@@ -6,6 +6,7 @@ import reducer, {
   clampToolOutput,
   setActiveSlot,
   setPendingInput,
+  stageToMainComposer,
   appendMessage,
   appendSlotMessage,
   updateStreamingMessage,
@@ -72,6 +73,12 @@ describe('chatSlice reducers', () => {
 
   it('setPendingInput', () => {
     expect(reducer(initial, setPendingInput('hello')).pendingInput).toBe('hello')
+  })
+
+  it('stageToMainComposer', () => {
+    const staged = reducer(initial, stageToMainComposer('do X in main'))
+    expect(staged.mainComposerAppend).toBe('do X in main')
+    expect(reducer(staged, stageToMainComposer(null)).mainComposerAppend).toBeNull()
   })
 
   it('appendMessage', () => {

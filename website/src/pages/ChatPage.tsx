@@ -31,7 +31,7 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone,
   appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, stageToMainComposer, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
   selectContinuable,
   selectTurnInterrupted,
@@ -853,6 +853,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => document.removeEventListener('keydown', onKey)
   }, [showHistorySuggestions])
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
+  const mainComposerAppend = useAppSelector(s => s.chat.mainComposerAppend)
 
   const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
   useEffect(() => {
@@ -1548,6 +1549,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }
   }, [pendingInput, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint])
+
+  // Consume Side Chat → main composer hand-offs. APPEND against the live input,
+  // never replace: the merge runs here because `inputRef` is the only holder of
+  // unsent text, mirroring the follow-up card's "add to this session". Pre-fills
+  // and stops — the user sends when they choose, so it never touches a live turn.
+  useEffect(() => {
+    if (!mainComposerAppend) return
+    dispatch(stageToMainComposer(null))
+    if (!activeSlot) return
+    const merged = mergeIntoDraft(inputRef.current, mainComposerAppend)
+    setDraft(drafts.current, activeSlot, merged)
+    saveDraftsDebounced()
+    setInput(merged)
+    raisePrefillHint()
+  }, [mainComposerAppend, activeSlot, dispatch, saveDraftsDebounced, raisePrefillHint])
 
   // Consume ?prefill= — the no-main-window fallback path for navigation
   // intents forwarded from a popout (see utils/popoutController.ts). The
