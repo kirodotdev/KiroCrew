@@ -10450,6 +10450,32 @@
         "moment_write_dropped": "entradas perdidas",
         "moment_approval_requested": "aprobación solicitada",
         "moment_approval_decided": "aprobación respondida"
+      },
+      "decisionStrip": {
+        "agreed": "Ambos eligieron las mismas habilidades",
+        "agreed_named": "Jev y coincidencia de palabras: {{names}}",
+        "agreed_short": "misma elección",
+        "baseline_label": "Coincidencia de palabras",
+        "baseline_named": "coincidencia de palabras: {{names}}",
+        "batches_label": "Rondas de selección",
+        "candidates_label": "Habilidades ofrecidas",
+        "confidence_title": "Confianza de Jev en su propia respuesta, de 0 a 1",
+        "dropped_label": "Rechazadas",
+        "error_title": "La decisión falló",
+        "feedback_failed": "No se pudo guardar",
+        "history_chars_label": "Contexto enviado (caracteres)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "ninguna habilidad",
+        "point_skills_select": "habilidades",
+        "rate_baseline": "Coincidencia de palabras",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "La coincidencia de palabras eligió las habilidades correctas",
+        "rate_right_jev": "Jev eligió las habilidades correctas",
+        "rate_wrong_baseline": "La coincidencia de palabras eligió las habilidades equivocadas",
+        "rate_wrong_jev": "Jev eligió las habilidades equivocadas",
+        "saved_tokens": "{{tokens}} tokens ahorrados",
+        "truncated_label": "Habilidades excluidas de la oferta"
       }
     },
     "chatPage": {

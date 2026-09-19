@@ -1323,6 +1323,13 @@ export interface ChatMessage {
   seq?: number
   /** Gateway process generation that numbered `seq` (folded snapshot rows). */
   gen?: string
+  /** One skill-selection decision the gateway stamped on the row that ends the
+   *  turn, when the Decisions (Jev) seam answered for it. Typed `unknown`
+   *  because the shape is validated at the read, by
+   *  `pages/chat/decisionRecord.ts` — the strip draws nothing for a record it
+   *  cannot check. The gateway stamps it under `meta` on both doors, and this
+   *  top-level spelling is accepted as well, the split `kind` above has too. */
+  decisions_strip?: unknown
 }
 
 export interface SubagentActivity {

@@ -10164,6 +10164,32 @@
         "moment_write_dropped": "エントリが失われた",
         "moment_approval_requested": "承認を要求",
         "moment_approval_decided": "承認に回答"
+      },
+      "decisionStrip": {
+        "agreed": "どちらも同じスキルを選びました",
+        "agreed_named": "Jev と単語マッチング: {{names}}",
+        "agreed_short": "同じ選択",
+        "baseline_label": "単語マッチング",
+        "baseline_named": "単語マッチング: {{names}}",
+        "batches_label": "選択ラウンド数",
+        "candidates_label": "提示したスキル",
+        "confidence_title": "Jev 自身の答えへの確信度（0 から 1）",
+        "dropped_label": "却下",
+        "error_title": "判断に失敗しました",
+        "feedback_failed": "保存できませんでした",
+        "history_chars_label": "送信したコンテキスト（文字数）",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "スキルなし",
+        "point_skills_select": "スキル",
+        "rate_baseline": "単語マッチング",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "単語マッチングのスキル選択は正しかった",
+        "rate_right_jev": "Jev のスキル選択は正しかった",
+        "rate_wrong_baseline": "単語マッチングのスキル選択は間違っていた",
+        "rate_wrong_jev": "Jev のスキル選択は間違っていた",
+        "saved_tokens": "{{tokens}} トークン節約",
+        "truncated_label": "候補から外したスキル"
       }
     },
     "chatPage": {

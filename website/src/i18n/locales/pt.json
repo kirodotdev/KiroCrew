@@ -10450,6 +10450,32 @@
         "moment_write_dropped": "entradas perdidas",
         "moment_approval_requested": "aprovação solicitada",
         "moment_approval_decided": "aprovação respondida"
+      },
+      "decisionStrip": {
+        "agreed": "Os dois escolheram as mesmas habilidades",
+        "agreed_named": "Jev e correspondência de palavras: {{names}}",
+        "agreed_short": "mesma escolha",
+        "baseline_label": "Correspondência de palavras",
+        "baseline_named": "correspondência de palavras: {{names}}",
+        "batches_label": "Rodadas de seleção",
+        "candidates_label": "Habilidades oferecidas",
+        "confidence_title": "Confiança do Jev na própria resposta, de 0 a 1",
+        "dropped_label": "Recusadas",
+        "error_title": "A decisão falhou",
+        "feedback_failed": "Não foi possível salvar",
+        "history_chars_label": "Contexto enviado (caracteres)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "nenhuma habilidade",
+        "point_skills_select": "habilidades",
+        "rate_baseline": "Correspondência de palavras",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "A correspondência de palavras escolheu as habilidades certas",
+        "rate_right_jev": "O Jev escolheu as habilidades certas",
+        "rate_wrong_baseline": "A correspondência de palavras escolheu as habilidades erradas",
+        "rate_wrong_jev": "O Jev escolheu as habilidades erradas",
+        "saved_tokens": "{{tokens}} tokens economizados",
+        "truncated_label": "Habilidades retiradas da oferta"
       }
     },
     "chatPage": {

@@ -10307,6 +10307,32 @@
         "moment_write_dropped": "Einträge verloren",
         "moment_approval_requested": "Freigabe angefragt",
         "moment_approval_decided": "Freigabe beantwortet"
+      },
+      "decisionStrip": {
+        "agreed": "Beide haben dieselben Skills gewählt",
+        "agreed_named": "Jev und Wortabgleich: {{names}}",
+        "agreed_short": "gleiche Auswahl",
+        "baseline_label": "Wortabgleich",
+        "baseline_named": "Wortabgleich: {{names}}",
+        "batches_label": "Auswahlrunden",
+        "candidates_label": "Angebotene Skills",
+        "confidence_title": "Wie sicher Jev bei der eigenen Antwort ist, von 0 bis 1",
+        "dropped_label": "Abgelehnt",
+        "error_title": "Entscheidung fehlgeschlagen",
+        "feedback_failed": "Konnte nicht gespeichert werden",
+        "history_chars_label": "Gesendeter Kontext (Zeichen)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "keine Skills",
+        "point_skills_select": "Skills",
+        "rate_baseline": "Wortabgleich",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "Der Wortabgleich hat die richtigen Skills gewählt",
+        "rate_right_jev": "Jev hat die richtigen Skills gewählt",
+        "rate_wrong_baseline": "Der Wortabgleich hat die falschen Skills gewählt",
+        "rate_wrong_jev": "Jev hat die falschen Skills gewählt",
+        "saved_tokens": "{{tokens}} Tokens gespart",
+        "truncated_label": "Aus dem Angebot gestrichene Skills"
       }
     },
     "chatPage": {

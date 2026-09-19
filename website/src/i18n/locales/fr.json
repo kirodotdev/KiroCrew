@@ -10450,6 +10450,32 @@
         "moment_write_dropped": "entrées perdues",
         "moment_approval_requested": "validation demandée",
         "moment_approval_decided": "validation tranchée"
+      },
+      "decisionStrip": {
+        "agreed": "Les deux ont choisi les mêmes compétences",
+        "agreed_named": "Jev et correspondance de mots : {{names}}",
+        "agreed_short": "même choix",
+        "baseline_label": "Correspondance de mots",
+        "baseline_named": "correspondance de mots : {{names}}",
+        "batches_label": "Tours de sélection",
+        "candidates_label": "Compétences proposées",
+        "confidence_title": "Confiance de Jev dans sa propre réponse, de 0 à 1",
+        "dropped_label": "Refusées",
+        "error_title": "Décision échouée",
+        "feedback_failed": "Enregistrement impossible",
+        "history_chars_label": "Contexte envoyé (caractères)",
+        "jev_label": "Jev",
+        "jev_named": "Jev : {{names}}",
+        "no_skills": "aucune compétence",
+        "point_skills_select": "compétences",
+        "rate_baseline": "Correspondance de mots",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "La correspondance de mots a choisi les bonnes compétences",
+        "rate_right_jev": "Jev a choisi les bonnes compétences",
+        "rate_wrong_baseline": "La correspondance de mots a choisi les mauvaises compétences",
+        "rate_wrong_jev": "Jev a choisi les mauvaises compétences",
+        "saved_tokens": "{{tokens}} jetons économisés",
+        "truncated_label": "Compétences retirées de la proposition"
       }
     },
     "chatPage": {

@@ -423,6 +423,12 @@ export interface DecisionsConsentData {
   permits: boolean
 }
 
+/** Which side of a logged decision a reader's verdict is about. */
+export type DecisionFeedbackSide = 'jev' | 'baseline'
+
+/** A reader's verdict on one side. `null` retracts an earlier one. */
+export type DecisionVerdictValue = 'right' | 'wrong' | null
+
 /** Computer-use config as returned by GET /api/computer-use/config.
  *
  * `enabled` comes from the keystone `computer_use.json`, not `config.json`; the
@@ -4842,6 +4848,11 @@ export const api = {
   // that address and answers 409 if config.json moved it since the read.
   saveDecisionsConsent: (enabled: boolean, endpoint?: string) =>
     put('/api/decisions/consent', enabled ? { enabled, endpoint } : { enabled }).then(j) as Promise<DecisionsConsentData>,
+  // One reader's verdict on one side of one decision, from the transcript's
+  // decision strip. `verdict: null` takes an answer back, which is why the field
+  // is nullable rather than absent — the server records the retraction.
+  sendDecisionsFeedback: (turnId: string, verdict: DecisionVerdictValue, side: DecisionFeedbackSide) =>
+    post('/api/decisions/feedback', { turn_id: turnId, verdict, side }).then(j) as Promise<unknown>,
   // Slack integration config
   getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
   getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string }>,

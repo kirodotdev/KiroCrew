@@ -10164,6 +10164,32 @@
         "moment_write_dropped": "条目丢失",
         "moment_approval_requested": "请求审批",
         "moment_approval_decided": "审批已回复"
+      },
+      "decisionStrip": {
+        "agreed": "两边选出的技能相同",
+        "agreed_named": "Jev 与词语匹配：{{names}}",
+        "agreed_short": "选择相同",
+        "baseline_label": "词语匹配",
+        "baseline_named": "词语匹配：{{names}}",
+        "batches_label": "选择轮数",
+        "candidates_label": "候选技能",
+        "confidence_title": "Jev 对自己答案的把握，取值 0 到 1",
+        "dropped_label": "已拒绝",
+        "error_title": "决策失败",
+        "feedback_failed": "没能保存",
+        "history_chars_label": "发送的上下文（字符数）",
+        "jev_label": "Jev",
+        "jev_named": "Jev：{{names}}",
+        "no_skills": "没有技能",
+        "point_skills_select": "技能",
+        "rate_baseline": "词语匹配",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "词语匹配选对了技能",
+        "rate_right_jev": "Jev 选对了技能",
+        "rate_wrong_baseline": "词语匹配选错了技能",
+        "rate_wrong_jev": "Jev 选错了技能",
+        "saved_tokens": "省下 {{tokens}} 个 token",
+        "truncated_label": "因空间不足未纳入的技能"
       }
     },
     "chatPage": {

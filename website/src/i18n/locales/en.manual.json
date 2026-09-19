@@ -4224,6 +4224,32 @@
         "moment_write_dropped": "entries lost",
         "moment_approval_requested": "approval asked",
         "moment_approval_decided": "approval answered"
+      },
+      "decisionStrip": {
+        "agreed": "Both picked the same skills",
+        "agreed_named": "Jev and word match: {{names}}",
+        "agreed_short": "same pick",
+        "baseline_label": "Word match",
+        "baseline_named": "word match: {{names}}",
+        "batches_label": "Selection rounds",
+        "candidates_label": "Skills offered",
+        "confidence_title": "Jev's confidence in its own answer, from 0 to 1",
+        "dropped_label": "Refused",
+        "error_title": "Decision failed",
+        "feedback_failed": "Could not save that",
+        "history_chars_label": "Context sent (characters)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "no skills",
+        "point_skills_select": "skills",
+        "rate_baseline": "Word match",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "Word match picked the right skills",
+        "rate_right_jev": "Jev picked the right skills",
+        "rate_wrong_baseline": "Word match picked the wrong skills",
+        "rate_wrong_jev": "Jev picked the wrong skills",
+        "saved_tokens": "saved {{tokens}} tokens",
+        "truncated_label": "Skills cut from the offer"
       }
     },
     "chatPage": {

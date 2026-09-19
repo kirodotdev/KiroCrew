@@ -10164,6 +10164,32 @@
         "moment_write_dropped": "항목 손실",
         "moment_approval_requested": "승인 요청",
         "moment_approval_decided": "승인 응답"
+      },
+      "decisionStrip": {
+        "agreed": "양쪽이 같은 스킬을 골랐습니다",
+        "agreed_named": "Jev와 단어 매칭: {{names}}",
+        "agreed_short": "같은 선택",
+        "baseline_label": "단어 매칭",
+        "baseline_named": "단어 매칭: {{names}}",
+        "batches_label": "선택 라운드 수",
+        "candidates_label": "제시한 스킬",
+        "confidence_title": "Jev가 자기 답에 대해 갖는 확신도, 0에서 1까지",
+        "dropped_label": "거부됨",
+        "error_title": "결정 실패",
+        "feedback_failed": "저장하지 못했습니다",
+        "history_chars_label": "보낸 컨텍스트(글자 수)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "스킬 없음",
+        "point_skills_select": "스킬",
+        "rate_baseline": "단어 매칭",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "단어 매칭이 스킬을 옳게 골랐다",
+        "rate_right_jev": "Jev가 스킬을 옳게 골랐다",
+        "rate_wrong_baseline": "단어 매칭이 스킬을 잘못 골랐다",
+        "rate_wrong_jev": "Jev가 스킬을 잘못 골랐다",
+        "saved_tokens": "{{tokens}} 토큰 절약",
+        "truncated_label": "후보에서 빠진 스킬"
       }
     },
     "chatPage": {

@@ -32,6 +32,7 @@ import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
+import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
 import { resolveTransientNotice } from '../pages/chat/transientNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
@@ -429,6 +430,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
             variants={m.variants}
             variantIdx={m.variant_idx}
             turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
+            decisionsStrip={decisionStripFieldOf(m)}
             fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
             suppressSteerAck={turnHadPolicyBlock(ctx.messages, ctx.index)}
           />

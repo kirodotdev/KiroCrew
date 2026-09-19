@@ -10307,6 +10307,32 @@
         "moment_write_dropped": "प्रविष्टियाँ खो गईं",
         "moment_approval_requested": "अनुमोदन मांगा गया",
         "moment_approval_decided": "अनुमोदन का उत्तर दिया"
+      },
+      "decisionStrip": {
+        "agreed": "दोनों ने एक ही स्किल चुनीं",
+        "agreed_named": "Jev और शब्द मिलान: {{names}}",
+        "agreed_short": "एक ही पसंद",
+        "baseline_label": "शब्द मिलान",
+        "baseline_named": "शब्द मिलान: {{names}}",
+        "batches_label": "चयन के दौर",
+        "candidates_label": "दी गई स्किल",
+        "confidence_title": "Jev को अपने ही उत्तर पर कितना भरोसा है, 0 से 1 तक",
+        "dropped_label": "अस्वीकृत",
+        "error_title": "निर्णय विफल रहा",
+        "feedback_failed": "सहेजा नहीं जा सका",
+        "history_chars_label": "भेजा गया संदर्भ (अक्षर)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "कोई स्किल नहीं",
+        "point_skills_select": "स्किल",
+        "rate_baseline": "शब्द मिलान",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "शब्द मिलान ने सही स्किल चुनीं",
+        "rate_right_jev": "Jev ने सही स्किल चुनीं",
+        "rate_wrong_baseline": "शब्द मिलान ने गलत स्किल चुनीं",
+        "rate_wrong_jev": "Jev ने गलत स्किल चुनीं",
+        "saved_tokens": "{{tokens}} टोकन बचाए",
+        "truncated_label": "सूची से हटाई गई स्किल"
       }
     },
     "chatPage": {

@@ -10450,6 +10450,32 @@
         "moment_write_dropped": "voci perse",
         "moment_approval_requested": "approvazione richiesta",
         "moment_approval_decided": "approvazione decisa"
+      },
+      "decisionStrip": {
+        "agreed": "Entrambi hanno scelto le stesse skill",
+        "agreed_named": "Jev e corrispondenza di parole: {{names}}",
+        "agreed_short": "stessa scelta",
+        "baseline_label": "Corrispondenza di parole",
+        "baseline_named": "corrispondenza di parole: {{names}}",
+        "batches_label": "Turni di selezione",
+        "candidates_label": "Skill proposte",
+        "confidence_title": "Quanta fiducia ha Jev nella propria risposta, da 0 a 1",
+        "dropped_label": "Rifiutate",
+        "error_title": "Decisione non riuscita",
+        "feedback_failed": "Non è stato possibile salvare",
+        "history_chars_label": "Contesto inviato (caratteri)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "nessuna skill",
+        "point_skills_select": "skill",
+        "rate_baseline": "Corrispondenza di parole",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "La corrispondenza di parole ha scelto le skill giuste",
+        "rate_right_jev": "Jev ha scelto le skill giuste",
+        "rate_wrong_baseline": "La corrispondenza di parole ha scelto le skill sbagliate",
+        "rate_wrong_jev": "Jev ha scelto le skill sbagliate",
+        "saved_tokens": "{{tokens}} token risparmiati",
+        "truncated_label": "Skill escluse dalla proposta"
       }
     },
     "chatPage": {
