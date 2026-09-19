@@ -27,6 +27,15 @@
  * and the surrounding block already carries that gesture. Swallowing the click
  * to open a lightbox would make the image the only span in a note you cannot
  * click to edit.
+ *
+ * The failed/loaded state belongs to ONE source. An Obsidian embed keeps its
+ * positional React key while its `src` changes underneath it: the first paint
+ * resolves the embed against the note's folder before the vault's attachment
+ * folder setting has loaded, and the setting may move it to that folder a
+ * moment later. If the provisional URL 404s first, a state that outlived the
+ * source would pin the block on the failure fallback and never request the
+ * corrected one. So each flag remembers the source it was observed for, and a
+ * new source starts clean without remounting anything.
  */
 import { ImageOff } from 'lucide-react'
 import { useState } from 'react'
@@ -38,9 +47,26 @@ function srcLabel(src: string): string {
   return (slash === -1 ? clean : clean.slice(slash + 1)) || src
 }
 
-export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: string; rawSrc: string }) {
-  const [failed, setFailed] = useState(false)
-  const [loaded, setLoaded] = useState(false)
+export function NoteImage({
+  src,
+  alt,
+  rawSrc,
+  width,
+}: {
+  src: string | null
+  alt: string
+  rawSrc: string
+  /** Requested display width in CSS pixels (an Obsidian `![[file|720]]`), still capped by the column. */
+  width?: number
+}) {
+  // The source each event was observed for, not a bare boolean: a flag that
+  // outlived its source would keep a corrected `src` from ever being requested
+  // (see the note above). Comparing against the current `src` retires the old
+  // observation the moment the source moves, with no effect and no remount.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
+  const failed = src !== null && failedSrc === src
+  const loaded = src !== null && loadedSrc === src
   if (src === null || failed) {
     // The glyph, not the muted colour, is what says "this was an image": alt
     // text alone reads as an ordinary sentence, so a renamed or refused file
@@ -61,13 +87,16 @@ export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: strin
     <img
       src={src}
       alt={alt}
-      onLoad={() => setLoaded(true)}
-      onError={() => setFailed(true)}
+      onLoad={() => setLoadedSrc(src)}
+      onError={() => setFailedSrc(src)}
       style={{
         maxWidth: '100%',
         maxHeight: '60vh',
         objectFit: 'contain',
         ...(isSvg ? { width: '100%', height: 'auto' } : { height: loaded ? 'auto' : undefined, minHeight: loaded ? undefined : '120px' }),
+        // After the SVG basis so an authored width wins over it; `maxWidth`
+        // above still keeps a wide request inside the reading column.
+        ...(width === undefined ? null : { width: `${width}px` }),
         display: 'block',
         margin: '4px 0',
         borderRadius: '4px',

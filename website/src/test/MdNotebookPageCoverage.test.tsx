@@ -63,6 +63,7 @@ const api = {
   setPat: vi.fn(),
   pickFolder: vi.fn(),
   listNotes: vi.fn(),
+  listAttachments: vi.fn(),
   readNote: vi.fn(),
   saveNote: vi.fn(),
   deleteNote: vi.fn(),
@@ -248,6 +249,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
+    api.listAttachments.mockResolvedValue({ attachmentFolderPath: null })
     api.health.mockResolvedValue({ ok: true, features: FEATURES })
     api.listVaults.mockResolvedValue({
       vaults: [aVault(), SECOND_VAULT],
@@ -1386,5 +1388,31 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     // The superseded read must not repoint the editor at the note it read.
     expect(localStorage.getItem('mdnb-open-note')).toBe('"One.md"')
     expect(screen.queryByText('Stale read')).toBeNull()
+  })
+
+  it('shows a failed attachment-setting request through the error notice', async () => {
+    // The setting rides along with the notes and never gates them, but a request
+    // that FAILED is an error like any other on this page: it renders through
+    // `ErrorNotice`, with the hand-off, rather than the embeds quietly losing
+    // their folder resolution.
+    // The module is mocked above with `...actual`, so its real error class comes
+    // through it; a static import would run before the mock's `api` exists.
+    const { ApiError } = await import('../apps/md-notebook/api')
+    api.listAttachments.mockRejectedValue(new ApiError('settings unavailable', 500, {}))
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    expect(await screen.findByRole('alert')).toHaveTextContent('settings unavailable')
+  })
+
+  it('keeps quiet when the backend simply predates the attachment route', async () => {
+    // The one swallowed failure: an older backend has no `/attachments`. That is
+    // what the ride-along exists to tolerate, and the stale-backend banner is
+    // the page's word for it, so no error notice fires on top.
+    const { ApiError } = await import('../apps/md-notebook/api')
+    api.listAttachments.mockRejectedValue(new ApiError('no route', 404, {}, true))
+    await mount()
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
+    await waitFor(() => expect(api.listAttachments).toHaveBeenCalled())
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })
