@@ -22,7 +22,7 @@ other entry's markers would resolve against the wrong list).
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -188,6 +188,69 @@ class TestDrainedRow:
         ]
         pop = next(p for p in pops if p.get("content") == "plain text")
         assert "meta" not in pop
+
+
+class TestSteeredAttachments:
+    @pytest.mark.asyncio
+    async def test_accepted_steer_keeps_attachments_on_row_and_live_echo(
+        self, tmp_path, monkeypatch
+    ):
+        state, slot = _busy_state(tmp_path, monkeypatch)
+        slot._acp_client = MagicMock(supports_steer=True, steer=AsyncMock(return_value=True))
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "slot": "busy-chat",
+                    "message": _WIRE,
+                    "steer": True,
+                    "meta": {"files": [_PATH], "dirs": [_DIR]},
+                },
+            )
+            assert resp.status == 200
+            assert (await resp.json()).get("steered") is True
+
+        assert _user_rows(slot)[-1]["meta"]["files"] == [_PATH]
+        echo = next(
+            c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "steer_push"
+        )
+        assert echo["meta"] == {"files": [_PATH], "dirs": [_DIR]}
+        from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
+
+        _settle_consumed_steers(slot, f"<user_message>\n{_WIRE}\n</user_message>")
+        assert slot._steer_attachment_meta == {}
+
+    @pytest.mark.asyncio
+    async def test_unconsumed_steer_keeps_attachments_through_requeue_and_drain(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat_runner import _requeue_unconsumed_steers
+
+        state, slot = _busy_state(tmp_path, monkeypatch)
+        slot._acp_client = MagicMock(supports_steer=True, steer=AsyncMock(return_value=True))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "slot": "busy-chat",
+                    "message": _WIRE,
+                    "steer": True,
+                    "meta": {"files": [_PATH], "dirs": [_DIR]},
+                },
+            )
+            assert resp.status == 200
+
+        _requeue_unconsumed_steers(state, slot)
+        entry = next(i for i in slot._queue if i["content"] == _WIRE)
+        assert entry["meta"]["files"] == [_PATH]
+        assert entry["meta"]["dirs"] == [_DIR]
+        assert slot._steer_attachment_meta == {}
+
+        state.subagents = None
+        slot._in_stage_execution = False
+        await _drain_once(state, slot)
+        assert _user_rows(slot)[-1]["meta"]["files"] == [_PATH]
 
 
 class TestAttachmentEntriesDrainAlone:

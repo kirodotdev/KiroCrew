@@ -6186,6 +6186,8 @@ def _settle_consumed_steers(
             # cannot rehydrate the stale card.
             state.clear_question_pending(slot.key, blocking=False)
     slot._pending_steers[:] = remaining
+    for settled_msg in set(previous) - set(remaining):
+        slot._steer_attachment_meta.pop(settled_msg, None)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -6259,6 +6261,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _sid = getattr(slot, "_steer_send_ids", {}).pop(steer_msg, "")
         if _sid:
             _meta["sendId"] = _sid
+        _meta.update(getattr(slot, "_steer_attachment_meta", {}).pop(steer_msg, {}))
         # Provenance is derivable, not guessed: `steer_into_running_turn` has
         # exactly one caller (the api_chat composer branch), and app isolation
         # confines app-surface requests to app-scoped slots — so every steer

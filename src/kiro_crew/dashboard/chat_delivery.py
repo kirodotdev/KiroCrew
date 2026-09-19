@@ -238,6 +238,7 @@ async def steer_into_running_turn(
     message: str,
     *,
     send_id: str | None = None,
+    attachments: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -255,6 +256,7 @@ async def steer_into_running_turn(
     for every caller, not just the current one.
     """
     send_id = normalize_send_id(send_id)
+    attachments = attachment_meta(attachments)
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
@@ -320,6 +322,8 @@ async def steer_into_running_turn(
     # requeued entry's meta unchanged.
     if send_id:
         slot._steer_send_ids[message] = send_id
+    if attachments:
+        slot._steer_attachment_meta[message] = attachments
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -386,6 +390,7 @@ async def steer_into_running_turn(
         # every intermediate transition, including a merged row.
         slot._steer_delivery_ids.pop(message, None)
         slot._steer_send_ids.pop(message, None)
+        slot._steer_attachment_meta.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -413,6 +418,7 @@ async def steer_into_running_turn(
             slot._pending_steers.remove(message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
+            slot._steer_attachment_meta.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -504,6 +510,8 @@ async def steer_into_running_turn(
     # `consumed` only when the echo confirms the injection. A crew log line has no
     # such state: it would assert consumption this coroutine cannot prove, and a
     # turn that ends without the echo still requeues the text.
+    if not still_registered:
+        slot._steer_attachment_meta.pop(message, None)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -570,6 +578,8 @@ async def steer_into_running_turn(
         # transcript page is what mergePreservedThinking reads to resolve an
         # optimistic bubble by id (accepted steer vs raced new turn).
         meta["sendId"] = send_id
+    if attachments:
+        meta.update(attachments)
     # Store the sanitized form — raw content must never reach an external
     # surface — so the steer survives a page reload via the dirty-flush cycle.
     _row = slot.append("user", sanitized, "msg msg-u", ts=ts, meta=meta)
@@ -594,6 +604,8 @@ async def steer_into_running_turn(
         # id; omitted when absent so the payload shape is unchanged for sends
         # that never minted one.
         push_payload["sendId"] = send_id
+    if attachments:
+        push_payload["meta"] = attachments
     state.broadcast_ws("steer_push", push_payload)
     return STEER_STEERED
 
