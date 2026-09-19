@@ -1574,6 +1574,15 @@ Allocation grants no store or caller authority. Proof, ownership, namespace and
 immutable no-replacement binding publication remain separate and unchanged.
 Exact path checks ignore only Windows' extended-length prefix, including UNC;
 redirects, non-regular or multiply-linked allocator files refuse allocation.
+On Windows, allocator objects must belong to the current user or to the local
+Administrators group (`S-1-5-32-544`), the default owner for elevated creation.
+The group exception requires a confirmed local volume: the same SID on a network
+share denotes that server's administrators, not this machine's. An unknown user
+SID, unreadable owner or any other owner still refuses. The existing fail-loud
+owner-only DACL lockdown remains required for both directories and files; no
+ownership is rewritten. POSIX retains its exact-current-UID check. This allocator
+exception does not enable native Windows private-member execution or relax its
+separate isolation and binding checks.
 
 This replaces the unmerged reservation protocol in
 [PR #10586](https://github.com/kirodotdev/KiroCrew/pull/10586), verified open before
