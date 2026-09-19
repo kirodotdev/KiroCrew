@@ -828,6 +828,32 @@ class SessionMap:
         """
         return self._resolve_alias(key)[1] is not None
 
+    def mapped_sid(self, key: str) -> str:
+        """Read-only, in-memory: the session ID *key* maps to, or ``""``.
+
+        The value half of :meth:`has_hint`, and undecorated for the same reason:
+        one dict lookup through the shared alias fold, no disk and no mutation,
+        so it is safe on the event loop and carries no cross-thread hazard.
+
+        It answers a question :meth:`get` deliberately does not. ``get`` asks
+        "can this ID still be resumed", which is why it stats the transcript and
+        PRUNES the entry when that file is gone or empty. A caller recording
+        HISTORY wants the opposite: the ID this key was last serving, whether or
+        not a resume would now succeed. Routing such a caller through ``get``
+        loses the ID exactly when the two stores disagree -- a crew log unit can
+        outlive a truncated ACP transcript -- and mutates the map as a side
+        effect of being asked to describe it.
+
+        So this is not an alternative spelling of ``get``: a caller deciding
+        whether to RESUME must still use ``get``, whose file check is the whole
+        point, and must not treat a value from here as a resumable session.
+        """
+        entry = self._resolve_alias(key)[1]
+        if not entry:
+            return ""
+        sid = entry.get("sid")
+        return sid if isinstance(sid, str) else ""
+
     @staticmethod
     def _inbound_binding(entry: dict) -> ChannelLink | None:
         """The inbound resume binding *entry* holds, or None when it holds none.

@@ -67,7 +67,8 @@ handle the process already holds is silent. Not turn-scoped, so it carries no
 
 **Pairing** — None. It is not an opener: `session/closed` is a teardown marker for
 the gateway's own serving, not a closer for this entry. On the resume path this
-entry's write is the point the interrupted-turn repair runs.
+entry's write is the point the interrupted-turn repair runs; on the CREATE path it
+is the point the repair runs against the crew log named by `previous`.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
@@ -78,6 +79,8 @@ entry's write is the point the interrupted-turn repair runs.
 | `cwd` | string | required | Working directory. May be empty. | |
 | `owner` | string | required | Owner, defaulted to `default`. | |
 | `resumed` | bool | required | `true` when this claim re-attached to an existing crew log. | |
+| `previous` | object | | `{sid}` — the crew log the SAME slot was writing before this one. Present only on a crew log that was just created while the slot already had one. Absent on the slot's first crew log, on every re-attach, and when the gateway could not name the predecessor. | |
+| `parent` | object | | `{slot, sid?}` — the session that made this one through `session_create`. `sid` is the creator's ACP session id, frozen at mint, and is absent when the creator had no live handle then. Absent entirely on a person's own tab, on a fork, on a `spawn_run` subagent, and on a session whose gateway restarted between the mint and its first turn. | |
 
 **Invariants** — At most one per create and one per re-attach. The session's
 *starting* model rides here rather than in a `model/selected` entry, which records
@@ -98,6 +101,9 @@ absent field holds only for entries written since. A fold spanning the upgrade m
 read an absent field on an older entry as *unknown*, which is the same misreading
 #12017 exists to remove.
 
+`previous` never names this same session: a re-attach is the same crew log, and a
+self-edge would make a chain walker revisit the crew log it started from.
+
 ```json
 {"type":"session/opened","seq":1,"time":1789000000000,"src":"gateway","data":{"agent":"kirocrew","slot":"dashboard:3","model":"","cwd":"/home/u/proj","owner":"default","resumed":false}}
 ```
@@ -113,6 +119,15 @@ what was chosen. Whether a request was APPLIED is not recorded here: a reader
 that needs it reads the provider's own outcome rather than comparing the two
 strings. When `model` is empty the served id, once known, appears on the first
 `turn/completed` that reports one.
+
+`resumed` and `previous` answer two different continuities, and a reader needs
+both. `resumed` covers one crew log served again; `previous` covers one SLOT whose
+ACP session was torn down, so its work continues in a crew log with a different
+id. A reader that wants the slot rather than the session folds the newest crew
+log, reads `previous` off the `status` projection, folds that crew log, and
+repeats. A `null` answer is "no edge to follow", never "there was no earlier crew
+log": retention deletes whole segments off the front, and the edge rides on the
+creating entry.
 
 **Since** — #10091.
 

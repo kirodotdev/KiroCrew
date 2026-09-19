@@ -163,7 +163,7 @@ source were removed (see the emitter spec's "Removed types").
 ### Session, turn
 | Type | `data` | Emitter |
 |---|---|---|
-| `session/opened` | header echo + `resumed`; `model_requested` when a tier resolved one; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
+| `session/opened` | header echo + `resumed`; `model_requested` when a tier resolved one; `previous {sid}` on a crew log created while its slot already had one; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
 | `session/closed` | `{reason}` | yes |
 | `turn/started` | `{turn, actor, depth, message_seq?, attempt?}` | yes |
 | `turn/refused` | `{turn, actor, reason, depth}` | yes |
@@ -282,6 +282,44 @@ not persisted at all. A child whose gateway restarted between mint and its first
 writes no `parent`. `sid` is a citation of the creator's unit, not the tree key -- a slot outlives its ACP
 session, so a fold that builds the session tree keys it by `slot` and reads one `session/opened` per
 crew log.
+
+**The other edge is the SLOT's own succession.** A slot outliving its ACP session is not an edge case
+but the steady state: a restart whose `session/load` does not re-attach, a reset, an agent/model/effort
+switch, a compaction that recycles the session and a provider swap each tear the ACP session down, and
+the successor cold-starts under a new id. `CrewLog.exists` is false for that id, so the slot gains a
+SECOND crew log, and `resumed` is false there because nothing re-attached. That is correct and is also
+all `resumed` can say, so the successor's `session/opened` carries `previous {sid}`: the crew log the
+same slot was writing before. Same citation shape as `parent`, written once at creation and never
+rewritten, absent rather than empty when there is nothing to name -- the slot's first crew log and a
+predecessor the gateway could not name are both "nothing to follow". No `slot` is repeated inside it,
+because it is the slot in `data.slot`. The id comes from the persisted slot-to-session mapping, read
+before allocation publishes the successor over it, which is the last moment the predecessor is still
+nameable; a successful resume answers the same id and the emitter writes no edge, since a crew log
+cannot be its own predecessor.
+
+Superseding a crew log is also what makes its writer PROVABLY gone, and that is the one precondition
+the interrupted-turn repair needs. Compare the resume path, where `resumed` is a belief about a writer
+the process cannot see and has to be checked against its own live turns; here the slot's session was
+torn down, so nothing can append to the previous unit as that session again. So the same create closes
+that unit's open turn (`turn/completed {stop_reason: "interrupted"}`) and its open tool calls
+(`status: "unknown"`). Before this, the repair hung off the `exists` branch alone, which a new id never
+takes -- so the crew log that was actually interrupted was the one crew log never repaired. An
+unmatched `subagent/spawned` is still left open: the repairing process's registry answers for its own
+children, and a restart's children belonged to a process that is gone, so reporting them finished would
+be an `unknown` outcome written on no evidence beside the real one a surviving child can still file.
+
+Being provably gone to ACP is not the same as having no writes outstanding, so the repair stands down
+while this process still OWES entries for the previous unit. A transient append failure puts that
+unit's own `turn/completed` into retry backoff, and a synthesised `interrupted` appended ahead of it
+would leave the real completion landing underneath -- two outcomes for one turn, which is the state the
+repair exists to prevent. The emitter's debt set answers that directly, and a later supersede of the
+same unit repairs it once the debt is gone, so the guard defers the repair rather than cancelling it.
+
+The read side is `session/opened.data.previous` itself, folded into the `status` projection and served
+by the existing projection route. A reader that wants the SLOT rather than the session folds the newest
+crew log, follows `previous` to the one before it, and repeats. There is deliberately no chain-walking
+helper in the store: the walk is one field read per fold, and a bounded, cycle-guarded walker belongs
+with the first fold that actually performs it rather than shipped ahead of any caller.
 
 ## 6. Rules
 
