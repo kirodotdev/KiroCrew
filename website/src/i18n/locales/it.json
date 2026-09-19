@@ -7199,7 +7199,8 @@
       "credit_multiplier": "{{value}} il costo in crediti di Auto",
       "credit_multiplier_baseline": "{{value}}, il costo in crediti di riferimento",
       "loading_models": "Caricamento dei modelli…",
-      "no_matches": "Nessuna corrispondenza"
+      "no_matches": "Nessuna corrispondenza",
+      "order_load_failed": "Impossibile caricare l'ordine dei modelli salvato: viene mostrato l'ordine predefinito finché non si carica."
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gestisci nelle impostazioni",
@@ -7675,6 +7676,8 @@
     },
     "multiSelect": {
       "deselect_all": "Deseleziona tutto",
+      "reorder_clear_search": "Cancella la ricerca per riordinare",
+      "reorder_unavailable": "Il riordino non è disponibile finché l'ordine salvato non viene caricato",
       "select_all": "Seleziona tutto"
     },
     "searchableSelect": {
@@ -13503,7 +13506,7 @@
         "model_picker_selected_models": "Selezionati {{selected}} / {{total}}",
         "search_models": "Cerca modelli…",
         "selectable_models": "Modelli selezionabili",
-        "selectable_models_description": "Scegli quali modelli disponibili mostrare nei selettori della chat. Auto e il modello della sessione attiva restano sempre visibili.",
+        "selectable_models_description": "Scegli quali modelli disponibili mostrare nei selettori della chat. Auto e il modello della sessione attiva restano sempre visibili. Trascina per impostare l'ordine usato dai selettori.",
         "default_normal_length": "Predefinito — lunghezza normale",
         "default_reasoning_effort": "Livello di ragionamento predefinito",
         "default_to_autopilot_mode": "Usa per impostazione predefinita la modalità pilota automatico",
@@ -15521,6 +15524,11 @@
         "description": "Persistente usa ciò che già sa e salva nuova memoria. Incognito usa ciò che sa, ma non salva nuova memoria. Temporaneo parte senza memoria e non salva nulla. Tutte le chat restano visibili nella cronologia. Puoi cambiare la modalità di ogni chat.",
         "label": "Modalità memoria predefinita",
         "persistent": "Persistente"
+      },
+      "modelOrder": {
+        "reorder": "Riordina {{model}}",
+        "reset": "Ripristina l'ordine predefinito",
+        "saveFailed": "Impossibile salvare l'ordine dei modelli. Riprova. Viene mostrato l'ultimo ordine salvato."
       },
       "plainDiff": {
         "description": "Mostra i diff come testo unified diff senza evidenziazione della sintassi. Usa meno memoria sui diff di grandi dimensioni.",

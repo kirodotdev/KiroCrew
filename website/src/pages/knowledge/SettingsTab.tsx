@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useId, createContext, useContext } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
-import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { useAvailableModels, useModelOrderLoadFailed } from '../../hooks/useAvailableModels'
 import SimpleSelect from '../../components/SimpleSelect'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 import { i18nT } from '../../i18n/t'
@@ -71,6 +71,7 @@ export function SettingsTab() {
 
   // ── Model dropdown ──
   const availableModels = useAvailableModels()
+  const modelOrderLoadFailed = useModelOrderLoadFailed()
   const modelOptions = availableModels.map(m => m.name)
   const currentModel = cfg?.extraction_model || 'auto'
   if (!modelOptions.includes(currentModel)) modelOptions.unshift(currentModel)
@@ -160,6 +161,16 @@ export function SettingsTab() {
         label={i18nT('pages.knowledge.settings.model_label')}
         description={i18nT('pages.knowledge.settings.model_desc')}
       >
+        {/* Saved model order failed to load: the select shows backend order as a
+            fallback. askAgent off; the No hand-off decision, named concretely:
+            the embedding rate-limit number input above holds an unsaved
+            blur-committed draft that navigating to a chat would abandon, this
+            tab already surfaces its own config-read failure with an inline
+            retry (cfgQ.isError above), and the state self-clears when the
+            shared config read retries. */}
+        {modelOrderLoadFailed && (
+          <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} />
+        )}
         <SimpleSelect
           options={modelOptions}
           optionLabels={modelOptions.map(m => m === 'auto' ? i18nT('pages.knowledge.settings.model_auto') : m)}

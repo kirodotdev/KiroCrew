@@ -7199,7 +7199,8 @@
       "credit_multiplier": "{{value}} o custo em créditos do Auto",
       "credit_multiplier_baseline": "{{value}}, o custo em créditos de referência",
       "loading_models": "Carregando modelos…",
-      "no_matches": "Nenhuma correspondência"
+      "no_matches": "Nenhuma correspondência",
+      "order_load_failed": "Não foi possível carregar sua ordem de modelos salva — exibindo a ordem padrão até carregar."
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gerenciar nas configurações",
@@ -7675,6 +7676,8 @@
     },
     "multiSelect": {
       "deselect_all": "Desmarcar tudo",
+      "reorder_clear_search": "Limpe a pesquisa para reordenar",
+      "reorder_unavailable": "A reordenação fica indisponível até o carregamento da ordem salva",
       "select_all": "Selecionar tudo"
     },
     "searchableSelect": {
@@ -13503,7 +13506,7 @@
         "model_picker_selected_models": "Selecionados {{selected}} / {{total}}",
         "search_models": "Pesquisar modelos…",
         "selectable_models": "Modelos selecionáveis",
-        "selectable_models_description": "Escolha quais modelos anunciados aparecem nos seletores do chat. Auto e o modelo da sessão ativa permanecem sempre visíveis.",
+        "selectable_models_description": "Escolha quais modelos anunciados aparecem nos seletores do chat. Auto e o modelo da sessão ativa permanecem sempre visíveis. Arraste para definir a ordem usada pelos seletores.",
         "default_normal_length": "Predefinido — comprimento normal",
         "default_reasoning_effort": "Esforço de raciocínio padrão",
         "default_to_autopilot_mode": "Usar modo Autopilot por padrão",
@@ -15521,6 +15524,11 @@
         "description": "Persistente usa o que já sabe e salva nova memória. Anônimo usa o que sabe, mas não salva nova memória. Temporário começa em branco e não salva nada. Todos os chats continuam aparecendo no histórico. Você pode mudar o modo de qualquer chat.",
         "label": "Modo de memória padrão",
         "persistent": "Persistente"
+      },
+      "modelOrder": {
+        "reorder": "Reordenar {{model}}",
+        "reset": "Redefinir para a ordem padrão",
+        "saveFailed": "Não foi possível salvar a ordem dos modelos. Tente novamente. Sua última ordem salva está sendo exibida."
       },
       "plainDiff": {
         "description": "Exibe os diffs como texto unified diff sem realce de sintaxe. Usa menos memória em diffs grandes.",

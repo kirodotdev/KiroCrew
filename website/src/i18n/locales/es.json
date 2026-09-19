@@ -7199,7 +7199,8 @@
       "credit_multiplier": "{{value}} el coste en créditos de Auto",
       "credit_multiplier_baseline": "{{value}}, el coste en créditos de referencia",
       "loading_models": "Cargando modelos…",
-      "no_matches": "Sin coincidencias"
+      "no_matches": "Sin coincidencias",
+      "order_load_failed": "No se pudo cargar tu orden de modelos guardado; se muestra el orden predeterminado hasta que se cargue."
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gestionar en Ajustes",
@@ -7675,6 +7676,8 @@
     },
     "multiSelect": {
       "deselect_all": "Anular selección",
+      "reorder_clear_search": "Borra la búsqueda para reordenar",
+      "reorder_unavailable": "No se puede reordenar hasta que se cargue el orden guardado",
       "select_all": "Seleccionar todo"
     },
     "searchableSelect": {
@@ -13504,7 +13507,7 @@
         "model_picker_selected_models": "Seleccionados {{selected}} / {{total}}",
         "search_models": "Buscar modelos…",
         "selectable_models": "Modelos seleccionables",
-        "selectable_models_description": "Elige qué modelos anunciados aparecen en los selectores del chat. Auto y el modelo de la sesión activa siempre permanecen visibles.",
+        "selectable_models_description": "Elige qué modelos anunciados aparecen en los selectores del chat. Auto y el modelo de la sesión activa siempre permanecen visibles. Arrastra para definir el orden que usan los selectores.",
         "default_normal_length": "Predeterminado: longitud normal",
         "default_reasoning_effort": "Esfuerzo de razonamiento predeterminado",
         "default_to_autopilot_mode": "Usar el modo piloto automático por defecto",
@@ -15522,6 +15525,11 @@
         "description": "Persistente usa lo que ya sabe y guarda memoria nueva. Incógnito usa lo que sabe, pero no guarda memoria nueva. Temporal empieza en blanco y no guarda memoria. Todos los chats siguen apareciendo en el historial. Puedes cambiar el modo de cualquier chat.",
         "label": "Modo de memoria predeterminado",
         "persistent": "Persistente"
+      },
+      "modelOrder": {
+        "reorder": "Reordenar {{model}}",
+        "reset": "Restablecer el orden predeterminado",
+        "saveFailed": "No se pudo guardar el orden de modelos. Inténtalo de nuevo. Se muestra tu último orden guardado."
       },
       "plainDiff": {
         "description": "Muestra los diffs como texto unified diff sin resaltado de sintaxis. Usa menos memoria en diffs grandes.",

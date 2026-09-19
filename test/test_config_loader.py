@@ -612,6 +612,52 @@ class TestRefusalFallbackModelLoad:
         assert loaded.to_dict()["agent"]["refusal_fallback_model"] == "claude-opus-5"
 
 
+class TestModelOrderLoad:
+    """agent.model_order loads bounded, mirroring the PATCH validator.
+
+    The PATCH path enforces max_entries/max_len before writing, but a
+    hand-edited config.json reaches the loader directly — so the loader
+    applies the same shared-constant bounds (sections.MODEL_ORDER_*), keeping
+    an oversized self-authored list from being retained and re-serialized.
+    """
+
+    def test_load_normalizes_dedup_first_wins(self) -> None:
+        loaded = _load_from_dict({"agent": {"model_order": ["a", "b", "a", "c"]}})
+        assert loaded.agent.model_order == ["a", "b", "c"]
+
+    def test_load_caps_entry_count_at_shared_bound(self) -> None:
+        from kiro_crew.config.sections import MODEL_ORDER_MAX_ENTRIES
+
+        oversized = [f"model-{i}" for i in range(MODEL_ORDER_MAX_ENTRIES + 50)]
+        loaded = _load_from_dict({"agent": {"model_order": oversized}})
+        assert loaded.agent.model_order == oversized[:MODEL_ORDER_MAX_ENTRIES]
+
+    def test_load_drops_oversized_ids(self) -> None:
+        from kiro_crew.config.sections import MODEL_ORDER_MAX_ID_LEN
+
+        at_limit = "a" * MODEL_ORDER_MAX_ID_LEN
+        over_limit = "b" * (MODEL_ORDER_MAX_ID_LEN + 1)
+        loaded = _load_from_dict({"agent": {"model_order": [at_limit, over_limit, "ok"]}})
+        assert loaded.agent.model_order == [at_limit, "ok"]
+
+    def test_load_cap_applies_after_dedup_and_length_filter(self) -> None:
+        # The count bound must cap SURVIVORS, not raw entries: dropped
+        # non-strings, oversized ids and duplicates must not consume slots.
+        from kiro_crew.config.sections import (
+            MODEL_ORDER_MAX_ENTRIES,
+            MODEL_ORDER_MAX_ID_LEN,
+        )
+
+        junk = [42, "c" * (MODEL_ORDER_MAX_ID_LEN + 1), "dup", "dup"]
+        keepers = [f"model-{i}" for i in range(MODEL_ORDER_MAX_ENTRIES - 1)]
+        loaded = _load_from_dict({"agent": {"model_order": junk + keepers}})
+        assert loaded.agent.model_order == ["dup", *keepers]
+
+    def test_load_malformed_value_never_crashes(self) -> None:
+        loaded = _load_from_dict({"agent": {"model_order": {"not": "a list"}}})
+        assert loaded.agent.model_order == []
+
+
 class TestMalformedConfigValuesNeverCrashLoad:
     """Round-2 hardening: several config parse sites coerced values with a bare
     .upper()/int()/list()/set()/.items() and no guard. jsonschema is optional

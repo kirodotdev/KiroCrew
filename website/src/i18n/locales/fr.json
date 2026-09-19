@@ -7199,7 +7199,8 @@
       "credit_multiplier": "{{value}} le coût en crédits d'Auto",
       "credit_multiplier_baseline": "{{value}}, le coût en crédits de référence",
       "loading_models": "Chargement des modèles…",
-      "no_matches": "Aucun résultat"
+      "no_matches": "Aucun résultat",
+      "order_load_failed": "Impossible de charger votre ordre de modèles enregistré — l'ordre par défaut s'affiche en attendant."
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gérer dans les paramètres",
@@ -7675,6 +7676,8 @@
     },
     "multiSelect": {
       "deselect_all": "Tout désélectionner",
+      "reorder_clear_search": "Effacez la recherche pour réorganiser",
+      "reorder_unavailable": "La réorganisation est indisponible tant que l'ordre enregistré n'est pas chargé",
       "select_all": "Tout sélectionner"
     },
     "searchableSelect": {
@@ -13504,7 +13507,7 @@
         "model_picker_selected_models": "{{selected}} / {{total}} sélectionnés",
         "search_models": "Rechercher des modèles…",
         "selectable_models": "Modèles sélectionnables",
-        "selectable_models_description": "Choisissez les modèles annoncés qui apparaissent dans les sélecteurs du chat. Auto et le modèle de la session active restent toujours visibles.",
+        "selectable_models_description": "Choisis les modèles annoncés qui apparaissent dans les sélecteurs du chat. Auto et le modèle de la session active restent toujours visibles. Fais glisser pour définir l'ordre utilisé par les sélecteurs.",
         "default_normal_length": "Par défaut — longueur normale",
         "default_reasoning_effort": "Effort de raisonnement par défaut",
         "default_to_autopilot_mode": "Mode Autopilot par défaut",
@@ -15522,6 +15525,11 @@
         "description": "Persistant utilise ce qu’il sait déjà et enregistre de nouveaux souvenirs. Incognito utilise ce qu’il sait, mais n’enregistre rien de nouveau. Temporaire démarre sans mémoire et n’enregistre rien. Tous les chats restent visibles dans l’historique. Vous pouvez changer le mode de chaque chat.",
         "label": "Mode mémoire par défaut",
         "persistent": "Persistant"
+      },
+      "modelOrder": {
+        "reorder": "Réordonner {{model}}",
+        "reset": "Réinitialiser l'ordre par défaut",
+        "saveFailed": "Impossible d'enregistrer l'ordre des modèles. Réessaie. Ton dernier ordre enregistré est affiché."
       },
       "plainDiff": {
         "description": "Affiche les diffs sous forme de texte unified diff sans coloration syntaxique. Consomme moins de mémoire sur les diffs volumineux.",

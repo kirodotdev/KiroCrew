@@ -6993,7 +6993,8 @@
       "credit_multiplier": "Auto 크레딧 비용의 {{value}}",
       "credit_multiplier_baseline": "{{value}}, 기준 크레딧 비용",
       "loading_models": "모델 불러오는 중…",
-      "no_matches": "일치 항목 없음"
+      "no_matches": "일치 항목 없음",
+      "order_load_failed": "저장된 모델 순서를 불러오지 못했습니다. 불러올 때까지 기본 순서로 표시됩니다."
     },
     "modelEffortDropdown": {
       "manage_in_settings": "설정에서 관리",
@@ -7453,6 +7454,8 @@
     },
     "multiSelect": {
       "deselect_all": "전체 선택 해제",
+      "reorder_clear_search": "순서를 변경하려면 검색을 지우세요",
+      "reorder_unavailable": "저장된 순서를 불러올 때까지 순서 변경을 사용할 수 없습니다",
       "select_all": "전체 선택"
     },
     "searchableSelect": {
@@ -13137,7 +13140,7 @@
         "model_picker_selected_models": "{{selected}} / {{total}} 선택됨",
         "search_models": "모델 검색…",
         "selectable_models": "선택 가능한 모델",
-        "selectable_models_description": "채팅 모델 선택기에 표시할 제공 모델을 선택합니다. Auto와 활성 세션 모델은 항상 표시됩니다.",
+        "selectable_models_description": "채팅 모델 선택기에 표시할 제공 모델을 선택합니다. Auto와 활성 세션 모델은 항상 표시됩니다. 드래그하여 선택기에서 사용할 순서를 설정할 수 있습니다.",
         "default_normal_length": "기본 — 보통 길이",
         "default_reasoning_effort": "기본 추론 강도",
         "default_to_autopilot_mode": "오토파일럿 모드를 기본값으로",
@@ -15127,6 +15130,11 @@
         "description": "영구 모드는 이미 아는 내용을 사용하고 새 메모리를 저장합니다. 시크릿 모드는 아는 내용을 사용하지만 새 메모리를 저장하지 않습니다. 임시 모드는 빈 상태로 시작하고 아무것도 저장하지 않습니다. 모든 채팅은 기록에 계속 표시됩니다. 각 채팅의 모드를 바꿀 수 있습니다.",
         "label": "기본 메모리 모드",
         "persistent": "영구"
+      },
+      "modelOrder": {
+        "reorder": "{{model}} 순서 변경",
+        "reset": "기본 순서로 재설정",
+        "saveFailed": "모델 순서를 저장하지 못했습니다. 다시 시도해 주세요. 마지막으로 저장된 순서가 표시됩니다."
       },
       "plainDiff": {
         "description": "차이를 구문 강조 없이 일반 unified diff 텍스트로 표시합니다. 큰 diff에서 메모리를 덜 사용합니다.",

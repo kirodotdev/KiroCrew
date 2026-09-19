@@ -64,6 +64,12 @@ logger = logging.getLogger("kiro_crew.config.loader")
 
 
 DEFAULT_MODEL = "auto"
+# Bounds for the saved model-picker order (agent.model_order). Single-sourced
+# here so the PATCH validator spec (dashboard/handlers/core.py) and the config
+# loader's normalization cannot drift: any list surviving either path is at
+# most MODEL_ORDER_MAX_ENTRIES ids of at most MODEL_ORDER_MAX_ID_LEN chars.
+MODEL_ORDER_MAX_ENTRIES = 100
+MODEL_ORDER_MAX_ID_LEN = 64
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
 # Ceiling for a WHOLE orchestrator plan. The per-stage timeout multiplies by
 # stage count, so this is the only bound on total unattended runtime.
@@ -846,6 +852,20 @@ class AgentConfig:
     model: str = field(
         default=DEFAULT_MODEL,
         metadata=_meta("Model", "LLM model identifier. 'auto' resolves from agent config."),
+    )
+    model_order: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Model order",
+            "Display order for the model-selection dropdown, as a list of model "
+            "ids in the order they should appear. Models named here are shown "
+            "first, in this order; any live model not named appends after them "
+            "in the backend's own order, and a saved id the live list no longer "
+            "advertises is skipped at render (never rejected on save — kiro "
+            "renames and re-prices models, so a saved order must outlive a "
+            "briefly-degraded list). 'auto' stays pinned first regardless of "
+            "this order. Empty (the default) means the backend's own order.",
+        ),
     )
     role_models: dict[str, str] = field(
         default_factory=dict,

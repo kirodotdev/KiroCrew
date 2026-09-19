@@ -39,6 +39,8 @@ const MODELS = [
   { name: 'test-model', description: 'served' },
 ]
 vi.mock('../hooks/useAvailableModels', () => ({
+  // The order-load-failure flag the hosts now render; false = not failed.
+  useModelOrderLoadFailed: () => false,
   useAvailableModels: () => MODELS,
 }))
 

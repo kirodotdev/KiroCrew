@@ -19,7 +19,7 @@ import { Input } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import Modal from '../../../components/Modal'
 import SimpleSelect from '../../../components/SimpleSelect'
-import { useAvailableModels } from '../../../hooks/useAvailableModels'
+import { useAvailableModels, useModelOrderLoadFailed } from '../../../hooks/useAvailableModels'
 
 import { i18nT } from '../../../i18n/t'
 export interface SettingsModalProps {
@@ -32,6 +32,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   // session would resolve to — mirrors the Research app's per-campaign picker.
   const [model, setModel] = useState('')
   const availableModels = useAvailableModels()
+  const modelOrderLoadFailed = useModelOrderLoadFailed()
 
   // Server read through React Query (repo `use-react-query` rule); the inputs
   // stay local state because they are edit buffers, seeded once the read lands.
@@ -125,6 +126,13 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
           advertised list (cold model cache on first open, or a model the
           account no longer serves): without it the trigger would claim
           "Default (inherit)" while the stamp keeps applying that model. */}
+      {/* Saved model order failed to load: the select shows backend order as a
+          fallback. No hand-off: this is a modal — handing off would close it and
+          discard the in-progress selection — and the state self-clears when the
+          config read retries. */}
+      {modelOrderLoadFailed && (
+        <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} />
+      )}
       <SimpleSelect
         aria-label={i18nT('apps.specBuilder.components.settingsModal.spec_generation_model')}
         options={availableModels.map((m) => m.name).filter((n) => n !== 'auto')}
