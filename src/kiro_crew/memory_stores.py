@@ -864,6 +864,69 @@ def _provision_member_memory(config, member: str) -> str:
     return name
 
 
+def retire_unpublished_allocation(
+    config,
+    member: str,
+    store: str,
+    *,
+    previous_store: str,
+    previous_member_id: str,
+) -> bool:
+    """Remove a store that one creation attempt allocated but never published.
+
+    Called by the creation paths when provisioning succeeded and publication did
+    not. The store is deleted only when the on-disk configuration, read under the
+    same lock publication takes, references it from no member and no store entry:
+    a publication that landed before the caller saw its failure (or its
+    cancellation) is kept intact. A pre-existing binding is never touched, so the
+    idempotent "member already owns a V2 store" provisioning result is preserved.
+
+    The in-memory config is restored to its pre-provisioning binding either way,
+    so a retry from the same snapshot allocates fresh instead of reusing a name
+    that is absent from disk. Returns True when the directory was removed.
+    """
+    import shutil
+
+    from kiro_crew.config.loader import update_config_locked
+
+    if store == previous_store or store == DEFAULT_MEMORY_STORE:
+        return False
+    published = True
+
+    def inspect(data: dict) -> None:
+        nonlocal published
+        agents = data.get("agents")
+        stores = data.get("memory_stores")
+        bound = isinstance(agents, dict) and any(
+            isinstance(entry, dict) and entry.get("memory_store") == store
+            for entry in agents.values()
+        )
+        listed = isinstance(stores, dict) and store in stores
+        published = bound or listed
+        return None
+
+    removed = False
+    with memory_store_namespace_lock():
+        try:
+            update_config_locked(mutate=inspect)
+        except OSError:
+            # An unreadable or locked configuration cannot prove the store is
+            # unreferenced; keep the allocation rather than guess.
+            published = True
+        if not published:
+            target = _named_store_dir(store)
+            # A sharing violation or a busy file can leave the tree in place;
+            # report what is actually on disk, not what was attempted.
+            shutil.rmtree(target, ignore_errors=True)
+            removed = not target.exists()
+    agent = config.agents.get(member)
+    if agent is not None and agent.memory_store == store:
+        agent.memory_store = previous_store
+        agent.member_id = previous_member_id
+    config.memory_stores.pop(store, None)
+    return removed
+
+
 @memory_store_namespace_lock()
 def persist_member_config(
     config,
@@ -876,8 +939,10 @@ def persist_member_config(
     """Atomically publish a member and its ownership while retaining other writes.
 
     Competing creates/initializations of the same member are refused under the
-    cross-process config lock. A losing writer can leave an unreferenced empty
-    store, but can neither replace the winner nor adopt another store.
+    cross-process config lock. A losing writer's fresh allocation is removed by
+    the creation paths through :func:`retire_unpublished_allocation` once this
+    function has failed; it can neither replace the winner nor adopt another
+    store.
 
     Updates may name only the fields the caller actually changed, preserving
     concurrent edits to other fields. None retains full-record publication;

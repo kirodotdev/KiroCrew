@@ -1,4 +1,4 @@
-"""Failed member publication preserves data without blocking a safe retry."""
+"""Failed member creation removes only the allocation it never published."""
 
 from __future__ import annotations
 
@@ -22,8 +22,10 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.handlers import agents as handlers
 from kiro_crew.memory_stores import (
     _named_store_dir,
+    persist_member_config,
     provision_member_memory,
     require_member_memory_store,
+    retire_unpublished_allocation,
 )
 
 
@@ -64,6 +66,14 @@ async def _dispatch(request, action):
     return await handler(request)
 
 
+def _removed_allocation(store, owner):
+    # The unpublished allocation is gone; nothing in the namespace names it.
+    assert not _named_store_dir(store).exists()
+    loaded = KiroCrewConfig.load()
+    assert store not in loaded.memory_stores
+    assert all(agent.memory_store != store for agent in loaded.agents.values())
+
+
 def _retained_allocation(store, owner):
     assert (_named_store_dir(store) / "evidence.txt").read_bytes() == b"retained allocation"
     from kiro_crew.vector_memory import read_member_database_identity
@@ -75,7 +85,7 @@ def _retained_allocation(store, owner):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["create"])
-async def test_dashboard_publication_failure_preserves_new_allocation_and_allows_retry(
+async def test_dashboard_publication_failure_removes_new_allocation_and_allows_retry(
     owner_gateway, monkeypatch, action
 ):
     request = _request(monkeypatch, action)
@@ -98,13 +108,38 @@ async def test_dashboard_publication_failure_preserves_new_allocation_and_allows
             await _dispatch(request, action)
     owner = "new-member" if action == "create" else "legacy"
     assert len(failed_stores) == 1
-    await asyncio.to_thread(_retained_allocation, failed_stores[0], owner)
+    await asyncio.to_thread(_removed_allocation, failed_stores[0], owner)
     loaded = await asyncio.to_thread(KiroCrewConfig.load)
     assert await asyncio.to_thread(require_member_memory_store, loaded, "legacy") == "default"
     monkeypatch.setattr(handlers, "persist_member_config", original)
     response = await _dispatch(request, action)
     assert response.status == 200, response.text
     assert json.loads(response.text)["memory_store"] != failed_stores[0]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_failure_after_landed_publication_keeps_the_store(
+    owner_gateway, monkeypatch
+):
+    # The failure surfaces AFTER update_config_locked wrote the member: the
+    # retire step must find the store referenced on disk and leave it alone.
+    request = _request(monkeypatch, "create")
+    original = handlers.persist_member_config
+    published = []
+
+    def publish_then_fail(cfg, name, **kwargs):
+        original(cfg, name, **kwargs)
+        published.append(cfg.agents[name].memory_store)
+        raise OSError("post-publication failure")
+
+    monkeypatch.setattr(handlers, "persist_member_config", publish_then_fail)
+    response = await _dispatch(request, "create")
+    assert response.status == 409
+    assert len(published) == 1
+    store = published[0]
+    assert (_named_store_dir(store) / "memory.db").is_file()
+    loaded = await asyncio.to_thread(KiroCrewConfig.load)
+    assert await asyncio.to_thread(require_member_memory_store, loaded, "new-member") == store
 
 
 async def _wait_for_publication_worker(task, entered):
@@ -167,11 +202,17 @@ async def test_cancelled_dashboard_request_drains_worker_before_observing_public
     store, owner = allocated[0]
     loaded = await asyncio.to_thread(KiroCrewConfig.load)
     if phase == "provision":
-        await asyncio.to_thread(_retained_allocation, store, owner)
+        # Cancelled before publication: the drained worker still finished the
+        # allocation, and the retire step removed it because nothing on disk
+        # names it.
+        await asyncio.to_thread(_removed_allocation, store, owner)
         assert await asyncio.to_thread(require_member_memory_store, loaded, "legacy") == "default"
     else:
+        # Cancelled after publication landed: the retire step reads the store
+        # from config.json and keeps it.
         assert await asyncio.to_thread(require_member_memory_store, loaded, owner) == store
         assert (_named_store_dir(store) / "memory.db").is_file()
+        await asyncio.to_thread(_retained_allocation, store, owner)
 
 
 @pytest.mark.asyncio
@@ -216,8 +257,37 @@ def test_cli_publication_failure_keeps_legacy_binding_and_preserves_new_store(
     assert exc.value.code == 1
     assert "publication refused" in capsys.readouterr().err
     assert len(failed_stores) == 1
-    _retained_allocation(failed_stores[0], "new-member" if action == "create" else "legacy")
+    _removed_allocation(failed_stores[0], "new-member" if action == "create" else "legacy")
     assert require_member_memory_store(KiroCrewConfig.load(), "legacy") == "default"
+
+
+def test_retire_keeps_a_store_the_disk_config_still_references(owner_gateway):
+    # Direct contract of the retire helper: a store that config.json names is
+    # never removed, and the in-memory binding is still restored for a retry.
+    cfg = owner_gateway
+    cfg.agents["new-member"] = KiroCrewAgentConfig()
+    store = provision_member_memory(cfg, "new-member")
+    persist_member_config(cfg, "new-member", create=True)
+    removed = retire_unpublished_allocation(
+        cfg, "new-member", store, previous_store="default", previous_member_id=""
+    )
+    assert removed is False
+    assert (_named_store_dir(store) / "memory.db").is_file()
+    assert require_member_memory_store(KiroCrewConfig.load(), "new-member") == store
+
+
+def test_retire_never_touches_a_pre_existing_binding(owner_gateway):
+    cfg = owner_gateway
+    store = provision_member_memory(cfg, "legacy")
+    persist_member_config(cfg, "legacy", create=False, expected_store="default")
+    # The idempotent provisioning result equals the previous binding: no-op.
+    assert (
+        retire_unpublished_allocation(
+            cfg, "legacy", store, previous_store=store, previous_member_id="legacy"
+        )
+        is False
+    )
+    assert (_named_store_dir(store) / "memory.db").is_file()
 
 
 @pytest.mark.asyncio

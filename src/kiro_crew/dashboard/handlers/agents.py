@@ -129,6 +129,7 @@ from kiro_crew.memory_stores import (
     memory_store_namespace_lock,
     persist_member_config,
     provision_member_memory,
+    retire_unpublished_allocation,
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.sandbox import (
@@ -4700,12 +4701,28 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         )
         # Provision against this snapshot; publish the agent and owned store
         # together through persist_member_config's flocked delta and create guard.
+        # A fresh allocation that never reached config.json is removed on the way
+        # out (retire_unpublished_allocation re-reads the disk under the config
+        # lock first, so a publication that did land is kept).
         cfg.agents[name] = new_agent
+        previous_store = new_agent.memory_store
+        previous_member_id = new_agent.member_id
         try:
             try:
                 await _drained_to_thread(provision_member_memory, cfg, name)
                 await _drained_to_thread(lambda: persist_member_config(cfg, name, create=True))
             except BaseException:
+                allocated = cfg.agents[name].memory_store
+                if allocated != previous_store:
+                    await _drained_to_thread(
+                        lambda: retire_unpublished_allocation(
+                            cfg,
+                            name,
+                            allocated,
+                            previous_store=previous_store,
+                            previous_member_id=previous_member_id,
+                        )
+                    )
                 raise
         except MemberAlreadyExists:
             return web.json_response(

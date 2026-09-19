@@ -100,6 +100,7 @@ from kiro_crew.memory_stores import (
     provision_member_memory,
     require_memory_store,
     resolve_declared_store,
+    retire_unpublished_allocation,
 )
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.project_scope import scope_is_admissible, scope_selector_is_inadmissible
@@ -1187,11 +1188,22 @@ def _handle_agent(args: argparse.Namespace) -> None:
             workspace=args.workspace,
             memory_store=memory_store,
         )
+        previous_store = cfg.agents[args.name].memory_store
+        previous_member_id = cfg.agents[args.name].member_id
         try:
             require_member_memory_creation(args.name)
             provision_member_memory(cfg, args.name)
             persist_member_config(cfg, args.name, create=True)
         except BaseException as exc:
+            allocated = cfg.agents[args.name].memory_store
+            if allocated != previous_store:
+                retire_unpublished_allocation(
+                    cfg,
+                    args.name,
+                    allocated,
+                    previous_store=previous_store,
+                    previous_member_id=previous_member_id,
+                )
             if not isinstance(exc, (OSError, UnknownMemoryStore)):
                 raise
             print(f"Error: {exc}", file=sys.stderr)
