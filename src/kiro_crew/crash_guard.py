@@ -47,7 +47,13 @@ def _write_crash(header: str, exc_info: tuple | None = None) -> None:
     """Append a crash record to crash.log (best-effort, never raises)."""
     try:
         path = _CRASH_LOG or _crash_log_path()
-        with open(path, "a") as f:
+        # utf-8 explicitly, never the host locale: on a cp1252 Windows console
+        # host any non-ASCII byte -- in the exception message, or in a source
+        # line echoed by traceback.print_exception -- raises UnicodeEncodeError
+        # mid-record, and the except below swallows it, so the record is lost or
+        # truncated exactly where the cause would be named. backslashreplace
+        # keeps even an unencodable surrogate from ending the last-resort writer.
+        with open(path, "a", encoding="utf-8", errors="backslashreplace") as f:
             f.write(f"\n{'=' * 72}\n")
             f.write(f"{header}\n")
             f.write(f"Time: {datetime.now(timezone.utc).isoformat()}\n")

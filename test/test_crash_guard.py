@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import builtins
 import faulthandler
 import sys
 
@@ -273,3 +274,111 @@ class TestInstallIdempotent:
         assert sys.excepthook is crash_guard._excepthook
         assert registrations == [crash_guard._atexit_handler]
         assert crash_guard._CRASH_LOG is crash_log_after_first
+
+
+class TestNonAsciiCrashRecord:
+    """crash.log is written as utf-8, so a non-ASCII crash still lands whole.
+
+    The writer is the last-resort diagnostic sink and its body sits inside
+    ``except Exception: pass``. With a locale-encoded ``open()`` a cp1252 host
+    raises ``UnicodeEncodeError`` on the first non-ASCII byte -- from the
+    exception message, or from a source line echoed by
+    ``traceback.print_exception`` -- and the swallow turns that into a missing
+    or half-written record, as reported from a native Windows install. These
+    tests force an ASCII default so the locale-encoded variant reproduces that
+    loss here, on any host.
+    """
+
+    # ``open()`` parameters after ``mode``, in positional order — the fixture
+    # normalizes positionals into keywords so it still sees an ``encoding``
+    # passed as ``open(path, "a", -1, "utf-8")``. Without that, a caller using
+    # positional form would silently escape the forced ASCII default and these
+    # tests would pass without exercising the guard at all.
+    _OPEN_PARAMS = ("buffering", "encoding", "errors", "newline", "closefd", "opener")
+
+    @pytest.fixture
+    def ascii_default_open(self, monkeypatch):
+        """Make an ``open()`` that names no ``encoding=`` behave like cp1252/ascii.
+
+        This is the host condition the ticket reports, expressed without
+        depending on the test machine's locale or on ``PYTHONUTF8``.
+        """
+        real_open = builtins.open
+        params = self._OPEN_PARAMS
+
+        def _open(file, mode="r", *args, **kwargs):
+            kwargs.update(zip(params, args))
+            if "b" not in mode and kwargs.get("encoding") is None:
+                kwargs["encoding"] = "ascii"
+            return real_open(file, mode, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _open)
+
+    @pytest.mark.parametrize("positional", [False, True])
+    def test_fixture_really_forces_an_ascii_default(
+        self, tmp_path, ascii_default_open, positional
+    ):
+        """Pin the fixture itself: unless a call names utf-8, ASCII is enforced.
+
+        The two tests below only prove anything while this holds, and it is the
+        half a later refactor can silently break — by passing ``encoding``
+        positionally, which would leave the default untouched.
+        """
+        target = tmp_path / "probe.txt"
+        with pytest.raises(UnicodeEncodeError):
+            with open(target, "w") as f:
+                f.write("café")
+
+        # A call that DOES name utf-8, keyword or positional, is left alone.
+        if positional:
+            handle = open(target, "w", -1, "utf-8")
+        else:
+            handle = open(target, "w", encoding="utf-8")
+        with handle as f:
+            f.write("café")
+        assert target.read_text(encoding="utf-8") == "café"
+
+    @staticmethod
+    def _raise_non_ascii() -> tuple:
+        """Raise with a non-ASCII message from a non-ASCII source line."""
+        try:
+            raise RuntimeError("🐾 gateway startup failed — café")  # noqa: RUF001
+        except RuntimeError:
+            return sys.exc_info()
+
+    def test_full_record_survives_an_ascii_default_encoding(self, tmp_path, ascii_default_open):
+        crash_log = tmp_path / "crash.log"
+        crash_guard._CRASH_LOG = crash_log
+        exc_info = self._raise_non_ascii()
+
+        crash_guard._write_crash(
+            f"UNHANDLED EXCEPTION: {exc_info[0].__name__}: {exc_info[1]}", exc_info
+        )
+
+        text = crash_log.read_text(encoding="utf-8")
+        # The header glyph and the accented word both reach the file...
+        assert "🐾" in text
+        assert "café" in text
+        # ...and the record is whole: traceback, the echoed source line that
+        # carries the non-ASCII literal, and the closing separator.
+        assert "Traceback (most recent call last)" in text
+        assert "_raise_non_ascii" in text
+        assert 'raise RuntimeError("🐾 gateway startup failed — café")' in text
+        assert text.rstrip().endswith("=" * 72)
+
+    def test_unencodable_surrogate_does_not_lose_the_record(self, tmp_path, ascii_default_open):
+        """``errors="backslashreplace"`` keeps even a lone surrogate writable.
+
+        A surrogate reaches the writer from any string built out of undecodable
+        OS bytes (``surrogateescape``), and utf-8 alone cannot encode it -- so
+        without the error handler the record is swallowed like before.
+        """
+        crash_log = tmp_path / "crash.log"
+        crash_guard._CRASH_LOG = crash_log
+
+        crash_guard._write_crash("UNHANDLED EXCEPTION: OSError: bad path \ud800 tail")
+
+        text = crash_log.read_text(encoding="utf-8")
+        assert "bad path" in text
+        assert "tail" in text
+        assert text.rstrip().endswith("=" * 72)
