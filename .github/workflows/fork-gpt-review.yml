@@ -80,6 +80,12 @@ jobs:
       # reached only when pass 2 emitted [BLOCK-MERGE]. Those three endpoints
       # mirror fork-opus-review.yml's allowlist. Comments cannot live inside the
       # folded block below: its lines are literal endpoint text.
+      #
+      # The GPT passes do NOT reach Bedrock on the classic runtime host: the
+      # review CLI's amazon-bedrock provider posts to
+      # https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses, so that
+      # host needs its own line. Without it both passes retry five times, exit 1
+      # and the lane fails closed with `review incomplete`.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -88,6 +94,7 @@ jobs:
           allowed-endpoints: >
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
+            bedrock-mantle.us-east-1.api.aws:443
             sts.amazonaws.com:443
             sts.us-east-1.amazonaws.com:443
             bedrock-runtime.us-west-2.amazonaws.com:443
@@ -96,6 +103,7 @@ jobs:
             github.com:443
             api.github.com:443
             objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
             codeload.github.com:443
             registry.npmjs.org:443
 

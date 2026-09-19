@@ -11746,3 +11746,135 @@ class TestPerHeadMonotonicFloor:
             )
             == 1
         )
+
+
+def _lane_jobs(lane: str) -> dict:
+    """The `jobs:` mapping of one workflow file under `.github/workflows`."""
+    return yaml.safe_load((WORKFLOWS / lane).read_text(encoding="utf-8"))["jobs"]
+
+
+def _blocking_endpoints(job: dict) -> "list[str] | None":
+    """The job's blocking-egress endpoint list, or None when it does not block."""
+    for step in job.get("steps") or ():
+        if "step-security/harden-runner" not in str(step.get("uses") or ""):
+            continue
+        settings = step.get("with") or {}
+        if settings.get("egress-policy") != "block":
+            return None
+        return str(settings.get("allowed-endpoints") or "").split()
+    return None
+
+
+class TestForkLaneBunEgress:
+    """The fork reviewers install bun from a GitHub *release asset*.
+
+    `anthropics/claude-code-action` runs `oven-sh/setup-bun`, which downloads
+    `https://github.com/oven-sh/bun/releases/download/...`. GitHub answers that
+    with a 302 to `release-assets.githubusercontent.com` -- a different host
+    from the `objects.githubusercontent.com` these allowlists already carry. A
+    lane that blocks egress without it does not fail at the model call: bun
+    never lands, the action's own script dies `bun: command not found`
+    (exit 127), the lane posts `review incomplete`, and because `PR Readiness`
+    aggregates these lanes, every fork PR goes red at once.
+
+    `workflow_run` lanes always execute the DEFAULT branch's copy of the yaml,
+    so a PR editing these files cannot exercise its own change. This test is
+    the only pre-merge guard the coupling has.
+    """
+
+    ENDPOINT = "release-assets.githubusercontent.com:443"
+    ACTION = "anthropics/claude-code-action"
+
+    @classmethod
+    def _runs_a_model(cls, job: dict) -> bool:
+        return any(cls.ACTION in str(step.get("uses") or "") for step in job.get("steps") or ())
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_every_model_job_allows_the_bun_release_asset_host(self, lane: str) -> None:
+        checked = 0
+        for name, job in _lane_jobs(lane).items():
+            if not self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            checked += 1
+            assert self.ENDPOINT in endpoints, (
+                f"{lane} job {name!r} runs {self.ACTION} behind a blocking egress "
+                f"policy but does not allow {self.ENDPOINT}, so setup-bun's download "
+                "is refused and the step exits 127 instead of reviewing anything"
+            )
+        assert checked, f"{lane} has no blocking-egress {self.ACTION} job to check"
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_jobs_that_run_no_model_keep_the_narrower_allowlist(self, lane: str) -> None:
+        # Least privilege: only the job that actually downloads bun gets the
+        # host. `fork-security-scope-review.yml` blocks egress in four jobs and
+        # runs the model in exactly one, so a blanket per-file edit would widen
+        # three allowlists that fetch nothing but Actions artifacts.
+        for name, job in _lane_jobs(lane).items():
+            if self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            assert self.ENDPOINT not in endpoints, (
+                f"{lane} job {name!r} runs no model and downloads no bun, so "
+                f"allowing {self.ENDPOINT} widens its egress for nothing"
+            )
+
+
+class TestForkGptLaneMantleEgress:
+    """The GPT passes call Bedrock on the mantle host, not the runtime host.
+
+    The two review passes run a CLI configured with
+    `model_provider = "amazon-bedrock"`, whose provider posts to
+    `https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses` -- the URL a
+    real job log shows the lane calling. The classic
+    `bedrock-runtime.*.amazonaws.com` hosts in the allowlist do not cover it, so
+    under blocking egress each pass retries five times, ends
+    `Connection failed: error sending request`, and the lane fails closed with
+    `review incomplete` -- a separate failure from the bun one above, on the
+    same lane.
+
+    Only the job that configures that provider gets the host: the Opus, Design,
+    UX, First-Principles and Security-Scope lanes talk to Bedrock through the
+    runtime host and must not carry it.
+    """
+
+    ENDPOINT = "bedrock-mantle.us-east-1.api.aws:443"
+    PROVIDER = 'model_provider = "amazon-bedrock"'
+
+    @classmethod
+    def _configures_the_mantle_provider(cls, job: dict) -> bool:
+        return any(cls.PROVIDER in str(step.get("run") or "") for step in job.get("steps") or ())
+
+    def test_the_gpt_lane_model_job_allows_the_mantle_endpoint(self) -> None:
+        checked = 0
+        for name, job in _lane_jobs("fork-gpt-review.yml").items():
+            if not self._configures_the_mantle_provider(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            checked += 1
+            assert self.ENDPOINT in endpoints, (
+                f"fork-gpt-review.yml job {name!r} points the review CLI at "
+                f"Bedrock's mantle endpoint behind a blocking egress policy but "
+                f"does not allow {self.ENDPOINT}, so both passes fail to connect "
+                "and the lane posts `review incomplete`"
+            )
+        assert checked, "fork-gpt-review.yml has no blocking-egress mantle job to check"
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_lanes_that_use_no_mantle_provider_keep_the_narrower_allowlist(self, lane: str) -> None:
+        for name, job in _lane_jobs(lane).items():
+            if self._configures_the_mantle_provider(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            assert self.ENDPOINT not in endpoints, (
+                f"{lane} job {name!r} runs no mantle-backed model, so allowing "
+                f"{self.ENDPOINT} widens its egress for nothing"
+            )
