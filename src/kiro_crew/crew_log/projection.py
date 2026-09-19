@@ -17,6 +17,9 @@ the rendered value. A fold keeps bookkeeping a reader has no use for (the open
 tool calls it is matching by ``call_id``, the attempt an open turn is on), and
 :func:`Checkpoint.state` holding exactly what the fold needs to continue is what
 lets the render stay the surface the dashboard reads.
+:mod:`kiro_crew.crew_log.checkpoint` writes that state beside the log, so a read
+resumes where the last one stopped; this module owns no path and every failure
+over there is answered by folding from seq 1 again.
 
 Absent is never read as zero. ``turn/completed`` carries ``credits`` and
 ``tokens`` only on a provider-reported close, so a synthesized closer omits them
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -48,6 +52,8 @@ from kiro_crew.crew_log.entry_types import SESSION_ENTRY_TYPES
 from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
 from kiro_crew.crew_log.store import CrewLog
+
+logger = logging.getLogger(__name__)
 
 #: The session side panel's projections, in the RFC section 5 order.
 PROJECTION_NAMES: Final[tuple[str, ...]] = (
@@ -176,9 +182,10 @@ class Projection:
 class Checkpoint:
     """A fold's resumable position: the seq it has consumed, and its state.
 
-    The state is JSON-serializable so a caller may persist it. Storing it on disk
-    is not this module's business, and the shape is what a later checkpoint file
-    would carry.
+    The state is JSON-serializable so a caller may persist it. Writing it to disk
+    is :mod:`kiro_crew.crew_log.checkpoint`, which records exactly this shape
+    beside the log it was folded from; this module stays the folding and holds no
+    path.
     """
 
     name: str
@@ -206,7 +213,39 @@ class Checkpoint:
             raise CrewLogError(
                 "checkpoint state must be an object", code=CODE_BAD_DATA, field="state"
             )
+        if not _state_matches_fold(name, state):
+            raise CrewLogError(
+                f"checkpoint state does not match the {name} fold",
+                code=CODE_BAD_DATA,
+                field="state",
+            )
         return cls(name=name, last_seq=last_seq, state=state)
+
+
+def _state_matches_fold(name: str, state: dict[str, Any]) -> bool:
+    """Whether *state* has the registered fold's durable top-level shape."""
+    expected = _FOLDS[name].start()
+    if state.keys() != expected.keys():
+        return False
+    for key, initial_value in expected.items():
+        value = state[key]
+        if isinstance(initial_value, bool):
+            valid = isinstance(value, bool)
+        elif isinstance(initial_value, str):
+            valid = isinstance(value, str)
+        elif isinstance(initial_value, (int, float)):
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif isinstance(initial_value, dict):
+            valid = isinstance(value, dict)
+        elif isinstance(initial_value, list):
+            valid = isinstance(value, list)
+        else:
+            # ``None`` is a sentinel for fields that later hold different JSON
+            # kinds, so the initial value cannot safely constrain their type.
+            valid = True
+        if not valid:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -339,6 +378,14 @@ class SessionProjections:
     #: passes -- stale state would then apply to a different file's bytes. ``None``
     #: when no log existed (the empty bundle) and never matches a real file.
     origin: str | None = None
+    #: The seq every checkpoint in this bundle is PERSISTED through
+    #: (:mod:`kiro_crew.crew_log.checkpoint`), which is not the seq it was folded
+    #: through: a savepoint is allowed to lag, because resuming from an older one
+    #: replays the tail and reaches the same value. Carried on the bundle so a
+    #: caller reusing it across reads decides whether a write is owed from what it
+    #: already holds, instead of reading the savepoint files to find out. 0 is
+    #: "nothing on disk", which is what an unpersisted bundle must claim.
+    saved_seq: int = 0
 
     def projection(self, name: str) -> Projection:
         """One rendered projection, or raise ``bad_data`` for an unknown name."""
@@ -376,7 +423,7 @@ def open_session_log(session_id: str) -> CrewLog | None:
     return CrewLog.open(KIND_SESSION, session_id)
 
 
-def _log_origin(handle: CrewLog) -> str | None:
+def log_origin(handle: CrewLog) -> str | None:
     """The crew log file's creation identity for *handle*, or ``None``.
 
     A reuse (:func:`fold_session` ``since=``) folds new bytes onto a cached
@@ -390,6 +437,11 @@ def _log_origin(handle: CrewLog) -> str | None:
     guard cannot: a recreated log that has already grown PAST the cached seq.
     ``None`` is "unknown identity" and never matches, so a header without the
     field or a stat failure falls back to the safe full rebuild.
+
+    Public because the on-disk savepoints (:mod:`kiro_crew.crew_log.checkpoint`)
+    record this same value and must compare it the same way. Two spellings of "is
+    this the same log" would be free to disagree, and the one that said yes too
+    often would fold a retired file's state onto a live one's bytes.
     """
     created_at = getattr(handle.header, "created_at", None)
     if not isinstance(created_at, int) or isinstance(created_at, bool):
@@ -420,13 +472,68 @@ def fold_session(
     *log* is an already-open handle, so a caller that has just read
     ``last_seq`` folds against the same handle rather than opening the file
     twice.
+
+    The on-disk savepoint (:mod:`kiro_crew.crew_log.checkpoint`) is not optional
+    and has no switch: with no reusable *since* the fold resumes from what is
+    beside the log instead of from seq 1, and the result is written back once it
+    has moved far enough to earn a write. A flag would be a public surface with no
+    production caller, and it is not needed to reach the from-scratch answer --
+    :func:`fold` and :func:`advance` ARE that answer, and a savepoint is never
+    load-bearing, since every failure over there falls back to folding from seq 1.
     """
     wanted = tuple(require_name(name) for name in names)
+    bundle, stable, handle = _fold_attempt(session_id, wanted, since=since, log=log, resume=True)
+    if stable:
+        return _persisted(bundle, handle=handle)
+    # The file's identity changed WHILE it was being folded: the unit was removed
+    # and recreated between the identity read and the pass, so the entries just
+    # consumed may belong to a different file than the state they were folded onto.
+    # One more attempt, from scratch -- no cached bundle, no savepoint, and a freshly
+    # opened handle, since the one this call was given does not name the file it was
+    # opened on.
+    bundle, stable, handle = _fold_attempt(session_id, wanted, since=None, log=None, resume=False)
+    if stable:
+        return _persisted(bundle, handle=handle)
+    # Twice in a row, so the unit is being recreated faster than it can be read.
+    # The value is served, because the alternative is refusing to render a session
+    # that exists, but its identity is reported as UNKNOWN: that is what stops a
+    # caller from reusing it and stops it from being written to disk, both of which
+    # compare against this field and neither of which accepts ``None``.
+    logger.debug("crew log %s changed identity twice while folding it", session_id)
+    return SessionProjections(
+        session_id=session_id,
+        last_seq=bundle.last_seq,
+        checkpoints=bundle.checkpoints,
+        origin=None,
+        saved_seq=0,
+    )
+
+
+def _fold_attempt(
+    session_id: str,
+    wanted: Sequence[str],
+    *,
+    since: SessionProjections | None,
+    log: CrewLog | None,
+    resume: bool,
+) -> tuple[SessionProjections, bool, CrewLog | None]:
+    """One pass for :func:`fold_session`. ``(bundle, the file held still, handle)``.
+
+    The middle element is what makes the pass checkable. ``iter_from`` opens the
+    log by NAME, so a unit removed and recreated mid-pass hands this function a
+    different file's entries while it holds the first file's state -- and the seq
+    numbers do not say so, because a recreated log starts its own again. So the
+    identity is read before the pass and again after it, and a change makes the
+    bundle untrustworthy rather than merely stale. The caller decides what to do
+    about it; nothing is persisted from here, which is why the handle comes back
+    too -- the caller writes the savepoint against the same handle rather than
+    opening the file a second time.
+    """
     handle = log if log is not None else open_session_log(session_id)
     if handle is None:
-        return empty_session(session_id, wanted)
+        return (empty_session(session_id, wanted), True, None)
     last_seq = handle.last_seq
-    origin = _log_origin(handle)
+    origin = log_origin(handle)
     reusable = (
         since is not None
         and since.session_id == session_id
@@ -440,15 +547,41 @@ def fold_session(
         and since.last_seq <= last_seq
         and all(name in since.checkpoints for name in wanted)
     )
-    base: dict[str, Checkpoint] = (
-        {name: since.checkpoints[name] for name in wanted}
-        if reusable and since is not None
-        else {name: initial(name) for name in wanted}
-    )
+    if reusable and since is not None:
+        base: dict[str, Checkpoint] = {name: since.checkpoints[name] for name in wanted}
+        saved_seq = since.saved_seq
+    else:
+        # No bundle in hand, so ask the disk before folding the file. A savepoint
+        # covers the names it has and is silent about the rest, and each checkpoint
+        # takes only the part of a chunk above its own seq, so a partial answer
+        # costs the cold fold to the folds it did not cover rather than to all of
+        # them.
+        base = {name: initial(name) for name in wanted}
+        saved_seq = 0
+        # ``resume`` is false only on the retry a mid-pass identity change forces:
+        # the savepoint on disk describes the file that just went away, so the
+        # retry must not read it. It is private for that reason -- the one caller
+        # that needs it is the retry, and a public switch would be a surface with
+        # no production caller.
+        resumed = _resume_from_disk(handle, wanted) if resume else None
+        if resumed is not None:
+            base.update(resumed.checkpoints)
+            saved_seq = resumed.saved_seq
     from_seq = min((cp.last_seq for cp in base.values()), default=0) + 1
     if from_seq > last_seq:
-        return SessionProjections(
-            session_id=session_id, last_seq=last_seq, checkpoints=base, origin=origin
+        # No entries were read, but the bundle still describes the identity seen
+        # before this check. Recheck it so a recreation during the call retries
+        # cold instead of serving state from the retired log.
+        return (
+            SessionProjections(
+                session_id=session_id,
+                last_seq=last_seq,
+                checkpoints=base,
+                origin=origin,
+                saved_seq=saved_seq,
+            ),
+            log_origin(handle) == origin,
+            handle,
         )
     # ONE pass over the file, in bounded chunks. Five folds consume the same
     # entries, so a bare generator would be exhausted by the first of them and
@@ -469,9 +602,46 @@ def fold_session(
     if chunk:
         grown = _advance_all(grown, chunk)
     reached = max((cp.last_seq for cp in grown.values()), default=last_seq)
-    return SessionProjections(
-        session_id=session_id, last_seq=reached, checkpoints=grown, origin=origin
+    return (
+        SessionProjections(
+            session_id=session_id,
+            last_seq=reached,
+            checkpoints=grown,
+            origin=origin,
+            saved_seq=saved_seq,
+        ),
+        log_origin(handle) == origin,
+        handle,
     )
+
+
+# The savepoint module imports this one for the fold surface it persists, so the
+# dependency runs one way and these two calls are function-local. A module-level
+# import here would close the cycle, and the alternative -- moving the fold types
+# into a third module to break it -- would split the surface a reader of either
+# file has to hold in mind, for no gain at the one place they meet.
+
+
+def _resume_from_disk(handle: CrewLog, wanted: Sequence[str]) -> SessionProjections | None:
+    """The savepoints for *wanted* beside *handle*'s log, or ``None``."""
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    return savepoints.load(handle, wanted)
+
+
+def _persisted(bundle: SessionProjections, *, handle: CrewLog | None) -> SessionProjections:
+    """*bundle*, with its savepoint on disk brought forward if a write is owed.
+
+    Whether a write is owed is the savepoint module's decision, not this one's: how
+    far a fold must have moved to earn one is a property of the files, and stating
+    it here as well would give two places an answer that has to agree. A session
+    with no log has nothing to write beside.
+    """
+    if handle is None:
+        return bundle
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    return savepoints.save(handle, bundle)
 
 
 def _advance_all(

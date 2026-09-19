@@ -39,7 +39,8 @@ the file to say which is right.
 may store it and continue later. The state is deliberately NOT the rendered
 value: a fold keeps bookkeeping a reader has no use for -- the open tool calls it
 is matching by `call_id`, the attempt an open turn is on -- and keeping the two
-apart is what lets the value stay the surface the dashboard reads.
+apart is what lets the value stay the surface the dashboard reads. Writing that
+state to disk is section 6.
 
 `advance(checkpoint, entries)` does not touch its input. It copies the state
 first, because these are frozen records and a returned one sharing a mutable dict
@@ -280,11 +281,160 @@ doing so, and would erase the one fact a reader wants from that log: this sessio
 died with work in flight. A reader sees `closed_at` and the open turn together and
 can tell exactly what happened. Only `turn/completed` closes a turn.
 
-## 6. Deliberately not here
+## 6. Savepoints on disk
 
-- **Checkpoints on disk** (`projections/<key>.json`). State is kept in memory,
-  keyed by session, and the shape is already the one a checkpoint file would
-  carry, so persistence is additive.
+A fold is cheap per entry and unbounded in total, so folding from seq 1 makes the
+projection route cost what the session's whole history costs. The push avoids that
+with the in-memory bundle above, but that cache dies with the process and holds
+`MAX_CACHED_SESSIONS` sessions, so a restart and an eviction each pay for the file
+again. `crew_log/checkpoint.py` is RFC NFR-1's answer: each fold's state written
+beside the log it came from and resumed on the next read. Measured on a
+10,001-entry (1.4 MB) log: 99.5 ms to fold cold, 3.2 ms to resume, 24 KB of files.
+
+One file per fold, inside the unit's own directory, which the RFC's section 3
+already names:
+
+```
+<store dir>/projections/<fold>.json
+{"v", "unit", "origin", "first_seq", "fold", "seq", "state"}
+```
+
+One file per fold rather than one for all five, so a payload this build cannot
+read costs that fold its savepoint instead of costing all of them, and so a caller
+asking for one projection writes one file. The name is a fold name that passed
+`require_name`, so it can only ever be one of the five words this package
+declares. The store reads its segments by name (`log.jsonl`, `log.<first_seq>.jsonl`)
+and ignores every other neighbour, and removal deletes the unit's whole directory,
+so the files need no registration on either side.
+
+**Disposable, and that is the property to keep.** Every failure -- no file, a
+truncated one, a payload from a build this one does not understand, a store the
+file no longer describes -- is answered by folding from seq 1, which reaches the
+same value at more cost. `load` and `save` therefore never raise: nothing a reader
+is served depends on a savepoint existing or being current, and the tests state
+each rejection as "the fold still lands on the cold answer".
+
+**An append-only prefix never invalidates one.** The entries a savepoint consumed
+cannot change, so folding what came after reaches what a cold fold reaches -- the
+section 2 equality, now with a file behind it. Three things break it, and each is
+checked before a file is used:
+
+| check | what it catches |
+|---|---|
+| `origin` | a unit removed and recreated under the same id. Its seqs start again, so once the new file grows past the stored seq a seq check alone passes. It is the same value `SessionProjections.origin` compares, spelled once in `log_origin`, because two spellings of "same log" could disagree and the lenient one would fold a retired file's state onto a live file's bytes. |
+| `first_seq` | the log lost its FRONT. Retention deletes whole segments off the oldest end, so a cold fold now folds a window while the savepoint still counts entries that are gone. The savepoint's answer is the one no reader can reproduce, so it is the one that is retired. |
+| `seq` vs the log's end | a store SHORTER than the savepoint. Mostly caught by the two above, and checked on its own because a fold resumed past the end of a file is the one state no later read recovers from. |
+
+**The identity is also read AFTER the pass, and a change discards the fold.**
+`iter_from` opens the log by NAME, so a unit removed and recreated between the
+identity read and the read of the entries hands the fold a different file's
+entries while it holds the first file's state -- and the seqs do not say so,
+because a recreated log starts its own again. `fold_session` therefore folds once
+more from scratch, and on a second change reports `origin: None`, which is
+"unknown identity": it is what stops a caller reusing the bundle and stops it
+being written, since both compare against that field and neither accepts `None`.
+The value is still served, because refusing to render a session that exists is the
+worse answer.
+
+That after-check is BEST-EFFORT, and the limit is worth stating where a reader
+will look for it. `log_origin` combines the header's `createdAt` with the file's
+device and inode, but it reads that `createdAt` from the handle's CACHED header --
+so for a handle held across a recreation it compares device and inode alone, and a
+just-freed inode is commonly reused. The savepoint FILES are not affected: `load`
+and `save` run against a freshly opened handle, whose header is the one on disk.
+
+**A savepoint is allowed to LAG, and that is what keeps the write off the hot
+path.** One is written only once the bundle has advanced `MIN_ADVANCE_ENTRIES`
+past what is on disk; resuming from an older one replays the tail and reaches the
+same value. Without the threshold the push would rewrite five files each time a
+session grew by one entry, which is the cost this removes rather than relocates.
+It also means a short session leaves no file at all: folding it from the start is
+already cheap. `SessionProjections.saved_seq` carries what is on disk, so a caller
+reusing a bundle decides from what it holds instead of reading the files to find
+out.
+
+**The payload is ASCII-only.** A crew log's own JSON admits a lone surrogate, so a
+fold can retain one in a label -- and a serializer that passes it through makes the
+UTF-8 encode raise out of a function that promises never to. Escaping every
+non-ASCII character round-trips the surrogate and cannot fail, which is what the
+store's own serializer does.
+
+**No fsync.** A savepoint a crash leaves unpersisted is an older savepoint or no
+savepoint, and both are answered by folding further, so a flush per write would
+buy nothing the cold fold does not give for free. The rename is still atomic,
+which is what keeps a reader from seeing half a payload.
+
+**The write goes through the unit's lease, non-sole.** Nothing here needs
+ownership to be correct against another READER: each file names the log and the
+seq it describes, so any writer's version is a valid savepoint of the same
+append-only bytes. Removal is the different case. It takes the lease `sole`, which
+`acquire` refuses while any other hold exists, so holding a shared one across the
+create, the write and the final check is what stops a removal starting in the
+middle of them -- and a removal already in progress refuses the reader instead,
+which is the answer that leaves the removal whole. Contention is a reason to skip,
+never to wait: the read the fold was for is already served.
+
+Two more rules close the ends the lease cannot. Establishing the identity stats
+the newest segment, so a removed unit fails there -- BEFORE the lease, which would
+otherwise create a lease file inside a directory removal has already emptied. And
+after the write, a unit with no segment has everything just written deleted again,
+the unit directory included: `atomic_write` creates its target's parents, so a
+write that landed after a removal emptied the tree rebuilt that directory too, and
+nothing else collects an empty one, because the retention sweep decides from a
+unit's own entries and a unit with no segments has none.
+
+The size cap is a BACKSTOP on section 2's bounds, not a bound itself: a fold that
+grew unbounded state loses its savepoint instead of writing an unbounded file on
+every read.
+
+**Changing what a fold stores bumps `CHECKPOINT_VERSION`, and a test enforces
+it.** `CHECKPOINT_VERSION` and `_state_matches_fold` both check the payload's
+SHAPE, so the case neither sees is a fold whose MEANING changes while its keys do
+not -- a counting fix in `usage` or `status` being the likely one. The old build's
+savepoint then resumes onto the new logic, and the long sessions this exists to
+speed up are the ones that keep serving pre-fix numbers for the life of the unit,
+with no in-product way to retire the file because the tree is fenced from the
+agent. So the rule is: any change to what a fold's `start` or `step` stores bumps
+the version, which retires every savepoint to a cold fold at one refold each. The
+rule is not left as this paragraph --
+`test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move` digests
+each fold's stored state over a fixed script with the clock frozen, so a changed
+fold reddens CI with the bump named in the failure. One global number over a
+per-fold one is deliberate: it over-retires, and over-retiring costs a refold
+while under-retiring serves a wrong number.
+
+## 7. Deliberately not here
+
+- **Detecting a damaged entry BELOW the savepoint's seq.** The three checks cover
+  the log's identity, its front and its length, and none of them reads the
+  consumed prefix. So a savepoint and a cold fold disagree in exactly one case: an
+  entry that was intact when the savepoint folded it later becomes unreadable on
+  disk. `store._iter_segments` documents that a damaged line inside one file is
+  SKIPPED on purpose, so the cold fold silently omits that entry while the
+  savepoint keeps the value it folded, and the savepoint is the answer that looks
+  clean. This is a real divergence, and the assumption it rests on -- that a
+  consumed entry cannot change -- is stronger than the store's own posture, which
+  tolerates interior damage rather than refusing it.
+  Nothing this tree writes can produce that state: the writer only appends, a torn
+  final line sits ABOVE the savepoint's seq because `last_seq` counts only complete
+  entries, and retention removes whole front segments, which moves `first_seq` and
+  retires the file. It takes out-of-band corruption of already-committed bytes.
+  Closing it means carrying an immutable identity for the whole consumed prefix and
+  verifying it on resume, which is a hash over every consumed entry on every fold --
+  the O(n) prefix re-read this module exists to remove. The divergence is bounded
+  and recoverable (derived read-only display state, the log itself untouched,
+  self-correcting once the savepoint is retired), so it is recorded here rather
+  than paid for on the hot path.
+- **A stronger identity for a handle held across a recreation.** `log_origin`
+  reads `createdAt` from the handle's cached header, so across a recreation it
+  compares device and inode alone. Re-reading the header from disk would close it
+  and costs a read per fold; the savepoint files do not need it, because `load`
+  and `save` hold a freshly opened handle.
+- **A savepoint that survives a segment rollover.** `origin` carries the newest
+  segment's inode, so a log that rolls over retires its savepoints once. No writer
+  creates a second segment today, and whoever adds one has to revisit `log_origin`
+  anyway -- the in-memory bundle reuses the same identity and has the same
+  weakness. The cost of leaving it is one cold fold per rollover.
 - **Crew-kind folds.** No crew writer exists.
 - **Subagent lineage and fork pointers.** A `subagent/spawned` entry's `ref` is
   resolved on the page like any other citation; walking the tree is its own work.
