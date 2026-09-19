@@ -1247,6 +1247,13 @@ tests; the classes below are what the rest was made of.
   bytecode lands in a mirror tree under the cache root, still persistent across runs.
   A test that wants a module's stale bytecode gone locates it with
   `importlib.util.cache_from_source`, not by assuming a sibling `__pycache__/`.
+- **A real PTY test must not source the operator's profiles.** The ordinary terminal
+  integration tests run through a Bash-named shim that execs the resolved Bash with
+  `--noprofile --norc -i`. Keeping the shim's basename `bash` preserves the production
+  readiness-marker path without letting `/etc/profile`, `~/.bash_profile`, or an automatic
+  tmux attach redirect test input into a developer's live pane. Tests whose subject IS login
+  profile behavior replace `HOME` with their own temporary profile; the fixture detects that
+  explicit handoff and preserves the real `bash -l` path for those tests only.
 - **A PTY close that deadlocks on macOS: a hang is a lost run.** `_kill_session` closed
   the PTY's controller descriptor first, to unblock the reader's `os.read()`. True on Linux
   (the read returns EIO), false on macOS/BSD, where `close()` WAITS for the outstanding
