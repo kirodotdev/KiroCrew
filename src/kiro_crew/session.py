@@ -173,6 +173,7 @@ from kiro_crew.session_compaction import (
     CompactionCoordinator,
     CompactionDeps,
     CompactionState,
+    SeedWriter,
 )
 from kiro_crew.session_lifecycle import (
     SessionLifecycleConstants,
@@ -2285,6 +2286,10 @@ class SessionManager:
     def set_compact_callback(self, cb: _CompactCallback | None) -> None:
         """Register the compaction completion callback."""
         self._compaction.set_compact_callback(cb)
+
+    def set_compaction_seed_writer(self, writer: SeedWriter | None) -> None:
+        """Register the surface hook the ``shake`` compaction method writes its seed row through."""
+        self._compaction.set_seed_writer(writer)
 
     def mark_needs_reinjection(self, key: str) -> None:
         """Mark a live session for one-shot context reinjection."""

@@ -35,7 +35,7 @@ import { ErrorCard } from '../pages/chat/ErrorCard'
 import { resolveTransientNotice } from '../pages/chat/transientNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
-import { REASONING_ROLES } from '../pages/chat/groupDisplayItems'
+import { COMPACTION_SEED_ROLE, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import { renderUserContent } from '../pages/chat/ChatPageMessageContent'
@@ -502,7 +502,9 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // Reasoning roles derive from the shared classification (see
     // pages/chat/groupDisplayItems.ts) so this default cannot drift from the
     // surfaces that DO draw them; the lifecycle roles are local to this entry.
-    roles: [...REASONING_ROLES, 'system', 'done', 'queued'],
+    // The compaction seed row is model-facing history (same module): claimed
+    // here so no surface's unclaimed-role fallback prints its digest.
+    roles: [...REASONING_ROLES, 'system', 'done', 'queued', COMPACTION_SEED_ROLE],
     render: () => null,
   },
   {

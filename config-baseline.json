@@ -1377,6 +1377,7 @@
         "empty_response_auto_continue": true,
         "empty_response_max_continues": 1,
         "autocompact_pct": 70.0,
+        "compaction_method": "native",
         "pool_size": 0,
         "pool_agent": "",
         "pool_ttl_secs": 1800,
@@ -1440,6 +1441,24 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 70.0
+    },
+    {
+      "path": "session.compaction_method",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Compaction Method",
+      "help": "The strongest compaction to use when the Auto-Compact Threshold fires; weaker ones follow automatically and 'native' always runs last, so a session at the threshold is always compacted. 'native' has the agent runtime summarize the whole context in place (one model call, minutes on a large window). 'soft' starts a fresh session seeded with the recent conversation tail the session replay carries for the model's window, no model call. 'shake' also carries an elided digest of what was dropped, on surfaces that can write one (the dashboard); where no digest can be written (channels) it goes straight to 'native' rather than drop that history undigested. An unknown name means 'native'.",
+      "hasChildren": false,
+      "enumValues": [
+        "native",
+        "soft",
+        "shake"
+      ],
+      "defaultValue": "native"
     },
     {
       "path": "session.pool_size",

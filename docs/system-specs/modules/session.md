@@ -649,6 +649,170 @@ send time.
   the cooldown, with the mid-stream overflow guard covering the interim).
   There is no prompt-count fallback on this path — the 40-prompt blind backstop
   belongs to `recycle_background()` alone (see "Context Overflow Protection").
+- **Compaction method ladder** (`session.compaction_method`, default
+  `native`): the key is a ceiling, not an order. The methods form one line of
+  strength (`COMPACTION_METHODS`, weakest first: `native`, `soft`, `shake`),
+  each rotation degrades one way, and the non-Claude branch of
+  `_compact_session` walks down from the chosen method through every weaker
+  one (`session_compaction_methods.rotation_ladder`), `native` last and
+  unconditionally, so a session at the threshold is compacted by something
+  and no order needs spelling out (`CompactionCoordinator._run_method_ladder`).
+  `native` is the in-place `/compact` above, with its own failure recycle,
+  and ends the walk whatever it returns. `soft` and `shake` are **rotation**
+  methods: they take the turn
+  semaphore under the same `COMPACT_WAIT_TIMEOUT_SECS` budget (a held turn
+  returns `"busy"` for the whole ladder, since nothing later in the order
+  could run either) and recycle the session ON PURPOSE through the same
+  `_recycle_held` primitive as the failure path; the successor is then
+  re-seeded on its next message by `build_session_replay` from the transcript
+  tail, so no model call is spent. The one-shot re-injection flag is not set
+  for a rotation (the successor gets full startup context), and
+  `CompactionState.rotating` marks the key for the span of the recycle so the
+  `context_compactions` counter counts an intentional rotation as the success
+  it is while a failed `/compact` that had to recycle still counts as a
+  failure; the counter also carries `method` (the rotating method, else
+  `native`), so a rotation recycling every turn is its own series rather than
+  a rise in native successes. Before running, a rotation method is judged like the in-place
+  verdict: `project_pct_after(window, carried, overhead)` with `carried` =
+  the successor's own replay tail, `context_budget.replay_budget_chars(window)`
+  estimated at 4 chars/token (80K chars at the 1M reference, 16K on a 200K
+  model; `shake` adds its digest share, a `SEED_BUDGET_DIVISOR`-th of the
+  same figure) and `overhead` = `context_budget.startup_context_chars(window)`,
+  the FULL session-context ceiling `build_session_context` enforces with lazy
+  skills on: the sum of the additive section caps, computed from the one
+  fraction table (`context_budget.SECTION_FRACTIONS`) that `context` derives
+  its own caps from, so the ceiling charged and the ceiling applied cannot
+  drift (charging the bare base would understate the successor by about a
+  sixth of it). A projection that does not land at least
+  `_COMPACT_MIN_EFFECT_PCT_POINTS` under the session's threshold is
+  `insufficient`, an unknown window (a provider reporting 0) or a `shake` on
+  a surface whose seed writer holds no transcript for the key is
+  `unavailable` (availability is answered before the projection, through
+  `SeedWriter.supports(key)`, so a no-writer or unsupported-surface `shake` is
+  never merely `insufficient` and can never slide to `soft` on the strength
+  of a projection the writer was not asked about). `insufficient` hands the
+  turn to the next name: `soft`'s
+  projection is smaller than `shake`'s by the digest's share, so it can fit
+  where `shake` did not. `shake` answering `unavailable` skips `soft` and hands
+  straight to `native`: choosing `shake` over `soft` is choosing the digest
+  over speed, and where no digest can be written `soft` would drop the
+  pre-tail history undigested on exactly the surfaces (channels) whose users
+  cannot see the loss, while `native` still keeps it as a summary. A rotation
+  method that RAISES (an unreadable transcript under the seed writer) is
+  logged at WARNING and counts as `unavailable`, so the promise that `native`
+  runs last holds whatever a rotation does.
+  There is deliberately no config key sizing the carried tail: the tail a
+  rotation leaves, the tail the successor replays and the tail the projection
+  charges are one number read from one function, so no row can fall between
+  the digest and the replay. A rotation is judged BEFORE it runs, by that
+  projection, and the projection omits provider-side overhead the real usage
+  figure includes; so a rotation also arms the same deferred verdict the
+  native path uses (`pending_verdict[key]` = the pre-rotation reading, with
+  `pending_rotation[key]` = the method), and the successor's first confirmed
+  reading settles it in `_compaction_gate_decision`: the ledger entry is
+  emitted and `_judge_compact_effect` arms the failure cooldown when the
+  rotation freed less than `_COMPACT_MIN_EFFECT_PCT_POINTS`. When that
+  judged-ineffective verdict came from a rotation, the key enters
+  `rotation_hold` (one WARNING line) and the next ladder walk for it runs
+  `native` outright, once, instead of repeating the same arithmetic on the
+  same session every turn. The Claude and
+  `cc_managed` branches are untouched: the ladder is a kiro path, selected
+  positively. Every attempted method logs one INFO line with its outcome. The
+  arithmetic lives in `session_compaction_methods.py` (pure functions, no
+  I/O); the method names are owned by `config/sections.py`
+  (`COMPACTION_METHODS`) and a config naming an unknown method is normalized
+  to the default at load.
+- **`shake` seed row**: the coordinator owns no transcript, so `shake` hands
+  the digest to the surface through
+  `SessionManager.set_compaction_seed_writer` (a `SeedWriter`: a cheap
+  synchronous `supports(key) -> bool` the coordinator asks before it projects
+  the rotation, and the awaited write `(key, method, window_tokens) -> str`,
+  run with the semaphore held and the session still registered, answering
+  `SEED_WRITTEN`, `SEED_NOTHING` or `SEED_UNSUPPORTED`). The dashboard
+  registers one (`DashboardSeedWriter`) in
+  `wire_session_compact_callback` (`dashboard/compaction_seed.py`): it reads
+  `context.rotation_rows` (the replay's own admission, `ts` and `meta`
+  intact, live window merged with disk), splits at the tail the successor's
+  replay will carry for that window (`split_tail` under
+  `context.replay_walk_options(window_tokens)`: the budget
+  `replay_budget_chars`, the line renderer that clips an `inject` row to the
+  window-scaled per-row ceiling, and the `inject` reserve; the cut is
+  `session_compaction_methods.walk_tail`, the ONE budgeted newest-first walk
+  that `build_session_replay` also renders through, so the two cannot drift
+  and an oversized newest inject that the replay would clip and carry cannot
+  digest the conversation beside it; the walk keeps the newest row whatever
+  its size but clips that one line to the budget with the truncation mark, so
+  the carried tail never exceeds the figure the rotation projection charges),
+  digests the rest with `shake_elide` —
+  every row keeps its speaker label and prose, a fenced block ≥ 2000 chars
+  becomes `[Output elided - N tokens]`, and when the result still exceeds a
+  `SEED_BUDGET_DIVISOR`-th (half) of the tail budget the oldest rows keep a
+  quarter of it, the newest the rest, with one `[... N rows between these
+  left out ...]` marker. A seed row an earlier rotation left is not a
+  conversation row of that fold: `shake_elide` carries its digest first,
+  under a `[Digest carried from an earlier compaction, standing in for N
+  rows]` header, whole when it fits in a `_CARRIED_DIGEST_DIVISOR`-th (half)
+  of the digest budget and clipped with the truncation mark when it does not,
+  and adds the rows it stood in for to `dropped_rows`; the conversation
+  digests into the budget that remains. So a second shake can shorten the
+  compacted history an earlier one kept, visibly, never leave it out. The
+  writer appends the digest to the slot as a row of
+  role `compaction` with `meta = {kind: "compaction_seed", method,
+  through_row, through_ts, dropped_rows}`. `through_row` is the
+  `row_fingerprint` of the newest row the digest covers (one hash over the
+  delivery id, role, stamp and content, so only the same row reproduces it: a
+  repeated `meta.mid` on a newer tail row must not be taken for the boundary,
+  or the replay would stop there and drop the rows between) and `through_ts`
+  that row's stamp: a stamp alone cannot name a row, since two merged streams
+  or a legacy clock can put two rows on one instant. The write answers in
+  three words, and the ladder reads them narrowly: `SEED_NOTHING` (a tab
+  holds the transcript but nothing is older than the tail the successor
+  carries, so a tail-only rotation loses no history) is the ONE answer that
+  lets the walk reach `soft`; `SEED_UNSUPPORTED` (the tab closed under the
+  rotation) and any answer the contract does not name are read as
+  `unavailable`, the fail-safe direction, because no digest exists that the
+  coordinator can vouch for. A gateway registers one writer, the dashboard's,
+  and every session's `shake` asks it: it answers `supports` False for a
+  channel-born key (a Slack or Discord conversation keeps its own session key
+  even while a dashboard tab mirrors it, so `dashboard_slot_key` alone would
+  digest a channel's history into a tab its user may never open) and for a
+  key with no tab (cron, subagent, background sessions), so `shake` is
+  `unavailable` there before any projection and the ladder skips `soft` and
+  reaches `native` (the digest was asked for and cannot be written; see the
+  ladder rule above). The row is not a conversation role: `RECALL_ROLES`
+  excludes it, the sidebar preview ignores it, and the dashboard's transcript
+  registries claim it undrawn (`COMPACTION_SEED_ROLE` in
+  `website/src/pages/chat/groupDisplayItems.ts`, read by both the SDK default
+  registry and `ChatPage`'s own `undrawn` entry): a role no renderer claims
+  falls to the chat page's bubble fallback, which would print the digest after
+  a reload. It is on disk before the writer answers: the
+  answer lets the coordinator drop the native conversation, and a restart
+  between the recycle and the periodic flush would otherwise reload a
+  transcript with no seed, so the writer runs `DashboardState.save_slot_strict`
+  (the periodic flush's opposite: a guarded metadata write in flight, a
+  refused save and a raising writer are all exceptions) off the event loop
+  with the seed row in the window, and only then answers `SEED_WRITTEN`. A
+  write that does not happen withdraws the row (`_ChatSlot.withdraw`, by
+  identity, so no later rotation carries a digest of rows that were never
+  dropped) and answers `SEED_UNSUPPORTED`, so `native` keeps the history.
+- **Replay of a seed row** (`build_session_replay`, `_replay_rows`): the
+  newest non-empty `compaction` row is admitted once and rendered FIRST, as
+  `[Earlier history compacted via <method>; large outputs elided]` + digest +
+  `[End of compacted history]`, on its own share of the replay budget
+  (`SEED_BUDGET_DIVISOR`) rather than inside the tail's, because charging it
+  to the tail it protects would open a gap between the newest row the digest
+  covers and the oldest row the tail carries; an oversized digest is clipped
+  at the end with an ASCII `...[truncated]` (the replay folds U+2026 to
+  `...`). The reverse walk ends at the row whose fingerprint is
+  `through_row`, or at a row STRICTLY older than `through_ts` — a row that
+  merely shares the boundary stamp never entered the digest and is carried;
+  only a parseable stamp is a bound, since `transcript_sort_key` parks an
+  unreadable one after every real instant — so the successor sees the digest
+  once and the verbatim tail after it, no gap and no overlap. Older seeds are
+  skipped; a seed with neither field drops nothing; a transcript without a
+  seed row replays exactly as before. A later rotation carries an earlier
+  seed's digest into its own under the carried-digest header (above);
+  `replay_line` splices a seed row as its content, never as a speaker.
 - **Circuit breaker**: force-resets session after 5 consecutive failures.
 - **Dead provider detection**: `get_or_create()` checks `provider.is_alive()`
   on the fast path. If the backing process died (crash, SIGKILL, orphan
@@ -1566,7 +1730,14 @@ and once the file is gone the path is left in the prose next to the assistant's
 own earlier description of what it showed. Stripping at the row builders rather
 than at each consumer is what makes the guarantee hold for all three. The
 CURRENT turn is unaffected — it is excluded from the replay by identity, so a
-freshly attached image still becomes a real image block.
+freshly attached image still becomes a real image block. A rotation's seed row
+is replayed history too: `_replay_rows` strips its digest content on the way
+out, and the walk renderer both sides share (`replay_walk_options`'s `line_of`)
+strips as well, because the seed writer walks the STORED rows (`rotation_rows`
+keeps them intact so `row_fingerprint` still names the row on disk) while the
+replay walks stripped ones, and a bare path and its marker differ in length. One
+renderer that strips keeps the writer's split and the successor's tail cutting at
+the same row.
 
 **Same-provider resume:** unaffected. Normal `session/load` path with full
 native fidelity.
@@ -2736,9 +2907,10 @@ In-place compaction (both backends) keeps the `_sessions` entry healthy:
 a concurrent `get_or_create()` reuses it, queueing on the session
 semaphore behind the compact, then continues on the compacted session.
 
-Only the kiro-cli failure recycle tears the entry down, and it runs inside
-`_compact_in_place` under the turn semaphore that the compact attempt
-already holds — never after releasing it. That is load-bearing: releasing
+Only a recycle tears the entry down — the kiro-cli failure recycle inside
+`_compact_in_place`, or a rotation method (`soft`, `shake`) chosen by the
+method ladder — and each runs under the turn semaphore that the attempt
+already holds, never after releasing it. That is load-bearing: releasing
 first and re-acquiring for the recycle leaves a gap a queued turn wins, and
 that turn is then dispatched into a kiro-cli still finishing its compaction,
 receives the late `completed` status instead of an `end_turn`, and hangs

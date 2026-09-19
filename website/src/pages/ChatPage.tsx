@@ -316,7 +316,7 @@ import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
-import { createTurnGrouper, applyRunningState, isTurnEnd, REASONING_ROLES, TURN_OPENER_ROLES } from './chat/groupDisplayItems'
+import { createTurnGrouper, applyRunningState, isTurnEnd, COMPACTION_SEED_ROLE, REASONING_ROLES, TURN_OPENER_ROLES } from './chat/groupDisplayItems'
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import ChatSidebar from './ChatSidebar'
@@ -5782,9 +5782,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // arm) and the queue rail's rows draw nothing here, but `system` /
         // `done` -- lifecycle markers this store never carries -- are left
         // unclaimed on purpose, so they take the bubble fallback exactly as the
-        // if-chain's fall-through did rather than vanishing.
+        // if-chain's fall-through did rather than vanishing. The compaction
+        // seed row is claimed: it is model-facing history a reload brings back,
+        // and the bubble fallback would print its digest as a message.
         id: 'undrawn',
-        roles: [...REASONING_ROLES, 'queued'],
+        roles: [...REASONING_ROLES, 'queued', COMPACTION_SEED_ROLE],
         render: () => null,
       },
       {

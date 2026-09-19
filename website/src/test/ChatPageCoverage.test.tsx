@@ -43,6 +43,7 @@ import type { RootState } from '../store'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { sseAutomation } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
+import { COMPACTION_SEED_ROLE } from '../pages/chat/groupDisplayItems'
 import { structuredMonitorLoop } from './monitorFixtures'
 import { normalizeAutomationRecord, type AutomationRecord } from '../monitoring/automation'
 
@@ -682,6 +683,39 @@ describe('ChatPage renderMessage — role dispatch', () => {
     await waitFor(() => expect(shown()).toContain('anchor row'))
     expect(shown()).not.toContain('later please')
     expect(shown()).not.toContain('may I run ls?')
+  })
+
+  it('draws nothing for a reloaded compaction seed row, and does not fall back to the bubble', async () => {
+    // The row a rotation compaction method leaves behind (backend SEED_ROLE)
+    // reaches the page through the slot-detail fetch on a reload; its content
+    // is the digest the model replays, not something to read. An unclaimed
+    // role would fall to the bubble fallback and print that digest. Driven
+    // through the real reload path: the page's mount activation fetches the
+    // slot detail (`switchSlot`) and its fulfilled reducer installs the rows
+    // (filterMessages keeps this role); nothing is dispatched by hand.
+    const digest = 'DIGEST OF 12 DROPPED ROWS: the deploy plan and its rollback'
+    const { store } = renderChatPage([], {
+      chat: { slotMessages: {} },
+      detailPages: [{
+        messages: [
+          msg('user', 'what did we decide?', { ts: 'u1' }),
+          msg(COMPACTION_SEED_ROLE, digest, {
+            ts: 's1',
+            meta: { kind: 'compaction_seed', method: 'shake', through_row: 'f0e1', through_ts: 'u0', dropped_rows: 12 },
+          }),
+          msg('assistant', 'the rollback stays manual', { ts: 'a1' }),
+        ],
+        has_more: false,
+        total: 3,
+      }],
+    })
+    await waitFor(() => expect(shown()).toContain('the rollback stays manual'))
+    // The reload kept the seed row (filterMessages skips only chunk/done)...
+    expect(store.getState().chat.messages.map(m => m.role)).toEqual(['user', COMPACTION_SEED_ROLE, 'assistant'])
+    // ...and the page drew nothing for it.
+    expect(shown()).not.toContain('DIGEST OF 12 DROPPED ROWS')
+    // Claimed undrawn, not lost: the row still holds its display slot.
+    expect(rows()).toHaveLength(3)
   })
 
   it('renders a nudge row as its own auto-nudge card, not an assistant bubble', async () => {

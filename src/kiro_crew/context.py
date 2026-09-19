@@ -13,13 +13,14 @@ import threading
 import time
 import unicodedata
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew import context_budget as _context_budget_mod
 from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
@@ -29,7 +30,18 @@ from kiro_crew.board_tag_grammar import is_grantable_tag_id
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.context_budget import (
+    CONTEXT_BUDGET_BASE,
+    MIN_CONTEXT_BUDGET_BASE,
+    REFERENCE_WINDOW_TOKENS,
+)
+from kiro_crew.context_budget import REPLAY_BUDGET_CHARS as _CB_REPLAY_BUDGET_CHARS
+from kiro_crew.context_budget import (
+    budget_base,
+    effective_window,
+)
 from kiro_crew.cron import get_local_tz
+from kiro_crew.history import transcript_sort_key
 from kiro_crew.hooks import (
     HOOK_INJECT_CONTEXT,
     HOOK_MODIFY,
@@ -60,6 +72,12 @@ from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
+)
+from kiro_crew.session_compaction_methods import (
+    SEED_BUDGET_DIVISOR,
+    SEED_ROLE,
+    row_fingerprint,
+    walk_tail,
 )
 from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.skills import SkillsLoader
@@ -562,8 +580,9 @@ async def _build_store_vectors(name: str) -> "VectorMemoryStore | None":
 # make room for skills. Instead skills/steering get their own ADDITIONAL caps
 # and the global ceiling (_MAX_CONTEXT_CHARS, DERIVED below as the sum of all
 # section caps) grows accordingly — so sections never share one pool and
-# truncate each other.
-_CONTEXT_BUDGET_BASE = 165_000  # ~55k tokens
+# truncate each other. The base itself lives in ``context_budget`` so the
+# compaction coordinator can read it without importing this module.
+_CONTEXT_BUDGET_BASE = CONTEXT_BUDGET_BASE
 
 # Delimiters that wrap untrusted Slack thread-parent text.
 # The content is screened for injection and framed as UNTRUSTED DATA; these
@@ -1080,8 +1099,14 @@ def _member_backend_can_dispatch(cfg: "KiroCrewConfig | None" = None) -> bool:
 
 
 def _budget(fraction: float) -> int:
-    """A section char cap as a percentage of the budget base."""
-    return int(_CONTEXT_BUDGET_BASE * fraction)
+    """A section char cap as a percentage of the budget base (``context_budget.reference_cap``)."""
+    return _context_budget_mod.reference_cap(fraction)
+
+
+#: The additive section fractions, from the ONE table in ``context_budget``: the
+#: rotation projection charges their sum as the startup ceiling, so the two
+#: cannot drift.
+_SECTION_FRACTIONS = _context_budget_mod.SECTION_FRACTIONS
 
 
 # These module-level caps are the 1M-REFERENCE values (base tuned for a 1M
@@ -1090,14 +1115,14 @@ def _budget(fraction: float) -> int:
 # gets proportionally smaller caps. These constants stay as the reference /
 # fallback (used when the window is unknown ⇒ 1M) and by tests.
 _HISTORY_BUDGET_CHARS = _budget(0.21)  # thread history (fallback/truncated)  = 21%
-_MEMORY_PREFS_CAP = _budget(0.026)  # user preferences                     = 2.6%
-_MEMORY_PROJECTS_CAP = _budget(0.039)  # active projects                      = 3.9%
-_MEMORY_HISTORY_CAP = _budget(0.16)  # daily history (multi-tier decay)     = 16%
-_LESSONS_CAP = _budget(0.226)  # learned corrections (high priority)  = 22.6%
-_SEMANTIC_MEMORY_CAP = _budget(0.077)  # semantic memory (vector)             = 7.7%
-_EPISODIC_MEMORY_CAP = _budget(0.077)  # episodic memory (vector)             = 7.7%
-_SKILLS_CAP = _budget(0.15)  # skills top-K block (lazy-loaded)     = 15%
-_STEERING_CAP = _budget(0.10)  # steering resource files              = 10%
+_MEMORY_PREFS_CAP = _budget(_SECTION_FRACTIONS["prefs"])  # user preferences        = 2.6%
+_MEMORY_PROJECTS_CAP = _budget(_SECTION_FRACTIONS["projects"])  # active projects  = 3.9%
+_MEMORY_HISTORY_CAP = _budget(_SECTION_FRACTIONS["memory_history"])  # daily history = 16%
+_LESSONS_CAP = _budget(_SECTION_FRACTIONS["lessons"])  # learned corrections     = 22.6%
+_SEMANTIC_MEMORY_CAP = _budget(_SECTION_FRACTIONS["semantic"])  # semantic memory  = 7.7%
+_EPISODIC_MEMORY_CAP = _budget(_SECTION_FRACTIONS["episodic"])  # episodic memory  = 7.7%
+_SKILLS_CAP = _budget(_SECTION_FRACTIONS["skills"])  # skills top-K block (lazy)   = 15%
+_STEERING_CAP = _budget(_SECTION_FRACTIONS["steering"])  # steering resource files = 10%
 _PER_MESSAGE_CAP = 8_000  # truncate individual messages on fallback path
 # Historical char cap for the episodic-memory block injected on new sessions
 # (build_message). Bounds the top-8 episodic fragments; scaled down with the
@@ -1145,7 +1170,7 @@ def _prompt_build_embedding_deadline(enabled: bool) -> Iterator[None]:
 # Strip Mode Identity blocks from injected context so cross-tab or history
 # content from a different mode doesn't override the current prompt's identity.
 _MODE_IDENTITY_RE = re.compile(r"## 🔒 Mode Identity.*?(?=\n## |\Z)", re.DOTALL)
-_COMPRESSED_HISTORY_CAP = _budget(0.27)  # budget for LLM-compressed thread summary  = 27%
+_COMPRESSED_HISTORY_CAP = _budget(_SECTION_FRACTIONS["compressed_history"])  # LLM summary = 27%
 
 # Global ceiling = SUM of the independent section caps (by design: the
 # global cap is Σ section caps, not a shared pool the sections fight over). Only
@@ -1156,7 +1181,7 @@ _COMPRESSED_HISTORY_CAP = _budget(0.27)  # budget for LLM-compressed thread summ
 # (the per-section caps already prevent that), so sections never truncate each
 # other. Works out to ~1.155 x base ≈ 190k chars (~63k tokens) — a larger
 # startup context, well within a 200k-token model window.
-_PREAMBLE_HEADROOM = _budget(0.03)  # fixed rules/identity/workspace/docs/date  = 3%
+_PREAMBLE_HEADROOM = _budget(_SECTION_FRACTIONS["preamble_headroom"])  # fixed blocks = 3%
 # Global ceiling for the reference (1M) window. DERIVED from _resolve_caps so the
 # section-sum lives in exactly one place (_ResolvedCaps.max_context); defined
 # just after that function below to avoid a forward reference.
@@ -1173,13 +1198,15 @@ _PREAMBLE_HEADROOM = _budget(0.03)  # fixed rules/identity/workspace/docs/date  
 # identical across models (a section that is 20% of a 1M window stays 20% of a
 # 200K window, i.e. one-fifth the chars). At the reference window the scale
 # factor is exactly 1.0, so the default deployment is byte-for-byte unchanged.
-_REFERENCE_WINDOW_TOKENS = 1_000_000
+# Lives in ``context_budget`` (re-exported here) so the compaction coordinator
+# reads it without importing this module.
+_REFERENCE_WINDOW_TOKENS = REFERENCE_WINDOW_TOKENS
 
 # Floor so a pathologically small (or misreported) window can't collapse the
 # caps to ~0 and inject a degenerate/empty context. 20% of the base ≈ the 200K
 # tier, our smallest real model window — below that, memory stops being useful
 # before the model even runs, so clamp rather than shrink further.
-_MIN_CONTEXT_BUDGET_BASE = int(_CONTEXT_BUDGET_BASE * 0.2)
+_MIN_CONTEXT_BUDGET_BASE = MIN_CONTEXT_BUDGET_BASE
 
 
 @dataclass(frozen=True)
@@ -1232,17 +1259,11 @@ class _ResolvedCaps:
 def _effective_window(window_tokens: int | None) -> int:
     """Resolve a usable context-window size, defaulting to the reference (1M).
 
-    A ``None``/unset or non-positive window falls back to the reference window,
-    NOT to a small default. This is deliberate: the default deployment runs
-    ``provider=acp`` + ``model="auto"``, and the registry maps ``"auto"`` → 200K
-    even though ACP auto actually runs a 1M-window model. Treating an
-    unknown/auto window as the reference means ONLY an explicitly-selected
-    smaller model scales the budget down — an unresolved window never silently
-    shrinks the default deployment to 20%.
+    Thin re-export of ``context_budget.effective_window`` so this module's many
+    readers and tests keep the private name. See that function for why an
+    unknown/auto window resolves to the reference rather than a small default.
     """
-    if not window_tokens or window_tokens <= 0:
-        return _REFERENCE_WINDOW_TOKENS
-    return window_tokens
+    return effective_window(window_tokens)
 
 
 def _resolve_caps(window_tokens: int | None) -> _ResolvedCaps:
@@ -1263,10 +1284,7 @@ def _resolve_caps_cached(window: int) -> _ResolvedCaps:
     # byte-identical to the module-level constants there. ``factor`` is floored
     # via _MIN_CONTEXT_BUDGET_BASE so a pathologically small window can't zero
     # out the caps.
-    base = max(
-        _MIN_CONTEXT_BUDGET_BASE,
-        round(_CONTEXT_BUDGET_BASE * window / _REFERENCE_WINDOW_TOKENS),
-    )
+    base = budget_base(window)
     factor = base / _CONTEXT_BUDGET_BASE
 
     def _scaled(reference_cap: int) -> int:
@@ -1287,6 +1305,53 @@ def _resolve_caps_cached(window: int) -> _ResolvedCaps:
         compressed_history=_scaled(_COMPRESSED_HISTORY_CAP),
         preamble_headroom=_scaled(_PREAMBLE_HEADROOM),
     )
+
+
+def replay_walk_options(window_tokens: int | None) -> dict[str, Any]:
+    """The exact ``walk_tail`` keyword arguments ``build_session_replay`` walks with.
+
+    Budget, the line renderer (which clips an ``inject`` row's content to the
+    window-scaled per-row ceiling) and the ``inject`` reserve. A rotation
+    compaction splits the transcript with these same options, so an oversized
+    inject row that the replay would clip and carry cannot, on the writer's
+    side, eat the budget whole and push conversation into the digest that the
+    successor would have kept verbatim. The budget is ``context_budget``'s: the
+    ONE conversation-tail figure the coordinator projects from and the writer
+    cuts at, so the three cannot drift.
+    """
+    caps = _resolve_caps(window_tokens)
+    replay_budget = _context_budget_mod.replay_budget_chars(window_tokens)
+    # Scaled by the same factor, and bounded by the budget so a tiny window still
+    # admits one row rather than clipping every inject row to nothing.
+    inject_cap = max(
+        1, min(replay_budget, round(_REPLAY_INJECT_CAP_CHARS * caps.base / _CONTEXT_BUDGET_BASE))
+    )
+    from kiro_crew.image_refs import strip_image_refs
+
+    def _line(m: Mapping[str, Any]) -> str:
+        # The replay hands this renderer rows ``_replay_rows`` already stripped;
+        # the rotation writer hands it the STORED rows (``full_rows``), whose
+        # image references it must not carry into a digest either. Stripping
+        # here, where both sides render, keeps the two walks measuring the same
+        # line at the budget edge: a bare path and its replacement marker differ
+        # in length, and a split that disagreed with the replay by one row would
+        # digest a row the successor still carries verbatim, or drop one it does
+        # not. The marker contains no path, so a second pass is a no-op.
+        content = strip_image_refs(m.get("content", ""))
+        if m["role"] == "inject" and len(content) > inject_cap:
+            content = content[:inject_cap] + "…[truncated]"
+        return f"{str(m['role']).title()}: {content}"
+
+    return {
+        "budget_chars": replay_budget,
+        "line_of": _line,
+        # Reserved so conversation cannot be starved by breadcrumbs: inject rows
+        # spend their own share and older ones are skipped, while the scan keeps
+        # looking for user/assistant rows rather than stopping at the first
+        # inject row that spills.
+        "reserve_role": "inject",
+        "reserve_chars": max(1, replay_budget // _REPLAY_INJECT_BUDGET_DIVISOR),
+    }
 
 
 # Global ceiling at the reference (1M) window — the historical
@@ -2601,7 +2666,7 @@ async def compress_thread_history(
 
 
 _REPLAY_BUDGET_CHARS = (
-    80_000  # 80K chars ≈ 20K tokens — fits alongside system context in 200K window
+    _CB_REPLAY_BUDGET_CHARS  # 80K chars ≈ 20K tokens — fits alongside system context in 200K window
 )
 
 # Per-row ceiling for ``inject`` content inside a replay. Conversation rows are
@@ -2627,6 +2692,64 @@ _REPLAY_INJECT_MAX_ROWS = (
 ) // _REPLAY_INJECT_CAP_CHARS
 
 _REPLAY_CONVERSATION_MAX_ROWS = 500
+
+# Share of the replay budget a compaction seed row may spend, and it spends it
+# ON TOP of the conversation budget rather than inside it. The seed stands in
+# for the history a rotation dropped; charging it to the tail it protects would
+# open a gap between the newest row the digest covers and the oldest row the
+# tail carries. The rotation that wrote the seed sized the digest to the same
+# share of the same budget (``SEED_BUDGET_DIVISOR``), so at the reference
+# window it fits whole.
+_REPLAY_SEED_BUDGET_DIVISOR = SEED_BUDGET_DIVISOR
+
+_REPLAY_SEED_HEADER = "[Earlier history compacted via {method}; large outputs elided]"
+_REPLAY_SEED_FOOTER = "[End of compacted history]"
+# ASCII on purpose: the replay folds multibyte punctuation afterwards, and a
+# mark whose length changes under that fold cannot be budgeted exactly.
+_REPLAY_SEED_TRUNCATED = "...[truncated]"
+
+
+def _seed_coverage_key(row: dict) -> tuple[str | None, tuple[int, float] | None] | None:
+    """What a seed row covers through: the boundary row's fingerprint and its stamp.
+
+    ``None`` when the seed names neither. Only a parseable ``through_ts`` yields
+    a stamp bound: ``transcript_sort_key`` parks an unreadable stamp after every
+    real instant, which as a coverage bound would swallow the whole conversation.
+    """
+    meta = row.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    through_row = meta.get("through_row")
+    fingerprint = through_row if isinstance(through_row, str) and through_row else None
+    through = meta.get("through_ts")
+    stamp: tuple[int, float] | None = None
+    if isinstance(through, str) and through:
+        key = transcript_sort_key(through)
+        stamp = key if key[0] == 0 else None
+    if fingerprint is None and stamp is None:
+        return None
+    return fingerprint, stamp
+
+
+def _row_covered(row: dict, coverage: tuple[str | None, tuple[int, float] | None]) -> bool:
+    """Whether *row* is the row a seed covers through, or older than it.
+
+    The boundary row itself is named by fingerprint. Older rows are those
+    STRICTLY before its stamp: a row that merely shares the stamp (two streams
+    merged into one replay, a legacy second-resolution clock) is not covered,
+    because it never entered the digest. Without a fingerprint (a seed written
+    before the field existed) the stamp alone decides, exclusive.
+    """
+    fingerprint, stamp = coverage
+    if fingerprint is not None and row_fingerprint(row) == fingerprint:
+        return True
+    if stamp is None:
+        return False
+    ts = row.get("ts")
+    if not isinstance(ts, str) or not ts:
+        return False
+    key = transcript_sort_key(ts)
+    return key[0] == 0 and key < stamp
 
 
 def _replay_identity(row: dict) -> tuple | None:
@@ -2681,11 +2804,21 @@ def _replay_rows(
     exclude_last_n: int = 0,
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
+    full_rows: bool = False,
 ) -> list[dict]:
     """Tail of the chain under per-role quotas, in chronological order.
 
     Conversation rows get the full quota whatever the inject volume, which a
     single bounded query cannot guarantee.
+
+    A ``compaction`` seed row, left by a rotation compaction for its successor,
+    is admitted once: the newest one is kept (with its ``meta``) and the first
+    row at or before its ``meta.through_ts`` ends the walk, because the seed
+    already stands in for everything from there back. Older seeds are skipped.
+
+    *full_rows* returns the stored rows themselves, ``ts`` and ``meta``
+    included, instead of role/content pairs; the rotation surface reads that
+    shape to split the transcript at the same rows this walk admits.
     """
     messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
     if pending_messages is not None or current_message is not None:
@@ -2697,8 +2830,27 @@ def _replay_rows(
 
     kept: list[dict] = []
     conv = inj = 0
+    seed_seen = False
+    coverage: tuple[str | None, tuple[int, float] | None] | None = None
     for m in reversed(messages):
+        if coverage is not None and _row_covered(m, coverage):
+            break
         role = m["role"]
+        if role == SEED_ROLE:
+            if seed_seen or not m.get("content"):
+                continue
+            seed_seen = True
+            coverage = _seed_coverage_key(m)
+            kept.append(
+                m
+                if full_rows
+                else {
+                    "role": role,
+                    "content": strip_image_refs(m["content"]),
+                    "meta": m.get("meta"),
+                }
+            )
+            continue
         if role == "inject":
             if inj >= _REPLAY_INJECT_MAX_ROWS:
                 continue
@@ -2711,9 +2863,27 @@ def _replay_rows(
             conv += 1
         else:
             continue
-        kept.append({"role": role, "content": strip_image_refs(m["content"])})
+        kept.append(m if full_rows else {"role": role, "content": strip_image_refs(m["content"])})
     kept.reverse()
     return kept
+
+
+def rotation_rows(
+    conversation_log: "ConversationLog | None",
+    session_key: str,
+    *,
+    pending_messages: list[dict] | None = None,
+) -> list[dict]:
+    """Stored rows a rotation compaction splits and digests, in chronological order.
+
+    The same admission as the successor's replay (``_replay_rows``): conversation
+    and inject rows under their quotas, the newest seed row, nothing the seed
+    already covers. Rows keep ``ts`` and ``meta``, so the digest can record the
+    newest row it covers.
+    """
+    return _replay_rows(
+        conversation_log, session_key, pending_messages=pending_messages, full_rows=True
+    )
 
 
 # Conversation rows admitted by the bounded recall sites. Mirrors ``recent()``'s
@@ -2814,45 +2984,49 @@ def build_session_replay(
     )
     if not messages:
         return None
+    # At most one seed row survives ``_replay_rows``; it is rendered ahead of
+    # the conversation on its own budget, never inside the tail's walk below.
+    seed = next((m for m in messages if m["role"] == SEED_ROLE), None)
+    if seed is not None:
+        messages = [m for m in messages if m is not seed]
 
-    # Scale the replay budget by the resolved window factor (base/reference).
-    caps = _resolve_caps(model_window)
-    replay_budget = round(_REPLAY_BUDGET_CHARS * caps.base / _CONTEXT_BUDGET_BASE)
-    # Scaled by the same factor, and bounded by the budget so a tiny window still
-    # admits one row rather than clipping every inject row to nothing.
-    inject_cap = max(
-        1, min(replay_budget, round(_REPLAY_INJECT_CAP_CHARS * caps.base / _CONTEXT_BUDGET_BASE))
-    )
-
-    # Reserved so conversation cannot be starved by breadcrumbs: inject rows spend
-    # their own share and older ones are skipped, while the scan keeps looking for
-    # user/assistant rows rather than stopping at the first inject row that spills.
-    inject_budget = max(1, replay_budget // _REPLAY_INJECT_BUDGET_DIVISOR)
-
-    # Build lines from most recent to oldest, stop when budget exhausted
-    lines: list[str] = []
-    total = 0
-    inject_total = 0
-    for m in reversed(messages):
-        role = m["role"].title()
-        content = m.get("content", "")
-        if m["role"] == "inject" and len(content) > inject_cap:
-            content = content[:inject_cap] + "…[truncated]"
-        line = f"{role}: {content}"
-        if m["role"] == "inject" and inject_total + len(line) > inject_budget and lines:
-            continue
-        if total + len(line) > replay_budget and lines:
-            break
-        lines.append(line)
-        total += len(line) + 2  # +2 for separator
-        if m["role"] == "inject":
-            inject_total += len(line) + 2
+    # One budget, one walk, one set of options: the rotation that wrote a seed
+    # split the rows with exactly these (``replay_walk_options``), so the
+    # successor carries exactly the rows the digest stops at.
+    options = replay_walk_options(model_window)
+    replay_budget = options["budget_chars"]
+    lines = walk_tail(messages, **options).lines
 
     lines.reverse()
+    if seed is not None:
+        seed_block = _render_seed_block(seed, max(1, replay_budget // _REPLAY_SEED_BUDGET_DIVISOR))
+        if seed_block:
+            lines.insert(0, seed_block)
     replay = "\n\n".join(lines)
     replay, _ = redact_exfiltration_urls(replay)
     replay, _ = redact_credentials(replay)
     return replay.translate(_MULTIBYTE_TABLE)
+
+
+def _render_seed_block(seed: dict, cap_chars: int) -> str:
+    """The seed row as the block that opens a replay, its digest clipped to *cap_chars*.
+
+    A digest that outgrows the cap (a smaller window than the one the rotation
+    sized it for) keeps its beginning: the head of a shake digest is the goal
+    statement, and the digest's own tail is the newest dropped rows, which the
+    verbatim tail right after this block continues from anyway.
+    """
+    meta = seed.get("meta")
+    method = meta.get("method") if isinstance(meta, dict) else None
+    header = _REPLAY_SEED_HEADER.format(method=method or "rotation")
+    content = str(seed.get("content") or "")
+    if not content:
+        return ""
+    if len(content) > cap_chars:
+        content = (
+            content[: max(0, cap_chars - len(_REPLAY_SEED_TRUNCATED))] + _REPLAY_SEED_TRUNCATED
+        )
+    return f"{header}\n{content}\n{_REPLAY_SEED_FOOTER}"
 
 
 def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, list[str]]:

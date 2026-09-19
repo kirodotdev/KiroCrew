@@ -3512,6 +3512,27 @@ class _ChatSlot:
         # :func:`row_mid`, never an inline ``meta`` poke.
         return msg
 
+    def withdraw(self, row: dict[str, Any]) -> bool:
+        """Remove *row* (by identity) from the live window; ``True`` when it was there.
+
+        For a caller that appended a row on the strength of a step that then
+        failed (the compaction seed writer persisting the seed before it
+        answers). The row leaves the window and the pending stream queue, and
+        the counters ``append`` advanced are walked back; the window is marked
+        dirty because its persisted form may already hold the row.
+        """
+        for index, msg in enumerate(self.messages):
+            if msg is row:
+                del self.messages[index]
+                break
+        else:
+            return False
+        self._pending = [m for m in self._pending if m is not row]
+        self.invalidate_source_links()
+        self.total_messages -= 1
+        self._dirty = True
+        return True
+
     def push_wire_frame(self, cls: str, content: str) -> None:
         """Queue an ephemeral frame for live SSE readers only."""
         self._buffers.push_wire_frame(self, cls, content)
@@ -4545,6 +4566,12 @@ class DashboardState:
 
         self.sessions.set_compact_callback(_on_compacted)
 
+        # circular import: compaction_seed imports chat_utils, which imports
+        # this module at scope (the chat_utils note above).
+        from kiro_crew.dashboard.compaction_seed import DashboardSeedWriter
+
+        self.sessions.set_compaction_seed_writer(DashboardSeedWriter(self))
+
     async def _notify_channel_compaction(self, key: str, pct: float, *, success: bool) -> None:
         """Deliver the auto-compact notice to a channel-originated session.
 
@@ -5357,6 +5384,10 @@ class DashboardState:
 
     def flush_slot_now(self, slot: _ChatSlot) -> None:
         _persistence_for(self).flush_slot_now(self, slot)
+
+    def save_slot_strict(self, slot: _ChatSlot) -> None:
+        """Write *slot*'s window now or raise; see ``DashboardPersistenceCoordinator.save_slot_strict``."""
+        _persistence_for(self).save_slot_strict(self, slot)
 
     def _flush_dirty_slots(self) -> None:
         _persistence_for(self)._flush_dirty_slots(self)
