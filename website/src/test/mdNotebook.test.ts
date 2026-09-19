@@ -16,7 +16,9 @@ import {
   isEmptyListItem,
   matchesShortcut,
   neighborAfterDelete,
+  nameProblem,
   noteBasename,
+  portableName,
   relTime,
   targetsSameNote,
   rowBadge,
@@ -163,6 +165,46 @@ describe('md-notebook/buildTree', () => {
 })
 
 describe('md-notebook/misc helpers', () => {
+  it('cleans a typed name into a component every clone of the vault can hold', () => {
+    // Separators and Win32-forbidden characters go; the rest is trimmed.
+    expect(portableName(' ..Pro/jects? ')).toBe('Projects')
+    expect(portableName('Q&A:2026')).toBe('Q&A2026')
+    // Nothing usable left, or a Windows device name whatever its case or
+    // extension: refused as ''.
+    expect(portableName('?*|')).toBe('')
+    expect(portableName('   ')).toBe('')
+    for (const bad of ['CON', 'con', 'lpt1', 'Nul.txt', 'com9.md']) expect(portableName(bad)).toBe('')
+    // Windows also reserves the ports spelled with superscript digits.
+    for (const bad of ['COM¹', 'lpt³.md', 'Com²']) expect(portableName(bad)).toBe('')
+    expect(portableName('console')).toBe('console')
+    expect(portableName('COM10')).toBe('COM10')
+    // A trailing dot or space goes — including one the 120-character cut
+    // puts back: 119 a's + '.x' must not end in a dot.
+    expect(portableName('Drafts. .')).toBe('Drafts')
+    expect(portableName(`${'a'.repeat(119)}.x`)).toBe('a'.repeat(119))
+    expect(portableName(`${'a'.repeat(119)} tail`)).toBe('a'.repeat(119))
+    expect(portableName('a'.repeat(130))).toHaveLength(120)
+    // The cut counts code points: 119 ASCII + an emoji keeps the whole emoji
+    // rather than leaving a lone surrogate no filesystem accepts.
+    const emojiTail = portableName(`${'a'.repeat(119)}😀x`)
+    expect(Array.from(emojiTail)).toHaveLength(120)
+    expect(emojiTail.endsWith('😀')).toBe(true)
+    // And within 120 code points the cut is also on bytes: 100 four-byte
+    // emoji are 400 bytes, past the filesystem's 255-byte component limit, so
+    // the name is cut to 62 whole emoji (248 bytes) and never a split one.
+    const emojiRun = portableName('😀'.repeat(100))
+    expect(Array.from(emojiRun)).toHaveLength(62)
+    expect(new TextEncoder().encode(emojiRun)).toHaveLength(248)
+    // Control characters go with the Win32-forbidden set.
+    expect(portableName('Plan\u0007s\u001f')).toBe('Plans')
+    expect(portableName('\u0000\u0001')).toBe('')
+    // One cause per refusal, for the message at the field.
+    expect(nameProblem('?*|')).toBe('empty')
+    expect(nameProblem('   ')).toBe('empty')
+    expect(nameProblem('lpt1.md')).toBe('reserved')
+    expect(nameProblem('Plans')).toBeNull()
+  })
+
   it('derives a basename without directories or extension', () => {
     expect(noteBasename('sub/My Note.md')).toBe('My Note')
     expect(noteBasename('Plain.MD')).toBe('Plain')
