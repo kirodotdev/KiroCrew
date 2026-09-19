@@ -302,10 +302,14 @@ point — the one place shared by every channel's gate, chosen because each
 channel's `_tool_gate` is synchronous and loop-bound while the check does
 filesystem work — and on a refusal DOWNGRADES to the ladder below (never a hard
 block), logging `outcome=auto_approve_declined` with `reason=name_grant`, the
-refusal code, and `tier=hook_auto_approve`. On Windows the check cannot model
-the shell's lookup at all, so it declines every name-based shell grant there —
-a channel turn without a decider then falls to deny-by-default for shell tools
-its `auto_approve_tools` used to grant. Non-shell verdicts and the two
+refusal code, and `tier=hook_auto_approve`. On Windows the check models the
+shell's lookup and returns per-command verdicts as it does on POSIX, except in
+two host states that still decline every name grant:
+`windows_lookup_not_modelled` when Windows cannot report where the user's
+Documents folder is, and `ambiguous_env` when a per-user PowerShell profile sits
+at one of the paths derived from it. In those two states a channel turn without
+a decider falls to deny-by-default for shell tools its `auto_approve_tools`
+would otherwise grant. Non-shell verdicts and the two
 full-trust predicates above are not name-based grants and are unchanged. The
 `APPROVAL_TRUST_READS` rung is also unchanged and deliberately out of this
 check's scope: it keys on `event.tool_kind`, never on a program name — a

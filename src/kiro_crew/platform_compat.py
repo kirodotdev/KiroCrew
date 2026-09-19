@@ -2405,6 +2405,85 @@ def _windows_system_dirs() -> tuple[str, ...]:
     return tuple(dirs) + tuple(os.path.join(d, "WindowsPowerShell", "v1.0") for d in dirs)
 
 
+#: ``FOLDERID_Documents`` — the Known Folder PowerShell derives ``$PROFILE``
+#: from (``Environment.GetFolderPath(MyDocuments)``). Read through the shell API
+#: rather than ``%USERPROFILE%\Documents`` because the folder is redirectable
+#: (OneDrive, roaming profiles, group policy) and PowerShell follows the
+#: redirection, so a guess from the environment would check the wrong place.
+_FOLDERID_DOCUMENTS = "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}"
+
+#: ``(sub-directory, file)`` pairs under Documents that Windows PowerShell 5.1
+#: reads before running a ``-Command``. This is the shell kiro-cli spawns, so
+#: this is the profile set that matters here. The two files are the all-hosts
+#: ``profile.ps1`` and its host-specific companion. PowerShell 7 (``pwsh``) has
+#: its own profiles under ``Documents\PowerShell``; kiro-cli does not spawn it,
+#: so those files never run before the command and are deliberately not listed.
+_POWERSHELL_USER_PROFILES = (
+    ("WindowsPowerShell", "profile.ps1"),
+    ("WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
+)
+
+
+def windows_documents_dir() -> str | None:
+    """The user's Documents Known Folder, or ``None`` when Windows cannot say.
+
+    ``None`` is the fail-closed answer for every caller: a check that needs to
+    know what is in Documents cannot proceed on a guess.
+    """
+
+    if not IS_WINDOWS:
+        return None
+    try:
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", ctypes.c_uint32),
+                ("Data2", ctypes.c_uint16),
+                ("Data3", ctypes.c_uint16),
+                ("Data4", ctypes.c_uint8 * 8),
+            ]
+
+        text = _FOLDERID_DOCUMENTS.strip("{}")
+        parts = text.split("-")
+        guid = _GUID()
+        guid.Data1 = int(parts[0], 16)
+        guid.Data2 = int(parts[1], 16)
+        guid.Data3 = int(parts[2], 16)
+        tail = bytes.fromhex(parts[3] + parts[4])
+        guid.Data4 = (ctypes.c_uint8 * 8)(*tail)
+        out = ctypes.c_wchar_p()
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
+        result = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(out))
+        if result != 0 or not out.value:
+            return None
+        try:
+            return str(out.value)
+        finally:
+            ole32.CoTaskMemFree(out)
+    except Exception:
+        return None
+
+
+def windows_powershell_profile_paths() -> tuple[str, ...] | None:
+    """Every per-user PowerShell profile path, or ``None`` when Documents is unknown.
+
+    These are the scripts PowerShell runs BEFORE the command it was handed,
+    unless it was started with ``-NoProfile``. They live under the user's own
+    Documents folder, so whatever can write as the user -- an agent included --
+    can write them, and a function defined there shadows any program name. A
+    caller that vouches for a program by name has to know none of them exist.
+    Existence is the caller's question; this only names where to look.
+    """
+
+    documents = windows_documents_dir()
+    if documents is None:
+        return None
+    return tuple(
+        os.path.join(documents, subdir, filename) for subdir, filename in _POWERSHELL_USER_PROFILES
+    )
+
+
 # Names already probed for the diagnostic below, so the message costs one PATH
 # scan per name per process. Only the *message* is one-shot; resolution itself
 # stays uncached, so a tool that lands in a trusted directory later is still

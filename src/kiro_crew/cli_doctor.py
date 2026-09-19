@@ -1841,33 +1841,54 @@ def _doctor_trust_root() -> None:
 
 
 def _doctor_name_grant_platform_scope() -> None:
-    """Report whether hook auto-approve can be satisfied on this platform.
+    """Report whether hook auto-approve can be satisfied on this host.
 
-    Windows declines every name-based auto-approve by design. In the log that
-    shows only as a decline line per invocation, and a user reading those cannot
-    tell a platform scope from their own misconfiguration; what they would have
-    to read to find out is the source of :mod:`kiro_crew.name_grant`. This says
-    it where they are already looking for what their install can and cannot do.
+    A user reading decline lines in the log cannot tell a host-wide reason from
+    their own misconfiguration; what they would have to read to find out is the
+    source of :mod:`kiro_crew.name_grant`. This says it where they are already
+    looking for what their install can and cannot do. Three answers:
 
-    Not a failure, so it never joins *issues*: the fail-closed is the intended
-    posture and stays closed. Imported locally to keep ``kirocrew doctor`` from
-    pulling a security module in on every invocation just to print one row.
+    * the platform-scope code (Windows could not report the Documents folder,
+      so the PowerShell profile check cannot run) -- a property of the host;
+    * a Windows environment refusal (a per-user PowerShell profile exists) --
+      the user can act on it, so the path is printed;
+    * or grants can be satisfied.
+
+    Not a failure, so it never joins *issues*: each fail-closed answer is the
+    intended posture. Imported locally to keep ``kirocrew doctor`` from pulling
+    a security module in on every invocation just to print one row.
     """
 
     from kiro_crew import name_grant
 
-    if name_grant.platform_scope_notice() is None:
-        print("  hook auto-approve:  ✅ name grants can be satisfied on this platform")
+    notice = name_grant.platform_scope_notice()
+    if notice is not None:
+        print(f"  hook auto-approve:  ⏹ declined on this host ({notice})")
+        _print_wrapped(
+            "This is the platform's scope, not your configuration. Windows could "
+            "not report where the user's Documents folder is, so this check cannot "
+            "tell whether a PowerShell profile runs before each command and "
+            "declines every name grant. Hooks that auto-approve on macOS and "
+            "Linux go to the approval card instead."
+        )
         return
-    print(f"  hook auto-approve:  ⏹ declined on Windows ({name_grant.WINDOWS_UNMODELLED})")
-    _print_wrapped(
-        "This is the platform's scope, not your configuration. A name grant "
-        "cannot be satisfied here because the tokenizer does not preserve a "
-        "backslash path and the shell searches the command's own directory "
-        "before the search path, so this check cannot say which file a program "
-        "name would run. Hooks that auto-approve on macOS and Linux go to the "
-        "approval card instead."
-    )
+    refusal = name_grant.environment_refusal()
+    if refusal is not None:
+        print(f"  hook auto-approve:  ⚠ declined by this environment ({refusal.code})")
+        # The profile is the one state with a remedy a user can be told in a
+        # word. The others -- a relative `PATH` entry, an inherited `BASH_ENV`
+        # or exported shell functions -- are named in the detail, which says
+        # which one it is; a generic sentence there beats naming the wrong file.
+        if platform_compat.IS_WINDOWS and refusal.code == name_grant.AMBIGUOUS_ENV:
+            remedy = "remove or rename the profile to restore them."
+        else:
+            remedy = "clear the environment state named above to restore them."
+        _print_wrapped(
+            refusal.detail + ". Hooks that would auto-approve go to the approval "
+            "card while this holds; " + remedy
+        )
+        return
+    print("  hook auto-approve:  ✅ name grants can be satisfied on this platform")
 
 
 #: MCP servers that host strict-identity tools — the reflexive verbs

@@ -286,9 +286,13 @@ is decided in strict priority order:
    `reason=name_grant`, the refusal code, and `tier=hook_auto_approve`. This
    matters most here: the subagent surface runs unattended, so an unverified
    shadowed name would be honoured with nobody watching. On Windows the check
-   cannot model the shell's lookup at all, so it declines every name-based
-   shell grant there — a headless subagent (no parent `auto` policy, no
-   interactive approver) then rejects shell tools its allowlist used to grant.
+   models the shell's lookup and returns per-command verdicts as it does on
+   POSIX, except in two host states that still decline every name grant:
+   `windows_lookup_not_modelled` when Windows cannot report where the user's
+   Documents folder is, and `ambiguous_env` when a per-user PowerShell profile
+   sits at one of the paths derived from it. In those two states a headless
+   subagent (no parent `auto` policy, no interactive approver) rejects shell
+   tools its allowlist would otherwise grant.
 3. **Parent policy** — `parent_policy == "auto"` → auto-approve. Resolved once
    at `_run_inner` start (see the chain below); an active global YOLO folds
    into this snapshot rather than being re-read per event.

@@ -3519,16 +3519,19 @@ class TestProjectSectionAndAuthRow:
 
 
 class TestNameGrantPlatformScopeRow:
-    """`kirocrew doctor` says whether hook auto-approve works on this platform.
+    """`kirocrew doctor` says whether hook auto-approve works on this host.
 
-    A Windows user who sees repeated decline lines in `gateway.log` has no other
-    way to tell a platform scope from their own configuration.
+    A user who sees decline lines in `gateway.log` has no other way to tell a
+    host-wide reason from their own configuration.
     """
 
-    def test_windows_names_the_code_and_says_it_is_not_your_config(self, monkeypatch, capsys):
+    def test_unknown_documents_folder_names_the_code_and_says_it_is_not_your_config(
+        self, monkeypatch, capsys
+    ):
         from kiro_crew import name_grant
 
         monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(name_grant.platform_compat, "windows_powershell_profile_paths", lambda: None)
         cli_doctor._doctor_name_grant_platform_scope()
         out = capsys.readouterr().out
         # The code is what a reader greps `gateway.log` for.
@@ -3536,14 +3539,82 @@ class TestNameGrantPlatformScopeRow:
         assert "not your configuration" in out
         assert "approval card" in out
 
-    def test_posix_reports_that_grants_can_be_satisfied(self, monkeypatch, capsys):
+    def test_an_existing_profile_is_named_so_the_user_can_act(self, monkeypatch, capsys, tmp_path):
         from kiro_crew import name_grant
 
-        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", False)
+        profile = tmp_path / "Microsoft.PowerShell_profile.ps1"
+        profile.write_text("function ls { evil }\n")
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            name_grant.platform_compat, "windows_powershell_profile_paths", lambda: (str(profile),)
+        )
+        cli_doctor._doctor_name_grant_platform_scope()
+        out = capsys.readouterr().out
+        assert name_grant.AMBIGUOUS_ENV in out
+        assert str(profile) in out
+        assert "approval card" in out
+        assert "✅" not in out
+
+    def test_windows_without_a_profile_reports_that_grants_can_be_satisfied(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        from kiro_crew import name_grant
+
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(name_grant, "_path_is_ambiguous", lambda: False)
+        monkeypatch.setattr(
+            name_grant.platform_compat,
+            "windows_powershell_profile_paths",
+            lambda: (str(tmp_path / "absent.ps1"),),
+        )
         cli_doctor._doctor_name_grant_platform_scope()
         out = capsys.readouterr().out
         assert "hook auto-approve:  ✅" in out
         assert name_grant.WINDOWS_UNMODELLED not in out
+
+    def test_posix_reports_that_grants_can_be_satisfied(self, monkeypatch, capsys):
+        from kiro_crew import name_grant
+
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(name_grant, "_path_is_ambiguous", lambda: False)
+        monkeypatch.setattr(name_grant, "_inherited_preload", lambda: None)
+        cli_doctor._doctor_name_grant_platform_scope()
+        out = capsys.readouterr().out
+        assert "hook auto-approve:  ✅" in out
+        assert name_grant.WINDOWS_UNMODELLED not in out
+
+    def test_an_inherited_preload_is_reported_rather_than_claimed_satisfiable(
+        self, monkeypatch, capsys
+    ):
+        # The row must describe the answer the module actually gives. `BASH_ENV`,
+        # exported shell functions and a relative `PATH` entry each refuse every
+        # grant, so a ✅ beside them would send a user hunting a fault that is
+        # their own environment.
+        from kiro_crew import name_grant
+
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(name_grant, "_path_is_ambiguous", lambda: False)
+        monkeypatch.setattr(name_grant, "_inherited_preload", lambda: "BASH_ENV")
+        cli_doctor._doctor_name_grant_platform_scope()
+        out = capsys.readouterr().out
+        assert "hook auto-approve:  ✅" not in out
+        assert name_grant.AMBIGUOUS_ENV in out
+        assert "BASH_ENV" in out
+        assert "approval card" in out
+        # Not the profile remedy -- there is no profile in this state.
+        assert "rename the profile" not in out
+
+    def test_a_relative_search_path_entry_is_reported_rather_than_claimed_satisfiable(
+        self, monkeypatch, capsys
+    ):
+        from kiro_crew import name_grant
+
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(name_grant, "_path_is_ambiguous", lambda: True)
+        cli_doctor._doctor_name_grant_platform_scope()
+        out = capsys.readouterr().out
+        assert "hook auto-approve:  ✅" not in out
+        assert name_grant.AMBIGUOUS_PATH in out
 
     def test_the_row_cannot_contribute_an_issue(self):
         # The fail-closed is the intended posture, so this row reports scope

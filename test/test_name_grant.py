@@ -760,6 +760,8 @@ class TestLogSafety:
             name_grant.DISPATCHER,
             name_grant.AMBIGUOUS_PATH,
             name_grant.WINDOWS_UNMODELLED,
+            name_grant.FILE_ASSOCIATION,
+            name_grant.BUILTIN_SHADOWS,
             name_grant.UNINSPECTABLE,
             name_grant.UNKNOWN_COMMAND,
             name_grant.AMBIGUOUS_ENV,
@@ -986,6 +988,27 @@ class TestDispatchers:
         system_dir, _ = world
         _program(system_dir, "head")
         assert name_grant.name_grant_refusal("head file") is None
+
+    @pytest.mark.parametrize(
+        "program", ["iex", "start", "wmic", "invoke-expression", "start-process"]
+    )
+    def test_a_windows_only_dispatcher_name_is_not_refused_on_posix(self, world, program):
+        # `iex` is Elixir's REPL on POSIX, `start` and `wmic` are ordinary names
+        # a user is free to install, and the Windows-only dispatcher rule must
+        # only apply where its argument grammar does. If any of them leaked into
+        # `_DISPATCHERS`, POSIX would refuse a resolvable file with code
+        # DISPATCHER; the check must resolve the file and either honour it or
+        # refuse for another reason.
+        system_dir, _ = world
+        _program(system_dir, program)
+        refusal = name_grant.name_grant_refusal(f"{program} --version")
+        assert refusal is None or refusal.code != name_grant.DISPATCHER
+
+    def test_the_windows_dispatcher_table_stays_out_of_the_shared_one(self):
+        # The Windows entries live in their own set so POSIX behaviour is
+        # identical to base. Guards against a future edit dropping one back into
+        # `_DISPATCHERS`, where it would refuse the same name on POSIX.
+        assert name_grant._DISPATCHERS.isdisjoint(name_grant._WINDOWS_DISPATCHERS)
 
 
 class TestInheritedHostEnvironment:
@@ -1252,30 +1275,42 @@ class TestDowngradePath:
 
 
 class TestWindowsPaths:
-    """A path this tokenizer cannot preserve must not become a silent pass.
+    """The POSIX walk keeps POSIX semantics; the Windows model lives elsewhere.
 
-    Runs on POSIX by patching the platform flag, because the module-level skip
-    keeps the rest of this file off Windows: the fixtures rely on the POSIX
-    execute bit. That skip is why this gap existed at all, and it is stated in
-    the PR rather than papered over.
+    ``test_name_grant_windows.py`` covers the Windows lexer and PowerShell's
+    lookup on every platform. What stays here is the contract this file's
+    POSIX fixtures can speak to: that Windows answers per command rather than
+    with one constant refusal, and that a backslash means ESCAPE on POSIX.
     """
 
-    def test_windows_refuses_every_name(self, world, monkeypatch):
-        # GPT 5.6 rounds 11 and 12, compounding: POSIX tokenization destroys a
-        # backslash path (leaving a bare name that resolves nowhere, which is
-        # ALLOWED), and `cmd.exe` searches the command's own directory before
-        # PATH -- a directory this check, running in the gateway's, cannot see.
+    def test_windows_answers_per_command(self, world, monkeypatch):
+        # WINDOWS_UNMODELLED is reserved for the one host state the model cannot
+        # run in (Documents unknown). A host that CAN say where its profile
+        # would be gets a per-command verdict: `find` is a system program here
+        # and is allowed; a relative path is refused for what it is.
         system_dir, _ = world
-        _program(system_dir, "head")
+        exe = _program(system_dir, "find.exe")
         monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
-        for command in (r"C:\workspace\tool.exe run", "head file", "find ."):
-            refusal = name_grant.name_grant_refusal(command)
-            assert refusal is not None, command
-            assert refusal.code == name_grant.WINDOWS_UNMODELLED, command
+        monkeypatch.setattr(
+            name_grant.platform_compat,
+            "windows_powershell_profile_paths",
+            lambda: (str(system_dir / "no-such-profile.ps1"),),
+        )
+        # The world's system stand-in knows no extensions; Windows' does.
+        monkeypatch.setattr(
+            name_grant.platform_compat,
+            "trusted_system_bin",
+            lambda name: exe if name.lower() in ("find", "find.exe") else None,
+        )
+        monkeypatch.setenv("PATHEXT", ".EXE")
+        assert name_grant.name_grant_refusal("find . -name x") is None
+        refusal = name_grant.name_grant_refusal(r".\tool.exe run")
+        assert refusal is not None
+        assert refusal.code == name_grant.RELATIVE_PATH
 
-    def test_the_tokenizer_really_does_destroy_it(self):
-        # Half the premise, pinned: if this stops being true the refusal can
-        # narrow to the lookup-order half alone.
+    def test_the_posix_tokenizer_still_treats_backslash_as_an_escape(self):
+        # The Windows lexer is selected by the platform flag; the POSIX one must
+        # not change, because on POSIX `\` IS an escape and `grep '\d'` relies on it.
         assert name_grant.program_names(r"C:\workspace\tool.exe run") == ["C:workspacetool.exe"]
 
     def test_posix_backslash_is_left_alone(self, world):
@@ -1404,12 +1439,29 @@ class TestPlatformScopeDeclineNotice:
         assert name_grant.should_log_decline("hook:default:b", refusal) is True
         assert len(name_grant._DECLINE_NOTICES) == 2
 
-    def test_the_notice_follows_the_same_platform_branch_as_the_refusal(self, monkeypatch):
-        # Read off IS_WINDOWS, like `name_grant_refusal`, so `kirocrew doctor`
-        # cannot describe a posture this module does not hold.
+    def test_the_notice_follows_the_same_platform_branch_as_the_refusal(
+        self, monkeypatch, tmp_path
+    ):
+        # Derived from `windows_environment_refusal`, like `name_grant_refusal`,
+        # so `kirocrew doctor` cannot describe a posture this module does not
+        # hold. Off Windows there is no notice; on Windows there is one only
+        # when the profile check cannot run at all.
         monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", False)
         assert name_grant.platform_scope_notice() is None
         monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            name_grant.platform_compat,
+            "windows_powershell_profile_paths",
+            lambda: (str(tmp_path / "profile.ps1"),),
+        )
+        assert name_grant.platform_scope_notice() is None
+        (tmp_path / "profile.ps1").write_text("function ls { evil }\n")
+        # A profile that EXISTS is command scope: the user can remove it.
+        assert name_grant.platform_scope_notice() is None
+        assert name_grant.windows_environment_refusal().code == name_grant.AMBIGUOUS_ENV
+        monkeypatch.setattr(
+            name_grant.platform_compat, "windows_powershell_profile_paths", lambda: None
+        )
         assert name_grant.platform_scope_notice() == name_grant.WINDOWS_UNMODELLED
 
     def test_the_audit_row_is_never_gated_by_the_notice(self):
@@ -1454,3 +1506,187 @@ class TestPlatformScopeDeclineNotice:
         refusal = name_grant.name_grant_refusal("head file")
         assert refusal is not None
         assert refusal.code == name_grant.platform_scope_notice()
+
+
+class TestCommandScopeDedupeByEnvironmentFingerprint:
+    """A command-scope decline whose fingerprint does not change is one line.
+
+    An oh-my-posh user whose profile is stable across a session sees the SAME
+    ``AMBIGUOUS_ENV`` line for every command in ``gateway.log`` -- the exact
+    per-invocation noise ``should_log_decline`` exists to prevent -- but the
+    code stays command-scope because a user CAN change the file, and every SEL
+    audit row is still written per invocation. The refusal opts in through
+    :attr:`Refusal.dedupe_key`; when the fingerprint changes (a profile edited
+    or removed mid-session) a fresh line is written.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_ledger(self):
+        name_grant._DECLINE_NOTICES.clear()
+        yield
+        name_grant._DECLINE_NOTICES.clear()
+
+    def test_a_command_scope_code_without_a_fingerprint_still_logs_every_time(self):
+        # The default -- what every existing call site sends -- is unchanged.
+        refusal = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail")
+        assert refusal.dedupe_key is None
+        assert name_grant.should_log_decline("s1", refusal) is True
+        assert name_grant.should_log_decline("s1", refusal) is True
+
+    def test_a_fingerprinted_refusal_is_stated_once_per_state(self):
+        refusal = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key="profile|100")
+        assert name_grant.should_log_decline("s1", refusal) is True
+        assert name_grant.should_log_decline("s1", refusal) is False
+        assert name_grant.should_log_decline("s1", refusal) is False
+
+    def test_a_changed_fingerprint_writes_a_fresh_line(self):
+        # The user edits the profile; the mtime moves. That is a fresh fact --
+        # the file may say something different now, so the line must not be
+        # silently suppressed.
+        first = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key="profile|100")
+        second = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key="profile|200")
+        assert name_grant.should_log_decline("s1", first) is True
+        assert name_grant.should_log_decline("s1", first) is False
+        assert name_grant.should_log_decline("s1", second) is True
+        # And the state we already logged still stays suppressed.
+        assert name_grant.should_log_decline("s1", first) is False
+
+    def test_two_sessions_each_get_their_own_first_line(self):
+        refusal = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key="profile|100")
+        assert name_grant.should_log_decline("s1", refusal) is True
+        assert name_grant.should_log_decline("s2", refusal) is True
+
+    def test_a_blank_session_still_gets_its_own_bucket(self):
+        # A headless surface passes no session, but the dedupe must not
+        # collapse into a shared bucket that suppresses another session's
+        # first line.
+        refusal = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key="profile|100")
+        assert name_grant.should_log_decline("", refusal) is True
+        assert name_grant.should_log_decline("", refusal) is False
+        assert name_grant.should_log_decline("s1", refusal) is True
+
+    def test_a_different_code_with_the_same_fingerprint_is_a_different_bucket(self):
+        # The refusal code is part of the key, so a hypothetical second
+        # command-scope code adopting the fingerprint mechanism does not
+        # accidentally piggy-back on `AMBIGUOUS_ENV`'s bucket.
+        env_r = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key="profile|100")
+        path_r = name_grant.Refusal(name_grant.AMBIGUOUS_PATH, "detail", dedupe_key="profile|100")
+        assert name_grant.should_log_decline("s1", env_r) is True
+        assert name_grant.should_log_decline("s1", path_r) is True
+
+    def test_the_notice_ledger_stays_bounded_with_fingerprints(self):
+        # A caller could feed the ledger an unbounded number of distinct
+        # fingerprints (many profile paths); the bounded-eviction behaviour must
+        # still hold.
+        for n in range(name_grant._DECLINE_NOTICE_LIMIT + 50):
+            r = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key=f"profile-{n}|0")
+            name_grant.should_log_decline("s1", r)
+        assert len(name_grant._DECLINE_NOTICES) <= name_grant._DECLINE_NOTICE_LIMIT
+
+    def test_a_command_scope_code_is_still_not_in_the_platform_scope_set(self):
+        # The dedupe opt-in must not sneak `AMBIGUOUS_ENV` into the code set
+        # `should_log_decline` treats as platform scope. Env state a user can
+        # change is command scope, and a code in that set would ignore the
+        # fingerprint entirely -- an old state would silently suppress a fresh
+        # one on the same code.
+        assert name_grant.AMBIGUOUS_ENV not in name_grant._PLATFORM_SCOPE_CODES
+
+    def test_the_audit_row_is_still_written_per_invocation(self):
+        # The security invariant survives item 3: even when the LINE is
+        # deduplicated by fingerprint, `log_decline` writes one SEL row per
+        # call, so the audit sink observes every decline.
+        rows: list[dict] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kwargs):
+                rows.append(kwargs)
+
+        class _Event:
+            title = "Running: find /c x nul"
+            tool_kind = "shell"
+            request_id = "r1"
+
+        refusal = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "detail", dedupe_key="profile|100")
+        logged = 0
+        for _ in range(4):
+            if name_grant.should_log_decline("s1", refusal):
+                logged += 1
+            name_grant.log_decline(
+                source="test",
+                session_key="s1",
+                event=_Event(),
+                refusal=refusal,
+                tier="hook_auto_approve",
+                sel_factory=_Sel,
+            )
+        assert logged == 1, "one warning per session per fingerprint"
+        assert len(rows) == 4, "every decline is still audited"
+        assert {r["outcome"] for r in rows} == {"auto_approve_declined"}
+        assert {r["metadata"]["code"] for r in rows} == {name_grant.AMBIGUOUS_ENV}
+
+
+class TestProfileRefusalFingerprint:
+    """Item 3, end to end -- the fingerprint tracks the profile's real state.
+
+    ``windows_environment_refusal`` populates the fingerprint from the profile
+    path and its mtime, so a stable profile logs once, an edited one logs
+    again. Off Windows there is no profile to fingerprint.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_ledger(self):
+        name_grant._DECLINE_NOTICES.clear()
+        yield
+        name_grant._DECLINE_NOTICES.clear()
+
+    def test_a_stable_profile_writes_one_line_per_session(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        profile = tmp_path / "profile.ps1"
+        profile.write_text("function evil {}\n")
+        monkeypatch.setattr(
+            name_grant.platform_compat,
+            "windows_powershell_profile_paths",
+            lambda: (str(profile),),
+        )
+        refusal_a = name_grant.windows_environment_refusal()
+        refusal_b = name_grant.windows_environment_refusal()
+        assert refusal_a is not None and refusal_b is not None
+        assert refusal_a.code == name_grant.AMBIGUOUS_ENV
+        assert refusal_a.dedupe_key is not None
+        assert refusal_a.dedupe_key == refusal_b.dedupe_key
+        assert str(profile) in refusal_a.dedupe_key
+        # Two commands under the same stable state -> one warning.
+        assert name_grant.should_log_decline("s1", refusal_a) is True
+        assert name_grant.should_log_decline("s1", refusal_b) is False
+
+    def test_an_edited_profile_writes_a_fresh_line(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        profile = tmp_path / "profile.ps1"
+        profile.write_text("function evil {}\n")
+        os.utime(profile, ns=(100_000_000, 100_000_000))
+        monkeypatch.setattr(
+            name_grant.platform_compat,
+            "windows_powershell_profile_paths",
+            lambda: (str(profile),),
+        )
+        first = name_grant.windows_environment_refusal()
+        assert first is not None
+        assert name_grant.should_log_decline("s1", first) is True
+        assert name_grant.should_log_decline("s1", first) is False
+        # The user edits the profile; the mtime moves.
+        os.utime(profile, ns=(200_000_000, 200_000_000))
+        second = name_grant.windows_environment_refusal()
+        assert second is not None
+        assert second.dedupe_key != first.dedupe_key
+        assert name_grant.should_log_decline("s1", second) is True
+
+    def test_no_profile_produces_no_refusal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        profile = tmp_path / "profile.ps1"
+        # File does not exist.
+        monkeypatch.setattr(
+            name_grant.platform_compat,
+            "windows_powershell_profile_paths",
+            lambda: (str(profile),),
+        )
+        assert name_grant.windows_environment_refusal() is None
