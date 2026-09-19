@@ -3872,6 +3872,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const gitBadge = !projectGitStatusError && projectGitStatus?.repo
     ? {
         dirty: projectGitStatus.files.length,
+        // The listing is capped server-side, so the count here is a floor, not
+        // a total. The badge reads the same flag the Git panel does; without it
+        // the badge states the cap as the number of changed files.
+        dirtyTruncated: projectGitStatus.truncated === true,
         ahead: projectGitStatus.ahead ?? 0,
         behind: projectGitStatus.behind ?? 0,
       }
@@ -7679,6 +7683,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}
               projectGitDirty={gitBadge?.dirty ?? 0}
+              projectGitDirtyTruncated={gitBadge?.dirtyTruncated ?? false}
               projectGitAhead={gitBadge?.ahead ?? 0}
               projectGitBehind={gitBadge?.behind ?? 0}
               isMac={isMac}

@@ -8320,7 +8320,14 @@
       "uncommitted": "{{count}} nicht committet",
       "branch_unavailable": "Branch nicht verfügbar",
       "status_failed": "Der Repository-Status konnte nicht gelesen werden. Der Commit-Verlauf ist möglicherweise veraltet.",
-      "log_failed": "Das Commit-Protokoll konnte nicht gelesen werden."
+      "status_failed_no_history": "Die Liste der Änderungen konnte nicht gelesen werden.",
+      "log_failed": "Das Commit-Protokoll konnte nicht gelesen werden.",
+      "uncommitted_capped": "über {{count}} nicht committet",
+      "showing_first": "erste {{count}} angezeigt",
+      "filter_refused": "Die Git-Konfiguration dieses Repositorys richtet ein Konvertierungsprogramm (etwa Git LFS) ein, daher lässt Kiro diese Prüfungen hier aus. Änderungen und Verlauf können nicht angezeigt werden, und ein erneuter Versuch hilft nicht.",
+      "filter_refused_title": "Kiro kann dieses Repository nicht auf Änderungen prüfen",
+      "refresh_unavailable": "Aktualisieren nicht möglich, solange diese Prüfungen aus sind",
+      "filter_refused_unreadable": "Kiro konnte die Git-Konfiguration dieses Repositorys nicht lesen und lässt diese Prüfungen hier daher aus. Änderungen und Verlauf können erst angezeigt werden, wenn dieser Lesevorgang gelingt."
     },
     "workspaceTree": {
       "status_failed": "Der Repository-Status konnte nicht gelesen werden."

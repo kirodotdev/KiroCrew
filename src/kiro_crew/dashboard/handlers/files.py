@@ -7268,6 +7268,15 @@ def _porcelain_unquote(path: str) -> str:
 # ``-c`` cannot neutralize arbitrary driver names, so a repo declaring one is
 # refused outright — the same fail-closed stance as worktree.py's
 # ``_checkout_filter``.
+#
+# The refusal message says the config DECLARES a driver and that policy refuses
+# the check. It must not claim the program runs: matching is deliberately wider
+# than execution. ``smudge`` fires on checkout, not on the status re-hash; and a
+# driver no ``.gitattributes`` path maps to never runs at all. A probe that
+# merely FAILS is a DIFFERENT fact -- no driver is known to exist there -- so it
+# refuses under its own ``"unreadable"`` cause rather than borrowing this one.
+# Refusing both is correct, since neither can be proven safe, but telling the
+# reader a program ran is not, and neither is handing them both causes at once.
 _GIT_FILTER_KEY_RE = re.compile(
     r"^filter\..+\.(process|smudge|clean)$", re.IGNORECASE
 )
@@ -7300,9 +7309,15 @@ def _worktree_probe_failure_is_empty_scope(
     )
 
 
-def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bool:
-    """True when repo-supplied config names a content-filter driver (or the
-    probe cannot prove it does not).
+def _repo_filter_refusal_cause(git_cmd: list[str], base: str, env: dict) -> str:
+    """Why this repo's checks are refused: ``"declared"``, ``"unreadable"``, or ``""``.
+
+    ``"declared"`` means repo-supplied config names a content-filter driver.
+    ``"unreadable"`` means the probe could not prove one absent, so nothing is
+    known about a driver at all. Both refuse -- neither can be proven safe --
+    but they are different facts and the reader is told the one that applies:
+    collapsing them onto one message made the common case (an LFS repo) read as
+    a disjunction the caller had already resolved.
 
     Mirrors ``worktree.py::_checkout_filter``: drivers can only come from a
     config file the repository supplies — ``--local`` (``.git/config``) and,
@@ -7343,11 +7358,11 @@ def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bo
                 git_cmd, base, env
             ):
                 continue
-            return True
+            return "unreadable"
         for key in out.splitlines():
             if _GIT_FILTER_KEY_RE.match(key.strip()):
-                return True
-    return False
+                return "declared"
+    return ""
 
 
 async def api_project_git_status(request: web.Request) -> web.Response:
@@ -7446,9 +7461,32 @@ async def api_project_git_status(request: web.Request) -> web.Response:
 
         # Refuse repos whose own config names a content-filter driver: status
         # re-hashes modified files through ``filter.<name>.clean``, which would
-        # execute that program on every 5s poll. Degraded-but-safe empty answer.
-        if _repo_declares_filter_driver(_git_cmd, base, _env):
-            return {"repo": True, "files": []}
+        # execute that program on every 5s poll.
+        #
+        # The refusal reports UNAVAILABLE, never an empty file list.
+        # ``{"repo": True, "files": []}`` is what a genuinely clean repository
+        # returns, so a refusal wearing that shape is indistinguishable from
+        # health: the panel draws its green "clean" pill over a working tree it
+        # holds no status for, on any repo configured by ``git lfs install
+        # --local``, on every poll. A panel whose one job is surfacing
+        # uncommitted changes is more wrong when it claims none than when it
+        # admits it has no answer. The guard also refuses when its own config
+        # probe cannot prove a driver absent, and that state is likewise unknown
+        # rather than clean -- it answers a distinct cause so the reader is told
+        # which of the two actually happened.
+        #
+        # It carries its OWN code, distinct from the outage code its four
+        # siblings use. This condition is not an outage: it is a standing policy
+        # decision with a knowable cause. For the `declared` cause it is also
+        # permanent rather than transient -- no retry clears it while that
+        # config stands -- which is why only the declared copy promises
+        # permanence and only the declared cause makes the panel's refresh
+        # control inert. The `unreadable` cause can clear on its own, so it
+        # promises nothing about permanence. Spelling either as an outage
+        # would tell an LFS user their repository is broken, every poll, forever.
+        _status_refusal = _repo_filter_refusal_cause(_git_cmd, base, _env)
+        if _status_refusal:
+            return {"_status_filter_refused": _status_refusal}
 
         # Get repo root and branch info
         root_rc, root_out, _ = _run_git_bounded(
@@ -7588,6 +7626,25 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     # while the directory still exists is an operational outage.
     if await asyncio.to_thread(_project_directory_absent, base):
         return web.json_response({"repo": False, "files": []})
+    _status_refusal = result.pop("_status_filter_refused", "")
+    if _status_refusal:
+        return web.json_response(
+            {
+                # One cause per body. "declares a filter driver, or could not be
+                # read" made every LFS repo -- the common case by far -- read a
+                # disjunction this function had already resolved.
+                "error": (
+                    "Checks are off for this repository: its Git config declares a "
+                    "filter driver, so they are refused by policy."
+                    if _status_refusal == "declared" else
+                    "Checks are off for this repository: its Git config could not be "
+                    "read, so they are refused by policy."
+                ),
+                "code": "git_status_filter_refused",
+                "cause": _status_refusal,
+            },
+            status=503,
+        )
     if result.pop("_status_unavailable", False):
         return web.json_response(
             {
@@ -7992,9 +8049,15 @@ async def api_project_git_log(request: web.Request) -> web.Response:
         # Same filter-driver refusal as the status handler (defense in depth:
         # ``git log`` does not run clean filters, but one uniform invariant --
         # no git subcommand runs against a repo that names a driver -- is
-        # auditable; per-subcommand carve-outs are not).
-        if _repo_declares_filter_driver(_git_cmd, base, _env):
-            return {"repo": True, "commits": []}
+        # auditable; per-subcommand carve-outs are not). Reported as
+        # unavailable for the same reason status is: an empty commit list is
+        # what a brand-new repository legitimately returns, so a refusal
+        # spelled that way is indistinguishable from "no history yet". It
+        # carries the filter-specific code, since the cause is the repo's own
+        # config rather than an outage.
+        _log_refusal = _repo_filter_refusal_cause(_git_cmd, base, _env)
+        if _log_refusal:
+            return {"_log_filter_refused": _log_refusal}
 
         # Get HEAD sha for isHead marking
         head_rc, head_out, _ = _run_git_bounded(
@@ -8028,6 +8091,23 @@ async def api_project_git_log(request: web.Request) -> web.Response:
         return {"repo": True, "commits": commits}
 
     result = await asyncio.to_thread(_run)
+    _log_refusal = result.pop("_log_filter_refused", "")
+    if _log_refusal:
+        return web.json_response(
+            {
+                # One cause per body, same as the status route.
+                "error": (
+                    "History is off for this repository: its Git config declares a "
+                    "filter driver, so this check is refused by policy."
+                    if _log_refusal == "declared" else
+                    "History is off for this repository: its Git config could not be "
+                    "read, so this check is refused by policy."
+                ),
+                "code": "git_log_filter_refused",
+                "cause": _log_refusal,
+            },
+            status=503,
+        )
     # Egress redaction: commit subjects and author names are repo content the
     # agent can author, and this body is rendered by the dashboard.
     for c in result.get("commits", []):

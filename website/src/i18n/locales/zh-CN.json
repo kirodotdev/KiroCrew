@@ -8206,7 +8206,14 @@
       "uncommitted": "{{count}} 个未提交",
       "branch_unavailable": "分支不可用",
       "status_failed": "无法读取仓库状态。提交历史可能已过时。",
-      "log_failed": "无法读取提交记录。"
+      "status_failed_no_history": "无法读取更改列表。",
+      "log_failed": "无法读取提交记录。",
+      "uncommitted_capped": "超过 {{count}} 个未提交",
+      "showing_first": "已显示前 {{count}} 个",
+      "filter_refused": "此仓库的 Git 配置设置了转换程序（例如 Git LFS），所以 Kiro 在这里不做这些检查。无法显示更改和历史，重试也不会有帮助。",
+      "filter_refused_title": "Kiro 无法检查此仓库的更改",
+      "refresh_unavailable": "这些检查停用时无法刷新",
+      "filter_refused_unreadable": "Kiro 无法读取此仓库的 Git 配置，所以在这里不做这些检查。在读取成功之前，无法显示更改和历史。"
     },
     "workspaceTree": {
       "status_failed": "无法读取仓库状态。"

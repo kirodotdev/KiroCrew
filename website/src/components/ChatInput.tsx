@@ -601,6 +601,8 @@ interface ChatInputProps {
   projectDetached?: boolean
   /** Uncommitted file count in the project's working tree (0 = clean). */
   projectGitDirty?: number
+  /** True when the server capped the listing, so the count above is a floor. */
+  projectGitDirtyTruncated?: boolean
   /** Commits ahead of / behind the branch's upstream, when it tracks one. */
   projectGitAhead?: number
   projectGitBehind?: number
@@ -945,6 +947,7 @@ function ChatInput({
   projectBranch,
   projectDetached,
   projectGitDirty,
+  projectGitDirtyTruncated,
   projectGitAhead,
   projectGitBehind,
   memoryMode,
@@ -1460,11 +1463,20 @@ function ChatInput({
   // sync, which is also what hides the badge.
   const gitBadgeTitle = useMemo(() => {
     const parts: string[] = []
-    if (projectGitDirty) parts.push(i18nT('components.gitPanel.uncommitted', { count: projectGitDirty }))
+    if (projectGitDirty) {
+      // A capped listing makes the count a floor, so it is read as "500+" here
+      // and in the badge below -- the same claim the Git panel's pill makes.
+      parts.push(i18nT(
+        projectGitDirtyTruncated
+          ? 'components.gitPanel.uncommitted_capped'
+          : 'components.gitPanel.uncommitted',
+        { count: projectGitDirty },
+      ))
+    }
     if (projectGitAhead) parts.push('\u2191' + String(projectGitAhead))
     if (projectGitBehind) parts.push('\u2193' + String(projectGitBehind))
     return parts.join(' \u00b7 ')
-  }, [projectGitDirty, projectGitAhead, projectGitBehind])
+  }, [projectGitDirty, projectGitDirtyTruncated, projectGitAhead, projectGitBehind])
   // Focus the composer when the dictation panel is up (as before) OR while a
   // batch transcript is landing (voiceTranscribing), so Enter sends and typing
   // edits the result. Deliberately NOT keyed on bare voiceRecording: focusing
@@ -4970,7 +4982,7 @@ function ChatInput({
                    anything (UX review finding). */
                 <span className="inline-flex items-center gap-0.5 px-1 py-px rounded bg-warn/15 text-warn">
                   <FileDiff size={11} className="shrink-0" />
-                  {projectGitDirty}
+                  {projectGitDirtyTruncated ? `${projectGitDirty}+` : projectGitDirty}
                 </span>
               )}
               {(!!projectGitAhead || !!projectGitBehind) && (

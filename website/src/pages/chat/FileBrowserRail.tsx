@@ -7,6 +7,12 @@ import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
 import ErrorNotice from '../../components/ErrorNotice'
 import { findReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
+import {
+  gitFilterRefusalCause,
+  gitFilterRefusalCopyKey,
+  isGitFilterRefusal,
+} from '../../utils/gitStatusError'
 import { EmptyState } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { cn } from '../../lib/utils'
@@ -347,7 +353,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     _setQuery(v)
   }
 
-  const { data: status, isError: statusError } = useQuery({
+  const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir,
@@ -518,7 +524,28 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             agent handoff; mounting this row there would duplicate one failure. */}
         {statusError && !changedMode && (
           <div className="px-2 pt-1.5 shrink-0">
-            <ErrorNotice variant="inline" message={t('pages.chat.fileBrowserRail.git_status_failed')} askAgent />
+            {/* A filter-driver refusal is NOT an outage, so it must not wear the
+                generic failed copy here. That spelling is permanent for an
+                LFS-configured repository -- it would say "failed" on every 5 s
+                poll, forever, with no cause and no "retry won't help" -- which is
+                the defect the refusal codes exist to end one panel over. Same
+                localized sentence the Git panel shows, so there is one wording
+                for one condition rather than three to keep in step. */}
+            {/* NO title here, unlike the Git panel. `inline` lays title and
+                message out as flex SIBLINGS, so at this rail's 300-520px the
+                title wraps into a five-line stack of two-word fragments beside a
+                narrow column of message -- the captured frame is what settled
+                that. The title exists in the panel to separate a refusal from a
+                coexisting outage notice; nothing renders beside this one, and
+                the message names the cause by itself. */}
+            <ErrorNotice
+              variant="inline"
+              message={isGitFilterRefusal(statusError)
+                ? t(gitFilterRefusalCopyKey(gitFilterRefusalCause(statusError)))
+                : t('pages.chat.fileBrowserRail.git_status_failed')}
+              report={findReport(errMessage(statusError))}
+              askAgent
+            />
           </div>
         )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">
