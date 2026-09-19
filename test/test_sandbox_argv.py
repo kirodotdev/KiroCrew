@@ -4303,3 +4303,44 @@ class TestSandboxExecArgvPinsInnerConfiner:
         finally:
             if cleanup:
                 os.unlink(cleanup)
+
+
+class TestKiroCliWorkerThreadEnv:
+    """kiro_cli_worker_thread_env is an OPT-IN cap on kiro-cli's Tokio pool."""
+
+    def test_no_cap_by_default_when_knob_unset(self):
+        # Opt-in: an unset knob injects nothing, so nothing is capped and no
+        # cap leaks tree-wide into agent-run programs.
+        with patch("kiro_crew.config.loader._raw_config", return_value={}):
+            assert sandbox_mod.kiro_cli_worker_thread_env({}) == {}
+
+    def test_configured_value_is_injected(self):
+        with patch(
+            "kiro_crew.config.loader._raw_config",
+            return_value={"resource_limits": {"kiro_cli_worker_threads": 6}},
+        ):
+            assert sandbox_mod.kiro_cli_worker_thread_env({}) == {"TOKIO_WORKER_THREADS": "6"}
+
+    def test_config_zero_or_junk_is_treated_as_unset(self):
+        # kiro-cli rejects TOKIO_WORKER_THREADS=0; 0/junk validates to None
+        # (_limit_int lo=1), which means "not configured" -> no cap.
+        for bad in (0, "x", 0.9):
+            with patch(
+                "kiro_crew.config.loader._raw_config",
+                return_value={"resource_limits": {"kiro_cli_worker_threads": bad}},
+            ):
+                assert sandbox_mod.kiro_cli_worker_thread_env({}) == {}
+
+    def test_operator_env_override_wins_without_reading_config(self):
+        # A pre-set TOKIO_WORKER_THREADS (the other opt-in) is never clobbered.
+        assert sandbox_mod.kiro_cli_worker_thread_env({"TOKIO_WORKER_THREADS": "12"}) == {}
+
+    def test_present_env_value_is_respected_by_presence_not_truthiness(self):
+        # A caller-set value is never clobbered even when empty AND even when the
+        # config knob is set: presence, not truthiness. Overwriting a present ""
+        # would violate the "never clobber a caller-set value" contract.
+        with patch(
+            "kiro_crew.config.loader._raw_config",
+            return_value={"resource_limits": {"kiro_cli_worker_threads": 4}},
+        ):
+            assert sandbox_mod.kiro_cli_worker_thread_env({"TOKIO_WORKER_THREADS": ""}) == {}

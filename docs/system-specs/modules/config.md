@@ -2270,6 +2270,16 @@ read by more than one enforcement mechanism, and two of those keys mean
 | `max_total_memory_mb` | — | slice `MemoryMax` (all trees together) | — |
 | `max_total_processes` | — | slice `TasksMax` | — |
 | `xdist_auto_cap` | — | — | `-1` auto, `0` off, `N` fixed |
+| `kiro_cli_worker_threads` | — | — | — |
+
+`kiro_cli_worker_threads` is a **fourth mechanism** none of the three columns
+cover: the `TOKIO_WORKER_THREADS` env var written into the agent spawn
+environment (`sandbox.kiro_cli_worker_thread_env`), capping kiro-cli's Tokio
+worker pool. It is **opt-in**: `0`/junk/unset means **no cap** (no env change),
+and only `N > 0` injects. Inherited tree-wide, so an opted-in value also caps
+any Tokio program the agent runs. An operator-set `TOKIO_WORKER_THREADS` in the
+environment wins over the config value. The underlying per-agent thread cost is
+fixed process-scoped inside kiro-cli, not here.
 
 `0` cannot be normalised away in either direction. On the rlimit path it is a
 documented request ("leave the inherited limit unchanged") with existing configs

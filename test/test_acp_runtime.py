@@ -1860,6 +1860,12 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
 
     monkeypatch.setattr(runtime_mod, "bind_voice_safe_agent_workspace_async", _unbound_workspace)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", stop_spawn)
+    # Opt in to the kiro-cli Tokio worker cap so the spawn-env wiring is
+    # exercised on this path (the cap is off by default).
+    monkeypatch.setattr(
+        "kiro_crew.config.loader._raw_config",
+        lambda: {"resource_limits": {"kiro_cli_worker_threads": 3}},
+    )
 
     runtime = AcpRuntime(work_dir=tmp_path / "workspace")
     with pytest.raises(_StopSpawn):
@@ -1887,6 +1893,11 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     )
     spawn_kwargs = wrapped["spawn_kwargs"]
     assert isinstance(spawn_kwargs, dict)
+    # The opt-in kiro-cli Tokio worker cap must actually reach the child env,
+    # not just exist as a helper: a spawn that drops the wiring silently leaves
+    # the pool uncapped even when configured. Pins the wiring on AcpRuntime.
+    spawn_env = spawn_kwargs["env"]
+    assert spawn_env["TOKIO_WORKER_THREADS"] == "3"
     # The installed binary is exec'd in place: the ONLY descriptor handed to the
     # child is the verified workspace the spawn shim must `fchdir` into, never an
     # inherited snapshot descriptor. Nothing binds a workspace off macOS, so the

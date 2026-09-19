@@ -9922,6 +9922,62 @@ async def wrap_argv_async(
 _SPAWN_SCRUB_ENV_PREFIXES: list[str] = list(_SENSITIVE_ENV_PREFIXES) + list(_AGENT_DENIED_ENV_KEYS)
 
 
+# kiro-cli sizes its Tokio multi-threaded runtime to the host core count
+# (Tokio's `num_cpus` default), so one idle agent runtime costs ~one worker
+# thread per core on top of a second, kiro-cli-internal core-scaled pool — on a
+# many-core host that drives the agents-slice pids ceiling toward exhaustion.
+# The real fix is process-scoped inside kiro-cli (both pools; tracked in the
+# upstream amplifier issue). This is an OPT-IN escape hatch only: when an
+# operator sets `resource_limits.kiro_cli_worker_threads`, pin
+# `TOKIO_WORKER_THREADS` in the child env. There is deliberately NO default cap
+# — an unset knob changes nothing — because injecting a cap by default leaks
+# the value tree-wide into any Tokio program the agent runs (a user's own
+# service/benchmark would silently get the capped worker count).
+
+
+def _kiro_cli_worker_threads_from_config() -> int | None:
+    """Operator-configured kiro-cli Tokio worker count, or ``None`` if unset.
+
+    Reads ``resource_limits.kiro_cli_worker_threads`` through the section's one
+    validated parse site (``0`` / junk maps to ``None`` there — kiro-cli rejects
+    ``TOKIO_WORKER_THREADS=0``). ``None`` means "not configured": no cap, no env
+    change. Reads config, so callers MUST invoke it off the event loop (mirrors
+    ``_slice_limits_from_config``).
+    """
+    try:
+        # circular import: config.loader consumers import sandbox, so the
+        # import stays local (same constraint as _slice_limits_from_config).
+        from kiro_crew.config.loader import ResourceLimitsConfig, _raw_config
+
+        rl = ResourceLimitsConfig.from_raw(_raw_config().get("resource_limits"))
+        if rl.kiro_cli_worker_threads is not None and rl.kiro_cli_worker_threads >= 1:
+            return rl.kiro_cli_worker_threads
+    except Exception:
+        logger.debug("kiro-cli worker threads: config unavailable, treating as unset")
+    return None
+
+
+def kiro_cli_worker_thread_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Return env additions that cap kiro-cli's Tokio worker pool, or ``{}``.
+
+    Opt-in and empty by default: only when the operator set
+    ``resource_limits.kiro_cli_worker_threads`` is a value injected. Empty too
+    when the caller already set ``TOKIO_WORKER_THREADS`` (never clobbered — the
+    bare env var is the other way to opt in). Presence, not truthiness: a
+    caller who set it to any value, including ``""``, owns it, so it is left
+    untouched rather than silently overwritten. When it does inject, the value
+    is inherited tree-wide by the runtime's descendants, so an opted-in
+    operator also caps any Tokio program the agent runs (documented on the
+    config key). Reads config, so it MUST be invoked off the event loop.
+    """
+    if "TOKIO_WORKER_THREADS" in env:
+        return {}
+    configured = _kiro_cli_worker_threads_from_config()
+    if configured is None:
+        return {}
+    return {"TOKIO_WORKER_THREADS": str(configured)}
+
+
 def scrub_env(
     env: dict[str, str] | None = None,
     *,

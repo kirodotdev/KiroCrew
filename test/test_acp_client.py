@@ -9636,6 +9636,12 @@ class TestResolveKiroBinEnvOverride:
                 "asyncio.create_subprocess_exec",
                 mock_exec,
             ),
+            # Opt in to the Tokio worker cap so the spawn-env wiring is
+            # exercised here (the cap is off by default).
+            patch(
+                "kiro_crew.config.loader._raw_config",
+                return_value={"resource_limits": {"kiro_cli_worker_threads": 3}},
+            ),
         ):
             client = AcpClient(work_dir=tmp_path / "workspace")
 
@@ -9665,6 +9671,10 @@ class TestResolveKiroBinEnvOverride:
             "--agent",
             client._agent,
         )
+        # The opt-in kiro-cli Tokio worker cap must actually reach the child
+        # env, not just exist as a helper: a spawn that drops the wiring
+        # silently leaves the pool uncapped even when configured. Pins AcpClient.
+        assert spawn_call.kwargs["env"]["TOKIO_WORKER_THREADS"] == "3"
         # No inherited snapshot descriptor: the installed binary is exec'd in
         # place, so there is nothing to hand down to the wrapper chain.
         #

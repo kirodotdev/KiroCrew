@@ -6190,6 +6190,22 @@ class ResourceLimitsConfig:
             nullable=True,
         ),
     )
+    kiro_cli_worker_threads: int | None = field(
+        default=None,
+        metadata=_meta(
+            "kiro-cli Tokio worker threads",
+            "OPT-IN cap on kiro-cli's Tokio worker pool. When set, "
+            "TOKIO_WORKER_THREADS is pinned to this value in the agent spawn "
+            "environment; N > 0 pins the worker count, and 0/junk/unset means "
+            "no cap (no env change, the default). Inherited tree-wide, so an "
+            "opted-in value also caps any Tokio program the agent runs (a "
+            "user's own service/benchmark included). An operator-set "
+            "TOKIO_WORKER_THREADS in the environment overrides this. Not a "
+            "kernel ceiling -- an env var read by kiro-cli; the underlying "
+            "per-agent thread cost is fixed process-scoped inside kiro-cli.",
+            nullable=True,
+        ),
+    )
 
     @classmethod
     def from_raw(cls, section: object) -> "ResourceLimitsConfig":
@@ -6217,6 +6233,9 @@ class ResourceLimitsConfig:
                 section.get("max_total_processes"), "max_total_processes", lo=0
             ),
             xdist_auto_cap=_limit_int(section.get("xdist_auto_cap"), "xdist_auto_cap", lo=-1),
+            kiro_cli_worker_threads=_limit_int(
+                section.get("kiro_cli_worker_threads"), "kiro_cli_worker_threads", lo=1
+            ),
         )
 
 
