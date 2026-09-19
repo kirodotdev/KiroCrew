@@ -831,6 +831,45 @@ class TestUtf8Console:
         assert errors == []
 
 
+def _wire_mapping(buf: mmap.mmap, length: int) -> bool:
+    """Pin *buf*'s pages resident with ``mlock``; True when the kernel agreed.
+
+    Faulting a page in does not keep it in the resident set. Under memory
+    pressure macOS hands anonymous pages to its compressor the moment they
+    are touched, and a compressed page is not counted by
+    ``task_info().resident_size`` -- so on a loaded 3-shard runner a 128 MB
+    mapping that was written end to end read back as a 40 MB rise, and the
+    "rose while held" precondition below failed on a reading that was
+    exactly what ``ps -o rss=`` showed. Wired pages cannot be compressed or
+    evicted, which turns "how much of the mapping is resident" from the
+    kernel's discretion into a fixed quantity for the duration of the sample.
+
+    Best-effort by design: ``RLIMIT_MEMLOCK`` is unlimited on macOS but a few
+    megabytes on a stock Linux, where the call fails with ``ENOMEM`` and the
+    plain fault-in is enough because Linux does not compress anonymous pages.
+    Windows has no ``mlock``. Whatever happens, the mapping is still faulted
+    in by the caller; the return value only records which case ran so a
+    failing sample says so.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        mlock = libc.mlock
+    except (AttributeError, OSError):
+        return False
+    mlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    mlock.restype = ctypes.c_int
+    # ``from_buffer`` takes an export on the mapping; it must be dropped
+    # before ``buf.close()`` or the close raises BufferError.
+    view = ctypes.c_char.from_buffer(buf)
+    try:
+        addr = ctypes.addressof(view)
+    finally:
+        del view
+    return mlock(addr, length) == 0
+
+
 def _measure_rss_release():
     """Sample one real mapping's lifetime in the calling process."""
     chunk = 128 * 1024 * 1024
@@ -838,6 +877,7 @@ def _measure_rss_release():
     baseline = pc.proc_rss_bytes()
     buf = mmap.mmap(-1, chunk)
     try:
+        wired = _wire_mapping(buf, chunk)
         for offset in range(0, chunk, page):  # fault the pages in
             buf[offset] = 1
         while_held = pc.proc_rss_bytes()
@@ -852,6 +892,7 @@ def _measure_rss_release():
         "peak_while_held": peak_while_held,
         "after_free": after_free,
         "peak_after": peak_after,
+        "wired": wired,
     }
 
 
@@ -888,6 +929,16 @@ class TestResourceShims:
         RSS covers the whole process: unrelated allocations released by a prior
         test's threads or finalizers can cancel out this mapping's growth.
         A fresh interpreter removes that inherited state, not OS variability.
+
+        The mapping is also WIRED where the platform allows (``mlock``), because
+        faulting a page in does not keep it resident: under memory pressure the
+        macOS compressor takes touched anonymous pages straight out of the
+        resident set, and on a loaded 3-shard runner the 128 MB mapping read back
+        as a 40 MB rise -- a correct reading that failed the "rose while held"
+        precondition. Wired pages are the one thing the kernel cannot compress or
+        evict, so the rise is the mapping's size rather than the compressor's
+        mood. ``samples["wired"]`` records whether the lock took, so a failure
+        here says which case it measured.
         """
         import kiro_crew
 
