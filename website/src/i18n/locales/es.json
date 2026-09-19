@@ -9554,7 +9554,12 @@
       "your_artifacts": "Tus artefactos",
       "local_preview": "Local preview",
       "more_actions": "Más acciones",
-      "retry": "Reintentar"
+      "retry": "Reintentar",
+      "preview_read_network_error": "No se pudo leer este documento: la solicitud no llegó al servidor. Comprueba tu conexión y reinténtalo.",
+      "preview_read_server_error": "No se pudo leer este documento: el servidor devolvió un error.",
+      "preview_relative_path_body": "La ubicación de este documento se registró en relación con su proyecto original, así que no se puede abrir de forma segura desde aquí. Ábrelo desde la sesión que lo creó.",
+      "save_to_artifacts": "Guardar en los artefactos",
+      "saved_to_library_notice": "Se guardó “{{name}}” en tus artefactos."
     },
     "capabilitiesPage": {
       "agent_capabilities": "Capacidades del agente",

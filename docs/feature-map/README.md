@@ -207,7 +207,7 @@ It also verifies accepting and rejecting conflict proposals in each lineage.
 
 | Feature | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
-| Artifact library | Saved widgets, HTML and documents, versioned | `/artifacts` — rail **Artifacts** | `pages/ArtifactsPage.tsx` | `handlers/artifacts.py` | `GET,POST /api/artifacts`, `GET /api/artifact-folders`, `PATCH /api/artifacts/{slug}/folder` |
+| Artifact library | Saved widgets, HTML and documents, versioned; unsaved chat documents listed under "From your chats" open in a read-only preview, with the star to promote one into the library | `/artifacts` — rail **Artifacts** | `pages/ArtifactsPage.tsx`, `components/library/SessionDocPreview.tsx` | `handlers/artifacts.py`, `handlers/files.py` (preview read) | `GET,POST /api/artifacts`, `GET /api/artifact-folders`, `PATCH /api/artifacts/{slug}/folder`, `GET /api/file-read` (preview) |
 | Artifact detail | View, edit, version history, companion chat | `/artifacts/:slug` | `pages/ArtifactDetailPage.tsx` | `handlers/artifacts.py` | `GET,PATCH /api/artifacts/{slug}`, `GET /api/artifacts/{slug}/versions`, `GET /api/artifacts/{slug}/events` |
 | Artifact comments | Threaded, anchored comments on an artifact | Artifact detail → select text → comment | `pages/ArtifactDetailPage.tsx` | `handlers/artifacts.py` | `GET,POST /api/artifacts/{slug}/comments`, `PATCH,DELETE .../comments/{comment_id}` |
 | Remote artifacts | Provider-hosted docs browsed and commented in place | `/artifacts/remote/:provider/:externalId` | `pages/RemoteArtifactDetailPage.tsx` | `handlers/artifacts.py` | `GET /api/remote-artifacts/{provider}/browse`, `GET .../{external_id}`, `GET .../comments` |

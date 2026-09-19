@@ -3656,7 +3656,12 @@
       "this_folder_is_empty_drag_artifacts_onto_it_to_f": "This folder is empty. Drag artifacts onto it to file them here.",
       "untitled_artifact_name": "Untitled",
       "more_actions": "More actions",
-      "retry": "Retry"
+      "retry": "Retry",
+      "preview_read_network_error": "Couldn't read this document — the request didn't reach the server. Check your connection and retry.",
+      "preview_read_server_error": "Couldn't read this document — the server reported an error.",
+      "preview_relative_path_body": "This document's location was recorded relative to its original project, so it can't be opened safely from here. Open it from the session that created it.",
+      "save_to_artifacts": "Save to artifacts",
+      "saved_to_library_notice": "Saved “{{name}}” to your artifacts."
     },
     "capabilitiesPage": {
       "crews_label": "Agents",
