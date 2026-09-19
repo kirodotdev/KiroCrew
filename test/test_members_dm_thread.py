@@ -1868,3 +1868,399 @@ async def test_private_thread_conflict_names_its_actual_cause(tmp_path, monkeypa
         finished.set()
         if task is not None:
             await asyncio.wait_for(task, 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "running, fault",
+    [
+        (False, ""),
+        (True, ""),
+        (True, "linked"),
+        (True, "memory"),
+        (True, "assignment_missing"),
+        (True, "assignment_other"),
+        (True, "binding_missing"),
+        (True, "binding_other_slot"),
+        (True, "race_replaced"),
+        (True, "race_linked"),
+        (True, "race_agent"),
+        (True, "race_mode"),
+        (True, "race_memory"),
+    ],
+)
+async def test_reopen_bound_private_thread_preserves_active_turn(
+    tmp_path, monkeypatch, running, fault
+):
+    """Opening the same pinned DM must not interrupt or reassign its active turn."""
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+
+    patch_private_memory_supported(monkeypatch)
+    cfg = KiroCrewConfig.load()
+    cfg.agents[CREW] = KiroCrewAgentConfig(kiro_agent=CREW)
+    await asyncio.to_thread(provision_member_memory, cfg, CREW)
+    await asyncio.to_thread(cfg.save)
+    state = _make_state(tmp_path)
+    async with TestClient(TestServer(_make_members_app(state))) as client:
+        first = await client.post(f"/api/members/{CREW}/thread")
+        assert first.status == 200, await first.text()
+        opened = await first.json()
+        slot = state._slots[opened["slot_key"]]
+        session_key = f"dashboard:{slot.key}"
+        assigned = await asyncio.to_thread(read_private_session_store, session_key)
+        assert assigned == cfg.agents[CREW].memory_store
+        binding = await asyncio.to_thread(read_dm_binding, CREW)
+        release = asyncio.Event()
+        task = asyncio.create_task(release.wait()) if running else None
+        slot.task = task
+        if fault == "linked":
+            slot.linked_session_key = "dashboard:other-session"
+        elif fault == "memory":
+            slot.memory_store = "member-other"
+        loop = asyncio.get_running_loop()
+        raced = threading.Event()
+
+        def change_identity():
+            if fault == "race_replaced":
+                from kiro_crew.dashboard.state import _ChatSlot
+
+                state._slots[slot.key] = _ChatSlot(slot.key, agent=CREW, mode=DM_SLOT_MODE)
+            elif fault == "race_linked":
+                slot.linked_session_key = "dashboard:other-session"
+            elif fault == "race_agent":
+                slot.agent = OTHER
+            elif fault == "race_mode":
+                slot.mode = ""
+            elif fault == "race_memory":
+                slot.memory_store = "member-other"
+            raced.set()
+
+        def read_assignment(key):
+            if key == session_key:
+                if fault == "assignment_missing":
+                    return None
+                if fault == "assignment_other":
+                    return "member-other"
+                if fault.startswith("race_"):
+                    loop.call_soon_threadsafe(change_identity)
+                    assert raced.wait(timeout=5)
+            return read_private_session_store(key)
+
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.read_private_session_store", read_assignment
+        )
+        if fault in {"binding_missing", "binding_other_slot"}:
+            reported_binding = (
+                None if fault == "binding_missing" else dict(binding, slot_key="member-other")
+            )
+            monkeypatch.setattr("kiro_crew.members.read_dm_binding", lambda slug: reported_binding)
+        if running:
+            slot._memory_assignment_from_history = False
+        assignment_flag = slot._memory_assignment_from_history
+        pin = AsyncMock(side_effect=AssertionError("running thread was re-pinned"))
+        if running:
+            monkeypatch.setattr("kiro_crew.dashboard.handlers.members.pin_private_agent_store", pin)
+        try:
+            reopened = await client.post(f"/api/members/{CREW}/thread")
+            body = await reopened.json()
+            assert (state._slots[slot.key] is slot) is (fault != "race_replaced")
+            assert slot.task is task
+            assert slot.running is running
+            expected_store = "member-other" if fault in {"memory", "race_memory"} else assigned
+            assert slot.memory_store == expected_store
+            assert await asyncio.to_thread(read_dm_binding, CREW) == binding
+            assert await asyncio.to_thread(read_private_session_store, session_key) == assigned
+            if running:
+                pin.assert_not_awaited()
+                assert slot._memory_assignment_from_history == assignment_flag
+            if fault:
+                assert reopened.status == 409, body
+                assert body["code"] == "member_slot_conflict"
+                if fault.startswith("race_"):
+                    assert raced.is_set()
+            else:
+                assert reopened.status == 200, body
+                assert body == opened
+        finally:
+            release.set()
+            if task is not None:
+                await task
+            slot.task = None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "member_deleted",
+        "member_recreated",
+        "config_lock_order",
+        "store_rebound",
+        "store_missing",
+        "store_version",
+        "store_owner",
+        "store_shared",
+        "binding_missing",
+        "binding_member",
+        "binding_malformed",
+        "manifest_owner",
+        "manifest_missing",
+        "config_malformed",
+    ],
+)
+async def test_running_private_thread_refuses_ownership_changed_during_read(
+    tmp_path, monkeypatch, fault
+):
+    """A completed owner change must invalidate an in-flight, read-only reopen."""
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers import agents
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import memory_stores_root, provision_member_memory
+
+    patch_private_memory_supported(monkeypatch)
+    cfg = KiroCrewConfig.load()
+    cfg.agents[CREW] = KiroCrewAgentConfig(kiro_agent=CREW)
+    store = await asyncio.to_thread(provision_member_memory, cfg, CREW)
+    await asyncio.to_thread(cfg.save)
+    state = _make_state(tmp_path)
+    app = _make_members_app(state)
+    app.router.add_delete("/api/agents/{name}", agents.api_kirocrew_agent_delete)
+    monkeypatch.setattr(agents, "_refresh_session_defaults", AsyncMock())
+    async with TestClient(TestServer(app)) as client:
+        first = await client.post(f"/api/members/{CREW}/thread")
+        assert first.status == 200, await first.text()
+        slot = state._slots[(await first.json())["slot_key"]]
+        session_key = f"dashboard:{slot.key}"
+        entered = asyncio.Event()
+        resume = threading.Event()
+        release_turn = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        task = asyncio.create_task(release_turn.wait())
+        slot.task = task
+        slot._memory_assignment_from_history = False
+        reopen = None
+        config_lock = agents._get_config_lock()
+        config_requested = asyncio.Event()
+
+        def observed_config_lock():
+            config_requested.set()
+            assert not slot._lock.locked(), "reopen inverted config/slot lock order"
+            return config_lock
+
+        if fault == "config_lock_order":
+            monkeypatch.setattr(agents, "_get_config_lock", observed_config_lock)
+
+        def paused_read(key):
+            assigned = read_private_session_store(key)
+            if key == session_key:
+                loop.call_soon_threadsafe(entered.set)
+                assert resume.wait(timeout=5), "reopen read was not released"
+            return assigned
+
+        def change_ownership():
+            current = KiroCrewConfig.load()
+            if fault == "config_lock_order":
+                del current.agents[CREW]
+            elif fault == "store_rebound":
+                current.agents[CREW].memory_store = "default"
+            elif fault == "store_missing":
+                del current.memory_stores[store]
+            elif fault == "store_version":
+                current.memory_stores[store].memory_version = 1
+            elif fault == "store_owner":
+                current.memory_stores[store].owner_member = OTHER
+            elif fault == "store_shared":
+                current.agents[OTHER] = KiroCrewAgentConfig(memory_store=store)
+            elif fault == "binding_missing":
+                dm_binding_path(CREW).unlink()
+            elif fault == "binding_member":
+                path = dm_binding_path(CREW)
+                row = json.loads(path.read_text(encoding="utf-8"))
+                row["member"] = OTHER
+                path.write_text(json.dumps(row), encoding="utf-8")
+            elif fault == "binding_malformed":
+                dm_binding_path(CREW).write_text("{invalid", encoding="utf-8")
+            elif fault == "manifest_owner":
+                path = memory_stores_root() / store / "member-memory.json"
+                row = json.loads(path.read_text(encoding="utf-8"))
+                row["owner_member"] = OTHER
+                path.write_text(json.dumps(row), encoding="utf-8")
+            elif fault == "manifest_missing":
+                (memory_stores_root() / store / "member-memory.json").unlink()
+            elif fault == "config_malformed":
+                from kiro_crew.config.loader import config_path
+
+                config_path().write_text("{invalid", encoding="utf-8")
+                return
+            current.save()
+
+        monkeypatch.setattr("kiro_crew.member_memory_auth.read_private_session_store", paused_read)
+        pin = AsyncMock(side_effect=AssertionError("running thread was re-pinned"))
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.pin_private_agent_store", pin)
+        try:
+            reopen = asyncio.create_task(client.post(f"/api/members/{CREW}/thread"))
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            if fault in {"member_deleted", "member_recreated"}:
+                deleted = await asyncio.wait_for(client.delete(f"/api/agents/{CREW}"), timeout=5)
+                assert deleted.status == 200, await deleted.text()
+                current = await asyncio.to_thread(KiroCrewConfig.load)
+                assert CREW not in current.agents
+                if fault == "member_recreated":
+                    current.agents[CREW] = KiroCrewAgentConfig(kiro_agent=CREW)
+                    replacement = await asyncio.to_thread(provision_member_memory, current, CREW)
+                    assert replacement != store
+                    await asyncio.to_thread(current.save)
+            elif fault == "config_lock_order":
+                async with config_lock:
+                    resume.set()
+                    await asyncio.wait_for(config_requested.wait(), timeout=5)
+                    # A config writer must still be able to take the slot lock.
+                    await asyncio.wait_for(slot._lock.acquire(), timeout=5)
+                    try:
+                        await asyncio.to_thread(change_ownership)
+                    finally:
+                        slot._lock.release()
+            else:
+                await asyncio.to_thread(change_ownership)
+            binding_after_change = await asyncio.to_thread(read_dm_binding, CREW)
+            resume.set()
+            response = await asyncio.wait_for(reopen, timeout=5)
+            body = await response.json()
+            assert state._slots[slot.key] is slot
+            assert slot.task is task and slot.running
+            assert slot.agent == CREW and slot.mode == DM_SLOT_MODE
+            assert slot.memory_store == store
+            assert not slot._memory_assignment_from_history
+            pin.assert_not_awaited()
+            assert await asyncio.to_thread(read_private_session_store, session_key) == store
+            assert await asyncio.to_thread(read_dm_binding, CREW) == binding_after_change
+            assert response.status == 409, body
+            assert body["code"] == "member_slot_conflict"
+        finally:
+            resume.set()
+            release_turn.set()
+            if reopen is not None:
+                await asyncio.wait_for(asyncio.gather(reopen, return_exceptions=True), timeout=5)
+            await asyncio.wait_for(task, timeout=5)
+            slot.task = None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_running, final_running, fault",
+    [
+        (False, True, ""),
+        (False, True, "member_deleted"),
+        (False, True, "member_recreated"),
+        (False, True, "store_rebound"),
+        (False, False, ""),
+        (True, False, ""),
+    ],
+)
+async def test_private_thread_reopen_rechecks_running_after_slot_lock(
+    tmp_path, monkeypatch, initial_running, final_running, fault
+):
+    """A queued idle opener cannot reuse an unchecked running identity."""
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers import agents, members
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+
+    patch_private_memory_supported(monkeypatch)
+    cfg = KiroCrewConfig.load()
+    cfg.agents[CREW] = KiroCrewAgentConfig(kiro_agent=CREW)
+    store = await asyncio.to_thread(provision_member_memory, cfg, CREW)
+    await asyncio.to_thread(cfg.save)
+    state = _make_state(tmp_path)
+    app = _make_members_app(state)
+    app.router.add_delete("/api/agents/{name}", agents.api_kirocrew_agent_delete)
+    monkeypatch.setattr(agents, "_refresh_session_defaults", AsyncMock())
+    async with TestClient(TestServer(app)) as client:
+        first = await client.post(f"/api/members/{CREW}/thread")
+        assert first.status == 200, await first.text()
+        opened = await first.json()
+        slot = state._slots[opened["slot_key"]]
+        session_key = f"dashboard:{slot.key}"
+        waiting = asyncio.Event()
+        release_turn = asyncio.Event()
+
+        class ObservedLock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    waiting.set()
+                return await super().acquire()
+
+        monkeypatch.setattr(slot, "_lock", ObservedLock())
+        task = asyncio.create_task(release_turn.wait()) if initial_running else None
+        slot.task = task
+        slot._memory_assignment_from_history = False
+        pin = AsyncMock(wraps=members.pin_private_agent_store)
+        monkeypatch.setattr(members, "pin_private_agent_store", pin)
+        reopen = None
+        try:
+            async with slot._lock:
+                assert slot.running is initial_running
+                reopen = asyncio.create_task(client.post(f"/api/members/{CREW}/thread"))
+                await asyncio.wait_for(waiting.wait(), timeout=5)
+                assert not reopen.done(), "opener did not wait for the held slot lock"
+                if final_running:
+                    task = asyncio.create_task(release_turn.wait())
+                    slot.task = task
+                elif task is not None:
+                    release_turn.set()
+                    await asyncio.wait_for(task, timeout=5)
+                assert slot.running is final_running
+                if fault in {"member_deleted", "member_recreated"}:
+                    deleted = await asyncio.wait_for(
+                        client.delete(f"/api/agents/{CREW}"), timeout=5
+                    )
+                    assert deleted.status == 200, await deleted.text()
+                    current = await asyncio.to_thread(KiroCrewConfig.load)
+                    assert CREW not in current.agents
+                    if fault == "member_recreated":
+                        current.agents[CREW] = KiroCrewAgentConfig(kiro_agent=CREW)
+                        replacement = await asyncio.to_thread(
+                            provision_member_memory, current, CREW
+                        )
+                        assert replacement != store
+                        await asyncio.to_thread(current.save)
+                elif fault == "store_rebound":
+                    current = await asyncio.to_thread(KiroCrewConfig.load)
+                    current.agents[CREW].memory_store = "default"
+                    await asyncio.to_thread(current.save)
+                binding_after_change = await asyncio.to_thread(read_dm_binding, CREW)
+            response = await asyncio.wait_for(reopen, timeout=5)
+            body = await response.json()
+            assert state._slots[slot.key] is slot
+            assert slot.task is task and slot.running is final_running
+            assert slot.agent == CREW and slot.mode == DM_SLOT_MODE
+            assert slot.memory_store == store
+            assert await asyncio.to_thread(read_private_session_store, session_key) == store
+            assert await asyncio.to_thread(read_dm_binding, CREW) == binding_after_change
+            if initial_running or final_running:
+                pin.assert_not_awaited()
+                assert not slot._memory_assignment_from_history
+            else:
+                pin.assert_awaited_once()
+            if final_running:
+                assert response.status == 409, body
+                assert body["code"] == "member_slot_conflict"
+                assert not task.done() and not task.cancelled()
+            else:
+                assert response.status == 200, body
+                assert body == opened
+        finally:
+            release_turn.set()
+            if reopen is not None:
+                await asyncio.wait_for(asyncio.gather(reopen, return_exceptions=True), timeout=5)
+            if task is not None:
+                await asyncio.wait_for(task, timeout=5)
+            slot.task = None
