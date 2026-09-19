@@ -6250,6 +6250,8 @@
         "context_from": "Context from",
         "off_record_marker": "Side Chat · not saved to the conversation",
         "refresh_context": "Refresh context",
+        "send_to_main": "Send to main chat",
+        "send_to_main_tip": "Stage this in the main chat composer to act on it there",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "thinking": "Thinking…",

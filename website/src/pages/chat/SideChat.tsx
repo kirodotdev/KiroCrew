@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MessageCircleQuestionMark, RotateCcw } from 'lucide-react'
+import { MessageCircleQuestionMark, RotateCcw, CornerUpRight } from 'lucide-react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt } from '../../store/chatSlice'
+import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt, stageToMainComposer } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
@@ -116,6 +116,22 @@ export default function SideChat({ slot }: { slot: string }) {
   const lastMsg = messages[lastIdx]
   const isStreaming = reduxSide?.streaming ?? false
   const isStreamingLast = lastMsg?.role === 'assistant' && isStreaming
+
+  // The latest settled (non-streaming, non-error) assistant answer, or null.
+  // This is the moment a side answer — which the read-only side chat cannot act
+  // on — is ready to hand to the main chat. While the turn streams there is no
+  // settled answer to send.
+  const settledAnswer =
+    lastMsg?.role === 'assistant' && !lastMsg.is_error && !isStreamingLast
+      ? lastMsg.content.trim()
+      : ''
+
+  // Stage the settled answer in the main composer (append, never send). The
+  // main chat shares this slot, so the ChatPage effect merges it against the
+  // live draft; the user commits it there.
+  const sendToMain = useCallback(() => {
+    if (settledAnswer) dispatch(stageToMainComposer(settledAnswer))
+  }, [settledAnswer, dispatch])
 
   /** The side buffer carries only `user` / `assistant` plus an `is_error` flag, so the
    *  roles the shared transcript understands are derived here rather than stored. The last
@@ -690,6 +706,22 @@ export default function SideChat({ slot }: { slot: string }) {
             onCancel={qid => { if (!blockedQueueIds.has(qid)) cancelQueued.mutate({ queueId: qid, slot }) }}
             onEdit={(qid, content) => { if (!blockedQueueIds.has(qid)) editQueued.mutate({ queueId: qid, content, slot }) }}
           />
+        </div>
+      )}
+      {settledAnswer && (
+        <div className="shrink-0 px-2 pb-1">
+          {/* The read-only side chat can only PROPOSE; this hands the settled
+              answer to the main chat, where it can be acted on. */}
+          <button
+            type="button"
+            onClick={sendToMain}
+            title={i18nT('pages.chat.sideChat.send_to_main_tip')}
+            data-testid="side-chat-send-to-main"
+            className="flex items-center gap-1.5 text-[12px] font-medium text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1 py-0.5"
+          >
+            <CornerUpRight size={13} aria-hidden />
+            {i18nT('pages.chat.sideChat.send_to_main')}
+          </button>
         </div>
       )}
       {followUpOptions.length > 0 && (
