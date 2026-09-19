@@ -28,6 +28,8 @@ import json
 import logging
 import os
 import shutil
+import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -124,6 +126,10 @@ class AppearanceStore:
         self._root = Path(data_dir) / PACKS_DIRNAME
         #: id -> colour map, for packs the user has recoloured.
         self._colour_maps: dict[str, dict[str, str]] = {}
+        # Route writes run through ``asyncio.to_thread`` and can overlap. Keep
+        # each in-memory mutation, disk publish and possible rollback as one
+        # transaction so a failed older request cannot undo a newer success.
+        self._colour_lock = threading.RLock()
         #: The filename is a persisted artefact of the library it sits in, so it
         #: keeps its name: renaming it would leave every already-recoloured pack
         #: reading as un-recoloured, silently losing the user's colour choices.
@@ -142,7 +148,10 @@ class AppearanceStore:
             if self._colour_path.exists():
                 raw = json.loads(self._colour_path.read_text("utf-8"))
                 if isinstance(raw, dict):
-                    self._colour_maps = {k: v for k, v in raw.items() if isinstance(v, dict)}
+                    with self._colour_lock:
+                        self._colour_maps = {
+                            k: v for k, v in raw.items() if isinstance(v, dict)
+                        }
         except (OSError, ValueError) as exc:
             # A corrupt colour file costs the user their recolouring, not their art,
             # so carrying on with defaults beats refusing to start.
@@ -346,7 +355,8 @@ class AppearanceStore:
         does next.
         """
         ident = _safe_id(pack_id)
-        return dict(self._colour_maps.get(ident or "", {}))
+        with self._colour_lock:
+            return dict(self._colour_maps.get(ident or "", {}))
 
     # ── writes ──────────────────────────────────────────────────────────────
 
@@ -360,19 +370,20 @@ class AppearanceStore:
         clean = {
             str(k): str(v) for k, v in colours.items() if isinstance(k, str) and isinstance(v, str)
         }
-        prev = self._colour_maps.get(ident)
-        self._colour_maps[ident] = clean
-        try:
-            self._save_colours()
-        except OSError:
-            # Roll back so memory matches disk — otherwise the UI shows the
-            # new colour until a restart silently reverts it. Re-raise so the
-            # route answers 503 instead of pretending the save landed.
-            if prev is None:
-                self._colour_maps.pop(ident, None)
-            else:
-                self._colour_maps[ident] = prev
-            raise
+        with self._colour_lock:
+            prev = self._colour_maps.get(ident)
+            self._colour_maps[ident] = clean
+            try:
+                self._save_colours()
+            except OSError:
+                # Roll back so memory matches disk — otherwise the UI shows the
+                # new colour until a restart silently reverts it. Re-raise so the
+                # route answers 503 instead of pretending the save landed.
+                if prev is None:
+                    self._colour_maps.pop(ident, None)
+                else:
+                    self._colour_maps[ident] = prev
+                raise
         return True
 
     def delete_pack(self, pack_id: str) -> bool:
@@ -403,14 +414,15 @@ class AppearanceStore:
         except OSError as exc:
             logger.warning("appearance-packs: pack delete failed: %s", exc)
             return False
-        self._colour_maps.pop(ident, None)
-        try:
-            self._save_colours()
-        except OSError as exc:
-            # The pack itself is already gone — a stale colour entry for a
-            # nonexistent pack is harmless and gets rewritten on the next
-            # successful save, so the delete still reports success.
-            logger.warning("appearance-packs: colour map write failed: %s", exc)
+        with self._colour_lock:
+            self._colour_maps.pop(ident, None)
+            try:
+                self._save_colours()
+            except OSError as exc:
+                # The pack itself is already gone — a stale colour entry for a
+                # nonexistent pack is harmless and gets rewritten on the next
+                # successful save, so the delete still reports success.
+                logger.warning("appearance-packs: colour map write failed: %s", exc)
         return True
 
     def save_pack(self, pack_id: str, manifest: Any, files: Any) -> bool:
@@ -463,7 +475,13 @@ class AppearanceStore:
                 manifest = {**manifest, "sounds": kept_states}
                 files = {**{n: c for n, c in kept_files.items() if n not in files}, **files}
 
-        staging = self._root / f".tmp-{ident}-{os.getpid()}"
+        # Crew Companion offloads each request independently, so two saves can
+        # run in this process at once.  A PID-only name makes them share one
+        # directory and can publish one request's manifest with the other's art.
+        # Give every save its own transaction paths; the ``.old.`` spelling is
+        # retained so startup recovery still recognizes interrupted overwrites.
+        transaction = f"{os.getpid()}-{uuid.uuid4().hex}"
+        staging = self._root / f".tmp-{ident}-{transaction}"
         target = self._root / ident
         # Serialize and size-check the manifest BEFORE creating staging or
         # touching the target. Every pack file below is capped at
@@ -529,7 +547,7 @@ class AppearanceStore:
             # trade worth the two extra lines this avoids.
             backup: Path | None = None
             if target.exists():
-                backup = target.with_name(f"{target.name}.old.{os.getpid()}")
+                backup = target.with_name(f"{target.name}.old.{transaction}")
                 if backup.exists():
                     shutil.rmtree(backup, ignore_errors=True)
                 os.replace(target, backup)
@@ -729,7 +747,7 @@ class AppearanceStore:
             description="The default companion.",
             type="builtin",
             format="svg",
-            recoloured=bool(self._colour_maps.get(DEFAULT_PACK)),
+            recoloured=bool(self.colour_map(DEFAULT_PACK)),
         )
 
     def _read_manifest(self, pack_dir: Path) -> dict[str, Any] | None:
@@ -771,7 +789,7 @@ class AppearanceStore:
             description=str(meta.get("description") or ""),
             type="custom",
             format=fmt if fmt in FORMATS else "svg",
-            recoloured=bool(self._colour_maps.get(ident)),
+            recoloured=bool(self.colour_map(ident)),
         )
 
     def _read_pack_file(self, pack_dir: Path, filename: Any) -> str | None:
@@ -809,14 +827,21 @@ class AppearanceStore:
         wrapper maps the raised OSError to 503 store_write_failed (same
         contract as the reminder store).
         """
-        tmp = self._colour_path.with_suffix(f".json.tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(self._colour_maps, indent=2), "utf-8")
-        # chmod_safe, not os.chmod: docs/system-specs/common/platform-compat.md
-        # mandates the
-        # platform_compat shim, which is a no-op where POSIX modes mean
-        # nothing (Windows) instead of raising or silently misleading.
-        chmod_safe(tmp, 0o600)
-        os.replace(tmp, self._colour_path)
+        transaction = f"{os.getpid()}-{uuid.uuid4().hex}"
+        tmp = self._colour_path.with_suffix(f".json.tmp.{transaction}")
+        try:
+            tmp.write_text(json.dumps(self._colour_maps, indent=2), "utf-8")
+            # chmod_safe, not os.chmod: docs/system-specs/common/platform-compat.md
+            # mandates the platform_compat shim, which is a no-op where POSIX
+            # modes mean nothing (Windows) instead of raising or silently
+            # misleading.
+            chmod_safe(tmp, 0o600)
+            os.replace(tmp, self._colour_path)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _safe_filename(raw: Any) -> str | None:

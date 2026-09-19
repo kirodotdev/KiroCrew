@@ -9,6 +9,8 @@ anything without taking the companion down with it.
 from __future__ import annotations
 
 import json
+import os
+import threading
 
 import pytest
 
@@ -298,3 +300,111 @@ class TestColours:
         monkeypatch.setattr(AppearanceStore, "_save_colours", boom)
         assert store.delete_pack("dog") is True
         assert all(p["id"] != "dog" for p in store.list_packs())
+
+    def test_concurrent_recolours_do_not_share_staging_or_rollback_the_winner(
+        self, tmp_path, monkeypatch
+    ):
+        """One request's failed publish must not erase another's committed state."""
+        store = AppearanceStore(tmp_path)
+        store.load()
+        start = threading.Barrier(3)
+        staging_paths = []
+        paths_lock = threading.Lock()
+        original_replace = os.replace
+        outcomes = {}
+
+        def controlled_replace(src, dst, *args, **kwargs):
+            if ".json.tmp." in str(src):
+                with paths_lock:
+                    staging_paths.append(str(src))
+            return original_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, "replace", controlled_replace)
+
+        def recolour_a():
+            start.wait()
+            outcomes["a"] = store.set_colour_map(DEFAULT_PACK, {"#fff": "#aaa"})
+
+        def recolour_b():
+            start.wait()
+            outcomes["b"] = store.set_colour_map(DEFAULT_PACK, {"#fff": "#bbb"})
+
+        a = threading.Thread(target=recolour_a, name="colour-a")
+        b = threading.Thread(target=recolour_b, name="colour-b")
+        a.start()
+        b.start()
+        start.wait()
+        a.join(10)
+        b.join(10)
+        assert not a.is_alive() and not b.is_alive()
+
+        assert outcomes == {"a": True, "b": True}
+        assert len(staging_paths) == 2
+        assert len(set(staging_paths)) == 2, "each transaction owns its staging path"
+        persisted = json.loads((tmp_path / "crew-companion-colours.json").read_text("utf-8"))
+        assert store.colour_map(DEFAULT_PACK) == persisted[DEFAULT_PACK]
+
+
+def test_concurrent_saves_publish_one_complete_pack(tmp_path, monkeypatch):
+    """Crew Companion offloads every save independently, so two requests can
+    reach one store on different worker threads.  A published revision must be
+    wholly A or wholly B, never one request's manifest with the other's art."""
+    store = AppearanceStore(tmp_path)
+    store.load()
+    manifest_a_written = threading.Event()
+    b_at_publish = threading.Event()
+    release_b = threading.Event()
+    original_write_text = type(tmp_path).write_text
+    original_replace = os.replace
+
+    def controlled_write_text(path, data, *args, **kwargs):
+        result = original_write_text(path, data, *args, **kwargs)
+        if path.name == "manifest.json" and '"name": "A"' in data:
+            manifest_a_written.set()
+            assert b_at_publish.wait(5)
+        return result
+
+    def controlled_replace(src, dst, *args, **kwargs):
+        if threading.current_thread().name == "save-b" and type(tmp_path)(src).name.startswith(
+            ".tmp-demo-"
+        ):
+            b_at_publish.set()
+            assert release_b.wait(5)
+        return original_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(type(tmp_path), "write_text", controlled_write_text)
+    monkeypatch.setattr(os, "replace", controlled_replace)
+    results = {}
+
+    def save_a():
+        results["a"] = store.save_pack(
+            "demo",
+            {"meta": {"name": "A"}, "states": {"idle": "idle.svg"}},
+            {"idle.svg": "ART-A"},
+        )
+        release_b.set()
+
+    def save_b():
+        assert manifest_a_written.wait(5)
+        results["b"] = store.save_pack(
+            "demo",
+            {"meta": {"name": "B"}, "states": {"idle": "idle.svg"}},
+            {"idle.svg": "ART-B"},
+        )
+
+    a = threading.Thread(target=save_a, name="save-a")
+    b = threading.Thread(target=save_b, name="save-b")
+    a.start()
+    b.start()
+    a.join(10)
+    b.join(10)
+    assert not a.is_alive() and not b.is_alive()
+
+    target = tmp_path / "appearances" / "demo"
+    manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+    art = (target / "idle.svg").read_text(encoding="utf-8")
+    assert (manifest["meta"]["name"], art) in {("A", "ART-A"), ("B", "ART-B")}
+    # Windows cannot atomically replace one populated directory with another,
+    # so the request that loses the publish race may truthfully report failure.
+    # The durable winner still has to be one complete request snapshot.
+    assert results["a"] or results["b"]
