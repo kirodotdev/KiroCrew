@@ -5181,6 +5181,13 @@ class TestKillProcessTreePinned:
 
     HANDLE = 4242
 
+    @pytest.fixture(autouse=True)
+    def _isolate_pending_registry(self, monkeypatch):
+        # kill_process_tree_pinned now transfers the pinned root into the
+        # process-owned pending registry. Give each case its own so no fake
+        # pending state leaks between tests or into an unrelated one.
+        monkeypatch.setattr(pc, "_PENDING_WINDOWS_TREE_CLEANUPS", {})
+
     def _wire(self, monkeypatch, *, handle=HANDLE, identity=(4321, 777, None)):
         """Patch the seams; return (opened, closed, killed) recorders."""
         opened: list[int] = []
@@ -5200,14 +5207,19 @@ class TestKillProcessTreePinned:
         def _close(h):
             closed.append(h)
 
-        def _kill(pid, sig):
-            killed.append((pid, sig))
+        def _kill(handle_arg):
+            # terminate_windows_process_tree_owned OWNS the handle it is given:
+            # on success it closes it once, on refusal it retains it. Model both
+            # against the same handle production passed, so the closure/retention
+            # assertions still observe close_process_handle.
+            killed.append((handle_arg, pc.SIGTERM))
+            _close(handle_arg)
             return True
 
-        monkeypatch.setattr(pc, "_open_process_query_handle", _open)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", _open)
         monkeypatch.setattr(pc, "_windows_process_handle_identity", _identity)
-        monkeypatch.setattr(pc, "_close_process_handle", _close)
-        monkeypatch.setattr(pc, "kill_process_tree", _kill)
+        monkeypatch.setattr(pc, "close_process_handle", _close)
+        monkeypatch.setattr(pc, "terminate_windows_process_tree_owned", _kill)
         return opened, closed, killed
 
     def test_a_matching_identity_kills_and_then_releases_the_handle(self, monkeypatch):
@@ -5216,7 +5228,7 @@ class TestKillProcessTreePinned:
         assert pc.kill_process_tree_pinned(4321, "777", pc.SIGTERM) is True
 
         assert opened == [4321]
-        assert killed == [(4321, pc.SIGTERM)]
+        assert killed == [(self.HANDLE, pc.SIGTERM)]
         assert closed == [self.HANDLE]
 
     def test_a_mismatched_identity_never_invokes_the_kill(self, monkeypatch):
@@ -5265,17 +5277,20 @@ class TestKillProcessTreePinned:
         seen_closed_during_kill: list[list[int]] = []
 
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda pid: self.HANDLE)
         monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda h: (4321, 777, None))
-        monkeypatch.setattr(pc, "_close_process_handle", closed.append)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
 
-        def _gated_kill(pid, sig):
+        def _gated_kill(handle):
+            assert handle == self.HANDLE
             seen_closed_during_kill.append(list(closed))
             entered.set()
             assert release.wait(10), "the gate was never released"
+            # The owned drain OWNS the handle and closes it once, on return.
+            closed.append(handle)
             return True
 
-        monkeypatch.setattr(pc, "kill_process_tree", _gated_kill)
+        monkeypatch.setattr(pc, "terminate_windows_process_tree_owned", _gated_kill)
 
         result: list[bool] = []
         worker = threading.Thread(
@@ -5297,27 +5312,45 @@ class TestKillProcessTreePinned:
         assert result == [True]
         assert closed == [self.HANDLE], "released once the kill returned"
 
-    def test_the_handle_is_released_when_the_kill_raises(self, monkeypatch):
-        """A failing terminate must not leak the handle.
+    def test_the_handle_is_retained_for_retry_when_the_kill_raises(self, monkeypatch):
+        """A failing drain must RETAIN the pinned handle, not leak or drop it.
 
-        A leaked handle keeps the pid reserved for the life of the gateway, so
-        the failure mode is a slow resource leak rather than a loud one.
+        Under the owned model the pinned root is transferred into the process
+        pending registry; a raised drain leaves it there with its handle open so
+        the incarnation stays pinned and the next maintenance tick can finish it.
+        Closing on the raise would unpin the pid mid-failure — the very reuse
+        window this change closes — so the contract is deliberate retention, and
+        a later successful drain is what releases the handle, exactly once.
         """
         closed: list[int] = []
+        first = [True]
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
-        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda h: (4321, 777, None))
-        monkeypatch.setattr(pc, "_close_process_handle", closed.append)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            lambda h: (4321, 777, None if first[0] else 888),
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
 
-        def _raising_kill(pid, sig):
-            raise ProcessLookupError("gone between the pin and the signal")
+        def _descendants(pid, retained, root_handle):
+            if first[0]:
+                raise ProcessLookupError("gone between the pin and the signal")
+            return {}
 
-        monkeypatch.setattr(pc, "kill_process_tree", _raising_kill)
+        monkeypatch.setattr(pc, "descendant_termination_handles", _descendants)
 
+        # First attempt: the drain raises, so the handle is RETAINED, not closed.
         with pytest.raises(ProcessLookupError):
             pc.kill_process_tree_pinned(4321, "777")
+        assert closed == [], "a failed drain must not close (unpin) the handle"
+        assert len(pc._PENDING_WINDOWS_TREE_CLEANUPS) == 1
 
+        # A later maintenance retry completes and releases the handle exactly once.
+        first[0] = False
+        assert pc.retry_pending_windows_process_trees() == (4321,)
         assert closed == [self.HANDLE]
+        assert pc._PENDING_WINDOWS_TREE_CLEANUPS == {}
 
     def test_posix_delegates_straight_through(self, monkeypatch):
         """POSIX is unchanged: no handle exists to hold, so none is sought.
@@ -5356,9 +5389,11 @@ class TestKillProcessTreePinned:
         monkeypatch.setattr(pc.sys, "platform", "win32")
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda pid: self.HANDLE)
         monkeypatch.setattr(pc, "_close_process_handle", lambda h: None)
+        monkeypatch.setattr(pc, "close_process_handle", lambda h: None)
         monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda h: (4321, 777, 888))
-        monkeypatch.setattr(pc, "kill_process_tree", lambda pid, sig: True)
+        monkeypatch.setattr(pc, "terminate_windows_process_tree_owned", lambda handle: True)
 
         recorded = pc.process_start_time(4321)
 

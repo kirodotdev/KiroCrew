@@ -217,6 +217,54 @@ before it was ever observed/pinned remains unverifiable; a single numeric snapsh
 is not enough to recover that chain. The deterministic and self-owned native
 regressions are in `test/test_platform_compat.py`, `TestProcessDescendants`.
 
+## Windows session-tree teardown
+
+ACP runtime and direct-client teardown retain the original asyncio process
+object and drain it through `terminate_windows_asyncio_tree`. The Windows
+`kill_process_tree_pinned` path uses the same `terminate_windows_process_tree_owned`
+operation after confirming the recorded creation identity. Neither path relies
+on a still-running root PID or a successful `taskkill` return code.
+
+The bounded worker discovers descendants through exact handles, terminates each
+verified object and scans each parent again after confirmed exit. A successful
+pass closes every acquired handle. A failed pass from an owning caller transfers
+the original root and every already observed intermediary handle into
+process-local pending state keyed by the exact root incarnation; it retains no
+provider or client object. Repeated transfers deduplicate and close only the
+redundant root handle. The existing off-loop
+`session_pid.cleanup_orphaned_session_roots` maintenance entry advances a finite,
+fair snapshot of that state before its ordinary PID-file orphan scan; a tree
+already draining on another caller is skipped with a non-blocking lock and
+rotated behind its peers, so one busy entry cannot hold up the sweep (caller-
+initiated cleanup keeps its blocking serialization). A denied
+tree remains retained and visible and moves behind its peers; only an
+exact-handle-verified complete drain retires the state. On completion, a
+synchronous maintenance callback retires the session layer's PID-file records
+and protected-PID shield WHILE the state lock is held and the exact root handle
+still pins the incarnation, BEFORE any handle is closed — so a recycled pid
+cannot register fresh tracking between the close and the untrack. The handles are
+closed only after that callback succeeds; a transient callback/write failure
+leaves the state un-retired with its handles open, so its receipt survives for
+the next tick rather than being lost, and an in-flight duplicate owner that has
+already completed the same state contributes no second retirement. This is
+same-process retry continuity, not crash recovery: the
+maintenance path never reconstructs a missing original handle or gains cleanup
+authority from a PID, a PID-file entry, or a successful `TerminateProcess`
+return. Phase-one periodic PID identification remains non-destructive.
+
+Caller cancellation is delivered after its current cleanup attempt settles.
+Unknown identity/ancestry, denied access or a non-draining tree is a failure, not
+an empty tree; ACP retains the original process and PID tracking when the owning
+call does not complete, while the transferred exact handles remain independently
+retryable after provider/client references are dropped.
+
+This does not reconstruct an intermediary that exited before any available
+handle observed it. Such incomplete ancestry remains a refusal, not permission
+to signal numeric PIDs. POSIX teardown and Windows resource Job limits are
+unchanged. Native small-process regressions live in
+`test/test_runtime_cleanup_windows.py`; deterministic timing/error contracts
+live in `test/test_windows_tree_reap.py`.
+
 ## Pod lifetime Job primitives
 
 `pod._windows_job.PodJob` owns pod-specific named Windows Job handles. Creation

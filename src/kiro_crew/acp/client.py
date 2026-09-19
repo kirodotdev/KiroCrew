@@ -7938,6 +7938,11 @@ class AcpClient:
         Args:
             force: If True, kill immediately (used during shutdown).
         """
+        if self._process and platform_compat.IS_WINDOWS:
+            self._windows_tree_cleanup_failed = True
+            await platform_compat.terminate_windows_asyncio_tree(self._process)
+            self._windows_tree_cleanup_failed = False
+            return
         if not self._process or self._process.returncode is not None:
             return
         pid = self._pid
@@ -8169,6 +8174,11 @@ class AcpClient:
 
     def _reset_state(self) -> None:
         """Reset all session state (call after process is dead)."""
+        if getattr(self, "_windows_tree_cleanup_failed", False) is True:
+            logger.warning(
+                "Retaining Windows client PID %s after incomplete tree cleanup", self._pid
+            )
+            return
         if self._process:
             for pipe in (self._process.stdin, self._process.stdout, self._process.stderr):
                 if pipe:
@@ -8745,6 +8755,16 @@ class AcpClient:
         Re-creating the directory later could not repair a live child anyway:
         a process's cwd is bound to the inode, not the path.
         """
+        if (
+            platform_compat.IS_WINDOWS
+            and self._process
+            and (
+                self._process.returncode is not None
+                or getattr(self, "_windows_tree_cleanup_failed", False) is True
+            )
+        ):
+            await self._kill_process(force=True)
+            self._reset_state()
         if not self._work_dir_ready:
             await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
             self._work_dir_ready = True

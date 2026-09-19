@@ -2041,6 +2041,9 @@ def _neuter_kill_side_effects(monkeypatch, proc):
 
     proc.wait = AsyncMock(return_value=0)
     monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rt_mod.platform_compat, "terminate_windows_asyncio_tree", AsyncMock(return_value=True)
+    )
     monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
     monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: None)
     monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: None)
@@ -5383,6 +5386,10 @@ class TestAcpRuntimePidTracking:
         # workers 4242 was intermittently a REAL live process -- kill() then took
         # the survivor branch and this asserted `[] == [4242]`.
         monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
+        monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a: None)
+        monkeypatch.setattr(
+            rt_mod.platform_compat, "terminate_windows_asyncio_tree", AsyncMock(return_value=True)
+        )
 
         await rt.kill()
 
@@ -5407,8 +5414,19 @@ class TestAcpRuntimePidTracking:
         monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: calls["pid"].append(p))
         monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: calls["session"].append(p))
         monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: True)
+        monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a: None)
+        monkeypatch.setattr(
+            rt_mod.platform_compat,
+            "terminate_windows_asyncio_tree",
+            AsyncMock(side_effect=OSError("fixture tree still alive")),
+        )
 
-        await rt.kill()
+        if rt_mod.platform_compat.IS_WINDOWS:
+            with pytest.raises(OSError, match="fixture tree still alive"):
+                await rt.kill()
+            assert rt._process is proc
+        else:
+            await rt.kill()
 
         assert calls["pid"] == []
         assert calls["session"] == []
