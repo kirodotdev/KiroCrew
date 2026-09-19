@@ -7830,6 +7830,49 @@ class GatewayOrchestrator:
                         "loop": loop_payload,
                     },
                 )
+                # Best-effort per-member event log: a member's DM-slot patrol
+                # started or stopped. Additive; never affects the broadcast.
+                # emit fsyncs, so offload it: this observer runs on the gateway
+                # loop and a synchronous durability barrier would stall every
+                # concurrent session. Fire-and-forget on the loop's executor.
+                try:
+                    import asyncio as _asyncio
+
+                    from kiro_crew import eventlog_hooks
+                    from kiro_crew.eventlog.types import PATROL_STARTED, PATROL_STOPPED
+
+                    _pslug = eventlog_hooks.member_slug_for_slot(loop.slot_key)
+                    _etype2: str | None = None
+                    _edata: dict = {}
+                    if event == "added":
+                        _etype2, _edata = PATROL_STARTED, {"slot_key": loop.slot_key}
+                    elif event in ("removed", "expired"):
+                        _reason = getattr(loop, "stopped_reason", None) or event
+                        _etype2, _edata = (
+                            PATROL_STOPPED,
+                            {"slot_key": loop.slot_key, "reason": _reason},
+                        )
+                    if _pslug is not None and _etype2 is not None:
+                        _pslug_s: str = _pslug
+                        _etype_s: str = _etype2
+
+                        def _emit_patrol(
+                            slug: str = _pslug_s, etype: str = _etype_s, data: dict = _edata
+                        ) -> None:
+                            try:
+                                eventlog_hooks.emit(slug, None, etype, data)
+                            except Exception:
+                                logger.debug("patrol event-log emit failed", exc_info=True)
+
+                        try:
+                            _loop = _asyncio.get_running_loop()
+                            _loop.run_in_executor(None, _emit_patrol)
+                        except RuntimeError:
+                            # No running loop (not the serving thread): safe to
+                            # run inline -- the fsync stalls only this caller.
+                            _emit_patrol()
+                except Exception:
+                    logger.debug("patrol event-log hook failed", exc_info=True)
 
         self.autonudge_svc = AutoNudgeService(
             base_dir=data_home(),
@@ -13374,6 +13417,36 @@ class GatewayOrchestrator:
         # early-returns so persisted loops are harmless until a dashboard
         # process takes over.
         await self._init_autonudge()
+
+        # Per-member event-log startup reconcile. Runs AFTER AutoNudge is
+        # constructed (it consults live loops to decide patrol closers) and
+        # after slot restoration: member slots are rehydrated lazily on demand
+        # rather than eagerly at boot, so ``state._slots`` here holds whatever
+        # the dashboard restored, and any driving.open slot not present is
+        # closed as interrupted. Off-loop (ensure/append are synchronous file
+        # IO) and best-effort — the helper swallows its own failures so a
+        # logging fault never blocks boot.
+        if self.dashboard_state is not None:
+            from kiro_crew import eventlog_hooks
+
+            async def _reconcile_members() -> None:
+                # Off-loop (ensure/append are synchronous file IO, and first-boot
+                # migration fsyncs per record) and best-effort. Run as a background
+                # task rather than an awaited boot step: it must not delay Slack
+                # availability or socket connect, and it is idempotent on reboot.
+                try:
+                    await asyncio.to_thread(
+                        eventlog_hooks.reconcile_members_at_startup,
+                        self._cfg,
+                        self.dashboard_state,
+                        self.autonudge_svc,
+                    )
+                except Exception:
+                    logger.debug("member event-log startup reconcile failed", exc_info=True)
+
+            # Retain a strong reference: a bare create_task is only weakly held,
+            # so the loop could garbage-collect it mid-run.
+            self._member_reconcile_task = asyncio.create_task(_reconcile_members())
 
         # Wire up event routing and interactive handlers
         init_interactions(self)

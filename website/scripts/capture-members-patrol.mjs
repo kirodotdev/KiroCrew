@@ -65,6 +65,7 @@ const MEMBERS = [
   member('ledger', { last_active_ts: NOW - 900, last_message: 'Work ledger reconciled, no drift.' }),
   member('scout', { last_active_ts: NOW - 4 * 3600, last_message: 'Queue scan finished, nothing new.' }),
   member('scribe', { last_active_ts: NOW - 26 * 3600, last_message: 'Release notes drafted.' }),
+  member('signal', { last_active_ts: NOW - 30, last_message: 'Interrupted by a restart mid-patrol.' }),
   member('fixer', { last_active_ts: NOW - 2 * 86400, last_message: 'Two PRs opened for the queue.' }),
 ]
 const loopRecord = (slug, extra) => ({
@@ -95,7 +96,11 @@ const SCRIBE = loopRecord('scribe', {
   message: 'Draft release notes for every merged PR.', active: false,
   idle_secs: 3600, cycle_count: 7, last_fire_ts: NOW - 26 * 3600, next_due_ts: 0, stopped_reason: 'approval_stalled',
 })
-const BASELINE = [RADAR, LEDGER, SCOUT, SCRIBE]
+const SIGNAL = loopRecord('signal', {
+  message: 'Watch the release train and wake on a red build.', active: false,
+  idle_secs: 30, cycle_count: 2, last_fire_ts: NOW - 120, next_due_ts: 0, stopped_reason: 'interrupted',
+})
+const BASELINE = [RADAR, LEDGER, SCOUT, SCRIBE, SIGNAL]
 
 // Mutable registry: the recordings flip it between frames; `mode` lets the
 // two evidence frames make the read hang or fail.
@@ -178,7 +183,14 @@ async function openMembers(theme, { record = false } = {}) {
     if (!wsServer) throw new Error('the page never opened /api/ws')
     wsServer.send(JSON.stringify({ type: 'autonudge_state', data: { event, slot: loop.slot_key, loop } }))
   }
-  return { page, context, pushLoop }
+  /** Push one `member_projection` frame (gateway envelope) — a contributor's
+   *  published view plus its render schema, exactly as the eventlog WS route
+   *  emits it. Used to render the contributed-view card client-side. */
+  const pushProjection = async (slug, key, value, seq, schema) => {
+    if (!wsServer) throw new Error('the page never opened /api/ws')
+    wsServer.send(JSON.stringify({ type: 'member_projection', data: { slug, key, value, seq, schema } }))
+  }
+  return { page, context, pushLoop, pushProjection }
 }
 
 /** Exactly the badges the registry implies: one accent badge per ACTIVE loop
@@ -198,9 +210,9 @@ async function expectBadges(page, want) {
 
 async function openDrawerFor(page, name, expectedState) {
   await page.getByText(name, { exact: true }).first().click()
-  const drawer = page.locator('[data-testid="member-drawer"]')
+  const drawer = page.locator('[data-testid="member-side-panel"]')
   if (!(await drawer.isVisible().catch(() => false))) {
-    await page.locator('[data-testid="member-drawer-toggle"]').click()
+    await page.locator('[data-testid="member-panel-toggle"]').click()
   }
   await drawer.waitFor({ state: 'visible', timeout: 15000 })
   await expectState(page, expectedState)
@@ -222,7 +234,7 @@ async function expectState(page, expectedState) {
 }
 
 // ── Still frames ─────────────────────────────────────────────────────────────
-const { page: dark, context: darkCtx } = await openMembers('dark')
+const { page: dark, context: darkCtx, pushProjection: darkPushProjection } = await openMembers('dark')
 await openDrawerFor(dark, 'radar', 'active')
 await dark.locator('[data-testid="member-wake-patrol"]').waitFor({ timeout: 15000 })
 await dark.screenshot({ path: `${OUT}/01-active-dark.png` })
@@ -248,9 +260,105 @@ await openDrawerFor(dark, 'scribe', 'stopped')
 await dark.screenshot({ path: `${OUT}/05-stalled-dark.png` })
 console.log('05-stalled-dark: scribe stopped, approval went unanswered')
 
+await openDrawerFor(dark, 'signal', 'stopped')
+await dark.screenshot({ path: `${OUT}/05b-interrupted-dark.png` })
+console.log('05b-interrupted-dark: signal stopped, interrupted by a restart — reads "Interrupted by a restart.", not a raw token')
+
 await openDrawerFor(dark, 'fixer', 'none')
 await dark.screenshot({ path: `${OUT}/06-none-dark.png` })
 console.log('06-none-dark: fixer has no patrol scheduled')
+
+// ── Projection-armed patrol ("Patrolling") ───────────────────────────────────
+// A wake projection can report a patrol as armed before any loop record lands
+// (patrol: 'armed', no autonudge loop). The drawer renders the accent
+// "Patrolling" verdict and lists the patrol as a wake source without an
+// "Every N" interval it does not yet have — rather than a lit icon over
+// "No patrol scheduled."
+await darkPushProjection(
+  'fixer',
+  'wake',
+  { patrol: 'armed', slot_key: 'fixer#dm', since: NOW - 20 },
+  1,
+)
+await dark.locator('[data-testid="member-wake-patrol"]').waitFor({ timeout: 15000 })
+await dark.screenshot({ path: `${OUT}/06b-armed-dark.png` })
+console.log('06b-armed-dark: projection-armed patrol reads "Patrolling", listed as a wake source with no interval')
+
+// ── Contributed-view card (contribution protocol §5/§7) ──────────────────────
+// A contributor app publishes a folded view plus a render schema; the drawer
+// draws it from the schema alone (no contributor JS runs). Mirrors what
+// test/contrib_protocol_demo.py produces. First a populated keyvalue card,
+// then the empty-body state.
+await darkPushProjection(
+  'fixer',
+  'demo/count',
+  { pings: { last: 'iad-prod-01', total: 42 } },
+  1,
+  { kind: 'keyvalue', title: 'Demo contributor', path: ['pings.last', 'pings.total'] },
+)
+await dark.locator('[data-testid="contributed-card-demo/count"]').waitFor({ timeout: 15000 })
+await dark.screenshot({ path: `${OUT}/07-contributed-card-dark.png` })
+console.log('07-contributed-card-dark: a published keyvalue card (title + app pill + body)')
+
+// Empty body: the app declared a list view but has published nothing in it
+// yet. A list/table with zero rows is the card's genuine empty state (a
+// keyvalue schema with a fixed path always renders its rows, so it is not the
+// empty path).
+await darkPushProjection(
+  'fixer',
+  'demo/tasks',
+  { items: [] },
+  1,
+  { kind: 'list', title: 'Demo tasks', path: ['items'] },
+)
+await dark.locator('[data-testid="contributed-empty"]').waitFor({ timeout: 15000 })
+await dark.screenshot({ path: `${OUT}/08-contributed-empty-dark.png` })
+console.log('08-contributed-empty-dark: a declared card with no published rows yet (empty body)')
+
+// The remaining body kinds a contributor can declare (badge / text / list /
+// table), each drawn from the value + schema alone. One card per kind so a
+// reviewer sees every rendering the PR adds, not only keyvalue.
+await darkPushProjection(
+  'fixer',
+  'demo/status',
+  { state: 'green' },
+  1,
+  { kind: 'badge', title: 'Demo status', path: ['state'] },
+)
+await darkPushProjection(
+  'fixer',
+  'demo/note',
+  { text: 'Last sweep clean; next run in 6m.' },
+  1,
+  { kind: 'text', title: 'Demo note', path: ['text'] },
+)
+// 25 rows so the list slices at MAX_ROWS (20) and shows the "+5 more" marker.
+await darkPushProjection(
+  'fixer',
+  'demo/queue',
+  { items: Array.from({ length: 25 }, (_, i) => `job #${4800 + i}`) },
+  1,
+  { kind: 'list', title: 'Demo queue', path: ['items'] },
+)
+await darkPushProjection(
+  'fixer',
+  'demo/runs',
+  { rows: [{ id: 4821, status: 'ok' }, { id: 4822, status: 'ok' }, { id: 4823, status: 'fail' }] },
+  1,
+  { kind: 'table', title: 'Demo runs', path: ['rows', 'id', 'status'] },
+)
+await dark.locator('[data-testid="contributed-badge"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-text"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-list"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-table"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-more"]').first().waitFor({ timeout: 15000 })
+// One element still per card kind, scrolled into view, so no body is clipped
+// by the drawer fold the way a single full-page shot was.
+await dark.locator('[data-testid="contributed-card-demo/status"]').screenshot({ path: `${OUT}/08b-badge-dark.png` })
+await dark.locator('[data-testid="contributed-card-demo/note"]').screenshot({ path: `${OUT}/08c-text-dark.png` })
+await dark.locator('[data-testid="contributed-card-demo/queue"]').screenshot({ path: `${OUT}/08d-list-more-dark.png` })
+await dark.locator('[data-testid="contributed-card-demo/runs"]').screenshot({ path: `${OUT}/08e-table-dark.png` })
+console.log('08b/c/d/e: badge, text, list (with +N more), and table card bodies, one still each')
 await darkCtx.close()
 
 // 09/10: the two non-verdict states of the block — read in flight, read failed.
@@ -258,7 +366,7 @@ await darkCtx.close()
   registry.mode = 'hang'
   const { page, context } = await openMembers('dark')
   await page.getByText('fixer', { exact: true }).first().click()
-  await page.locator('[data-testid="member-drawer"]').waitFor({ state: 'visible', timeout: 15000 })
+  await page.locator('[data-testid="member-side-panel"]').waitFor({ state: 'visible', timeout: 15000 })
   await page.locator('[data-testid="member-patrol-loading"]').waitFor({ state: 'visible', timeout: 15000 })
   // DetailPanel's width spring is still running when the skeleton first
   // shows; let it settle so the frame is the resting layout, not mid-tween.
@@ -269,7 +377,7 @@ await darkCtx.close()
   registry.mode = 'fail'
   const { page: p2, context: c2 } = await openMembers('dark')
   await p2.getByText('fixer', { exact: true }).first().click()
-  await p2.locator('[data-testid="member-drawer"]').waitFor({ state: 'visible', timeout: 15000 })
+  await p2.locator('[data-testid="member-side-panel"]').waitFor({ state: 'visible', timeout: 15000 })
   await p2.locator('[data-testid="member-patrol-error"]').waitFor({ state: 'visible', timeout: 30000 })
   await p2.locator('[data-testid="member-roster-patrol-error"]').waitFor({ state: 'visible', timeout: 15000 })
   await p2.waitForTimeout(600)

@@ -375,6 +375,94 @@ def _check_ws_origin(request: web.Request) -> None:
         raise web.HTTPForbidden(text="WebSocket origin not allowed")
 
 
+async def _handle_eventlog_frame(
+    ws: web.WebSocketResponse, ws_app: str, msg_type: str, data: dict
+) -> None:
+    """Serve one ``eventlog_subscribe`` / ``eventlog_unsubscribe`` frame (§3).
+
+    App tokens only, and only for a unit kind the caller's manifest
+    ``contributions.units`` grants. A refused subscribe answers with an
+    ``eventlog_subscribed`` carrying ``error`` and no ``lastSeq`` rather than
+    closing the socket: the socket multiplexes everything else this app uses, and
+    a contributor that asked for the wrong kind needs to be told, not dropped.
+
+    Order matters and is the reason this is one function: the hub registers the
+    socket for fan-out FIRST, so an append racing the handshake is queued; then
+    ``lastSeq`` is read and ``eventlog_subscribed`` is written to the socket; only
+    then is the pump allowed to run. That is how the contract's "subscribed
+    precedes any event" holds without dropping the racing append.
+    """
+    from kiro_crew.dashboard.eventlog_ws import (
+        WS_SUBSCRIBED,
+        SubscriptionLimit,
+        get_hub,
+    )
+    from kiro_crew.eventlog import grants
+    from kiro_crew.eventlog.contrib import ContribError, resolve_unit
+
+    kind = str(data.get("data", {}).get("kind", "") or "")
+    unit_id = str(data.get("data", {}).get("id", "") or "")
+    hub = get_hub()
+
+    async def _refuse(code: str, message: str) -> None:
+        try:
+            await ws.send_json(
+                {
+                    "type": WS_SUBSCRIBED,
+                    "data": {"kind": kind, "id": unit_id, "code": code, "error": message},
+                }
+            )
+        except Exception:
+            logger.debug("eventlog: refusal could not be sent", exc_info=True)
+
+    if not ws_app:
+        await _refuse(
+            "unit_kind_not_granted",
+            "the event-log delta channel is for app tokens; a dashboard session "
+            "receives member_projection frames instead",
+        )
+        return
+    if msg_type == "eventlog_unsubscribe":
+        hub.unsubscribe(ws, kind, unit_id)
+        return
+    if not grants.may_use_kind(ws_app, kind):
+        await _refuse("unit_kind_not_granted", f"this app may not subscribe to {kind!r} units")
+        return
+    try:
+        unit = await asyncio.to_thread(resolve_unit, kind, unit_id)
+    except ContribError as exc:
+        await _refuse(exc.code, str(exc))
+        return
+    except Exception:
+        logger.debug("eventlog: unit resolve failed for %s/%s", kind, unit_id, exc_info=True)
+        await _refuse("unit_not_found", f"no log for {kind}/{unit_id}")
+        return
+
+    try:
+        hub.subscribe(ws, kind, unit_id)
+    except SubscriptionLimit as exc:
+        await _refuse("unit_kind_not_granted", str(exc))
+        return
+    last_seq = await asyncio.to_thread(unit.service().last_seq, unit_id)
+    try:
+        await ws.send_json(
+            {
+                "type": WS_SUBSCRIBED,
+                "data": {
+                    "kind": kind,
+                    unit.id_field: unit_id,
+                    "id": unit_id,
+                    "lastSeq": last_seq,
+                },
+            }
+        )
+    except Exception:
+        # The socket died mid-handshake; do not leave it registered for fan-out.
+        hub.unsubscribe(ws, kind, unit_id)
+        return
+    hub.start_pump(ws)
+
+
 async def api_ws(request: web.Request) -> web.WebSocketResponse:
     """GET /api/ws — single multiplexed WebSocket for all real-time events."""
     _check_ws_origin(request)
@@ -550,6 +638,28 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             logger.warning("slots connect snapshot failed to serialize", exc_info=True)
             raise
         await ws.send_str(snapshot_payload)
+        # One-shot per-member event-log baseline, to THIS socket only, after the
+        # connect snapshot (`slots` is the first frame a client reads, which the
+        # ws contract and its tests both depend on).
+        #
+        # The baseline is a lastSeqs CEILING the client truncates its held
+        # member_projection rows against, so a projection broadcast landing
+        # between the lastSeqs read and this send would be applied and then
+        # dropped by the truncate behind it. Ordering the two frames cannot fix
+        # that, because the socket is already registered by the time the snapshot
+        # is written: `send_members_subscribed` instead marks the socket as
+        # awaiting its baseline, and the broadcast chokepoint withholds
+        # member_projection frames from a socket in that state.
+        #
+        # Owner surface only: app tokens never receive member_projection /
+        # members_subscribed (both are owner-only in ws_event_scope).
+        #
+        # Isolated: a failure to send this baseline must not fail the connection.
+        if is_dashboard_user:
+            try:
+                await state.send_members_subscribed(ws)
+            except Exception:
+                logger.debug("members_subscribed baseline not sent", exc_info=True)
         if owner_request or is_dashboard_user:
             # Issue links carry no check status — skip them so the scheduler
             # never hands an issue URL to the pull-request-only chip fetch.
@@ -934,6 +1044,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             pass
                     elif msg_type == "unsubscribe_subagents":
                         state.unsubscribe_subagents(ws)
+                    elif msg_type in ("eventlog_subscribe", "eventlog_unsubscribe"):
+                        await _handle_eventlog_frame(ws, ws_app, msg_type, data)
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —
@@ -995,5 +1107,15 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             _focus_task.cancel()
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
+        # Contribution-protocol subscriptions live in their own hub (per unit, not
+        # per app), so the generic registry cleanup above does not reach them; a
+        # surviving entry would keep queueing frames for a closed socket and hold
+        # its pump task alive.
+        try:
+            from kiro_crew.dashboard.eventlog_ws import get_hub
+
+            get_hub().drop(ws)
+        except Exception:
+            logger.debug("eventlog: subscription cleanup failed", exc_info=True)
         state.unregister_ws(ws)
     return ws

@@ -160,6 +160,14 @@ from kiro_crew.dashboard.handlers.diagnostics import (  # noqa: E402, F401
     api_diagnostics_download,
 )
 
+# ── Contribution protocol event log (handlers/eventlog.py) ──
+from kiro_crew.dashboard.handlers.eventlog import (  # noqa: E402, F401
+    api_eventlog_events_get,
+    api_eventlog_events_post,
+    api_eventlog_projection_put,
+    api_eventlog_projection_schema_put,
+)
+
 # ── Files & Workspaces (extracted to handlers/files.py) ──
 from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     _validate_dashboard_path,
@@ -257,6 +265,7 @@ from kiro_crew.dashboard.handlers.mcp_apps import (  # noqa: E402, F401
 # ── Crew Members (handlers/members.py) ──
 from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_activity,
+    api_member_history,
     api_member_rules_get,
     api_member_rules_put,
     api_member_thread,

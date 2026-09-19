@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { api, type MemberRosterRow } from './client'
+import { memberProjectionStore } from '../state/memberProjectionStore'
 import type { ErrorReport } from '../utils/errorReport'
 
 /**
@@ -31,6 +32,39 @@ export const membersRosterQuery = {
   queryKey: MEMBERS_ROSTER_QUERY_KEY,
   queryFn: (): Promise<MemberRosterRow[]> => api.members().then((r) => r.members),
   staleTime: MEMBERS_ROSTER_STALE_MS,
+  // Seed the per-member projection store from each row's baseline block BEFORE
+  // the page renders rows — `select` runs synchronously on the query result,
+  // so the first paint already reads pushed values via useMemberProjection.
+  // seed() applies at asOfSeq through the store's higher-seq-wins rule, so a
+  // live frame that raced ahead of this baseline keeps winning. Rows pass
+  // through unchanged.
+  select: (rows: MemberRosterRow[]): MemberRosterRow[] => {
+    for (const row of rows) {
+      if (row.projections) {
+        // Reconcile BEFORE seeding: this response is the authoritative list of
+        // contributed rows the gateway still holds, so a card whose teardown
+        // frame was missed while the socket was down is removed here. Done
+        // first so the seed below re-applies everything that is still live in
+        // the same pass.
+        memberProjectionStore.reconcileContributed(
+          row.slug,
+          Object.keys(row.projections.values),
+        )
+        // `seqs` / `schemas` are present only for CONTRIBUTED rows: such a row's
+        // seq is the contributor's own fold position rather than this response's
+        // asOfSeq, and seeding it at asOfSeq would make higher-seq-wins drop the
+        // contributor's next live push.
+        memberProjectionStore.seed(
+          row.slug,
+          row.projections.values,
+          row.projections.asOfSeq,
+          row.projections.seqs,
+          row.projections.schemas,
+        )
+      }
+    }
+    return rows
+  },
 }
 
 /** Recent-activity pointers for one member's drawer. Keyed by the exact

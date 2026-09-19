@@ -1359,6 +1359,46 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "preference is not one the client can use, and the sync loop would "
         "write the sentinel back over the file.",
     ),
+    (
+        "Member event-log projection broadcast",
+        "eventlog/service.py",
+        "Folded member projection views pushed to the browser over the "
+        "member-projection WS on every change. A projection carries "
+        "agent-authored free-text (an activity record's `project`, message "
+        "previews) that would otherwise cross to the dashboard verbatim, the "
+        "same class the sibling `/history` and `/activity` HTTP reads redact. "
+        "`_redact_projection_value` runs the shared exfiltration-URL then "
+        "credential chain over the view before broadcast; it is applied at the "
+        "network boundary rather than the fold so the stored projection keeps "
+        "its raw value for server-side folds while nothing leaves unredacted.",
+    ),
+    (
+        "Contributor catch-up read",
+        "dashboard/handlers/eventlog.py",
+        "Event envelopes served by `GET /api/eventlog/{kind}/{id}/events`, the "
+        "contribution-protocol catch-up read a granted contributor uses to fold "
+        "the log. `events_after` returns each envelope raw, and an event's `data` "
+        "carries agent-authored free-text (an activity `project`, message "
+        "previews) of the same class the sibling member `/history` and "
+        "`/activity` reads redact. Each event's `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before egress, so a credential or presigned URL smuggled into an event "
+        "does not reach the browser.",
+    ),
+    (
+        "Live event-log frame broadcast",
+        "dashboard/eventlog_ws.py",
+        "The `eventlog_event` WS frame `EventLogHub.publish` fans out to every "
+        "subscriber the instant an event is appended -- the live counterpart of "
+        "the `GET .../events` catch-up read. The event's `data` carries "
+        "agent-authored free-text (an activity `project`, message previews) of "
+        "the same class the sibling reads redact, so `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before serialization. Runs on the appending thread inside the log lock, "
+        "so the pure-string redactor cannot block; a redactor fault falls back to "
+        "the raw event rather than dropping the frame, matching the best-effort "
+        "contract of that fan-out.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

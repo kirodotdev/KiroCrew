@@ -4,6 +4,7 @@ import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { ApiError } from '../../api/apiError'
+import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
 import { memberThreadQueryKey } from '../../api/membersQuery'
 import { getViewedThreadSlot, _resetViewedThreadForTests } from '../../lib/viewedThread'
@@ -130,7 +131,7 @@ function setWindowWidth(px: number) {
 }
 
 function row(overrides: Record<string, unknown> = {}) {
-  return {
+  const base = {
     name: 'oncall',
     slug: 'oncall',
     bound: false,
@@ -142,6 +143,34 @@ function row(overrides: Record<string, unknown> = {}) {
     model: '',
     ...overrides,
   }
+  // Every roster row now carries a baseline projections block (the backend
+  // contract). The `roster` face mirrors the row's own config fields so the
+  // page reads identical values whether from the row or the seeded store; a
+  // case that wants a divergence overrides `projections` explicitly.
+  const projections = {
+    asOfSeq: 1,
+    values: {
+      roster: {
+        name: base.name,
+        slug: base.slug,
+        kiro_agent: base.kiro_agent,
+        workspace: base.workspace,
+        memory_store: base.memory_store,
+        model: base.model,
+        slot_key: base.slot_key,
+        last_active_ts: (base as { last_active_ts?: number }).last_active_ts,
+        last_message: (base as { last_message?: string }).last_message,
+        starred: (base as { starred?: boolean }).starred,
+      },
+      // `activity` is deliberately omitted from the default fixture: the
+      // activity-focused cases feed entries through api.memberActivity, and a
+      // member with no activity projection must fall back to that query. Cases
+      // that want a pushed activity projection seed it via memberProjectionStore.
+      wake: { patrol: 'none' as const },
+      driving: { open: [] },
+    },
+  }
+  return { ...base, projections, ...overrides }
 }
 
 /** Echoes the requested slug back as the thread's member — the happy path for
@@ -244,6 +273,9 @@ beforeEach(() => {
   vi.mocked(api.autonudgeList).mockImplementation(() => Promise.resolve({ enabled: true, loops: [] }))
   // The remembered member must not leak between cases.
   localStorage.clear()
+  // The projection store is a module-level singleton fed by the roster seed;
+  // clear it so one case's seeded values do not survive into the next.
+  memberProjectionStore.clear()
   // The side panel's tab strip is a module-level, persisted store; a tab
   // opened in one case would otherwise be on the strip in the next.
   __resetPanelTabs()
@@ -593,6 +625,72 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(within(drawer).getAllByRole('button', { name: 'Edit in crew manager' })).toHaveLength(1)
     fireEvent.click(within(drawer).getByRole('button', { name: 'Edit in crew manager' }))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
+  })
+
+  it('re-renders the model from a member_projection frame without a roster refetch', async () => {
+    // The drawer's model reads the pushed `roster` projection. Applying a
+    // higher-seq frame (what the useWebSocket member_projection case does) must
+    // update the cell in place — no second GET /api/members.
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const summary = await screen.findByTestId('member-crew-summary')
+    expect(summary).toHaveTextContent('claude-opus-5')
+    const callsBefore = (api.members as ReturnType<typeof vi.fn>).mock.calls.length
+    act(() => {
+      memberProjectionStore.apply(
+        'oncall',
+        'roster',
+        { name: 'oncall', slug: 'oncall', kiro_agent: 'kirocrew', model: 'claude-sonnet-9' },
+        5,
+      )
+    })
+    await waitFor(() => expect(summary).toHaveTextContent('claude-sonnet-9'))
+    expect(summary).not.toHaveTextContent('claude-opus-5')
+    expect((api.members as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+  })
+
+  it('a starred:true frame flips the Starred filter count and membership at page level without a roster refetch', async () => {
+    // The page-level Starred count and filter read the MERGED list (rows +
+    // pushed roster projection), so a `member_projection` frame that stars a
+    // member must move the menu count and the filtered membership WITHOUT a
+    // second GET /api/members — otherwise the row shows starred while the
+    // count reads 0 (the bug this fixes).
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research' }),
+    ])
+    // The Starred filter lives inside the filter menu; open it to read the
+    // count — Enter on the trigger, as the sidebar's own filter tests do.
+    fireEvent.keyDown(await screen.findByTestId('member-filter-menu'), { key: 'Enter' })
+    const starItem = await screen.findByTestId('member-filter-starred')
+    // No stars yet: the count reads 0.
+    expect(starItem).toHaveTextContent('0')
+    const callsBefore = (api.members as ReturnType<typeof vi.fn>).mock.calls.length
+
+    act(() => {
+      // seq > the baseline seed's asOfSeq (1) so higher-seq-wins applies it.
+      memberProjectionStore.apply(
+        'research',
+        'roster',
+        { name: 'research', slug: 'research', starred: true },
+        5,
+      )
+    })
+
+    await waitFor(() => expect(screen.getByTestId('member-filter-starred')).toHaveTextContent('1'))
+    // No roster refetch drove the change.
+    expect((api.members as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+
+    // Enabling the filter shows exactly that member.
+    fireEvent.click(screen.getByTestId('member-filter-starred'))
+    await waitFor(() => {
+      const names = Array.from(document.querySelectorAll('[data-testid^="member-star-"]')).map((el) =>
+        el.getAttribute('data-testid')!.replace('member-star-', ''),
+      )
+      expect(names).toEqual(['research'])
+    })
+    // The member roster was fetched exactly once across the whole case.
+    expect(api.members).toHaveBeenCalledTimes(1)
   })
 
   it('shows member memory V2 when owner metadata matches the member', async () => {
@@ -1690,6 +1788,36 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await waitFor(() => expect(stats).toHaveTextContent('2+'))
   })
 
+  it('a saturated projection ring renders counters as floors (N+), even with no query capped flag', async () => {
+    // The pushed activity projection is a newest-first ring bounded at
+    // ACTIVITY_RING (50). When it is full, older in-window events fell off, so
+    // the tile must read "50+" not an exact "50" — even though the query path's
+    // `capped` flag is false (the count comes from the projection, not the
+    // query). Regression for the UX finding on the projection-served path.
+    const now = Date.now() / 1000
+    vi.mocked(api.memberActivity).mockResolvedValue({
+      slug: 'oncall',
+      member: 'oncall',
+      capped: false,
+      entries: [],
+    })
+    // 50 records, all within today — a full ring.
+    const recent = Array.from({ length: 50 }, (_, i) => ({
+      ts: now - i,
+      via: 'chat',
+      project: '',
+    }))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-stats')
+    act(() => {
+      memberProjectionStore.apply('oncall', 'activity', { recent, today: 50, week: 50 }, 5)
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('member-stats')).toHaveTextContent('50+'),
+    )
+  })
+
   it('a failed activity fetch renders the error state, never the affirmative empty state', async () => {
     vi.mocked(api.memberActivity).mockRejectedValue(new Error('boom'))
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
@@ -2221,6 +2349,25 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     await openDrawerWith({ loops: [loop({ slot_key: 'member-research' }), loop({ slot_key: 'chat-1-abc' })] })
     expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'none')
     expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/no patrol scheduled/i)
+  })
+
+  it('a stop the loop registry has already forgotten still renders from the wake projection', async () => {
+    // The restart case: the gateway died mid-patrol, the registry came back
+    // empty, and the loader synthesised the stop into the member log. The
+    // registry alone would read "nothing scheduled"; the pushed `wake` value
+    // is the only record that the patrol existed and how it ended.
+    await openDrawerWith({ loops: [] })
+    act(() => {
+      memberProjectionStore.apply(
+        'oncall',
+        'wake',
+        { patrol: 'stopped', slot_key: 'member-oncall', stopped_reason: 'interrupted', since: Date.now() },
+        99,
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'stopped'))
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/patrol stopped/i)
+    expect(screen.getByTestId('member-patrol-reason')).toHaveTextContent(/interrupted/i)
   })
 
   it('a stopped loop keeps its reason visible instead of collapsing into "no patrol scheduled"', async () => {
