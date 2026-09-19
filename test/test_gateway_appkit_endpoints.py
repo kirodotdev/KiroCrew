@@ -446,7 +446,8 @@ class TestContextInjection:
 
         entry = slot._pending_context[0]
         assert entry["maxAge"] == 60
-        assert entry["ephemeral"] is False
+        # An EXPLICIT false opts in to durability, and that stores no flag.
+        assert "ephemeral" not in entry
 
     @pytest.mark.asyncio
     async def test_inject_multiple(self, tmp_path: Path):

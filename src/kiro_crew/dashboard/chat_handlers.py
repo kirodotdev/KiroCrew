@@ -8,7 +8,6 @@ import json
 import logging
 import math
 import os
-import re
 import tempfile
 import time
 import uuid
@@ -143,11 +142,18 @@ from kiro_crew.dashboard.slot_buffers import (
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
 from kiro_crew.dashboard.state import (
+    MAX_CONTEXT_CONTENT,
+    MAX_SOURCE_LEN,
+    SOURCE_CTRL_RE,
     DashboardState,
     SlotOrigin,
     _ChatSlot,
+)
+from kiro_crew.dashboard.state import _finite_number as _is_finite_number
+from kiro_crew.dashboard.state import (
     _mark_permission_resolved,
     _normalize_slot_key,
+    _note_authorized_elsewhere,
     _slots_serialization_note,
     append_and_surface,
     chat_message_frame,
@@ -11743,7 +11749,6 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
 
 
 _MAX_CONTEXT_PER_SOURCE = 10
-_MAX_CONTEXT_CONTENT = 40000
 # Default expiry for a note's context half: if the user never sends a follow-up
 # within 24h, the stale entry is dropped at drain rather than attaching itself to
 # some far-future unrelated message. The visible transcript line has no maxAge.
@@ -11763,8 +11768,6 @@ _UNSET = object()
 # control chars and newlines to keep a crafted label from breaking out of the
 # frame line, and cap the length. Defense-in-depth: the real free-form surface
 # is ``content``, not ``source``.
-_MAX_SOURCE_LEN = 64
-_SOURCE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _validate_content(content: object) -> web.Response | None:
@@ -11783,10 +11786,10 @@ def _validate_content(content: object) -> web.Response | None:
             {"error": "content is required", "code": "empty_content"},
             status=400,
         )
-    if len(content) > _MAX_CONTEXT_CONTENT:
+    if len(content) > MAX_CONTEXT_CONTENT:
         return web.json_response(
             {
-                "error": f"content exceeds {_MAX_CONTEXT_CONTENT} char limit",
+                "error": f"content exceeds {MAX_CONTEXT_CONTENT} char limit",
                 "code": "content_too_long",
             },
             status=400,
@@ -11820,7 +11823,7 @@ def _validate_source(source: object) -> web.Response | None:
         )
     # Checked BEFORE the strip, which would otherwise silently drop a leading or
     # trailing tab/newline the documented contract says is a 400.
-    if isinstance(source, str) and _SOURCE_CTRL_RE.search(source):
+    if isinstance(source, str) and SOURCE_CTRL_RE.search(source):
         return web.json_response(
             {
                 "error": "source must not contain control characters or newlines",
@@ -11831,12 +11834,12 @@ def _validate_source(source: object) -> web.Response | None:
     normalized = _normalize_source(source)
     if normalized == "":
         return None
-    if len(normalized) > _MAX_SOURCE_LEN:
+    if len(normalized) > MAX_SOURCE_LEN:
         return web.json_response(
-            {"error": f"source exceeds {_MAX_SOURCE_LEN} char limit", "code": "source_too_long"},
+            {"error": f"source exceeds {MAX_SOURCE_LEN} char limit", "code": "source_too_long"},
             status=400,
         )
-    if _SOURCE_CTRL_RE.search(normalized):
+    if SOURCE_CTRL_RE.search(normalized):
         return web.json_response(
             {
                 "error": "source must not contain control characters or newlines",
@@ -11871,13 +11874,7 @@ def _validate_max_age(max_age: object) -> web.Response | None:
     # NaN and Infinity are floats that slip past the <= 0 check (NaN <= 0 is
     # False) and then make injected_at + max_age non-comparable at drain, so the
     # entry would never expire. Reject them at the boundary.
-    # An arbitrary-precision int passes the isinstance check above, then
-    # OverflowErrors inside isfinite's float conversion — same 400, not a 500.
-    try:
-        finite = math.isfinite(max_age)
-    except OverflowError:
-        finite = False
-    if not finite:
+    if not _is_finite_number(max_age):
         return web.json_response(
             {"error": "maxAge must be a finite number", "code": "non_finite_number"},
             status=400,
@@ -12042,8 +12039,9 @@ def _enqueue_pending_context(
     slot: _ChatSlot,
     content: str,
     source: str,
-    ephemeral: bool,
     max_age: int | float | None,
+    ephemeral: bool,
+    context_key: str | None = None,
 ) -> web.Response | None:
     """Build, cap, and append a ``_pending_context`` entry.
 
@@ -12057,7 +12055,9 @@ def _enqueue_pending_context(
     through to the drain.
 
     """
-    entry, err = _build_pending_context_entry(slot, content, source, ephemeral, max_age)
+    entry, err = _build_pending_context_entry(
+        slot, content, source, max_age, ephemeral, context_key
+    )
     if err is not None:
         return err
     assert entry is not None
@@ -12069,8 +12069,9 @@ def _build_pending_context_entry(
     slot: _ChatSlot,
     content: str,
     source: str,
-    ephemeral: bool,
     max_age: int | float | None,
+    ephemeral: bool,
+    context_key: str | None = None,
 ) -> tuple[dict[str, object] | None, web.Response | None]:
     """Validate and build one context entry WITHOUT touching the queue.
 
@@ -12094,12 +12095,60 @@ def _build_pending_context_entry(
     entry: dict[str, object] = {
         "content": content,
         "source": source,
-        "ephemeral": ephemeral,
         "injectedAt": time.time(),
     }
     if max_age is not None:
         entry["maxAge"] = max_age
+    # EVERYTHING EXCEPT LITERAL `False` IS EPHEMERAL, because durability is opt-in: an
+    # `is True` test made `null`, `0` and the JSON string "false" durable by accident.
+    if ephemeral is not False:
+        entry["ephemeral"] = True
+    # CARRIED SO THE SUPPRESSION SURVIVES A RELOAD: the caller names which snapshot this
+    # entry is, and the boundary refuses a second copy of one still pending.
+    if context_key:
+        entry["contextKey"] = context_key
     return entry, None
+
+
+def _validate_context_key(raw: object) -> web.Response | None:
+    """400 when ``contextKey`` is present but unusable, mirroring :func:`_validate_source`.
+
+    REFUSED RATHER THAN TRUNCATED, and that asymmetry would be a data-loss bug rather than a
+    style choice: the key is an IDENTITY the dedup compares, so clipping it to the cap aliases
+    two distinct keys sharing a prefix onto one. The second post would then match the first,
+    answer 200, and append nothing -- content acknowledged and silently dropped, with no
+    surface reporting it. ``source`` is already refused at this same limit, so refusing here
+    reuses that convention instead of inventing a second one.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return web.json_response(
+            {"error": "contextKey must be a string", "code": "invalid_context_key"},
+            status=400,
+        )
+    # Checked BEFORE the strip, mirroring :func:`_validate_source`: a leading or trailing newline
+    # survives into the dedup, which strips the key onto an earlier one and drops this post at 200.
+    if SOURCE_CTRL_RE.search(raw):
+        return web.json_response(
+            {
+                "error": "contextKey must not contain control characters or newlines",
+                "code": "invalid_context_key",
+            },
+            status=400,
+        )
+    normalized = raw.strip()
+    if normalized == "":
+        return None
+    if len(normalized) > MAX_SOURCE_LEN:
+        return web.json_response(
+            {
+                "error": f"contextKey exceeds {MAX_SOURCE_LEN} char limit",
+                "code": "context_key_too_long",
+            },
+            status=400,
+        )
+    return None
 
 
 async def api_chat_slot_context(request: web.Request) -> web.Response:
@@ -12117,7 +12166,7 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         {
             "content": "...",
             "source": "watch-check",   // optional
-            "ephemeral": true,         // optional, default true
+            "ephemeral": true,         // optional, DEFAULT true; true = memory-only
             "maxAge": 300              // optional, seconds
         }
     """
@@ -12145,6 +12194,7 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         _validate_content(content)
         or _validate_source(body.get("source"))
         or _validate_max_age(body.get("maxAge"))
+        or _validate_context_key(body.get("contextKey"))
     )
     if bad is not None:
         return bad
@@ -12155,6 +12205,50 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     if stale is not None:
         return stale
 
+    _ctx_key = body.get("contextKey")
+    if isinstance(_ctx_key, str) and _ctx_key.strip():
+        # NOT clipped to the cap: the validator above refuses an overlong key outright, because
+        # truncating an IDENTITY aliases two distinct keys onto one and drops the second post.
+        _ctx_key = _ctx_key.strip()
+        _ctx_src = _normalize_source(body.get("source"))
+        # EVERY OWNED LIVE BUCKET: a drain moves entries to ``_ctx_inflight`` and an over-ceiling
+        # one parks in ``_ctx_overflow``, both still undelivered.
+        _now = time.time()
+        _ctx_live_session = effective_session_key(slot)
+        _owned_live = [
+            e
+            for e in (
+                *slot._pending_context,
+                *(getattr(slot, "_ctx_inflight", None) or []),
+                *(getattr(slot, "_ctx_overflow", None) or []),
+            )
+            if not _note_authorized_elsewhere(e, _ctx_live_session)
+        ]
+        # UNEXPIRED ONLY. An expired entry is discarded by the drain, so matching one would
+        # answer 200 for a repost whose replacement content then never reaches the model.
+        _match = next(
+            (
+                e
+                for e in _owned_live
+                if e.get("contextKey") == _ctx_key
+                and (e.get("source") or "") == _ctx_src
+                and not context_entry_expired(e, _now)
+            ),
+            None,
+        )
+        if _match is not None:
+            # AUDITED LIKE EVERY OTHER SUCCESSFUL RETURN. This arm returns before the call at
+            # the end of the handler, so a suppressed repost left no SEL row at all.
+            sel().log_api_access(
+                caller=request_app or request.get("user", "dashboard"),
+                operation="context_inject",
+                outcome="ok",
+                source="app_kit",
+                resources=f"slot={name}",
+            )
+            return web.json_response({"ok": True, "pending": len(slot._pending_context)})
+    else:
+        _ctx_key = None
     # Normalize the source the same way /note does, so a whitespace-padded label
     # renders a clean drain frame and shares one cap bucket with its trimmed
     # form. /context keeps empty-source-uncapped and applies no default label: a
@@ -12163,8 +12257,9 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         slot,
         content,
         _normalize_source(body.get("source")),
-        body.get("ephemeral", True),
         body.get("maxAge"),
+        body.get("ephemeral", True),
+        _ctx_key,
     )
     if err is not None:
         return err
@@ -12566,7 +12661,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         if max_age is _UNSET:
             max_age = _NOTE_CONTEXT_MAX_AGE
         context_entry, err = _build_pending_context_entry(
-            slot, content, source, body.get("ephemeral", True), max_age
+            slot, content, source, max_age, body.get("ephemeral", True)
         )
         if err is not None:
             return err
