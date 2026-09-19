@@ -2304,7 +2304,10 @@ class CronService:
         if self._sessions:
             try:
                 await asyncio.wait_for(
-                    self._sessions.reset(session_key), timeout=_REAPER_RESET_TIMEOUT
+                    # Same class as ``cancel``: the reaper has given up on this run, so
+                    # its conversation is over and its sub-agent runs end with it.
+                    self._sessions.reset(session_key, ends_conversation=True),
+                    timeout=_REAPER_RESET_TIMEOUT,
                 )
             except asyncio.TimeoutError:
                 logger.warning("Reaper: reset hung for cron %s, attempting SIGKILL", job_id)
@@ -2512,7 +2515,10 @@ class CronService:
         if self._sessions and is_agent_job and not killed_proc:
             try:
                 await asyncio.wait_for(
-                    self._sessions.reset(session_key), timeout=_REAPER_RESET_TIMEOUT
+                    # The job is cancelled, so its conversation is over and its
+                    # sub-agent runs go with it -- not a recycle.
+                    self._sessions.reset(session_key, ends_conversation=True),
+                    timeout=_REAPER_RESET_TIMEOUT,
                 )
             except asyncio.TimeoutError:
                 logger.warning("Cancel: reset hung for cron %s, attempting SIGKILL", job_id)

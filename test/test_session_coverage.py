@@ -675,7 +675,13 @@ class TestExpireIdle:
     @pytest.mark.asyncio
     async def test_an_idle_session_is_reset_not_removed(self, mgr) -> None:
         """reset() preserves the session-map entry so the next open can
-        session/load the transcript back."""
+        session/load the transcript back.
+
+        Expiry recycles a process and the conversation survives on disk, which is
+        exactly what ``reset`` means -- and why it is the verb here rather than
+        ``remove``. Asserting the WHOLE call keeps a later edit from reaching for an
+        ending verb, which would take the session's in-flight sub-agent runs with it.
+        """
         _register(mgr, "dashboard:1", last_used=0.0)
         with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
             await mgr._expire_idle(1)

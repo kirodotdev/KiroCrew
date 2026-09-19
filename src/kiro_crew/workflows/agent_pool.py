@@ -188,6 +188,29 @@ class _WorkflowSessionWorker:
         prov = self._provider
         new_conv = getattr(prov, "new_conversation", None) if prov is not None else None
         if new_conv is not None:
+            # BEFORE ``new_conv()``, not after. The cheap path replaces the CONVERSATION and
+            # keeps the process, so the previous conversation's sub-agent runs still have to
+            # end -- the process surviving does not give them anywhere to report, and
+            # without this they inject into whatever this warm worker is handed next.
+            #
+            # The ordering is the whole point. ``new_conv()`` swaps the provider's
+            # conversation handle, and a child that finishes during that await lands in the
+            # handle that exists when it reports. Arming the suppression afterwards leaves a
+            # window in which the previous task's result is delivered into the NEXT task's
+            # conversation -- the exact confusion this verb exists to prevent, and worse
+            # than no teardown because it is silent.
+            #
+            # Outside the try below, so a failure here is not read as ``new_conversation``
+            # having failed: that would send a healthy warm worker down a hard reset it does
+            # not need.
+            try:
+                await self._sessions.end_children_for(self._key)
+            except Exception:
+                logger.debug(
+                    "workflow pool: ending %s's children on reuse failed",
+                    self._key,
+                    exc_info=True,
+                )
             try:
                 await new_conv()
                 return
@@ -200,7 +223,9 @@ class _WorkflowSessionWorker:
                 )
         # Fallback: hard reset (kill+respawn) via the manager, then re-acquire.
         try:
-            await self._sessions.reset(self._key)
+            # This method STARTS A NEW CONVERSATION on a pooled key, so the previous
+            # one ends here and its sub-agent runs end with it.
+            await self._sessions.reset(self._key, ends_conversation=True)
         except Exception:
             logger.debug("workflow pool: hard reset failed for %s", self._key, exc_info=True)
         self._provider = None

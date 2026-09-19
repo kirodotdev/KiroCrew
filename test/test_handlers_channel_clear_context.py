@@ -102,7 +102,10 @@ class TestChannelClearContext:
         body = json.loads(resp.body)
         assert body["ok"] is True
         assert body["cleared"] == ["Researcher"]
-        sessions.reset.assert_called_once_with("channel:ch1:a1")
+        # ``ends_conversation``: the user asked this agent to forget the conversation, so
+        # its sub-agent runs have nothing left to report into. Asserting the whole call
+        # keeps a later edit from turning this back into a process recycle.
+        sessions.reset.assert_called_once_with("channel:ch1:a1", ends_conversation=True)
         # Messages and exchange_counts NOT cleared for single-agent scope
         assert len(ch.messages) == 2
 
