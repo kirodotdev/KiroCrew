@@ -2262,3 +2262,71 @@ def test_import_restricts_staging_before_extracting(tmp_path, monkeypatch):
     monkeypatch.setattr(zipfile.ZipFile, "extract", extract_after_restrict)
     apply_import_zip(archive)
     assert restricted
+
+
+def test_oversized_imported_command_is_dropped_without_scanning_it(tmp_path):
+    """The import path refuses an unscannable command instead of allocating for it.
+
+    This is the reach the review named: `apply_import_zip` -> `_sanitize_imported_crons`
+    -> `_vet_shell_command`. That path reads the raw dict `command` with no field-length
+    cap, so the only upstream bound is the 2 GiB uncompressed-archive ceiling, and
+    `_quote_states` would allocate two per-character lists at a measured 16 bytes/char.
+
+    Tested here rather than only at the vet because the vet's own cap is invisible from
+    this side: what a restoring operator observes is whether the job comes back, and the
+    honest outcome for a body nothing can verify is that it does not, reported as
+    rejected rather than silently absent.
+
+    Deliberately far below the real ceiling so the test costs nothing -- the point is the
+    DECISION, and the decision is a length comparison that does not care how far over the
+    input is.
+    """
+    from kiro_crew.mcp_cron import _CRON_MAX_COMMAND_SCAN
+    from kiro_crew.portability import _sanitize_imported_crons
+
+    crons = tmp_path / "crons.json"
+    crons.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    # The schedule must be the real serialised shape (an object with a
+                    # `kind`). A shape the product never writes is dropped by rule 1
+                    # instead, which makes the assertions below pass for the wrong
+                    # reason -- measured: with `{"every": 60}` BOTH jobs were dropped
+                    # and the benign neighbour never proved anything.
+                    # `message` is required too: rule 1 demands str-typed id/name/message
+                    # AND a schedule object carrying a str `kind`. Omitting any of them
+                    # drops the job for a reason that has nothing to do with the command,
+                    # which is how this fixture twice passed its main assertion vacuously.
+                    {
+                        "id": "a",
+                        "name": "oversized",
+                        "message": "x",
+                        "schedule": {"kind": "cron", "cron_expr": "0 9 * * *"},
+                        "command": "a" * (_CRON_MAX_COMMAND_SCAN + 1),
+                    },
+                    {
+                        "id": "b",
+                        "name": "ordinary",
+                        "message": "x",
+                        "schedule": {"kind": "cron", "cron_expr": "0 9 * * *"},
+                        "command": "df -h",
+                    },
+                ]
+            }
+        )
+    )
+
+    dropped, paused = _sanitize_imported_crons(crons)
+
+    assert "oversized" in dropped, f"an unscannable command must be dropped, got {dropped}"
+    assert "ordinary" not in dropped, "a benign neighbour must survive the same pass"
+    # Rule 3: a surviving `command` job is imported disabled, not live. Worth asserting
+    # alongside the drop so the two outcomes stay distinguishable -- conflating them is
+    # what the function's own docstring warns tells the user the wrong thing.
+    assert "ordinary" in paused, f"a surviving command job must be paused, got {paused}"
+
+    remaining = json.loads(crons.read_text())["jobs"]
+    names = {job.get("name") for job in remaining}
+    assert "oversized" not in names, "the dropped job must be gone from the rewritten store"
+    assert "ordinary" in names, "the restore must keep the job it did not reject"
