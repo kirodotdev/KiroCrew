@@ -57,7 +57,10 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
     startup sweep SIGKILL'd a live kiro-cli off a stale dead-gateway entry on
     macOS because the grace window silently did not apply there.
 
-    On Windows: returns None (no grace — sweep behavior unchanged there).
+    On Windows: returns None. The Windows start token is a creation ``FILETIME``
+    in 100-ns units, not epoch seconds, so the epoch arithmetic below must not
+    consume it — the grace window stays POSIX-only and the sweep keeps its
+    existing kill behavior there.
 
     The *proc_root* parameter allows injection of a fake /proc tree for testing.
     """
@@ -122,9 +125,9 @@ def _pid_start_token(pid: int) -> str | None:
     may run on the loop is governed by that tracker's exclusive file lock, not
     by this lookup — see ``AUTOSDE: no-blocking-call-on-event-loop``.)
 
-    Returns ``None`` when identity cannot be determined (Windows, or a process
-    we may not introspect). Callers MUST treat ``None`` as "unknown", never as a
-    mismatch — see the sweep call sites.
+    Returns ``None`` when identity cannot be determined (a process we may not
+    introspect). Callers MUST treat ``None`` as "unknown", never as a mismatch —
+    see the sweep call sites.
 
     Note this cannot reuse ``acp.client._get_start_time``: that hashes with
     builtin ``hash()``, which is PYTHONHASHSEED-randomized per interpreter and
@@ -1802,8 +1805,8 @@ def cleanup_orphaned_session_roots() -> int:
                 continue  # identity unknown — retain entry, retry next sweep
             identity_confirmed = True
 
-        # Fallback PID-reuse guard for entries with NO recorded token (Windows,
-        # or a failed token probe at spawn): verify PPid is 1 (reparented to
+        # Fallback PID-reuse guard for entries with NO recorded token (a failed
+        # token probe at spawn): verify PPid is 1 (reparented to
         # init) or the dead gateway PID (race window). A recycled PID would have
         # a completely different parent. platform_compat.get_ppid returns -1 on
         # failure (Linux /proc, macOS libproc, Windows snapshot). This is only
