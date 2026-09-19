@@ -17,6 +17,7 @@ import pytest
 from kiro_crew.config.sections import (
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
+    DECISION_HISTORY_BUDGET_DEFAULT,
     DECISION_PROVIDER_ENDPOINT_DEFAULT,
     DecisionProviderConfig,
     DecisionsConfig,
@@ -27,12 +28,22 @@ class TestDefaults:
     def test_fully_sampled_by_default(self):
         assert DecisionsConfig().bucket == DECISION_BUCKET_MAX
 
-    def test_the_section_is_two_fields_and_neither_is_a_switch(self):
+    def test_no_field_here_is_a_switch(self):
         """The arm/impl/points vocabulary is retired, and ``enabled`` never lands
-        here: config.json is agent-writable, so consent is the keystone's."""
+        here: config.json is agent-writable, so consent is the keystone's. Every
+        field is a bound or an address -- nothing here grants egress."""
         from dataclasses import fields
 
-        assert {f.name for f in fields(DecisionsConfig)} == {"bucket", "provider"}
+        assert {f.name for f in fields(DecisionsConfig)} == {
+            "bucket",
+            "history_budget_chars",
+            "provider",
+        }
+
+    def test_no_prior_conversation_is_sent_by_default(self):
+        """Consent is recorded against the text the owner reviewed, which names the
+        message excerpt and the candidate descriptions. Prior turns are a choice."""
+        assert DecisionsConfig().history_budget_chars == DECISION_HISTORY_BUDGET_DEFAULT == 0
 
     def test_the_provider_defaults_are_the_documented_ones(self):
         provider = DecisionsConfig().provider
@@ -95,7 +106,7 @@ class TestMigrationFromThePreviewSpelling:
         from dataclasses import asdict
 
         saved = asdict(DecisionsConfig.from_raw({"preview": True, "points": {"a": {"arm": "off"}}}))
-        assert set(saved) == {"bucket", "provider"}
+        assert set(saved) == {"bucket", "history_budget_chars", "provider"}
         assert "arm" not in json.dumps(saved)
         assert "enabled" not in json.dumps(saved)
 
@@ -132,6 +143,117 @@ class TestBucket:
     def test_the_saved_value_is_the_value_in_force(self):
         """An operator who wrote 500 reads back 100, not a number behaving as 100."""
         assert DecisionsConfig.from_raw({"bucket": 500}).bucket == 100
+
+
+class TestTheHistoryBudget:
+    """The one char budget: what it bounds, and which way it fails.
+
+    It decides how much conversation leaves the machine, so -- like ``bucket`` --
+    an unreadable value fails CLOSED. Its default is already the closed value.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [(0, 0), (500, 500), ("500", 500), (500.0, 500), (-1, 0), (10**9, 10**9)],
+    )
+    def test_it_is_coerced_and_floored(self, raw, expected):
+        assert DecisionsConfig.from_raw({"history_budget_chars": raw}).history_budget_chars == (
+            expected
+        )
+
+    @pytest.mark.parametrize("raw", ["lots", None, True, 12.5, {"chars": 10}])
+    def test_an_unreadable_value_sends_no_prior_turns(self, raw):
+        parsed = DecisionsConfig.from_raw({"history_budget_chars": raw})
+        assert parsed.history_budget_chars == DECISION_HISTORY_BUDGET_DEFAULT == 0
+
+    def test_an_absent_key_sends_no_prior_turns(self):
+        assert DecisionsConfig.from_raw({"bucket": 10}).history_budget_chars == 0
+
+    def test_a_negative_value_cannot_read_as_unbounded(self):
+        assert DecisionsConfig.from_raw({"history_budget_chars": -5}).history_budget_chars == 0
+
+    def test_an_owner_who_opts_in_gets_what_they_asked_for(self):
+        assert DecisionsConfig.from_raw({"history_budget_chars": 2000}).history_budget_chars == 2000
+
+    def test_the_gate_takes_the_smaller_of_config_and_the_consented_ceiling(self, monkeypatch):
+        """Two files, two questions: the config asks, the keystone authorizes.
+
+        `config.json` is agent-writable, so a budget recorded only there could be
+        raised by the very agent whose conversation would then be sent. The ceiling
+        lives on the sealed keystone, and the gate takes `min` -- so lowering stays
+        an ordinary config edit and raising past what was reviewed takes a consent.
+        """
+        from kiro_crew.decisions import consent as consent_mod
+        from kiro_crew.decisions import gate
+
+        class _Cfg:
+            decisions = DecisionsConfig.from_raw({"history_budget_chars": 42})
+
+        monkeypatch.setattr(consent_mod, "consented_history_budget", lambda *a, **k: 100)
+        assert gate.history_budget_chars(_Cfg()) == 42, "the config asks for less: it wins"
+
+        monkeypatch.setattr(consent_mod, "consented_history_budget", lambda *a, **k: 10)
+        assert gate.history_budget_chars(_Cfg()) == 10, "the ceiling is lower: it wins"
+
+    def test_an_agent_raising_the_config_cannot_widen_egress(self, monkeypatch):
+        """The whole point of the ceiling, stated as the attack it refuses."""
+        from kiro_crew.decisions import consent as consent_mod
+        from kiro_crew.decisions import gate
+
+        class _AgentRaised:
+            decisions = DecisionsConfig.from_raw({"history_budget_chars": 100_000})
+
+        # The owner consented before the ceiling existed, or to no prior turns.
+        monkeypatch.setattr(consent_mod, "consented_history_budget", lambda *a, **k: 0)
+        assert gate.history_budget_chars(_AgentRaised()) == 0
+
+    def test_an_unreadable_keystone_sends_no_prior_turns(self, monkeypatch):
+        from kiro_crew.decisions import consent as consent_mod
+        from kiro_crew.decisions import gate
+
+        class _Cfg:
+            decisions = DecisionsConfig.from_raw({"history_budget_chars": 2000})
+
+        def _boom(*_a, **_k):
+            raise OSError("keystone unreadable")
+
+        monkeypatch.setattr(consent_mod, "consented_history_budget", _boom)
+        assert gate.history_budget_chars(_Cfg()) == 0
+
+    def test_a_zero_config_asks_for_nothing_and_reads_no_keystone(self, monkeypatch):
+        """The shipped default costs no keystone read on the turn path."""
+        from kiro_crew.decisions import consent as consent_mod
+        from kiro_crew.decisions import gate
+
+        reads = []
+        monkeypatch.setattr(
+            consent_mod, "consented_history_budget", lambda *a, **k: reads.append(1) or 100
+        )
+
+        class _Cfg:
+            decisions = DecisionsConfig.from_raw({})
+
+        assert gate.history_budget_chars(_Cfg()) == 0
+        assert reads == [], "nothing asked for, so nothing authorized to check"
+
+    def test_a_config_whose_reads_raise_gives_the_gate_zero(self):
+        from kiro_crew.decisions import gate
+
+        class _Hostile:
+            @property
+            def decisions(self):
+                raise RuntimeError("no")
+
+        assert gate.history_budget_chars(_Hostile()) == DECISION_HISTORY_BUDGET_DEFAULT == 0
+
+    def test_the_retired_state_budget_is_gone(self):
+        """It only fed a split the shipped menu ceiling made unreachable."""
+        from dataclasses import fields
+
+        from kiro_crew.decisions import gate
+
+        assert "state_budget_chars" not in {f.name for f in fields(DecisionsConfig)}
+        assert not hasattr(gate, "state_budget_chars")
 
 
 class TestProvider:

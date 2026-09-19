@@ -780,3 +780,100 @@ def test_existing_log_removed_during_handoff_is_recreated_exclusively(
     assert len(leaf_flags) == 3
     assert opened
     assert sorted(opened) == sorted(closed)
+
+
+class TestASharingViolationOnTheOpenIsRetried:
+    """Windows reports contention on the OPEN, so the open carries a budget of its own.
+
+    ERROR_SHARING_VIOLATION means another handle is held with narrower sharing than
+    the access asked for. On this path that is somebody else's transient handle -- a
+    scanner, an indexer, a backup agent -- because our own opens share read and
+    write. The writer already retried short writes; the open is the step where
+    Windows contention actually shows up, and a verdict route that answers 503 makes
+    a one-shot open the difference between recording an owner's thumbs-up and telling
+    them it was not recorded.
+
+    That budget is ``_APPEND_TIMEOUT_SECONDS`` long and is charged separately from
+    the one the lock and the writes spend, which is why a slow open cannot arrive at
+    the lock with nothing left (``test_the_open_is_not_charged_to_the_append_deadline``
+    pins the other half of that split).
+
+    Branching is on ``exc.winerror``, so these run on every platform; the Windows
+    lane is what proves the real ``CreateFileW`` raises it.
+    """
+
+    def _violation(self):
+        exc = OSError("in use by another process")
+        exc.winerror = pla._WIN_ERROR_SHARING_VIOLATION
+        return exc
+
+    def test_a_transient_violation_is_retried_and_the_row_lands(self, tmp_path, monkeypatch):
+        path = tmp_path / "decisions-20260919.jsonl"
+        real = pla._open_log
+        attempts = {"n": 0}
+
+        def _flaky(target):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise self._violation()
+            return real(target)
+
+        monkeypatch.setattr(pla, "_open_log", _flaky)
+        monkeypatch.setattr(pla, "_SHARING_RETRY_SECONDS", 0)
+
+        pla.append_line(path, b'{"ts": "x"}\n')
+
+        assert attempts["n"] == 2, "the first open was retried, not reported"
+        assert path.read_text(encoding="utf-8") == '{"ts": "x"}\n'
+
+    def test_a_holder_that_outlasts_the_open_budget_still_raises(self, tmp_path, monkeypatch):
+        path = tmp_path / "decisions-20260919.jsonl"
+        violation = self._violation()
+
+        def _always(_target):
+            raise violation
+
+        monkeypatch.setattr(pla, "_open_log", _always)
+        monkeypatch.setattr(pla, "_SHARING_RETRY_SECONDS", 0)
+        monkeypatch.setattr(pla, "_APPEND_TIMEOUT_SECONDS", 0.02)
+
+        with pytest.raises(OSError) as caught:
+            pla.append_line(path, b'{"ts": "x"}\n')
+
+        assert caught.value is violation, "the original error, not a timeout about it"
+
+    def test_any_other_open_error_is_not_retried(self, tmp_path, monkeypatch):
+        path = tmp_path / "decisions-20260919.jsonl"
+        attempts = {"n": 0}
+
+        def _denied(_target):
+            attempts["n"] += 1
+            raise PermissionError("chmod-ed")
+
+        monkeypatch.setattr(pla, "_open_log", _denied)
+
+        with pytest.raises(PermissionError):
+            pla.append_line(path, b'{"ts": "x"}\n')
+
+        assert attempts["n"] == 1, "only a sharing violation is contention"
+
+    def test_the_retry_cannot_replay_a_partial_write(self, tmp_path, monkeypatch):
+        """The retry covers the open alone, so a body failure is never repeated."""
+        path = tmp_path / "decisions-20260919.jsonl"
+        opens = {"n": 0}
+        real = pla._open_log
+
+        def _counting(target):
+            opens["n"] += 1
+            return real(target)
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("write refused")
+
+        monkeypatch.setattr(pla, "_open_log", _counting)
+        monkeypatch.setattr(pla.os, "write", _boom)
+
+        with pytest.raises(OSError):
+            pla.append_line(path, b'{"ts": "x"}\n')
+
+        assert opens["n"] == 1, "a write failure must not reopen and try again"

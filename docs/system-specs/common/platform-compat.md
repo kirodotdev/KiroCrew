@@ -130,8 +130,15 @@ cross-platform file lock spans EOF validation, short-write/EINTR retries and
 rollback. File offsets are explicitly reset inside the lock, including on Windows.
 Lock acquisition and retries share a finite deadline that starts once the log is
 open, so the create-and-pin ahead of it never spends the budget it cannot be
-cancelled by. No additional worker is spawned; a stalled filesystem syscall
-itself is not cancellable by that deadline.
+cancelled by. The OPEN carries a second budget of the same length, spent only on
+Windows and only on `ERROR_SHARING_VIOLATION`: another process holding a transient
+handle with narrower sharing than the access asked for is what contention looks
+like there before the lock is reached, so the open is retried for that one error
+while the budget lasts and reports it unchanged afterwards. Two budgets rather
+than one because a slow open must not reach the lock with nothing left; the retry
+covers the open alone, so no partial write is ever replayed. No additional worker
+is spawned; a stalled filesystem syscall itself is not cancellable by either
+deadline.
 
 On write failure, rollback removes only the bytes counted for that append when
 the file has exactly the expected size. Existing bytes or unrelated growth are

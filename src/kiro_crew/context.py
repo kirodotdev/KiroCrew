@@ -4836,7 +4836,36 @@ class ContextBuilder:
             # reaches `build_message` only through `run_in_embed_pool`, so the
             # loop captured at construction runs only the `decide` await.
             def select() -> list[str] | None:
-                from kiro_crew.decisions.points.skills_select import selected_skills
+                from kiro_crew.decisions.points.skills_select import (
+                    HISTORY_ROLES,
+                    MAX_HISTORY_MESSAGES,
+                    selected_skills,
+                )
+
+                def prior_turns() -> list[dict]:
+                    # The cheapest prior-turn source this method can reach: a
+                    # bounded tail slice of the session's own transcript, served
+                    # from `conversation_log`'s tail read rather than a
+                    # whole-file parse, projected to role and content only.
+                    # Passed as a CALLABLE so an unsampled or disabled turn pays
+                    # nothing for it -- `selected_skills` invokes it only after
+                    # its own gate check.
+                    #
+                    # `exclude_last_n` is the same value every other reader of
+                    # this log gets here, and it exists for exactly this reason:
+                    # the current turn's user message may already be flushed, and
+                    # sending it as prior history as well would duplicate it.
+                    #
+                    # Roles are restricted at the READ, so tool output is not
+                    # merely filtered later -- it is never projected.
+                    if not session_key or self.conversation_log is None:
+                        return []
+                    return self.conversation_log.recent(
+                        session_key,
+                        max_messages=MAX_HISTORY_MESSAGES,
+                        roles=HISTORY_ROLES,
+                        exclude_last_n=exclude_last_n,
+                    )
 
                 return selected_skills(
                     self.skills,
@@ -4844,6 +4873,7 @@ class ContextBuilder:
                     project,
                     session_key=session_key,
                     loop=self._decisions_loop,
+                    history_source=prior_turns,
                 )
 
             triggered = self.skills.get_triggered_skills(text, project_dir=project, select=select)

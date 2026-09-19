@@ -919,6 +919,27 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The decision log (``decisions/decisions-YYYYMMDD.jsonl``, written by
+    # ``decisions.log``). Another instance of the input-to-an-authorization-decision
+    # class, reached through the record rather than through the grant: the day-file
+    # carries `kind="feedback"` rows, which are the OWNER's verdicts on what the skills
+    # decision chose. An agent that can append there can put a verdict nobody gave into
+    # the record, which is the one reading the feature exists to produce. The keystone next to it
+    # (``decisions_consent.json``) is already read+write sensitive, and sealing the
+    # grant while leaving the record writable would be half a control.
+    #
+    # WRITE-protected, not read+write sensitive: the rows are the machine's own
+    # measurements and reading them is the point -- an owner or an agent asked to
+    # explain a decision should be able to. There is no legitimate agent WRITE:
+    # ``platform_log_append`` opens the file directly and does not route through this
+    # gate, so the gateway keeps recording. The directory is separately mounted
+    # read-only in the sandbox (``sandbox._CREW_READONLY_LEAVES``); that layer covers a
+    # shell, and this one covers the file-edit tool, which is present on every host
+    # whether or not the OS sandbox is.
+    f"{prefix}/decisions"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The dashboard session-history store, fourth instance of the
     # input-to-an-authorization-decision class (rotation.yaml, the alias
     # ownership record, the OMC index). Each slot's persisted metadata carries

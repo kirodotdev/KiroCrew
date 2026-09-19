@@ -809,3 +809,73 @@ class TestLoggingCannotCostTheResult:
         ident = asyncio.run(_drive())
         assert seen and seen[0] != ident
         assert loop_thread is not None
+
+
+# ---------------------------------------------------------------------------
+# A point's own row fields
+# ---------------------------------------------------------------------------
+
+
+class TestExtraRowFields:
+    """``extra`` is written onto the row and is never sent."""
+
+    @pytest.mark.asyncio
+    async def test_it_rides_the_row_of_a_successful_call(self, install_impl, log_home):
+        install_impl(_RecordingOracle())
+        answers = await decide(
+            POINT,
+            {"q": "x"},
+            QUESTIONS,
+            session_key="s",
+            config=_config(),
+            extra={"turn_id": "abc", "round": 2, "rounds": 3},
+        )
+        assert answers is not None
+        row = log_home()[0]
+        assert (row["turn_id"], row["round"], row["rounds"]) == ("abc", 2, 3)
+
+    @pytest.mark.asyncio
+    async def test_it_rides_a_failure_row_too(self, install_impl, log_home):
+        """Which round failed is the whole question a split menu raises."""
+        install_impl(_RaisingOracle(RuntimeError("transport")))
+        assert (
+            await decide(
+                POINT, {"q": "x"}, QUESTIONS, config=_config(), extra={"turn_id": "t", "round": 2}
+            )
+            is None
+        )
+        row = log_home()[0]
+        assert row["error"] == gate_mod.ERROR_PROVIDER
+        assert (row["turn_id"], row["round"]) == ("t", 2)
+
+    @pytest.mark.asyncio
+    async def test_it_is_not_part_of_the_request(self, install_impl, log_home):
+        """It is a log field, so it is neither scanned nor sent."""
+        oracle = install_impl(_RecordingOracle())
+        await decide(
+            POINT,
+            {"q": "x"},
+            QUESTIONS,
+            config=_config(),
+            extra={"turn_id": "abc", "baseline": ["review"]},
+        )
+        ((state, questions),) = oracle.calls
+        assert state == {"q": "x"}, "the state sent is the state given"
+        assert "turn_id" not in json.dumps(state)
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_that_writes_no_row_writes_no_extra(self, install_impl, log_home):
+        """The three cheap refusals still touch no disk."""
+        install_impl(_ExplodingOracle())
+        assert (
+            await decide(
+                POINT,
+                {"q": "x"},
+                QUESTIONS,
+                session_key="s",
+                config=_config(bucket=0),
+                extra={"turn_id": "abc"},
+            )
+            is None
+        )
+        assert log_home() == []

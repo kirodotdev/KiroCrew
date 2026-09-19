@@ -51,6 +51,24 @@ class TestRowShape:
             "error",
         }
 
+    def test_a_point_may_add_its_own_fields_flat_beside_the_seven(self):
+        """A round number and a turn id read as fields, not as a nested object."""
+        row = _row(extra={"turn_id": "abc123", "round": 2, "rounds": 4, "agree": False})
+        assert row["turn_id"] == "abc123"
+        assert row["round"] == 2 and row["rounds"] == 4
+        assert row["agree"] is False
+        assert set(row) > {"ts", "point", "session", "latency_ms", "scrubbed", "answers", "error"}
+
+    def test_a_list_field_stays_a_list(self):
+        """A reader comparing two arms needs the members, not one rendered string."""
+        row = _row(extra={"baseline": ["a", "b"], "jev": []})
+        assert row["baseline"] == ["a", "b"]
+        assert row["jev"] == []
+
+    def test_no_extra_is_the_seven_fields_exactly(self):
+        assert set(_row(extra=None)) == set(_row())
+        assert set(_row(extra={})) == set(_row())
+
     def test_answers_are_flattened_to_value_p_confidence(self):
         row = _row(answers={"verdict": Answer("verdict", "DUP", 0.9, 0.8)})
         assert row["answers"] == {"verdict": {"value": "DUP", "p": 0.9, "confidence": 0.8}}
@@ -118,6 +136,44 @@ class TestBounds:
 
         row = _row(answers={"v": Answer("v", _Big(), 1.0)})
         assert len(row["answers"]["v"]["value"]) == log_mod._MAX_VALUE_CHARS
+
+    def test_an_extra_cannot_rewrite_a_core_field(self):
+        """``scrubbed`` and ``session`` must mean what every reader expects."""
+        row = _row(
+            extra={
+                "session": "chat-plaintext",
+                "scrubbed": "sort of",
+                "ts": "yesterday",
+                "point": "somewhere.else",
+                "error": "made up",
+                "answers": "made up",
+                "latency_ms": "ages",
+            }
+        )
+        assert row["session"] == log_mod.session_digest("sess-1")
+        assert row["scrubbed"] is False
+        assert row["point"] == "skills.select"
+        assert row["latency_ms"] == 212
+        assert row["error"] is None
+        assert row["answers"] is None
+        assert row["ts"] != "yesterday"
+
+    def test_too_many_extra_fields_are_capped(self):
+        row = _row(extra={f"f{i}": i for i in range(200)})
+        added = set(row) - set(_row())
+        assert len(added) == log_mod._MAX_EXTRA_KEYS
+
+    def test_a_long_extra_list_and_a_long_extra_value_are_bounded(self):
+        row = _row(extra={"keys": ["k"] * 500, "note": "x" * 5000})
+        assert len(row["keys"]) == log_mod._MAX_EXTRA_ITEMS
+        assert len(row["note"]) == log_mod._MAX_VALUE_CHARS
+
+    def test_an_extra_that_is_not_a_mapping_is_ignored(self):
+        assert set(_row(extra=["round", 1])) == set(_row())
+
+    def test_a_null_extra_value_stays_null(self):
+        """``p`` is a probability OR nothing; a reader must not parse "None"."""
+        assert _row(extra={"p": None})["p"] is None
 
 
 class TestAppend:

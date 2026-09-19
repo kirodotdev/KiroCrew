@@ -4007,6 +4007,7 @@
       "enumValues": null,
       "defaultValue": {
         "bucket": 100,
+        "history_budget_chars": 0,
         "provider": {
           "endpoint": "https://api.typesafe.ai/v1/systemone",
           "api_key": "secret://TYPESAFE_API_KEY",
@@ -4028,6 +4029,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 100
+    },
+    {
+      "path": "decisions.history_budget_chars",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "History budget (chars)",
+      "help": "How many characters of PRIOR conversation one decision may carry, on top of the current message. Earlier user and assistant turns are added newest-first until this many characters are spent and the last one is clipped to fit; tool output is never sent. The default is 0 -- no prior turns -- because consent is recorded against the text the owner reviewed, which names the message excerpt and the candidate descriptions; raising this widens what leaves the machine, so it is a choice rather than an upgrade. A negative value reads as 0.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "decisions.provider",

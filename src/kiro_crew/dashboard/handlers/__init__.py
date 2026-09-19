@@ -982,11 +982,13 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     pwa_file,
 )
 
-# Decision-seam consent — the operator's switch for sending conversation state
-# to Jev. Sole writer of the ``decisions_consent.json`` keystone.
+# Decision seam — the operator's switch for sending conversation state to Jev
+# (sole writer of the ``decisions_consent.json`` keystone), plus the chat strip's
+# verdict writer and folded report.
 from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_consent_get,
     api_decisions_consent_put,
+    api_decisions_feedback,
 )
 
 # Flagged-file delivery consent — owner-gated, and the ONLY writer of

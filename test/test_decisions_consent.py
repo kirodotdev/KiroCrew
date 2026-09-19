@@ -20,7 +20,7 @@ import json
 import os
 import stat
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -52,6 +52,72 @@ def configured(monkeypatch):
 # ---------------------------------------------------------------------------
 # Fences
 # ---------------------------------------------------------------------------
+
+
+class TestTheLogIsSealedToo:
+    """Sealing the GRANT and leaving the RECORD writable would be half a control.
+
+    An agent that cannot switch the seam on can still append a ``kind="feedback"``
+    line -- the exact shape ``log.build_feedback_row`` produces -- and the owner's
+    summary would count a verdict nobody gave. The directory is read-only in every
+    sandbox mode for that reason, and pre-created so an install that has never
+    sampled a decision does not leave the name creatable.
+    """
+
+    def test_the_log_directory_is_mounted_read_only(self):
+        from kiro_crew import sandbox
+
+        assert "decisions" in sandbox._CREW_READONLY_LEAVES
+
+    def test_the_log_directory_is_fenced_on_the_agent_file_tool_path_too(self):
+        """The sandbox layer covers a shell; this one covers the file-edit tool.
+
+        The sandbox is one enforcement point and not every host has it, while the file
+        tool is present on all of them -- so the sandbox mount alone leaves the forged
+        verdict reachable wherever the OS sandbox is absent or off. WRITE-protected
+        rather than sensitive: reading the rows is the point of recording them, and the
+        gateway's own writer opens the file directly without passing this gate.
+        """
+        from kiro_crew.security.paths import write_protected_home_paths
+
+        entries = write_protected_home_paths()
+        assert any(entry.endswith("/decisions") for entry in entries), entries
+
+    def test_the_log_directory_stays_readable_through_the_tools(self):
+        """A record nobody may read is a record nobody can be shown."""
+        from kiro_crew.security.paths import is_sensitive_path
+
+        assert is_sensitive_path("~/.kiro/crew/decisions") is False
+        assert is_sensitive_path("~/.kiro/crew/decisions/decisions-20260919.jsonl") is False
+
+    def test_it_is_pre_created_so_an_absent_directory_is_not_skipped(self):
+        """A mount cannot target a path that does not exist, and an install that has
+        never sampled a decision has no log directory -- which is precisely the
+        state in which the name is creatable from inside the sandbox."""
+        from kiro_crew import sandbox
+
+        assert "decisions" in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+
+    def test_it_is_pre_created_as_a_DIRECTORY_not_a_file(self):
+        """A regular file at that name is worse than an absent one: the gateway's
+        own log directory could not then be created there."""
+        from kiro_crew import sandbox
+
+        assert "decisions" not in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
+
+    def test_the_seal_is_by_NAME_so_a_planted_symlink_cannot_stand_in(self):
+        """A resolving symlink is followed by the mount, which would seal a target
+        the governed party chose and leave the lexical name replaceable -- so the
+        anti-forgery seal would be satisfied by a link rather than by the log."""
+        from kiro_crew import sandbox
+
+        assert "decisions" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+
+    def test_the_grant_is_sealed_as_well(self):
+        """Both halves, so neither can be read as sufficient on its own."""
+        from kiro_crew import sandbox
+
+        assert "decisions_consent.json" in sandbox._CREW_READONLY_LEAVES
 
 
 class TestTheLeafIsAKeystone:
@@ -157,7 +223,11 @@ class TestRead:
 
 class TestWrite:
     def test_writes_owner_only_and_reads_back_bound_to_the_endpoint(self, keystone):
-        assert consent.save_enabled(True, endpoint=CUSTOM) == {"enabled": True, "endpoint": CUSTOM}
+        assert consent.save_enabled(True, endpoint=CUSTOM) == {
+            "enabled": True,
+            "endpoint": CUSTOM,
+            "history_budget_chars": 0,
+        }
         assert consent.permits(CUSTOM) is True
         assert consent.permits(DEFAULT_ENDPOINT) is False
         if os.name == "posix":
@@ -169,6 +239,7 @@ class TestWrite:
         assert consent.save_enabled(False, endpoint=DEFAULT_ENDPOINT) == {
             "enabled": False,
             "endpoint": "",
+            "history_budget_chars": 0,
         }
         assert consent.permits(CUSTOM) is False
 
@@ -179,7 +250,55 @@ class TestWrite:
             "note": "kept",
             "enabled": True,
             "endpoint": DEFAULT_ENDPOINT,
+            "history_budget_chars": 0,
         }
+
+    def test_records_the_history_ceiling_it_was_given(self, keystone):
+        """The prior-conversation budget the owner reviewed, on the sealed record."""
+        state = consent.save_enabled(True, endpoint=CUSTOM, history_budget_chars=2000)
+        assert state["history_budget_chars"] == 2000
+        assert consent.consented_history_budget() == 2000
+
+    def test_omitting_the_ceiling_consents_to_no_prior_turns(self, keystone):
+        consent.save_enabled(True, endpoint=CUSTOM)
+        assert consent.consented_history_budget() == 0
+
+    def test_disabling_clears_the_ceiling_even_when_one_is_passed(self, keystone):
+        """So a later re-enable cannot inherit a budget nobody re-reviewed.
+
+        The budget is passed on the DISABLE call too, because that is the only
+        version of this test that fails when the clearing is removed: disabling
+        with the default of 0 would write 0 either way.
+        """
+        consent.save_enabled(True, endpoint=CUSTOM, history_budget_chars=2000)
+        state = consent.save_enabled(False, endpoint=CUSTOM, history_budget_chars=2000)
+        assert state["history_budget_chars"] == 0
+        assert consent.consented_history_budget() == 0
+
+    @pytest.mark.parametrize("bad", [True, False, "2000", 2000.5, None, -1, [2000]])
+    def test_a_ceiling_that_is_not_a_whole_non_negative_number_is_refused(self, keystone, bad):
+        """Refused rather than rounded: it is written into a security record."""
+        with pytest.raises(ValueError):
+            consent.save_enabled(True, endpoint=CUSTOM, history_budget_chars=bad)
+
+    @pytest.mark.parametrize(
+        "recorded,expected",
+        [(2000, 2000), (0, 0), (-5, 0), (True, 0), ("2000", 0), (2000.5, 0), (None, 0)],
+    )
+    def test_only_a_whole_non_negative_number_reads_as_a_ceiling(
+        self, keystone, recorded, expected
+    ):
+        """A hand-edited keystone cannot widen egress by being creative."""
+        keystone.write_text(
+            json.dumps({"enabled": True, "endpoint": CUSTOM, "history_budget_chars": recorded}),
+            encoding="utf-8",
+        )
+        assert consent.consented_history_budget() == expected
+
+    def test_an_absent_ceiling_is_no_prior_turns(self, keystone):
+        """Every consent recorded before this ceiling existed keeps its meaning."""
+        keystone.write_text(json.dumps({"enabled": True, "endpoint": CUSTOM}), encoding="utf-8")
+        assert consent.consented_history_budget() == 0
 
     def test_refuses_to_clobber_a_corrupt_file(self, keystone):
         keystone.write_text("{not json", encoding="utf-8")
@@ -193,6 +312,87 @@ class TestWrite:
         with pytest.raises(ValueError):
             consent.save_enabled(True, endpoint="   ")
         assert not keystone.exists()
+
+    def test_a_lowering_survives_an_enable_running_beside_it(self, keystone, monkeypatch):
+        """Two owner PUTs on two threads, and the LOWER ceiling is the one left.
+
+        The handler hands ``save_enabled`` to a thread, so the switch PUT (which
+        omits the field and therefore keeps) and a PUT lowering the ceiling to 0
+        really do overlap. Resolving the sentinel inside the function narrows the
+        window but cannot order two reads against one write: the keeper reads 2000,
+        the lowerer writes 0, and the keeper writes 2000 back -- an egress limit
+        raised by losing a race.
+
+        The interleaving is forced rather than raced for: the keeper's write is held
+        open long enough for the lowerer to finish inside it. Under the lock the
+        lowerer cannot start until the keeper is done, so the last write is its 0;
+        without the lock the keeper's delayed 2000 lands last.
+        """
+        import threading
+        import time
+
+        from kiro_crew.decisions import consent as module
+
+        consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
+        real_write = module.atomic_write
+
+        def _slow_keeper_write(path, text, **kwargs):
+            if '"history_budget_chars": 2000' in text:
+                time.sleep(0.3)
+            return real_write(path, text, **kwargs)
+
+        monkeypatch.setattr(module, "atomic_write", _slow_keeper_write)
+        errors: list[BaseException] = []
+
+        def _keep():
+            try:
+                consent.save_enabled(
+                    True,
+                    endpoint=DEFAULT_ENDPOINT,
+                    history_budget_chars=consent.KEEP_HISTORY_BUDGET,
+                )
+            except BaseException as exc:  # pragma: no cover - reported, not swallowed
+                errors.append(exc)
+
+        def _lower():
+            try:
+                consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=0)
+            except BaseException as exc:  # pragma: no cover - reported, not swallowed
+                errors.append(exc)
+
+        keeper = threading.Thread(target=_keep)
+        lowerer = threading.Thread(target=_lower)
+        keeper.start()
+        time.sleep(0.05)
+        lowerer.start()
+        keeper.join(timeout=5)
+        lowerer.join(timeout=5)
+
+        assert not errors, errors
+        assert not keeper.is_alive() and not lowerer.is_alive()
+        assert consent.consented_history_budget() == 0, "the enable PUT restored a lowered ceiling"
+
+    def test_the_write_is_held_under_one_lock(self, keystone):
+        """The read and the write are inside the same acquisition, not two."""
+        held: list[bool] = []
+        real_read = consent.read_state_strict
+        real_write = consent.atomic_write
+
+        def _read_under_the_lock():
+            held.append(consent._SAVE_LOCK.locked())
+            return real_read()
+
+        def _write_under_the_lock(path, text, **kwargs):
+            held.append(consent._SAVE_LOCK.locked())
+            return real_write(path, text, **kwargs)
+
+        with (
+            patch.object(consent, "read_state_strict", _read_under_the_lock),
+            patch.object(consent, "atomic_write", _write_under_the_lock),
+        ):
+            consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
+
+        assert held == [True, True]
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +444,7 @@ class TestHandler:
             "endpoint": "",
             "configured_endpoint": DEFAULT_ENDPOINT,
             "permits": False,
+            "history_budget_chars": 0,
         }
         keystone.write_text(
             json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
@@ -362,6 +563,185 @@ class TestHandler:
         assert resp.status == 400
         assert json.loads(resp.text)["code"] == "decisions_consent_invalid_body"
         assert not keystone.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", [True, False, "2000", 2000.5, -1, [2000], {"n": 1}])
+    async def test_the_route_refuses_a_ceiling_that_is_not_a_whole_number(
+        self, keystone, audit, configured, bad
+    ):
+        """Refused at the DOOR, not coerced: it is written into a security record.
+
+        Driven through the handler rather than through ``save_enabled``, because the
+        route carries its own validation and a test of the writer leaves it
+        unexercised -- which is what revert-verify caught.
+        """
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        resp = await api_decisions_consent_put(
+            _request(
+                body={"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": bad}
+            )
+        )
+
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "decisions_consent_invalid_body"
+        assert consent.consented_history_budget() == 0
+
+    @pytest.mark.asyncio
+    async def test_the_route_records_the_ceiling_the_owner_echoed(
+        self, keystone, audit, configured
+    ):
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        resp = await api_decisions_consent_put(
+            _request(
+                body={"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 2000}
+            )
+        )
+
+        assert resp.status == 200
+        assert json.loads(resp.text)["history_budget_chars"] == 2000
+        assert consent.consented_history_budget() == 2000
+
+    @pytest.mark.asyncio
+    async def test_omitting_the_ceiling_with_none_recorded_consents_to_no_prior_turns(
+        self, keystone, audit, configured
+    ):
+        """With nothing recorded, the switch consents to the message and the menu."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        resp = await api_decisions_consent_put(
+            _request(body={"enabled": True, "endpoint": DEFAULT_ENDPOINT})
+        )
+
+        assert resp.status == 200
+        assert json.loads(resp.text)["history_budget_chars"] == 0
+
+    @pytest.mark.asyncio
+    async def test_omitting_the_ceiling_leaves_a_recorded_one_as_it_was(
+        self, keystone, audit, configured
+    ):
+        """An enable PUT that never mentions the ceiling must not lower it.
+
+        The consent card sends ``enabled`` and ``endpoint`` only, so defaulting the
+        missing field to 0 makes an ordinary switch flip erase a ceiling recorded
+        through this same route -- a security decision lowered by a request that
+        said nothing about it, and silently, since the route answers 200.
+
+        Driven through the handler, because the default that did the erasing lives
+        on the route and a test of ``save_enabled`` leaves it unexercised.
+        """
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        first = await api_decisions_consent_put(
+            _request(
+                body={"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 2000}
+            )
+        )
+        assert first.status == 200
+        assert consent.consented_history_budget() == 2000
+
+        again = await api_decisions_consent_put(
+            _request(body={"enabled": True, "endpoint": DEFAULT_ENDPOINT})
+        )
+
+        assert again.status == 200
+        assert json.loads(again.text)["history_budget_chars"] == 2000
+        assert consent.consented_history_budget() == 2000
+
+    @pytest.mark.asyncio
+    async def test_the_route_hands_the_keep_sentinel_down_rather_than_a_number(
+        self, keystone, audit, configured, monkeypatch
+    ):
+        """Resolving the ceiling here would write a number read before the write.
+
+        Two owner PUTs can overlap: one lowering the ceiling, one that only flips the
+        switch. If this route resolved the omitted field itself, it would hold a
+        ceiling read BEFORE the lowering landed and write that number back, raising an
+        egress limit by losing a race. The writer resolves it from the same read its
+        write is based on, so the route must hand the sentinel down untouched.
+        """
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
+        seen: list = []
+        real = consent.save_enabled
+
+        def _spy(enabled, *, endpoint, history_budget_chars=0):
+            seen.append(history_budget_chars)
+            return real(enabled, endpoint=endpoint, history_budget_chars=history_budget_chars)
+
+        monkeypatch.setattr(consent, "save_enabled", _spy)
+
+        resp = await api_decisions_consent_put(
+            _request(body={"enabled": True, "endpoint": DEFAULT_ENDPOINT})
+        )
+
+        assert resp.status == 200
+        assert seen == [consent.KEEP_HISTORY_BUDGET], "the route resolved it instead"
+        assert consent.consented_history_budget() == 2000
+
+    @pytest.mark.asyncio
+    async def test_keep_reads_the_ceiling_from_the_write_s_own_read(self, keystone):
+        """A lowering that lands before the write wins, rather than being restored."""
+        lowered = {"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 0}
+        consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
+
+        with patch.object(consent, "read_state_strict", return_value=lowered):
+            state = consent.save_enabled(
+                True,
+                endpoint=DEFAULT_ENDPOINT,
+                history_budget_chars=consent.KEEP_HISTORY_BUDGET,
+            )
+
+        assert state["history_budget_chars"] == 0
+        assert consent.consented_history_budget() == 0
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_of_zero_in_the_body_still_clears_a_recorded_one(
+        self, keystone, audit, configured
+    ):
+        """0 is a ceiling the owner chose, and absent is a field nobody sent.
+
+        Preserving on absence is only safe if an explicit 0 still lowers it, which is
+        the owner's way to take prior turns back without turning the seam off.
+        """
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        await api_decisions_consent_put(
+            _request(
+                body={"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 2000}
+            )
+        )
+
+        resp = await api_decisions_consent_put(
+            _request(
+                body={"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 0}
+            )
+        )
+
+        assert resp.status == 200
+        assert json.loads(resp.text)["history_budget_chars"] == 0
+        assert consent.consented_history_budget() == 0
+
+    @pytest.mark.asyncio
+    async def test_disabling_without_the_field_still_clears_the_ceiling(
+        self, keystone, audit, configured
+    ):
+        """Preserving is for an enable; a revocation clears the ceiling with it."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        await api_decisions_consent_put(
+            _request(
+                body={"enabled": True, "endpoint": DEFAULT_ENDPOINT, "history_budget_chars": 2000}
+            )
+        )
+
+        resp = await api_decisions_consent_put(_request(body={"enabled": False}))
+
+        assert resp.status == 200
+        assert json.loads(resp.text)["history_budget_chars"] == 0
+        assert consent.consented_history_budget() == 0
 
     @pytest.mark.asyncio
     async def test_put_refuses_a_body_that_is_not_json(self, keystone, audit, configured):
