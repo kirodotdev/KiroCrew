@@ -300,6 +300,25 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
 # Module-level dict — safe because gateway runs in a single asyncio event loop.
 _pending_approvals: dict[str, _PendingApproval] = {}
 
+# In-flight turns: reply_ts (thread root) -> that turn's "Working…" marker ts.
+# Registered when the marker posts, popped in the SAME no-await stretch as the
+# turn-end mirror's link re-resolve. On the single event loop this makes the
+# mid-turn "Link to Dashboard" race two-way exclusive: a click's import either
+# sees the entry (filters this turn's own in-flight messages; the mirror then
+# delivers the finalized answer into the linked slot) or sees no entry (the
+# mirror already ran and skipped; the import captures the completed thread
+# whole) — never both (duplicate answer), never neither (lost answer).
+_INFLIGHT_TURNS: dict[str, str] = {}
+
+
+def inflight_turn_marker(thread_ts: str) -> str | None:
+    """The working-marker ts of the turn currently in flight in ``thread_ts``.
+
+    ``None`` means no turn is in flight (or its mirror handoff already ran).
+    """
+    return _INFLIGHT_TURNS.get(thread_ts)
+
+
 # ── Phase-aware reaction constants ──────────────────────────────────────
 
 _DEFAULT_PHASE_EMOJIS: dict[str, str] = {
@@ -3371,10 +3390,28 @@ async def handle_message(
     # Post inline stop button (only in threaded conversations to avoid breaking tests)
     _working_ts: str | None = None
     if thread_ts:
-
-        _working_ts = await slack.post_blocks(
-            channel, build_working_blocks(session_key), "Working…", reply_ts
+        # Same gate the timing footer applies at turn end (threaded, thread not
+        # already linked, dashboard present), evaluated NOW so the "Link to
+        # Dashboard" control exists for the whole turn rather than appearing
+        # only once the turn completes — on a long turn the footer arrives far
+        # too late to be the first chance to link. The footer keeps its own
+        # copy: this message is deleted at turn end, so without the footer the
+        # control would vanish exactly when the turn finishes.
+        _early_link = (
+            not sessions.get_session_for_thread(reply_ts) and get_dashboard_state() is not None
         )
+        _working_ts = await slack.post_blocks(
+            channel,
+            build_working_blocks(session_key, include_dashboard_link=_early_link),
+            "Working…",
+            reply_ts,
+        )
+        if _working_ts:
+            # Mark the turn in flight for the mid-turn "Link to Dashboard"
+            # import. Popped in the mirror's no-await stretch at turn end
+            # (safety-netted in the finally), never merely inferred from the
+            # marker message's presence in a thread fetch.
+            _INFLIGHT_TURNS[reply_ts] = _working_ts
 
     use_slack_stream = False
     stream_ts: str | None = None
@@ -4563,6 +4600,7 @@ async def handle_message(
                     await slack.delete_message(channel, _working_ts)
                 except Exception:
                     pass
+                _working_ts = None
             _release_permit()
             return
 
@@ -4570,12 +4608,12 @@ async def handle_message(
         if channel_activation != ACTIVATION_REVIEW:
             await slack.set_thread_status(channel, reply_ts, "")
 
-        # Remove inline stop button
-        if _working_ts:
-            try:
-                await slack.delete_message(channel, _working_ts)
-            except Exception:
-                pass
+        # The "Working…" marker is NOT deleted here: it is the visible half of
+        # the in-flight signal a mid-turn "Link to Dashboard" import filters
+        # by, so it must outlive the dashboard mirror below — deleting it now
+        # would let a click land between deletion and mirror and import the
+        # finalized answer the mirror is about to deliver again. The finally
+        # deletes it after the mirror handoff (and on every early-return path).
 
         # Suppress error replies for trusted bot messages to prevent echo loops
         if from_trusted_bot and _had_error:
@@ -5265,18 +5303,63 @@ async def handle_message(
                 consolidator.maybe_consolidate(session_key)
 
         # ── Bidirectional sync: mirror to dashboard if routed to a dashboard session ──
+        # ``linked_session_key`` was committed by the routing loop BEFORE the
+        # model ran. A "Link to Dashboard" click during this turn (the early
+        # button posts at turn start) links the thread after that commit, so
+        # the pre-turn value cannot see it — re-resolve here. The import that
+        # ran at click time deliberately dropped this turn's in-flight
+        # messages (working/thinking/stream placeholders and any half- or
+        # fully-streamed answer), so this mirror is the only path that
+        # delivers the finalized answer into the click's slot. A pinned
+        # answer keeps mirroring nowhere: it belongs to the asker, not to
+        # whoever owns the thread now.
+        #
+        # ORDERING INVARIANT: the registry pop below and the re-resolve +
+        # slot appends further down share one no-await stretch. The click's
+        # import likewise decides filtering and links in one no-await stretch
+        # after its fetch. On the single event loop the two stretches cannot
+        # interleave, so the import sees the entry and filters (mirror
+        # delivers the answer) or sees no entry and imports the completed
+        # thread (mirror already skipped) — exactly one of the two delivers.
+        _INFLIGHT_TURNS.pop(reply_ts, None)
+        _mid_turn_link = False
+        if not linked_session_key and not route_pinned:
+            linked_session_key = sessions.get_session_for_thread(reply_ts)
+            _mid_turn_link = linked_session_key is not None
         if linked_session_key and _dashboard_state and accumulated and not _skip_writes:
             try:
                 ds = _dashboard_state
                 slot_name = linked_session_key.removeprefix("dashboard:")
                 slot = getattr(ds, "_slots", {}).get(slot_name)
                 if slot:
-                    slot.append("user", text, "msg msg-u")
+                    # A mid-turn link already imported the thread, including the
+                    # user message that started this turn — mirroring it again
+                    # would duplicate it. The answer is never in the import (the
+                    # in-flight filter excluded it), so it always lands. Dedup
+                    # by the trigger's Slack ts against the set the import
+                    # recorded — exact, immune to a mid-turn follow-up sitting
+                    # after the trigger — falling back to a scan of ALL user
+                    # messages (not just the last: a follow-up would defeat
+                    # that) when the import predates the ts record.
+                    _user_already_imported = False
+                    if _mid_turn_link:
+                        _imported_ts = getattr(slot, "_imported_slack_ts", None)
+                        if _imported_ts:
+                            _user_already_imported = msg_ts in _imported_ts
+                        else:
+                            _texts = (text, _display_redactor(text))
+                            _user_already_imported = any(
+                                _m.get("role") == "user" and _m.get("content") in _texts
+                                for _m in getattr(slot, "messages", []) or []
+                            )
+                    if not _user_already_imported:
+                        slot.append("user", text, "msg msg-u")
                     slot.append("assistant", accumulated, "msg msg-a")
                     if slot._on_message:
-                        slot._on_message(
-                            slot.key, {"role": "user", "content": text, "cls": "msg msg-u"}
-                        )
+                        if not _user_already_imported:
+                            slot._on_message(
+                                slot.key, {"role": "user", "content": text, "cls": "msg msg-u"}
+                            )
                         slot._on_message(
                             slot.key,
                             {"role": "assistant", "content": accumulated, "cls": "msg msg-a"},
@@ -5300,6 +5383,17 @@ async def handle_message(
                 )
             )
     finally:
+        # In-flight registry: the mirror's pop above is the ordering-critical
+        # one; this pop covers every early-return and exception path.
+        _INFLIGHT_TURNS.pop(reply_ts, None)
+        # Working-marker deletion, deferred past the mirror handoff (see the
+        # in-flight comment above answer delivery). Idempotent: paths that
+        # already deleted it nulled ``_working_ts``.
+        if _working_ts:
+            try:
+                await slack.delete_message(channel, _working_ts)
+            except Exception:
+                pass
         # If the verdict was deferred to the footer and this tail is torn down
         # (a raise or cancellation in a decoration) before the footer books it,
         # the choices never reached the reader, so book the failure here rather

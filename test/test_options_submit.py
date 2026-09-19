@@ -428,6 +428,238 @@ class TestImportThreadToSlot:
         # the exact output, but append should have been called)
         slot.append.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_drops_inflight_transient_tail(self):
+        """A mid-turn import must not capture the working/stream placeholders.
+
+        The handler's in-flight registry marks the turn live; the bot's own
+        messages at/after the registered marker ts are transient — the
+        half-streamed answer would otherwise be frozen into the transcript.
+        The finalized answer arrives via the turn-end mirror instead.
+        """
+        from kiro_crew.slack import handler, interactions
+
+        working_msg = {
+            "bot_id": "B1",
+            "ts": "104.0",
+            "text": "Working…",
+            "blocks": [
+                {
+                    "type": "actions",
+                    "elements": [{"type": "button", "action_id": "mc_inline_stop_slack_C1"}],
+                }
+            ],
+        }
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(
+            return_value=[
+                {"user": "U1", "ts": "101.0", "text": "old question"},
+                {"bot_id": "B1", "ts": "102.0", "text": "old answer"},
+                {"user": "U1", "ts": "103.0", "text": "new question"},
+                working_msg,
+                {"bot_id": "B1", "ts": "105.0", "text": "partial streamed ans"},
+            ]
+        )
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+
+        handler._INFLIGHT_TURNS["100.0"] = "104.0"
+        try:
+            with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
+                await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+        finally:
+            handler._INFLIGHT_TURNS.pop("100.0", None)
+
+        contents = [c.args[1] for c in slot.append.call_args_list]
+        assert contents == ["old question", "old answer", "new question"]
+
+    @pytest.mark.asyncio
+    async def test_keeps_user_message_after_inflight_marker(self):
+        """A human message sent during the turn is real content, not transient."""
+        from kiro_crew.slack import handler, interactions
+
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(
+            return_value=[
+                {"user": "U1", "ts": "101.0", "text": "question"},
+                {
+                    "bot_id": "B1",
+                    "ts": "102.0",
+                    "text": "Working…",
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "elements": [{"action_id": "mc_inline_stop_slack_C1"}],
+                        }
+                    ],
+                },
+                {"user": "U1", "ts": "103.0", "text": "follow-up while running"},
+            ]
+        )
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+
+        handler._INFLIGHT_TURNS["100.0"] = "102.0"
+        try:
+            with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
+                await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+        finally:
+            handler._INFLIGHT_TURNS.pop("100.0", None)
+
+        contents = [c.args[1] for c in slot.append.call_args_list]
+        assert contents == ["question", "follow-up while running"]
+
+    @pytest.mark.asyncio
+    async def test_foreign_bot_reply_after_marker_is_kept(self):
+        """Another bot's mid-turn reply is content, not our transient.
+
+        Own-identity comes from the marker message's author fields, so the
+        filter drops only Kiro Crew's own in-flight tail — a foreign bot
+        posting into the thread during the turn stays in the import.
+        """
+        from kiro_crew.slack import handler, interactions
+
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(
+            return_value=[
+                {"user": "U1", "ts": "101.0", "text": "question"},
+                {
+                    "bot_id": "B1",
+                    "user": "UBOT",
+                    "ts": "102.0",
+                    "text": "Working…",
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "elements": [{"action_id": "mc_inline_stop_slack_C1"}],
+                        }
+                    ],
+                },
+                {"bot_id": "B_OTHER", "ts": "103.0", "text": "CI bot: build passed"},
+                {"bot_id": "B1", "user": "UBOT", "ts": "104.0", "text": "partial streamed"},
+            ]
+        )
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = ""
+
+        handler._INFLIGHT_TURNS["100.0"] = "102.0"
+        try:
+            with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
+                await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+        finally:
+            handler._INFLIGHT_TURNS.pop("100.0", None)
+
+        contents = [c.args[1] for c in slot.append.call_args_list]
+        assert contents == ["question", "CI bot: build passed"]
+
+    @pytest.mark.asyncio
+    async def test_refetches_when_turn_ends_during_fetch(self):
+        """A fetch straddling turn end must not freeze a pre-answer snapshot.
+
+        The turn was in flight when the fetch started and had ended (registry
+        popped by the mirror stretch) by the time it returned: the first
+        snapshot may predate the finalized answer, and the mirror — which ran
+        before this link existed — will never deliver it. The import refetches
+        once and captures the completed thread whole.
+        """
+        from kiro_crew.slack import handler, interactions
+
+        stale = [{"user": "U1", "ts": "101.0", "text": "question"}]
+        fresh = [
+            {"user": "U1", "ts": "101.0", "text": "question"},
+            {"bot_id": "B1", "ts": "105.0", "text": "final answer"},
+        ]
+
+        async def _fetch(channel, thread_ts):
+            # Turn ends while the first fetch is in flight.
+            handler._INFLIGHT_TURNS.pop("100.0", None)
+            return stale if slack.fetch_thread_replies.await_count == 1 else fresh
+
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(side_effect=_fetch)
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+
+        handler._INFLIGHT_TURNS["100.0"] = "102.0"
+        try:
+            with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
+                await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+        finally:
+            handler._INFLIGHT_TURNS.pop("100.0", None)
+
+        assert slack.fetch_thread_replies.await_count == 2
+        contents = [c.args[1] for c in slot.append.call_args_list]
+        assert contents == ["question", "final answer"]
+
+    @pytest.mark.asyncio
+    async def test_settled_thread_keeps_all_bot_messages(self):
+        """No turn in flight (registry empty) — import everything, but a
+        leftover working marker from a crashed turn is a control, not content."""
+        from kiro_crew.slack import interactions
+
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(
+            return_value=[
+                {"user": "U1", "ts": "101.0", "text": "question"},
+                {"bot_id": "B1", "ts": "102.0", "text": "final answer"},
+                {
+                    "bot_id": "B1",
+                    "ts": "103.0",
+                    "text": "Working…",
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "elements": [{"action_id": "mc_inline_stop_slack_C1"}],
+                        }
+                    ],
+                },
+            ]
+        )
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+
+        with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
+            await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+
+        contents = [c.args[1] for c in slot.append.call_args_list]
+        assert contents == ["question", "final answer"]
+
+    def test_real_chat_slot_accepts_imported_ts_record(self):
+        """Regression: ``_ChatSlot`` uses ``__slots__``, so the ts-record
+        assignment at the end of ``_import_thread_to_slot`` crashes with
+        ``AttributeError`` unless the slot is declared. The MagicMock slots
+        used elsewhere in this class cannot catch that, so pin it on the
+        real class: default is an empty set, and the import's exact
+        assignment shape lands.
+        """
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        slot = _ChatSlot("s1")
+        assert slot._imported_slack_ts == set()
+        msgs = [{"ts": "100.0", "text": "q"}, {"ts": None, "text": "x"}]
+        slot._imported_slack_ts = {str(m.get("ts") or "") for m in msgs}
+        assert slot._imported_slack_ts == {"100.0", ""}
+
 
 # ── Tests for OPTIONS submit dispatch path ──
 

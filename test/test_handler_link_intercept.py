@@ -549,3 +549,158 @@ class TestSessionsKeywordFallThrough:
             slot.append.assert_not_called()
         finally:
             handler.sel = orig_sel
+
+
+# ── Mid-turn link: turn-end mirror re-resolve ──
+
+
+class TestMidTurnLinkMirror:
+    """The turn-end mirror must see a thread linked DURING the turn.
+
+    ``linked_session_key`` commits before the model runs; the early Link to
+    Dashboard button makes a mid-turn link the headline case rather than an
+    edge case. The mirror re-resolves the thread owner at delivery time, and
+    dedups the user message the click-time import already captured.
+    """
+
+    def _make_env(self, slot_messages: list[dict], imported_ts: set[str] | None = None):
+        from test_slack_handler import FakeProvider, FakeSessionManager
+
+        from kiro_crew.providers.base import LLMEvent
+
+        class LinkingProvider(FakeProvider):
+            """Links the thread to a dashboard slot mid-stream (after routing)."""
+
+            def __init__(self, sessions_ref: list):
+                super().__init__([LLMEvent(kind="text_chunk", text="final answer")])
+                self._sessions_ref = sessions_ref
+
+            async def stream(self, message, timeout=120.0):
+                # First event: simulate the user clicking Link to Dashboard —
+                # the import has run and the thread index now names the slot.
+                self._sessions_ref[0].thread_link = "dashboard:chat-1"
+                async for ev in super().stream(message, timeout):
+                    yield ev
+
+        class LinkingSessionManager(FakeSessionManager):
+            def __init__(self, provider=None):
+                super().__init__(provider)
+                self.thread_link: str | None = None
+
+            def get_session_for_thread(self, thread_ts):
+                return self.thread_link
+
+        sessions_ref: list = []
+        provider = LinkingProvider(sessions_ref)
+        sessions = LinkingSessionManager(provider)
+        sessions_ref.append(sessions)
+
+        slot = MagicMock()
+        slot.key = "chat-1"
+        slot.messages = slot_messages
+        # Explicit (a bare MagicMock attr is truthy): ``None`` exercises the
+        # text-scan fallback; a real set exercises the exact ts dedup.
+        slot._imported_slack_ts = imported_ts
+        slot._on_message = None
+        ds = MagicMock()
+        ds._slots = {"chat-1": slot}
+        # Entry state: the thread is NOT linked when the message arrives — the
+        # link happens mid-turn. A truthy return here would fire the entry
+        # intercept and route the message away before the turn ever runs.
+        ds.get_linked_slot = MagicMock(return_value=None)
+        return sessions, slot, ds
+
+    @pytest.mark.asyncio
+    async def test_final_answer_mirrored_into_mid_turn_linked_slot(self):
+        from kiro_crew.slack import handler
+
+        # Import captured the triggering user message already.
+        sessions, slot, ds = self._make_env([{"role": "user", "content": "the question"}])
+        from conftest import MockSlackClient
+
+        slack = MockSlackClient()
+        with patch.object(handler, "_dashboard_state", ds):
+            await handler.handle_message(slack, sessions, "C1", "the question", "100.0", "m2", "U1")
+
+        appended = [(c.args[0], c.args[1]) for c in slot.append.call_args_list]
+        # User message deduped (already imported); answer delivered exactly once.
+        assert appended == [("assistant", "final answer")]
+
+    @pytest.mark.asyncio
+    async def test_user_message_mirrored_when_import_missed_it(self):
+        from conftest import MockSlackClient
+        from kiro_crew.slack import handler
+
+        sessions, slot, ds = self._make_env([])
+        slack = MockSlackClient()
+        with patch.object(handler, "_dashboard_state", ds):
+            await handler.handle_message(slack, sessions, "C1", "the question", "100.0", "m2", "U1")
+
+        appended = [(c.args[0], c.args[1]) for c in slot.append.call_args_list]
+        assert appended == [("user", "the question"), ("assistant", "final answer")]
+
+    @pytest.mark.asyncio
+    async def test_followup_does_not_defeat_ts_dedup(self):
+        """A mid-turn follow-up after the trigger must not re-append the trigger.
+
+        The import captured both the trigger and a later follow-up; dedup by
+        the trigger's exact Slack ts (recorded by the import) is immune to the
+        follow-up sitting last — a last-user-only text comparison would miss
+        the trigger and duplicate it out of order.
+        """
+        from conftest import MockSlackClient
+        from kiro_crew.slack import handler
+
+        sessions, slot, ds = self._make_env(
+            [
+                {"role": "user", "content": "the question"},
+                {"role": "user", "content": "also do X please"},
+            ],
+            imported_ts={"m2", "m3"},
+        )
+        slack = MockSlackClient()
+        with patch.object(handler, "_dashboard_state", ds):
+            await handler.handle_message(slack, sessions, "C1", "the question", "100.0", "m2", "U1")
+
+        appended = [(c.args[0], c.args[1]) for c in slot.append.call_args_list]
+        assert appended == [("assistant", "final answer")]
+
+    @pytest.mark.asyncio
+    async def test_text_fallback_scans_all_user_messages(self):
+        """Without the ts record, the fallback must scan every user message —
+        stopping at the last one would let a follow-up defeat the dedup."""
+        from conftest import MockSlackClient
+        from kiro_crew.slack import handler
+
+        sessions, slot, ds = self._make_env(
+            [
+                {"role": "user", "content": "the question"},
+                {"role": "user", "content": "also do X please"},
+            ],
+            imported_ts=None,
+        )
+        slack = MockSlackClient()
+        with patch.object(handler, "_dashboard_state", ds):
+            await handler.handle_message(slack, sessions, "C1", "the question", "100.0", "m2", "U1")
+
+        appended = [(c.args[0], c.args[1]) for c in slot.append.call_args_list]
+        assert appended == [("assistant", "final answer")]
+
+    @pytest.mark.asyncio
+    async def test_unlinked_thread_still_mirrors_nowhere(self):
+        from test_slack_handler import FakeProvider, FakeSessionManager
+
+        from conftest import MockSlackClient
+        from kiro_crew.providers.base import LLMEvent
+        from kiro_crew.slack import handler
+
+        provider = FakeProvider([LLMEvent(kind="text_chunk", text="answer")])
+        sessions = FakeSessionManager(provider)
+        slot = MagicMock()
+        ds = MagicMock()
+        ds._slots = {"chat-1": slot}
+        ds.get_linked_slot = MagicMock(return_value=None)
+        slack = MockSlackClient()
+        with patch.object(handler, "_dashboard_state", ds):
+            await handler.handle_message(slack, sessions, "C1", "q", "100.0", "m2", "U1")
+        slot.append.assert_not_called()

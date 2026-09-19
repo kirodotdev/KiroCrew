@@ -70,6 +70,7 @@ from kiro_crew.slack.handler import (
     add_trusted_session,
     handle_interaction,
     handle_message,
+    inflight_turn_marker,
     is_allowed_user,
     is_owner,
     set_allowed_users,
@@ -1425,6 +1426,29 @@ async def _route_action_to_session(
     t.add_done_callback(_orch._handler_tasks.discard)
 
 
+def _inflight_transient_start(msgs: list[dict]) -> int | None:
+    """Index of the "⏳ Working…" status message, or None when absent.
+
+    The status message carries the inline Stop button (action_id
+    ``mc_inline_stop_*``) and exists only while a turn is in flight — every
+    turn exit path deletes it. Its presence in a fetched thread therefore
+    marks a running turn, and every BOT message from it onward is transient
+    turn state: the status itself, the thinking placeholder, and the
+    streaming placeholder holding a half-streamed answer. The action_id alone
+    identifies it — no other message carries an ``mc_inline_stop_`` control.
+    """
+    for i, m in enumerate(msgs):
+        for block in m.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("type") != "actions":
+                continue
+            for el in block.get("elements") or []:
+                if isinstance(el, dict) and str(el.get("action_id", "")).startswith(
+                    "mc_inline_stop_"
+                ):
+                    return i
+    return None
+
+
 async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: str) -> Any:
     """Fetch a Slack thread, redact messages, and import into a new dashboard slot."""
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
@@ -1434,9 +1458,60 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     if existing:
         return existing
 
+    # Registry read BEFORE the fetch: if the turn ends while we fetch, the
+    # snapshot may predate the finalized answer — and the turn-end mirror,
+    # which ran before this click's link existed, will never deliver it.
+    # That straddle is detected below and cured with one refetch.
+    _inflight_before = inflight_turn_marker(thread_ts)
     msgs = await slack.fetch_thread_replies(channel, thread_ts)
     if not msgs:
         return None
+    _marker_ts = inflight_turn_marker(thread_ts)
+    if _inflight_before is not None and _marker_ts is None:
+        msgs = await slack.fetch_thread_replies(channel, thread_ts) or msgs
+        _marker_ts = inflight_turn_marker(thread_ts)
+    bot_id = getattr(ds, "_self_bot_id", None) or ""
+
+    def _is_bot(m: dict) -> bool:
+        return bool(m.get("bot_id")) or (bool(bot_id) and m.get("user") == bot_id)
+
+    # In-flight turn: the early dashboard-link button is clickable from turn
+    # start, so this import can run while the turn is still streaming. Drop
+    # OUR OWN messages at/after the working marker — the working/thinking/
+    # stream placeholders and any half- or fully-streamed answer — rather
+    # than freeze them into the dashboard transcript; the finalized answer
+    # reaches the slot through the turn-end mirror, which re-resolves the
+    # thread link for exactly this case. The handler's in-flight registry is
+    # the authority (popped in the same no-await stretch as the mirror's
+    # re-resolve, so filtering here and mirror delivery are two-way
+    # exclusive); the marker message's own author fields supply "us", so a
+    # foreign bot's mid-turn reply and mid-turn user messages are kept —
+    # they are content, not transients.
+    if _marker_ts is not None:
+        _marker_msg = next((m for m in msgs if m.get("ts") == _marker_ts), None)
+        _self_ids = {v for k in ("bot_id", "user") for v in [(_marker_msg or {}).get(k)] if v}
+
+        def _is_own(m: dict) -> bool:
+            if _self_ids:
+                return m.get("bot_id") in _self_ids or m.get("user") in _self_ids
+            # Marker absent from the fetch (not expected while the registry
+            # entry lives): degrade to the role classifier above.
+            return _is_bot(m)
+
+        def _msg_ts(m: dict) -> float:
+            try:
+                return float(m.get("ts") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        _cut = _msg_ts({"ts": _marker_ts})
+        msgs = [m for m in msgs if _msg_ts(m) < _cut or not _is_own(m)]
+    else:
+        # No turn in flight: a working marker still present in the thread is
+        # a crashed turn's leftover control — never content, drop just it.
+        _stale = _inflight_transient_start(msgs)
+        if _stale is not None:
+            msgs = [m for i, m in enumerate(msgs) if i != _stale]
     # Pre-filter: drop empty text and !link-to-dashboard messages
     msgs = [
         m
@@ -1451,14 +1526,17 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
         msgs = msgs[-50:]
     slot = ds.get_or_create_slot()
     slot.title = f"Slack thread {thread_ts[:10]}" + (" (truncated)" if truncated else "")
-    bot_id = getattr(ds, "_self_bot_id", None) or ""
     for m in msgs:
-        is_bot = bool(m.get("bot_id")) or m.get("user") == bot_id
+        is_bot = _is_bot(m)
         role = "assistant" if is_bot else "user"
         text_content = m.get("text", "")
         text_content, _ = redact_exfiltration_urls(text_content)
         text_content, _ = redact_credentials(text_content)
         slot.append(role, text_content, f"msg msg-{'a' if is_bot else 'u'}")
+    # Record what was imported so the turn-end mirror can dedup the turn's
+    # triggering user message by exact Slack ts instead of by text (in-memory
+    # only; a restart between import and mirror falls back to the text scan).
+    slot._imported_slack_ts = {str(m.get("ts") or "") for m in msgs}
     ds.link_slack(slot.key, thread_ts, channel)
     await save_slot_off_loop(ds, slot)
     ds.push_slots_update()

@@ -38,6 +38,25 @@ class TestBuildWorkingBlocks:
         btn = blocks[1]["elements"][0]
         assert btn["style"] == "danger"
 
+    def test_no_dashboard_link_by_default(self):
+        """Default shape is unchanged: exactly one button, the Stop button."""
+        blocks = build_working_blocks("k")
+        elements = blocks[1]["elements"]
+        assert len(elements) == 1
+        assert elements[0]["action_id"] == "mc_inline_stop_k"
+
+    def test_dashboard_link_appended_when_requested(self):
+        from kiro_crew.slack.format import LINK_DASHBOARD_ACTION
+
+        blocks = build_working_blocks("k", include_dashboard_link=True)
+        elements = blocks[1]["elements"]
+        assert len(elements) == 2
+        # Stop stays first so the layout users know is preserved.
+        assert elements[0]["action_id"] == "mc_inline_stop_k"
+        assert elements[1]["action_id"] == LINK_DASHBOARD_ACTION
+        # Same unstyled button the footer posts — one control, one look.
+        assert "style" not in elements[1]
+
 
 # ---------------------------------------------------------------------------
 # session_task_card — End button
