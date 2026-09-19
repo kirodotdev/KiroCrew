@@ -673,3 +673,104 @@ async def test_cleanup_loop_closes_scan_at_shutdown():
     await SessionCleanup._cleanup_loop(owner)
     cursor.close.assert_called_once()
     assert owner.state.member_reclaim_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_repeated_publication_retirement_and_maintenance_preserve_live_records(
+    home, monkeypatch
+):
+    """Real writers/locks/cursor across cycles; namespace rows model deferred exit.
+
+    The generated Linux launcher's own publication/retirement is covered in
+    test_sandbox_namespace_retirement. Here its wire format is written through
+    the real atomic writer, so Windows also exercises both record families.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from kiro_crew import session
+    from kiro_crew.config import KiroCrewConfig
+
+    starts = {}
+    dead = set()
+    monkeypatch.setattr(pc, "get_process_start_id", starts.get)
+    monkeypatch.setattr(pc, "pid_confirmed_absent", lambda pid: pid in dead)
+    monkeypatch.setattr(records, "SCAN_BUDGET", 2)
+    pids = home / "member-memory-bindings" / "pids"
+
+    def publish(pid):
+        auth.publish_member_session_pid(pid, f"test:记录:{pid}", home=home, memory_store="")
+        # No portable namespace publisher exists: use its canonical payload,
+        # real protected directory, common lock and atomic file publication.
+        with records.record_directory(home) as directory, records.record_lock(directory):
+            name = f"{pid}.namespace.json"
+            payload = json.dumps(_row(namespace=True, start=starts[pid]))
+            if pc.IS_POSIX:
+                records.atomic_write_at(directory.fd, name, payload, mode=0o600)
+            else:
+                records.atomic_write(directory.describe(name), payload, restrict_to_owner=True)
+        return [pids / f"{pid}{suffix}.json" for suffix in ("", ".namespace")]
+
+    starts[PID] = "live"
+    live = await asyncio.to_thread(publish, PID)
+    unknown = _put(home, pid=PID + 1)
+    malformed = _put(home, pid=PID + 2, row={"future_schema": True})
+    dead.add(PID + 2)  # malformed remains even with positive owner absence
+    preserved = {path: path.read_bytes() for path in [*live, unknown, malformed]}
+    lock = pids / records.LOCK_NAME
+    lock_identity = (lock.stat().st_dev, lock.stat().st_ino)
+    cfg = KiroCrewConfig()
+    cfg.session.pool_size = 0
+    manager = session.SessionManager(cfg, provider_factory=None)
+    cleanup = manager._cleanup_boundary()
+
+    async def drain():
+        # At most one entry per tick would still finish within this bound.
+        bound = len(list(pids.iterdir())) + 1
+        for tick in range(bound):
+            await cleanup._sweep_member_bindings()
+            assert all(path.read_bytes() == body for path, body in preserved.items())
+            if cleanup.state.member_reclaim_cursor is None:
+                assert tick > 0, "scan did not retain its bounded cursor across ticks"
+                return
+        pytest.fail("bounded maintenance cursor never completed")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(session, "maintenance_executor", lambda: executor)
+        try:
+            for cycle in range(3):
+                normal, abandoned, reused = [PID + 10 + cycle * 3 + i for i in range(3)]
+                paths = []
+                for pid in (normal, abandoned, reused):
+                    starts[pid] = f"start-{cycle}-{pid}"
+                    paths.extend(await asyncio.to_thread(publish, pid))
+                assert all(path.is_file() for path in paths)
+                # A live maintenance pass cannot mistake current records for garbage.
+                before = {path: path.read_bytes() for path in paths}
+                await drain()
+                assert all(path.read_bytes() == body for path, body in before.items())
+
+                # Normal PID invalidation, then missed namespace retirement / crash.
+                await asyncio.to_thread(
+                    auth.publish_member_session_pid, normal, "", home=home, memory_store=""
+                )
+                assert not (pids / f"{normal}.json").exists()
+                assert (pids / f"{normal}.namespace.json").exists()
+                for pid in (normal, abandoned):
+                    starts.pop(pid)
+                    dead.add(pid)
+                starts[reused] = f"replacement-{cycle}"
+
+                # Maintenance must defer, not mutate files while a writer owns the lock.
+                before = {path: path.read_bytes() for path in pids.glob("*.json")}
+                with records.record_directory(home) as directory, records.record_lock(directory):
+                    await cleanup._sweep_member_bindings()
+                    assert {path: path.read_bytes() for path in pids.glob("*.json")} == before
+                await drain()
+                assert set(pids.iterdir()) == {*preserved, lock}
+                await drain()  # another pass must not grow files or erase survivors
+                assert set(pids.iterdir()) == {*preserved, lock}
+                assert (lock.stat().st_dev, lock.stat().st_ino) == lock_identity
+        finally:
+            if cleanup.state.member_reclaim_cursor is not None:
+                cleanup.state.member_reclaim_cursor.close()
+                cleanup.state.member_reclaim_cursor = None

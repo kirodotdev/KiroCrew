@@ -956,3 +956,133 @@ def test_scope_active_enter_returns_none_on_subprocess_errors(monkeypatch):
 
     assert r._scope_active_enter_us("oserror.scope") is None
     assert r._scope_active_enter_us("subprocess-error.scope") is None
+
+
+@pytest.mark.asyncio
+async def test_periodic_ticks_reclaim_successive_runtime_trees_without_gateway_restart(
+    tmp_path, monkeypatch
+):
+    """Real loop, watchdog registration and reaper; only the OS table is synthetic."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from kiro_crew import sandbox, session, session_pid
+    from kiro_crew.config import KiroCrewConfig
+
+    proc, slice_dir = tmp_path / "proc", tmp_path / "slice"
+    rec = _Recorder()
+    now = [_NOW]
+    boot = _enter_us_for_age(2000)
+    entered = {}
+    protected = {}
+    for pid in range(701, 708):
+        unit = f"run-protected-{pid}.scope"
+        _make_proc(proc, pid, pgrp=pid if pid == 707 else 700, marker=pid != 706)
+        scope = _make_scope(slice_dir, unit, [pid])
+        rec.register(unit, scope)
+        entered[unit] = _enter_us_for_age(1000)
+        protected[scope / "cgroup.procs"] = (scope / "cgroup.procs").read_bytes()
+
+    cfg = KiroCrewConfig()
+    cfg.session.pool_size = 0
+    cfg.session.timeout_secs = 60
+    cfg.session.watchdog_rss_max_mb = 0
+    manager = session.SessionManager(cfg, provider_factory=None)
+    cleanup = manager._cleanup_boundary()
+    client = SimpleNamespace(_pid=701)
+    manager._sessions["test:active"] = SimpleNamespace(provider=SimpleNamespace(client=client))
+    manager._warm_pool.put_nowait((SimpleNamespace(client=SimpleNamespace(_pid=702)), 0.0))
+    manager._starting_pids.add(703)
+    manager._subagent_runtimes["test:companion"] = SimpleNamespace(pid=704, is_alive=lambda: True)
+    monkeypatch.setattr(session_pid, "_protected_pids", lambda: set())
+    monkeypatch.setattr(session_pid, "_read_tracked_agent_pids", lambda: ({705}, True))
+    monkeypatch.setattr(sandbox, "_probe_cgroup_scope", lambda: (True, "fixture"))
+    monkeypatch.setattr(r, "_instance_scope_dir", lambda: (slice_dir, ""))
+    monkeypatch.setattr(r, "_cached_gateway_boot_us", lambda: boot)
+    monkeypatch.setattr(r, "time", _ModuleProxy(r.time, clock_gettime=lambda _: now[0]))
+    monkeypatch.setattr(r, "os", _ModuleProxy(r.os, getpid=lambda: 900))
+    monkeypatch.setattr(r, "_sel_scope_reap", lambda *args: None)
+    core = r.reap_scopes
+    summaries = []
+
+    def reap_fixture(path, **kwargs):
+        assert kwargs["gateway_boot_us"] == boot
+        result = core(
+            path,
+            **kwargs,
+            proc_root=proc,
+            stop_unit=rec.stop_unit,
+            signal_owned=rec.signal_owned,
+            sleep=rec.sleep,
+            active_enter_us=entered.get,
+        )
+        summaries.append(result.reclaimed)
+        return result
+
+    monkeypatch.setattr(r, "reap_scopes", reap_fixture)
+    # Keep the registered scope hook real; unrelated maintenance must never run.
+    for name in (
+        "_expire_idle_hook",
+        "_orphan_mcp_hook",
+        "_rss_threshold_check",
+        "_stuck_turn_check",
+        "_bg_drain_reap_hook",
+    ):
+        monkeypatch.setattr(cleanup, name, AsyncMock())
+    for name in (
+        "_sweep_session_roots",
+        "_sweep_sandbox_artifacts",
+        "_sweep_member_bindings",
+        "_maybe_prune_pycache",
+        "_sweep_periodic_pids",
+    ):
+        monkeypatch.setattr(cleanup, name, AsyncMock())
+
+    ticks = []
+    round_state = {}
+
+    async def advance():
+        tick = len(ticks)
+        cycle, phase = divmod(tick, 5)
+        leader = 200 + cycle * 10
+        unit = f"run-cycle-{cycle}.scope"
+        client._pid = None if phase == 2 else 701  # incomplete active snapshot
+        if phase == 0:
+            _make_proc(proc, leader, pgrp=leader)
+            _make_proc(proc, leader + 1, pgrp=leader)
+            scope = _make_scope(slice_dir, unit, [leader, leader + 1])
+            rec.register(unit, scope)
+            entered[unit] = int(now[0] * 1_000_000)
+            round_state["scope"] = scope
+        elif phase == 1:
+            # The runtime leader exits before the grace floor, not the gateway.
+            now[0] += 1
+            for path in (proc / str(leader)).iterdir():
+                path.unlink()
+            (proc / str(leader)).rmdir()
+            (round_state["scope"] / "cgroup.procs").write_text(f"{leader + 1}\n")
+        elif phase == 2:
+            now[0] += r._REAP_MIN_AGE_SECS + 1
+        raise asyncio.TimeoutError
+
+    shutdown = SimpleNamespace(is_set=lambda: len(ticks) == 10, wait=advance)
+    monkeypatch.setattr(session, "shutdown_event", shutdown)
+
+    async def record_tick():
+        cycle, phase = divmod(len(ticks), 5)
+        expected = [f"run-cycle-{n}.scope" for n in range(cycle + int(phase >= 3))]
+        assert rec.stopped == expected
+        assert all(path.read_bytes() == body for path, body in protected.items())
+        if phase >= 3:
+            assert (round_state["scope"] / "cgroup.procs").read_bytes() == b""
+        ticks.append(phase)
+
+    monkeypatch.setattr(cleanup, "_sweep_untracked_mcps", record_tick)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(session, "maintenance_executor", lambda: executor)
+        await asyncio.wait_for(cleanup._run_cleanup_ticks(cleanup._adopt_idle_policy()), 10)
+    assert ticks == list(range(5)) * 2
+    assert summaries == [0, 0, 1, 0] * 2
+    assert rec.killed == rec.slept == []
