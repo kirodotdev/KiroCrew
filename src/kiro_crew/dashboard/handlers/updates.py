@@ -34,7 +34,7 @@ from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.gateway_restart import resolve_restart_launcher
+from kiro_crew.gateway_restart import resolve_launch_shim, resolve_restart_launcher
 from kiro_crew.git_divergence import (
     UNREADABLE_TIMEOUT,
     DivergenceUnreadable,
@@ -1485,10 +1485,27 @@ async def _restart_gateway(
                 resolver = respawn_executable
             exe = await asyncio.to_thread(resolver)
             if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
-                state.push_update_progress(
-                    "error", "Cannot restart: invalid Python executable path"
+                # The interpreter is GONE, not merely unexpected. An update whose
+                # install removes the previous version's directory prunes the
+                # tree this path names, and the resolver above answers that
+                # cached path for every layout but the managed venv — so the
+                # restart the update needs could never happen, and the only
+                # symptom was a stale version string. The pathname this process
+                # was launched through outlives that tree, so it is tried before
+                # refusing; it does not resurrect the old version, because the
+                # tree the old version lived in is what just disappeared.
+                launcher = await asyncio.to_thread(resolve_launch_shim)
+                if launcher is None:
+                    state.push_update_progress(
+                        "error", "Cannot restart: invalid Python executable path"
+                    )
+                    return False
+                logger.info(
+                    "Respawn interpreter %s no longer exists; restarting through the "
+                    "launch pathname instead",
+                    exe,
                 )
-                return False
+                exe = None
         # circular import: kiro_crew.dashboard.chat imports from
         # kiro_crew.dashboard.handlers (which re-exports this module), so this
         # must stay inline to avoid an import cycle at module load.
@@ -1526,10 +1543,32 @@ async def _restart_gateway(
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
         await asyncio.sleep(0.5)
-        if launcher is not None:
-            reexec_launcher(launcher, sys.argv[1:])
-        else:
-            reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        # Verified once, before the drain. Re-checking here instead would turn a
+        # target that vanished mid-drain into a refusal AFTER close_all, and nothing
+        # clears the session registry's closing flag, so the gateway would survive
+        # permanently unable to serve. Nothing an AGENT does needs catching in this
+        # window either: the shim is refused up front unless its whole chain belongs
+        # to another uid, so this uid cannot alter it here.
+        #
+        # execv does not return on success, so reaching the handler means the target
+        # went away during the drain -- a separate privileged package operation, for
+        # a shim this uid cannot touch. Say so in the operator's own terms: at this
+        # point the sessions are closed and only a relaunch restores service, and a
+        # message naming that is worth more than an exception in the log.
+        try:
+            if launcher is not None:
+                reexec_launcher(launcher, sys.argv[1:])
+            else:
+                reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        except OSError:
+            logger.exception("Gateway restart exec failed after sessions were closed")
+            state.push_update_progress(
+                "error",
+                "The update installed, but this gateway could not restart: its "
+                "restart target disappeared while sessions were closing. Sessions "
+                "are stopped -- relaunch from a terminal to finish.",
+            )
+            return False
         return True
     finally:
         state._gateway_restart_in_progress = False

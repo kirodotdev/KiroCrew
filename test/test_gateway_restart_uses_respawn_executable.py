@@ -23,12 +23,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import GatewayOrchestrator
-
-_STABLE_INTERPRETER = "/managed/current/bin/python-sentinel"
 
 
 def _make_orchestrator() -> GatewayOrchestrator:
@@ -43,9 +42,18 @@ def _make_orchestrator() -> GatewayOrchestrator:
 
 
 @pytest.fixture
-def exec_seams(monkeypatch):
-    """Replace the interpreter lookup and the exec; return both recorders."""
-    respawn = MagicMock(return_value=_STABLE_INTERPRETER)
+def exec_seams(monkeypatch, tmp_path):
+    """Replace the interpreter lookup and the exec; return both recorders.
+
+    The interpreter is a REAL file on disk. Every restart path verifies that the
+    resolved interpreter still exists before it drains anything, so a sentinel
+    naming nothing would drive the refusal path instead of the exec under test.
+    """
+    interpreter = tmp_path / "managed" / "current" / "bin" / "python-sentinel"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    platform_compat.chmod_safe(interpreter, 0o700)
+    respawn = MagicMock(return_value=str(interpreter))
     monkeypatch.setattr("kiro_crew.platform.wheel_engine.respawn_executable", respawn)
     reexec = MagicMock()
     monkeypatch.setattr("kiro_crew.platform_compat.reexec_python_module", reexec)
@@ -76,7 +84,7 @@ def _assert_execs_the_respawn_interpreter(respawn: MagicMock, reexec: MagicMock)
     args, kwargs = reexec.call_args
     assert args[0] == "kiro_crew"
     assert list(args[1]) == sys.argv[1:]
-    assert kwargs.get("executable") == _STABLE_INTERPRETER, (
+    assert kwargs.get("executable") == respawn.return_value, (
         "restart exec'd sys.executable instead of respawn_executable(); after an "
         "update pruned the old install that path no longer exists"
     )
