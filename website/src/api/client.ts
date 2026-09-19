@@ -54,6 +54,7 @@ export const SKILLS_TIMEOUT_MS = 15_000
  *  would only be a second number to explain. Rationale in the CR description. */
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 import { installApiTransport } from './apiTransport'
+import { netFetch } from './netFetch'
 import type { SessionSummary } from '../types/sessionSummary'
 import { queryClient, resolveDefaultMemoryMode } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
@@ -1779,7 +1780,10 @@ const projectHeader = (projectKey?: string): HeadersInit | undefined =>
   projectKey ? { 'X-Steering-Project': projectKey } : undefined
 
 const get = (url: string, sessionKey?: string, signal?: AbortSignal) =>
-  fetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) })
+  // GET is idempotent, so a network-level failure (tunnel drop, gateway
+  // restart) is retried by netFetch before it surfaces. Mutations below are
+  // journaled but never replayed — see netFetch's header.
+  netFetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) }, { retry: true })
 const post = (
   url: string,
   body?: object,
@@ -1787,7 +1791,7 @@ const post = (
   extra?: HeadersInit,
   redirect?: RequestRedirect,
 ) =>
-  trackArtifactWrite(url, fetch(url, {
+  trackArtifactWrite(url, netFetch(url, {
     method: 'POST',
     // sessionKey overrides the shared `dashboard:ui` placeholder with the REAL
     // slot. The placeholder satisfies the server's `if sk:` gate but names no
@@ -1805,11 +1809,11 @@ const post = (
     body: body ? JSON.stringify(body) : undefined,
   }))
 const put = (url: string, body: object, sessionKey?: string, extra?: HeadersInit) =>
-  trackArtifactWrite(url, fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: JSON.stringify(body) }))
+  trackArtifactWrite(url, netFetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: JSON.stringify(body) }))
 const del = (url: string, body?: object, sessionKey?: string, extra?: HeadersInit) =>
-  trackArtifactWrite(url, fetch(url, { method: 'DELETE', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: body ? JSON.stringify(body) : undefined }))
+  trackArtifactWrite(url, netFetch(url, { method: 'DELETE', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: body ? JSON.stringify(body) : undefined }))
 const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSignal) =>
-  trackArtifactWrite(url, fetch(url, {
+  trackArtifactWrite(url, netFetch(url, {
     method: 'PATCH',
     // Same override as post(): replace the shared `dashboard:ui` placeholder with
     // the REAL slot when the write belongs to a chat session, so the server's
