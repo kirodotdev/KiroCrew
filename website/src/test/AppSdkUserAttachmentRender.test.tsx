@@ -52,22 +52,20 @@ describe('app-sdk user row — attachments render like ChatPage', () => {
     expect(text.split('![image](/tmp/once.png)').length - 1).toBe(1)
   })
 
-  it('draws a non-image attachment as a card; inert without a file-open handler', () => {
-    render(<ChatMessageList messages={[user('summarize this', { files: ['/tmp/report.pdf'] })]} running={false} />)
-    const card = screen.getByTitle(/\/tmp\/report\.pdf/)
-    expect(card.textContent).toContain('report.pdf')
-    // No host handler: the card must not LOOK clickable (no button role, no
-    // open-file label), the same degrade DirChip makes -- and its tooltip says
-    // WHERE the file opens, since a click here answers nothing.
-    expect(card.getAttribute('role')).toBeNull()
-    expect(card.getAttribute('title')).toMatch(/can't be opened here/)
-    expect(screen.queryByRole('button', { name: /report\.pdf/ })).toBeNull()
-  })
-
-  it('opens the attachment through the host handler when one is supplied', () => {
+  it('draws a non-image attachment as a clickable card that opens through the host handler', () => {
     const onFileOpen = vi.fn()
     render(<ChatMessageList messages={[user('summarize this', { files: ['/tmp/report.pdf'] })]} running={false} onFileOpen={onFileOpen} />)
-    fireEvent.click(screen.getByTitle('/tmp/report.pdf'))
+    const card = screen.getByRole('button', { name: /report\.pdf/ })
+    expect(card.getAttribute('title')).toBe('/tmp/report.pdf')
+    fireEvent.click(card)
     expect(onFileOpen).toHaveBeenCalledWith('/tmp/report.pdf')
+  })
+
+  it('renders the card clickable even without a host handler — every viewer host supplies one (#9487)', () => {
+    render(<ChatMessageList messages={[user('summarize this', { files: ['/tmp/report.pdf'] })]} running={false} />)
+    const card = screen.getByRole('button', { name: /report\.pdf/ })
+    expect(card.getAttribute('title')).toBe('/tmp/report.pdf')
+    // No handler: clicking must not throw.
+    fireEvent.click(card)
   })
 })
