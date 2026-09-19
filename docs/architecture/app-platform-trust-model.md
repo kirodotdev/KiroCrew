@@ -32,6 +32,70 @@ code itself.
 - **SEL audit** — every module load is recorded in the Security Event Log with its
   trust class (`builtin` / `third_party`), so app-code execution is auditable.
 - **Execution admission defaults to deny** — `agent.apps_allow_third_party` defaults to `false`. A non-builtin app needs either an explicit per-app `agent.apps_trusted` grant (with its repository binding, where applicable) or the broad `apps_allow_third_party=true` grant. `app_execution_denied` is consulted before in-process module loading, backend spawning, enable-time side effects, and manifest shell lifecycle commands; allowed and denied decisions are SEL-audited. Builtin status is accepted only when the registered app name and resolved path prove shipped provenance.
+- **Turning admission off REVOKES, it does not merely stop admitting** — the app's
+  tracked BACKEND PROCESS is stopped, so the setting is never a label that changes
+  nothing until the next restart. Three paths enforce it, and they exist because
+  the setting has three writers:
+  - `PUT /api/security/trusted-apps/allow-all` sweeps on the falling edge before
+    persisting `false`, so each app's `on_shutdown` hook can still load, then
+    sweeps a second time after the write to catch an app enabled during the
+    window. It reports what it could not stop rather than claiming success, and
+    `agent.apps_allow_third_party` is excluded from the generic settings PATCH so
+    no caller reaches the setting without that sequencing.
+  - `start_enabled_app_backends` revokes at boot: an app the ceiling no longer
+    admits has its agents, skills, and MCP entries deregistered and its backend
+    is not spawned. A policy tightened while the gateway was down therefore does
+    not survive the restart.
+  - the per-backend liveness watch re-reads the ceiling each sweep and stops a
+    backend that is no longer admitted. This is what closes the CLI and the
+    hand-edited `config.json`: both reach the setting without passing the
+    endpoint, and before this a backend they un-trusted kept serving until the
+    next boot. Bound is one `_HEALTH_WATCH_INTERVAL`.
+
+  Scope is the executing surface. An app with its own `agent.apps_trusted` grant
+  keeps running while that grant stands — the blanket flag does not govern it — and
+  non-executable resources (agents, skills, MCP declarations, cron definitions)
+  are outside the ceiling. Anything that tries to RUN app code meets
+  `app_execution_denied` and fails closed on its own.
+  The liveness watch is level-triggered on the ceiling rather than edge-triggered
+  on one setting, so REMOVING an app's own grant from `config.json` also stops its
+  backend within one interval. That follows from the same rule and is intended: an
+  app the gateway would refuse to load is an app it should not keep running.
+  Turning the blanket flag off, on its own, never touches an app that still holds
+  its own grant.
+
+  **What revocation does NOT reach.** Only processes the gateway TRACKS are
+  stoppable, because only those have a recorded identity to signal. An
+  `openCommand` child is launched fire-and-forget by `POST /api/apps/<name>/open`
+  and is never recorded, so one already running when the ceiling closes keeps
+  running until it exits or the user closes it. What the closed ceiling does stop
+  is the next one: that endpoint calls `app_execution_denied` before it spawns, so
+  no new open is admitted. The same holds for any process an app's own backend
+  spawned as a child of itself, which dies with its parent only if it is in the
+  parent's process group.
+
+  **Adopted backends are never builtin-exempt.** A backend found already answering
+  a declared port is adopted rather than launched, so the gateway never vetted the
+  executable behind it and cannot classify it as shipped code — there is no
+  portable way to read a listening process's executable path. It is therefore
+  recorded as third-party and is revocable, which fails closed. The consequence is
+  that a revoked adopted backend is not respawned until the next gateway start. No
+  shipped builtin can reach this: adoption requires a manifest to declare a
+  concrete port, and every shipped builtin either declares `"auto"` or omits the
+  key, which defaults to `"auto"`. A test pins that, so a future builtin that
+  declares a fixed port fails CI rather than silently losing its exemption.
+
+  **An unreadable policy is a deny.** `third_party_execution_allowed` fails closed,
+  and the config loader falls back to defaults when neither config file can be read,
+  where the flag is `false` and the trusted set is empty. Because the liveness watch
+  re-reads the ceiling each sweep, that answer now stops running backends rather than
+  only refusing new admissions. This is deliberate: sparing a backend whenever the
+  policy cannot be read would make deleting `config.json` the one operator action
+  guaranteed to stop nothing. It is the mirror of the `installed.json` rule above --
+  that file belongs to the app, so its absence must not spare it, and this file
+  belongs to the operator, so its absence is honoured as a withdrawal. The cost is
+  availability and it is bounded: a genuine transient read fault stops third-party
+  backends for that sweep, and they return at the next gateway start.
 
 ### App-token scope confinement (CWE-269)
 
