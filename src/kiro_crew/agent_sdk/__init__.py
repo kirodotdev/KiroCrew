@@ -88,6 +88,7 @@ from kiro_crew.agent_sdk.capabilities import (
     SessionCapabilities,
     capabilities_for,
     capabilities_of,
+    capture_prompt_timeout,
 )
 from kiro_crew.agent_sdk.context import (
     CONTEXT_EVENT_AGENT_CHANGED,
@@ -137,6 +138,7 @@ __all__ = [
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",
     "capabilities_of",
+    "capture_prompt_timeout",
     "card_payload",
     "UNKNOWN_AGENT_AUTH",
     "AgentAuthDeclaration",

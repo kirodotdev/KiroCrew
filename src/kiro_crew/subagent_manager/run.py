@@ -389,12 +389,23 @@ class RunEventCoordinator(ManagerComponent):
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
         try:
+            await self._manager._load_timeout_history()
+            if info.timeout_secs == 0:
+                info.timeout_secs = self._manager._default_timeout
             await asyncio.wait_for(
-                self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
+                self._manager._run_inner(info, session_key), timeout=info.timeout_secs
             )
+            if info.outcome == "completed":
+                self._manager._observe_timeout_usage(info, completed=True)
         except asyncio.TimeoutError:
             if not info.reaped:
-                info.error = f"Timed out after {self._manager._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
+                learned = self._manager._observe_timeout_usage(info, completed=False)
+                adjustment = (
+                    f"; future runs use {learned // 60} minutes"
+                    if learned > info.timeout_secs
+                    else ""
+                )
+                info.error = f"Timed out after {info.timeout_secs // 60} minutes{adjustment} [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "timeout")
@@ -740,6 +751,7 @@ class RunEventCoordinator(ManagerComponent):
             raise ValueError("memory_unavailable: the recorded memory identity is malformed")
         # Local imports: this body runs on ``kiro_crew.subagent``'s globals
         # (bind_component_globals), which do not export these names.
+        from kiro_crew.agent_sdk import capture_prompt_timeout
         from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
         from kiro_crew.context import require_memory_delegation
         from kiro_crew.recovery.ladder import InfraError
@@ -1085,6 +1097,14 @@ class RunEventCoordinator(ManagerComponent):
             )
             is_cc = self._manager._is_cc_provider(client)
 
+        # One run owns one immutable manager deadline. Capture a transport
+        # budget only when the concrete provider declares that capability, then
+        # reuse it across every retry, fallback, and recovery continuation.
+        # Legacy duck providers retain their one-argument stream call.
+        prompt_timeout = await asyncio.to_thread(
+            capture_prompt_timeout, client, float(info.timeout_secs)
+        )
+
         # Capture cleanup identity immediately after successful session
         # acquisition. Every later step can fail and tombstone the run, so
         # delaying this until the state write leaves provider files unidentified.
@@ -1391,7 +1411,12 @@ class RunEventCoordinator(ManagerComponent):
                     # by a continuation on the same session.
                     _withheld: LLMEvent | None = None
                     _infra: Any = None
-                    async for _ev in client.stream(msg):
+                    stream = (
+                        client.stream(msg)
+                        if prompt_timeout is None
+                        else client.stream(msg, timeout=prompt_timeout)
+                    )
+                    async for _ev in stream:
                         # The run's own turn has produced its first frame: the
                         # durable row is ``running`` from here.
                         self.ensure_running_marked(info)

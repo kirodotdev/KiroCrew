@@ -817,7 +817,6 @@ test/test_process_tree_kill.py
 test/test_project_alias.py
 test/test_project_git.py
 test/test_project_git_status_log.py
-test/test_prompt_timeout_follows_ceiling.py
 test/test_provider_dispatch.py
 test/test_publish_providers.py
 test/test_publish_sync.py
@@ -929,7 +928,6 @@ test/test_socketsec.py
 test/test_source_providers.py
 test/test_source_providers_comment_guard.py
 test/test_source_summary.py
-test/test_spawn_followup.py
 test/test_spawn_list_redaction.py
 test/test_stable_release_gate.py
 test/test_stale_asset_watchdog.py

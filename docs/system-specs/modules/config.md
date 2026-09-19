@@ -1854,6 +1854,9 @@ class AgentConfig:
     max_subagents: int = 3         # concurrent subagent cap; 0 = auto-size from host memory/CPU. Load-time: 0 (auto) or [3, 64] — a fixed pin of 1/2 is raised to 3
     subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
     subagent_max_turns: int = 100  # default per-subagent tool-call budget. Load-time clamped to [1, 1000]
+    subagent_timeout_secs: int = 10800  # initial per-run wall-clock deadline (3 h); manual floor for adaptive learning
+    subagent_timeout_auto: bool = False  # opt in to raising future deadlines after timeouts or successful runs consuming at least 80% of the deadline
+    subagent_timeout_max_secs: int = 21600  # automatic-learning ceiling (6 h), clamped to [1800, 86400]; a higher manual floor is honored
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
@@ -2252,6 +2255,7 @@ in `sections.py` and re-exported by `loader.py`; the load-time clamp remains in
 | `SUBAGENT_AUTO_MAX_CEILING` | 64 | `agent.subagent_auto_max`, `agent.max_subagents` |
 | `SUBAGENT_MAX_TURNS_CEILING` | 1000 | `agent.subagent_max_turns` |
 | `SUBAGENT_TIMEOUT_MIN` / `SUBAGENT_TIMEOUT_MAX` | 60 / 86400 | `agent.subagent_timeout_secs` |
+| `SUBAGENT_TIMEOUT_MAX_MIN` / `SUBAGENT_TIMEOUT_MAX_MAX` | 1800 / 86400 | `agent.subagent_timeout_max_secs` |
 | `POOL_SIZE_MAX` | 10 | `session.pool_size` |
 | `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 86400 | `agent.chat_turn_timeout_secs` |
 | `TOOL_APPROVAL_TIMEOUT_MIN` / `_MAX` | 30 / 7200 | `agent.tool_approval_timeout_secs` |

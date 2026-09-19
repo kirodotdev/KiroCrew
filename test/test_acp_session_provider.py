@@ -238,6 +238,23 @@ class TestAcpSessionProviderStream:
         assert collected[2].kind == EVENT_COMPLETE
 
     @pytest.mark.asyncio
+    async def test_stream_forwards_explicit_transport_timeout(self):
+        handle = _make_handle()
+        seen: list[tuple[str, float | None]] = []
+
+        async def mock_prompt(message, timeout=None):
+            seen.append((message, timeout))
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        handle.prompt = mock_prompt
+        provider = AcpSessionProvider(handle, _make_runtime())
+
+        events = [event async for event in provider.stream("long run", timeout=21660.0)]
+
+        assert [event.kind for event in events] == [EVENT_COMPLETE]
+        assert seen == [("long run", 21660.0)]
+
+    @pytest.mark.asyncio
     async def test_stream_command_routes_through_handle_stream_command(self):
         """Slash commands go through the handle's NATIVE commands/execute path,
         never through prompt() — a prompt round-trip would hand the command to
