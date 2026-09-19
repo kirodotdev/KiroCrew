@@ -76,7 +76,7 @@ Four profiles:
 | `tool` (default) | Every ordinary agent-influenced spawn | The full rlimit ceiling plus `oom_score_adj=1000` |
 | `session_host` | The trusted ACP session-host spawns (`acp/client.py`, `acp/runtime.py`) | RAISES NOFILE to the inherited hard limit and does nothing else. A session host multiplexes many MCP pipe pairs, and the 1024 cap caused EMFILE crashes. No OOM bias: a trusted session host must not be the preferred kill target |
 | `build` | The dev-fleet build spawns (`apps/builtins/dev_fleet/runtime.py`) | Vite and npm need thousands of descriptors; keeps the OOM bias |
-| `none` | The user's own interactive terminal | No rlimits, no OOM bias, so the shim has nothing to deliver |
+| `none` | The user's own interactive terminal | No rlimits and no OOM bias, so the shim is skipped entirely unless the spawn also asks for a controlling terminal (`ctty_fd=`), which the terminal does |
 
 Async, shim-routed spawns cover MCP server probes (`mcp_discovery.py`), the app
 registry's clone and build spawns (`apps/registry.py`, `apps/routes.py`), the task
@@ -128,16 +128,21 @@ all its descendants, so coverage is unchanged; only the delivery point moved.
 `test/test_spawn_preexec_guard.py` is the AST tripwire that keeps a new async call site
 from reintroducing the fork.
 
-**Two documented exceptions**, both allowlisted in the tripwire:
+**One documented exception**, allowlisted in the tripwire:
 
 - `sandbox.create_subprocess_limited`'s own fallback, for a host with no usable shim
   (non-POSIX, or a truncated install). Dropping the caps silently would be worse.
-- `dashboard/handlers/terminal.py`'s interactive shell. It carries the `none` profile, so
-  the shim would have nothing to deliver while costing an interpreter startup on every
-  terminal open (measurably doubling the terminal test file's wall time). Its `preexec_fn`
-  is a single pre-resolved `ioctl` with no allocation and no lock acquisition, which is the
-  only shape where a fork-child callable is defensible. The fork remains; the risk is
-  accepted and stated at the call site.
+
+`dashboard/handlers/terminal.py`'s interactive shell is NOT an exception, and the reason is
+worth stating because the callable a fork would run there looks harmless. It carries the
+`none` profile, so the shim has no *limits* to deliver for it, and the callable is a single
+pre-resolved `ioctl` claiming the PTY as the controlling terminal -- no allocation, no lock
+acquisition. The fork it forces is not harmless: at 3GB resident and 121 threads the
+page-table copy holds the event loop for **107ms per terminal open** (13ms at 0.52GB, so it
+tracks resident size), and a clone that cannot reach `exec` holds it without bound. The shim
+carries the claim instead, through `--ctty-fd=`, which brings the loop-side cost to
+**0.5ms**: the interpreter startup it adds is paid by the CHILD after `exec`, not by the
+loop waiting for it.
 
 ### Defaults: one safe blanket limit, three opt-in knobs
 

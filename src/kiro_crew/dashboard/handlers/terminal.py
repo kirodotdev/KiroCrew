@@ -26,7 +26,7 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
-from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
+from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, RLIMIT_PROFILE_NONE, spawn_shim_argv
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -1497,30 +1497,22 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             # interactive terminal (like SSH), not agent-executed code.
             # Auth is enforced at WS handshake via token_auth_middleware.
             # See CLI_PANEL_DESIGN.md §8 "Security Considerations".
-            # TIOCSCTTY makes the PTY the controlling terminal after
-            # setsid(). Without this, Ctrl+C (SIGINT) doesn't work
-            # because the kernel can't find the foreground process group.
+            # The PTY has to become the child's CONTROLLING terminal or Ctrl+C
+            # reaches nothing: the kernel needs a foreground process group to
+            # deliver SIGINT to, and inheriting an already-open terminal
+            # descriptor does not confer one. It has to be claimed, after
+            # setsid(), by the session leader itself.
             #
-            # This is the one async spawn that deliberately keeps preexec_fn
-            # rather than using the post-exec shim. The shim exists to deliver
-            # RESOURCE LIMITS, and this spawn carries none: it is the user's own
-            # interactive shell, not agent-executed code, so it has no rlimits
-            # and no OOM bias to apply. Routing it through the shim therefore
-            # buys nothing and costs an interpreter startup on every terminal
-            # open -- doubling the wall time of the terminal test file, and
-            # slowing a user-facing surface.
-            #
-            # Residual risk, stated plainly: this still forks the threaded
-            # gateway. It is the smallest such fork in the codebase -- one
-            # pre-resolved ioctl, no allocation, no lock acquisition -- which is
-            # the only shape where preexec_fn is defensible.
-            tiocsctty = getattr(termios, "TIOCSCTTY", 0x540E)
-
-            def _setup_ctty():
-                # Safe in forked child: single ioctl with pre-resolved int,
-                # no Python allocation or lock acquisition.
-                fcntl.ioctl(0, tiocsctty, 0)
-
+            # The claim is made AFTER exec, by the post-exec shim, against fd 0
+            # (the PTY, below). Asking for it with preexec_fn instead is what
+            # makes CPython fork this whole multi-GB, ~120-thread gateway and run
+            # Python in the clone before exec, and the ioctl is not what costs:
+            # the page-table copy blocks the event loop for ~107ms per terminal
+            # open at 3GB resident, and a clone that cannot reach exec blocks it
+            # without bound, because the parent waits inside an un-awaitable
+            # os.read on the loop thread that no timeout can reach. The shim runs
+            # the same ioctl single-threaded in the exec'd child, where none of
+            # that applies -- see the module docstring of _spawn_exec_shim.py.
             argv = [shell, "-l"]
             if _is_bash_shell(shell):
                 token = uuid.uuid4().hex
@@ -1529,13 +1521,28 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 )
                 env.update(_bash_ready_env(token))
 
+            # RLIMIT_PROFILE_NONE: the user's own interactive shell carries no
+            # rlimits and no OOM bias, and never did. The controlling terminal is
+            # the only thing this spawn asks the shim for.
+            ctty_shim = spawn_shim_argv(RLIMIT_PROFILE_NONE, ctty_fd=0)
+            if not ctty_shim:
+                # Deliberately NOT falling back to preexec_fn: reintroducing the
+                # fork is the whole defect this spawn is avoiding, and a terminal
+                # whose Ctrl+C is dead is a smaller harm than a gateway the
+                # watchdog kills. Reachable only on a truncated install, where
+                # the shim source could not be captured at import.
+                logger.warning(
+                    "terminal: post-exec shim unavailable; opening the shell with no "
+                    "controlling terminal, so Ctrl+C will not reach it"
+                )
+
             proc = await asyncio.create_subprocess_exec(
+                *ctty_shim,
                 *argv,
                 stdin=worker_fd,
                 stdout=worker_fd,
                 stderr=worker_fd,
                 start_new_session=True,
-                preexec_fn=_setup_ctty,
                 cwd=cwd,
                 env=env,
             )
