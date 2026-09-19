@@ -464,6 +464,48 @@ class LLMProvider(ABC):
         return None
 
     @property
+    def compaction_self_managed(self) -> bool:
+        """Whether the harness itself bounds this session's context.
+
+        The third compaction question, and the one that separates the two
+        declines. ``manual_compact_unsupported_backend`` says Crew may not send
+        ``/compact``; ``compaction_unmanaged_backend`` says Crew will recycle
+        instead. A backend that answers the first and not the second is EITHER a
+        harness that summarizes unasked, OR a harness nobody has classified yet —
+        indistinguishable from those two answers alone, and they deserve
+        different words and different log levels.
+
+        Default ``True`` — a provider that has not spoken is taken to manage its
+        own context, which is the reading that changes no message and no level.
+        Declared here rather than probed off the instance (harness-parity H14);
+        the ACP implementations answer from
+        ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` membership."""
+        return True
+
+    @property
+    def compaction_unmanaged_backend(self) -> str | None:
+        """Backend id when NOTHING compacts this session, ``None`` otherwise.
+
+        The strictly narrower half of
+        :attr:`manual_compact_unsupported_backend`, and the two answer different
+        questions. That one asks whether CREW may send a ``/compact`` prompt. This
+        one asks what happens when Crew may not: a harness that summarizes on its
+        own initiative and reports it on the wire needs nothing from Crew, while a
+        harness that reports nothing needs the session recycled or its context grows
+        until the window ends the conversation for it.
+
+        Default ``None`` — a provider that has not positively named such a backend
+        is left alone, because this is the one answer that ENDS a conversation and
+        it must never be reached by default. Declared here with a safe default
+        rather than probed off the instance (harness-parity H14); the ACP
+        implementations answer from ``ACP_BACKENDS_CONTEXT_RECYCLE`` membership,
+        which names its members rather than taking whatever the other two sets
+        leave over. Consumers must act only on a non-empty ``str`` value, so a
+        mocked provider's attribute never reads as a claim that nothing
+        compacts."""
+        return None
+
+    @property
     def uses_kiro_identity_store(self) -> bool:
         """True when this provider's child authenticates from kiro-cli's own
         identity store, so an external ``kiro-cli logout`` invalidates a process

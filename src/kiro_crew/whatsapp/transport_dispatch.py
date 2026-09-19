@@ -23,7 +23,10 @@ from kiro_crew.messaging.approval import (
     parse_approval_reply,
     pending_for,
 )
-from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.commands import (
+    compact_refusal_plain_text,
+    compact_unsupported_backend,
+)
 from kiro_crew.messaging.conversation import (
     ConversationState,
     reserve_new_generation,
@@ -40,7 +43,6 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.whatsapp.commands import (
-    COMPACT_AUTO_MANAGED_TEXT,
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
     COMPACT_FAILED_TEXT,
@@ -307,7 +309,7 @@ class WhatsAppDispatcher:
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
                 logger.debug("whatsapp: manual /compact declined — %s compacts itself", unsupported)
-                await self._say(scope, COMPACT_AUTO_MANAGED_TEXT)
+                await self._say(scope, compact_refusal_plain_text(unsupported))
                 return
             await provider.compact()
             await provider.wait_for_compaction()
