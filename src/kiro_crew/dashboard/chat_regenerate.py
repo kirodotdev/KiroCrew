@@ -993,6 +993,20 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             # not release the flag early. ``best_effort=False`` so a failure
             # propagates to the 503 below instead of being swallowed and
             # re-armed as a dirty retry.
+            # ``expected_slot_name`` is the second axis, and it must be carried
+            # INTO the write for the same reason regenerate and switch-variant
+            # above carry it. ``_commit_target_intact`` compares the slot object
+            # too, but every call to it happens AFTER this save has settled, so
+            # for the durable rewrite it is a post-mortem: it can refuse the live
+            # commit and the dispatch, and it cannot un-truncate the file. A
+            # same-name close-and-recreate that resumes the SAME transcript keeps
+            # ``history_key`` identical, so the routing pin waves it through, and
+            # ``msgs_snapshot`` is frozen against THIS incarnation -- landing it
+            # after the replacement is published writes the truncation onto the
+            # replacement's transcript with no recovery path. The pin is re-read
+            # at the locked commit boundary with no await before the write, which
+            # is the only point that can still refuse (``False``, nothing
+            # written) instead of reporting damage already done.
             save_task = asyncio.ensure_future(
                 save_slot_off_loop(
                     state,
@@ -1000,6 +1014,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     msgs_snapshot,
                     best_effort=False,
                     expected_history_key=expected_history_key,
+                    expected_slot_name=name,
                 )
             )
             try:
@@ -1070,12 +1085,14 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 )
             if not saved:
                 # The save's own guards refused the write (the session was
-                # permanently deleted, or the slot was rebound to another
-                # transcript, while the write awaited its lock). Nothing was
+                # permanently deleted, the slot was rebound to another
+                # transcript, or a same-name recreate replaced this incarnation,
+                # while the write awaited its lock). Nothing was
                 # persisted, so dispatching a turn now would run from state that
                 # exists only in memory.
                 logger.warning(
-                    "edit-resend: history save refused for %s (concurrent delete or rebind)",
+                    "edit-resend: history save refused for %s "
+                    "(concurrent delete, rebind or recreate)",
                     slot.key,
                 )
                 _sel_native_destroyed("history_save_refused")

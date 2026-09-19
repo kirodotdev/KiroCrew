@@ -705,6 +705,19 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # worker's real outcome and complete the matching commit (and let
             # the reserved dispatch task run the edited prompt) before
             # propagating the cancellation.
+            # ``expected_slot_name`` pins the slot INCARNATION, the second axis
+            # the pin below cannot reach. ``expected_history_key`` catches a
+            # RENAMED replacement; a same-name close-and-recreate that resumes
+            # this same transcript keeps the key identical, so only comparing the
+            # object in ``state._slots`` catches it -- and it must be compared at
+            # the locked commit boundary rather than out here, because the recreate
+            # can land inside this executor wait, after every check on the loop
+            # and before the write. ``msgs_snapshot`` is the truncated window
+            # frozen against THIS incarnation, so landing it on a published
+            # replacement writes the truncation onto the replacement's transcript
+            # with no recovery. The post-save routing re-check below runs only
+            # after the write has settled and so cannot prevent that; refusing
+            # inside the write (``False``, nothing written) can.
             save_task = asyncio.ensure_future(
                 asyncio.to_thread(
                     _save_slot_to_history,
@@ -712,6 +725,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     slot,
                     msgs_snapshot,
                     expected_history_key=expected_history_key,
+                    expected_slot_name=name,
                     expected_disk_older_count=pre_await_disk_older_count,
                 )
             )
@@ -754,12 +768,14 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 )
             if not saved:
                 # The save's own guards refused the write (the session was
-                # permanently deleted, or the slot was rebound to another
-                # transcript, while the write awaited its lock). Nothing was
+                # permanently deleted, the slot was rebound to another
+                # transcript, or a same-name recreate replaced this incarnation,
+                # while the write awaited its lock). Nothing was
                 # persisted, so reporting success here would dispatch a turn
                 # from state that exists only in memory.
                 logger.warning(
-                    "rewind: history save refused for %s (concurrent delete or rebind)",
+                    "rewind: history save refused for %s "
+                    "(concurrent delete, rebind or recreate)",
                     slot.key,
                 )
                 _sel_native_destroyed("history_save_refused")

@@ -963,12 +963,26 @@ the four where `rewind` does not yet, so nobody reads them as already shared:
   something else has taken `slot.task`, committing would run this handler's turn
   alongside whatever now owns the slot — two concurrent turns writing one
   window). Any of the three refuses with a retryable 503.
+- **The durable write re-checks the slot incarnation itself.** Every call to the
+  commit predicate above happens AFTER the save has settled, so for the file it
+  is a post-mortem: it can refuse the live commit and the dispatch, and it cannot
+  un-truncate a transcript. The truncated window is frozen against ONE slot
+  incarnation, and a same-name close-and-recreate can be published inside the
+  executor wait -- after every check the handler can run on the loop, and without
+  moving the transcript key, so `expected_history_key` waves it through. Both
+  truncating handlers therefore also pass `expected_slot_name`, which the save
+  re-reads from `state._slots` at the locked commit boundary with no await before
+  the write: on a mismatch it refuses (`False`, nothing written) rather than land
+  the stale truncation on the replacement's transcript. The loop-side predicate
+  still owns the two axes the persistence layer cannot see (routing, which the
+  frozen snapshot hides from the save, and the dispatch reservation).
 - **The periodic dirty-slot flush is excluded for the whole rewrite.** Because
   the live slot keeps the full window until the commit, a flush tick can snapshot
   that stale window, block behind the rewrite on the per-session history lock,
   and then write the snapshot back on top — restoring every message the rewrite
   just discarded. `edit-resend` therefore saves through
-  `chat_persistence.save_slot_off_loop` (with `expected_history_key`, and
+  `chat_persistence.save_slot_off_loop` (with `expected_history_key` and
+  `expected_slot_name`, and
   `best_effort=False` so a failure reaches its 503 rather than being swallowed
   and re-armed as a dirty retry) instead of a bare `asyncio.to_thread`. That
   helper raises `slot._metadata_persist_inflight` around the write and lowers it

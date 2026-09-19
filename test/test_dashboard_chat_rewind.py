@@ -305,9 +305,20 @@ class TestRewindSlot:
         state.sessions._session_map.get = MagicMock(return_value="")
 
         def _save_stamps_witnesses(
-            _state, saved_slot, msgs, *, expected_history_key, expected_disk_older_count
+            _state,
+            saved_slot,
+            msgs,
+            *,
+            expected_history_key,
+            expected_slot_name,
+            expected_disk_older_count,
         ):
             # Emulate the real save's post-write bookkeeping on the live slot.
+            # ``expected_slot_name`` is accepted (and asserted) rather than
+            # absorbed by ``**kwargs``: the endpoint owes the save BOTH pins, and
+            # a stub that swallowed a dropped one would keep passing while the
+            # incarnation guard went unwired.
+            assert expected_slot_name == "src"
             saved_slot._pending_rewrite = False
             saved_slot._disk_window_len = len(msgs)
             saved_slot._disk_meta_observed = True
@@ -362,9 +373,16 @@ class TestRewindSlot:
         state.sessions.discard_conversation = AsyncMock(side_effect=_moves_the_boundary)
 
         def _record_pairing(
-            _state, saved_slot, msgs, *, expected_history_key, expected_disk_older_count
+            _state,
+            saved_slot,
+            msgs,
+            *,
+            expected_history_key,
+            expected_slot_name,
+            expected_disk_older_count,
         ):
             seen["boundary"] = expected_disk_older_count
+            seen["slot_name"] = expected_slot_name
             return True
 
         monkeypatch.setattr(
@@ -381,6 +399,9 @@ class TestRewindSlot:
 
         # The PRE-await boundary, not the one the worker would have read.
         assert seen["boundary"] == 0
+        # Paired with the slot-incarnation pin, which the same commit boundary
+        # re-reads: the endpoint hands over both axes or neither is checkable.
+        assert seen["slot_name"] == "src"
         assert slot._disk_older_count == 0  # the commit re-adopts it
         assert slot._disk_older_durable_count == 0  # and the durable base with it
         if slot.task:
