@@ -7353,6 +7353,8 @@
       "project_directory_path": "Ruta del directorio del proyecto",
       "recent": "Recientes",
       "recent_projects": "Proyectos recientes",
+      "recent_unavailable": "Proyectos recientes no disponibles",
+      "retry": "Reintentar",
       "search_recent_projects": "Buscar proyectos recientes",
       "search_recent_projects_2": "Buscar proyectos recientes…",
       "select": "Seleccionar",
