@@ -155,6 +155,91 @@ def _read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
     return _crew_log_read().read_page(session_id, start, end)
 
 
+def _unit_id(request: web.Request, given: str) -> tuple[str, bool]:
+    """The crew-log UNIT a read addresses, and whether the resolver named it.
+
+    A session's crew log is keyed by the ACP SESSION ID the turn path holds, and a
+    dashboard caller holds neither: a chat surface knows its SLOT key, and the ACP
+    id is not on any payload it reads (deliberately -- it is an internal identity,
+    and putting it on the wire to let a client rewrite it into a path would widen
+    what a client is trusted with). So a slot key is resolved here, through the one
+    module that answers this question, rather than by the caller guessing.
+
+    The resolver's answer is preferred when it has one, and the id is used verbatim
+    otherwise: an ACP id is not a session KEY, so the registry lookup misses and
+    answers ``UNKNOWN`` for one, which is what keeps a unit-id-addressed read
+    working unchanged. Two callers on main are of that kind -- the
+    ``kirocrew-crew-log`` MCP server reads a unit by id through the unit-keyed door,
+    and the ``session_projection`` frame carries the unit it folded as
+    ``session_id``, so anything taking an id out of a frame addresses by unit id.
+    It is a registry read with no disk in it, so it stays on the loop while the
+    read itself goes to a thread.
+
+    An unresolvable key -- a slot that never ran a turn, one whose ACP session was
+    torn down -- keeps the given id and reads back an empty fold. What this function
+    ALSO reports is whether the resolver answered, because that is the difference
+    between "this unit holds no entries" and "no unit is addressable for this id
+    right now", and only the caller of the second kind can be told the truth. A
+    slot whose session was reset keeps its record on disk under the retired ACP id;
+    telling its reader "nothing recorded for this session" would be false.
+
+    This does NOT fall back to the persisted session map to find that retired id,
+    for two reasons that are each decisive. ``SessionMap.get`` repairs or removes an
+    entry it judges stale, so consulting it would make a panel read mutate session
+    state -- the exact reason ``crew_log/resolve.py`` documents for not touching it.
+    And a retired unit belongs to a different session from the one this slot serves:
+    presenting its totals here would imply a whole-life figure that needs the lineage
+    pointer (``session/opened.data.previous``) and a fold that follows it, and this
+    module has neither. So the honest move is to say what is addressable, not to
+    guess.
+    """
+    if not given:
+        return given, False
+    state = request.app.get("state") if hasattr(request.app, "get") else None
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return given, False
+    from kiro_crew.crew_log.resolve import unit_for_session_key
+
+    resolved = unit_for_session_key(sessions, _session_key_of(state, given))
+    return (resolved or given), bool(resolved)
+
+
+def _session_key_of(state: Any, given: str) -> str:
+    """The SESSION key a slot's turns run on, or *given* when it names no slot.
+
+    A channel-born slot's turns run on the channel's own session, whose key it
+    carries in ``linked_session_key`` (``slack:<ts>``) -- so the ACP provider is
+    registered under THAT key, not under the slot's. The resolver does an exact
+    registry lookup and its one retry is the ``dashboard:`` form, so a panel that
+    sent the bare slot key would miss the provider and fold an empty record for
+    every channel-linked session, with nothing to correct it: the mapping is
+    stable, so it reads empty forever.
+
+    ``effective_session_key`` is the function that owns this mapping, and its
+    docstring says to use it wherever a slot's SESSION is addressed, which is what
+    a crew-log read does. It is a pure attribute read -- no disk, no session-state
+    mutation -- so it keeps the invariant that makes this path safe to call from a
+    read. An id naming no live slot is returned unchanged, which is what an ACP
+    unit id is.
+    """
+    get_slot = getattr(state, "get_slot", None)
+    if not callable(get_slot):
+        return given
+    slot = get_slot(given.removeprefix("dashboard:"))
+    if slot is None:
+        return given
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    key = effective_session_key(slot)
+    # A STRING or nothing: the registry lookup is keyed by one, and a partially
+    # built app -- or a double standing in for one -- can answer this with an
+    # object that is merely truthy. Handing that to the resolver would turn an
+    # exact lookup into a guaranteed miss, which reads as "this session has no
+    # log" rather than as the wiring problem it is.
+    return key if isinstance(key, str) and key else given
+
+
 async def api_session_crew_log(request: web.Request) -> web.Response:
     """GET /api/sessions/{id}/crew-log -- entries in a seq range, refs resolved."""
     denied = await require_owner_dashboard_request(request, "session_crew_log.read")
@@ -168,9 +253,15 @@ async def api_session_crew_log(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _bad_request(str(exc), "bad_range")
     try:
-        payload = await asyncio.to_thread(_read_page, session_id, start, end)
+        unit_id, _ = _unit_id(request, session_id)
+        payload = await asyncio.to_thread(_read_page, unit_id, start, end)
     except CrewLogError as exc:
         return _crew_log_refusal(exc)
+    # The page read builds its payload around the unit it opened, so answering
+    # with that would hand a slot-addressed caller back an ACP id it never sent --
+    # both a broken comparison and an internal identity on the wire. Same rule as
+    # the fold read below: name what the CALLER asked about.
+    payload["session_id"] = session_id
     return web.json_response(payload)
 
 
@@ -188,11 +279,100 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
         projections.require_name(name)
     except CrewLogError as exc:
         return _bad_request(exc.message, "unknown_projection")
+    unit_id, _ = _unit_id(request, session_id)
     try:
-        result = await asyncio.to_thread(projections.read_projection, session_id, name)
+        result = await asyncio.to_thread(projections.read_projection, unit_id, name)
     except CrewLogError as exc:
         return _crew_log_refusal(exc)
+    # ``session_id`` is what the CALLER asked about, not the unit the fold read:
+    # a client polling by slot key compares this against the id it sent, and
+    # answering with the resolved ACP id would both break that comparison and put
+    # an internal identity on the wire. It answers neither ``resolved`` nor
+    # ``writes_drained``: those exist for the surface that shows a reader five folds
+    # at once, this route has no caller that reads them, and the settle they need
+    # is a wait charged to every request. The resolution itself stays -- a slot-key
+    # read of this route folds the session's unit like any other.
     return web.json_response({"session_id": session_id, **result.to_dict()})
+
+
+async def api_session_crew_log_projections(request: web.Request) -> web.Response:
+    """GET /api/sessions/{id}/crew-log/projections -- every fold from one read.
+
+    A panel shows the five folds TOGETHER, and asking for them one route at a time
+    means five independent resolutions of the same session: if the slot's ACP
+    session is replaced while those are in flight, some answers describe the unit
+    that is going away and some the one arriving, and the reader sees a mix with no
+    way to tell. Resolving once and folding once removes that window rather than
+    narrowing it, and it costs less than the five reads it replaces -- one pass over
+    one file instead of five opens of it.
+
+    Each fold still carries its OWN ``seq``, because they genuinely differ: an
+    entry advances the folds it belongs to and leaves the others where they were.
+    What this route guarantees is that all five came from the same file at the same
+    moment, which is the part a caller cannot reconstruct for itself.
+    """
+    denied = await require_owner_dashboard_request(request, "session_crew_log.projections")
+    if denied is not None:
+        return denied
+    from kiro_crew.crew_log.errors import CrewLogError
+
+    projections = _crew_log()
+    session_id = request.match_info.get("id", "")
+    unit_id, resolved = _unit_id(request, session_id)
+    drained = await asyncio.to_thread(_settle_writes)
+    try:
+        bundle = await asyncio.to_thread(
+            projections.fold_session, unit_id, projections.PROJECTION_NAMES
+        )
+    except CrewLogError as exc:
+        return _crew_log_refusal(exc)
+    folded = {
+        name: projections.projection_of(checkpoint).to_dict()
+        for name, checkpoint in bundle.checkpoints.items()
+    }
+    # ``session_id`` names what the CALLER asked about, the same rule the two older
+    # reads follow: a client polling by slot key compares this against the id it
+    # sent, and answering with the resolved ACP id would break that comparison and
+    # put an internal identity on the wire.
+    return web.json_response(
+        {
+            "session_id": session_id,
+            "projections": folded,
+            "resolved": resolved,
+            "writes_drained": drained,
+        }
+    )
+
+
+#: How long a fold read waits for the writer to owe nothing before folding anyway.
+#: The emitter hands an append to a queue and returns, so a turn can END with its
+#: last entries still owed -- and a refresh triggered by that turn's end would then
+#: fold a file the turn has not finished writing and present the result as current.
+#: Short on purpose: a reader is waiting, and a read that misses the drain says so
+#: rather than blocking until it cannot.
+_SETTLE_SECONDS: Final[float] = 0.5
+
+
+def _settle_writes() -> bool:
+    """Whether the crew-log writer owes nothing, after waiting briefly for that.
+
+    ``emit.flush`` is the emitter's own answer for "a caller that must read the
+    file it just wrote", and it is global rather than per session DELIBERATELY: a
+    batch the writer has already claimed is absent from the per-session queue and
+    cannot be seen there (``_inline_claimable_locked`` documents exactly this), so
+    a predicate scoped to one session would report quiet in the one case that
+    matters. False is not an error -- it means the fold may be behind the record,
+    and the answer carries that so a reader is not shown a stale value dressed as
+    a current one.
+
+    Imported here rather than at module scope: a gateway that never turned the
+    crew log on does not import the emitter, and a read route is not the place to
+    change that. With the flag off there is nothing queued, so this answers True
+    without waiting.
+    """
+    from kiro_crew.crew_log import emit
+
+    return emit.flush(timeout=_SETTLE_SECONDS)
 
 
 def _crew_log_refusal(exc: "CrewLogError") -> web.Response:
