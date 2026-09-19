@@ -32,6 +32,7 @@ import { CommentThreadPopover } from '../components/CommentThreadPopover'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage, artifactAssetUrl, isEditableKind } from '../components/ArtifactBody'
+import { filterCommentsForForward } from '../lib/commentFilter'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { useArtifactLiveReload } from '../hooks/useArtifactLiveReload'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
@@ -380,7 +381,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // on every render. React Query keeps `data` referentially stable between
   // refetches that resolve deep-equal, so this changes only on real data.
   const durableComments = useMemo(() => commentsQuery.data?.comments ?? [], [commentsQuery.data?.comments])
-  const commentCount = durableComments.length
+  // Two counts, deliberately distinct.
+  //
+  // `displayCommentCount` drives what the human sees — the toggle badge, the
+  // sidebar auto-reveal and the "add one" tip — so it counts every durable
+  // comment: a resolved thread is still there to be revealed and read.
+  const displayCommentCount = durableComments.length
+  // `commentCount` is what the AGENT is told about, so it omits resolved
+  // threads: counting those re-asks the agent to act on its own completed work.
+  // It keeps the shorter name because the prompt copy below interpolates it.
+  const commentCount = useMemo(
+    () => filterCommentsForForward(durableComments).length,
+    [durableComments],
+  )
   const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
   // Right-hand panel state machine: the comments sidebar and the companion
   // chat panel share the same flex space, icon-toggled and mutually exclusive.
@@ -401,7 +414,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setPanel(p => (p === 'comments' ? 'none' : 'comments'))
   }, [])
   // Auto-reveal the comments panel when the artifact has comments; collapse it
-  // when it has none. Reacts to commentCount so adding the first comment reveals
+  // when it has none. Reacts to displayCommentCount so adding the first comment reveals
   // the panel and removing the last collapses it — unless the user has taken
   // manual control via a toggle, and NEVER by auto-switching away from an open
   // chat panel (the chat panel only opens on explicit action, so yanking it for
@@ -425,9 +438,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // find first. Auto-reveal was written for the side-by-side layout, where
       // the body stayed visible beside it. A manual open still survives, via the
       // user-toggled override this effect returns on above.
-      return commentCount > 0 && !isMobile ? 'comments' : 'none'
+      return displayCommentCount > 0 && !isMobile ? 'comments' : 'none'
     })
-  }, [slug, commentCount, isMobile])
+  }, [slug, displayCommentCount, isMobile])
   // Anchors are trimmed for matching; clipboard text stays exactly as selected.
   const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; copyText?: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   // Bidirectional anchor↔comment linking: flash a sidebar row when
@@ -1832,8 +1845,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             >
               <span className="inline-flex items-center gap-1">
                 <MessageSquare size={13} />
-                {commentCount > 0 && (
-                  <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{commentCount}</span>
+                {displayCommentCount > 0 && (
+                  <span className="ml-0.5 px-1 rounded bg-accent/20 text-[10px]">{displayCommentCount}</span>
                 )}
               </span>
             </button>
@@ -2133,7 +2146,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             ? i18nT('pages.artifactDetailPage.showing_live_v', { version: detailQuery.data?.version ?? '?' })
             : i18nT('pages.artifactDetailPage.showing_v_historical', { version: effectiveVersion })}
           {dirty && <span className="ml-2 text-warn">{i18nT('pages.artifactDetailPage.unsaved_changes')}</span>}
-          {commentable && commentCount === 0 && (
+          {commentable && displayCommentCount === 0 && (
             <span className="ml-2 text-muted/80">{i18nT('pages.artifactDetailPage.tip_select_text_to_anchor_a_comment_or_use_the')} <strong>{i18nT('pages.artifactDetailPage.comments')}</strong> {i18nT('pages.artifactDetailPage.panel_to_add_one')}</span>
           )}
           {!commentable && !editing && isCurrent && (

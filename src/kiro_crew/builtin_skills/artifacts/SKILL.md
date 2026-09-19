@@ -53,7 +53,7 @@ every file or a copy of the chat.
 | `artifact_folder_rename` | Rename a folder |
 | `artifact_folder_move` | Reparent a folder (cycle-guarded) |
 | `artifact_folder_delete` | Remove a folder; safe by default, destructive with `delete_contents=true` |
-| `artifact_get_comments` | Read every comment thread on an artifact |
+| `artifact_get_comments` | Read every comment thread on an artifact; pass `exclude_resolved` to skip threads already resolved |
 | `artifact_post_comment` | Open a thread, optionally anchored to a quoted span |
 | `artifact_reply_comment` | Reply in an existing thread |
 | `artifact_mark_review` | Advance a thread to REVIEW — addressed, awaiting human check |

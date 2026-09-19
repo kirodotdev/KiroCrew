@@ -334,6 +334,52 @@ class ArtifactComment:
     deleted: bool = False
 
 
+def filter_comments_for_forward(
+    comments: _List["ArtifactComment"],
+    *,
+    exclude_resolved: bool = True,
+) -> _List["ArtifactComment"]:
+    """Canonical comment-forwarding filter (comment→chat replay fix).
+
+    The single source of truth for which comments get *forwarded/counted* when
+    an artifact's feedback is sent into chat, so the UI count, the side-panel
+    submit and the agent's read all agree.
+
+    Evaluated at **thread-root granularity**: a reply inherits its root's
+    status (we follow ``parent_id`` to the root), so resolving a thread drops
+    the whole thread rather than leaving replies whose parent is gone.
+
+    A resolved thread is the only thing dropped. Staleness is deliberately NOT
+    inferred from the anchor version: a comment anchored to an older version
+    whose quoted span still exists is live feedback nobody has addressed, and
+    dropping it would silently stop forwarding a thread the sidebar still shows
+    as open. ``anchor_orphaned`` already marks the genuinely stale case (the
+    quote is gone) and the UI warns on it, so that call stays with the human.
+
+    With ``exclude_resolved=False`` the input is returned unchanged.
+    """
+    if not exclude_resolved:
+        return list(comments)
+
+    by_id = {c.id: c for c in comments}
+
+    def root_of(c: "ArtifactComment") -> "ArtifactComment":
+        # Walk parent_id to the thread root. Guard against cycles / missing
+        # parents by bounding the hops to the comment count.
+        seen: set[str] = set()
+        cur = c
+        hops = 0
+        while cur.parent_id and cur.parent_id in by_id and cur.parent_id not in seen:
+            seen.add(cur.id)
+            cur = by_id[cur.parent_id]
+            hops += 1
+            if hops > len(comments):
+                break
+        return cur
+
+    return [c for c in comments if root_of(c).status != "resolved"]
+
+
 @dataclass
 class ImageMetadata:
     """Sidecar description of a ``kind="image"`` artifact's raster bytes.

@@ -295,7 +295,10 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Get all comments on an artifact (local + provider-synced). "
                 "Use to read feedback, review comments, or discussion threads "
-                "on an artifact before addressing them."
+                "on an artifact before addressing them. Pass "
+                "exclude_resolved=true to skip threads that are already "
+                "resolved, so a mid-review read does not hand you back feedback "
+                "you have addressed."
             ),
             "inputSchema": {
                 "type": "object",
@@ -303,6 +306,10 @@ def schemas() -> list[dict[str, Any]]:
                     "slug": {
                         "type": "string",
                         "description": "Artifact slug to get comments for.",
+                    },
+                    "exclude_resolved": {
+                        "type": "boolean",
+                        "description": "Omit threads whose root is resolved (default false).",
                     },
                 },
                 "required": ["slug"],
@@ -937,7 +944,11 @@ def artifact_delete(name: str, args: dict[str, Any]) -> str:
 def artifact_get_comments(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, ARTIFACT_GET_COMMENTS_SCHEMA)
     slug = args["slug"]
-    d = mcp_core._get(f"/api/artifacts/{slug}/comments")
+    # The default stays the full list: this tool's contract is "read the
+    # comments", and changing what it returns by default would silently shift
+    # every existing agent workflow. Opting in is one flag.
+    qs = "?exclude_resolved=true" if args.get("exclude_resolved") else ""
+    d = mcp_core._get(f"/api/artifacts/{slug}/comments{qs}")
     if d.get("error"):
         return f"Error: {d['error']}"
     comments = d.get("comments", [])
