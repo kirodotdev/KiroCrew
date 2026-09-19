@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from typing import Callable
 
+from kiro_crew.credential_patterns import MERMAID_PAKO_URL
 from kiro_crew.preview_text import drop_format_chars
 
 _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
@@ -40,6 +41,11 @@ _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
 # widen the canonical form for no display that matches it. Slack link internals
 # (``<url|label>``) are already consumed by ``_SLACK_LINK`` before this runs.
 _EMPHASIS_RUN = re.compile(r"(?:[*_~`]|\|\|)+")
+# The one exact pako token the credential scrubber protects, compiled from the
+# shared spelling so this view cannot treat as opaque a string the scrubber never
+# validated (nor split emphasis inside one it did). Unsafe payloads are redaction
+# markers at this stage and therefore do not match here.
+_PAKO_BARE_URL = re.compile(MERMAID_PAKO_URL)
 # ``[label](url)`` (Markdown) and ``<url|label>`` (Slack mrkdwn). Both DISPLAY only
 # the label, so the url is invisible to a reader and the label joins whatever
 # surrounds it -- which makes them a splitter, exactly like ``**``.
@@ -87,6 +93,17 @@ def _strip_format_chars(text: str) -> str:
     return drop_format_chars(text)
 
 
+def _strip_emphasis_outside_pako_urls(text: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for match in _PAKO_BARE_URL.finditer(text):
+        parts.append(_EMPHASIS_RUN.sub("", text[cursor : match.start()]))
+        parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(_EMPHASIS_RUN.sub("", text[cursor:]))
+    return "".join(parts)
+
+
 def canonicalize_display(text: str) -> str:
     """Reduce *text* to what the platform will actually SHOW a reader.
 
@@ -108,7 +125,7 @@ def canonicalize_display(text: str) -> str:
     """
     out = _MD_LINK.sub(r"\1", text)
     out = _SLACK_LINK.sub(r"\2", out)
-    out = _EMPHASIS_RUN.sub("", out)
+    out = _strip_emphasis_outside_pako_urls(out)
     return _strip_format_chars(out)
 
 

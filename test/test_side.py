@@ -613,6 +613,85 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
     assert "[REDACTED" in stored[-1]["content"]
 
 
+@pytest.mark.asyncio
+async def test_side_stream_decides_pako_state_under_the_active_policy(tmp_path, monkeypatch):
+    """The side chat has no host-aware boundary behind it: its wire frames and its
+    final frame ARE the egress. A Mermaid pako link whose decoded diagram carries
+    a companion-only token must be refused on every one of them, while a clean
+    link survives whole and an ordinary companion-only token in prose keeps the
+    baseline behaviour this surface always had (no scope widening).
+    """
+    import base64
+    import dataclasses
+    import json
+    import zlib
+
+    from kiro_crew import security
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.context import reset_context, set_context
+
+    companion_token = "SSO-COOKIE-VALUE"
+
+    def _url(code: str) -> tuple[str, str]:
+        encoded = json.dumps({"code": code}, separators=(",", ":")).encode()
+        payload = base64.urlsafe_b64encode(zlib.compress(encoded, 9)).decode().rstrip("=")
+        return f"https://mermaid.live/edit#pako:{payload}", payload
+
+    unsafe_url, unsafe_payload = _url(f"flowchart TD\n  A[{companion_token}] --> B")
+    clean_url, _ = _url("flowchart TD\n  A[**Deploy**] --> B")
+
+    class _CompanionPolicy:
+        def redact(self, text: str) -> str:
+            return security.redact(text).replace(companion_token, "[REDACTED-SSO]")
+
+        def exempt_exact_hosts(self) -> frozenset[str]:
+            return frozenset()
+
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "kirocrew"
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+
+    async def _fake_get_or_create(key, **kwargs):
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    full = f"prose {companion_token} then {unsafe_url} and {clean_url} done"
+
+    async def _fake_stream(provider, message, *, on_chunk=None, **kwargs):
+        # Split both links mid-payload so the wire must hold and rejoin them.
+        for start in range(0, len(full), 41):
+            on_chunk(full[start : start + 41])
+        return full
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
+    set_context(
+        dataclasses.replace(build_default_context(KiroCrewConfig()), credentials=_CompanionPolicy())
+    )
+    try:
+        await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+    finally:
+        reset_context()
+
+    side_events = [d for t, d in events if t == "chat.side_result"]
+    streamed = "".join(d["content"] for d in side_events if not d.get("final"))
+    final = [d for d in side_events if d.get("final")]
+    stored = [m for m in parent._side.messages if m["role"] == "assistant"]
+    assert final and stored
+    for text in (streamed, final[-1]["content"], stored[-1]["content"]):
+        assert unsafe_payload not in text, text
+        assert "[REDACTED: encoded credential]" in text
+        assert clean_url in text
+        # Baseline on ordinary text, exactly as before: the seam widens nothing.
+        assert companion_token in text
+
+
 def _app_slot(state, *, app: str = "notes", agent: str = "notes--assistant"):
     """A slot owned by an app, with an open sidecar and one pending run."""
     slot = state.get_or_create_slot("app-parent")

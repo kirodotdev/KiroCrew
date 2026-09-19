@@ -51,6 +51,7 @@ from kiro_crew.messaging.approval import (
 from kiro_crew.messaging.outbound_files import Rejection, hide_local_refs
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.whatsapp import client as wa_client
 from kiro_crew.whatsapp.files import (
     REASON_UPLOAD_FAILED,
@@ -65,6 +66,12 @@ if TYPE_CHECKING:
     from kiro_crew.whatsapp.transport import WhatsAppTransport
 
 logger = logging.getLogger(__name__)
+
+
+def _authorized_display_safe_text(text: str) -> str:
+    """Recheck a TurnDriver-authorized value in WhatsApp's displayed form."""
+    return display_safe_text(text, redactor=redact_pako_via_context)
+
 
 #: Refresh cadence for the composing indicator. Neither whatsmeow nor neonize
 #: documents or enforces a presence TTL, and no authoritative WhatsApp figure was
@@ -271,7 +278,11 @@ class WhatsAppRenderer(Renderer):
         body = await asyncio.to_thread(hide_local_refs, visible)
         if not body:
             return []
-        return await render_chunks_off_loop(body, self.capabilities.max_message_chars)
+        return await render_chunks_off_loop(
+            body,
+            self.capabilities.max_message_chars,
+            redactor=redact_pako_via_context,
+        )
 
     def _edit_window_closed(self) -> bool:
         if not self._live_sent_at:
@@ -435,7 +446,7 @@ class WhatsAppRenderer(Renderer):
             # and start a group cooldown for an answer nobody has given yet.
             self._prompt_id = await self._transport.send_message(
                 self._chat,
-                display_safe_text(build_approval_prompt(title, purpose)),
+                _authorized_display_safe_text(build_approval_prompt(title, purpose)),
             )
         except Exception:
             # The entry is opened before the send because the send is what can
@@ -458,7 +469,7 @@ class WhatsAppRenderer(Renderer):
         window-closed edit falls back to a fresh message, because the notice
         matters more than where it appears.
         """
-        notice = display_safe_text(TIMEOUT_NOTICE)
+        notice = _authorized_display_safe_text(TIMEOUT_NOTICE)
         if self._prompt_id and await self._client.edit_text(self._chat, self._prompt_id, notice):
             self._prompt_id = ""
             return
@@ -501,7 +512,7 @@ class WhatsAppRenderer(Renderer):
         # never passed through ``to_whatsapp_text``, so it never met the display
         # screen either, and this branch would put the one form of the reply that
         # was scanned only as literal bytes into the chat.
-        chunks = await self._rendered_chunks() or [display_safe_text(body)]
+        chunks = await self._rendered_chunks() or [_authorized_display_safe_text(body)]
         # Not the count: a streaming send that raised advanced it without landing,
         # and this is the last pass, so starting at the count would drop that
         # chunk for good. Re-sending from the earliest unlanded one can repeat a
@@ -556,7 +567,7 @@ class WhatsAppRenderer(Renderer):
                 # markup exactly as it does in a body. Discord screens the same
                 # field for the same reason.
                 await self._transport.send_image(
-                    self._chat, outbound.data, display_safe_text(outbound.alt or "")
+                    self._chat, outbound.data, _authorized_display_safe_text(outbound.alt or "")
                 )
             except Exception:  # noqa: BLE001: the words already landed
                 # A failed upload becomes a REJECTION, not just a log line.
@@ -607,7 +618,7 @@ class WhatsAppRenderer(Renderer):
         conversion.
         """
         try:
-            await self._transport.send_message(self._chat, display_safe_text(body))
+            await self._transport.send_message(self._chat, _authorized_display_safe_text(body))
         except Exception:
             logger.warning("whatsapp: send failed, failing the turn", exc_info=True)
             raise

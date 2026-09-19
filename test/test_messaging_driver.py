@@ -9,6 +9,9 @@ approve_tool/reject_tool correctly.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import zlib
 
 import pytest
 
@@ -99,6 +102,184 @@ class TestTurnDriverTranslation:
         out = _run(p, r)
         assert out == "Hello world"
         assert [e[0] for e in r.events] == ["text_chunk", "text_chunk", "done"]
+
+    @staticmethod
+    def _companion(token: str):
+        """A context whose policy knows one token the baseline does not. Returns
+        the ``reset_context`` the caller must run in ``finally``."""
+        import dataclasses
+
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(token, "[REDACTED: companion credential]")
+
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                return frozenset()
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        return reset_context
+
+    @staticmethod
+    def _pako(code: str) -> tuple[str, str]:
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        return f"https://mermaid.live/edit#pako:{payload}", payload
+
+    def test_active_policy_decides_pako_state_on_the_stream_but_not_ordinary_text(self):
+        """Every channel renderer is a final egress: nothing host-aware runs after
+        it. So the stream's ``_redact`` refuses a pako link whose decoded diagram
+        carries a companion-only token BEFORE any chunk reaches the renderer,
+        while the same token in prose keeps the companion-blind baseline every
+        channel always had -- the seam widens exactly the pako decision."""
+        companion_token = "COMPANION-COOKIE-SECRET"
+        url, payload = self._pako(f"flowchart TD\n  A[{companion_token}] --> B")
+        reset = self._companion(companion_token)
+        try:
+            renderer = _RecordingRenderer()
+            provider = _ScriptedProvider(
+                [
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"cookie {companion_token} "),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[: len(url) // 2]),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[len(url) // 2 :] + " "),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ]
+            )
+            out = _run(provider, renderer)
+        finally:
+            reset()
+
+        wire = "".join(event[1] for event in renderer.events if event[0] == "text_chunk")
+        assert payload not in out
+        assert payload not in wire
+        assert "[REDACTED: encoded credential]" in out
+        assert companion_token in out and companion_token in wire
+
+    def test_active_policy_decides_pako_state_in_thinking_and_per_field_scrubs(self):
+        """Thinking frames, tool titles and prompt fields each get one per-field
+        scrub and are then shown: the decoded-state decision must be taken in
+        that scrub. Ordinary text in the same fields stays baseline."""
+        from kiro_crew.acp.types import EVENT_THINKING_CHUNK
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        url, payload = self._pako(f"flowchart TD\n  A[{companion_token}] --> B")
+        clean_url, _ = self._pako("flowchart TD\n  A --> B")
+        reset = self._companion(companion_token)
+        try:
+            renderer = _RecordingRenderer()
+            provider = _ScriptedProvider(
+                [
+                    AcpEvent(kind=EVENT_THINKING_CHUNK, text=f"plan {companion_token} {url} "),
+                    AcpEvent(
+                        kind=EVENT_TOOL_CALL,
+                        tool_call_id="t1",
+                        title=f"open {url} and {clean_url}",
+                        tool_purpose=f"because {companion_token}",
+                    ),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="done "),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ]
+            )
+            _run(provider, renderer)
+        finally:
+            reset()
+
+        thinking = "".join(event[1] for event in renderer.events if event[0] == "thinking")
+        assert payload not in thinking
+        assert "[REDACTED: encoded credential]" in thinking
+        assert companion_token in thinking  # baseline on ordinary text
+        titles = [event[2] for event in renderer.events if event[0] == "tool_call"]
+        assert titles and all(payload not in title for title in titles), titles
+        assert all(clean_url in title for title in titles), titles
+
+    def test_every_driver_redaction_call_runs_the_narrow_pako_seam(self):
+        """Positive identity for the driver's redaction: one local ``_redact`` that
+        IS ``redact_pako_via_context``, used by the StreamRedactor and every
+        per-field scrub. A reintroduced bare baseline pair (or a bare
+        ``StreamRedactor()``) would let a pako link's decoded state skip the
+        active policy on surfaces that cannot take a frame back."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(driver))
+
+        def _name(call: ast.Call) -> str:
+            if isinstance(call.func, ast.Name):
+                return call.func.id
+            if isinstance(call.func, ast.Attribute):
+                return call.func.attr
+            return ""
+
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        redacting_calls = {_name(call) for call in calls if _name(call).startswith("redact")}
+        assert redacting_calls == {"redact_pako_via_context"}, redacting_calls
+        assert "redact_pako_via_context(" in inspect.getsource(driver._redact)
+        stream_redactors = [call for call in calls if _name(call) == "StreamRedactor"]
+        assert stream_redactors, "the driver's answer stream must use a StreamRedactor"
+        assert all(
+            [ast.unparse(arg) for arg in call.args] == ["_redact"] and not call.keywords
+            for call in stream_redactors
+        ), [ast.unparse(call) for call in stream_redactors]
+        redaction_imports = {
+            alias.name
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew.security"
+            for alias in node.names
+        }
+        assert redaction_imports == {"StreamRedactor"}, redaction_imports
+
+    def test_safe_pako_stream_survives_the_driver_redactor(self):
+        """The driver's ``_redact`` seam is pako-aware: a valid Mermaid link split
+        across two chunks reaches the renderer byte-identical instead of shredded
+        by the bare-secret heuristic on its base64 windows."""
+        state = json.dumps(
+            {"code": "flowchart TD\n  A[**Deploy**] --> B[_ready_]"},
+            separators=(",", ":"),
+        )
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        renderer = _RecordingRenderer()
+        provider = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[: len(url) // 2]),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[len(url) // 2 :] + " "),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+
+        out = _run(provider, renderer)
+
+        wire = "".join(event[1] for event in renderer.events if event[0] == "text_chunk")
+        assert out == url + " "
+        assert wire == out
+
+    def test_emphasis_split_credential_inside_pako_stream_is_redacted(self):
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        code = f"flowchart TD\n  A[{key[:4]}**{key[4:8]}**{key[8:]}] --> B"
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        renderer = _RecordingRenderer()
+        provider = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[: len(url) // 2]),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[len(url) // 2 :] + " "),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+
+        out = _run(provider, renderer)
+
+        wire = "".join(event[1] for event in renderer.events if event[0] == "text_chunk")
+        assert payload not in out
+        assert payload not in wire
+        assert key not in out
+        assert "[REDACTED: encoded credential]" in out
 
     def test_safe_complete_reports_monitor_action_once(self):
         r = _RecordingRenderer()

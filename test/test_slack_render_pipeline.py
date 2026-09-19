@@ -46,19 +46,25 @@ exception is auditable in review and greppable later.
 from __future__ import annotations
 
 import ast
+import base64
+import hashlib
 import io
 import json
 import pathlib
 import re
 import tokenize
+import zlib
 
 import pytest
 from source_corpus import parsed_candidates
 
+from kiro_crew.platform import redact_with_findings_via_context
 from kiro_crew.slack.format import (
+    _SLACK_ATOMIC_PAKO_RE,
     CONTINUATION,
     SLACK_MAX_TEXT,
     SLACK_MSG_LIMIT,
+    _lossless_blocks_preserving_pako_links,
     build_options_blocks,
     build_options_selected_blocks,
     ends_inside_code_fence,
@@ -280,6 +286,147 @@ def test_render_ok_inside_a_string_does_not_suppress() -> None:
 
 class TestRenderForSlackOrdering:
     """render_for_slack: the multi-part form."""
+
+    def test_atomic_markdown_label_rejects_nested_openers_in_linear_grammar(self) -> None:
+        # Keep this assertion before the large probe: if "[" enters the repeated
+        # label body, it fails without running the resulting quadratic scan.
+        assert _SLACK_ATOMIC_PAKO_RE.pattern.startswith(r"(?:\[[^\[\]\n]*\]\(")
+        assert list(_SLACK_ATOMIC_PAKO_RE.finditer("[" * 110_000)) == []
+
+    @pytest.mark.parametrize("unsafe", [False, True])
+    def test_slack_link_conversion_preserves_only_clean_pako_payloads(self, unsafe: bool) -> None:
+        from kiro_crew import security
+
+        code = "flowchart TD\n  A[**Deploy**] --> B"
+        if unsafe:
+            key = "AKIA" + "IOSFODNN7EXAMPLE"
+            code += f"\n  C[{key[:4]}**{key[4:8]}**{key[8:]}]"
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        markdown = f"[Open]({url})"
+        baseline = security.redact(markdown)
+        assert payload not in baseline
+        assert "[REDACTED: encoded credential]" in baseline
+
+        body = "".join(render_for_slack(markdown))
+        native_text, credential_warnings, exfil_warnings = redact_with_findings_via_context(
+            f"<{url}|Open>"
+        )
+
+        if unsafe:
+            assert payload not in body
+            assert payload not in native_text
+            assert "[REDACTED: encoded credential]" in body
+            assert "[REDACTED: encoded credential]" in native_text
+            assert exfil_warnings or credential_warnings
+        else:
+            assert body == f"<{url}|Open>"
+            assert native_text == body
+            assert exfil_warnings == []
+            assert credential_warnings == []
+
+    def test_single_message_keeps_long_under_limit_pako_link_in_one_conversion_block(
+        self,
+    ) -> None:
+        from kiro_crew import security
+
+        code = "\n".join(
+            half
+            for i in range(700)
+            for half in (
+                hashlib.sha256(str(i).encode()).hexdigest()[:32],
+                hashlib.sha256(str(i).encode()).hexdigest()[32:],
+            )
+        )
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        markdown = f"[Open]({url})"
+        assert SLACK_MAX_TEXT // 2 < len(markdown) < SLACK_MAX_TEXT
+        assert _lossless_blocks_preserving_pako_links(markdown, SLACK_MAX_TEXT // 2) == [markdown]
+        assert _lossless_blocks_preserving_pako_links(url, SLACK_MAX_TEXT // 2) == [url]
+
+        baseline_markdown = security.redact(markdown)
+        baseline_bare = security.redact(url)
+        assert payload not in baseline_markdown
+        assert payload not in baseline_bare
+        assert "[REDACTED: encoded credential]" in baseline_markdown
+        assert "[REDACTED: encoded credential]" in baseline_bare
+
+        rendered = render_one_for_slack(markdown)
+        bare = render_one_for_slack(url)
+
+        assert rendered.text == f"<{url}|Open>"
+        assert rendered.redacted is False
+        assert bare.text == url, redact_with_findings_via_context(url)
+        assert bare.redacted is False
+
+    def test_atomic_pako_token_uses_inclusive_slack_ceiling(self) -> None:
+        prefix = "https://mermaid.live/edit#pako:"
+        split_limit = SLACK_MAX_TEXT // 2
+        for token_length, stays_atomic in (
+            (SLACK_MAX_TEXT, True),
+            (SLACK_MAX_TEXT + 1, False),
+        ):
+            token = prefix + "A" * (token_length - len(prefix))
+            assert len(token) == token_length
+            blocks = _lossless_blocks_preserving_pako_links(token, split_limit)
+            assert "".join(blocks) == token
+            if stays_atomic:
+                assert blocks == [token]
+            else:
+                assert blocks != [token]
+                assert all(len(block) <= split_limit for block in blocks)
+
+    def test_long_slack_angle_link_label_stays_in_one_conversion_block(self) -> None:
+        from kiro_crew import security
+
+        state = json.dumps({"code": "flowchart TD\n  A --> B"}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        angle_link = f"<{url}|{'long-label-' * 1900}>"
+        assert SLACK_MAX_TEXT // 2 < len(angle_link) < SLACK_MAX_TEXT
+
+        baseline = security.redact(angle_link)
+        assert payload not in baseline
+        assert "[REDACTED: encoded credential]" in baseline
+
+        assert _lossless_blocks_preserving_pako_links(angle_link, SLACK_MAX_TEXT // 2) == [
+            angle_link
+        ]
+        rendered = render_one_for_slack(angle_link)
+        assert rendered.text == angle_link
+        assert rendered.redacted is False
+
+    def test_complete_slack_angle_link_stays_atomic_when_cut_precedes_closer(self) -> None:
+        from kiro_crew import security
+
+        code = "\n".join(
+            half
+            for i in range(700)
+            for half in (
+                hashlib.sha256(f"complete-{i}".encode()).hexdigest()[:32],
+                hashlib.sha256(f"complete-{i}".encode()).hexdigest()[32:],
+            )
+        )
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        angle_link = f"<{url}>"
+        nominal_cut = len(angle_link) - 1
+        assert SLACK_MAX_TEXT // 2 < len(angle_link) < SLACK_MAX_TEXT
+        assert angle_link[nominal_cut] == ">"
+
+        baseline = security.redact(angle_link)
+        assert payload not in baseline
+        assert "[REDACTED: encoded credential]" in baseline
+
+        assert _lossless_blocks_preserving_pako_links(angle_link, nominal_cut) == [angle_link]
+        rendered = render_one_for_slack(angle_link)
+        assert rendered.text == angle_link
+        assert rendered.redacted is False
 
     def test_ansi_split_credential_is_not_reassembled(self) -> None:
         """redact-then-convert hazard: the ANSI strip must not rebuild a secret.

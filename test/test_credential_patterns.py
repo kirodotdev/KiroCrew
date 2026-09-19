@@ -120,6 +120,64 @@ class TestSharedSpellings:
         assert f"(?:{cp.AWS_KEY_ID_PREFIXES})" in sel._AWS_KEY_ANYCASE_RE.pattern
         assert cp.AWS_KEY_ID not in sel._AWS_KEY_ANYCASE_RE.pattern
 
+    def test_pako_consumers_compile_the_shared_grammar(self) -> None:
+        """The scrubber, the display canonicalizer and the Slack pre-splitter all
+        read the pako token from here.
+
+        Three layers must agree on ONE exact token: the scrubber decides which
+        fragment is validated and restored byte-for-byte, the display view then
+        treats that same token as opaque (so its ``_`` is not emphasis), and the
+        Slack pre-split keeps it atomic (so it is not bisected into fragments the
+        scrubber never saw whole). A hand-spelled copy at any of them is a silent
+        drift pair, which is what this consolidation removes.
+        """
+        from kiro_crew.messaging import display_safety
+        from kiro_crew.security import redaction
+        from kiro_crew.slack import format as slack_format
+
+        assert redaction._PAKO_FRAGMENT_PREFIX == cp.MERMAID_PAKO_URL_PREFIX
+        assert cp.MERMAID_PAKO_URL_PREFIX_SOURCE in redaction._PAKO_FRAGMENT_RE.pattern
+        assert cp.MERMAID_PAKO_PAYLOAD in redaction._PAKO_FRAGMENT_RE.pattern
+        assert display_safety._PAKO_BARE_URL.pattern == cp.MERMAID_PAKO_URL
+        # All container alternatives (Markdown, Slack labeled/unlabeled angles, bare) wrap it.
+        assert slack_format._SLACK_ATOMIC_PAKO_RE.pattern.count(cp.MERMAID_PAKO_URL) == 4
+
+    def test_pako_prefix_source_scopes_url_case_folding(self) -> None:
+        """Scheme/host aliases match; path and fragment spelling stay exact."""
+        literal, source = cp.MERMAID_PAKO_URL_PREFIX, cp.MERMAID_PAKO_URL_PREFIX_SOURCE
+        pattern = re.compile(source)
+        assert pattern.fullmatch(literal)
+        assert pattern.fullmatch("HTTPS://MERMAID.LIVE/edit#pako:")
+        assert not pattern.fullmatch("https://mermaid.live/EDIT#pako:")
+        assert not pattern.fullmatch("https://mermaid.live/edit#PAKO:")
+        assert not pattern.fullmatch(literal.replace("mermaid.live", "mermaidXlive"))
+        assert re.compile(cp.MERMAID_PAKO_URL).fullmatch(
+            "HTTPS://MERMAID.LIVE/edit#pako:eNpLzUvOT8ks"
+        )
+        assert not re.compile(cp.MERMAID_PAKO_URL).fullmatch(literal + "eNpLz=")
+
+    def test_pako_origin_case_fold_is_ascii_only(self) -> None:
+        """Unicode lookalikes must not inherit the ASCII host's exemption."""
+        lookalike = cp.MERMAID_PAKO_URL_PREFIX.replace("mermaid", "merma\u0131d")
+        assert not re.compile(cp.MERMAID_PAKO_URL_PREFIX_SOURCE).fullmatch(lookalike)
+        assert not re.compile(cp.MERMAID_PAKO_URL).fullmatch(lookalike + "eNpLzUvOT8ks")
+
+    def test_no_module_spells_the_pako_token_by_hand(self) -> None:
+        """No module under ``src/kiro_crew`` writes the Mermaid editor origin out
+        again -- as a literal or as regex source -- other than the home itself."""
+        src_root = Path(cp.__file__).parent
+        offenders = [
+            str(path.relative_to(src_root))
+            for path in sorted(src_root.rglob("*.py"))
+            if "_vendor" not in path.parts
+            and path.name != "credential_patterns.py"
+            and "mermaid.live" in path.read_text(encoding="utf-8", errors="replace")
+        ]
+        assert offenders == [], (
+            "these modules spell the pako URL token out again -- import "
+            f"MERMAID_PAKO_URL* from credential_patterns instead: {offenders}"
+        )
+
 
 class TestDeliberateDivergence:
     """The redaction floor is wider than the scrubber, by construction."""

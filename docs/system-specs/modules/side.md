@@ -449,7 +449,12 @@ chat.
 ### `dashboard/ws.py` — `broadcast_side_result`
 
 Module-level helper emitting `chat.side_result` frames to all WS clients.
-Deliberately separate from `broadcast_ws` main-channel events.
+Deliberately separate from `broadcast_ws` main-channel events. The helper is the
+last side-wire egress and applies `redact_pako_via_context`: ordinary outer text
+keeps the established baseline, while decoded pako state must pass the active
+policy before a clean link is restored. Reapplying a public baseline pass here
+would erase that explicit authorization and redact safe links after the side
+stream had already classified them.
 
 ## Frontend Modules
 

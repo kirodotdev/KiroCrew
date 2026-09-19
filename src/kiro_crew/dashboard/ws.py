@@ -29,6 +29,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     load_declared_events_for_connect,
     slots_envelope_extras,
 )
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -186,14 +187,16 @@ def broadcast_side_result(
     Set final=True on the terminal frame of a side turn so the frontend
     can flip the streaming flag off cleanly.
 
-    No payload field is persisted — sidecar-only, ephemeral.
+    No payload field is persisted — sidecar-only, ephemeral. Outer text keeps
+    the established baseline policy; decoded pako state is checked under the
+    active policy before a clean link can be restored.
     """
     payload: dict[str, object] = {
         "kind": SIDE_KIND,
         "slot": slot_key,
         "run_id": run_id,
         "role": role,
-        "content": redact_credentials(redact_exfiltration_urls(content)[0])[0],
+        "content": redact_pako_via_context(content),
         "ts": ts if ts is not None else time.time(),
     }
     if is_error:

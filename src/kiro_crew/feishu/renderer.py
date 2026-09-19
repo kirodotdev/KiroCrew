@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.renderer import Renderer, render_options_as_text
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 
 if TYPE_CHECKING:
     from kiro_crew.feishu.client import LarkClient
@@ -147,5 +148,9 @@ class FeishuRenderer(Renderer):
         redacts them); ``redact_for_target`` is idempotent, so covering them again
         with the body costs nothing.
         """
-        rendered = render_options_as_text("".join(self._buf).strip(), self.capabilities)
+        rendered = render_options_as_text(
+            "".join(self._buf).strip(),
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
         return self.redact_for_target(rendered)

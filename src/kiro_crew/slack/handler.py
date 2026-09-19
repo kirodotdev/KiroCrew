@@ -112,7 +112,12 @@ from kiro_crew.messaging.renderer import redaction_notice
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
-from kiro_crew.platform import current_context
+from kiro_crew.platform import (
+    current_context,
+    redact_pako_via_context,
+    redact_pako_with_findings_via_context,
+    redact_with_findings_via_context,
+)
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -187,15 +192,8 @@ logger = logging.getLogger(__name__)
 
 
 def _display_redactor(text: str) -> str:
-    """Both outbound redactors as one callable, in the canonical order.
-
-    The twin of the renderer's ``_redact_all``: exfiltration URLs then
-    credentials. Passed to ``redact_for_display`` so a fallback egress on this
-    path is scanned against what Slack renders, matching the answer path rather
-    than a weaker literal-only scrub.
-    """
-    text, _ = redact_exfiltration_urls(text)
-    return redact_credentials(text)[0]
+    """Recheck already-authorized native output in Slack's display form."""
+    return redact_pako_via_context(text)
 
 
 # Mapping of bang commands to their /kirocrew slash equivalents.
@@ -3380,14 +3378,15 @@ async def handle_message(
     stream_ts: str | None = None
     thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
     _show_thinking = KiroCrewConfig.load().slack.show_thinking
-    _stream_had_redaction = False  # True when per-chunk redaction modified a streamed chunk
+    _stream_had_redaction = False  # True when live-wire redaction modified a streamed chunk
     _stream_delivered = False  # True once ANY real-text append is confirmed on the stream
     # Rolling-buffer redactor for the live Slack wire: withholds the trailing
     # credential-class run so a credential split across streaming chunks can't
-    # reach Slack unredacted (issue 3). The final message is posted from the
-    # complete, fully-redacted `accumulated`, so the held tail is superseded at
-    # stop_stream — no data loss.
-    _sred = StreamRedactor()
+    # reach Slack unredacted. Provider chunks remain raw in ``accumulated`` so
+    # complete pako state can be validated before any frame reaches Slack. The
+    # narrow seam keeps baseline policy on ordinary text and applies active policy
+    # only to decoded pako state.
+    _sred = StreamRedactor(redact_pako_via_context)
     accumulated = ""
     thinking_accumulated = ""
     stream_buffer = ""  # unsent chunks for streaming API (buffered between rate-limited appends)
@@ -3442,22 +3441,22 @@ async def handle_message(
             logger.warning("Stream rotation failed — falling back to chat.update")
         return new_ts
 
-    async def _append_stream(text: str) -> bool:
+    async def _append_stream(text: str, *, flush: bool = False) -> bool:
         """Append text to stream, rotating on failure.
 
         Streams through the rolling redactor (``_sred``) so a credential split
         across streaming chunks can't reach Slack unredacted (issue 3): only the
         confirmed-safe prefix is sent now; the trailing (possible-partial-
-        credential) run is withheld until the next append. The final message is
-        posted from the complete, fully-redacted ``accumulated`` at stop_stream,
-        so the withheld tail is superseded — never lost.
+        credential) run is withheld until the next append. ``flush=True`` emits
+        that already-redacted tail before ``stop_stream`` because the shipped
+        Slack client does not transmit its ``final_text`` argument.
         """
         nonlocal _stream_had_redaction, _stream_delivered
         if not stream_ts:
             return True
         if channel_activation == ACTIVATION_REVIEW:
             return True  # Suppress streaming text in review mode
-        safe = _sred.feed(text)  # redacts the confirmed-safe prefix internally
+        safe = _sred.flush() if flush else _sred.feed(text)
         if not safe:
             return True  # whole delta withheld (partial credential) — nothing to send yet
         if "[REDACTED" in safe:
@@ -3926,11 +3925,6 @@ async def handle_message(
                     first = event.text[:1]
                     if first and first not in ("\n", " "):
                         event.text = "\n\n" + event.text
-                event.text, _exfil_w = redact_exfiltration_urls(event.text)
-                event.text, _cred_w = redact_credentials(event.text)
-                if _exfil_w or _cred_w:
-                    _stream_had_redaction = True
-
                 if event.text:
                     _tool_gap = False
                 status_ctrl.set_phase("thinking")
@@ -3979,7 +3973,10 @@ async def handle_message(
                         # answer is posted at end of turn from ``accumulated``.
                         if stream_ts and channel_activation != ACTIVATION_REVIEW:
                             await _safe_update(
-                                slack, channel, stream_ts, redact(accumulated) + _CURSOR
+                                slack,
+                                channel,
+                                stream_ts,
+                                redact_pako_via_context(accumulated) + _CURSOR,
                             )
                     last_edit = now
 
@@ -4118,7 +4115,12 @@ async def handle_message(
                     # Skip the cursor edit — the final answer is posted by the
                     # end-of-turn ``else`` branch with a fresh ``post_message``.
                     if stream_ts and channel_activation != ACTIVATION_REVIEW:
-                        await _safe_update(slack, channel, stream_ts, redact(accumulated) + _CURSOR)
+                        await _safe_update(
+                            slack,
+                            channel,
+                            stream_ts,
+                            redact_pako_via_context(accumulated) + _CURSOR,
+                        )
                 last_edit = time.monotonic()
 
                 # wait tool blocks MCP for up to 30min — finalize the
@@ -4151,6 +4153,7 @@ async def handle_message(
                     bracket_hold, _released = _resolve_comment_hold(bracket_hold, accumulated)
                     if _released:
                         await _append_stream(_released)
+                    await _append_stream("", flush=True)
                     try:
                         await slack.stop_stream(channel, stream_ts)
                     except Exception:
@@ -4598,8 +4601,12 @@ async def handle_message(
             _release_permit()
             return
 
-        # Strip any inline <thinking> tags that leaked into the text
+        # Join raw provider chunks before applying active policy. This keeps an
+        # incomplete pako candidate unmodified until its complete container is
+        # available, then protects both persistence and final delivery.
         _untrimmed = ""
+        _joined_cred_warnings: list[str] = []
+        _joined_exfil_warnings: list[str] = []
         if accumulated:
             accumulated, inline_thinking = strip_thinking_tags(accumulated)
             # Trailing control-tag lines are peeled BEFORE the whitespace trim: the
@@ -4609,6 +4616,13 @@ async def handle_message(
             accumulated = _untrimmed.strip()
             if inline_thinking:
                 thinking_accumulated += ("\n\n" if thinking_accumulated else "") + inline_thinking
+            (
+                accumulated,
+                _joined_cred_warnings,
+                _joined_exfil_warnings,
+            ) = redact_with_findings_via_context(accumulated)
+            if _joined_exfil_warnings or _joined_cred_warnings:
+                _stream_had_redaction = True
 
         actually_streamed = use_slack_stream and bool(stream_ts)
         # render_one_for_slack normalises ANSI and redacts BEFORE converting, then
@@ -4640,12 +4654,15 @@ async def handle_message(
         final_text = _render.text or _NO_RESPONSE
         _render_redacted = _render.redacted
 
-        # Second pass at the boundary: the decorator seam below can still introduce
-        # text, and these warning lists drive the final chat_update decision.
-        final_text, exfil_warnings = redact_exfiltration_urls(final_text)
+        # Final answer boundary: baseline policy on ordinary outer text, active
+        # policy on decoded pako state. Include findings from the joined boundary.
+        final_text, cred_warnings, exfil_warnings = redact_pako_with_findings_via_context(
+            final_text
+        )
+        exfil_warnings = _joined_exfil_warnings + exfil_warnings
+        cred_warnings = _joined_cred_warnings + cred_warnings
         for w in exfil_warnings:
             logger.warning("Exfiltration URL redacted in response: %s", w)
-        final_text, cred_warnings = redact_credentials(final_text)
         for w in cred_warnings:
             logger.warning("Credential redacted in response: %s", w)
 
@@ -4673,13 +4690,14 @@ async def handle_message(
         # exfiltration / credential disclosure). Only re-scan when the decorator changed
         # the text (the common Default path is a no-op identity, so this is skipped).
         if clean_text != _pre_decorate:
-            clean_text, _exfil_after = redact_exfiltration_urls(clean_text)
+            clean_text, _cred_after, _exfil_after = redact_pako_with_findings_via_context(
+                clean_text
+            )
             if _exfil_after:
                 logger.warning(
                     "Redacted %d exfiltration URL(s) introduced by reply decorator",
                     len(_exfil_after),
                 )
-            clean_text, _cred_after = redact_credentials(clean_text)
             if _cred_after:
                 # Log only the COUNT — the per-warning strings embed a truncated
                 # prefix of the matched credential (redact_credentials returns
@@ -4831,6 +4849,7 @@ async def handle_message(
                 if stream_buffer:
                     stream_buffer, _ = strip_thinking_tags(stream_buffer, strip_whitespace=False)
                     await _append_stream(stream_buffer)
+                await _append_stream("", flush=True)
                 # On the streaming path the answer is delivered incrementally as
                 # it arrives, and a refused append on a stream that DID land text
                 # is recoverable delivery-debt (a designed follow-up), NOT a turn
@@ -4968,10 +4987,11 @@ async def handle_message(
             # stream, has no StreamRedactor upstream -- so this render is its ONLY
             # redaction. Ordering matters most here for that reason.
             thinking_mrkdwn = render_one_for_slack(thinking_accumulated).text
-            thinking_mrkdwn, exfil_warnings = redact_exfiltration_urls(thinking_mrkdwn)
+            thinking_mrkdwn, cred_warnings, exfil_warnings = redact_pako_with_findings_via_context(
+                thinking_mrkdwn
+            )
             for w in exfil_warnings:
                 logger.warning("Exfiltration URL redacted in thinking: %s", w)
-            thinking_mrkdwn, cred_warnings = redact_credentials(thinking_mrkdwn)
             for w in cred_warnings:
                 logger.warning("Credential redacted in thinking: %s", w)
             # Fold thinking redactions into the SAME per-turn tally as the answer so

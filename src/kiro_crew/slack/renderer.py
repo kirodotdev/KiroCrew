@@ -54,7 +54,7 @@ from kiro_crew.messaging.outbound_files import (
 from kiro_crew.messaging.renderer import Renderer, chunk_text
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.sel import sel
 from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
 from kiro_crew.slack.format import (
@@ -124,9 +124,8 @@ PARTIAL_TURN_MARKER = (
 
 
 def _redact_all(text: str) -> str:
-    """Both outbound redactors as one callable, in the canonical order."""
-    text, _ = redact_exfiltration_urls(text)
-    return redact_credentials(text)[0]
+    """Recheck already-authorized turn text without losing validated pako links."""
+    return redact_pako_via_context(text)
 
 
 def _display_safe(text: str) -> str:
@@ -758,8 +757,7 @@ class SlackRenderer(Renderer):
         """
         chunks = await self._split_for_slack(text)
         if self._stream_ts is not None:
-            first = chunks[0]
-            first, _ = redact_exfiltration_urls(first)
+            first = redact_pako_via_context(chunks[0])
             if len(first) > SLACK_MSG_LIMIT:
                 first = first[:SLACK_MSG_LIMIT] + TRUNCATION_NOTICE
             # A tool-only / reasoning-only turn reaches here with empty text

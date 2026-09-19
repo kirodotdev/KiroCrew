@@ -92,7 +92,7 @@ from kiro_crew.messaging.status_reactions import (
 )
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -112,8 +112,8 @@ _DISCORD_MENTION_AT_RE = re.compile(r"(?:(?<=<)@(?=[!&]?\d+>)|(?<!\w)@(?=(?i:eve
 
 
 def _redact_all(text: str) -> str:
-    text, _ = redact_exfiltration_urls(text)
-    return redact_credentials(text)[0]
+    """Recheck already-authorized turn text without losing validated pako links."""
+    return redact_pako_via_context(text)
 
 
 def _redact_transformed(text: str) -> str:
@@ -721,7 +721,12 @@ class DiscordRenderer(Renderer):
         # This segment is terminal, so a trailing table cannot grow.
         await self._convert_tables(final=True)
         await self._rotate_on_length()
-        body_text, opts = apply_options_cap(self._segment_text(), opts, self.capabilities)
+        body_text, opts = apply_options_cap(
+            self._segment_text(),
+            opts,
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
         self._buf = []
         self._delivery_text = body_text
         # apply_options_cap may EXPAND the body (numbered overflow lines), and
@@ -1220,7 +1225,12 @@ class DiscordRenderer(Renderer):
         opts = self._take_canonical_options()
         # The stream is over, so a trailing table run is complete.
         await self._convert_tables(final=True)
-        body_text, opts = apply_options_cap(self._segment_text(), opts, self.capabilities)
+        body_text, opts = apply_options_cap(
+            self._segment_text(),
+            opts,
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
         self._buf = []
         self._delivery_text = body_text
         components = (

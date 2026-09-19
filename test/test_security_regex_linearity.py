@@ -219,6 +219,6 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
 
     assert isinstance(security_mod._CREDENTIAL_PATTERNS, re.Pattern)
     body = inspect_source(security_mod.redact_credentials)
-    assert "_CREDENTIAL_PATTERNS.finditer(text)" in body
-    assert "_might_contain_credential(text)" in body
+    assert "_CREDENTIAL_PATTERNS.finditer(scan_text)" in body
+    assert "_might_contain_credential(scan_text)" in body
     assert "re.compile(" not in body

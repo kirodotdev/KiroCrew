@@ -5540,6 +5540,96 @@ class TestRunChatSegmentFlush:
         assert "[REDACTED: credential]" in wire
 
     @pytest.mark.asyncio
+    async def test_both_live_wires_decide_pako_state_under_the_active_policy(
+        self, tmp_path, monkeypatch
+    ):
+        """The chat_chunk and chat_thinking wires run the narrow pako seam.
+
+        A Mermaid link whose decoded diagram carries a companion-only token must
+        not cross EITHER wire, split across frames or not: the client cannot
+        un-see a link once a frame carried it, so the host-aware segment flush
+        replacing it later is no defence, and the thinking wire has no later
+        boundary at all. The seam widens nothing else: the same token in prose
+        keeps the companion-blind baseline these wires always had, while the
+        persisted segment -- the host-aware boundary -- scrubs it.
+        """
+        import base64
+        import dataclasses
+        import zlib
+
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_THINKING_CHUNK,
+            LLMEvent,
+        )
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        encoded = json.dumps(
+            {"code": f"flowchart TD\n  A[{companion_token}] --> B"}, separators=(",", ":")
+        ).encode()
+        payload = base64.urlsafe_b64encode(zlib.compress(encoded, 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        split = len(url) // 2
+        events = [
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text=f"the cookie is {companion_token} see "),
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text=url[:split]),
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text=url[split:] + " ok"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"cookie {companion_token} and "),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=url[:split]),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=url[split:] + " done"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            await _run_chat(state, slot, "think about it")
+        finally:
+            reset_context()
+
+        frames = {
+            kind: [
+                call.args[1]["content"]
+                for call in state.broadcast_ws.call_args_list
+                if call.args[0] == kind
+            ]
+            for kind in ("chat_thinking", "chat_chunk")
+        }
+        for kind, wire_frames in frames.items():
+            wire = "".join(wire_frames)
+            assert wire_frames, kind
+            for frame in wire_frames:
+                assert payload not in frame, (kind, frame)
+            assert "[REDACTED: encoded credential]" in wire, kind
+            # Ordinary text stays companion-blind on the wire, as it always was.
+            assert companion_token in wire, kind
+        persisted = next(row for row in slot.messages if row.get("role") == "assistant")
+        assert payload not in persisted["content"]
+        assert companion_token not in persisted["content"]
+        assert "[REDACTED: companion credential]" in persisted["content"]
+
+    @pytest.mark.asyncio
     async def test_text_tool_text_complete_produces_two_segments(self, tmp_path, monkeypatch):
         """Mock event stream: text → tool_call → text → complete produces
         two assistant messages and one tool message.
@@ -18357,6 +18447,68 @@ class TestAcpProcessDiedRecovery:
                 "meta": slot._queue[0]["meta"],
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_partial_pako_uses_active_policy_before_terminal_persistence(
+        self, tmp_path: Path
+    ) -> None:
+        """A mid-stream provider death cannot persist companion-only pako state."""
+        import base64
+        import dataclasses
+        import zlib
+
+        from kiro_crew import security
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        companion_token = "SSO-COOKIE"
+        encoded_state = json.dumps(
+            {"code": f"flowchart TD\n  A[{companion_token}] --> B"},
+            separators=(",", ":"),
+        ).encode()
+        payload = base64.urlsafe_b64encode(zlib.compress(encoded_state, 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._titled = True
+
+        async def _stream_then_die(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=url)
+            raise AcpProcessDied("pipe broken")
+
+        client.stream = _stream_then_die
+        client.stream_command = _stream_then_die
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            with patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
+                await _run_chat(state, slot, "test message")
+        finally:
+            reset_context()
+
+        persisted = "".join(
+            message.get("content", "")
+            for message in slot.messages
+            if message.get("role") == "assistant"
+        )
+        assert payload not in persisted
+        assert "[REDACTED: encoded credential]" in persisted
 
     @pytest.mark.asyncio
     async def test_prompt_busy_requeue_does_not_claim_a_lost_connection(

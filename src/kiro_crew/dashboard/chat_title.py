@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
 from kiro_crew.llm_helpers import background_turn, run_bg_oneliner
+from kiro_crew.platform import redact_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -743,14 +744,14 @@ def _reset_auto_run_for_new_plan(slot: "_ChatSlot") -> None:
 
 
 def _extract_and_redact_plan_metadata(text: str) -> tuple[list[str], str, list[list[str]]]:
-    """Extract stage titles, goal, and descriptions from plan text, redacted."""
+    """Extract stage titles, goal, and descriptions through the active policy."""
     titles, goal, descriptions = extract_plan_metadata(text)
-    titles = [redact_credentials(redact_exfiltration_urls(t)[0])[0] for t in titles]
+    titles = [redact_via_context(title) for title in titles]
     if goal:
-        goal = redact_credentials(redact_exfiltration_urls(goal)[0])[0]
+        goal = redact_via_context(goal)
     descriptions = [
-        [redact_credentials(redact_exfiltration_urls(d)[0])[0] for d in stage_descs]
-        for stage_descs in descriptions
+        [redact_via_context(description) for description in stage_descriptions]
+        for stage_descriptions in descriptions
     ]
     return titles, goal, descriptions
 

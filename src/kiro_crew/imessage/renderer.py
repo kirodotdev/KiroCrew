@@ -33,12 +33,8 @@ from kiro_crew.messaging.renderer import (
     render_options_as_text,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import (
-    CREDENTIAL_REDACTION_TAGS,
-    EXFILTRATION_REDACTION_TAG_PREFIX,
-    redact_credentials,
-    redact_exfiltration_urls,
-)
+from kiro_crew.platform import redact_pako_via_context
+from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, EXFILTRATION_REDACTION_TAG_PREFIX
 
 if TYPE_CHECKING:
     from kiro_crew.imessage.client import IMessageClient
@@ -54,16 +50,8 @@ _ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
 
 def _default_redactor(text: str) -> str:
-    """The same pair ``TurnDriver`` streams provider text through.
-
-    Spelled out here rather than imported from ``messaging.renderer``, whose
-    equivalent is private to that module. ``security`` is a pure-regex module
-    with no vendor dependencies, so this adds no import-time cost and nothing
-    that could touch an event loop.
-    """
-    out, _ = redact_exfiltration_urls(text or "")
-    out, _ = redact_credentials(out)
-    return out
+    """Recheck already-authorized turn text without losing validated pako links."""
+    return redact_pako_via_context(text)
 
 
 class IMessageRenderer(Renderer):
@@ -223,7 +211,11 @@ class IMessageRenderer(Renderer):
     # -- helpers ------------------------------------------------------------
     def text(self) -> str:
         """The turn's answer as markdown, with ``[OPTIONS:]`` as numbered text."""
-        return render_options_as_text("".join(self._buf).strip(), self.capabilities)
+        return render_options_as_text(
+            "".join(self._buf).strip(),
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
 
     def delivery_text(self) -> str:
         """The answer flattened for a surface that renders no markup.

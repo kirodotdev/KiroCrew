@@ -34,7 +34,13 @@ from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
-from .redaction import _contains_fixed_credential, _text_contains_bare_secret
+from .redaction import (
+    _contains_fixed_credential,
+    _pako_decoded_contains_exfiltration,
+    _PakoScanState,
+    _protect_pako_fragments,
+    _text_contains_bare_secret,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1072,15 +1078,26 @@ EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
 def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     """Scan and redact suspicious exfiltration URLs from text.
 
-    Returns (cleaned_text, list_of_warnings).
+    Validated Mermaid pako bytes are hidden before raw URL heuristics run, but
+    their decoded UTF-8 receives this same policy first. This baseline-only API
+    cannot authorize restoration, so even a clean candidate remains one
+    fail-closed encoded-credential marker; PlatformContext owns restoration.
+    Returns ``(cleaned_text, list_of_warnings)``.
     """
-    warnings = scan_exfiltration_urls(text)
+    pako_warnings: list[str] = []
+    protected, _ = _protect_pako_fragments(
+        text,
+        pako_warnings,
+        _PakoScanState(),
+        decoded_text_is_unsafe=_pako_decoded_contains_exfiltration,
+    )
+    warnings = scan_exfiltration_urls(protected)
     if not warnings:
-        return text, []
+        return protected, pako_warnings
 
     exempt_hosts = _exfil_exempt_hosts()
-    result = text
-    for match in _URL_RE.finditer(text):
+    result = protected
+    for match in _URL_RE.finditer(protected):
         domain = match.group(1)
         if _exfil_url_warning(
             domain,
@@ -1090,7 +1107,7 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
             is_https=match.group(0).lower().startswith("https://"),
         ):
             result = result.replace(match.group(0), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
-    return result, warnings
+    return result, pako_warnings + warnings
 
 
 # Markerless 40-character values collide with OAuth entropy only for these

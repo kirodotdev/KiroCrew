@@ -27,9 +27,12 @@ Reading returns a transcript tail, stopping cancels a turn the way the Stop butt
 does, creating opens an empty session, and sending delivers a message that the
 target runs as its next turn. Delivery is the sharpest verb and is bounded
 accordingly: the body is redacted through `sanitize_outbound` before it is
-persisted, it is prefixed with a `[sent by session <caller> via session_send]`
-envelope so the target's transcript can never render it as something the person
-typed, and channel agents are blocked from it outright.
+persisted, preserving the existing baseline policy on ordinary outer text while
+checking every decoded Mermaid Live pako view under the active credential policy
+before restoring the opaque link; it is prefixed with a
+`[sent by session <caller> via session_send]` envelope so the target's transcript
+can never render it as something the person typed, and channel agents are blocked
+from it outright.
 
 **Delivery has two authorization moments, and only the first is enforced today.**
 An idle target runs the prompt immediately, under the authorization that admitted

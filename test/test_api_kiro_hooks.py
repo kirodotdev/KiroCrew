@@ -25,10 +25,15 @@ from kiro_crew.dashboard.handlers.hooks import api_kiro_hooks
 # the SOURCE module on purpose: `kiro_agents_dir_path()` reads it from `agent`'s
 # globals at call time, so the source-module patch is unaffected by the hoist —
 # do NOT retarget it to the handler namespace (the name does not exist there).
-# `redact` is likewise patched where it is defined.
+# `redact` is the platform seam the handler late-imports inside its body
+# (`from kiro_crew.platform import redact_via_context as redact`), so it is
+# patched on the `kiro_crew.platform` package, where that import resolves at
+# call time. On the Default policy the seam composes the pako-aware baseline
+# directly and never calls the bare `security.redact`, so a patch on that
+# function would leave the handler's calls unobserved.
 _P_AGENTS_DIR = "kiro_crew.agent.KIRO_AGENTS_DIR"
 _P_DEFAULTS = "kiro_crew.dashboard.handlers.hooks._shipped_defaults"
-_P_REDACT = "kiro_crew.security.redact"
+_P_REDACT = "kiro_crew.platform.redact_via_context"
 
 
 def _make_app() -> web.Application:
@@ -146,12 +151,11 @@ class TestApiKiroHooks:
                 assert entry["command"] == "[R:echo secret]"
                 assert entry["matcher"] == "[R:tool_*]"
                 # Count the HANDLER's calls, not every call in the process. The patch
-                # target is the process-wide ``security.redact``, and the SEL routes
-                # every field it persists through the same function -- so any audit row
-                # written while the platform context composes on first use (a tier
-                # record from the policy ladder, say) would otherwise be counted
-                # against this handler and make the test assert on unrelated
-                # subsystems.
+                # target is the process-wide platform seam, which other egress
+                # sites (a SEL audit row written while the platform context
+                # composes on first use, say) also route through -- so any such
+                # call would otherwise be counted against this handler and make
+                # the test assert on unrelated subsystems.
                 own = [
                     c for c in mock_redact.call_args_list if c.args[0] in ("echo secret", "tool_*")
                 ]

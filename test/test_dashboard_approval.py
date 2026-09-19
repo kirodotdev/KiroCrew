@@ -2356,6 +2356,74 @@ class TestDenyRowTitleRedaction:
         assert recs, f"expected a {outcome} audit record"
         assert all("[REDACTED: credential]" in c.get("tool_name", "") for c in recs), recs
 
+    def test_display_helper_decides_pako_state_under_the_active_policy_only(self) -> None:
+        """``_redact_display_text`` runs the narrow pako seam: the companion-blind
+        baseline on the title's ordinary text (unchanged behaviour), but a Mermaid
+        link in the title whose DECODED diagram carries a companion-only token is
+        refused whole -- a deny-row title is shown once and never replaced."""
+        import base64
+        import dataclasses
+        import json
+        import zlib
+
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        state = json.dumps({"code": f"flowchart TD\n  A[{companion_token}] --> B"})
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        title = f"Open {companion_token} at https://mermaid.live/edit#pako:{payload}"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                return frozenset()
+
+        assert chat_runner._redact_display_text(title) == title  # Default policy admits it
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            result = chat_runner._redact_display_text(title)
+        finally:
+            reset_context()
+
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+        assert result.startswith(f"Open {companion_token} at ")
+
+    def test_legacy_tool_payload_fields_fail_closed_without_context_authorization(self) -> None:
+        import base64
+        import json
+        import zlib
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        state = json.dumps(
+            {"code": f"flowchart TD\n  A[{companion_token}] --> B"},
+            separators=(",", ":"),
+        )
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        event = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title=url,
+            tool_kind=url,
+            tool_call_id=url,
+            tool_purpose=url,
+            tool_input=url,
+        )
+
+        result = chat_runner._tool_call_ws_payload(event)
+        rendered = json.dumps(result, sort_keys=True)
+        assert url not in rendered
+        assert payload not in rendered
+        assert "[REDACTED: encoded credential]" in rendered
+
     @pytest.mark.asyncio
     async def test_auto_approve_invalid_name_redacts(self, tmp_path):
         state, client = _make_state(

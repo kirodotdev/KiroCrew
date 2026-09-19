@@ -58,6 +58,7 @@ from kiro_crew.messaging.renderer import (
 from kiro_crew.messaging.split import chunk_utf8_bytes
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.webex.cards import approval_card, options_card, usable_choices
 from kiro_crew.webex.client import WEBEX_MAX_TEXT
@@ -114,23 +115,18 @@ def _redact_all(text: str) -> str:
 
 
 def webex_display_safe(text: str) -> str:
-    """Redact *text* against what WEBEX will show, not against its bytes.
+    """Redact raw Webex-bound text against what the client will display.
 
-    The driver's ``StreamRedactor`` already scans the stream byte-for-byte. This
-    is the second pass every other rendering channel runs (``discord`` and
-    ``imessage`` do the same), and it exists because a credential split by
-    markdown delimiters — ``AKIA**IOSF**ODNN7EXAMPLE`` — survives a byte scan and
-    is then reassembled by the platform's own renderer into the whole key.
-    ``redact_for_display`` canonicalizes to the DISPLAYED form first, so the scan
-    sees what the user will.
-
-    Deliberately WITHOUT the mention defang that ``messaging.renderer.display_safe``
-    adds: that inserts a zero-width space after every ``@`` to neutralize
-    ``@everyone``-style broadcast grammars, and Webex has none — while its
-    allow-list is email addresses, so defanging would mangle every address the
-    agent legitimately prints.
+    This public helper remains companion-blind for command and proactive sends
+    that did not pass through :class:`TurnDriver`.
     """
     out, _ = redact_for_display(text or "", _redact_all)
+    return out
+
+
+def _authorized_display_safe(text: str) -> str:
+    """Recheck a TurnDriver-authorized value in Webex's displayed form."""
+    out, _ = redact_for_display(text or "", redact_pako_via_context)
     return out
 
 
@@ -192,7 +188,7 @@ def _safe_tool_label(raw: str) -> str:
     actually ships.
     """
     stripped = _MD_CONTROL_RE.sub("", " ".join((raw or "").split()))[:_TOOL_LABEL_MAX]
-    return webex_display_safe(stripped)
+    return _authorized_display_safe(stripped)
 
 
 class WebexRenderer(Renderer):
@@ -349,7 +345,12 @@ class WebexRenderer(Renderer):
         # Cap the choices for the widget and degrade the remainder to numbered
         # text through the SHARED helper, so the cap is enforced in one place and
         # a choice past it is still visible rather than silently dropped.
-        body, kept = apply_options_cap(body, choices, self.capabilities)
+        body, kept = apply_options_cap(
+            body,
+            choices,
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
         card = self._options_card(kept)
         if card is None:
             # No card will be rendered, so every choice belongs in the text.
@@ -375,7 +376,7 @@ class WebexRenderer(Renderer):
         uploads: list[Any] = []
         if self._uploads_enabled():
             body, uploads = await self._extract_uploads(body)
-        content = webex_display_safe(body) or ("…" if ok else _ERROR_TEXT)
+        content = _authorized_display_safe(body) or ("…" if ok else _ERROR_TEXT)
         if self._steered:
             content = f"{content}\n\n{_STEER_NOTE}"
         # Byte-aware and LOSSLESS: Webex caps messages in UTF-8 BYTES, so the
@@ -514,7 +515,7 @@ class WebexRenderer(Renderer):
         # Scanned like the final answer: the frame carries the forming answer's
         # tail, so the same delimiter-split credential the byte scan cannot see
         # reaches the room here FIRST — minutes before on_done would have caught it.
-        frame = webex_display_safe(frame)
+        frame = _authorized_display_safe(frame)
         edited = await self._client.edit_message(self._placeholder_id, self._room_id, frame)
         if edited:
             self._edits_used += 1
@@ -656,7 +657,7 @@ class WebexRenderer(Renderer):
             # otherwise ship; it gets the same display-form floor every other
             # ``_reply``/frame passes through.
             name = upload_filename(item, index)
-            caption = webex_display_safe(item.alt or name)
+            caption = _authorized_display_safe(item.alt or name)
             sent = await self._client.send_file(
                 self._room_id,
                 caption,
@@ -683,7 +684,7 @@ class WebexRenderer(Renderer):
         lines = [_UPLOAD_FAILED_HEADER]
         lines += [f"- `{item.path}`" for item in failed]
         await self._client.send_message(
-            self._room_id, webex_display_safe("\n".join(lines)), parent_id=self._thread_id
+            self._room_id, _authorized_display_safe("\n".join(lines)), parent_id=self._thread_id
         )
 
     def _numbered_text(self, body: str, choices: list[str]) -> str:
@@ -698,7 +699,12 @@ class WebexRenderer(Renderer):
         Used only where no card will carry the choices -- a card this client
         cannot render, or a card whose send failed.
         """
-        return apply_options_cap(body, choices, replace(self.capabilities, max_buttons=0))[0]
+        return apply_options_cap(
+            body,
+            choices,
+            replace(self.capabilities, max_buttons=0),
+            redactor=redact_pako_via_context,
+        )[0]
 
     def _options_card(self, choices: list[str]) -> dict[str, Any] | None:
         """An Adaptive Card for *choices*, or ``None`` to keep the text form.

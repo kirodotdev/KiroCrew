@@ -163,6 +163,7 @@ from kiro_crew.history import carry_provenance, is_incognito_transcript, transcr
 from kiro_crew.llm_helpers import pick_epoch_host, slot_switch_session_lock
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import (
@@ -9943,9 +9944,12 @@ def _redact_history_rows(rows: list[dict], *, window_limit: int | None = None) -
     off the loop (``asyncio.to_thread``) so its larger pass yields freely.
 
     Read-side redaction is DEFENSE-IN-DEPTH, not the primary protection: non-user
-    content is redacted at the write boundary (``chat_runner``), so this covers
-    rows written before a redaction rule existed, a hand-edited or legacy JSONL,
-    or any write path that bypassed the boundary. It must not be dropped.
+    string content is redacted at the context-aware write boundary
+    (``chat_runner``), so this rechecks through the same narrow pako seam and
+    preserves a validated clean link. Structured legacy/corrupt rows have no
+    such provenance and retain the companion-blind normalization below. The
+    pass also covers rows written before a redaction rule existed, a hand-edited
+    JSONL, or any write path that bypassed the boundary. It must not be dropped.
 
     User rows are left untouched (matching the write boundary, which redacts
     non-user text). A non-string ``content`` (legacy/corrupt JSONL, or nested
@@ -9972,8 +9976,7 @@ def _redact_history_rows(rows: list[dict], *, window_limit: int | None = None) -
         if m.get("role", "assistant") != "user":
             content = m.get("content", "")
             if isinstance(content, str):
-                content, _ = redact_exfiltration_urls(content)
-                content, _ = redact_credentials(content)
+                content = redact_pako_via_context(content)
                 m = {**m, "content": content}
             else:
                 # Legacy/corrupt or nested multi-part content: normalise it to a

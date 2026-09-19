@@ -477,3 +477,317 @@ class TestRedactLogViaContext:
                 "A converged site routes its gate-side text through the context spelling, "
                 "so a companion host is not scanned with the weaker pass."
             )
+
+
+class TestRedactPakoViaContext:
+    """``redact_pako_via_context`` -- the narrow context-authorized pako seam.
+
+    Ordinary text stays byte-identical to the companion-blind baseline. A valid
+    clean pako link is restored only after the active policy is resolved, while a
+    link whose decoded state carries a companion-only token fails closed as one
+    encoded-credential marker.
+    """
+
+    COMPANION_SHAPE = "SSO-COOKIE"
+    BASELINE_SHAPE = "AKIAIOSFODNN7EXAMPLE"
+
+    @staticmethod
+    def _pako_url(code: str) -> tuple[str, str]:
+        import base64
+        import json
+        import zlib
+
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        return f"https://mermaid.live/edit#pako:{payload}", payload
+
+    @staticmethod
+    def _install(policy, cfg: KiroCrewConfig):
+        import dataclasses
+
+        from kiro_crew.platform import set_context
+
+        set_context(
+            dataclasses.replace(
+                build_default_context(cfg, profile=PROFILE_ENTERPRISE),
+                credentials=policy,
+            )
+        )
+
+    def _companion(self):
+        shape = self.COMPANION_SHAPE
+
+        class _Policy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(shape, "[REDACTED-SSO]")
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        return _Policy()
+
+    @pytest.fixture(autouse=True)
+    def _restore_context(self):
+        from kiro_crew.platform import reset_context
+
+        yield
+        reset_context()
+
+    def test_ordinary_text_stays_the_companion_blind_baseline(self, cfg: KiroCrewConfig) -> None:
+        """No scope widening: a companion-only token in PROSE is left exactly as
+        the baseline leaves it, while the baseline's own shapes are still scrubbed."""
+        from kiro_crew.platform.context import redact_pako_via_context, redact_via_context
+
+        self._install(self._companion(), cfg)
+        text = f"cookie {self.COMPANION_SHAPE} and key {self.BASELINE_SHAPE} in prose"
+        out = redact_pako_via_context(text)
+        assert out == security.redact(text)
+        assert self.COMPANION_SHAPE in out
+        assert self.BASELINE_SHAPE not in out
+        # The full seam is the one that widens; the two are distinct on purpose.
+        assert self.COMPANION_SHAPE not in redact_via_context(text)
+
+    def test_companion_token_inside_decoded_pako_state_fails_closed(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        from kiro_crew.platform.context import (
+            redact_pako_via_context,
+            redact_pako_with_findings_via_context,
+        )
+
+        url, payload = self._pako_url(f"flowchart TD\n  A[{self.COMPANION_SHAPE}] --> B")
+        containers = (url, f"[Open]({url})", f"<{url}|Open>", f"see {url}.")
+        for container in containers:
+            assert redact_pako_via_context(container) == container
+            baseline = security.redact(container)
+            assert container not in baseline
+            assert payload not in baseline
+
+        self._install(self._companion(), cfg)
+        for container in containers:
+            out = redact_pako_via_context(container)
+            assert container not in out
+            assert payload not in out
+            assert "[REDACTED: encoded credential]" in out
+        text, cred_warnings, url_warnings = redact_pako_with_findings_via_context(url)
+        assert payload not in text
+        assert cred_warnings == [
+            f"Redacted credential-bearing compressed payload ({len(payload)} chars)"
+        ]
+        assert url_warnings == []
+
+    def test_unsafe_link_does_not_downgrade_clean_sibling(
+        self, cfg: KiroCrewConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.platform.context as context
+
+        unsafe, unsafe_payload = self._pako_url(f"flowchart TD\n  A[{self.COMPANION_SHAPE}] --> B")
+        clean, _ = self._pako_url("flowchart TD\n  A --> B")
+        self._install(self._companion(), cfg)
+
+        def unexpected_fallback(_text: str) -> tuple[str, list[str], list[str]]:
+            raise AssertionError("a valid active policy must not fall back to the baseline")
+
+        monkeypatch.setattr(context, "_security_redact_with_findings", unexpected_fallback)
+        outer = f"footer {self.COMPANION_SHAPE} {unsafe} {clean} end"
+        result = context.redact_pako_via_context(outer)
+
+        assert self.COMPANION_SHAPE in result
+        assert unsafe not in result
+        assert unsafe_payload not in result
+        assert "[REDACTED: encoded credential]" in result
+        assert clean in result
+
+    def test_clean_pako_state_is_restored_only_by_context_policy(self, cfg: KiroCrewConfig) -> None:
+        from kiro_crew.platform.context import redact_pako_via_context
+
+        url, payload = self._pako_url("flowchart TD\n  A[**Deploy**] --> B[_ready_]")
+        for container in (url, f"[Open]({url})", f"<{url}|Open>"):
+            assert redact_pako_via_context(container) == container
+            baseline = security.redact(container)
+            assert container not in baseline
+            assert payload not in baseline
+        self._install(self._companion(), cfg)
+        for container in (url, f"[Open]({url})", f"<{url}|Open>"):
+            assert redact_pako_via_context(container) == container
+
+    def test_default_policy_adds_no_delta_and_runs_the_baseline_once(
+        self, cfg: KiroCrewConfig, monkeypatch
+    ) -> None:
+        """Standalone: no companion, so no decoded redactor and exactly one
+        credential pass per call -- the seam must not pay a second baseline."""
+        from kiro_crew.platform import reset_context
+        from kiro_crew.platform.context import redact_pako_via_context
+
+        reset_context()
+        real = security.redact_credentials
+        calls: list[str] = []
+
+        def counting(text: str, **kwargs):
+            calls.append(text)
+            return real(text, **kwargs)
+
+        monkeypatch.setattr(security, "redact_credentials", counting)
+        url, _ = self._pako_url("flowchart TD\n  A --> B")
+        assert redact_pako_via_context(f"plain {self.BASELINE_SHAPE}") == (
+            "plain [REDACTED: credential]"
+        )
+        assert len(calls) == 1
+        calls.clear()
+        assert redact_pako_via_context(url) == url
+        assert len(calls) == 1
+
+    def test_the_decoded_redactor_is_consulted_only_for_a_pako_link(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        """The companion's ``redact`` runs on decoded views, never on the outer text."""
+        seen: list[str] = []
+
+        class _Recording:
+            def redact(self, text: str) -> str:
+                seen.append(text)
+                return text
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        from kiro_crew.platform.context import redact_pako_via_context
+
+        self._install(_Recording(), cfg)
+        redact_pako_via_context("ordinary prose with nothing to decode")
+        assert seen == []
+        url, payload = self._pako_url("flowchart TD\n  A --> B")
+        redact_pako_via_context(url)
+        assert seen, "a pako link must be decoded and shown to the active policy"
+        assert all(payload not in view and "flowchart" in view for view in seen), seen
+
+    def test_composition_failure_still_raises_on_a_pako_link(self, cfg: KiroCrewConfig) -> None:
+        """Fail-closed like ``redact_via_context``: a host that cannot compose its
+        companion must not silently admit a link under the public baseline."""
+        from kiro_crew.platform.context import redact_pako_via_context
+
+        class _Unprovable:
+            def redact(self, text: str) -> str:
+                raise PlatformCompositionError("companion could not be composed")
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        self._install(_Unprovable(), cfg)
+        url, _ = self._pako_url("flowchart TD\n  A --> B")
+        with pytest.raises(PlatformCompositionError):
+            redact_pako_via_context(url)
+
+    def test_a_transient_policy_error_fails_closed_only_for_pako(self, cfg: KiroCrewConfig) -> None:
+        """An unverifiable decoded diagram is removed, while ordinary text keeps
+        the baseline because it never invokes the companion policy."""
+        from kiro_crew.platform.context import (
+            redact_pako_via_context,
+            redact_pako_with_findings_via_context,
+        )
+
+        class _Flaky:
+            def redact(self, text: str) -> str:
+                raise RuntimeError("adapter blew up")
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        self._install(_Flaky(), cfg)
+        ordinary = f"key {self.BASELINE_SHAPE} in prose"
+        assert redact_pako_via_context(ordinary) == security.redact(ordinary)
+
+        url, payload = self._pako_url("flowchart TD\n  A --> B")
+        out = redact_pako_via_context(url)
+        assert payload not in out
+        assert "[REDACTED: encoded credential]" in out
+        text, cred_warnings, url_warnings = redact_pako_with_findings_via_context(url)
+        assert payload not in text
+        assert cred_warnings == [
+            f"Redacted credential-bearing compressed payload ({len(payload)} chars)"
+        ]
+        assert url_warnings == []
+
+    def test_full_context_seam_fails_closed_when_decoded_policy_raises(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        """The general egress shim must not restore an opaque link under the
+        baseline when a companion can scan outer text but not its decoded view."""
+        from kiro_crew.platform.context import redact_via_context
+
+        class _DecodedOnlyFailure:
+            def redact(self, text: str) -> str:
+                if "flowchart" in text:
+                    raise RuntimeError("decoded policy unavailable")
+                return security.redact(text)
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        self._install(_DecodedOnlyFailure(), cfg)
+        url, payload = self._pako_url("flowchart TD\n  A --> B")
+        out = redact_via_context(url)
+        assert payload not in out
+        assert "[REDACTED: encoded credential]" in out
+
+    def test_full_context_final_policy_error_preserves_decoded_rejection(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        """A transient final-pass error keeps the already fail-closed marker."""
+        from kiro_crew.platform.context import redact_via_context
+
+        companion_shape = self.COMPANION_SHAPE
+
+        class _FinalFailure:
+            def redact(self, text: str) -> str:
+                if "[REDACTED: encoded credential]" in text:
+                    raise RuntimeError("outer policy unavailable")
+                return text.replace(companion_shape, "[REDACTED-SSO]")
+
+            def exempt_exact_hosts(self) -> frozenset[str]:
+                return frozenset()
+
+        self._install(_FinalFailure(), cfg)
+        url, payload = self._pako_url(f"flowchart TD\n  A[{companion_shape}] --> B")
+        out = redact_via_context(url)
+        assert payload not in out
+        assert "[REDACTED: encoded credential]" in out
+
+    def test_every_production_stream_redactor_is_built_on_a_platform_seam(self) -> None:
+        """Constructor pin: no production ``StreamRedactor()`` may fall back to the
+        bare baseline again. Each rolling wire names ``redact_pako_via_context``
+        (its ordinary text was always companion-blind) or ``redact_via_context``;
+        a bare constructor would let a pako link's decoded state skip the active
+        policy on exactly the surface that cannot take it back."""
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.handlers import side
+        from kiro_crew.messaging import driver
+        from kiro_crew.slack import handler as slack_handler
+
+        seams = {"redact_pako_via_context", "redact_via_context", "_redact"}
+        found: dict[str, list[str]] = {}
+        for module in (chat_runner, side, driver, slack_handler):
+            tree = ast.parse(inspect.getsource(module))
+            constructors = [
+                ast.unparse(node)
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "StreamRedactor"
+            ]
+            assert constructors, f"{module.__name__} no longer builds a StreamRedactor"
+            found[module.__name__] = constructors
+            for call in constructors:
+                args = call[len("StreamRedactor(") : -1]
+                assert args in seams, f"{module.__name__}: bare or unknown redactor in {call}"
+        # The driver's local ``_redact`` is itself the narrow seam, by definition.
+        driver_redact = inspect.getsource(driver._redact)
+        assert "redact_pako_via_context(" in driver_redact
+        assert found["kiro_crew.messaging.driver"] == ["StreamRedactor(_redact)"]
+        assert found["kiro_crew.dashboard.chat_runner"] == [
+            "StreamRedactor(redact_pako_via_context)",
+            "StreamRedactor(redact_pako_via_context)",
+        ]

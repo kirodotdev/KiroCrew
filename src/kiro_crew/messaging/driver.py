@@ -51,7 +51,8 @@ from kiro_crew.monitoring.completion import (
     disposition_for_stop_reason,
     is_monitor_completion_evidence,
 )
-from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform import redact_pako_via_context
+from kiro_crew.security import StreamRedactor
 from kiro_crew.sel import sel
 from kiro_crew.tool_call_title import derive_tool_call_title
 
@@ -294,10 +295,17 @@ def sanitize_channel_replay_text(text: str) -> str:
 
 
 def _redact(text: str | None) -> str:
-    """Scrub exfiltration URLs + credentials from text (deterministic)."""
-    out, _ = redact_exfiltration_urls(text or "")
-    out, _ = redact_credentials(out)
-    return out
+    """Scrub exfiltration URLs + credentials from text (deterministic).
+
+    The companion-blind baseline pair on the outer text, exactly as every
+    channel always had it, through the platform's narrow pako seam
+    (``redact_pako_via_context``): a Mermaid ``#pako:`` link the baseline now
+    lets through whole has its DECODED state decided under the active
+    ``CredentialPolicy`` first. Every channel renderer is a final egress with no
+    later host-aware boundary behind it, so a link that reached a renderer
+    carrying a companion-only token could never be taken back.
+    """
+    return redact_pako_via_context(text or "")
 
 
 class TurnDriver:
