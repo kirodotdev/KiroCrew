@@ -15,6 +15,16 @@ except ImportError:
     import sqlite3
 
 from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char
+from .acl import (
+    DEFAULT_POLICY,
+    AccessContext,
+    AclPolicy,
+    ItemGrant,
+    ProviderResourceRef,
+    RevalidationHook,
+    RevalidationOutcome,
+    is_managed_trust_class,
+)
 from .embedder import embedder_signature
 from .store import KnowledgeStore
 
@@ -109,7 +119,10 @@ def vector_leg(embedder) -> tuple[Any, str | None]:
 class HybridRetriever:
     """FTS5 keyword + graph traversal + optional vector search, fused with RRF."""
 
-    def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None):
+    def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None,
+                 acl_policy: AclPolicy | None = None,
+                 revalidator: RevalidationHook | None = None,
+                 binding_resolver=None):
         """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float].
 
         ``embed_sig`` is the :func:`~kiro_crew.knowledge.embedder.embed_signature`
@@ -136,6 +149,9 @@ class HybridRetriever:
         self.store = store
         self.embedder = embedder
         self.embed_sig = embed_sig
+        self.acl_policy: AclPolicy = acl_policy or DEFAULT_POLICY
+        self.revalidator: RevalidationHook | None = revalidator
+        self.binding_resolver = binding_resolver
 
     def search(
         self,
@@ -143,6 +159,9 @@ class HybridRetriever:
         limit: int = 10,
         source_id: str | None = None,
         namespace: str | None = None,
+        *,
+        access_context: AccessContext | None = None,
+        query_principal=None,
     ) -> list[dict]:
         """Hybrid search with RRF fusion. Returns [{id, title, summary, content, score, source, match_type}].
 
@@ -159,9 +178,38 @@ class HybridRetriever:
         seeds, and the graph leg stays unfiltered for the same reason. The two
         filters compose (both applied when both are given).
 
+        ``access_context`` is the SECURITY boundary the two filters above are
+        not. It is the verified subject+tenant the query runs as (for a MANAGED
+        item, the PROVIDER-mapped identity -- resolved from the authenticated
+        caller, never self-reported). Every returned row -- from every leg,
+        including the unfiltered graph leg and the protected keyword rescue, and
+        everything the citation/location enrichment passes then attach -- is
+        gated against it by :attr:`acl_policy`. The gate is ITEM-SCOPED, not
+        call-surface-scoped: a trusted-local item (a personal folder, vault,
+        pasted/agent doc, artifact) is servable to the local single-user library
+        without a grant, but a MANAGED cloud/structured item is ALWAYS checked
+        against the current subject AND revalidated -- and denied when the
+        context carries no verifiable identity or the grant is stale/unverifiable
+        (fail-closed). ``None`` means the caller has NOT resolved an identity;
+        that is treated as :data:`acl.LOCAL_LIBRARY` (sees trusted-local items,
+        denies managed ones), so a SHARED/multi-tenant caller MUST pass a real
+        context. The gate runs BEFORE the result window is cut, so a denied item
+        never occupies a slot, triggers the rescue, or is enriched/cited.
+
         Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
         row -- the keyword leg's protected top hit (see below).
         """
+        from .acl import LOCAL_LIBRARY, LOCAL_PRINCIPAL
+        ctx = access_context if access_context is not None else LOCAL_LIBRARY
+        # The whole-query principal. A local-library principal (or a local ctx
+        # with no principal) maps to LOCAL_PRINCIPAL: trusted-local visible,
+        # managed denied. When a binding_resolver is wired, managed candidates
+        # are resolved PER-CANDIDATE from this principal + the candidate's own
+        # (provider, account) -- one request never applies one provider identity
+        # to the whole library.
+        principal = query_principal
+        if principal is None:
+            principal = LOCAL_PRINCIPAL if ctx.bypass_acl else None
         kw = self._keyword_search(
             query, limit=limit * 2, source_id=source_id, namespace=namespace
         )
@@ -174,6 +222,20 @@ class HybridRetriever:
         # keyword leg is weak. Weights align positionally
         # with (kw, gr, vec).
         fused = self._rrf_fuse(kw, gr, vec, weights=(1.0, 1.0, VECTOR_RRF_WEIGHT))
+
+        # ACL GATE. Drop every fused candidate the querying identity may not see
+        # BEFORE anything downstream reads it -- the result window, the recency
+        # tie-break, the keyword rescue, and both enrichment passes all operate
+        # only on this filtered list, so a denied item cannot leak through any of
+        # them (including via the deliberately-unfiltered graph leg, whose
+        # cross-source hits are exactly the ones this gate must catch). The gate
+        # is item-scoped: one batched grant read + one source-type read, then a
+        # per-item classify (trusted-local vs managed) + policy decision +
+        # managed-item revalidation. Fail-closed throughout: a managed item with
+        # no readable grant, a stale/unverifiable grant, or no verifiable
+        # identity is dropped -- while a trusted-local item is still servable to
+        # the local single-user library.
+        fused = self._acl_filter(fused, ctx, principal)
 
         # Resolve every fused candidate up front: both the recency tie-break below
         # and the result rows read the same item, so one lookup per id serves both.
@@ -250,6 +312,126 @@ class HybridRetriever:
         self._attach_source_locations(results)
         self._attach_citation_sources(results)
         return results
+
+    def _acl_filter(
+        self, fused: list[tuple[str, float]], ctx: AccessContext, principal=None
+    ) -> list[tuple[str, float]]:
+        """Keep only fused candidates the querying identity may see (fail-closed).
+
+        Item-scoped AND per-provider. For every candidate:
+
+        * classify managed-vs-trusted-local from the source PROVENANCE stamp
+          (``sources.trust_class``); sourceless/unknown/dangling => managed;
+        * a TRUSTED-LOCAL item with no grant is servable to a bypass (local)
+          context, else takes the subject/tenant test against ``ctx``;
+        * a MANAGED item is gated against the PROVIDER-MAPPED identity for ITS OWN
+          (provider, account). When a :attr:`binding_resolver` is wired, that
+          identity is resolved PER CANDIDATE from ``principal`` + the candidate's
+          ProviderResourceRef -- one request never applies one provider identity
+          to the whole library, and a principal with no binding for that
+          provider/account is denied (never falls back to another binding). A
+          managed item whose resource_ref is missing/unparseable cannot be
+          located to revalidate and is denied. Then the revalidation chain runs
+          against that per-candidate context.
+
+        Without a binding_resolver the managed item is checked directly against
+        ``ctx`` (the direct-context path: a caller that already resolved a single
+        provider identity, or a test).
+
+        Runs before any downstream read of ``fused``, so it is the ONE place the
+        gate lives.
+        """
+        if not fused:
+            return fused
+        ids = [item_id for item_id, _ in fused]
+        grants = self.store.get_item_grants(ids)
+        trust = self.store.get_item_trust(ids)
+        kept: list[tuple[str, float]] = []
+        for item_id, score in fused:
+            raw = grants.get(item_id)
+            has_source, trust_class = trust.get(item_id, (False, None))
+            managed_by_provenance = is_managed_trust_class(has_source, trust_class)
+            if raw is None:
+                # No grant row: trusted-local visible only to a bypass context;
+                # a managed (or enforcing-context) item is denied.
+                if not managed_by_provenance and ctx.bypass_acl:
+                    kept.append((item_id, score))
+                continue
+            managed = managed_by_provenance or bool(raw.get("managed"))
+            grant = ItemGrant.from_row(
+                raw.get("subjects"), raw.get("tenant"), raw.get("acl_version"),
+                managed=managed, fresh_as_of=raw.get("fresh_as_of"),
+            )
+            if not managed:
+                # Trusted-local grant: check against the whole-query ctx.
+                if self.acl_policy.allows(ctx, grant):
+                    kept.append((item_id, score))
+                continue
+
+            # --- Managed candidate: resolve the per-candidate identity. ---
+            resource = ProviderResourceRef.from_json(raw.get("resource_ref"))
+            item_ctx = self._context_for_managed_candidate(ctx, principal, resource)
+            if item_ctx is None:
+                # No provider-mapped identity for THIS candidate's provider/
+                # account (no binding, or resource_ref missing) -> deny.
+                continue
+            if item_ctx.bypass_acl:
+                # A bypass/local context has no provider-mapped subject -> a
+                # managed item is never visible to it.
+                continue
+
+            revalidation = RevalidationOutcome.UNVERIFIABLE
+            hook_consulted = False
+            if grant.readable and self.revalidator is not None:
+                hook_consulted = True
+                try:
+                    revalidation = self.revalidator.revalidate(item_ctx, item_id, grant)
+                except Exception:
+                    logger.warning(
+                        "Knowledge ACL revalidation hook raised for item %s; "
+                        "treating as unverifiable (fail-closed)", item_id,
+                        exc_info=True)
+                    revalidation = RevalidationOutcome.UNVERIFIABLE
+            # A consulted hook is authoritative: UNVERIFIABLE is a hard deny (no
+            # stale-stamp fallback). The stamp fallback only applies when NO hook
+            # is wired.
+            if hook_consulted and revalidation == RevalidationOutcome.UNVERIFIABLE:
+                continue
+            if self.acl_policy.allows(item_ctx, grant, revalidation=revalidation):
+                kept.append((item_id, score))
+        return kept
+
+    def _context_for_managed_candidate(self, ctx, principal, resource):
+        """The AccessContext a managed candidate is gated against, or None (deny).
+
+        With a binding_resolver wired: the candidate MUST carry a resource_ref
+        (else it cannot be located/revalidated -> None), and the resolver maps
+        ``principal`` + the resource's (provider, account) to the binding's
+        AccessContext -- None when the principal holds no binding there, so the
+        gate denies rather than reusing another provider's identity.
+
+        Without a resolver: the direct-context path -- gate against ``ctx`` as
+        passed (a caller that already resolved a single provider identity, or a
+        test). A bypass/local ctx has no provider subject and the caller drops
+        the managed item.
+        """
+        if self.binding_resolver is None:
+            return ctx
+        if resource is None or not resource.provider:
+            return None
+        if principal is None:
+            return None
+        # A local-library principal has no cross-identity boundary and holds no
+        # provider binding: never resolve a managed binding for it.
+        if getattr(principal, "local_library", False):
+            return None
+        try:
+            return self.binding_resolver.resolve(principal, resource.provider, resource.account)
+        except Exception:
+            logger.warning(
+                "Knowledge ACL binding_resolver raised for provider=%s; denying "
+                "(fail-closed)", resource.provider, exc_info=True)
+            return None
 
     def _attach_source_locations(self, results: list[dict]) -> None:
         """Enrich results in place with citation metadata (section + line range).

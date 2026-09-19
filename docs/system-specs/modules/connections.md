@@ -1120,6 +1120,7 @@ rest of this subsystem uses (`l0_probe.ProbeResult`, `l1_smoke.SmokeResult`,
 | `context.py` | `OperationContext` — the per-call references: `binding_ref`, `tenant_ref`, `subject_ref`, `deadline`, plus `credential_mode` (singular). No field is a credential VALUE; `binding_ref`/`tenant_ref`/`subject_ref` are references, `deadline` is an absolute POSIX-seconds UTC cutoff, and `credential_mode` is the single SELECTED mode identifier for this call (a mode *type*, never a token), chosen from — and never outside — the descriptor's declared `credential_modes` set. |
 | `result.py` | `OperationResult` — the outcome envelope: `status` (`ok` / `partial`) and `next_cursor` (an opaque continuation token, or `None` when complete). `next_cursor` is deliberately opaque: the manifest declares each operation's own `pagination` contract, and the envelope only says "resume here, or you are done". |
 | `errors.py` | `OperationError` — the RUN-01 typed error taxonomy: a twelve-value closed set (`auth`, `scope`, `consent`, `not_found`, `forbidden`, `quota`, `throttle`, `conflict`, `input`, `temporary`, `partial`, `ambiguous`) copied verbatim from the manifest, plus `detail`. |
+| `auth_modes.py` | Per-operation *permitted* credential modes + a single deny-by-default authorization path bounded by the descriptor (W01 · L05): the descriptor's `credential_modes` is the outer bound, a policy `PermittedModes` may only narrow within it, and `permit_operation` / `permit_registered_operation` (both REQUIRE a descriptor) deny a mode the descriptor did not declare **even if a registry permits it**, and deny an unknown mode **even if descriptor and policy both carry it** (real `policy ∩ descriptor ∩ CREDENTIAL_MODES` intersection in `effective_permitted_modes`, not a docstring). No public policy-only bypass. Mode identifiers and `operation_id` references only, never a credential value. See "Per-operation permitted credential modes, denied by default" below. |
 
 **`detail` reuses the subsystem's redaction discipline, opening no new
 channel.** A typed error's `detail` can reflect provider-returned text, so it
@@ -1130,6 +1131,205 @@ goes through the SAME redact-then-truncate discipline as
 exfiltration-URL scanners over the whole string BEFORE the slice — truncating
 first would bisect a credential straddling the boundary and leak the prefix past
 the regex. There is no un-redacted path onto `detail`.
+
+### The binding record (L02 · AUTH-01)
+
+`control_plane/binding.py` is what a context's `binding_ref` points AT: the
+`Binding` record for one authorized account. Still pure types with zero IO — it
+MINTS and INCREMENTS a record; it does not persist one, resolve one to a
+credential, or reach kiro-cli. Four properties, each a distinct defence:
+
+| Property | How it is enforced |
+|---|---|
+| **Random `binding_id`** | Minted from `secrets.token_hex(16)` (128 bits) — unguessable and NOT derived from the provider slug, tenant, or subject. A derived id would let anyone who knows the (often public) slug/tenant reconstruct or enumerate binding ids. The id carries no meaning; it is a name resolved through a later leaf's table, never parsed. |
+| **Verified subject + tenant** | `create_binding(...)` takes a required `SubjectTenantVerifier` and stores ONLY the `VerifiedIdentity` it returns — never the caller's raw `claimed_*` inputs. A failed verification raises `BindingVerificationError` and no record is built (verification runs BEFORE anything is minted, so there is no partial or unverified binding). There is no path from a claimed identity to a stored one that skips the verifier. |
+| **Monotonic `generation`** | A fresh binding starts at `INITIAL_GENERATION`; `next_generation(binding)` returns a new record with `generation` incremented by one and every other field carried through unchanged (the input is not mutated). Its PURPOSE is L04's revoke fencing — a revoke raises the generation so anything stamped with an older one is fenced off — but **this slice lands the field and the increment semantics only; it implements neither refresh nor revoke**, and nothing here decides what a bumped generation invalidates. |
+| **`secret_ref` metadata, never a value** | A binding records a `SecretRef` — the vault entry `name` plus metadata (`backend`, `bound_at`) — and it is a hard invariant of the type that no plaintext lives on it. The name follows the same `CONNECTIONS_<SLUG>_...` family `oauth_clients.client_secret_name` uses (via `binding_secret_ref`, with a distinct `_BINDING_SECRET` suffix so a per-binding grant secret never collides with the operator's `_CLIENT_SECRET` application credential). Resolving the name to a `SecretVault` / `SecretValue` is a later leaf's job. |
+
+**The old-custody invariant, at its sharpest.** Under the pre-native model the
+OAuth token chain lives entirely inside kiro-cli and the backend only `stat()`s
+to probe whether a grant exists. `binding.py` **never reads, copies, or
+references an old kiro-cli OAuth token.** A `SecretRef` names a NEW authorization
+grant's secret under a NEW trusted owner — it carries only a vault-entry name,
+not a filesystem path into kiro-cli's token store, so it is not a place to
+smuggle a moved-over legacy token.
+
+### The derived handle (L08)
+
+`control_plane/handle.py` derives a `DerivedHandle` from a trusted `Binding`.
+Where a binding is a LONG-LIVED, FULL-AUTHORITY record — it names the connection
+and references its secret and never expires — a handle is what a call site
+should actually hold: a capability strictly NARROWER than the binding, that
+EXPIRES, and that cannot be turned back into the binding. It MINTS a handle
+(`derive_handle`) and DECIDES whether one may be used (`ensure_usable`); it does
+not persist across processes, resolve to a credential, revoke, or reach
+kiro-cli.
+
+**The handle is a CLAIM; the issuance record is the authority.** A
+`DerivedHandle` is an ordinary mutable `TypedDict` a caller holds — so it is not
+trusted. A caller can edit its `scopes`, push its `not_after`, or change its
+`generation` in the dict. Therefore NO enforcement decision is read off the
+handle's own fields. Every mint records the authoritative facts (scope set,
+expiry, generation, binding fingerprint) in a module-private ISSUANCE REGISTRY
+keyed by the random `handle_id`, and `ensure_usable(handle, now=…)` judges ONLY
+against that record. A consumer **MUST NOT** read `scopes` / `not_after` /
+`generation` off the handle to make its own allow/deny decision — it MUST call
+`ensure_usable`; reading the fields directly re-opens exactly the hole this
+design closes.
+
+Three invariants, each enforced by real code with a real refusal path (never a
+docstring), each with a counterexample test:
+
+| Invariant | How it is enforced |
+|---|---|
+| **Scope only narrows** | *At mint:* `derive_handle(binding, granted_scopes=…, requested_scopes=…, …)` refuses any requested scope the binding does not grant with a typed RUN-01 `scope` error (`HandleScopeError`) and mints NO handle — never silently dropped to what is granted. *At use:* `ensure_usable` refuses a handle whose presented `scopes` are not a subset of the RECORD's scopes (`HandleTamperedError`, typed `auth`) — a caller who widens the dict after minting is refused, not obeyed. The binding record itself carries no scope set; the authorized-scope set is supplied by the layer that owns it (e.g. L06 governance) and passed in, and this module treats scopes as opaque strings — it never consults or mutates `platform/governance.SCOPE_CATALOG`. |
+| **Expiry is enforced** | `ensure_usable` first refuses a non-finite `now` (a `NaN` clock would make `now >= not_after` silently False and let an expired handle through), then compares the caller's `now` against the RECORD's `not_after` (inclusive) and refuses an expired handle with a typed RUN-01 `input` error (`HandleExpiredError`) — pushing the handle's own `not_after` changes nothing, and a claimed expiry later than the record's is itself a tamper refusal. At mint, `ttl_seconds`/`now` must be FINITE and `ttl_seconds > 0`, and `now + ttl_seconds` must not overflow to `inf`; otherwise `ValueError`. |
+| **Routing/auth axes are trusted, not caller-chosen** | `ensure_usable` also checks the handle's `service_id` and `credential_mode` against the record and refuses a mismatch (`HandleTamperedError`, typed `auth`) — a caller cannot flip `service_id` to redirect a Graph handle at another provider, or swap the credential mode. And it does not return `None`: on success it returns a **`TrustedHandleView`** built from the RECORD. |
+| **A malformed handle is refused, not crashed** | Because the handle's fields are UNTRUSTED, the very FIRST step of `ensure_usable` validates the COMPLETE shape — that the handle is a mapping, every required field is present, and each value is of a type the enforcement can operate on (a `handle_id` that keys the registry, a `scopes` that `set()` accepts, a `not_after` that `>=` orders). A missing or wrong-typed field is the SAME class of untrusted input as a widened scope, so it is a typed RUN-01 `auth` refusal (`HandleTamperedError`) whose `detail` names only the offending field (never its value, and redacted regardless) — never a bare `KeyError` / `TypeError` that would carry no `error_class`, skip the audit, and jump the decision chain onto the caller. The boolean predicate `is_expired` shares the registry lookup's crash surface but is not allowed to raise (its contract routes the typed refusal to `ensure_usable`), so a malformed handle — weaker than "unknown" — fails CLOSED there too: `is_expired` answers `True` (treated as expired) rather than crashing. |
+| **Cannot reconstruct the binding** | The handle carries NOTHING that rebuilds its binding: no `binding_id`, no `subject_ref` / `tenant_ref`, no `secret_ref` (the handle deliberately carries no secret reference at all). Its own `handle_id` is random (`secrets.token_hex(16)`), independent of the binding. The sole link back is `binding_fingerprint` — a ONE-WAY keyed digest (HMAC-SHA256 under a per-process random key) of `binding_id`, which L04 revoke fencing can MATCH against a candidate binding but which no handle holder can INVERT to recover the id. |
+
+**A consumer routes on the returned view, never on the handle fields.**
+`ensure_usable(handle, now=…)` returns a frozen `TrustedHandleView` whose
+`service_id` / `credential_mode` / `scopes` / `generation` / `not_after` are
+copied from the trusted issuance record. **W05 / L09 MUST decide where to send
+the call and which credential to use from this returned view, and MUST NOT read
+`service_id` / `credential_mode` / `scopes` off the `DerivedHandle` dict.**
+Reading them off the handle re-opens the "validate, then use the unvalidated
+value" hole the whole design closes — a caller who edited `service_id` on the
+dict would route the call to the wrong provider even though `ensure_usable`
+verified a different one. The handle is a claim; the returned view is the answer.
+L09's real entry point may re-assert this check at its boundary; it must not fall
+back to trusting the handle.
+
+**Cross-process and restart: a fail-closed contract, not undefined behavior.**
+The issuance registry is process-local and in-memory; it starts empty at import
+and is never persisted. So two things are guaranteed: (1) **after a restart,
+every handle minted before the restart is refused** — the new process's registry
+is empty, so no prior `handle_id` resolves and `ensure_usable` fails closed with
+a typed `auth` refusal (`HandleNotIssuedError`), never silently accepted; (2) **a
+handle minted in another process is refused here** — each process has its own
+registry. The capability boundary is therefore explicit: a derived handle is
+usable ONLY within the process that issued it, while that process lives and the
+record has not expired. A handle is not a bearer token that survives
+serialization to another process — that is deliberate and enforced by the
+lookup. (A cross-process handoff, if a later slice needs it, is a signed-record
+or shared-store design that is out of this slice.)
+
+**Why `generation` rides along but `binding_id` does not.** L04's revoke fencing
+(NOT implemented here) needs both the handle's `generation` (to compare against
+the binding's current one) and WHICH binding it came from. Carrying the raw
+`binding_id` would answer the second but break the no-reconstruction invariant,
+so the record and handle carry the non-invertible `binding_fingerprint` instead:
+L04 recomputes the fingerprint of a candidate binding under the same process key,
+matches, and fences off any handle whose `generation` is older than that
+binding's current one. This slice lands `generation` + the fingerprint and proves
+they are preserved; it makes no revoke decision.
+
+**Secret custody stays where it is.** This module handles references and
+derivation only. Secret storage remains the existing mechanism — the
+`secrets/vault.py` `SecretVault` / `SecretValue` machinery and the
+`oauth_clients.client_secret_name(slug)` naming convention — and a handle
+carries no secret reference, so resolving a binding's secret is still a later
+leaf's job, gated by the handle's scope and expiry rather than reachable from
+the handle itself.
+### The binding lifecycle (L04): trusted store, single-writer rotation, revoke fencing
+
+L02's `resolve_binding_for_principal` matches over an `Iterable` the CALLER
+hands in — so the candidate set is caller-controlled, and a caller can slip a
+binding it should not own into that set and have the resolve "legitimately" hit
+it. That is the FIFTH recurrence of the trusted-source discipline (recorded
+provenance → returned views → the executor's inputs → secret resolution → now
+the candidate set), so L04 closes it as a PATTERN rather than one more point
+fix. `control_plane/lifecycle.py` adds the persistent, trusted lifecycle — it is
+IO-doing by design (L01/L02 were pure types), but it persists a binding RECORD,
+never a secret value, and **never reads, copies, or references an old kiro-cli
+OAuth token.**
+
+| Concern | How L04 closes it |
+|---|---|
+| **Candidate set comes from a TRUSTED PERSISTENT store, never the caller** | `BindingStore.resolve(...)` has NO `bindings` parameter — it matches only over records the store admitted via `insert`, read from a file under `config_dir()/connections/control_plane_bindings.json`. A caller cannot present a candidate the store never admitted, and the store survives a process restart (a fresh `BindingStore` on the same file resolves the same bindings). **No new vault**: a secret is still only a `SecretRef` under the existing `SecretVault` / `client_secret_name` convention; what is persisted is the binding record. |
+| **`(deployment, account)` uniqueness domain, ENFORCED on the domain** | The domain is `(deployment_id, service_id, subject_ref, tenant_ref)` — the **provider-side deployment** that hosts the account (a specific GitHub Enterprise host, a Salesforce org, a Microsoft Graph tenant deployment; **NOT** a Kiro Crew instance — using our own instance id here would merge two provider deployments into one binding and split one deployment seen from two Kiro instances into two, exactly backwards), plus the provider **account** it names (service + verified subject + verified tenant, what the downstream ACL's `resolve(principal, provider, account)` keys on). `insert` enforces uniqueness on the DOMAIN, independent of `binding_id`: it REFUSES (`BindingUniquenessError`) a second binding colliding on that 4-tuple even with a fresh random id, AND refuses a re-insert under an existing `binding_id` whose domain fields changed (an illegal mutation of an immutable identity — the round-23 bypass). A same-id + same-domain re-insert is idempotent ONLY when it is byte-identical over an explicitly-scoped field set (the embedded binding's `binding_id` / `service_id` / `subject_ref` / `tenant_ref` / `credential_mode` / `generation` and `secret_ref`'s `name` + `backend`, plus the record's `deployment_id` and `kiro_principal`; volatile timestamps `created_at` / `bound_at` / `updated_at` are excluded); a re-insert differing in `kiro_principal`, `credential_mode`, or the secret reference is a CONFLICT (`BindingUniquenessError`), never a silent `return prior` of the old record (a "write looked successful but stored the old value" trap). It never silently overwrites. |
+| **The Kiro principal → authorization link is REAL** | Each stored binding records the `kiro_principal` authorized to use it, and `resolve(...)` requires the caller's authenticated principal to EQUAL it — a different principal does not resolve even with a correct provider identity and deployment. This is the `resolve(principal, provider, account)` seam enforced in code, not asserted in prose. |
+| **The per-binding secret SELECTOR resolves from the live store, by binding** | `BindingStore.select_secret(binding, *, reader)` is the payload path's secret selector. It resolves the secret reference **by binding, from the trusted live store** — NOT by provider slug (the legacy `binding_secret_ref` collapses every binding under a provider onto one name) and NOT from any caller-supplied set. It first calls `assert_live` (a fresh LIVE-store read that fences a revoked / stale / forged / swapped handle), takes the `secret_ref` from the STORE's returned record (never the caller's dict), reads the value through the injected `SecretReader` (the existing `SecretVault` satisfies it — no new vault), and returns a `ResolvedCredential` whose every field is the store's. So a rotated/revoked/tampered handle cannot pull a secret, and a slug-level collision cannot surface another binding's credential. Sixth recurrence of the trusted-source discipline, closed as the pattern. |
+| **Refresh rotation is a CROSS-PROCESS SINGLE WRITER around the REAL refresh** | `BindingStore.rotate(binding_id, *, observed_generation, refresh)` serializes through `platform_compat.acquire_lock` / `release_lock` (**never a raw `fcntl`** — a hard cross-platform constraint), and the caller's REAL token-refresh callable is invoked **inside that lock**, so the provider's token endpoint is hit EXACTLY ONCE under contention, not once per process. The winner calls `refresh`, advances `live_generation`, and returns `(record, True)`; the LOSER re-reads under the lock, finds the generation already advanced past its `observed_generation`, and returns `(winner_record, False)` WITHOUT calling `refresh` or rotating. Proven by a REAL two-process test that counts hits on a controlled token endpoint — not an internal counter, not "the lock was acquired". Fails closed: a stuck holder past the ceiling raises. |
+| **Revoke FENCES on EXACT generation AND identity** | `BindingStore.revoke(binding_id)` marks the binding revoked and raises `live_generation` (L02 left the counter and its `next_generation` increment here). `assert_live(binding)` and `resolve(...)` then require the presented handle's `generation` to EXACTLY equal the store's current live generation for the SAME binding identity (matching `service_id` / `subject_ref` / `tenant_ref`) — not "less than", not "not greater". So a STALE pre-revoke handle is refused, a FORGED future generation (e.g. `999` the store never issued) is refused, and a numerically-valid generation borrowed from ANOTHER binding is refused on the identity mismatch. The fence ALSO compares the presented `credential_mode` and the whole `secret_ref` against the store's record — a handle that keeps the right id/identity/generation but swaps the mode or points the secret reference at another vault entry is refused. `assert_live` RETURNS the store's trusted live `Binding` (not `None`), and the real sender MUST consume THAT return value for the ref/mode/secret it uses — never re-reading the caller-supplied dict after the fence, closing the "validate then use an unvalidated value" gap. |
+
+Every mutation (`insert` / `rotate` / `revoke`) is a reload-merge-publish under
+the cross-process lock, mirroring `acp/seed_provenance.py`: the store file is
+shared by every Crew process on the host and `atomic_write` makes the last
+writer win, so a writer that did not first reload would drop a sibling's
+records. Reads are lock-free snapshots. A store file that is present but
+UNREADABLE or malformed is **not** treated as empty — that would let the next
+write republish a fresh store and erase every binding, and let a colliding
+insert "become legal" again — so both reads and writes FAIL CLOSED with
+`BindingStoreCorruptError` and honestly report "unreadable", while an ABSENT file
+is a genuinely empty store; an individual malformed record inside an otherwise
+valid file is dropped fail-closed. The L04 symbols (`BindingStore`,
+`BindingUniquenessError`, `BindingRevokedError`, `BindingStoreCorruptError`,
+`StoredBinding`, `LIFECYCLE_SCHEMA_VERSION`, `store_path`) are canonical to
+`control_plane` and are NOT re-exported as top-level `connections` aliases,
+guarded by test.
+
+### The ACL binding-resolver adapter (L04): the host side of the knowledge seam
+
+The knowledge subsystem's ACL (`kiro_crew.knowledge.acl`) gates every managed
+(cloud/structured) item behind a per-candidate identity check, and it does NOT
+know how a principal maps to a provider account — that is a host/W01 concern. It
+declares a `@runtime_checkable` `Protocol`,
+`BindingResolver.resolve(principal, provider, account) -> AccessContext | None`,
+and its own docstring says *"Implemented by the host/W01 layer, not here."*
+`control_plane/acl_binding_resolver.py` is that host implementation, backed by
+the L04 trusted store.
+
+**It matches the CALL SHAPE, not by import — and matching the signature is not
+the whole contract.** A `Protocol` is structural, so the adapter matches
+`resolve(self, principal, provider, account) -> …|None` by shape and does NOT
+import — MUST NOT import — `kiro_crew.knowledge.acl` (that module lives on an
+un-merged branch; importing it would invert the dependency and is not reachable
+from a control-plane wheel). But **the ACL gate reads a field W01 does not
+produce**: `_subject_tenant_ok` evaluates `grant.subjects & ctx.subject_ids`,
+where `ctx.subject_ids` is a `@property` on ACL's `AccessContext`
+(`frozenset({subject, *groups})`). `subject_ids` exists **nowhere in W01**, so the
+`AccessGrant` this adapter returns cannot be handed to the ACL gate as-is — it
+would raise `AttributeError` at `ctx.subject_ids`. This section therefore makes
+**no** claim of structural equivalence or drop-in injection (that would be the
+"documented property that does not exist" trap this stack has hit before).
+
+**The actual bridge chain** has two halves. (1) W01 hands the ACL an `AccessGrant`
+carrying the provider-mapped, VERIFIED identity for one candidate (`subject` /
+`tenant` from the binding's `subject_ref` / `tenant_ref`; `groups` empty). (2) The
+ACL side consumes commit `dd715f12a` via ordinary git and, **on the ACL side**,
+bridges `AccessGrant` into its own `AccessContext`
+(`AccessContext(subject=grant.subject, tenant=grant.tenant, groups=grant.groups)`),
+which is where the `subject_ids` property comes into existence. `subject_ids` is
+an **ACL-owned derivation**, explicitly NOT a field W01 emits. So `AccessGrant` is
+a plainly-named W01 transport record, deliberately not a copy of ACL's
+`AccessContext` (no `subject_ids`, no `__post_init__`); every symbol it uses
+(`BindingStore`, `ServiceId`, `map_provider_to_service_id`,
+`ControlPlaneBindingResolver`, `AccessGrant`, `AccountToDeployment`) is real,
+importable, and tested — nothing is a "the ACL will call …" placeholder.
+
+| Concern | How the adapter closes it |
+|---|---|
+| **CALL-shape adapter, fail-closed** | `ControlPlaneBindingResolver.resolve(self, principal, provider, account)` (positional, matching the Protocol) maps the ACL inputs onto the store's keyword-only lookup and returns an `AccessGrant` or `None`. It returns `None` — deny this candidate, no fallback — for an unmappable provider, an unverified/empty/`local_library` principal, an `account` the host cannot map to a deployment, and a principal holding no (or a revoked) binding on the resolved `(deployment, service)`. It raises only when the store itself is unreadable (corruption is surfaced, never read as "no binding"). |
+| **`provider` lands on a CLOSED set** | `map_provider_to_service_id(provider)` maps the ACL connector-id to W01's closed `ServiceId` set: a verbatim member maps 1:1, the one alias `excel → excel_shared_engine` is translated, and ANY other string (unknown, misspelled, free-form) returns `None` → REFUSE. No lenient acceptance of arbitrary strings. |
+| **`resolve_ref(principal, ref)` is the single judgment path (endpoint-discriminated)** | The ACL adopted the four-field contract: `resolve_ref(principal, ref) -> AccessGrant \| None`, consuming the `ProviderResourceRef` STRUCTURALLY (`.provider`/`.account`/`.resource_id`/`.locator`, no ACL import). It carries the endpoint the bare `(provider, account)` pair lacks. Five FAIL-CLOSED checks in order: (1) principal established (see the trust row); (2) provider → `ServiceId` closed set; (3) the service's REQUIRED locator keys present (from `_LOCATOR_SPECS`), no best-effort completion; (4) the endpoint (read from the ref's locator) must be REGISTERED in the trusted store — `BindingStore.resolve_deployment_for_account_endpoint` returns a deployment only for a stored `(service, account, endpoint)`, so a caller-supplied endpoint the store never registered does not match; (5) ambiguity denies. The returned view comes ENTIRELY from the store's verified record; **the ref is a lookup key only, never an identity source**. The old two-arg `resolve(provider, account)` is now a THIN SHELL that builds an endpoint-less ref and defers to `resolve_ref` — NOT a second judgment path, and it fail-closes for any endpoint-requiring provider. Only three providers have a real connector today: **salesforce** carries the real endpoint `instanceUrl` (the two-deployment discriminator); **github**'s connector emits `{owner,repo,…}` with NO endpoint field yet (W02 owns adding it — NOT fabricated here, so github stays fail-closed on the endpoint axis); **google_drive** `{fileId,[driveId]}` has no host endpoint. The Microsoft Graph family + gmail/zoom/slack/asana are PROPOSED shapes (no connector emits them) and are marked proposed, not invented as wired. |
+| **`account` is NOT a `deployment_id` — a store-backed mapping, not a silent equation** | The ACL keys on `(provider, account)`, where `account` is the VENDOR-side account/org/tenant/**driveId** an object lives in (per acl.py: "a Graph tenant id, a Salesforce org id, a Drive driveId, a GitHub org/login, a Slack workspace id"). L04's `deployment_id` is instead the **provider-side deployment that hosts** the account (a GHE host, a Salesforce org, a Graph tenant deployment) — DIFFERENT axes (a GitHub org/login is not a GHE host; a Graph driveId is a resource, not the tenant deployment). The adapter does NOT pass `deployment_id=account`. The persisted store records each binding's vendor `account` AND its `endpoint` alongside its `deployment_id` (optional `StoredBinding.account`/`endpoint`, threaded through `insert`, carried through `rotate`/`revoke`, in `_same_stored_binding` and `_well_formed`; L02's `Binding` is untouched). `resolve_ref` keys on `(service, account, endpoint)`; the endpoint-less two-key `StoreBackedAccountToDeployment` remains as a store method but is no longer the judgment path (it fail-closes the same-name-cross-host case the endpoint discriminator resolves). |
+| **Principal trust: a bare session-key is not proof** | An ACL `QueryPrincipal` carries `principal_id`/`local_library` but NO verification provenance, and the ACL side has minted a principal from a bare `X-Session-Key` fallback (`a31`). A bare session key is not an authentication proof, so the adapter does NOT trust `principal_id` on its face: it accepts a principal as an authorization subject ONLY when a wired `principal_verified` predicate vouches its verification is established, and FAILS CLOSED otherwise (no predicate wired ⇒ no principal accepted). The predicate is the trust-contract seam the ACL/request layer must supply — the concrete discriminator (a verified marker / the signed request context the id was derived from) is NAMED, same discipline as `tenant_ref`/`subject_ref`: only verifier-produced identity counts, never a caller self-report. |
+| **GitHub trusted tenant** | The returned `subject`/`tenant` are the resolved binding's `subject_ref`/`tenant_ref`, which the `SubjectTenantVerifier` produced at INSERT time and the store persisted. `resolve_for_acl` takes NO caller-claimed subject/tenant and runs no verifier (the ACL contract carries none), so the tenant a caller ultimately sees is a VERIFIED provider tenant read from the trusted store, never a value the caller asserted. |
+| **`groups` empty, `bypass_acl` never true** | `AccessGrant.groups` is ALWAYS `frozenset()`: W01 does not produce or invent a group/role dimension — group membership is a separate authority (the provider's directory) the ACL folds into `subject_ids` on its side. `AccessGrant.bypass_acl` is ALWAYS `False`: `bypass_acl=True` is the ACL-side local-single-user library context, and a provider binding is a managed, cross-identity path. |
+| **Shared handler stays on the ACL side** | W01 does not build a second ACL or shared handler and does not extend any handle's self-reported fields to satisfy `AccessContext`. Authorization/routing consume only what a trusted read returns; the adapter's job ends at handing the ACL a provider-mapped `AccessGrant`. |
+
+**Not covered by W01, left to the ACL bridge (named, not hidden):** `subject_ids`
+(the `frozenset({subject, *groups})` derivation the ACL gate reads). Because the
+Protocol type is not reachable here, `isinstance(adapter, BindingResolver)` cannot
+be asserted; the tests pin the CALL shape directly AND pin the bridge-chain
+contract — that `AccessGrant` carries exactly `subject`/`tenant`/`groups`/`bypass_acl`
+and that `subject_ids` is NOT among them (`test_access_grant_does_not_provide_subject_ids…`).
+The adapter symbols (`AccessGrant`, `AccountToDeployment`,
+`ControlPlaneBindingResolver`, `map_provider_to_service_id`) are canonical to
+`control_plane`, not re-exported as top-level `connections` aliases, guarded by
+test.
 
 ### Two orthogonal axes, the same word in this repo, kept apart on purpose
 
@@ -1180,6 +1380,65 @@ classifying a failure by sniffing substrings out of a free-text message — the
 **Reconnecting that classifier to RUN-01 is a separate later slice; W01 only
 fixes the taxonomy it will target and does not touch `l1_smoke`.**
 
+### Per-operation permitted credential modes, denied by default
+
+`control_plane/auth_modes.py` (W01 · L05) adds the call-time counterpart to the
+descriptor's `credential_modes`. Where `operation.py` fixes the Axis-B closed
+set and carries the SET a descriptor declares, this module lets a governance
+policy declare which of those modes it *permits*, and decides allow/deny for a
+caller-offered mode against BOTH the descriptor's declared set and the policy.
+
+- **Declaration.** `declare_permitted_modes(modes)` builds an immutable
+  `PermittedModes` (`frozenset[CredentialMode]`) from a subset of the L01 closed
+  set. A value outside `CREDENTIAL_MODES` is rejected with `ValueError`: this
+  slice never mints a fourth credential mode, exactly as `operation.py` never
+  does — a genuinely new mode is a scoped revision of the manifest's `auth_modes`
+  vocabulary, not a value smuggled in through a declaration.
+- **Decision (the ONE authorization path).** `permit_operation(descriptor,
+  offered_mode, permitted)` is the module's single authorization decision. It
+  REQUIRES the descriptor and returns `None` on allow, or a RUN-01 `auth`
+  `OperationError` on deny — built with `operation_error(...)`, so `detail` is
+  unconditionally redacted-then-truncated and this module opens no un-redacted
+  error channel. `permit_registered_operation(descriptor, offered_mode,
+  registry)` does the same against a whole `PermittedModeRegistry`
+  (`Mapping[str, PermittedModes]`). There is deliberately NO public policy-only
+  sibling that skips the descriptor: a function named like an authz decision
+  that did not consult the descriptor would be a bypass waiting to be used, so
+  the descriptor is required. (The bare policy-membership predicate is kept
+  PRIVATE as `_is_mode_permitted`, out of `__all__`.)
+- **Enforcing the descriptor bound + closed set (real code, not a docstring).**
+  `context.py` *says* the selected mode must come from within the descriptor's
+  declared `credential_modes`, but a `TypedDict` validates nothing at runtime,
+  so that sentence needs code behind it. `effective_permitted_modes(descriptor,
+  permitted)` is that code: it returns `permitted ∩ descriptor["credential_modes"]
+  ∩ CREDENTIAL_MODES`. The descriptor factor drops a mode the descriptor did not
+  declare **even if the policy named it** (the counter-example the slice is
+  judged on, deny reason `not DECLARED`). The closed-set factor is NOT redundant:
+  a descriptor's `credential_modes` and a policy set are both un-validated at
+  runtime, so an out-of-closed-set string (a typo, a fabricated fourth mode) can
+  sit in BOTH and a bare `policy ∩ declared` would keep it — intersecting with
+  `CREDENTIAL_MODES` makes an unknown mode fall out no matter how many places
+  carry it, so "an unknown mode is always denied" holds structurally.
+- **Deny-by-default.** An operation that declares no permitted mode — an empty
+  `PermittedModes`, an empty descriptor `credential_modes`, or an `operation_id`
+  absent from a `PermittedModeRegistry` — is DENIED, never allowed. The absence
+  of a declaration is not an open door: a registry is the complete statement of
+  what is permitted, and anything unstated is nothing, so an operation nobody
+  configured fails closed. This is pinned by tests.
+- **Zero credential values.** The whole API accepts and returns only mode
+  IDENTIFIERS (`CredentialMode`) and reference strings (`operation_id`). It never
+  accepts, stores, or returns a token, a client secret, or any credential
+  plaintext — the same "references, never a value" invariant `context.py`
+  carries. A permitted mode says which KIND of credential is allowed; resolving a
+  kind to a live credential is a later leaf in kiro-cli custody, not here.
+
+This gate operates on **Axis B only**. It never reads a provider's registration
+mode (Axis A, `dcr` / `preregistered`) and never infers a permitted credential
+mode from one — the two value sets are disjoint (`{dcr, preregistered}` vs
+`{oauth_user, fine_grained_pat, service_to_service}`), and a companion test
+asserts they do not intersect, so the collapse the manifest's two-axis design
+forbids cannot creep in through this slice.
+
 ### The `vendors/` container anchor
 
 `connections/vendors/__init__.py` is a committed anchor for an otherwise-empty
@@ -1199,3 +1458,235 @@ subdirectory is this slice's to make. The name is `vendors`, not `providers`,
 deliberately: `src/kiro_crew/providers/` already exists and means LLM providers,
 so a `connections/providers/` here would be one word for two different things in
 one package tree.
+
+### Five-layer governance intersection + approval binding (W01 · L06)
+
+`control_plane/policy.py` answers one question for a connector operation: *given
+every governance layer with an opinion, is this scoped item permitted, and does
+an approval on record still apply to the exact parameters it was granted for?*
+It composes **five** layers:
+
+    platform ∩ workspace/profile ∩ session/App/job ∩ connection ∩ vendor
+
+**It sits ON TOP of `platform.governance.resolve()` and changes
+`platform/governance.py` by not one character.** `Decision.layer` there is a
+two-layer vocabulary today (`policy | profile | both | default`) and `resolve`
+composes exactly those two (an enterprise ceiling ∩ a per-surface profile) under
+Rule 2. Widening that closed set to name three more layers would edit a module
+outside this stream's ownership, so L06 does not: it *consumes the platform
+primitives read-only* — the one `SCOPE_CATALOG`, `resolve`, `GovernanceCeiling`,
+`Profile`, `Decision` — and layers the extra narrowing on top of them.
+
+- **Intersection only narrows — `resolve_layers()`.** The platform ∩ workspace
+  pair is delegated verbatim to `resolve(ceiling, profile, scope, item)`; the
+  remaining three layers are each an ordinary `GovernanceCeiling`, queried
+  through the SAME primitive with no profile (`resolve(layer_ceiling, None, …)`,
+  which returns just that one layer's answer). The effective decision is the AND
+  of all five layer permits, so the result is ⊆ every individual layer's
+  permitted set and, over the range `resolve()` itself covers, ⊆ its answer. AND
+  is monotone non-increasing: adding a layer can only shrink the permitted set,
+  never grow it, and no layer can turn another layer's deny into a permit. The
+  first layer that denies is returned, so `Decision.layer` / `reason` name the
+  deciding layer.
+- **Ceilings are inputs, never hardcoded — `LayerCeilings`.** Each layer's
+  ceiling/profile is a parameter (`platform`, `workspace`, `session`,
+  `connection`, `vendor`); a layer with nothing to say passes `None` (ungoverned
+  = unrestricted = contributes a permit, exactly `resolve`'s own `None`
+  semantics). The module hardcodes NO per-layer legal-scope-subset table — and
+  deliberately so: neither the connector-capability manifest nor this document
+  defines which scopes a "connection" or "vendor" layer may govern, so L06 does
+  not invent one. It intersects whatever the caller supplies.
+- **Deny-by-default — `decide()`.** An unknown `scope` (not a live
+  `SCOPE_CATALOG` member) is refused before any layer is consulted, and an
+  unknown layer name is outside the `LAYERS` closed set. A misspelled scope or an
+  unlisted layer gets a typed denial, not a silent open door.
+- **Approval-parameter binding — `Approval` / `approval_applies()`.** An approval
+  is granted for a specific parameter set, bound at grant time to a canonical
+  (order-independent, value-sensitive) fingerprint of those parameters. Reusing
+  it for a call whose parameters differ — an added key, a removed key, a changed
+  value — is refused: the approval on record does not permit those parameters and
+  is NOT reused. This closes the "approve once, then swap the arguments" replay.
+- **Typed refusals.** Every refusal is an L01 `OperationError` built with
+  `operation_error(...)`, which redacts its `detail` unconditionally; L06
+  hand-assembles no error string that would bypass that redaction.
+
+**No new `connection.*` / `provider.*` scope is registered.** Whether the
+connector campaign gets its own governed scope family is still an open decision
+and is not L06's to make: this module reuses the existing `SCOPE_CATALOG` rows
+and adds none.
+
+Exports for these symbols (`LAYERS`, `POLICY_SCHEMA_VERSION`, `Approval`,
+`LayerCeilings`, `LayerName`, `approval_applies`, `decide`, `resolve_layers`)
+are added ONLY to `control_plane/__init__.py`; they are NOT re-exported as
+top-level `kiro_crew.connections` aliases — a zero-consumer second spelling is a
+rename hazard, not a convenience.
+
+### An uncertain non-idempotent write is not blindly replayed (L07)
+
+A non-idempotent write — a POST that creates a resource, an
+`external_send` that posts a message — that is issued and then leaves its
+caller with an **uncertain** outcome (a timeout, a dropped connection, a 5xx
+with no usable body) is the case a naive retry gets wrong: reissuing it can
+apply the effect **twice** — two issues created, two messages sent. The
+core invariant `control_plane/writes.py` fixes is:
+
+> When a non-idempotent write's outcome is `unknown`, a replay MUST be refused
+> unless there is evidence the prior attempt did not take effect (or its
+> recorded result can be reused).
+
+The module is pure decision logic, zero IO — it neither issues the write nor
+holds a client nor resolves a credential. It records what is KNOWN about a prior
+attempt and decides whether replaying it now is allowed:
+
+- An `AttemptRecord` gives one attempt an identity — the triple
+  `(operation_id, args_fingerprint, idempotency_key)`, so a retry is recognized
+  as a replay of a known prior attempt — and one of three **outcome** states
+  (`AttemptOutcome`, a closed set distinct from the success envelope's
+  `ResultStatus` and the RUN-01 `ErrorClass`, which classify what a call
+  RETURNED; this records whether the effect LANDED): `succeeded`,
+  `failed_not_applied`, or `unknown`.
+- `replay_decision(descriptor, record)` is the gate. `failed_not_applied` →
+  **allow** (the write provably did not land, so a reissue cannot duplicate it);
+  `succeeded` → **reuse** the recorded result (do not reissue and duplicate);
+  `unknown` for a non-idempotent operation → **refuse**, a typed
+  `operation_error("conflict", …)` whose detail says the outcome is uncertain.
+  A refusal is always a typed rejection built through `operation_error(…)`,
+  never a bare boolean.
+
+**The idempotent-write exception is decided only by an explicit assertion.**
+Whether `unknown` is safe to replay is decided ONLY by an explicit, trusted
+`idempotent` assertion the caller places on the attempt record (a fixed-key
+upsert, a provider-honored idempotency token). It is **never** inferred from the
+descriptor's `effect` — in particular `effect=delete` is NOT treated as
+idempotent: a second `delete` can land on a resource RECREATED in the interim
+(deleting someone else's new resource), and a given API's delete may itself not
+be idempotent. The safe default is refuse; the exception is something the caller
+must state.
+
+**Attribution comes first.** Before any outcome is honored, the gate checks the
+record BELONGS to this request: `operation_id` must equal the descriptor's, and
+the `args_fingerprint` / `idempotency_key` must equal the request's own. A
+record for another operation, or another argument set, is refused — never
+allowed, never reused. The stored fingerprint and key are compared, not merely
+retained. A `succeeded` record with no recorded result is likewise refused
+rather than reused (reuse would return an empty result).
+
+Like every other symbol on this seam, the L07 exports live on the canonical
+`kiro_crew.connections.control_plane` subpackage only; they are **not**
+re-exported as top-level `kiro_crew.connections` aliases (a second spelling with
+zero consumers is a rename hazard, not a convenience).
+
+### The executor wires the four judgments together (L09)
+
+L01..L08 delivered four decision primitives; L09 (`control_plane/executor.py`)
+is the first real CALLER that runs them in the one order a dispatch must, BEFORE
+any transport call is emitted:
+
+    ensure_usable (trusted handle view)
+      → permit_operation (credential-mode permit)
+        → decide (five-layer governance intersection)
+          → replay_decision (write-replay gate)
+            → transport
+
+- **A denied gate emits ZERO calls.** Any judgment that rejects returns a typed
+  `OperationError` in an `ExecutionOutcome` and the transport is **never**
+  called — "emit first, decide after" would make all four upstream slices dead
+  code. This is pinned by a test using a call-counting in-memory fake transport
+  asserting `calls == 0` on every deny path (undeclared / unpermitted mode,
+  unknown governance scope, tampered / expired handle, non-finite clock, and an
+  `unknown`-outcome non-idempotent write).
+- **Routing trusts the VIEW, never the handle.** `service_id` and
+  `credential_mode` that reach the transport are read only off the
+  `TrustedHandleView` `ensure_usable` returns from its issuance record — never
+  off the mutable `DerivedHandle`. A test mutates the handle's `service_id` and
+  asserts the executor never routes to the forged service (the tamper is refused
+  outright, so the call is not even emitted).
+- **Server clock, not the caller's word.** A non-finite `now` (`NaN` / `±inf`)
+  is refused up front, so a bad clock cannot slip an expired handle or a stale
+  precondition through — the same fail-closed direction L08 enforces.
+- **HTTP 412 is preserved, not flattened.** A precondition-failed response is
+  returned as a structured `PreconditionFailure` carrying the failed
+  precondition names and the server's current ETag, so the CALLER can decide to
+  re-read and re-derive rather than blind-retry. It records the write's outcome
+  as L07's `failed_not_applied` (the write provably did not land — the branch
+  `replay_decision` *allows*), but "allowed to replay" is **not** "safe to
+  replay as-is": a 412 tells you only that your asserted precondition is false,
+  never the server's current state. The correct shape is 412 → preserve the
+  structured signal → readback + re-derive the precondition → only then retry.
+  The executor deliberately does NOT auto-reissue. **MS owns its own 412 /
+  readback / baseline / fresh / locator revalidation under `vendors/microsoft/`;
+  L09 changes nothing there and only preserves the shared signal MS consumes.**
+- **Three surfaces for two downstreams.** The outer interface covers `execute`
+  (dispatch), `advance_page` over a `PageWalk` (real cursor pagination — it
+  re-runs the full gate chain per page, advances on the response's
+  `next_cursor`, terminates on `None`, and refuses to loop on a repeated cursor,
+  so it neither drops nor duplicates a page), and `classify_error` (HTTP-status
+  → RUN-01 `ErrorClass`). W02 (GitHub) needs fetch / pagination / error; W05/MS
+  needs the 412 structured signal.
+- **`EXECUTOR_SCHEMA_VERSION`.** A pinnable constant (currently `1`) the two
+  downstreams encode against; a change to the request/response envelope, the
+  transport-callable contract, or the paging / error surface bumps it.
+- **Not a query-ACL substitute.** L06's five-layer intersection and the handle's
+  scope narrowing do **not** replace document- / provider-level query
+  permissions; that is a separately-owned gap and L09 makes no claim to cover it.
+
+#### The send path resolves its credential from L04's LIVE store, per binding
+
+`control_plane/production.py` composes the real transport, and the credential it
+sends is resolved by **`BindingStore.select_secret(binding, reader=vault)`** — the
+L04 selector described above — on **every call**. `build_production_transport`
+takes a live `store` plus a `gate` (`BindingCustodyGate`), and the gate answers
+only *which binding* a call may resolve for; it selects no secret and derives no
+vault name.
+
+The defect this closes: the transport used to derive the vault entry name with
+`binding_secret_ref(slug)`. A slug names a PROVIDER, so every binding of one
+provider collapsed onto ONE vault entry — two accounts in two tenants resolved
+the same credential, and per-binding custody was apparent rather than real. That
+derivation is **removed from the send path with no fallback branch**: `slug` is
+not a parameter of the composition, `BindingCustodyGate` carries no `slug` /
+`secret_backend` field, and `production.py` no longer imports
+`binding_secret_ref` at all (pinned by an AST check, so a docstring mention
+cannot pass for a call site).
+
+Order per call, and where each refusal lands:
+
+| Step | What it does | On refusal |
+|---|---|---|
+| 1. `gate.trusted_binding_for(view)` | Matches the call's trusted binding identity (fingerprint + the `service_id` / `credential_mode` read OFF its binding, so a gate cannot check one identity and present another) and returns the binding to fence, stamped with the generation THIS CALL presents — not one frozen at composition. | `401`, ZERO calls, store and vault never asked |
+| 2. `locator(...)` | Vendor request shaping; no credential in it. | — |
+| 3. `store.select_secret(...)` | ONE call that FENCES via `assert_live` against a fresh LIVE-store read and resolves the value by the STORE's own `secret_ref`. A revoked binding, a stale or forged generation, a swapped identity / mode / `secret_ref` are all refused. | `401` (fenced or secret absent) / `503` (corrupt store, fail-closed and honest), ZERO calls |
+| 4. reveal → `Authorization: Bearer` | The one place plaintext exists, on a local that dies with the call. | — |
+
+Because the fence is a fresh live-store read per call with nothing cached, a
+revoke or rotation takes effect on the **next** call — including the next page of
+a `PageWalk`, which re-runs the whole chain through the same closure rather than
+reusing page 1's answer, so a binding revoked between page 1 and page 2 refuses
+page 2 with zero calls. All of this is proven over the REAL TLS loopback with the
+REAL on-disk `SecretVault` and the REAL on-disk `BindingStore`, counting sockets.
+
+**What is NOT wired here, stated so it is not read as working:**
+
+- **L03 (auth-code / PKCE) is required and NOT IMPLEMENTED anywhere in this
+  stack.** Whatever the vault holds had to be put there by an authorization flow
+  that does not exist yet. This path reads custody; it never establishes it.
+- **`principal -> binding` is not wired into the send path.** L04's
+  `BindingStore.resolve` IS a trusted principal→binding resolver, but the
+  transport does not call it: a gate is composed for ONE binding and refuses every
+  other, so one transport still cannot serve many tenants. That is a refusal, not
+  multi-identity support.
+- **Refresh rotation is not driven from here.** `BindingStore.rotate` exists and
+  is single-writer, but the transport never calls it — it does not react to a 401
+  by refreshing. It honours the OUTCOME: once something else rotates or revokes,
+  the next call is fenced.
+- `PRODUCTION_SCHEMA_VERSION` is `4` for this change (composition signature +
+  fenced behaviour). `RESULT_SCHEMA_VERSION` stays `3` and
+  `EXECUTOR_SCHEMA_VERSION` stays `4`: the transport contract and the result
+  envelope kept their shapes — only how this module obtains the credential behind
+  that contract changed.
+
+Like every other symbol on this seam, the L09 exports live on the canonical
+`kiro_crew.connections.control_plane` subpackage only; they are **not**
+re-exported as top-level `kiro_crew.connections` aliases (a second spelling with
+zero consumers is a rename hazard, not a convenience).
+

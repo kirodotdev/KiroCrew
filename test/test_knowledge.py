@@ -41,6 +41,24 @@ def store(tmp_path):
     s.close()
 
 
+# Query-time ACL: HybridRetriever.search classifies a SOURCELESS item as managed
+# (fail-closed) per Root's decision, so a retriever test that builds items with
+# no source and searches under the default (local-library) context now sees
+# nothing. Production ingestion always attaches a source, so these retriever
+# mechanics tests are migrated to add their items under a trusted-LOCAL source
+# (local_folder -> trust_class local_admitted) via this helper -- modelling
+# production, not weakening the gate. Tests that exercise the STORE FTS directly
+# (search_items_fts) are unaffected and keep using bare add_item.
+def _li(store, *args, **kwargs):
+    """add_item under a shared trusted-local source for this store (memoised)."""
+    sid = getattr(store, "_test_local_sid", None)
+    if sid is None:
+        sid = store.add_source("Local Test", "local_folder", "file:///test-local")
+        store._test_local_sid = sid
+    kwargs.setdefault("source_id", sid)
+    return store.add_item(*args, **kwargs)
+
+
 @pytest.fixture()
 def store_factory(tmp_path):
     """Return a callable that creates a new store at a given path."""
@@ -878,8 +896,8 @@ class TestEntityExtractor:
 
 class TestHybridRetriever:
     def test_keyword_search(self, store):
-        store.add_item("Auth Design", "JWT tokens with refresh flow", "design_doc")
-        store.add_item("DB Schema", "DynamoDB table layout", "design_doc")
+        _li(store, "Auth Design", "JWT tokens with refresh flow", "design_doc")
+        _li(store, "DB Schema", "DynamoDB table layout", "design_doc")
         retriever = HybridRetriever(store)
         results = retriever.search("JWT")
         assert len(results) >= 1
@@ -922,8 +940,8 @@ class TestHybridRetriever:
         # Natural-language query whose connective tokens ("related","to") the
         # target doc lacks. Old implicit-AND required every literal token -> 0
         # hits; the OR-match recovers the relevant item.
-        store.add_item("Budget Planning VoC", "voice of customer budget planning notes", "doc")
-        store.add_item("Unrelated", "something entirely about widgets", "doc")
+        _li(store, "Budget Planning VoC", "voice of customer budget planning notes", "doc")
+        _li(store, "Unrelated", "something entirely about widgets", "doc")
         retriever = HybridRetriever(store)
         results = retriever.search("VoC related to Budget Planning")
         assert "Budget Planning VoC" in [r["title"] for r in results]
@@ -958,7 +976,7 @@ class TestHybridRetriever:
     def test_search_omits_location_when_absent(self, store):
         # An item with no source_locations row degrades cleanly -- the citation
         # keys are simply absent, not None placeholders.
-        store.add_item("DB Schema", "DynamoDB table layout", "design_doc")
+        _li(store, "DB Schema", "DynamoDB table layout", "design_doc")
         retriever = HybridRetriever(store)
         results = retriever.search("DynamoDB")
         assert results
@@ -1082,16 +1100,16 @@ class TestHybridRetrieverNamespaceFilter:
     def test_namespace_narrows_keyword_seeds(self, store):
         # Both items match the query; scoping to one namespace keeps only its
         # item. namespace is an organisational label on items, not a source.
-        store.add_item("Auth A", "JWT tokens for service alpha", "doc", namespace="client-a")
-        store.add_item("Auth B", "JWT tokens for service beta", "doc", namespace="client-b")
+        _li(store, "Auth A", "JWT tokens for service alpha", "doc", namespace="client-a")
+        _li(store, "Auth B", "JWT tokens for service beta", "doc", namespace="client-b")
         retriever = HybridRetriever(store)
         results = retriever.search("JWT", namespace="client-a")
         assert [r["title"] for r in results] == ["Auth A"]
 
     def test_omitted_namespace_keeps_current_behavior(self, store):
         # Regression: no namespace == the pre-filter result set.
-        store.add_item("Auth A", "JWT tokens for service alpha", "doc", namespace="client-a")
-        store.add_item("Auth B", "JWT tokens for service beta", "doc", namespace="client-b")
+        _li(store, "Auth A", "JWT tokens for service alpha", "doc", namespace="client-a")
+        _li(store, "Auth B", "JWT tokens for service beta", "doc", namespace="client-b")
         retriever = HybridRetriever(store)
         results = retriever.search("JWT")
         assert {r["title"] for r in results} == {"Auth A", "Auth B"}
@@ -1100,8 +1118,8 @@ class TestHybridRetrieverNamespaceFilter:
         # Identical embeddings in two namespaces; scoping keeps one. The query
         # shares no tokens with the content, isolating the vector leg.
         vec = json.dumps([1.0, 0.0, 0.0, 0.0]).encode()
-        store.add_item("Vec A", "alpha content", "doc", namespace="client-a", embedding=vec)
-        store.add_item("Vec B", "beta content", "doc", namespace="client-b", embedding=vec)
+        _li(store, "Vec A", "alpha content", "doc", namespace="client-a", embedding=vec)
+        _li(store, "Vec B", "beta content", "doc", namespace="client-b", embedding=vec)
         retriever = HybridRetriever(
             store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
         )
@@ -2331,7 +2349,7 @@ class TestHybridRetrieverExtended:
     def test_search_combined_match_types(self, store):
         e1 = store.add_entity("JWT", "concept")
         emb = json.dumps([1.0, 0.0])
-        item_id = store.add_item("JWT Auth", "JWT token design", "doc", embedding=emb)
+        item_id = _li(store, "JWT Auth", "JWT token design", "doc", embedding=emb)
         store.add_mention(item_id, e1)
         retriever = HybridRetriever(
             store, embedder=lambda q: [1.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
@@ -3688,15 +3706,15 @@ class TestCjkKeywordRecall:
 
     def test_retriever_keyword_leg_finds_spaceless_cjk_query(self, store):
         """The hybrid path with no embedder, so only the keyword leg can answer."""
-        store.add_item("run", self.DOC_RUN, "note")
-        store.add_item("unrelated", "\u5b8c\u5168\u65e0\u5173\u7684\u8bdd\u9898", "note")
+        _li(store, "run", self.DOC_RUN, "note")
+        _li(store, "unrelated", "\u5b8c\u5168\u65e0\u5173\u7684\u8bdd\u9898", "note")
         results = HybridRetriever(store).search(self.LEAK)
         assert self._titles(results) == ["run"]
         assert "keyword" in results[0]["match_type"]
 
     def test_retriever_mixed_script_query_matches_both_halves(self, store):
-        store.add_item("mixed", "kirocrew \u7684\u90e8\u7f72\u6d41\u7a0b\u8bb0\u5f55", "note")
-        store.add_item("cjk_only", "\u90e8\u7f72\u6d41\u7a0b\u8bb0\u5f55", "note")
+        _li(store, "mixed", "kirocrew \u7684\u90e8\u7f72\u6d41\u7a0b\u8bb0\u5f55", "note")
+        _li(store, "cjk_only", "\u90e8\u7f72\u6d41\u7a0b\u8bb0\u5f55", "note")
         results = HybridRetriever(store).search("kirocrew\u90e8\u7f72")
         assert self._titles(results) == ["mixed"]
 
@@ -3720,8 +3738,8 @@ class TestCjkKeywordRecall:
 
     def test_ascii_search_behaviour_is_unchanged(self, store):
         """Segmentation touches CJK only: no substring matching leaks into ASCII."""
-        store.add_item("Auth Design", "JWT tokens with refresh flow", "design_doc")
-        store.add_item("DB Schema", "DynamoDB table layout", "design_doc")
+        _li(store, "Auth Design", "JWT tokens with refresh flow", "design_doc")
+        _li(store, "DB Schema", "DynamoDB table layout", "design_doc")
         assert self._titles(store.search_items_fts("JWT")) == ["Auth Design"]
         # "oke" is a substring of "tokens" and must NOT match, the way a trigram
         # tokenizer would have made it.
@@ -3737,7 +3755,7 @@ class TestCjkKeywordRecall:
 
     def test_graph_leg_finds_entity_named_inside_a_cjk_run(self, store):
         """An entity name inside a spaceless run is unreachable by a whitespace split."""
-        item_id = store.add_item("doc", self.DOC_RUN, "note")
+        item_id = _li(store, "doc", self.DOC_RUN, "note")
         eid = store.add_entity("\u5185\u5b58", "component")  # "memory"
         store.add_mention(item_id, eid, "\u5185\u5b58")
         results = HybridRetriever(store).search(self.LEAK)
@@ -4132,7 +4150,7 @@ class TestCjkKeywordRecall:
         path = str(tmp_path / "legacy_retriever.db")
         first = KnowledgeStore(path)
         try:
-            first.add_item("run", self.DOC_RUN, "note")
+            _li(first, "run", self.DOC_RUN, "note")
             self._make_legacy_index(first, "run", self.DOC_RUN)
         finally:
             first.close()

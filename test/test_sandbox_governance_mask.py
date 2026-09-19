@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import selectors
+import subprocess
 import sys
 
 import pytest
@@ -757,3 +759,163 @@ class TestAPodChildsRemappedHomeIsMasked:
         assert "_pod_os_home_targets(" in launcher
         seatbelt = inspect.getsource(sandbox._build_seatbelt_profile)
         assert "_pod_os_home_targets(" in seatbelt
+
+
+class TestF2ConnectionsBindingStoreIsSealedReadOnly:
+    """F2 (behavior-level, OS-sandbox half): the connections binding store's
+    top-level directory is sealed READ-ONLY by the launcher on Linux and by the
+    Seatbelt profile on macOS, and is a top-level leaf so the seal cannot be
+    bypassed by renaming a writable parent.
+
+    The store is the SINGLE trusted source the ACL resolver reads a connector
+    credential's binding/secret_ref from. A sandboxed shell that could write a
+    forged record would have the resolver trust it; the kernel-level seal denies
+    that write however the path is spelled, complementing the file-tool gate
+    (tested in test_connections_control_plane.py).
+
+    PLATFORM COVERAGE (what is really exercised here):
+      * Linux   — the generated launcher's READONLY_DIRS bind-remount config.
+      * macOS   — the generated Seatbelt SBPL deny-rules.
+    Windows has no launcher seal (the POSIX launcher only); on Windows the store
+    is fenced by the file-tool gate alone (security.is_sensitive_write_path,
+    covered in test_connections_control_plane.py). The Windows *kernel* path is
+    NOT exercised by any test here.
+    """
+
+    LEAF = "control-plane-bindings"
+
+    def test_it_is_a_top_level_readonly_leaf_no_writable_parent_to_rename(self) -> None:
+        """A nested leaf under the agent-writable connections/ dir could be bypassed
+        by renaming that parent (the Linux bind mount follows it). The store leaf is
+        top-level and NOFOLLOW, like the gateway launcher."""
+        assert self.LEAF in sandbox._CREW_READONLY_LEAVES
+        assert self.LEAF in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert self.LEAF in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        # Not nested under connections/ (that dir is agent-writable and shared).
+        assert "connections/control-plane-bindings" not in sandbox._CREW_READONLY_LEAVES
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", _MODES)
+    @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
+    def test_linux_seals_the_store_dir_read_only(self, mode: str, prefix: str) -> None:
+        """Linux: the launcher lists the store dir in READONLY_DIRS (bind-remounted
+        read-only) and NOT in the masked set (the resolver must still READ it)."""
+        hidden, readonly, _files = _launcher_sets(mode)
+        target = _crew_path(prefix, self.LEAF)
+        assert target in readonly, f"{self.LEAF} is writable through the {mode} sandbox"
+        assert target not in hidden, f"{self.LEAF} must stay READABLE, not be masked"
+
+    @pytest.mark.parametrize("mode", _MODES)
+    @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
+    def test_macos_denies_writes_and_links_but_not_reads(self, mode: str, prefix: str) -> None:
+        """macOS: the Seatbelt profile denies file-write* and file-link to the store
+        subpath (a hardlink at a non-denied path would otherwise reach the inode) but
+        does NOT deny file-read* (the resolver reads it)."""
+        profile = sandbox._build_seatbelt_profile(mode)
+        target = _crew_path(prefix, self.LEAF)
+        assert f'(deny file-write* (subpath "{target}"))' in profile
+        assert f'(deny file-link (subpath "{target}"))' in profile
+        assert f'(deny file-read* (subpath "{target}"))' not in profile
+
+
+# Child probe: runs INSIDE the namespace sandbox. Attempts the three writes the
+# store seal must deny and one read it must allow, and reports each outcome. A
+# write that raises OSError (EROFS/EACCES under the read-only bind) is a DENIED
+# write; one that succeeds is a hole. Emits READY first so the parent knows the
+# namespace handshake completed (distinguishing an effective seal from a launch
+# that never sandboxed anything).
+_STORE_SEAL_CHILD = """import json, os, sys
+from pathlib import Path
+h = Path(os.environ["KIROCREW_HOME"])
+d = h / "control-plane-bindings"
+store = d / "bindings.json"
+lock = d / "bindings.lock"
+temp = d / ".probe.tmp"
+print("READY", flush=True); sys.stdin.readline()
+out = {}
+# The resolver's READ must still work through the read-only bind.
+try:
+    out["read_ok"] = store.read_text() == "SEED"
+except OSError as exc:
+    out["read_ok"] = False; out["read_err"] = type(exc).__name__
+# Each write must be DENIED by the kernel seal.
+for label, target in (("store", store), ("lock", lock), ("temp", temp)):
+    try:
+        with target.open("ab") as fh:
+            fh.write(b"child write")
+        out[label + "_write_denied"] = False
+    except OSError as exc:
+        out[label + "_write_denied"] = True
+        out[label + "_errno"] = exc.errno
+print(json.dumps(out), flush=True)
+"""
+
+
+@_POSIX_ONLY
+def test_F2_the_store_seal_denies_real_writes_in_a_spawned_sandbox(tmp_path):
+    """F2 (real-kernel level): a process INSIDE the namespace sandbox cannot write
+    the store / lock / a temp, but CAN still read the store.
+
+    This is the only test that proves the seal at the KERNEL level rather than at
+    the generated-config level: it spawns the real namespace launcher and records
+    the child's actual write outcome. If unprivileged user/mount namespaces are
+    unavailable on this host (common in CI/dev containers), it SKIPS with that
+    reason rather than reporting a pass — a launch that never sandboxed anything
+    is not evidence of a write denial. macOS (Seatbelt) and Windows (no launcher
+    seal) are out of scope here and covered/So-noted elsewhere.
+    """
+    if not sandbox.userns_available():
+        pytest.skip("unprivileged user/mount namespaces unavailable on this host")
+
+    home = tmp_path / "home"
+    store_dir = home / "control-plane-bindings"
+    store_dir.mkdir(parents=True)
+    store = store_dir / "bindings.json"
+    # A legitimate backend write BEFORE the sandbox exists (the gateway's own
+    # writer opens the path directly, outside the sandbox) — this must work.
+    store.write_text("SEED")
+    assert store.read_text() == "SEED"
+
+    child = tmp_path / "store_seal_probe.py"
+    child.write_text(_STORE_SEAL_CHILD)
+    env = dict(os.environ)
+    env["KIROCREW_HOME"] = str(home)
+
+    argv = sandbox.namespace_argv([sys.executable, str(child)], "standard")
+    proc = subprocess.Popen(
+        argv,
+        env=env,
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert proc.stdout is not None
+        with selectors.DefaultSelector() as sel:
+            sel.register(proc.stdout, selectors.EVENT_READ)
+            assert sel.select(timeout=20), "namespace setup did not report readiness"
+        ready = proc.stdout.readline().strip()
+        if ready != "READY":
+            _, err = proc.communicate(timeout=5)
+            pytest.skip(f"namespace launch did not sandbox (env limitation): {ready} {err}")
+        out_line, _err = proc.communicate("go\n", timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+
+    result = json.loads(out_line.strip().splitlines()[-1])
+    # Reads still work through the read-only bind (the resolver must READ it).
+    assert result["read_ok"] is True, result
+    # All three writes are denied at the kernel level.
+    assert result["store_write_denied"] is True, result
+    assert result["lock_write_denied"] is True, result
+    assert result["temp_write_denied"] is True, result
+    # The legitimate pre-sandbox seed is intact (the write was denied, not that
+    # the file vanished).
+    assert store.read_text() == "SEED"

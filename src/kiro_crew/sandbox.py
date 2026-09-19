@@ -446,6 +446,19 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # lookup, but never writable by an agent shell. A top-level directory is
     # required: the writable trust parent could be renamed around a child seal.
     "member-memory-bindings",
+    # The connections control-plane BINDING STORE (bindings.json + its
+    # bindings.lock + atomic-write temps). It is the SINGLE trusted source the ACL
+    # resolver reads a connector credential's binding/secret_ref from, so a
+    # sandboxed agent that could WRITE a forged record here would have the resolver
+    # trust it and grant access to an account it was never authorized for. Sealed
+    # read-only so a spawned shell cannot write it however the path is spelled (the
+    # file-tool gate covers it via security.paths._WRITE_PROTECTED_HOME_PATHS; this
+    # is the OS-level half). A TOP-LEVEL directory for the same reason as
+    # member-memory-bindings above: a nested leaf under the agent-writable
+    # connections/ dir could be bypassed by renaming that writable parent, which the
+    # Linux bind mount would follow. The store's own writer opens these paths
+    # directly (atomic_write + the advisory-lock os.open), not through any tool gate.
+    "control-plane-bindings",
     # The governance ceiling and its trust root. ``boot_platform()`` resolves both
     # inside the sandbox for a script cron, and an absent file means "no ceiling".
     "security_policy.json",
@@ -972,12 +985,19 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "profiles",
     "member-memory-bindings",
+    "control-plane-bindings",
     "playwright-cli",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
 #: replaceable, which would let an agent choose the executable the gateway runs.
-_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = ("playwright-cli",)
+#: ``control-plane-bindings`` is here for the parallel reason: if its lexical name
+#: were replaceable the seal would cover a decoy while the real path the resolver
+#: reads is left agent-writable.
+_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
+    "control-plane-bindings",
+    "playwright-cli",
+)
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",

@@ -1087,6 +1087,36 @@ _WRITE_PROTECTED_HOME_PATHS += [
 _KIRO_AGENTS_DIR = ".kiro/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
 
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The connections control-plane BINDING STORE, a whole top-level DIRECTORY
+    # (``config_dir()/control-plane-bindings/`` — holding ``bindings.json``, its
+    # ``bindings.lock`` sidecar, and every atomic-write temp). The shared matcher
+    # covers the directory and its ``entry + os.sep`` prefix, so one entry fences
+    # the store, the lock, and any present-or-future temp without enumerating them.
+    #
+    # It is an INPUT TO AN AUTHORIZATION DECISION of the strongest kind: the store
+    # is the SINGLE trusted source ``BindingStore.assert_live`` / ``select_secret``
+    # resolve a connector credential from — never a caller-supplied set. An agent
+    # session with ordinary file-write tools that could write a forged record here
+    # would have the ACL resolver TRUST it and hand back a credential/secret_ref for
+    # an account it was never authorized for. Fencing the whole directory (rather
+    # than the leaf) also denies the rename-the-writable-parent bypass, which is why
+    # the store was moved OUT of the agent-writable ``connections/`` directory to
+    # its own top-level leaf.
+    #
+    # WRITE-protection, NOT read+write sensitive: the store carries secret
+    # REFERENCES, never values, and every Crew process must READ it to resolve a
+    # binding, so classifying it sensitive would break resolution. Kept OFF
+    # ``_SENSITIVE_HOME_DIRS``; reads are unaffected. The store's own writer
+    # (``BindingStore.insert``/``rotate``/``revoke`` via ``atomic_write`` and the
+    # advisory-lock ``os.open``) opens these paths directly and does NOT route
+    # through this gate, so lifecycle writes keep working; only the agent's own
+    # file-edit tool is refused. The OS sandbox seals the same leaf read-only (see
+    # ``sandbox._CREW_READONLY_LEAVES``) so a spawned shell cannot write it either.
+    f"{prefix}/control-plane-bindings"
+    for prefix in _CREW_HOME_PREFIXES
+]
+
 #: Longest command ``is_sensitive_bash_command`` will scan. Longer input is
 #: REFUSED, not skipped and not scanned: both detectors the gate runs are linear
 #: in the subject, so this bound is what turns "linear" into a hard wall-clock

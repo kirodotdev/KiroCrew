@@ -187,6 +187,103 @@ def _pipeline(request: web.Request):
     return request.app.get("knowledge_pipeline")
 
 
+# ---------------------------------------------------------------------------
+# Query-time ACL wiring (knowledge/acl.py)
+# The dashboard's knowledge search serves the on-host PERSONAL library. These
+# seams turn the request's authenticated identity into the query-time inputs the
+# retriever gates with, and expose where a shared/multi-tenant deployment plugs
+# in the provider binding resolver + revalidation hook. Fail-closed and honest
+# about what is wired TODAY:
+#
+#  * A managed cloud/structured item is gated on the PROVIDER-mapped subject/
+#    tenant, resolved PER CANDIDATE from the query principal + the candidate's
+#    own (provider, account) by app["knowledge_binding_resolver"] (W01's
+#    trusted binding association). No resolver is wired yet, so a managed item
+#    stays denied regardless of the dashboard identity -- one request never
+#    applies one provider identity to the whole library.
+#  * A trusted-local item is what the personal library legitimately serves, so
+#    the default whole-query context is acl.LOCAL_LIBRARY and the principal is
+#    acl.LOCAL_PRINCIPAL (trusted-local visible, every managed item denied).
+#
+# Install points (all read here, no call-site change): a per-candidate
+# app["knowledge_binding_resolver"] (acl.BindingResolver), an
+# app["knowledge_revalidator"] (acl.RevalidationHook), and -- for a deployment
+# that resolves the whole-query principal itself -- app["knowledge_identity_
+# resolver"] (request -> AccessContext) and app["knowledge_query_principal"]
+# (request -> acl.QueryPrincipal).
+def _knowledge_access_context(request: web.Request):
+    """The whole-query AccessContext (used for trusted-local items and for a
+    deployment that resolves a single context via knowledge_identity_resolver).
+
+    Uses an installed ``knowledge_identity_resolver`` when present; otherwise the
+    on-host personal library runs under the local single-user context. Never
+    derives a managed-item identity from a raw dashboard/session id -- that is
+    the per-candidate binding resolver's job, and its absence keeps managed items
+    denied.
+    """
+    resolver = request.app.get("knowledge_identity_resolver")
+    if resolver is not None:
+        try:
+            ctx = resolver(request)
+            if ctx is not None:
+                return ctx
+        except Exception:
+            logger.warning(
+                "knowledge_identity_resolver raised; falling back to the local "
+                "single-user context (managed items stay denied)", exc_info=True)
+    from kiro_crew.knowledge.acl import LOCAL_LIBRARY
+    return LOCAL_LIBRARY
+
+
+def _knowledge_query_principal(request: web.Request):
+    """The authenticated QueryPrincipal this request runs as.
+
+    Uses an installed ``knowledge_query_principal`` resolver when present; else
+    the local single-user principal (acl.LOCAL_PRINCIPAL), under which every
+    managed item is denied because it holds no provider binding. The
+    per-candidate binding resolver maps THIS principal to a provider identity for
+    each managed candidate's own (provider, account)."""
+    resolver = request.app.get("knowledge_query_principal")
+    if resolver is not None:
+        try:
+            p = resolver(request)
+            if p is not None:
+                return p
+        except Exception:
+            logger.warning(
+                "knowledge_query_principal raised; falling back to the local "
+                "single-user principal (managed items stay denied)", exc_info=True)
+    from kiro_crew.knowledge.acl import LOCAL_PRINCIPAL
+    return LOCAL_PRINCIPAL
+
+
+def _knowledge_binding_resolver(request: web.Request):
+    """The per-candidate provider BindingResolver, if a deployment installed one
+    on ``app["knowledge_binding_resolver"]``; None otherwise (managed items then
+    fall back to the whole-query context, i.e. denied under the local library).
+
+    The installed resolver is W01's ``ControlPlaneBindingResolver``, whose
+    ``resolve`` returns an ``AccessGrant`` record (subject/tenant/groups from the
+    trusted store's VERIFIED refs) — NOT an ``AccessContext``, so it lacks the
+    ``subject_ids`` the policy's subject test reads. It is wrapped here through
+    ``acl.bridge_binding_resolver`` so the retrieval gate receives a genuine
+    ``AccessContext``; a resolver that already returns ``AccessContext`` is
+    wrapped harmlessly (isinstance pass-through). The policy is untouched."""
+    inner = request.app.get("knowledge_binding_resolver")
+    if inner is None:
+        return None
+    from kiro_crew.knowledge.acl import bridge_binding_resolver
+
+    return bridge_binding_resolver(inner)
+
+
+def _knowledge_revalidator(request: web.Request):
+    """The provider live-permission RevalidationHook, if a deployment installed
+    one on ``app["knowledge_revalidator"]``; None otherwise (managed grants then
+    fall back to their staleness stamp, i.e. stale -> denied)."""
+    return request.app.get("knowledge_revalidator")
+
+
 def _create_embedder(app):
     """Create embedder from KiroCrew config. Returns None if disabled/unavailable."""
     cfg_path = config_dir() / "config.json"
@@ -414,18 +511,32 @@ _SCOPED_SEARCH_START = 200
 _SCOPED_SEARCH_MAX = 20000
 
 
-async def _search_until_exhausted(retriever, q: str, limit: int) -> list[dict]:
+async def _search_until_exhausted(retriever, q: str, limit: int, access_context=None,
+                                  query_principal=None) -> list[dict]:
     """Retrieve hybrid-search candidates until the retriever runs out.
 
     A source scope is applied *after* ranking, so a fixed window can hide every
     matching item behind higher-ranked hits from other sources. Growing the
     window until the retriever returns fewer rows than requested means the
     caller has seen the whole ranking, so its filtered count is the true total.
+
+    ``access_context``/``query_principal`` are the resolved query-time identity
+    (see _knowledge_access_context / _knowledge_query_principal); they default to
+    the local single-user identity when a caller does not supply them.
     """
+    if access_context is None:
+        from kiro_crew.knowledge.acl import LOCAL_LIBRARY
+        access_context = LOCAL_LIBRARY
+    if query_principal is None:
+        from kiro_crew.knowledge.acl import LOCAL_PRINCIPAL
+        query_principal = LOCAL_PRINCIPAL
     want = max(limit * 3, _SCOPED_SEARCH_START)
     results: list[dict] = []
     while True:
-        results = await run_in_embed_pool(retriever.search, q, limit=want)
+        results = await run_in_embed_pool(
+            retriever.search, q, limit=want, access_context=access_context,
+            query_principal=query_principal,
+        )
         # Short read means the ranking is exhausted; nothing further to fetch.
         if len(results) < want or want >= _SCOPED_SEARCH_MAX:
             return results
@@ -513,7 +624,13 @@ async def list_items(request: web.Request) -> web.Response:
         embedder = request.app.get("knowledge_embedder")
         available = bool(embedder) and await embedder.is_available_async()
         embed_fn, embed_sig = vector_leg(embedder if available else None)
-        retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
+        retriever = HybridRetriever(
+            store, embedder=embed_fn, embed_sig=embed_sig,
+            revalidator=_knowledge_revalidator(request),
+            binding_resolver=_knowledge_binding_resolver(request),
+        )
+        access_context = _knowledge_access_context(request)
+        query_principal = _knowledge_query_principal(request)
         # mc-embed bulkhead: the search's query embed blocks on the shared model.
         # The retriever ranks globally, so post-retrieval filtering can discard
         # an unbounded share of any fixed window: if enough higher-ranked hits
@@ -523,11 +640,12 @@ async def list_items(request: web.Request) -> web.Response:
         # fewer rows than asked for), which makes the scoped total exact.
         # Unscoped searches keep the cheap limit * 3 window.
         if source_id:
-            all_results = await _search_until_exhausted(retriever, q, limit)
+            all_results = await _search_until_exhausted(
+                retriever, q, limit, access_context, query_principal)
         else:
             all_results = await run_in_embed_pool(
-                retriever.search, q, limit=limit * 3
-            )
+                retriever.search, q, limit=limit * 3, access_context=access_context,
+                query_principal=query_principal)
         # Batch fetch all candidate items (avoid N+1). A scoped search escalates
         # its candidate pool, so this query and the row serialization can both be
         # large: run them in a worker thread rather than on the event loop.
@@ -1807,6 +1925,82 @@ def _task_registry(app: web.Application, key: str) -> set:  # type: ignore[type-
     return tasks
 
 
+def _register_optional_connector(
+    connectors: "dict[str, BaseConnector]",
+    module_path: str,
+    class_name: str,
+    runner_factory=None,
+    inject_kw: str | None = None,
+) -> bool:
+    """Register a structured vendor connector, injecting its live-read runner.
+
+    The structured vendor connectors (GitHub / Google Drive / Salesforce) each
+    live in their OWN package and land on ``main`` through their OWN PR. This
+    shared handler is their single registration site, but it must not
+    hard-``import`` a module that has not landed yet: a top-level import of an
+    absent module would break this handler's own import on a tree where the
+    vendor PR is not merged. So the import is guarded — when the module is
+    absent the source_type is simply NOT registered (fail-closed: ``add_source``
+    rejects an unregistered source_type and the retrieval gate never sees it,
+    never public).
+
+    Each connector takes its live-read dependency as an OPTIONAL injected arg
+    (GitHub ``transport_provider``, Google ``operations_factory``, Salesforce
+    ``call_runner``) and is the authority on its own fail-closed behavior when
+    that dependency is absent (GitHub refuses at fetch/detect_changes; Google/SF
+    refuse at validate_config). The injected value is a PER-SOURCE factory — the
+    connector calls it as ``factory(source)`` to build that source's own runner,
+    so one installed factory serves many sources without sharing a credential
+    binding. So the connector is registered whenever its module imports —
+    matching its documented contract (registered + editable, refusing live reads
+    until wired) — and the ``runner_factory`` is passed into the constructor ONLY
+    when the host has installed one; otherwise it is constructed with its own
+    default (this handler never synthesises a stand-in empty runner to feign
+    activation). This is real construction+injection (not an ``app[...]``
+    presence flag), and copies no vendor code — only the import + injected
+    instantiation live here.
+
+    Returns True when the connector was registered.
+    """
+    import importlib
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError:
+        logger.debug(
+            "knowledge connector module %s not present; source_type not "
+            "registered (fail-closed until its PR lands)",
+            module_path,
+        )
+        return False
+    try:
+        connector_cls = getattr(module, class_name)
+        # Inject the host-installed PER-SOURCE runner factory when present, by the
+        # connector's OWN keyword (they differ: Google ``operations_factory``,
+        # GitHub ``transport_provider``, Salesforce ``runner_factory``). Injecting
+        # positionally would be WRONG for a connector whose first positional param
+        # is something else -- e.g. Salesforce's ``__init__(call_runner=None, *,
+        # runner_factory=None)`` takes a single pre-composed runner first, so a
+        # positional factory would land in ``call_runner`` and be mistaken for a
+        # runner. When no factory is installed (or no keyword is known), construct
+        # with the connector's own default (it self-enforces fail-closed live
+        # reads until wired).
+        if runner_factory is not None and inject_kw:
+            connector = connector_cls(**{inject_kw: runner_factory})
+        else:
+            connector = connector_cls()
+        connectors[connector.source_type()] = connector
+    except Exception:  # pragma: no cover - defensive; a broken vendor module
+        logger.exception(
+            "knowledge connector %s.%s failed to register; skipping "
+            "(built-in connectors unaffected)",
+            module_path,
+            class_name,
+        )
+        return False
+    return True
+
+
 def _track_scan_task(app: web.Application, task: asyncio.Task) -> None:  # type: ignore[type-arg]
     """Keep strong reference to scan task and log exceptions."""
     tasks = _task_registry(app, "_scan_tasks")
@@ -2786,12 +2980,20 @@ async def search_for_context(request: web.Request) -> web.Response:
     embedder = request.app.get("knowledge_embedder")
     available = bool(embedder) and await embedder.is_available_async()
     embed_fn, embed_sig = vector_leg(embedder if available else None)
-    retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
+    retriever = HybridRetriever(
+        store, embedder=embed_fn, embed_sig=embed_sig,
+        revalidator=_knowledge_revalidator(request),
+        binding_resolver=_knowledge_binding_resolver(request),
+    )
     # HybridRetriever.search runs on an mc-embed worker thread; KnowledgeStore
     # hands each thread its own sqlite connection, so all sqlite
     # access is thread-safe here. mc-embed bulkhead: the query embed occupies
     # the shared model.
-    results = await run_in_embed_pool(retriever.search, q, limit=limit)
+    results = await run_in_embed_pool(
+        retriever.search, q, limit=limit,
+        access_context=_knowledge_access_context(request),
+        query_principal=_knowledge_query_principal(request),
+    )
 
     cards = []
     total_tokens = 0
@@ -2915,6 +3117,48 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+        # Structured vendor connectors (GitHub / Google Drive / Salesforce).
+        # Each lives in its own module that lands on main through its own PR;
+        # this is their single registration site. A connector is registered
+        # whenever its module imports (its documented contract: registered +
+        # edition-overridable, refusing live reads until wired), and its
+        # W01-backed runner factory is INJECTED when the host has installed one
+        # under ``knowledge_connector_runners`` — a {source_type: runner_factory}
+        # map. Each value is a PER-SOURCE factory: the connector invokes it as
+        # ``factory(source)`` to build that source's own runner (Google's
+        # ``operations_factory(source)``; Salesforce's per-source call runner),
+        # so one installed factory serves many sources without sharing a
+        # credential binding across them. WHERE the host obtains these factories
+        # (which composes the control-plane executor + per-source custody) is not
+        # settled yet, and this handler does NOT synthesise a default/empty
+        # runner to stand in: an absent factory means the connector is
+        # constructed with its own default and self-refuses live reads
+        # (fail-closed), never a fabricated "activated" state. An absent MODULE
+        # means the source_type is not registered at all (add_source rejects it,
+        # retrieval never sees it, never public). No vendor code is copied here;
+        # only the import + injected instantiation live in this shared handler.
+        # Built-ins are set BEFORE the edition merge below so an edition can
+        # still ADD or override a source_type. See _register_optional_connector.
+        _runner_factories = app.get("knowledge_connector_runners") or {}
+        # (source_type, module, class, inject_kw) -- inject_kw is the connector's
+        # OWN keyword for its per-source runner factory, which differs per vendor
+        # (see _register_optional_connector's positional-injection warning).
+        for _stype, _mod, _cls, _kw in (
+            ("github",
+             "kiro_crew.knowledge.connectors.github_structured",
+             "GithubStructuredConnector", "transport_provider"),
+            ("google_drive",
+             "kiro_crew.knowledge.connectors.google_drive",
+             "GoogleDriveConnector", "operations_factory"),
+            ("salesforce",
+             "kiro_crew.knowledge.connectors.salesforce_structured",
+             "SalesforceStructuredConnector", "runner_factory"),
+        ):
+            _register_optional_connector(
+                connectors, _mod, _cls,
+                runner_factory=_runner_factories.get(_stype),
+                inject_kw=_kw,
+            )
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
