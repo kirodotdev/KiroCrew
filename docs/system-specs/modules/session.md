@@ -1139,6 +1139,25 @@ the four where `rewind` does not yet, so nobody reads them as already shared:
   something else has taken `slot.task`, committing would run this handler's turn
   alongside whatever now owns the slot — two concurrent turns writing one
   window). Any of the three refuses with a retryable 503.
+- **The durable write is NOT covered by that predicate, and the gap is open.**
+  Every call to the commit predicate above happens AFTER the save has settled, so
+  for the file it is a post-mortem: it can refuse the live commit and the
+  dispatch, and it cannot un-truncate a transcript that has already been
+  replaced. The truncated window is frozen against ONE slot incarnation, and a
+  same-name close-and-recreate can be published inside the executor wait, after
+  every check the handler can run on the loop. Such a recreate resuming the same
+  conversation leaves the transcript key unchanged, so `expected_history_key`
+  waves it through.
+  `chat_persistence._save_slot_to_history` does accept `expected_slot_name` and
+  re-reads `state._slots` under the transcript lock before writing, which is what
+  the `regenerate` and `switch-variant` saves pass. That check is necessary but
+  not sufficient, and no caller should be read as closing the race: the harm does
+  not need the replacement published before the check, only that it READS the
+  file after the write commits. The save holds the per-session lock across its
+  whole read-modify-write, so a replacement published during the write waits and
+  then hydrates from the truncated content. Closing it needs slot publication to
+  be ordered against the persistence commit, and no such contract exists between
+  the registry and the persistence layer today. Tracked in issue #12090.
 - **The periodic dirty-slot flush is excluded for the whole rewrite.** Because
   the live slot keeps the full window until the commit, a flush tick can snapshot
   that stale window, block behind the rewrite on the per-session history lock,
