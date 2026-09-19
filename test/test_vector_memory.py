@@ -3304,7 +3304,7 @@ class TestSharedConnectionLockDiscipline:
         store.init()
         assert store.set_semantic("pref.editor", "vim", 0.9, "consolidation") is None
 
-        def _boom(key: str, old_value: str) -> None:
+        def _boom(key: str, old_value: str, **kw: object) -> None:
             raise RuntimeError("cannot start a transaction within a transaction")
 
         store._retire_stale_episodic = _boom  # type: ignore[assignment]

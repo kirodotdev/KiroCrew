@@ -827,6 +827,18 @@ read-modify-write and the FAISS add + id-map append with `_db_lock` (a `RLock`);
 statement atomicity (WAL + `busy_timeout`) rather than application-level locking
 — the lock is never held across a blocking embed.
 
+**Embed budget:** the offload bounds the loop, not the cost. One pass writes up
+to `_MAX_SEMANTIC_PER_CONSOLIDATION` + `_MAX_EPISODIC_PER_CONSOLIDATION` rows and
+each embeds inline, so a degraded embedder made the pass cost N times one call's
+latency on an embed-pool worker every other embed consumer shares.
+`_write_structured_memory` therefore charges both tiers' store writes against
+`_EMBED_BUDGET_SECS_PER_PASS`. The first overrun latches for the rest of that
+pass: every remaining row is written with `defer_embedding=True`, which stores the
+same NULL-vectored row a failed embed already produces and leaves the vector to
+`backfill_missing_embeddings`. On the semantic side the same flag also takes the
+stale-episodic retirement down its text-only arm, the arm it already takes when an
+embed returns nothing. The deferral is logged once per pass, never once per row.
+
 ## Stop Events
 
 Stop events are persisted to JSONL as `system` messages. The structured

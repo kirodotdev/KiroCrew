@@ -5621,6 +5621,245 @@ class TestConsolidationDoesNotImpersonateUser:
             store.close()
 
 
+class TestConsolidationEmbedBreaker:
+    """One consolidation pass must not pay a slow embedder once per item.
+
+    Every memory a pass writes embeds its text inline, so an embedder that is slow
+    for the first row is slow for all of them — and each failed embed stores the
+    same NULL-vector row the repair sweep would have filled anyway. The pass
+    therefore measures its own write time and, past the budget, defers the
+    remaining embeddings instead of re-paying the latency per item.
+    """
+
+    @staticmethod
+    def _consolidator(store):
+        memory = MagicMock()
+        memory.read_preferences.return_value = ""
+        memory.read_projects.return_value = ""
+        return HistoryConsolidator(
+            log=MagicMock(),
+            memory=memory,
+            sessions=None,
+            vector_store=store,
+            migrated=True,
+        )
+
+    @staticmethod
+    def _store(tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        return store
+
+    @staticmethod
+    def _episodes(count):
+        return [
+            {"text": f"episode {i}: the operator asked for a fresh status sweep", "importance": 0.5}
+            for i in range(count)
+        ]
+
+    @staticmethod
+    def _rows(store):
+        return store.db.execute(
+            "SELECT embedding FROM episodic_memories WHERE is_deleted = 0"
+        ).fetchall()
+
+    def test_slow_embedder_is_attempted_once_and_every_row_is_still_written(
+        self, tmp_path, caplog, monkeypatch
+    ) -> None:
+        """N items cost one embed attempt, not N."""
+        from kiro_crew import history_consolidation
+
+        store = self._store(tmp_path)
+        calls = []
+
+        def slow_embed(text):
+            calls.append(text)
+            time.sleep(0.05)
+            raise TimeoutError("timed out")
+
+        store.embed_fn = slow_embed
+        monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
+        try:
+            with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+                self._consolidator(store)._write_structured_memory(
+                    {"episodic": self._episodes(5)}, "sess-1"
+                )
+
+            assert len(calls) == 1, (
+                f"the pass kept embedding after the first overrun ({len(calls)} attempts); "
+                "a degraded embedder is paid once per item again"
+            )
+            rows = self._rows(store)
+            assert len(rows) == 5, "deferring the embedding must not drop the memory itself"
+            assert all(row["embedding"] is None for row in rows)
+            deferrals = [
+                r
+                for r in caplog.records
+                if "embedding is deferred to the repair sweep" in r.getMessage()
+            ]
+            assert len(deferrals) == 1, (
+                "the deferral must be logged once per pass, not once per row; got "
+                f"{[r.getMessage() for r in deferrals]}"
+            )
+            assert deferrals[0].levelno == logging.WARNING
+        finally:
+            store.close()
+
+    def test_healthy_embedder_embeds_every_row(self, tmp_path) -> None:
+        """Control: an embedder that answers promptly never arms the latch."""
+        store = self._store(tmp_path)
+        calls = []
+
+        def fast_embed(text):
+            index = len(calls)
+            calls.append(text)
+            # Orthogonal per row: identical vectors would hit the similarity dedup
+            # and reject rows this control needs written.
+            vec = [0.0] * 8
+            vec[index % 8] = 1.0
+            return vec
+
+        store.embed_fn = fast_embed
+        try:
+            self._consolidator(store)._write_structured_memory(
+                {"episodic": self._episodes(5)}, "sess-1"
+            )
+
+            assert len(calls) == 5, "a healthy pass must still embed every row inline"
+            rows = self._rows(store)
+            assert len(rows) == 5
+            assert all(row["embedding"] is not None for row in rows)
+        finally:
+            store.close()
+
+    def test_both_tiers_share_one_budget_and_stop_after_the_first_overrun(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Every row a pass writes embeds inline, so both tiers latch together."""
+        from kiro_crew import history_consolidation
+
+        store = self._store(tmp_path)
+        calls = []
+
+        def slow_embed(text):
+            calls.append(text)
+            time.sleep(0.05)
+            raise TimeoutError("timed out")
+
+        store.embed_fn = slow_embed
+        monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
+        keys = [f"project.p{i}.status" for i in range(4)]
+        try:
+            self._consolidator(store)._write_structured_memory(
+                {
+                    "semantic": [
+                        {"key": k, "value": f"green {i}", "confidence": 0.9}
+                        for i, k in enumerate(keys)
+                    ],
+                    "episodic": self._episodes(3),
+                },
+                "sess-1",
+            )
+
+            assert len(calls) == 1, (
+                "a tier kept embedding after the pass had already overrun "
+                f"({len(calls)} attempts across 4 semantic + 3 episodic rows)"
+            )
+            assert len(self._rows(store)) == 3, "deferral must not drop an episode"
+            rows = [store.get_semantic(k) for k in keys]
+            assert all(row is not None for row in rows), "deferral must not drop a fact"
+            assert all(row["embedding"] is None for row in rows)
+        finally:
+            store.close()
+
+    def test_a_deferred_episode_never_evicts_an_existing_memory(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A row admitted without dedup must not displace one it never compared.
+
+        Deferring leaves the vector NULL, which skips the similarity dedup. On a
+        legacy V1 store at its episodic cap the insert would then tombstone the
+        lowest-importance row to make room for a possible paraphrase. The refusal
+        is the cheaper loss: the transcript is still on disk, the evicted row is
+        not.
+        """
+        from kiro_crew import history_consolidation
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", episodic_max=2)
+        store.init()
+        assert store.algorithm_version == "v1"
+        kept = ["the canary stage runs before production", "the release owner signs the ledger"]
+        for text in kept:
+            assert store.write_episodic(text=text, importance=0.9, source="user_explicit")
+
+        calls = []
+
+        def slow_embed(text):
+            calls.append(text)
+            time.sleep(0.05)
+            raise TimeoutError("timed out")
+
+        store.embed_fn = slow_embed
+        monkeypatch.setattr(history_consolidation, "_EMBED_BUDGET_SECS_PER_PASS", 0.01)
+        try:
+            self._consolidator(store)._write_structured_memory(
+                {
+                    # One semantic write spends the budget, so every episode below
+                    # is written deferred rather than only the ones after the first.
+                    "semantic": [
+                        {"key": "project.alpha.status", "value": "green", "confidence": 0.9}
+                    ],
+                    "episodic": self._episodes(3),
+                },
+                "sess-1",
+            )
+
+            surviving = {
+                row["text"]
+                for row in store.db.execute(
+                    "SELECT text FROM episodic_memories WHERE is_deleted = 0"
+                ).fetchall()
+            }
+            assert surviving == set(kept), (
+                "a deferred episode displaced a memory it could not be compared "
+                f"against; store now holds {surviving}"
+            )
+            assert len(calls) == 1
+        finally:
+            store.close()
+
+    def test_a_deferred_semantic_row_is_left_for_the_repair_sweep(self, tmp_path) -> None:
+        """The deferred vector is work the standing sweep can still see and finish."""
+        store = self._store(tmp_path)
+        store.embed_fn = lambda _text: [1.0, 0.0, 0.0, 0.0]
+        try:
+            assert (
+                store.set_semantic(
+                    "project.alpha.status",
+                    "green",
+                    0.9,
+                    "consolidation:sess-1",
+                    defer_embedding=True,
+                )
+                is None
+            )
+
+            row = store.get_semantic("project.alpha.status")
+            assert row is not None and row["embedding"] is None
+            assert store.has_pending_embeddings(), (
+                "a deferred row the repair sweep cannot see is a vector lost forever"
+            )
+            # The returned count is episodic-only, so the repaired row itself is
+            # the evidence the semantic sub-sweep ran.
+            store.backfill_missing_embeddings(pace=False)
+            assert store.get_semantic("project.alpha.status")["embedding"] is not None
+        finally:
+            store.close()
+
+
 class TestConsolidationLessonScope:
     """Consolidation forwards a model-supplied ``repo_scope`` into the lesson write.
 

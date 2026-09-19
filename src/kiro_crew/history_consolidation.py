@@ -60,6 +60,64 @@ _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
 _SKILL_DETECTION_WINDOW = 200
 
+#: Wall-clock ceiling on the memory writes of ONE consolidation pass that embed
+#: inline. A pass writes up to ``_MAX_SEMANTIC_PER_CONSOLIDATION`` +
+#: ``_MAX_EPISODIC_PER_CONSOLIDATION`` rows and each one embeds its text through a
+#: blocking inference call, so a degraded embedder makes the pass cost N times one
+#: call's latency — all of it on an embed-pool worker, which is shared with every
+#: other embed consumer. Past the ceiling the rest of the pass is written with its
+#: embedding deferred, so it stops queueing inference it has measured to be slow.
+#: Deferred rows are filled in by the standing repair sweep
+#: (``backfill_missing_embeddings``), which is what makes deferral lossless.
+_EMBED_BUDGET_SECS_PER_PASS = 60.0
+
+
+class _EmbedBudget:
+    """One consolidation pass's embed-time ceiling, and the latch it arms.
+
+    The ceiling is measured over the store WRITES, not over the embed calls
+    themselves: the consolidation layer has no seam onto an individual embed, and
+    write time is the quantity that actually has to be bounded. Inference is the
+    only unbounded part of a write — the rest is local SQLite work — so a slow
+    embedder is what normally spends this budget, though lock contention or a
+    stalled disk can spend it too. The remedy for either is the same, and it is
+    self-healing: the repair sweep embeds what this pass deferred.
+
+    Once tripped the latch stays tripped for the rest of the pass — that is the
+    whole point. Without it, an embedder that is slow for the first row is slow for
+    every row, and the pass pays that latency once per item before finishing with
+    exactly the same rows it would have written anyway (a failed embed already
+    stores a NULL vector for the repair sweep to fill).
+    """
+
+    __slots__ = ("_budget", "_logger", "_spent", "tripped")
+
+    def __init__(self, budget_secs: float, logger: logging.Logger) -> None:
+        self._budget = budget_secs
+        self._logger = logger
+        self._spent = 0.0
+        self.tripped = False
+
+    @contextlib.contextmanager
+    def measured(self):
+        """Time one store write and charge it to the pass, arming the latch once."""
+        started = _time.monotonic()
+        try:
+            yield
+        finally:
+            self._spent += _time.monotonic() - started
+            if not self.tripped and self._spent >= self._budget:
+                self.tripped = True
+                # Once per pass, not once per row: a degraded embedder would
+                # otherwise repeat this line for every remaining item.
+                self._logger.warning(
+                    "Consolidation spent %.1fs on memory writes (budget %.1fs); "
+                    "embedding is deferred to the repair sweep for the rest of this pass",
+                    self._spent,
+                    self._budget,
+                )
+
+
 #: Default for the two write helpers' store arguments, meaning "argument not
 #: supplied — use the global handle off ``self``". It cannot be ``None``, because
 #: ``ContextBuilder.ensure_store`` may answer ``None`` for an unavailable legacy
@@ -1687,6 +1745,9 @@ class HistoryConsolidator:
             return
         source = f"consolidation:{key}"
         private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
+        # Shared by both tiers below: each embeds inline, so both charge the same
+        # pass and either can arm the latch for the other.
+        budget = _EmbedBudget(_EMBED_BUDGET_SECS_PER_PASS, self._logger)
 
         # Semantic entries
         semantic_items = result.get("semantic")
@@ -1744,14 +1805,16 @@ class HistoryConsolidator:
                     if evidence:
                         extra["correction"] = evidence
                         extra["expected_revision"] = evidence.revision
-                err = vector_store.set_semantic(
-                    key=item["key"],
-                    value=item["value"],
-                    confidence=conf,
-                    source=source,
-                    facets=facets,
-                    **extra,
-                )
+                with budget.measured():
+                    err = vector_store.set_semantic(
+                        key=item["key"],
+                        value=item["value"],
+                        confidence=conf,
+                        source=source,
+                        facets=facets,
+                        defer_embedding=budget.tripped,
+                        **extra,
+                    )
                 if err is None:
                     written += 1
                 else:
@@ -1776,6 +1839,7 @@ class HistoryConsolidator:
         episodic_items = result.get("episodic")
         if isinstance(episodic_items, list):
             written = 0
+            deferred = 0
             for item in episodic_items[:_MAX_EPISODIC_PER_CONSOLIDATION]:
                 if not isinstance(item, dict) or not isinstance(item.get("text"), str):
                     continue
@@ -1788,18 +1852,43 @@ class HistoryConsolidator:
                     continue
                 if not math.isfinite(importance) or not 0 <= importance <= 1:
                     continue
-                ep_ok = vector_store.write_episodic(
-                    text=item["text"],
-                    conversation_id=key,
-                    tags=tags,
-                    importance=importance,
-                    source=source,
-                    facets=facets,
-                )
+                # `defer_embedding` stores the row with a NULL vector instead of
+                # embedding it here. The text is keyword-searchable at once and the
+                # repair sweep fills the vector in.
+                #
+                # `preserve_existing` comes with it, and is not optional: without a
+                # vector the similarity dedup cannot run, and on a legacy V1 store
+                # at its episodic cap the insert would then tombstone the
+                # lowest-importance row to make room for a paraphrase it never
+                # compared against. A write that cannot arbitrate a conflict has no
+                # standing to evict, so at the cap the deferred row is refused
+                # instead — the transcript it came from is still on disk, and the
+                # row it would have displaced is not recoverable.
+                #
+                # Read before the write, so the row that SPENDS the budget is the
+                # last one to pay for an embed rather than the first to skip one.
+                defer = budget.tripped
+                with budget.measured():
+                    ep_ok = vector_store.write_episodic(
+                        text=item["text"],
+                        conversation_id=key,
+                        tags=tags,
+                        importance=importance,
+                        source=source,
+                        facets=facets,
+                        defer_embedding=defer,
+                        preserve_existing=defer,
+                    )
                 if ep_ok:
                     written += 1
+                    if defer:
+                        deferred += 1
             if written:
-                self._logger.info("Wrote %d episodic entries from consolidation", written)
+                self._logger.info(
+                    "Wrote %d episodic entries from consolidation (%d with embedding deferred)",
+                    written,
+                    deferred,
+                )
 
     def _dedupe_candidate(
         self, slug: str, description: str, triggers: str

@@ -2382,6 +2382,7 @@ class VectorMemoryStore:
         metadata: dict | None = None,
         expected_revision: int | None = None,
         correction: record_meta.CorrectionEvidence | None = None,
+        defer_embedding: bool = False,
     ) -> tuple[SemanticRejectCode, str] | None:
         """Write a semantic memory entry with full validation pipeline.
 
@@ -2390,6 +2391,13 @@ class VectorMemoryStore:
         *facets* stamps the crew lineage's carve axes and is ignored on v1. It is
         applied only on a SUCCESSFUL write, so a rejected value leaves no axis
         behind pointing at a row that does not exist.
+
+        ``defer_embedding`` writes the row without embedding its value here,
+        leaving the vector for :meth:`backfill_missing_embeddings` — the semantic
+        counterpart of ``write_episodic(defer_embedding=True)``, for a caller that
+        has measured this embedder to be slow and must stop paying that latency
+        once per item. The row is keyword-searchable at once, and the state it
+        persists is the state a FAILED embed already persists.
         """
         # Persist the raw UTF-8 dump (as memory_edit._json does for user
         # edits) so the size gate in validate_semantic measures exactly the
@@ -2423,6 +2431,7 @@ class VectorMemoryStore:
             metadata=metadata,
             expected_revision=expected_revision,
             correction=correction,
+            defer_embedding=defer_embedding,
         )
         if conflict is not None:
             logger.info("Semantic write rejected for %r: %s", key, conflict)
@@ -2707,8 +2716,16 @@ class VectorMemoryStore:
         expected_revision: int | None = None,
         correction: record_meta.CorrectionEvidence | None = None,
         _consolidation: bool = False,
+        defer_embedding: bool = False,
     ) -> str | None:
-        """Retain V1 conflict scoring; propose inferred changes in private V2."""
+        """Retain V1 conflict scoring; propose inferred changes in private V2.
+
+        ``defer_embedding`` skips BOTH blocking embeds this write can reach — the
+        value's own vector and the similarity arm of the stale-episodic retirement
+        — leaving each of them in the state it already reaches when the embedder
+        answers ``None``: a NULL vector for the repair sweep, and a retirement
+        that matches on text alone.
+        """
         private_policy = self.algorithm_version == "v2"
         with self._db_lock:
             if not _consolidation:
@@ -2944,7 +2961,12 @@ class VectorMemoryStore:
         already_embedded = bool(
             existing and existing["value_json"] == value_json and existing["embedding"] is not None
         )
-        if self.embed_fn is not None and not key.startswith("lesson.") and not already_embedded:
+        if (
+            self.embed_fn is not None
+            and not defer_embedding
+            and not key.startswith("lesson.")
+            and not already_embedded
+        ):
             embed_generation = self._space_generation
             vec = self._try_embed(f"{key} {value_json}", PRIORITY_BULK)
             if vec:
@@ -2985,7 +3007,7 @@ class VectorMemoryStore:
                 old_text = str(old_val)
             if isinstance(old_text, str) and len(old_text) >= 3:
                 try:
-                    self._retire_stale_episodic(key, old_text)
+                    self._retire_stale_episodic(key, old_text, defer_embedding=defer_embedding)
                 except Exception:
                     logger.warning(
                         "Stale-episodic retirement failed for key %r (semantic write kept)",
@@ -3098,14 +3120,17 @@ class VectorMemoryStore:
             "conflict_retire", "episodic", mem_id, text[:200], superseded_by, "semantic_update"
         )
 
-    def _retire_stale_episodic(self, key: str, old_value: str) -> None:
+    def _retire_stale_episodic(
+        self, key: str, old_value: str, *, defer_embedding: bool = False
+    ) -> None:
         """V1 keeps its original heuristic; member V2 requires literal evidence.
 
         Both share ``_MAX_EPISODIC_RETIRED_PER_WRITE``: the heuristic decides WHICH
-        episodes a write may retire, the cap decides HOW MANY.
+        episodes a write may retire, the cap decides HOW MANY. ``defer_embedding``
+        reaches only V1, the arm that embeds; V2 proves supersession from text.
         """
         if self.algorithm_version != "v2":
-            self._retire_stale_episodic_v1(key, old_value)
+            self._retire_stale_episodic_v1(key, old_value, defer_embedding=defer_embedding)
             return
         # No embedding/similarity can prove a contradiction. Require the old
         # value in an assertion about this key, then keep an undoable audit row.
@@ -3126,7 +3151,9 @@ class VectorMemoryStore:
                 self.db.commit()
                 self._invalidate_episodic_scoring()
 
-    def _retire_stale_episodic_v1(self, key: str, old_value: str) -> None:
+    def _retire_stale_episodic_v1(
+        self, key: str, old_value: str, *, defer_embedding: bool = False
+    ) -> None:
         """Soft-delete episodic entries that reference a superseded semantic value.
 
         Uses vector similarity search when embeddings are available (catches
@@ -3151,7 +3178,10 @@ class VectorMemoryStore:
         # implicit BEGIN of any concurrent writer (search_episodic's
         # last_accessed_at write, another consolidation) and the loser raises
         # "cannot start a transaction within a transaction".
-        emb = self._try_embed(query)
+        # ``defer_embedding`` takes the same arm an unavailable embedder takes:
+        # the text fallback below. Retiring fewer rephrased episodes is what this
+        # path already does whenever the embed answers None.
+        emb = None if defer_embedding else self._try_embed(query)
         with self._db_lock:
             if emb is not None:
                 # mmr=False: internal write-path caller that applies its own cosine
@@ -3675,7 +3705,10 @@ class VectorMemoryStore:
         bound which episodes a query is even allowed to surface.
 
         ``preserve_existing`` rejects similarity and capacity conflicts instead
-        of tombstoning an active entry. Import paths use it to remain merge-only.
+        of tombstoning an active entry. Import paths use it to remain merge-only,
+        and so does any writer that passes ``defer_embedding``: with no vector the
+        similarity dedup below cannot run, and a row admitted without it must not
+        evict one it was never compared against.
 
         ``defer_embedding`` stores the row with a NULL embedding instead of
         embedding inline, leaving it for :meth:`backfill_missing_embeddings`.

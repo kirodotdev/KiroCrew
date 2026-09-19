@@ -285,7 +285,7 @@ def test_identical_legacy_reset_does_not_retire_episodes(store, monkeypatch):
     store.db.commit()
     retired = []
     monkeypatch.setattr(
-        store, "_retire_stale_episodic", lambda key, text: retired.append((key, text))
+        store, "_retire_stale_episodic", lambda key, text, **kw: retired.append((key, text))
     )
     assert store.set_semantic("user.work_email", value, 1, "user_explicit") is None
     assert retired == []

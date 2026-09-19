@@ -971,6 +971,11 @@ class TestWriteStructuredMemory:
             importance=0.9,
             source="consolidation:sess",
             facets=None,
+            # Both False while the pass is inside its embed budget; the latch
+            # flips them together once a slow embedder has overrun it, because a
+            # write with no vector must neither embed nor evict.
+            defer_embedding=False,
+            preserve_existing=False,
         )
         assert "Wrote 1 episodic" in caplog.text
 
