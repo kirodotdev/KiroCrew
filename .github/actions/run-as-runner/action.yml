@@ -1,46 +1,23 @@
 name: Run steps as an unprivileged user
 description: >-
-  Gives a job the same user model on every Linux runner. GitHub-hosted runners
-  execute a job as the unprivileged `runner` user; the CodeBuild-hosted runner
-  executes it as root, and this repository's backend suite asserts permission
-  semantics root does not have (read-only refusals, root-owned-ancestor checks,
-  `PermissionError`) and refuses to run providers as root at all. AWS documents
-  no non-root mode for the CodeBuild GitHub Actions runner, so the runner
-  process and the `setup-*` actions stay root; this action draws ONE controlled
-  boundary below them.
-
-  On a root runner it creates `runner`, hands it the workspace and the job temp
-  dir, aligns the image with the hosted one (a resolvable libpython for the
-  setup-python toolcache, jq 1.7, lsof) and installs `/usr/local/bin/ci-shell`:
-  a `shell:` program that runs a step's script as `runner`. On a
-  GitHub-hosted runner ci-shell is a plain bash passthrough, so a step
-  declaring `shell: /usr/local/bin/ci-shell {0}` behaves identically on both.
-
-  Use it AFTER checkout and the setup-* actions (they install as root, which is
-  fine) and BEFORE any step whose behaviour depends on not being root. Steps
-  that write $GITHUB_OUTPUT / $GITHUB_ENV keep the default shell: those files
-  belong to the root runner process, and their own logic must not depend on
-  permission semantics.
+  Keep setup actions under the runner identity and run tests through ci-shell.
+  Root runners hand over only the workspace, never the runner's file commands
+  or credentials in RUNNER_TEMP. Non-root hosted runners use a bash passthrough.
 runs:
   using: composite
   steps:
+    # Reuses the measured Linux boundary: jq 1.7.1, lsof and toolcache libpython
+    # are the image gaps, not reasons to replace the image or weaken tests.
     - name: Provision the unprivileged user and ci-shell
       shell: bash
       env:
-        # Pinned by version AND sha256: an unpinned download would put a
-        # third-party binary of unknown content on PATH ahead of the test run.
         JQ_VERSION: "1.7.1"
         JQ_SHA256: "5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5"
       run: |
         set -euo pipefail
         if [ "$(id -u)" != "0" ]; then
-          # GitHub-hosted (or any non-root) runner: install the passthrough and
-          # change NOTHING else. No user is created, nothing is chowned, no
-          # package is installed -- the hosted image is the reference we are
-          # matching, not something to modify.
           sudo install -m 755 /dev/stdin /usr/local/bin/ci-shell <<'EOF'
         #!/bin/bash
-        # ci-shell (passthrough): this runner already executes jobs unprivileged.
         exec bash --noprofile --norc -eo pipefail "$1"
         EOF
           echo "ci-shell: non-root runner ($(id -un), uid $(id -u)) -- passthrough installed."
@@ -48,10 +25,7 @@ runs:
         fi
 
         echo "ci-shell: root runner -- provisioning the 'runner' account."
-        # 1001 is the hosted runner's own uid, so prefer it for parity, but do
-        # not ASSUME it is free: standard:7.0 is free to hand it to an image
-        # user, and useradd -u on a taken id fails the whole job. Fall back to
-        # whatever useradd picks; nothing downstream hardcodes the number.
+        # Prefer the hosted uid/gid, but standard:7.0 may already use 1001.
         if ! getent group runner >/dev/null 2>&1; then
           if getent group 1001 >/dev/null 2>&1; then
             groupadd runner
@@ -66,57 +40,20 @@ runs:
             useradd -m -u 1001 -d /home/runner -s /bin/bash -g runner runner
           fi
         fi
-        # A real home is part of the contract: the suite reads and writes under
-        # $HOME (the data home defaults below it) and a missing one turns a
-        # permission assertion into a confusing FileNotFoundError.
         install -d -o runner -g runner -m 755 /home/runner
-
-        # The checkout and the setup-* actions ran as root, so the tests need to
-        # be handed what they write into. NARROWLY: the workspace. NOT the tool
-        # cache (root-owned 0755 is readable, which is all pip --system needs),
-        # NOT /root, and never `chmod -R 777` -- a world-writable tree would
-        # itself break the read-only refusals this suite asserts.
         chown -R runner:runner "$GITHUB_WORKSPACE"
 
-        # The job temp is handled differently, and deliberately NOT by chowning
-        # it. It already holds two root-owned things the unprivileged step must
-        # not gain power over: the runner's file-command directory ($GITHUB_ENV,
-        # $GITHUB_OUTPUT, $GITHUB_PATH, $GITHUB_STEP_SUMMARY -- which the runner
-        # process reads AS ROOT after each step and applies to the next one, so a
-        # planted LD_PRELOAD/NODE_OPTIONS is executed by a later root-owned step
-        # such as the artifact upload), and the checkout's transient git
-        # credentials config. `chown -R runner:runner "$RUNNER_TEMP"` handed both
-        # over: directly at first, and then -- after the file-command directory
-        # alone was handed back -- still indirectly, because rename and unlink of
-        # a directory ENTRY are governed by the PARENT's permissions, so a
-        # runner-owned parent lets the protected directory be moved aside and
-        # recreated. Both routes were raised as blocking security findings by
-        # GPT 5.6, the second one on the fix for the first.
-        #
-        # What the tests actually need here is the ability to CREATE their own
-        # entries, which is `/tmp` semantics: root-owned, world-writable, sticky.
-        # Sticky is the load-bearing bit -- it is what stops a non-owner renaming
-        # or deleting an entry it does not own, so every root-owned entry already
-        # in the directory stays untouchable and unreadable while a new file from
-        # the unprivileged user still lands. Nothing changes hands.
+        # Root-owned + sticky is essential: a runner-owned parent can rename
+        # the file-command directory even if that child remains root-owned.
+        # The tests only need to CREATE their own entries, like /tmp.
         chmod 1777 "$RUNNER_TEMP"
 
-        # setup-python's downloaded toolcache builds link libpython dynamically
-        # and rely on LD_LIBRARY_PATH, which this suite deliberately strips when
-        # it spawns a sanitized subprocess (observed: `python: error while
-        # loading shared libraries: libpython3.12.so.1.0`, rc 127). Register the
-        # lib dirs with the dynamic linker so the interpreter resolves without
-        # the variable, as the hosted image's system python does.
+        # Sanitized children deliberately drop LD_LIBRARY_PATH. Register the
+        # setup-python libraries so those children can still start Python.
         if compgen -G "$RUNNER_TOOL_CACHE/Python/*/x64/lib" >/dev/null; then
           ls -d "$RUNNER_TOOL_CACHE"/Python/*/x64/lib > /etc/ld.so.conf.d/zz-actions-python-toolcache.conf
           ldconfig
         fi
-
-        # Image parity, evidence-driven -- only what a measured failure named.
-        # lsof: absent from standard:7.0, present on ubuntu-latest, and
-        # test_cli_server_more_coverage.py's port-bypass test needs the real
-        # binary (measured: 1 failure on the wrapper spike run, 34717454028).
-        # Distro package, not a download: it is in Ubuntu's own repositories.
         if ! command -v lsof >/dev/null 2>&1; then
           export DEBIAN_FRONTEND=noninteractive
           if ! (apt-get update -qq && apt-get install -y -qq --no-install-recommends lsof); then
@@ -124,9 +61,6 @@ runs:
             exit 1
           fi
         fi
-        # jq: standard:7.0 ships 1.6 and this repository's jq programs need 1.7.
-        # gh is deliberately NOT installed here -- no backend test has been
-        # measured to need it, and an unrequired binary on PATH is scope.
         if ! jq --version 2>/dev/null | grep -q "jq-1\.7"; then
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/jq" \
             "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64"
@@ -135,20 +69,41 @@ runs:
           rm -f "$RUNNER_TEMP/jq"
         fi
 
-        # The shell program. `runuser -m` keeps the step's environment (the PATH
-        # the setup-* actions built, GITHUB_*, RUNNER_*) -- the Actions
-        # toolchain is reachable no other way, and this job carries no secrets
-        # in its environment: `persist-credentials: false` on the checkout, no
-        # `secrets.*` in its env, and the CodeBuild service role is reachable
-        # from any process in the build regardless of which user runs it.
-        # HOME/USER/LOGNAME are set explicitly because -m suppresses runuser's
-        # own defaults for them. No sudo rule is created: this is the only
-        # privilege transition, and it goes DOWN.
+        # Only the kernel-owner lock tests use this existing tmpfs. Overlay can
+        # expose stat inode numbers that differ from /proc/locks. No mount or
+        # permission changes: each fixture owns and removes its temporary home.
+        test "$(stat -f -c %T /dev/shm)" = tmpfs
+
+        # Preserve setup-*'s PATH, but give tests a real unprivileged HOME.
+        # No sudo rule is created. This boundary does not hide the build role:
+        # fleet eligibility and the independent webhook actor filter do that.
         install -m 755 /dev/stdin /usr/local/bin/ci-shell <<'EOF'
         #!/bin/bash
-        # ci-shell: run the step script as the unprivileged `runner` user.
-        exec runuser -m -u runner -- env HOME=/home/runner USER=runner LOGNAME=runner \
+        # CodeBuild can pass SIG_IGN for INT through runuser. Reset only INT
+        # before Bash starts; Bash cannot undo an inherited ignore for children.
+        exec runuser -m -u runner -- env --default-signal=INT \
+          HOME=/home/runner USER=runner LOGNAME=runner KIROCREW_LOCK_TEST_ROOT=/dev/shm \
           bash --noprofile --norc -eo pipefail "$1"
         EOF
         echo "ci-shell: installed. jq $(jq --version), lsof $(command -v lsof)."
         runuser -m -u runner -- env HOME=/home/runner id
+
+    - name: Assert the non-root boundary (CodeBuild only)
+      if: runner.environment == 'self-hosted'
+      shell: /usr/local/bin/ci-shell {0}
+      run: |
+        test "$(id -u)" -ne 0
+        test "$HOME" = /home/runner
+        test -w "$GITHUB_WORKSPACE"
+        test -w "$RUNNER_TEMP"
+        test "$(stat -c %U "$RUNNER_TEMP")" = root
+        test -k "$RUNNER_TEMP"
+        test ! -w "$(dirname "$GITHUB_ENV")"
+        for file in "$GITHUB_ENV" "$GITHUB_OUTPUT" "$GITHUB_PATH" "$GITHUB_STEP_SUMMARY"; do
+          test ! -w "$file"
+        done
+        command -v lsof >/dev/null
+        env -u LD_LIBRARY_PATH python -c 'import os, sys; assert os.geteuid() != 0; print("euid", os.geteuid(), "python", sys.version.split()[0])'
+        echo "identity: $(id)"
+        echo "owners: workspace=$(stat -c %U:%G "$GITHUB_WORKSPACE") temp=$(stat -c %U:%G "$RUNNER_TEMP")"
+        echo "tools: $(jq --version) $(git --version)"

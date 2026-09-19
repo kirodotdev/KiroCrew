@@ -6,10 +6,11 @@
     "(cd website && npx playwright install chromium)"
   ],
   "gates": [
+    "python3 -c 'import sys; print(\"Gate Python:\", sys.version, \"executable:\", sys.executable); sys.exit(0 if sys.version_info >= (3, 12) else \"Gate checks require Python >=3.12; activate a supported interpreter.\")'",
     "python3 scripts/run_scoped_tests.py --test",
     "python3 scripts/leaf_test_scope.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface backend",
-    "python3 scripts/check_black_formatting.py",
+    "BLACK_NUM_WORKERS=2 python3 scripts/ci_black_diagnostics.py scripts/check_black_formatting.py",
     "python3 scripts/check_subprocess_encoding.py --test",
     "python3 scripts/check_subprocess_encoding.py",
     "python3 scripts/check_acp_frame_host_data.py",

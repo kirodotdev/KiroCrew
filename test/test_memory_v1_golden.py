@@ -270,12 +270,20 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Seeded:
     vectors = VectorMemoryStore(db_path=config_dir() / "memory.db", embedding_dim=_DIM)
     vectors.init()
     vectors.embed_fn = embed_fn
-    for key, value in (SEM_TOP, SEM_MID, SEM_OFF):
-        assert vectors.set_semantic(key, value, 1.0, "user_explicit") is None, key
+    # Recency order needs distinct input times, not a fast host clock.
+    with monkeypatch.context() as semantic_clock:
+        for index, (key, value) in enumerate((SEM_TOP, SEM_MID, SEM_OFF)):
+            stamp = (_FROZEN_NOW + timedelta(seconds=index)).isoformat()
+            semantic_clock.setattr(vector_memory, "_now_iso", lambda stamp=stamp: stamp)
+            assert vectors.set_semantic(key, value, 1.0, "user_explicit") is None, key
     for text, _age in (EP_TOP, EP_MID, EP_OFF):
         assert vectors.write_episodic(text, importance=0.5, source="consolidation"), text
-    for rule in (LESSON_TOP, LESSON_MID, LESSON_OFF):
-        assert vectors.write_lesson(rule).outcome.value == "inserted", rule
+    # Distinct write times make newest-first input independent of clock resolution.
+    with monkeypatch.context() as lesson_clock:
+        for index, rule in enumerate((LESSON_TOP, LESSON_MID, LESSON_OFF)):
+            stamp = (_FROZEN_NOW + timedelta(seconds=index)).isoformat()
+            lesson_clock.setattr(vector_memory, "_now_iso", lambda stamp=stamp: stamp)
+            assert vectors.write_lesson(rule).outcome.value == "inserted", rule
 
     # Pin each episodic row's AGE, not an absolute timestamp: the decay term is
     # ``exp(-rate * (now - created_at).days)`` against the real clock, so an

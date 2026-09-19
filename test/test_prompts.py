@@ -3383,11 +3383,10 @@ class TestCreateAndDeletePinTheDirectory:
             "bool",
         }, f"boot-path constant calls something that may touch the filesystem: {sorted(calls)}"
 
-    @pytest.mark.skipif(
-        not _prompts_mod._UNNAMED_CREATE_SUPPORTED or not os.path.isdir("/proc/self/fd"),
-        reason="platform cannot build an unnamed inode (O_TMPFILE + /proc/self/fd)",
-    )
-    def test_the_body_is_durable_before_the_name_appears(self, tmp_path, mock_sel, monkeypatch):
+    @pytest.mark.parametrize("unsupported_tmpfile", [False, True], ids=["native", "unsupported"])
+    def test_the_body_is_durable_before_the_name_appears(
+        self, tmp_path, mock_sel, monkeypatch, unsupported_tmpfile
+    ):
         """The flush precedes the publish, and the DIRECTORY is flushed too.
 
         201 says the prompt is on disk. Publishing first and flushing after
@@ -3412,7 +3411,29 @@ class TestCreateAndDeletePinTheDirectory:
         tests below.
         """
         order: list[str] = []
-        real_fsync, real_link = os.fsync, os.link
+        real_fsync, real_link, real_open = os.fsync, os.link, os.open
+        unnamed_opens: list[bool] = []
+        if unsupported_tmpfile:
+            # Exercise EOPNOTSUPP even on POSIX hosts without O_TMPFILE/procfs.
+            monkeypatch.setattr(_prompts_mod, "_UNNAMED_CREATE_SUPPORTED", True)
+            monkeypatch.setattr(os, "O_TMPFILE", getattr(os, "O_TMPFILE", 1 << 30), raising=False)
+            real_isdir = os.path.isdir
+            monkeypatch.setattr(os.path, "isdir", lambda p: p == "/proc/self/fd" or real_isdir(p))
+        attempts_unnamed = _prompts_mod._UNNAMED_CREATE_SUPPORTED and os.path.isdir("/proc/self/fd")
+        tmpfile_flag = getattr(os, "O_TMPFILE", 0)
+
+        def _note_open(path, flags, *a, **kw):
+            if tmpfile_flag and flags & tmpfile_flag == tmpfile_flag:
+                try:
+                    if unsupported_tmpfile:
+                        raise OSError(errno.EOPNOTSUPP, "test filesystem has no O_TMPFILE")
+                    fd = real_open(path, flags, *a, **kw)
+                except OSError:
+                    unnamed_opens.append(False)
+                    raise
+                unnamed_opens.append(True)
+                return fd
+            return real_open(path, flags, *a, **kw)
 
         def _note_fsync(fd):
             # Distinguish the file's flush from the directory's by asking the
@@ -3424,11 +3445,17 @@ class TestCreateAndDeletePinTheDirectory:
             order.append("publish")
             return real_link(*a, **kw)
 
+        monkeypatch.setattr(os, "open", _note_open)
         monkeypatch.setattr(os, "fsync", _note_fsync)
         monkeypatch.setattr(os, "link", _note_link)
         resp = asyncio.run(api_prompts_create(_create_request({"name": "durable", "content": "B"})))
+        monkeypatch.setattr(os, "open", real_open)
         monkeypatch.setattr(os, "fsync", real_fsync)
         monkeypatch.setattr(os, "link", real_link)
+
+        assert len(unnamed_opens) == int(attempts_unnamed)
+        if unsupported_tmpfile:
+            assert unnamed_opens == [False]
 
         assert resp.status == 201
         assert "fsync_file" in order, f"the body was never flushed: {order}"
@@ -3436,10 +3463,9 @@ class TestCreateAndDeletePinTheDirectory:
         assert order.index("fsync_file") < order.index(
             "fsync_dir"
         ), f"the body must be durable before the entry's flush claims it: {order}"
-        # The production predicate, so this cannot quietly settle for the weaker
-        # arm on a host where the stronger property holds.
-        unnamed = _prompts_mod._UNNAMED_CREATE_SUPPORTED and os.path.isdir("/proc/self/fd")
-        if unnamed:
+        # Observe the open outcome independently: a missing publish must never
+        # make a successful unnamed create pass as the weaker named branch.
+        if unnamed_opens == [True]:
             assert order[:2] == [
                 "fsync_file",
                 "publish",

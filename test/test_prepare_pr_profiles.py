@@ -9,11 +9,14 @@ Covers:
 The scripts live under the packaged builtin skill and are NOT importable as a
 package, so we load them by path with importlib. Everything here is stdlib.
 """
+import configparser
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -313,6 +316,40 @@ def _ci_workflow_run_text() -> str:
             )
         )
     return "\n".join(parts)
+
+
+def test_gate_python_floor_matches_project_metadata():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    config = configparser.ConfigParser()
+    config.read(REPO_ROOT / "setup.cfg", encoding="utf-8")
+    assert project["project"]["requires-python"] == ">=3.12"
+    assert config["options"]["python_requires"] == ">=3.12"
+
+
+@pytest.mark.parametrize("version", [(3, 9, 0), (3, 10, 20), (3, 11, 15), (3, 12, 0), (3, 13, 0)])
+def test_first_floor_gate_checks_and_reports_python(version):
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    argv = shlex.split(data["gates"][0])
+    assert argv[:2] == ["python3", "-c"] and len(argv) == 3
+    reported_version = ".".join(map(str, version))
+    prelude = (
+        f"import sys; sys.version_info = {version!r}; "
+        f"sys.version = {reported_version!r}; sys.executable = 'fixture-python'; "
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", prelude + argv[2]],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+    )
+    assert reported_version in result.stdout
+    assert "executable: fixture-python" in result.stdout
+    if version >= (3, 12):
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert "require Python >=3.12" in result.stderr
 
 
 def test_every_floor_command_names_a_real_target():

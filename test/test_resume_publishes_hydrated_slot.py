@@ -687,15 +687,30 @@ async def test_a_session_closed_before_the_resume_still_has_its_flag_cleared(tmp
     vanishes again on the next gateway restart. Both failure directions here are
     silent, so this direction needs its own test.
     """
+    import json
+    from types import SimpleNamespace
+
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _make_state(tmp_path)
     log = state.conversation_log
     key = "dashboard:closenormal1"
     log.append(key, "user", "history-1")
-    log.update_metadata(key, {"closed": True, "closed_at": time.time()})
+    closed_at = 1_700_000_000.0
+    log.update_metadata(key, {"closed": True, "closed_at": closed_at})
     assert log.get_metadata(key).get("closed"), "fixture expected a closed session"
+    persisted_before = json.loads(log._path(key).read_text(encoding="utf-8").splitlines()[0])
+    assert persisted_before["closed"] is True
+    assert persisted_before["closed_at"] == closed_at
 
-    async with TestClient(TestServer(_make_app(state))) as client:
+    app = _make_app(state)
+    # BEFORE means strictly earlier: consecutive wall-clock reads can share a
+    # tick on Windows, and compare-and-clear intentionally preserves ties.
+    # Pin only the handler's clock, not process-wide time or the real writer.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers.time",
+        SimpleNamespace(time=lambda: closed_at + 1),
+    )
+    async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/chat/slots/closenormal1/resume", json={"key": key})
 
     assert resp.status == 200, f"resume did not publish (status {resp.status})"
@@ -703,6 +718,11 @@ async def test_a_session_closed_before_the_resume_still_has_its_flag_cleared(tmp
         "a session closed BEFORE the resume kept its `closed` flag; it will "
         "disappear again on the next gateway restart"
     )
+    persisted_after = json.loads(log._path(key).read_text(encoding="utf-8").splitlines()[0])
+    assert "closed" not in persisted_after and "closed_at" not in persisted_after
+    assert persisted_after["created_at"] == persisted_before["created_at"]
+    assert [m.get("content") for m in state._slots["closenormal1"].messages] == ["history-1"]
+    assert [m.get("content") for m in log.read_messages_chained(key)] == ["history-1"]
 
 
 @pytest.mark.asyncio

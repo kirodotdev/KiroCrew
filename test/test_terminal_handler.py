@@ -2905,6 +2905,205 @@ def _make_app(registry=None, cfg=None, user="testuser", owner_id=None):
     return app
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux runner uses GNU env")
+@pytest.mark.parametrize("normalize", [False, True])
+def test_runner_sigint_normalization_preserves_other_signals(tmp_path, normalize):
+    """Exercise inherited SIG_IGN -> env -> Bash -> pytest without root.
+
+    The runuser transition itself belongs to the real non-root boundary job;
+    this probe executes its post-transition signal boundary at our current uid.
+    """
+    import shlex
+    import subprocess
+
+    import yaml
+
+    action = (
+        pathlib.Path(__file__).resolve().parents[1] / ".github/actions/run-as-runner/action.yml"
+    )
+    setup = yaml.safe_load(action.read_text())["runs"]["steps"][0]["run"]
+    wrapper = setup.rsplit("#!/bin/bash", 1)[1].split("\nEOF", 1)[0]
+    command = shlex.split(wrapper.split("exec ", 1)[1], comments=True)
+    assert command[:6] == ["runuser", "-m", "-u", "runner", "--", "env"]
+    assert command[6] == "--default-signal=INT"
+    boundary = command[5:7] if normalize else command[5:6]
+
+    probe = tmp_path / "test_signal_boundary.py"
+    probe.write_text(
+        "import os, signal, subprocess\n"
+        "def test_signal_boundary():\n"
+        f"    assert (os.getuid(), os.geteuid()) == {(os.getuid(), os.geteuid())!r}\n"
+        "    assert signal.getsignal(signal.SIGINT) != signal.SIG_IGN\n"
+        "    assert signal.getsignal(signal.SIGUSR1) == signal.SIG_IGN\n"
+        "    result = subprocess.run(['/bin/bash', '--noprofile', '--norc', '-c',\n"
+        "                             'kill -INT $$; exit 42'], timeout=5)\n"
+        "    assert result.returncode == -signal.SIGINT\n"
+    )
+    launcher = (
+        "import os, signal, sys; "
+        "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        "signal.signal(signal.SIGUSR1, signal.SIG_IGN); "
+        "os.execvp(sys.argv[1], sys.argv[1:])"
+    )
+    env = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTEST_ADDOPTS="")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            launcher,
+            *boundary,
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-eo",
+            "pipefail",
+            "-c",
+            'exec "$@"',
+            "signal-probe",
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-c",
+            "/dev/null",
+            "-o",
+            "cache_dir=" + str(tmp_path / "cache"),
+            str(probe),
+        ],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert result.returncode == (0 if normalize else 1), result.stdout + result.stderr
+    assert ("1 passed" if normalize else "signal.getsignal(signal.SIGINT)") in result.stdout
+
+
+def _collect_sigint_evidence(sess):
+    """Inspect only the test PTY and the shell's bounded direct-child list."""
+    import termios
+
+    evidence = {
+        "output_tail": repr(bytes(sess.scrollback[-2048:]))[-2048:],
+        "shell_pid": sess.proc.pid,
+        "shell_returncode": sess.proc.returncode,
+        "processes": [],
+        "errors": [],
+    }
+    # The existing session API uses a legacy field name; keep it at this boundary.
+    controller_fd = sess.master_fd  # wokeignore:rule=master
+    try:
+        evidence["foreground_pgid"] = os.tcgetpgrp(controller_fd)
+        attrs = termios.tcgetattr(controller_fd)
+        evidence["ISIG"] = bool(attrs[3] & termios.ISIG)
+        evidence["VINTR"] = repr(attrs[6][termios.VINTR])
+    except OSError as error:
+        evidence["errors"].append(f"tty:{type(error).__name__}")
+    if sys.platform != "linux":
+        return evidence
+
+    def read(source):
+        try:
+            with source.open(encoding="utf-8") as stream:
+                return stream.read(4096)
+        except OSError as error:
+            evidence["errors"].append(f"{source}:{type(error).__name__}")
+            return ""
+
+    shell_pid = sess.proc.pid
+    children = read(pathlib.Path(f"/proc/{shell_pid}/task/{shell_pid}/children")).split()
+    for pid in [str(shell_pid), *children[:16]]:
+        if not pid.isdecimal():
+            continue
+        status = read(pathlib.Path(f"/proc/{pid}/status"))
+        fields = dict(row.split(":", 1) for row in status.splitlines() if ":" in row)
+        # A child may exit before inspection. Do not report a reused stranger.
+        if pid != str(shell_pid) and fields.get("PPid", "").strip() != str(shell_pid):
+            continue
+        selected = {
+            key: value.strip()
+            for key, value in fields.items()
+            if key in {"State", "Pid", "PPid", "SigPnd", "ShdPnd", "SigBlk", "SigIgn", "SigCgt"}
+        }
+        evidence["processes"].append(selected)
+    return evidence
+
+
+def _sigint_failure_evidence(sess):
+    try:
+        return json.dumps(_collect_sigint_evidence(sess), sort_keys=True)[:8192]
+    except Exception as error:
+        return f"SIGINT evidence unavailable: {type(error).__name__}"
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_sigint_evidence_preserves_assertion_on_probe_error(monkeypatch, error_type):
+    def broken(_sess):
+        raise error_type("must not replace the original assertion")
+
+    monkeypatch.setattr(sys.modules[__name__], "_collect_sigint_evidence", broken)
+    with pytest.raises(AssertionError, match="SIGINT evidence unavailable"):
+        assert False, _sigint_failure_evidence(_make_session())
+
+
+def test_sigint_evidence_is_lazy_and_bounded(monkeypatch):
+    probe = MagicMock(return_value={"rows": "x" * 20000})
+    monkeypatch.setattr(sys.modules[__name__], "_collect_sigint_evidence", probe)
+    assert True, _sigint_failure_evidence(_make_session())
+    probe.assert_not_called()
+    assert len(_sigint_failure_evidence(_make_session())) == 8192
+
+
+def test_sigint_evidence_omits_unrelated_process_fields(monkeypatch):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    sess = _make_session()
+    sess.scrollback.extend(b"x" * 10000 + b"test-output")
+    pid = sess.proc.pid
+    sources = {
+        pathlib.Path(f"/proc/{pid}/task/{pid}/children"): "12346 12347",
+        pathlib.Path(f"/proc/{pid}/status"): f"Pid:\t{pid}\nState:\tS (sleeping)\nSigIgn:\t0002\n",
+        pathlib.Path(
+            "/proc/12346/status"
+        ): f"Pid:\t12346\nPPid:\t{pid}\nSigBlk:\t0000\nName:\tprivate-name\n",
+        # The child exited and this pid now belongs to someone else.
+        pathlib.Path("/proc/12347/status"): "Pid:\t12347\nPPid:\t1\nSigBlk:\tffff\n",
+    }
+    opened = []
+
+    def fake_open(source, **_kwargs):
+        opened.append(source)
+        return StringIO(sources[source])
+
+    attrs = [0, 0, 0, 1, 0, 0, [b"\x03"]]
+    with monkeypatch.context() as scoped:
+        scoped.setitem(
+            sys.modules,
+            "termios",
+            SimpleNamespace(
+                tcgetattr=lambda _fd: attrs,
+                ISIG=1,
+                VINTR=0,
+            ),
+        )
+        scoped.setattr(os, "tcgetpgrp", lambda _fd: 12346, raising=False)
+        scoped.setattr(sys, "platform", "linux")
+        scoped.setattr(pathlib.Path, "open", fake_open)
+        evidence = _collect_sigint_evidence(sess)
+    assert evidence["foreground_pgid"] == 12346
+    assert evidence["ISIG"] is True
+    assert evidence["VINTR"] == repr(b"\x03")
+    assert evidence["output_tail"] == repr(bytes(sess.scrollback[-2048:]))[-2048:]
+    assert len(evidence["processes"]) == 2
+    assert evidence["processes"][1] == {"Pid": "12346", "PPid": str(pid), "SigBlk": "0000"}
+    assert "private-name" not in json.dumps(evidence)
+    assert "ffff" not in json.dumps(evidence)
+    assert set(opened) == set(sources)
+
+
 def _unwrapped(buf: bytes) -> bytes:
     """Return *buf* with the PTY's line-wrap artifacts removed.
 
@@ -3774,7 +3973,7 @@ class TestTerminalWsIntegration:
                 # was delivered, just tore the whole session down). A dropped
                 # SIGINT leaves `sleep 120` running for the whole 25s budget, so
                 # neither branch can become true — the test correctly fails.
-                assert found or sess.proc.returncode is not None
+                assert found or sess.proc.returncode is not None, _sigint_failure_evidence(sess)
                 await ws.close()
 
             await terminal._kill_session(registry["sigint-sess"])

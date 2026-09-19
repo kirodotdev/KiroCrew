@@ -459,6 +459,8 @@ class TestLinuxPrivilegeResolution:
 
         monkeypatch.setenv("USER", "root")
         monkeypatch.setenv("SUDO_USER", "alice")
+        # Keep inherited tool paths independent of the HOME assertion.
+        monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
         # Simulate `sudo -H`: process home is /root.
         monkeypatch.setattr(svc_linux.Path, "home", classmethod(lambda cls: Path("/root")))
         # alice's passwd home.

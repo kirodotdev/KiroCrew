@@ -22,9 +22,12 @@ ALL_RULES = (TABS, MIGRATION, FORCE_PUSH, DIGEST, CERTIFICATE)
 
 
 @pytest.fixture
-def store(tmp_path: Path) -> Iterator[VectorMemoryStore]:
+def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[VectorMemoryStore]:
     memory = VectorMemoryStore(db_path=tmp_path / "mem.db")
     memory.init()
+    # Patch after schema setup; only lesson writes consume these distinct instants.
+    ticks = iter(f"2026-01-01T00:00:00.{tick:06d}+00:00" for tick in range(1, 1000))
+    monkeypatch.setattr(vector_memory, "_now_iso", lambda: next(ticks))
     yield memory
     memory.close()
 
@@ -72,6 +75,21 @@ class TestRelevanceOrdering:
 
         assert shown(block) == [MIGRATION, TABS]
         assert "most recent first" not in block  # nothing omitted, so no scope line
+
+    @pytest.mark.parametrize("query", ["", "unrelated zebra xylophone"])
+    def test_updating_an_older_lesson_moves_it_first(self, store, query):
+        store.write_lesson(TABS)
+        store.write_lesson(MIGRATION)
+        assert shown(store.get_lessons_context(query_text=query)) == [MIGRATION, TABS]
+        rows = store.get_lessons()
+        original_keys = {row["key"] for row in rows}
+        older = next(row for row in rows if TABS in row["value_json"])
+
+        # The public editor path updates the same key, not a newly inserted lesson.
+        assert store.set_semantic(older["key"], TABS, 1.0, "user_explicit") is None
+
+        assert shown(store.get_lessons_context(query_text=query)) == [TABS, MIGRATION]
+        assert {row["key"] for row in store.get_lessons()} == original_keys
 
 
 class TestCharacterBudget:

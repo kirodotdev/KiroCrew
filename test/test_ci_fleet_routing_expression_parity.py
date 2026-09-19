@@ -1,32 +1,9 @@
-"""
-The CodeBuild fleet routing decision -- same-repo run gets a per-run
-`codebuild-kirocrew-gha-linux-<run_id>-<run_attempt>` label, a fork run (or a
-run in any repository other than kirodotdev/KiroCrew) stays on
-`ubuntu-latest` -- is hand-copied as one literal `runs-on:` expression into
-every job that has no resolver job of its own to read an output from. A
-`needs:` edge cannot cross a workflow file, and several of the copies (Fast
-Gate's twelve gates) are FORBIDDEN a `needs:` edge even within their own file
-(see test_fast_gate_barrier.py), so this repo has ~50 independent copies of
-the same trust-boundary decision instead of one.
+"""Pin every inline fleet route and resolver consumer to its event policy.
 
-That is a real hole: a future fix to the fork rule applied to one copy and
-missed the rest reintroduces exactly the vulnerability the fix closed, and
-nothing short of reading every workflow file by hand would catch the miss.
-This test is the single point that would catch it -- every occurrence of the
-expression's literal text, across every workflow file, must be byte-identical
-to the one canonical copy defined below, or this test fails and names which
-file drifted.
-
-`ci.yml`'s `changes` job resolver, and the jobs in other files that read its
-`needs.changes.outputs.linux_runner`/`linux_runner_large` output rather than
-carrying their own copy, are a DIFFERENT (and stricter -- see that job's own
-`IS_FORK` env var, which computes the identical boolean) implementation of
-the same decision and are named as exceptions below, not exempted from
-scrutiny.
-
-Five jobs are PERMANENT exceptions: they fit the migration's other criteria
-but must stay on `ubuntu-latest` for a reason specific to each, recorded
-both at the job's own `runs-on:` line and in `_PERMANENT_EXCEPTIONS` below.
+Actor admission here is an availability decision: an unlisted actor or missing
+repository variable gets a hosted runner, not a queued job the webhook rejects.
+AWS webhook filtering remains the security boundary. Fast Gate computes this
+inline because its gates must not depend on another job or skip themselves.
 """
 
 from __future__ import annotations
@@ -38,50 +15,34 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 
-# The one canonical copy. Every other occurrence of this literal `runs-on:`
-# value, anywhere under .github/workflows/, must match this exactly.
+_ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id)"
 _CANONICAL_ROUTING_EXPR = (
-    "${{ (github.repository != 'kirodotdev/KiroCrew' || "
-    "(github.event_name == 'pull_request' && "
-    "github.event.pull_request.head.repo.full_name != github.repository)) "
-    "&& 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', "
-    "github.run_id, github.run_attempt) }}"
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && (github.event_name == 'push' || (github.event_name == 'pull_request' && "
+    "(github.event.action == 'opened' || github.event.action == 'synchronize') && "
+    "github.event.pull_request.head.repo.full_name == github.repository)) && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
+)
+_CANONICAL_PUSH_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && github.event_name == 'push' && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
+)
+_CANONICAL_DISPATCH_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
 )
 
-# Permanent exceptions: jobs that must stay on `ubuntu-latest` even though
-# their workflow otherwise fits this PR's migration scope, each for a
-# reason recorded at the job's own `runs-on:` line so a future reviewer
-# reads it before "fixing" the job back onto the fleet.
-#
-# - security-scope-review.yml's `generate`: its write fence hardcodes a
-#   GitHub-hosted-runner path (`Write(//home/runner/work/_actions/**)`) that
-#   the CodeBuild routing would silently bypass.
-# - security-scope-review.yml's `validate` and `publish`: a diff limited to
-#   this workflow's own `runs-on:` lines gives `generate`'s model no
-#   shell/flow/cron surface to propose candidates for, so it writes an
-#   honest empty `candidates.json`. `scope_candidates.py validate` treats
-#   an empty candidate file the same as an untrustworthy one (exit 2, not
-#   the exit-3 "nothing new" path, which specifically means candidates WERE
-#   proposed and are already covered) -- deliberately, per
-#   test_an_untrustworthy_candidate_file_is_exit_2's `empty` case, since
-#   merging the two would let a failed or empty model call pass as a
-#   reviewed set. `publish` runs downstream of `validate` unconditionally
-#   and stays paired with it rather than split across runner classes.
-# - issue-summary.yml's `summarize`, issue-triage.yml's `triage`,
-#   ai-review-human-override.yml's `record`, and
-#   disposition-deferral-check.yml's `validate-deferral`: each fires on
-#   `issues`/`issue_comment`, an event any GitHub user can trigger
-#   regardless of push access. The fork-vs-same-repo boolean this PR's
-#   routing expression checks has no PR head repository to compare against
-#   on these events, so it always evaluates "same-repo" and requests the
-#   fleet -- which the AWS-side webhook's actor allowlist then rejects for a
-#   non-collaborator triggering user, leaving the job queued rather than
-#   running on ubuntu-latest.
-# - nightly.yml's `version`: fires only on `schedule`/`workflow_dispatch`,
-#   neither of which has a `github.event.pull_request` to compare against,
-#   so the routing expression's fork term is always false and it always
-#   requests the fleet -- the identical availability-bug mechanism as the
-#   four `issues`/`issue_comment` exceptions above.
+# These lanes remain hosted: untrusted-content model execution, schedule/issue
+# triggers, or an isolation contract tied to hosted paths. The scope-review
+# generate job's action-code Write fence is one such path-sensitive contract.
 _PERMANENT_EXCEPTIONS = {
     ("security-scope-review.yml", "generate"),
     ("security-scope-review.yml", "validate"),
@@ -91,33 +52,22 @@ _PERMANENT_EXCEPTIONS = {
     ("ai-review-human-override.yml", "record"),
     ("disposition-deferral-check.yml", "validate-deferral"),
     ("nightly.yml", "version"),
-    # schedule/workflow_dispatch (and workflow_call inherited from a schedule
-    # caller) has no live collaborator actor for the AWS webhook fleet
-    # allowlist to check, so these stay on ubuntu-latest like nightly.yml.
     ("connections-l0.yml", "probe"),
     ("memory-benchmark.yml", "accept"),
     ("fix-loop-analysis.yml", "metrics"),
     ("fix-loop-analysis.yml", "analyze"),
-    ("dependency-vulnerability.yml", "audit-production-dependencies"),
-    ("pr-merge-conflict-label.yml", "label"),
     ("deferred-findings-audit.yml", "audit"),
     ("add-contributor.yml", "add"),
     ("ship-report.yml", "report"),
-    # Reusable workflow inheriting a schedule caller's event_name -- same
-    # reasoning as the schedule-only jobs above.
-    ("build-wheel.yml", "build-wheel"),
-    # Agentic reviewer reading untrusted PR diff content -- never gets fleet
-    # credentials, same isolation as claude-review.yml/codex-review.yml.
     ("first-principles-review.yml", "first-principles-review"),
     ("ux-review.yml", "ux-review"),
     ("design-review.yml", "design-review"),
+    ("code-review.yml", "sast"),
+    ("ci-runner-watchdog.yml", "watchdog"),
 }
 
-# The complete set of (file, job) pairs expected to carry the canonical
-# routing expression -- everything this PR's migration actually routed.
-# Listed explicitly, not derived, so a job silently added to or removed
-# from this set (rather than merely having its runs-on: text corrupted,
-# which the byte-match test above catches) fails a test too.
+# Fixed expectations, never inferred from the workflow contents: a route
+# silently removed or a new unreviewed fleet job must fail the inventory check.
 _EXPECTED_ROUTED_JOBS = {
     ("fast-gate.yml", "vendor-manifest"),
     ("fast-gate.yml", "brand-lint"),
@@ -150,23 +100,41 @@ _EXPECTED_ROUTED_JOBS = {
     ("macos-on-demand.yml", "decide"),
     ("ci.yml", "changes"),
     ("ci.yml", "await-fast-gate"),
+    ("code-review.yml", "autosde-rules"),
+    ("code-review.yml", "inclusive-language"),
+    ("code-review.yml", "pr-hygiene"),
+    ("pr-merge-conflict-label.yml", "label"),
+    ("build-wheel.yml", "build-wheel"),
+    ("dependency-vulnerability.yml", "audit-production-dependencies"),
 }
+_PUSH_ONLY_WORKFLOWS = {
+    "release.yml",
+    "pr-merge-conflict-label.yml",
+    "build-wheel.yml",
+    "dependency-vulnerability.yml",
+}
+_DISPATCH_WORKFLOWS = {"pages.yml", "main-ratchet-audit.yml"}
 
-# `ci.yml` jobs that read the `changes` job's resolver output instead of
-# carrying their own copy of the routing expression. Without this set, one
-# of these could quietly hardcode a literal fleet label -- bypassing the
-# resolver, and its fork-safety, entirely -- with no test catching it.
-# `frontend-test` reads the `_large` variant. The backend canary reads it
-# only for shard 1; the remaining consumers read the plain resolver output.
+# Resolver consumers pin their complete expressions, including hosted fallbacks.
+# Backend shards, backend lint, frontend tests and bundle size use large Linux
+# compute; Windows and boot-matrix consumers pin their respective OS mappings.
+# A literal fleet label must never bypass the shared actor/event/fork admission.
 _CANONICAL_CONSUMER_EXPR = "${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}"
 _CANONICAL_CONSUMER_EXPR_LARGE = (
     "${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}"
 )
-_CANONICAL_CONSUMER_EXPR_MATRIX = (
-    "${{ matrix.group == 1 && needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}"
+_CANONICAL_WINDOWS_CONSUMER_EXPR = "${{ needs.changes.outputs.windows_runner || 'windows-latest' }}"
+_CANONICAL_BOOT_MATRIX_EXPR = (
+    "${{ matrix.os == 'ubuntu-latest' && "
+    "(needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || "
+    "matrix.os == 'windows-latest' && "
+    "(needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}"
 )
 _EXPECTED_RESOLVER_CONSUMER_JOBS = {
-    ("ci.yml", "backend-test"): _CANONICAL_CONSUMER_EXPR_MATRIX,
+    ("ci.yml", "backend-lint"): _CANONICAL_CONSUMER_EXPR_LARGE,
+    ("ci.yml", "backend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
+    ("ci.yml", "backend-test-windows"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
+    ("ci.yml", "backend-test-windows-fail-closed"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
     ("ci.yml", "backend-test-crew-container"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "coverage-combine"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "coverage-gate"): _CANONICAL_CONSUMER_EXPR,
@@ -176,6 +144,8 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "electron-test"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "frontend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "frontend-coverage-merge"): _CANONICAL_CONSUMER_EXPR,
+    ("ci.yml", "bundle-size"): _CANONICAL_CONSUMER_EXPR_LARGE,
+    ("ci.yml", "e2e-boot-matrix"): _CANONICAL_BOOT_MATRIX_EXPR,
 }
 
 
@@ -183,123 +153,101 @@ def _all_workflow_files() -> list[Path]:
     return sorted(_WORKFLOWS_DIR.glob("*.yml"))
 
 
+def _expected_inline_expression(workflow_name: str) -> str:
+    if workflow_name in _PUSH_ONLY_WORKFLOWS:
+        return _CANONICAL_PUSH_EXPR
+    if workflow_name in _DISPATCH_WORKFLOWS:
+        return _CANONICAL_DISPATCH_EXPR
+    return _CANONICAL_ROUTING_EXPR
+
+
 def test_every_copy_of_the_routing_expression_matches_the_canonical_one() -> None:
     drifted: list[str] = []
     found_any = False
     for path in _all_workflow_files():
-        text = path.read_text(encoding="utf-8")
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if "runs-on:" not in line:
-                continue
-            # Anchor on the CodeBuild label format call, not on the fork
-            # boolean itself -- the boolean is exactly the text a drift could
-            # corrupt, so matching on it would make a corrupted copy invisible
-            # to its own detector. Every `runs-on:` line that builds this
-            # fleet's per-run label is a candidate for the canonical-text
-            # comparison below, regardless of what its boolean half says.
-            if "codebuild-kirocrew-gha-linux-{0}-{1}" not in line:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_id, spec in workflow["jobs"].items():
+            value = spec.get("runs-on")
+            # Parse the value, not a line regex: folded YAML and label arrays
+            # must not hide a fleet route from this check. Anchor on the fleet
+            # prefix, never on the predicate whose correctness we are checking.
+            if "codebuild-" not in str(value):
                 continue
             found_any = True
-            value = line.split("runs-on:", 1)[1].strip()
-            if value != _CANONICAL_ROUTING_EXPR:
-                drifted.append(f"{path.name}:{lineno}: {value}")
-    assert found_any, (
-        "no occurrence of the routing expression was found at all -- this "
-        "test's own matcher broke, not that the expression is gone"
-    )
-    assert not drifted, (
-        "one or more copies of the fork-vs-fleet routing expression have "
-        "drifted from the canonical text -- a rule change applied to one "
-        "copy and missed here:\n" + "\n".join(drifted)
-    )
+            if value != _expected_inline_expression(path.name):
+                drifted.append(f"{path.name}:{job_id}: {value}")
+    assert found_any, "no fleet routes found; the inventory must not pass vacuously"
+    assert not drifted, "fleet routing expression drift:\n" + "\n".join(drifted)
 
 
 def test_every_job_using_the_routing_expression_is_accounted_for() -> None:
-    """Companion to the byte-match test above: every job whose `runs-on:` is
-    the canonical expression must be exactly `_EXPECTED_ROUTED_JOBS`, and
-    every permanent exception's job must actually exist with `runs-on:
-    ubuntu-latest` (not merely be a name in a set nothing reads back). A job
-    silently added to or dropped from the routed set -- migrated further, or
-    quietly reverted -- fails here, not just a job whose `runs-on:` text was
-    corrupted in place (which is what the byte-match test catches).
-    """
+    """Both removed routes and unreviewed additions fail, as do missing exceptions."""
     routed: set[tuple[str, str]] = set()
     exception_runs_on: dict[tuple[str, str], object] = {}
     for path in _all_workflow_files():
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        jobs = workflow.get("jobs") or {}
-        for job_id, spec in jobs.items():
+        for job_id, spec in workflow["jobs"].items():
             key = (path.name, job_id)
             runs_on = spec.get("runs-on")
-            if runs_on == _CANONICAL_ROUTING_EXPR:
+            if "codebuild-" in str(runs_on):
                 routed.add(key)
             if key in _PERMANENT_EXCEPTIONS:
                 exception_runs_on[key] = runs_on
 
-    missing_from_workflows = _EXPECTED_ROUTED_JOBS - routed
-    added_since_expected = routed - _EXPECTED_ROUTED_JOBS
-    assert not missing_from_workflows, (
-        "a job in the expected routed set does not carry the canonical routing "
-        f"expression -- silently reverted or renamed: {missing_from_workflows}"
+    assert routed == _EXPECTED_ROUTED_JOBS, (
+        f"missing routes: {_EXPECTED_ROUTED_JOBS - routed}; "
+        f"unexpected routes: {routed - _EXPECTED_ROUTED_JOBS}"
     )
-    assert not added_since_expected, (
-        "a job not in the expected routed set now carries the canonical "
-        f"routing expression -- update _EXPECTED_ROUTED_JOBS if this is "
-        f"intentional, or investigate if it is not: {added_since_expected}"
-    )
-
-    missing_exceptions = _PERMANENT_EXCEPTIONS - set(exception_runs_on)
-    assert not missing_exceptions, (
-        f"a permanent exception does not exist as a job at all -- "
-        f"renamed or removed: {missing_exceptions}"
-    )
+    assert (
+        set(exception_runs_on) == _PERMANENT_EXCEPTIONS
+    ), f"missing hosted exceptions: {_PERMANENT_EXCEPTIONS - set(exception_runs_on)}"
     wrong_runner = {
         key: value for key, value in exception_runs_on.items() if value != "ubuntu-latest"
     }
-    assert not wrong_runner, (
-        f"a permanent exception's actual runs-on: is not 'ubuntu-latest' -- "
-        f"it was routed to the fleet despite the exception, or its runner "
-        f"changed to something else: {wrong_runner}"
-    )
+    assert not wrong_runner, f"hosted exception changed runner: {wrong_runner}"
 
 
 def test_every_ci_yml_resolver_consumer_reads_the_resolver_not_a_literal() -> None:
-    """Companion to the two tests above, for the OTHER routing form: a job
-    inside ci.yml that is supposed to read `needs.changes.outputs.linux_runner`
-    (or `_large`) rather than carrying its own copy of the inline expression.
-    Asserts each expected consumer's `runs-on:` is byte-identical to the
-    correct resolver-read form -- catching either a silent hardcode of the
-    literal fleet label (bypassing the resolver's fork-safety) or a silent
-    drop back to a bare `ubuntu-latest` -- and that the observed set of
-    resolver-reading jobs in ci.yml equals this fixed expectation exactly.
-    """
-    ci_yml = _WORKFLOWS_DIR / "ci.yml"
-    workflow = yaml.safe_load(ci_yml.read_text(encoding="utf-8"))
-    jobs = workflow.get("jobs") or {}
-
-    observed_consumers: dict[tuple[str, str], object] = {}
-    for job_id, spec in jobs.items():
-        runs_on = spec.get("runs-on")
-        if isinstance(runs_on, str) and "needs.changes.outputs.linux_runner" in runs_on:
-            observed_consumers[(ci_yml.name, job_id)] = runs_on
-
-    missing = set(_EXPECTED_RESOLVER_CONSUMER_JOBS) - set(observed_consumers)
-    assert not missing, (
-        "a job expected to read the changes job's resolver output does not "
-        f"do so -- silently reverted, renamed, or hardcoded a literal: {missing}"
-    )
-    added = set(observed_consumers) - set(_EXPECTED_RESOLVER_CONSUMER_JOBS)
-    assert not added, (
-        "a job not in the expected resolver-consumer set now reads "
-        f"needs.changes.outputs.linux_runner -- update "
-        f"_EXPECTED_RESOLVER_CONSUMER_JOBS if intentional: {added}"
-    )
-    wrong_form = {
-        key: observed_consumers[key]
-        for key, expected in _EXPECTED_RESOLVER_CONSUMER_JOBS.items()
-        if observed_consumers.get(key) != expected
+    """Pin the complete Linux/Windows consumer set, tiers and empty-output fallback."""
+    workflow = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    observed_consumers = {
+        ("ci.yml", job_id): spec["runs-on"]
+        for job_id, spec in workflow["jobs"].items()
+        if any(
+            f"needs.changes.outputs.{os_name}_runner" in str(spec.get("runs-on"))
+            for os_name in ("linux", "windows")
+        )
     }
-    assert not wrong_form, (
-        "a resolver-consumer job's runs-on: text does not byte-match the "
-        f"expected resolver-read form: {wrong_form}"
-    )
+    assert observed_consumers == _EXPECTED_RESOLVER_CONSUMER_JOBS
+
+
+def test_all_fast_gates_remain_unconditional() -> None:
+    workflow = yaml.safe_load((_WORKFLOWS_DIR / "fast-gate.yml").read_text(encoding="utf-8"))
+    assert workflow["jobs"]
+    for job_id, spec in workflow["jobs"].items():
+        assert "needs" not in spec, job_id
+        assert "if" not in spec, job_id
+        assert spec["runs-on"] == _CANONICAL_ROUTING_EXPR, job_id
+
+
+def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
+    workflow = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    changes = workflow["jobs"]["changes"]
+    expected_eligibility = _CANONICAL_ROUTING_EXPR.split(" && format(", 1)[0] + " }}"
+    steps = {step.get("id"): step for step in changes["steps"]}
+    for step_id, output, os_name in (
+        ("runner", "linux_runner_large", "linux"),
+        ("windows-runner", "windows_runner", "windows"),
+    ):
+        step = steps[step_id]
+        assert step["env"]["ELIGIBLE"] == expected_eligibility
+        assert changes["outputs"][output] == f"${{{{ steps.{step_id}.outputs.{output} }}}}"
+        assert step["env"]["LABEL"] == (
+            f"codebuild-kirocrew-gha-{os_name}-${{{{ github.run_id }}}}-"
+            "${{ github.run_attempt }}"
+        )
+        script = step["run"]
+        assert 'if [ "$ELIGIBLE" = "true" ]; then' in script
+        assert f'echo "{output}=$LABEL instance-size:large"' in script
+        hosted = "ubuntu-latest" if os_name == "linux" else "windows-latest"
+        assert f'echo "{output}={hosted}"' in script
