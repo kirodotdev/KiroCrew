@@ -110,6 +110,30 @@ import { addPendingFile, prepareSendPayload, buildRelMap, hasExactRelMention, no
 import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
+
+/** Keep live liveness/counters while filling only protected scheduled text that
+ * a reduced projection cannot carry. Identity equality is the merge boundary:
+ * an older sibling record must never enrich or resurrect a newer automation. */
+export function reconcileAutomationSources(
+  live: AutomationRecord | null,
+  snapshot: AutomationRecord | null | undefined,
+): AutomationRecord | null {
+  const full = snapshot ?? null
+  if (!live) return full
+  if (
+    live.kind === 'legacy_goal_loop'
+    && live.scheduledMessage === true
+    && live.message === ''
+    && full?.kind === 'legacy_goal_loop'
+    && full.scheduledMessage === true
+    && full.id === live.id
+    && full.slotKey === live.slotKey
+    && full.message !== ''
+  ) {
+    return { ...live, message: full.message }
+  }
+  return live
+}
 /** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
 function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
   const map = new Map<number, number>()
@@ -1140,7 +1164,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // invalidate this query before clearing Redux. That ordering keeps creation
   // disabled while absence is being re-proved and prevents a stale snapshot
   // from replacing or resurrecting a live record.
-  const automation = liveAutomation ?? automationSnapshot.data ?? null
+  const automation = reconcileAutomationSources(liveAutomation, automationSnapshot.data)
   const automationId = automation?.id
   const automationCreationReady = !!automation
     || (automationSnapshot.isSuccess && !automationSnapshot.isFetching)

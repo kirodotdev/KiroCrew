@@ -214,6 +214,28 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
   )
 }
 
+/** The one read-only sentence this page says about composer-scheduled messages.
+ *
+ * Those messages are session automation, not cron jobs: they never appear in
+ * this list and are edited or unscheduled from the chat that owns them. This
+ * page does not list or manage them — it only says where they are, at the two
+ * points where a reader could look for one here: the empty state and the foot
+ * of the job list. Rendered nowhere else (no header banner, no calendar or
+ * executions view), so it reads as guidance about the list rather than as
+ * page-wide chrome. Deliberately carries no link or button. */
+function ScheduledChatMessagePointer({ className = '' }: { className?: string }) {
+  return (
+    <p
+      role="note"
+      data-testid="scheduled-chat-message-note"
+      className={`flex items-start gap-1.5 text-[12px] text-muted text-left ${className}`}
+    >
+      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span>{i18nT('pages.schedulePage.scheduled_chat_messages_original_chat_note')}</span>
+    </p>
+  )
+}
+
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
   const dispatch = useAppDispatch()
@@ -611,6 +633,12 @@ export default function SchedulePage() {
                   </span>
                 </SendBtn>
                 <p className="text-[12px] text-muted mt-3">{i18nT('pages.schedulePage.or')} <a href="/chat" className="text-accent hover:underline">{i18nT('pages.schedulePage.ask_in_chat')}</a> {i18nT('pages.schedulePage.try_remind_me_to_check_my_pipeline_every_morning')}</p>
+                {/* Sits under the ask-in-chat line because that is the one place
+                    this page already talks about chat: a reader who scheduled a
+                    message from a composer and finds no row for it here learns
+                    where it lives without a page-wide banner saying so to
+                    everyone else. Read-only by design — no listing, no link. */}
+                <ScheduledChatMessagePointer className="mt-2 max-w-[360px]" />
               </div>
 
               {/* Pre-canned schedules pinned to the bottom: click to open the
@@ -1022,6 +1050,10 @@ export default function SchedulePage() {
             )}
             </div>
             </Card>
+            {/* Footnote to the job list, not header chrome: it qualifies what the
+                table above does and does not contain, so it belongs where the
+                table is. Calendar and Executions have nothing to qualify. */}
+            <ScheduledChatMessagePointer className="mt-3" />
             </>)}
           </>)}
         </div>

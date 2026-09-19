@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,7 +24,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+from kiro_crew import autonudge_selfarm
+from kiro_crew.autonudge import (
+    AutoNudgeService,
+    NudgeLoop,
+    scheduled_message_trust_id,
+)
 from kiro_crew.dashboard.handlers import autonudge as h
 from kiro_crew.monitoring.models import (
     MonitorCreationSurface,
@@ -51,6 +58,20 @@ class _FakeSvc:
 
     async def remove(self, loop_id: str) -> None:
         self.removed.append(loop_id)
+
+    async def remove_pending_scheduled_message(
+        self,
+        loop_id: str,
+    ) -> Any | None:
+        loop = self.get_by_id(loop_id)
+        if loop is None or loop.cycle_count > 0 or not loop.active:
+            return None
+        self.removed.append(loop_id)
+        return h.ScheduledMessageProvenance(
+            slot_key=loop.slot_key,
+            message=loop.message,
+            scheduled_at=loop.scheduled_at,
+        )
 
 
 def _loop(loop_id: str = "lp-1", slot_key: str = "chat-1-111") -> NudgeLoop:
@@ -109,6 +130,7 @@ def _mk(
         req["user"] = user
     if app_claim is not None:
         req["app"] = app_claim
+        req["is_dashboard_user"] = app_claim == ""
     if internal_auth:
         req["internal_auth"] = True
     if body is not ...:
@@ -976,6 +998,31 @@ async def test_get_returns_the_loop_bound_to_the_slot(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_scheduled_get_returns_503_without_removing_a_busy_provenance_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop("scheduled", "chat-7-777")
+    loop.scheduled_message = True
+    loop.scheduled_at = time.time() + 600
+    loop.next_due_ts = loop.scheduled_at
+    svc = _svc(monkeypatch, _FakeSvc([loop]))
+    monkeypatch.setattr(
+        h,
+        "read_scheduled_message",
+        lambda *_args: (_ for _ in ()).throw(OSError("store busy")),
+    )
+
+    response = await h.api_autonudge_get(
+        _mk("GET", "/api/autonudge/slot/chat-7-777", match={"slot_key": "chat-7-777"})
+    )
+
+    assert response.status == 503
+    assert _body(response)["code"] == "scheduled_message_provenance_unavailable"
+    assert svc.get_by_id(loop.id) is loop
+    assert svc.removed == []
+
+
+@pytest.mark.asyncio
 async def test_legacy_get_returns_a_structured_monitor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1235,6 +1282,105 @@ async def test_start_surfaces_the_authorizer_refusal(monkeypatch: pytest.MonkeyP
     }
 
 
+@pytest.mark.asyncio
+async def test_start_schedules_one_exact_future_fire(monkeypatch: pytest.MonkeyPatch) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    authorize = AsyncMock(return_value=(_loop("scheduled"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+    monkeypatch.setattr(h.time, "time", lambda: 1_000.0)
+
+    response = await h.api_autonudge_start(
+        _mk(
+            "POST",
+            "/api/autonudge",
+            body={"slot_key": "chat-1-111", "message": "follow up", "at": 1_900},
+        )
+    )
+
+    assert response.status == 200
+    kwargs = authorize.await_args.kwargs
+    assert kwargs["scheduled_at"] == 1_900.0
+    assert kwargs["max_cycles"] == 1
+    assert kwargs["gate"] is False
+    assert kwargs["composer_user_origin"] is True
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_machine_authored_scheduled_user_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    authorize = AsyncMock()
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+    monkeypatch.setattr(h.time, "time", lambda: 1_000.0)
+
+    response = await h.api_autonudge_start(
+        _mk(
+            "POST",
+            "/api/autonudge",
+            body={"slot_key": "chat-1-111", "message": "forged", "at": 1_900},
+            internal_auth=True,
+        )
+    )
+
+    assert response.status == 403
+    assert _body(response)["code"] == "scheduled_message_user_required"
+    authorize.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("value", "code"),
+    [
+        (True, "invalid_scheduled_at"),
+        (1_000, "scheduled_at_not_future"),
+        (1_000.5, "scheduled_at_not_whole_second"),
+        (float("inf"), "invalid_scheduled_at"),
+        (1_000 + 30 * 86400 + 1, "scheduled_at_too_far"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_start_rejects_invalid_scheduled_time(
+    monkeypatch: pytest.MonkeyPatch, value: object, code: str
+) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    monkeypatch.setattr(h.time, "time", lambda: 1_000.0)
+    response = await h.api_autonudge_start(
+        _mk(
+            "POST",
+            "/api/autonudge",
+            body={"slot_key": "chat-1-111", "message": "follow up", "at": value},
+        )
+    )
+    assert response.status == 400
+    assert _body(response)["code"] == code
+
+
+@pytest.mark.asyncio
+async def test_start_without_at_keeps_goal_loop_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    authorize = AsyncMock(return_value=(_loop("goal"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+
+    await h.api_autonudge_start(
+        _mk(
+            "POST",
+            "/api/autonudge",
+            body={
+                "slot_key": "chat-1-111",
+                "message": "keep working",
+                "idle_secs": 120,
+                "max_cycles": 4,
+                "gate": True,
+            },
+        )
+    )
+
+    kwargs = authorize.await_args.kwargs
+    assert kwargs["scheduled_at"] == 0.0
+    assert kwargs["max_cycles"] == 4
+    assert kwargs["gate"] is True
+
+
 # --- PATCH /api/autonudge/{loop_id} ------------------------------------------
 
 
@@ -1254,6 +1400,62 @@ async def test_update_400_on_undecodable_body(monkeypatch: pytest.MonkeyPatch) -
     response = await h.api_autonudge_update(request)
     assert response.status == 400
     assert _body(response) == {"error": "invalid JSON"}
+
+
+@pytest.mark.asyncio
+async def test_update_forwards_a_pending_scheduled_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop("scheduled")
+    loop.scheduled_message = True
+    loop.scheduled_at = float(int(time.time()) + 600)
+    loop.next_due_ts = loop.scheduled_at
+    loop.max_cycles = 1
+    _svc(monkeypatch, _FakeSvc([loop]))
+    updated = _loop("scheduled")
+    updated.scheduled_at = float(int(time.time()) + 1200)
+    authorize = AsyncMock(return_value=(updated, None, 200))
+    monkeypatch.setattr(h, "authorize_and_update_nudge", authorize)
+
+    response = await h.api_autonudge_update(
+        _mk(
+            "PATCH",
+            "/api/autonudge/scheduled",
+            match={"loop_id": "scheduled"},
+            body={"message": "changed", "at": updated.scheduled_at},
+        )
+    )
+
+    assert response.status == 200
+    assert authorize.await_args.kwargs["message"] == "changed"
+    assert authorize.await_args.kwargs["scheduled_at"] == updated.scheduled_at
+    assert authorize.await_args.kwargs["scheduled_user_origin"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_an_already_fired_scheduled_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop("scheduled")
+    loop.scheduled_message = True
+    loop.scheduled_at = time.time() + 600
+    loop.cycle_count = 1
+    _svc(monkeypatch, _FakeSvc([loop]))
+    authorize = AsyncMock()
+    monkeypatch.setattr(h, "authorize_and_update_nudge", authorize)
+
+    response = await h.api_autonudge_update(
+        _mk(
+            "PATCH",
+            "/api/autonudge/scheduled",
+            match={"loop_id": "scheduled"},
+            body={"message": "changed"},
+        )
+    )
+
+    assert response.status == 409
+    assert _body(response)["code"] == "scheduled_message_in_flight"
+    authorize.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1318,6 +1520,111 @@ async def test_delete_removes_and_audits_the_owning_slot(
     assert kwargs["tool_name"] == "autonudge_delete"
     assert kwargs["outcome"] == "success"
     assert kwargs["metadata"]["loop_id"] == "lp-1"
+
+
+@pytest.mark.asyncio
+async def test_unschedule_conflicts_when_delivery_starts_after_the_handler_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop("scheduled", "chat-5-555")
+    loop.scheduled_message = True
+    loop.scheduled_at = time.time() + 600
+    svc = _svc(monkeypatch, _FakeSvc([loop]))
+    svc.remove_pending_scheduled_message = AsyncMock(return_value=None)
+
+    response = await h.api_autonudge_delete(
+        _mk("DELETE", "/api/autonudge/scheduled", match={"loop_id": "scheduled"})
+    )
+
+    assert response.status == 409
+    assert _body(response)["code"] == "scheduled_message_in_flight"
+    assert svc.removed == []
+    svc.remove_pending_scheduled_message.assert_awaited_once()
+    assert svc.remove_pending_scheduled_message.await_args.args == ("scheduled",)
+    assert svc.remove_pending_scheduled_message.await_args.kwargs == {}
+
+
+async def _scheduled_delete_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provenance: str,
+) -> tuple[AutoNudgeService, NudgeLoop]:
+    """Create a real scheduled row with the requested protected-record state."""
+    monkeypatch.setattr(
+        autonudge_selfarm,
+        "scheduled_message_hidden_leaf_confined",
+        MagicMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        autonudge_selfarm.token_secret,
+        "signing_secret_is_persistent",
+        MagicMock(return_value=True),
+    )
+    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+    monkeypatch.setattr(autonudge_selfarm, "data_home", lambda: tmp_path)
+    svc = AutoNudgeService(base_dir=tmp_path)
+    svc._arm_timer = MagicMock()  # type: ignore[method-assign]
+    loop = await svc.add(
+        slot_key="chat-5-555",
+        message="send later",
+        scheduled_at=time.time() + 600,
+    )
+    record_id = scheduled_message_trust_id(loop.id)
+    record = autonudge_selfarm.scheduled_message_record_path(record_id)
+    if provenance == "valid":
+        autonudge_selfarm.record_scheduled_message(
+            record_id, loop.slot_key, "send later", loop.scheduled_at
+        )
+    elif provenance == "missing":
+        record.unlink(missing_ok=True)
+    elif provenance == "invalid_shape":
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"kind": "scheduled_message", "message": 42}))
+    elif provenance == "forged":
+        autonudge_selfarm.record_scheduled_message(
+            record_id, "chat-9-999", "not yours", loop.scheduled_at
+        )
+    else:  # pragma: no cover - parametrization guard
+        raise AssertionError(provenance)
+    _svc(monkeypatch, svc)
+    return svc, loop
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provenance", ("missing", "invalid_shape", "forged"))
+async def test_authenticated_delete_removes_schedule_with_untrusted_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provenance: str,
+) -> None:
+    svc, loop = await _scheduled_delete_fixture(monkeypatch, tmp_path, provenance)
+
+    response = await h.api_autonudge_delete(
+        _mk("DELETE", f"/api/autonudge/{loop.id}", match={"loop_id": loop.id})
+    )
+
+    assert response.status == 200
+    assert _body(response) == {"ok": True}
+    assert svc.get_by_id(loop.id) is None
+    assert svc.get_by_slot(loop.slot_key) is None
+    assert json.loads((tmp_path / "autonudge.json").read_text())["loops"] == []
+
+
+@pytest.mark.asyncio
+async def test_authenticated_delete_with_valid_provenance_returns_composer_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    svc, loop = await _scheduled_delete_fixture(monkeypatch, tmp_path, "valid")
+
+    response = await h.api_autonudge_delete(
+        _mk("DELETE", f"/api/autonudge/{loop.id}", match={"loop_id": loop.id})
+    )
+
+    assert response.status == 200
+    assert _body(response) == {"ok": True, "message": "send later"}
+    assert svc.get_by_id(loop.id) is None
+    assert json.loads((tmp_path / "autonudge.json").read_text())["loops"] == []
 
 
 @pytest.mark.asyncio
@@ -1434,3 +1741,178 @@ async def test_session_monitor_read_structured_monitor_carries_null_autonudge(
     assert payload["monitor_id"] == loop.id
     assert payload["monitor"]["target"] == "https://github.com/acme/widgets/pull/7"
     assert payload["autonudge_loop"] is None
+
+
+@pytest.mark.asyncio
+async def test_scheduled_message_user_gate_audits_both_decisions(
+    sel_mock: MagicMock,
+) -> None:
+    allowed = _mk("POST", "/api/autonudge")
+    denied = _mk("POST", "/api/autonudge", internal_auth=True)
+
+    assert await h._require_scheduled_message_user(allowed) is None
+    refusal = await h._require_scheduled_message_user(denied)
+
+    assert refusal is not None and refusal.status == 403
+    calls = sel_mock.log_api_access.call_args_list
+    assert [call.kwargs["outcome"] for call in calls] == ["allowed", "denied"]
+    assert all(call.kwargs["operation"] == "scheduled_message_post" for call in calls)
+    assert calls[1].kwargs["error"] == "authenticated dashboard user required"
+
+
+@pytest.mark.asyncio
+async def test_scheduled_registry_withholds_text_and_authenticated_slot_read_uses_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop("scheduled", "chat-5-555")
+    loop.message = "scrubbed mutable mirror"
+    loop.scheduled_message = True
+    loop.scheduled_at = time.time() + 600
+    loop.next_due_ts = loop.scheduled_at
+    _svc(monkeypatch, _FakeSvc([loop]))
+    exact = h.ScheduledMessageProvenance(
+        slot_key=loop.slot_key,
+        message="exact protected composer text",
+        scheduled_at=loop.scheduled_at + 60,
+    )
+    read = MagicMock(return_value=exact)
+    monkeypatch.setattr(h, "read_scheduled_message", read)
+
+    listed = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))
+    assert "message" not in listed["loops"][0]
+    assert "exact protected composer text" not in json.dumps(listed)
+
+    response = await h.api_autonudge_get(
+        _mk(
+            "GET",
+            "/api/autonudge/slot/chat-5-555",
+            match={"slot_key": "chat-5-555"},
+        )
+    )
+    assert response.status == 200
+    row = _body(response)["loop"]
+    assert row["message"] == exact.message
+    assert row["scheduled_at"] == exact.scheduled_at
+    assert row["next_due_ts"] == exact.scheduled_at
+    read.assert_called_once_with(h.scheduled_message_trust_id(loop.id), loop.slot_key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_kwargs",
+    [
+        {"user": None, "app_claim": None},
+        {"user": "app-user", "app_claim": "app-1"},
+        {"internal_auth": True},
+    ],
+)
+async def test_scheduled_slot_read_refuses_non_user_callers(
+    monkeypatch: pytest.MonkeyPatch,
+    request_kwargs: dict[str, Any],
+) -> None:
+    loop = _loop("scheduled", "chat-5-555")
+    loop.scheduled_message = True
+    loop.scheduled_at = time.time() + 600
+    _svc(monkeypatch, _FakeSvc([loop]))
+    read = MagicMock()
+    monkeypatch.setattr(h, "read_scheduled_message", read)
+
+    response = await h.api_autonudge_get(
+        _mk(
+            "GET",
+            "/api/autonudge/slot/chat-5-555",
+            match={"slot_key": "chat-5-555"},
+            **request_kwargs,
+        )
+    )
+
+    assert response.status == 403
+    assert _body(response)["code"] == "scheduled_message_user_required"
+    read.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unschedule_returns_protected_text_not_mutable_or_draft_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop("scheduled", "chat-5-555")
+    loop.message = "scrubbed mutable mirror"
+    loop.scheduled_message = True
+    loop.scheduled_at = time.time() + 600
+    svc = _svc(monkeypatch, _FakeSvc([loop]))
+    exact = h.ScheduledMessageProvenance(
+        slot_key=loop.slot_key,
+        message="exact text restored to composer",
+        scheduled_at=loop.scheduled_at,
+    )
+
+    async def remove_with_provenance(loop_id: str):
+        svc.removed.append(loop_id)
+        return exact
+
+    svc.remove_pending_scheduled_message = AsyncMock(side_effect=remove_with_provenance)
+
+    response = await h.api_autonudge_delete(
+        _mk("DELETE", "/api/autonudge/scheduled", match={"loop_id": "scheduled"})
+    )
+
+    assert response.status == 200
+    assert _body(response) == {"ok": True, "message": exact.message}
+    assert svc.removed == ["scheduled"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    ["/goal clear", "/goal ship the feature", "/goal --max 5 ship the feature"],
+)
+async def test_scheduled_create_rejects_mutating_goal_commands_before_authorization(
+    monkeypatch: pytest.MonkeyPatch, message: str
+) -> None:
+    _svc(monkeypatch, _FakeSvc())
+    authorize = AsyncMock()
+    monkeypatch.setattr(h, "authorize_and_add_nudge", authorize)
+    monkeypatch.setattr(h.time, "time", lambda: 1_000.0)
+
+    response = await h.api_autonudge_start(
+        _mk(
+            "POST",
+            "/api/autonudge",
+            body={"slot_key": "chat-1-111", "message": message, "at": 1_900},
+        )
+    )
+
+    assert response.status == 400
+    assert _body(response)["code"] == "scheduled_message_goal_command_mutates"
+    authorize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    ["/goal clear", "/goal ship the feature", "/goal --max 5 ship the feature"],
+)
+async def test_scheduled_edit_rejects_mutating_goal_commands_before_authorization(
+    monkeypatch: pytest.MonkeyPatch, message: str
+) -> None:
+    loop = _loop("scheduled")
+    loop.scheduled_message = True
+    loop.scheduled_at = time.time() + 600
+    loop.next_due_ts = loop.scheduled_at
+    loop.max_cycles = 1
+    _svc(monkeypatch, _FakeSvc([loop]))
+    authorize = AsyncMock()
+    monkeypatch.setattr(h, "authorize_and_update_nudge", authorize)
+
+    response = await h.api_autonudge_update(
+        _mk(
+            "PATCH",
+            "/api/autonudge/scheduled",
+            match={"loop_id": "scheduled"},
+            body={"message": message},
+        )
+    )
+
+    assert response.status == 400
+    assert _body(response)["code"] == "scheduled_message_goal_command_mutates"
+    authorize.assert_not_awaited()

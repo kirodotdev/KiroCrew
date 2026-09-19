@@ -148,9 +148,10 @@ Two properties are load-bearing at the architecture level:
 
 **The crew-home masks do NOT apply on the delegated path, and that is a stated
 residual rather than an oversight.** Kiro Crew's built-in HIDDEN leaves — the
-credential homes, `.env`, `live_target.json`, `inbound-spool`, `whatsapp`,
-`tasks`, `scratch` — are applied by Kiro Crew's OWN launcher (bind mounts on
-Linux, Seatbelt on macOS). A delegated spawn returns before that launcher runs
+credential homes, `.env`, `live_target.json`, `inbound-spool`,
+`scheduled-message-provenance`, `whatsapp`, `tasks`, `scratch` — are applied by
+Kiro Crew's OWN launcher (bind mounts on Linux, Seatbelt on macOS). A delegated
+spawn returns before that launcher runs
 (`wrap_argv` → `_delegate_to_kiro_internal_sandbox`), so inside a delegated child
 a shell can open any of them. The residual is the same for every leaf and is not
 specific to any one of them; only the caller-supplied `extra_hidden_dirs` /
@@ -687,3 +688,28 @@ install-layout decision, and any such gate must default **off** — the
 `KIROCREW_PROVIDER_BIN_STRICT` precedent
 (`github_runner.py:validate_provider_executable`) records that requiring a
 root-owned copy made every stock package-manager install fail.
+
+**A gateway that ran with `agent.sandbox: off` has exposed the scheduled-message
+signing key, and a later restart into confinement cannot tell.** Scheduled
+composer provenance (`scheduled-message-provenance`, see
+[`security.md` § Scheduled composer provenance](../system-specs/modules/security.md))
+binds a Send-later message to its author with an HMAC under the persistent
+dashboard `token_signing.key`, and is minted only from a Linux-namespace-confined
+boot. An `off` boot mints nothing and purges the leaf at startup, but for the rest
+of that boot the key and the directory sit in the same user's namespace with no OS
+fence, so same-user delegated code can mint a MAC-valid record. The live off → auto
+edit is handled (epoch invalidated, rows removed, provenance purged after the old
+generation exits); the OFFLINE change — stop, edit config to `auto`, restart — is
+not. **Status: ACCEPTED.** The obvious fix, a prior-boot posture marker or key
+metadata on disk, is *rejected by design*: under the stated threat model the
+attacker is the same UID the gateway runs as, so any marker the gateway could
+write, the attacker can forge with the same exposed key — it would add a check
+that proves nothing. `off` is an explicit trust-boundary exit, and confinement
+does not retroactively authenticate state or restore key secrecy; the
+user-authorship guarantee holds only while the persistent key has never been
+exposed to unconfined delegated code. Nothing in the software detects prior
+exposure or rotates the key. The operator closes it, before the confined restart,
+by treating pending scheduled rows and the key/data home as compromised and
+deleting `token_signing.key` while the gateway is down: every record minted under
+the exposed key then fails its MAC and is refused at fire time (the rotation also
+signs out every dashboard session and link token).

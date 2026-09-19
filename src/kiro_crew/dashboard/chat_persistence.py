@@ -162,6 +162,7 @@ _MAX_HISTORY_CHARS = 8000
 # event-loop mutations. A handful suffices — the only racing mutation is the
 # rare >10000-message trim; retries just re-read until the two reads agree.
 _FLUSH_SNAPSHOT_RETRIES = 4
+_HISTORY_PERSIST_LOCK_TYPE = type(threading.RLock())
 
 
 def _stable_durable_queue(slot: _ChatSlot) -> tuple[list[dict], int]:
@@ -3110,6 +3111,7 @@ def _save_slot_to_history(
     expected_disk_older_count: int | None = None,
     expected_slot_name: str | None = None,
     rows_only: bool = False,
+    _history_persist_lock_held: bool = False,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
 
@@ -3188,6 +3190,24 @@ def _save_slot_to_history(
     persisted and must not be treated as durable. Every other completion
     (including the benign no-op skips) returns ``True``.
     """
+    if not _history_persist_lock_held:
+        persistence_lock = getattr(slot, "_history_persist_lock", None)
+        if isinstance(persistence_lock, _HISTORY_PERSIST_LOCK_TYPE):
+            with persistence_lock:
+                return _save_slot_to_history(
+                    state,
+                    slot,
+                    messages,
+                    closed=closed,
+                    closed_at=closed_at,
+                    force=force,
+                    rewrite=rewrite,
+                    expected_history_key=expected_history_key,
+                    expected_disk_older_count=expected_disk_older_count,
+                    expected_slot_name=expected_slot_name,
+                    rows_only=rows_only,
+                    _history_persist_lock_held=True,
+                )
     if not state.conversation_log:
         return True
     # An explicit message snapshot always means "this is the full authoritative

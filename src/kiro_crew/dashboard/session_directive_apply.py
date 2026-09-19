@@ -913,8 +913,13 @@ async def _stop_resolved_loop(
     read, and ``monitor_inspect`` reports it as not armed. Callers that need a
     retained terminal record must be watching a structured monitor.
     """
-    from kiro_crew.autonudge import is_structured_monitor_loop
+    from kiro_crew.autonudge import is_scheduled_message, is_structured_monitor_loop
 
+    if is_scheduled_message(loop):
+        raise _DirectiveDenied(
+            "A protected scheduled message can only be unscheduled by an "
+            "authenticated dashboard user."
+        )
     loop_id = loop.id
     reason = _structured_stop_reason(args)
     structured = is_structured_monitor_loop(loop)

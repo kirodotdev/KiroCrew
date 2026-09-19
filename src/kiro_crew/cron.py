@@ -366,6 +366,11 @@ def job_agent_names_from_disk() -> list[tuple[str, str]]:
 
 _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
+#: Upper bound for one-shot fire times, matching the public ``at`` schema.
+#: Keeping it at the persistence owner prevents a caller that bypasses the
+#: schema from storing a timestamp ``datetime.fromtimestamp`` cannot render and
+#: thereby breaking the whole job-list response.
+_MAX_AT_TS = 4102444800
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
 # Margin the per-wake budget must leave above a command/script subprocess
 # timeout: the wake deadline cancels only the executor FUTURE (threads are
@@ -3076,8 +3081,9 @@ class CronService:
     def update_job(self, job_id: str, **kwargs: Any) -> CronJob | None:
         """Update fields on an existing job. Returns updated job or None if not found.
 
-        Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
-        approval_mode, silent, skip_dates, timezone, thread_ts, model,
+        Accepted kwargs: name, message, every_secs, cron_expr, at_ts (one-shot
+        fire time; mutually exclusive with recurring schedule fields), agent_id,
+        channel, approval_mode, silent, skip_dates, timezone, thread_ts, model,
         timeout_secs (per-wake execution budget, 1..86400).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the
@@ -3156,6 +3162,16 @@ class CronService:
                     and kwargs["every_secs"]
                 ):
                     raise ValueError("Cannot specify both cron_expr and every_secs")
+                if "at_ts" in kwargs and kwargs["at_ts"] is not None:
+                    if kwargs.get("cron_expr") or kwargs.get("every_secs"):
+                        raise ValueError("Cannot specify at_ts with cron_expr or every_secs")
+                    try:
+                        at_ts = float(kwargs["at_ts"])
+                    except (ValueError, TypeError, OverflowError) as exc:
+                        raise ValueError(f"Invalid at_ts: {kwargs['at_ts']!r}") from exc
+                    if not math.isfinite(at_ts) or not 0 <= at_ts <= _MAX_AT_TS:
+                        raise ValueError(f"at_ts out of range: {at_ts!r}")
+                    kwargs["at_ts"] = at_ts
                 if "cron_expr" in kwargs and kwargs["cron_expr"]:
                     if not validate_cron_expr(kwargs["cron_expr"]):
                         raise ValueError(f"Invalid cron expression: {kwargs['cron_expr']}")
@@ -3350,11 +3366,26 @@ class CronService:
                 if _tsub is not None:
                     job.timeout = _tsub
 
-                # Schedule changes (already validated above)
+                # Schedule changes (already validated above). Converting an
+                # at-job to a recurring schedule must also disarm its
+                # delete-after-run marker; otherwise the newly recurring job
+                # runs once and then silently removes itself.
+                was_one_shot = job.schedule.kind == "at"
                 if "cron_expr" in kwargs and kwargs["cron_expr"]:
                     job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+                    if was_one_shot:
+                        job.delete_after_run = False
                 elif "every_secs" in kwargs and kwargs["every_secs"]:
                     job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+                    if was_one_shot:
+                        job.delete_after_run = False
+                elif "at_ts" in kwargs and kwargs["at_ts"] is not None:
+                    job.schedule = CronSchedule(kind="at", at_ts=float(kwargs["at_ts"]))
+                    # A same-kind retime preserves the existing retention
+                    # contract. Only a recurring -> at conversion derives the
+                    # create-style delete-after-run default.
+                    if not was_one_shot:
+                        job.delete_after_run = True
                 self._save()
                 logger.info("Updated cron job %s", job_id)
                 return job

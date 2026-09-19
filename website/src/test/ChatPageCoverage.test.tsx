@@ -259,7 +259,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({
   ok: true, status: 200, text: () => Promise.resolve(''), json: () => Promise.resolve({}),
 }) as never
 
-import ChatPage from '../pages/ChatPage'
+import ChatPage, { reconcileAutomationSources } from '../pages/ChatPage'
 
 // --- Fixtures ---------------------------------------------------------------
 
@@ -408,6 +408,54 @@ describe('ChatPage active-slot automation hydration', () => {
       })
     })
     expect(chatInputProps?.automationSnapshotFailed).toBe(false)
+  })
+
+  it.each([
+    ['/command text', '/release status'],
+    ['@file text', '@docs/release-plan.md'],
+    ['$skill text', '$release-check'],
+  ])('hydrates protected %s without replacing live counters', async (_label, message) => {
+    const scheduledAt = 2_000_000_000
+    const raw = {
+      id: 'scheduled-tokens', slot_key: 'chat-1', message,
+      idle_secs: 60, max_cycles: 1, cycle_count: 0, active: true,
+      last_fire_ts: 0, next_due_ts: scheduledAt, scheduled_message: true,
+      scheduled_at: scheduledAt, stopped_reason: '',
+    }
+    const full = normalizeAutomationRecord(raw)!
+    const live = { ...full, message: '', cycleCount: 4 }
+    apiMocks.autonudgeForSlot = vi.fn().mockResolvedValue({ enabled: true, loop: raw })
+    apiMocks.monitorForSlot = vi.fn().mockResolvedValue({ enabled: true, monitor: null })
+
+    renderChatPage([], { chat: { automations: { 'chat-1': live } } })
+
+    await waitFor(() => expect(chatInputProps?.automation).toMatchObject({
+      id: 'scheduled-tokens', message, cycleCount: 4, active: true,
+    }))
+  })
+
+  it('reconciles scheduled sources only across an identical live record', () => {
+    const scheduledAt = 2_000_000_000
+    const full = normalizeAutomationRecord({
+      id: 'scheduled-1', slot_key: 'chat-1', message: 'protected text',
+      idle_secs: 60, max_cycles: 1, cycle_count: 0, active: true,
+      last_fire_ts: 0, scheduled_message: true, scheduled_at: scheduledAt,
+    })!
+    const reduced = { ...full, message: '', cycleCount: 7 }
+    const newerLive = { ...full, message: 'newer owner frame', cycleCount: 8 }
+    const sibling = { ...full, id: 'scheduled-2', message: 'stale sibling' }
+    const otherSlot = { ...full, slotKey: 'chat-2', message: 'stale other slot' }
+    const inFlight = normalizeAutomationRecord(structuredMonitorLoop({ wake_in_flight: true }))!
+
+    expect(reconcileAutomationSources(reduced, full)).toEqual({
+      ...reduced, message: 'protected text',
+    })
+    expect(reconcileAutomationSources(newerLive, full)).toBe(newerLive)
+    expect(reconcileAutomationSources(reduced, sibling)).toBe(reduced)
+    expect(reconcileAutomationSources(reduced, otherSlot)).toBe(reduced)
+    expect(reconcileAutomationSources(inFlight, full)).toBe(inFlight)
+    expect(reconcileAutomationSources(null, full)).toBe(full)
+    expect(reconcileAutomationSources(null, null)).toBeNull()
   })
 
   it('caches a non-null mutation result before updating the store', async () => {

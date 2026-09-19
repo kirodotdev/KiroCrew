@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -243,6 +244,76 @@ async def test_monitor_stop_removes_a_dashboard_legacy_loop(tmp_path):
     finally:
         service.stop()
     assert loop is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["monitor_stop", "autonudge_stop"])
+async def test_agent_stop_directives_cannot_cancel_a_protected_schedule(tmp_path, kind):
+    service = AutoNudgeService(base_dir=tmp_path / kind)
+    loop = await service.add(
+        slot_key="chat-1",
+        message="send this later",
+        scheduled_at=time.time() + 600,
+    )
+    audit = MagicMock()
+    try:
+        with (
+            patch("kiro_crew.autonudge.get_instance", return_value=service),
+            patch("kiro_crew.dashboard.session_directive_apply._audit", audit),
+        ):
+            result = await apply_session_directive(
+                SimpleNamespace(),
+                SimpleNamespace(key="chat-1", _app=""),
+                "dashboard:chat-1",
+                kind,
+                {"reason": "cancel it"},
+            )
+
+        assert "authenticated dashboard user" in result
+        assert service.get_by_slot("chat-1") is loop
+        audit.assert_called_once_with("dashboard:chat-1", kind, "denied")
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "patch_body",
+    [
+        {"message": "replace the protected text"},
+        {"active": False},
+        {"idle_secs": 900},
+    ],
+)
+async def test_agent_update_directive_cannot_mutate_a_protected_schedule(tmp_path, patch_body):
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add(
+        slot_key="chat-1",
+        message="send this later",
+        scheduled_at=time.time() + 600,
+    )
+    original = (loop.message, loop.active, loop.idle_secs, loop.scheduled_at)
+    audit = MagicMock()
+    try:
+        with (
+            patch("kiro_crew.autonudge.get_instance", return_value=service),
+            patch("kiro_crew.autonudge_authz.sel", return_value=MagicMock()),
+            patch("kiro_crew.dashboard.session_directive_apply._audit", audit),
+        ):
+            result = await apply_session_directive(
+                SimpleNamespace(_slots={}),
+                SimpleNamespace(key="chat-1", _app=""),
+                "dashboard:chat-1",
+                "monitor_update",
+                {"patch": patch_body},
+            )
+
+        assert "authenticated dashboard user" in result
+        assert service.get_by_slot("chat-1") is loop
+        assert (loop.message, loop.active, loop.idle_secs, loop.scheduled_at) == original
+        audit.assert_called_once_with("dashboard:chat-1", "monitor_update", "denied")
+    finally:
+        service.stop()
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,10 @@ export interface AutoNudgeLoop {
    *  Already serialized by the backend's `asdict(loop)` — the field simply
    *  was not surfaced here before (#6482). */
   next_due_ts: number
+  /** Positive kind discriminator for composer-authored one-shots. */
+  scheduled_message?: boolean
+  /** Absolute fire time carried only when ``scheduled_message`` is true. */
+  scheduled_at?: number
   /** Why the loop last went inactive: '' while active or never stopped,
    *  otherwise one of the service's terminal codes (`cycle_cap`,
    *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`). Only

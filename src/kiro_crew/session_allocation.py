@@ -472,38 +472,52 @@ class SessionAllocationService:
                 existing = self._subagent_runtimes.get(parent_session_key)
                 if existing is not None and existing.is_alive():
                     return existing
-                if existing is not None:
+
+            # Admission precedes the per-parent lock on the cold path. A sandbox
+            # transition holds every permit before taking companion snapshots, so
+            # waiting for a permit while holding this lock would deadlock against
+            # that snapshot. The second locked check keeps the ordinary live-runtime
+            # path semaphore-free and collapses concurrent cold starts to one process.
+            async with self._start_sem:
+                lock = self._subagent_runtime_locks.setdefault(parent_session_key, asyncio.Lock())
+                async with lock:
+                    if self._subagent_runtime_locks.get(parent_session_key) is not lock:
+                        continue
+                    existing = self._subagent_runtimes.get(parent_session_key)
+                    if existing is not None and existing.is_alive():
+                        return existing
+                    if existing is not None:
+                        try:
+                            await existing.kill()
+                        except Exception:
+                            self._deps.logger.debug(
+                                "get_subagent_runtime: dead runtime kill failed for %s",
+                                parent_session_key,
+                                exc_info=True,
+                            )
+                    selected_agent = (
+                        selected_agent
+                        or self._owner._get_session_agent(parent_session_key)
+                        or "kirocrew"
+                    )
+                    kwargs = self._owner._parent_runtime_kwargs(parent_session_key)
+                    runtime = runtime_type(agent=selected_agent, **kwargs)
                     try:
-                        await existing.kill()
-                    except Exception:
-                        self._deps.logger.debug(
-                            "get_subagent_runtime: dead runtime kill failed for %s",
+                        await runtime.spawn()
+                    except runtime_dead:
+                        if attempt >= max_retries:
+                            raise
+                        attempt += 1
+                        self._deps.logger.warning(
+                            "Subagent runtime spawn failed for %s (attempt %d/%d), retrying",
                             parent_session_key,
+                            attempt,
+                            max_retries + 1,
                             exc_info=True,
                         )
-                selected_agent = (
-                    selected_agent
-                    or self._owner._get_session_agent(parent_session_key)
-                    or "kirocrew"
-                )
-                kwargs = self._owner._parent_runtime_kwargs(parent_session_key)
-                runtime = runtime_type(agent=selected_agent, **kwargs)
-                try:
-                    await runtime.spawn()
-                except runtime_dead:
-                    if attempt >= max_retries:
-                        raise
-                    attempt += 1
-                    self._deps.logger.warning(
-                        "Subagent runtime spawn failed for %s (attempt %d/%d), retrying",
-                        parent_session_key,
-                        attempt,
-                        max_retries + 1,
-                        exc_info=True,
-                    )
-                    continue
-                self._subagent_runtimes[parent_session_key] = runtime
-                return runtime
+                        continue
+                    self._subagent_runtimes[parent_session_key] = runtime
+                    return runtime
 
     async def release_subagent_runtime(self, parent_session_key: str) -> None:
         """Serialize release with spawn and kill the detached runtime off-map."""
@@ -542,41 +556,63 @@ class SessionAllocationService:
             # asyncio.Lock is not reentrant.
             return await owner.get_subagent_runtime(parent_session_key, agent=agent)
 
-        if parent_session_key not in self._subagent_runtime_locks:
-            self._subagent_runtime_locks[parent_session_key] = asyncio.Lock()
-        lock = self._subagent_runtime_locks[parent_session_key]
-        async with lock:
-            existing = self._subagent_runtimes.get(parent_session_key)
-            if existing is not None and existing.is_alive():
-                return existing
-            provider = owner._provider_factory(parent_session_key, agent=agent, cwd=cwd)
-            await provider.start()
-            session_provider = getattr(provider, "_client", None)
-            runtime = getattr(session_provider, "_runtime", None)
-            if session_provider is not None and runtime is not None:
-                try:
-                    session_provider._owns_runtime = False
-                except Exception:
-                    self._deps.logger.debug("run runtime ownership transfer failed", exc_info=True)
-                self._subagent_runtimes[parent_session_key] = runtime
-                try:
-                    handle = getattr(session_provider, "_handle", None)
-                    session_id = getattr(handle, "session_id", None) or getattr(
-                        handle, "_session_id", None
-                    )
-                    if session_id:
-                        await runtime.terminate_session(session_id)
-                except Exception:
-                    self._deps.logger.debug(
-                        "run runtime bootstrap-session terminate failed", exc_info=True
-                    )
-                return runtime
-            try:
-                await provider.shutdown()
-            except Exception:
-                self._deps.logger.debug(
-                    "run runtime bootstrap provider shutdown failed", exc_info=True
-                )
+        while True:
+            lock = self._subagent_runtime_locks.setdefault(parent_session_key, asyncio.Lock())
+            async with lock:
+                if self._subagent_runtime_locks.get(parent_session_key) is not lock:
+                    continue
+                existing = self._subagent_runtimes.get(parent_session_key)
+                if existing is not None and existing.is_alive():
+                    return existing
+
+            # Match get_subagent_runtime's semaphore-before-parent-lock order. The
+            # provider's process and extracted runtime remain fenced until the
+            # canonical map owns the runtime identity.
+            async with self._start_sem:
+                lock = self._subagent_runtime_locks.setdefault(parent_session_key, asyncio.Lock())
+                async with lock:
+                    if self._subagent_runtime_locks.get(parent_session_key) is not lock:
+                        continue
+                    existing = self._subagent_runtimes.get(parent_session_key)
+                    if existing is not None and existing.is_alive():
+                        return existing
+                    factory = owner._provider_factory
+                    if factory is None:
+                        break
+                    provider = factory(parent_session_key, agent=agent, cwd=cwd)
+                    await provider.start()
+                    session_provider = getattr(provider, "_client", None)
+                    runtime = getattr(session_provider, "_runtime", None)
+                    if session_provider is not None and runtime is not None:
+                        try:
+                            session_provider._owns_runtime = False
+                        except Exception:
+                            self._deps.logger.debug(
+                                "run runtime ownership transfer failed", exc_info=True
+                            )
+                        self._subagent_runtimes[parent_session_key] = runtime
+                        try:
+                            handle = getattr(session_provider, "_handle", None)
+                            session_id = getattr(handle, "session_id", None) or getattr(
+                                handle, "_session_id", None
+                            )
+                            if session_id:
+                                await runtime.terminate_session(session_id)
+                        except Exception:
+                            self._deps.logger.debug(
+                                "run runtime bootstrap-session terminate failed",
+                                exc_info=True,
+                            )
+                        return runtime
+                    try:
+                        await provider.shutdown()
+                    except Exception:
+                        self._deps.logger.debug(
+                            "run runtime bootstrap provider shutdown failed",
+                            exc_info=True,
+                        )
+                    break
+            break
         return await owner.get_subagent_runtime(parent_session_key, agent=agent)
 
     async def _reacquire_and_validate(

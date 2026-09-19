@@ -736,8 +736,8 @@ async def relay_remote_turn(
     message: str,
     *,
     chunks: AsyncIterator[bytes] | None = None,
-) -> None:
-    """Run one turn for *slot* on its bound peer, replaying the result locally.
+) -> bool:
+    """Replay one peer turn and return whether its positive terminator arrived.
 
     *chunks* exists for tests: pass an async byte iterator to drive the replay
     without a tunnel. In production it is ``None`` and the stream comes from the
@@ -881,6 +881,7 @@ async def relay_remote_turn(
     # executor-aware queue dispatcher (routing ANY non-local executor, not just
     # this one), a change to the shared local turn path and a decision of its own
     # rather than a tail-call here — so the honest 409 stands until then.
+    return saw_terminator
 
 
 async def _peer_turn_chunks(

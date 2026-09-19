@@ -720,6 +720,26 @@ class TestMaskableDirsAreMaterializedBeforeTheSpawn:
         assert set(created) <= hidden
 
     @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", ["standard", "cc", "strict"])
+    def test_late_scheduled_provenance_is_hidden_by_a_preexisting_mask(self, crew_home, mode):
+        provenance = crew_home / "scheduled-message-provenance"
+        assert not provenance.exists(), "the regression requires a never-used data home"
+
+        created = sandbox._materialize_maskable_dirs()
+        script = sandbox._build_launcher_script(mode)
+        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
+        assert match
+
+        assert str(provenance) in created
+        assert str(provenance) in set(json.loads(match.group(1)))
+        # The gateway creates records only after a user schedules a message. The
+        # namespace has already bound its empty directory over this name, so that
+        # later child is behind the existing directory mask rather than appearing
+        # in a namespace whose isdir-guarded snapshot skipped an absent root.
+        (provenance / "late-record.json").write_text("protected", encoding="utf-8")
+        assert provenance.is_dir()
+
+    @_POSIX_ONLY
     def test_namespace_argv_materializes_the_masked_dirs(self, crew_home):
         sandbox.namespace_argv(["/bin/true"])
 

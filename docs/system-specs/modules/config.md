@@ -1679,9 +1679,31 @@ Where appliers live: an applier owned by a long-lived object registers in that
 object's constructor (session manager, subagent manager, each channel
 dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `set_timeout_secs` and `ChannelManager` binds `agent.max_channels` /
-`agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
-ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
-live in `server.py::_register_config_watch` — `agent.provider`,
+`agent.max_channel_agents` to its cap setters, both with `live.bind`). The
+session manager also owns the security-first ordering for `agent.sandbox`,
+`agent.sandbox_allow_no_isolation`, and
+`agent.sandbox_allow_unsandboxed_exec`: before a factory refresh can adopt any
+of those values, its subscriber permanently invalidates the process's scheduled-
+message confinement epoch and removes live plus orphan protected provenance.
+That cheap invalidation and cleanup runs on every host. **Send later is eligible
+only on Linux when this process booted with namespace confinement already in
+force and the dashboard signing key is persistent across restart**; Linux alone
+can therefore honor a pair after a later confined restart. On Linux, a sandbox-
+security change holds every cold-start permit, moves registered providers and
+detached subagent/background runtimes into a retryable quarantine, and does not
+publish the new factory or run the final provenance purge until every old runtime
+is verified dead. A failed kill or liveness check keeps the exact runtime
+reference for the next `ConfigWatch` retry. On Windows and macOS provenance is
+never eligible, so the same edit takes the ordinary factory-refresh path and
+preserves live work instead of imposing a cold-start barrier and host-wide
+retirement. A purge failure leaves the epoch invalid and the applier stale for
+retry. Because all config writers converge on `ConfigWatch`, dashboard saves,
+`kirocrew config set`, and direct editor writes have the same ordering. Only a
+gateway restart can establish a new Linux confinement epoch; changing `off` back
+to `auto` in the same process does not re-enable Send later while old process
+generations survive.
+Only the ones whose holder is `DashboardState`, or that must rebuild agent
+artifacts, live in `server.py::_register_config_watch` — `agent.provider`,
 `agent.role_models.background`, and `agent.log_level`
 (→ `handlers/updates.py::apply_log_level_from_config`).
 The provider applier only schedules the switch: `reload_provider_factory` clears
