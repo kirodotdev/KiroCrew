@@ -131,6 +131,17 @@ describe('LinkedSurfacesSection', () => {
       expect(await screen.findByText(L('disconnect_from', { label: 'Discord' }))).toBeInTheDocument()
     })
 
+    it.each([
+      ['imessage', 'iMessage'],
+      ['feishu', 'Feishu'],
+    ])('renders the %s brand instead of the target label', async (channel, brand) => {
+      mount({ links: [link({ channel, label: 'zzq-personal-target' })] })
+      expect(
+        await screen.findByRole('button', { name: L('disconnect_from', { label: brand }) }),
+      ).toBeInTheDocument()
+      expect(screen.queryByText(L('disconnect_from', { label: 'zzq-personal-target' }))).not.toBeInTheDocument()
+    })
+
     it('an unrecognised channel type falls back to the link label', async () => {
       mount({ links: [link({ channel: 'zzq-exotic', label: 'zzq-exotic-label' })] })
       expect(
