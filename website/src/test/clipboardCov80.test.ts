@@ -130,6 +130,52 @@ describe('copyToClipboard', () => {
   })
 })
 
+/**
+ * #9920: an unfocused copy (fired from a closing context menu) must fall back
+ * to execCommand rather than trust the async API's false-success resolution.
+ */
+describe('copyToClipboard when the document is not focused (#9920)', () => {
+  const setDocumentFocused = (v: boolean) =>
+    Object.defineProperty(document, 'hasFocus', { value: () => v, configurable: true })
+
+  afterEach(() => {
+    // Restore the happy-dom default so other cases keep seeing a focused doc.
+    setDocumentFocused(true)
+  })
+
+  it('skips the unfocused async write and uses the execCommand fallback instead', async () => {
+    // writeText would RESOLVE here (the false-success shape), but must not be trusted.
+    stubClipboard(() => Promise.resolve())
+    setDocumentFocused(false)
+
+    await expect(copyToClipboard('zzz-unfocused')).resolves.toBe(true)
+
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('reports failure honestly when the fallback cannot copy while unfocused', async () => {
+    stubClipboard(() => Promise.resolve())
+    setDocumentFocused(false)
+    execCommand.mockReturnValue(false)
+
+    // A false tick over an unchanged clipboard is worse than an honest failure.
+    await expect(copyToClipboard('zzz-unfocused-fail')).resolves.toBe(false)
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+  })
+
+  it('still uses the async API when the document IS focused', async () => {
+    stubClipboard(() => Promise.resolve())
+    setDocumentFocused(true)
+
+    await copyToClipboard('zzz-focused')
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('zzz-focused')
+    expect(execCommand).not.toHaveBeenCalled()
+  })
+})
+
 describe('copyCode', () => {
   it('trims surrounding whitespace so a pasted command lands clean at the prompt', async () => {
     stubClipboard(() => Promise.resolve())
