@@ -12428,9 +12428,13 @@ def _enqueue_pending_context(
 ) -> web.Response | None:
     """Build, cap, and append a ``_pending_context`` entry.
 
-    Returns a 4xx response on a bad request (429 per-source cap, 400 invalid
-    ``max_age``) WITHOUT mutating the queue, else None on success. The entry is
-    consumed on the next user-initiated message via ``drain_pending_context``.
+    Returns a 4xx response on a bad request (429 could not be queued, 400
+    invalid ``max_age``), else None on success. The entry is consumed on the next
+    user-initiated message via ``drain_pending_context``.
+
+    A 400 leaves the queue untouched. A 429 is decided by
+    ``append_pending_context``, which reclaims expired entries on the way, so a
+    refusal can have dropped dead entries -- nothing live is ever evicted.
 
     ``max_age`` is the resolved seconds-to-live, or None for no expiry. HTTP
     callers already validate it via ``_validate_max_age``; the same guard runs
@@ -12442,7 +12446,19 @@ def _enqueue_pending_context(
     if err is not None:
         return err
     assert entry is not None
-    slot.append_pending_context(entry)
+    # Asked once, of the authority: the append owns the ceiling and reports
+    # whether the entry was seated, so a preflight here would ask twice.
+    if not slot.append_pending_context(entry):
+        return web.json_response(
+            {
+                "error": (
+                    "pending context could not be queued for this session: the "
+                    "queue is full, or the entry expired before it was queued"
+                ),
+                "code": "context_not_queued",
+            },
+            status=429,
+        )
     return None
 
 
@@ -12961,7 +12977,10 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             # records the session it was authorized against -- same reason the
             # deferred arm below does, and checked at those later seams.
             context_entry["noteSession"] = effective_session_key(slot)
-            slot.append_pending_context(context_entry)
+            if not slot.append_pending_context(context_entry):
+                # The visible line is still written; contextSkipped carries the
+                # refused half, the same surface the per-source cap uses.
+                context_skipped = True
 
     # Caller-controlled content reaching the visible transcript (SSE plus the
     # on-disk JSONL). Redact at this sink so a secret or exfil URL cannot land
