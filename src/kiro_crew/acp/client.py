@@ -2919,6 +2919,12 @@ _RE_USAGE_LIMIT = re.compile(
 # boilerplate, and scoping to `data` keeps a stray echo in `message` from
 # flipping an otherwise-terminal error.
 _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE)
+# kiro-cli's sibling wrapper for the same class of backend failure, observed
+# AFTER tool results had landed and carrying a request_id: "The service failed
+# to process the request (request_id: ...)". Same momentary-blip reasoning and
+# the same `data`-only scoping as _RE_GENERATE_FAILED; kept as its own pattern
+# so the two branches can word their guidance for the moment each one fails.
+_RE_PROCESS_FAILED = re.compile(r"failed to process the request", re.IGNORECASE)
 
 # kiro-cli's structural rejection of a payload the backend could not parse:
 # "Improperly formed request". This string has NO source-side handling and
@@ -3088,6 +3094,7 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         or _RE_5XX_STATUS.search(haystack)
         or _RE_5XX_HINT.search(haystack)
         or _RE_GENERATE_FAILED.search(data)
+        or _RE_PROCESS_FAILED.search(data)
     )
 
 
@@ -3177,6 +3184,7 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
         or _RE_5XX_STATUS.search(text)
         or _RE_5XX_HINT.search(text)
         or _RE_GENERATE_FAILED.search(data_field)
+        or _RE_PROCESS_FAILED.search(data_field)
     )
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_HTTP_5XX, True, match.group(0))
@@ -3766,6 +3774,19 @@ def _format_acp_error(
                 "backend call died before streaming started, usually a momentary "
                 "capacity blip). Retry in a moment; if it keeps happening, switch "
                 "to a different model in the picker."
+                f"{req_id_suffix}"
+            )
+        elif _RE_PROCESS_FAILED.search(data):
+            # kiro-cli's sibling wrapper ("The service failed to process the
+            # request (request_id: ...)"): the backend call failed after the
+            # turn was under way, so a request_id exists but no error class.
+            # Same momentary-blip guidance as the branch above, scoped to
+            # `data` for the same reason. The phrase is kept in the rewrite so
+            # the string classifier in llm_helpers matches either form.
+            formatted = (
+                "The model backend failed to process the request (transient error, "
+                "usually a momentary capacity blip). Retry in a moment; if it keeps "
+                "happening, switch to a different model in the picker."
                 f"{req_id_suffix}"
             )
         elif _RE_MALFORMED_REQUEST.search(data):

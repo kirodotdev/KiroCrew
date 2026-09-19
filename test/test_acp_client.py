@@ -8946,6 +8946,43 @@ class TestFormatAcpError:
         assert "transient error" not in out.lower()
         assert "ValidationException: input contains an unsupported field 'foo'" in out
 
+    def test_kiro_process_failure_formats_as_transient_and_keeps_request_id(self):
+        """kiro-cli's post-stream sibling wrapper ("The service failed to
+        process the request (request_id: ...)") gets the same retry guidance
+        as the generation-failure branch, and the request_id survives the
+        rewrite so a support thread can quote it.
+        """
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": (
+                "The service failed to process the request "
+                "(request_id: aaaa1111-bbbb-2222-cccc-333344445555)"
+            ),
+        }
+        out = _format_acp_error(err)
+        assert "transient error" in out.lower()
+        assert "aaaa1111-bbbb-2222-cccc-333344445555" in out
+        assert "Prompt error: {" not in out
+        # The string fallback in llm_helpers classifies both the raw wrapper
+        # and the rewrite, so a path that lost the structured flag still retries.
+        from kiro_crew.llm_helpers import is_transient_backend_error
+
+        assert is_transient_backend_error(str(err["data"])) is True
+        assert is_transient_backend_error(out) is True
+
+    def test_process_failure_phrase_in_message_only_is_not_transient(self):
+        """Scoped to `data` like its sibling: the phrase in the JSON-RPC
+        `message` alone must not flip a deterministic failure to transient."""
+        err = {
+            "code": -32603,
+            "message": "The service failed to process the request",
+            "data": "ValidationException: input contains an unsupported field 'foo'",
+        }
+        out = _format_acp_error(err)
+        assert "transient error" not in out.lower()
+        assert "ValidationException: input contains an unsupported field 'foo'" in out
+
     def test_session_expired_rewrite(self):
         """An expired session gets actionable sign-in guidance rather than the
         misleading transient-5xx retry advice.
@@ -9280,6 +9317,43 @@ class TestIsTransientRawError:
         assert (
             _is_transient_raw_error(
                 {"data": "AccessDeniedException: Kiro failed to generate a response"}
+            )
+            is False
+        )
+
+    def test_kiro_process_failure_is_transient(self):
+        from kiro_crew.acp.client import _is_transient_raw_error, classify_provider_error
+
+        # kiro-cli's post-stream sibling of the generation-failure wrapper: a
+        # request_id is present, no error class, none of the 5xx tokens. This
+        # exact shape otherwise ends the turn with a terminal card and no retry.
+        data = (
+            "The service failed to process the request "
+            "(request_id: aaaa1111-bbbb-2222-cccc-333344445555)"
+        )
+        err = {"code": -32603, "message": "Internal error", "data": data}
+        assert _is_transient_raw_error(err) is True
+        verdict = classify_provider_error(data, data=data)
+        assert verdict.retryable is True
+        assert verdict.matched == "failed to process the request"
+
+    def test_process_failure_scoped_to_data_and_loses_to_auth(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # Phrase only in `message`: the scoped match must not fire.
+        assert (
+            _is_transient_raw_error(
+                {
+                    "message": "The service failed to process the request",
+                    "data": "ValidationException: unsupported field",
+                }
+            )
+            is False
+        )
+        # Auth is checked first and stays terminal even when the phrase co-occurs.
+        assert (
+            _is_transient_raw_error(
+                {"data": "AccessDeniedException: The service failed to process the request"}
             )
             is False
         )

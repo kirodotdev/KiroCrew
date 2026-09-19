@@ -135,6 +135,10 @@ _TRANSIENT_MARKERS = (
     # straight and typographic quotes both match the substring.
     "selected is temporarily unavailable",
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
+    # kiro-cli's post-stream wrapper ("The service failed to process the
+    # request (request_id: ...)"). Matches the raw provider text and
+    # _format_acp_error's rewrite alike, since the rewrite keeps the phrase.
+    "failed to process the request",
     # IAM credential-propagation race, matched against _format_acp_error's
     # rewritten wording. The RAW provider sentence ("The security token included
     # in the request is invalid") is matched structurally instead — see the
