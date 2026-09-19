@@ -3682,6 +3682,65 @@ def _register_config_watch(
         except Exception:
             logger.warning("background-model rebuild failed", exc_info=True)
 
+    default_model_failure_notified = False
+
+    async def _apply_default_model(change: ConfigChange) -> None:
+        # The default (chat) model is baked into the main ``kirocrew`` spec at
+        # agent-build time via ``_refresh_dynamic_fields`` (which reads
+        # config.json ``agent.model``). A dashboard/CLI change to that key only
+        # rewrites config.json, so without this rebuild the installed
+        # ``~/.kiro/agents/kirocrew.json`` keeps its previous ``model`` and
+        # kiro-cli's ``--agent`` startup loads the STALE pin — a newly created
+        # session then runs the old model even though the picker shows the new
+        # default (and "auto" can never clear a prior concrete pin). Mirrors
+        # ``_apply_background_model``: same authoritative rebuild, keyed on the
+        # chat-model config key instead of the background role key.
+        if not change.touched("agent.model"):
+            return
+        nonlocal default_model_failure_notified
+        try:
+            from kiro_crew.agent import rebuild_agent_config
+
+            await asyncio.to_thread(rebuild_agent_config)
+            # The config value and generated agent spec now agree. Tell every
+            # dashboard window to refetch both the config-backed picker and the
+            # effective-model endpoints only after that rebuild has completed;
+            # otherwise an eager refetch can cache the old spec indefinitely.
+            recovered = default_model_failure_notified
+            default_model_failure_notified = False
+            state.push_refresh("agents")
+            if recovered:
+                try:
+                    state.notify(
+                        "agent",
+                        "Default model applied",
+                        "The saved default model is now active. New sessions will use it.",
+                    )
+                except Exception:
+                    logger.debug("default-model recovery notification failed", exc_info=True)
+            logger.info("agent.model changed -- kirocrew agent spec rebuilt")
+        except Exception:
+            logger.warning("default-model rebuild failed", exc_info=True)
+            # The config write is already durable, but the generated spec is
+            # still the one new sessions actually consume. Surface that split
+            # to the operator instead of silently reporting the saved setting
+            # as active. Re-raise so ConfigWatch records this subscriber as
+            # stale and retries it on later ticks; a successful retry emits the
+            # refresh above and brings every open dashboard back into sync.
+            if not default_model_failure_notified:
+                default_model_failure_notified = True
+                try:
+                    state.notify(
+                        "agent",
+                        "Default model could not be applied",
+                        "The setting was saved but new sessions will keep using the "
+                        "previous model. Kiro Crew retries automatically; "
+                        "check the gateway logs if this persists.",
+                    )
+                except Exception:
+                    logger.debug("default-model failure notification failed", exc_info=True)
+            raise
+
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -3692,6 +3751,7 @@ def _register_config_watch(
             callback=_apply_background_model,
             name="agent.role_models.background",
         ),
+        live.subscribe("agent.model", callback=_apply_default_model, name="agent.model"),
         live.subscribe(
             "agent.log_level", callback=apply_log_level_from_config, name="agent.log_level"
         ),
