@@ -139,6 +139,10 @@ def serialize_deferred_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]
         session = note.get("session")
         if isinstance(session, str):
             entry["session"] = session
+        if note.get("contextOnly"):
+            # Without this the residual restores as an ordinary hold entry and
+            # replays a row a close already committed.
+            entry["contextOnly"] = True
         out.append(entry)
     return out
 
@@ -381,17 +385,20 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
             continue
         cls = item.get("cls")
         note_id = item.get("id")
-        notes.append(
-            {
-                # A missing or invalid id gets a fresh one so the entry stays
-                # addressable by the enqueue persist's merge after the restore.
-                "id": note_id if isinstance(note_id, str) and note_id else uuid.uuid4().hex[:12],
-                "content": content,
-                "cls": cls if isinstance(cls, str) and cls else "reconcile-note",
-                "context": _sanitize_restored_context(item.get("context")),
-                "session": session,
-            }
-        )
+        entry: dict[str, Any] = {
+            # A missing or invalid id gets a fresh one so the entry stays
+            # addressable by the enqueue persist's merge after the restore.
+            "id": note_id if isinstance(note_id, str) and note_id else uuid.uuid4().hex[:12],
+            "content": content,
+            "cls": cls if isinstance(cls, str) and cls else "reconcile-note",
+            "context": _sanitize_restored_context(item.get("context")),
+            "session": session,
+        }
+        if item.get("contextOnly") is True:
+            # Dropped rather than trusted loosely: any other value restores as an
+            # ordinary entry, which replays a row instead of skipping one.
+            entry["contextOnly"] = True
+        notes.append(entry)
     return notes
 
 
@@ -709,7 +716,9 @@ class SlotBufferCoordinator:
         return sum(1 for note in slot._deferred_notes if note.get("context") is not None)
 
     @staticmethod
-    def flush_deferred_notes(slot: Any, *, logger: logging.Logger) -> int:
+    def flush_deferred_notes(
+        slot: Any, *, logger: logging.Logger, retain_context_owing: bool = False
+    ) -> int:
         """Flush held notes in order, restoring the unwritten suffix on failure.
 
         Purely an in-memory drain: the flush NEVER writes the durable hold.
@@ -722,6 +731,18 @@ class SlotBufferCoordinator:
         next save retires it from there. A crash before the save re-delivers
         the note on restore: at-least-once, the correct failure direction for
         a delivery promise.
+
+        ``retain_context_owing``: for a caller whose slot is about to be POPPED.
+        The visible row is still committed — for a session never reopened it is the
+        only copy — but its context half is NOT promoted into
+        ``slot._pending_context``, which the persistence layer never serializes and
+        which dies with the discarded frame. A context-only residual is left in the
+        durable hold under a FRESH id instead, so the delivered row retires the
+        original entry while the residual survives to be delivered if the slot is
+        ever rehydrated with ``adopt_closed`` — an ordinary restore skips a closed
+        session outright. A residual is itself RETAINED by a later retaining
+        flush, so the several close-shaped flush sites a single close runs through
+        cannot drain one back into the dying frame.
         """
         if not slot._deferred_notes:
             return 0
@@ -730,6 +751,10 @@ class SlotBufferCoordinator:
         held = slot._deferred_notes[:]
         slot._deferred_notes.clear()
         live_session = effective_session_key(slot)
+        # A close in flight has no next turn to hand a context half to, so every
+        # flush it runs through retains -- the cancelled turn's own included.
+        retain = retain_context_owing or bool(getattr(slot, "_closing", False))
+        retained: list[dict[str, Any]] = []
         written = 0
         for index, note in enumerate(held):
             authorized_session = note.get("session")
@@ -762,6 +787,23 @@ class SlotBufferCoordinator:
             # was queued, the restored note must not enqueue that context twice.
             context = note.pop("context", None)
             note_id = note.get("id")
+            if note.get("contextOnly"):
+                if retain:
+                    # Promoting a residual HERE would lose it with the same popped
+                    # frame it was created to outlive, so it stays held.
+                    if context is not None:
+                        note["context"] = context
+                    retained.append(note)
+                    continue
+                # No row means the row-keyed retirement can never fire, hence the
+                # explicit dropped-id record.
+                if context is not None:
+                    context["noteSession"] = live_session
+                    slot.append_pending_context(context)
+                if isinstance(note_id, str) and note_id:
+                    slot._dropped_note_ids.add(note_id)
+                written += 1
+                continue
             row_meta: dict[str, Any] = {"noteSession": live_session}
             if isinstance(note_id, str) and note_id:
                 # The delivered row carries its note id, and the full save
@@ -769,6 +811,20 @@ class SlotBufferCoordinator:
                 # contains that id — row and retirement land in one atomic
                 # file write, whatever the flush/save interleaving was.
                 row_meta["noteId"] = note_id
+            if retain and context is not None:
+                # The row below retires the original entry; this residual, under a
+                # fresh id, outlives it.
+                retained.append(
+                    {
+                        "id": uuid.uuid4().hex[:12],
+                        "content": note["content"],
+                        "cls": note["cls"],
+                        "session": live_session,
+                        "context": context,
+                        "contextOnly": True,
+                    }
+                )
+                context = None
             try:
                 if context is not None:
                     context["noteSession"] = live_session
@@ -786,9 +842,10 @@ class SlotBufferCoordinator:
                 # included) and the next full save trues it up against live
                 # state; see the docstring for why no metadata write happens
                 # here.
-                slot._deferred_notes[:0] = held[index:]
+                slot._deferred_notes[:0] = retained + held[index:]
                 raise
             written += 1
+        slot._deferred_notes[:0] = retained
         return written
 
     @staticmethod
