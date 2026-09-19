@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Twenty-six types. Read [envelope.md](envelope.md) first for the fields every entry
+Twenty-seven types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -51,6 +51,7 @@ its **Since** line. A type this kind owns with no emitter anywhere is under
 | [`subagent/steered`](#subagentsteered) | A correction sent into a running child. | live | `gateway` | — |
 | [`subagent/completed`](#subagentcompleted) | A child finished its work. | live | `gateway` | closer, by `agent_id` |
 | [`subagent/failed`](#subagentfailed) | A child did not finish its work. | live | `gateway` | closer, by `agent_id` |
+| [`ledger/recorded`](#ledgerrecorded) | One session-ledger update: the fields it set and the event explaining them. | live | `gateway` | — |
 
 ## Session and turn
 
@@ -914,6 +915,50 @@ separates them.
 child was running and no liveness predicate was available.
 
 **Since** — type #10091; written by #11185.
+
+## The session ledger
+
+### `ledger/recorded`
+
+One session-ledger update: the fields it set, and the event explaining them.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — One entry per `session_ledger.record` call. Every reader folds
+these entries back into the record, so the ledger is a projection of the log rather
+than a stored document.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slot` | string | required | The ledger's key — the slot this update belongs to. Carried on the entry as well as in the header so a reader of one entry can say which slot it belongs to; selecting a slot's units is done from their headers. | |
+| `goal` | string | optional | The workstream's objective, when this call set one. | |
+| `phase` | string | optional | The new phase. Never written without `event` and `event_kind`, which is what makes the phase-requires-a-reason rule a property of ONE entry. | |
+| `next` | string | optional | The resumable intent — the concrete next step. | |
+| `tried` | object | optional | One rejected approach, appended to the fold's list. | |
+| `tried.approach` | string | required | What was tried. | |
+| `tried.rejected_because` | string | optional | Why it was rejected. | |
+| `artifacts` | object | optional | String-to-string pointers merged into the fold's map. The members are the caller's own keys — worktree, branch, pr — so they are deliberately not declared and are checked for shape by the fold. | |
+| `event` | string | optional | One-line progress note appended to the event tail. | |
+| `event_kind` | string | optional | Which kind of step this records. Closed: the writer coerces an unrecognized kind to `note` before it builds the entry. | `blocked`, `decision`, `note`, `phase`, `progress`, `tried`, `unblocked` |
+
+**Invariants** — One entry per call, carrying only the fields that call set — an
+omitted field means "unchanged", which is what lets a partial update be one line. A
+phase change carries its event in the SAME entry, so no reader can observe a phase
+that moved without its logged reason. The ledger therefore DEPENDS on this log: a
+gateway started without `KIROCREW_CREW_LOG=1` records none, and the tool refuses
+rather than keeping a document of its own.
+
+```json
+{"type":"ledger/recorded","seq":80,"time":1789000002600,"src":"gateway","data":{"slot":"dashboard:3","goal":"land the ledger fold","phase":"implementation","next":"regenerate the reference tables","tried":{"approach":"stored document","rejected_because":"cannot survive compaction"},"artifacts":{"worktree":"/w/proj","branch":"feat/x","pr":"123"},"event":"folded the ledger over the crew log","event_kind":"phase"}}
+```
+
+**Reader hint** — Fold the slot's entries oldest first across every unit the slot
+ran under; a later entry's set fields overwrite an earlier one's, and an omitted
+field leaves the folded value unchanged.
+
+**Since** — #11185.
 
 ## Removed types
 

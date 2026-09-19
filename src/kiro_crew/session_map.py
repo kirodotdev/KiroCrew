@@ -1687,9 +1687,16 @@ class SessionMap:
         return best
 
     @_guarded
-    def find_key_by_sid(self, session_id: str) -> str | None:
-        """Find the session map key for a given kiro-cli session ID."""
+    def find_key_by_sid(self, session_id: str, *, exclude: str = "") -> str | None:
+        """Find the session map key for a given kiro-cli session ID.
+
+        *exclude* skips one key, for a caller asking whether ANOTHER key maps the same
+        session -- the question "is this session still somebody's" cannot be answered by
+        a lookup that can return the very key the caller is retiring.
+        """
         for k, entry in self._data.items():
+            if exclude and k == exclude:
+                continue
             sid = entry.get("sid") if isinstance(entry, dict) else entry
             if sid == session_id:
                 return k

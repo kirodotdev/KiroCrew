@@ -391,7 +391,13 @@ def _scan_session_ledgers(*, older_than_days: float, now: datetime) -> tuple[lis
     kept = 0
     root = sl._ledger_root()
     try:
-        children = sorted(p for p in root.iterdir() if p.is_dir())
+        # The control directory is not a store and is never a candidate: it holds the
+        # exclusion and ordering files that decide what a slot's fold reads, and
+        # sweeping one away lets a recycled slot key fold units a delete excluded.
+        # The work-ledger scan below skips its bindings directory for the same reason.
+        children = sorted(
+            p for p in root.iterdir() if p.is_dir() and p.name != sl._CONTROL_DIR_NAME
+        )
     except FileNotFoundError:
         # No store yet: a machine that never recorded a ledger has nothing to
         # sweep, and "nothing" is the truth.

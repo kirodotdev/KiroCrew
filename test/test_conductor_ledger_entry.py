@@ -22,7 +22,10 @@ from pathlib import Path
 
 from skill_script_helpers import load_skill_script
 
+from kiro_crew import crew_log as lg
 from kiro_crew import session_ledger
+from kiro_crew.crew_log import CrewLog
+from kiro_crew.crew_log import emit as crew_log_emit
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -488,11 +491,17 @@ class TestLedgerAcceptsWhatTheCodecEmits:
 
     def test_encoded_entry_round_trips_through_the_ledger(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-        mod = _mod()
-        value = mod.mode_encode(_fields())["value"]
-        session_ledger.record("slot-a", artifacts={"item-1": value})
-        state = session_ledger.read_state("slot-a")
-        assert state["artifacts"]["item-1"] == value
-        decoded = mod.mode_decode({"value": state["artifacts"]["item-1"]})
-        assert decoded["ok"] is True
-        assert decoded["entry"] == _fields()
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+        crew_log_emit.reset_caches()
+        try:
+            CrewLog.create(lg.KIND_SESSION, "acp-a", owner="owner", agent="kirocrew", slot="slot-a")
+            mod = _mod()
+            value = mod.mode_encode(_fields())["value"]
+            session_ledger.record("slot-a", session_id="acp-a", artifacts={"item-1": value})
+            state = session_ledger.read_state("slot-a")
+            assert state["artifacts"]["item-1"] == value
+            decoded = mod.mode_decode({"value": state["artifacts"]["item-1"]})
+            assert decoded["ok"] is True
+            assert decoded["entry"] == _fields()
+        finally:
+            crew_log_emit.reset_caches()
