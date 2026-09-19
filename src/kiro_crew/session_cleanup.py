@@ -813,6 +813,19 @@ class SessionCleanup:
             self._deps.logger.debug("Idle sweep: %d checked, 0 expired", total_checked)
 
         for key, is_orphan in expired:
+            # Same invariant as the RSS path: a free semaphore only proves the
+            # parent's OWN turn is over. Sub-agents dispatched by that turn keep
+            # running on this session's runtime, so expiring it here (and firing
+            # on_session_expire ahead of the reset) discards their work. The
+            # orphan branch ignores the clock, so without this a closed tab reaps
+            # a parent with live children on the very next sweep.
+            if await self._has_attached_subagents(key):
+                self._deps.logger.debug(
+                    "Idle sweep: session %s looks %s but has attached sub-agent work; skipping",
+                    key,
+                    "orphaned" if is_orphan else "idle",
+                )
+                continue
             if is_orphan:
                 self._deps.logger.warning(
                     "Expiring orphaned dashboard session (slot gone): %s",
