@@ -8434,7 +8434,14 @@
       "uncommitted": "{{count}} non validé(s)",
       "branch_unavailable": "Branche indisponible",
       "status_failed": "Impossible de lire l’état du dépôt. L’historique des commits peut être obsolète.",
-      "log_failed": "Impossible de lire l’historique des commits."
+      "status_failed_no_history": "Impossible de lire la liste des modifications.",
+      "log_failed": "Impossible de lire l’historique des commits.",
+      "uncommitted_capped": "plus de {{count}} non validé(s)",
+      "showing_first": "{{count}} premiers affichés",
+      "filter_refused": "La configuration Git de ce dépôt met en place un programme de conversion (comme Git LFS), alors Kiro laisse ces vérifications désactivées ici. Les modifications et l'historique ne peuvent pas être affichés, et réessayer n'y changera rien.",
+      "filter_refused_title": "Kiro ne peut pas vérifier les modifications de ce dépôt",
+      "refresh_unavailable": "Actualisation indisponible tant que ces vérifications sont désactivées",
+      "filter_refused_unreadable": "Kiro n'a pas pu lire la configuration Git de ce dépôt, alors il laisse ces vérifications désactivées ici. Les modifications et l'historique ne peuvent pas être affichés tant que cette lecture n'aboutit pas."
     },
     "workspaceTree": {
       "status_failed": "Impossible de lire l’état du dépôt."

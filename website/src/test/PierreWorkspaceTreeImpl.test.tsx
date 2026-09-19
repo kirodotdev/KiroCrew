@@ -215,7 +215,10 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(screen.getByText(/Large workspace/)).toBeInTheDocument()
     unmount()
 
-    // Changed mode renders the git-status set, which is never truncated.
+    // Changed mode renders the git-status set, which carries no workspace-level
+    // truncation notice. The set itself IS capped server-side (500 entries, and
+    // the response says so via `truncated`), so this asserts only that the
+    // workspace notice is absent -- not that the listing is complete.
     vi.mocked(api.projectGitStatus).mockResolvedValue(mkStatus([mkFile('project/a.ts', 'M')]))
     renderTree({ mode: 'changed' })
     await waitForTree()
@@ -345,6 +348,56 @@ describe('PierreWorkspaceTreeImpl — changed mode', () => {
 
     await waitFor(() => expect(screen.getByText('Working tree clean')).toBeInTheDocument())
     expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+  })
+
+  it('names a filter refusal instead of wearing the generic failed copy', async () => {
+    // Turning the refusal into a 503 made these two surfaces render their
+    // generic "failed" notice on every LFS-configured repository, forever, with
+    // no cause and no "retry won't help" -- the outage spelling this change
+    // exists to end, one panel over. Both must recognise the refusal code.
+    const errorReport = await import('../utils/errorReport')
+    const i18n = await import('../i18n/t')
+    const refusal = Object.assign(new Error('CHECKS-OFF'), {
+      status: 503,
+      code: 'git_status_filter_refused',
+      body: JSON.stringify({
+        error: 'CHECKS-OFF',
+        code: 'git_status_filter_refused',
+        cause: 'declared',
+      }),
+    })
+    errorReport.__resetErrorJournalForTests()
+    vi.mocked(api.projectGitStatus).mockRejectedValue(refusal)
+
+    const direct = renderTree({ mode: 'changed' })
+    const notice = await screen.findByTestId('workspace-tree-status-error')
+    expect(notice).toHaveTextContent(i18n.i18nT('components.gitPanel.filter_refused'))
+    expect(notice).not.toHaveTextContent(
+      i18n.i18nT('components.workspaceTree.status_failed'),
+    )
+    // And NO title. `inline` lays a title out as a flex sibling of the message,
+    // so at this width it stacks into two-word fragments -- the capture is what
+    // showed that. The panel needs the title to separate two coexisting notices;
+    // nothing renders beside this one.
+    expect(notice.querySelector('strong')).toBeNull()
+
+    direct.unmount()
+    const { default: FileBrowserRail } = await import('../pages/chat/FileBrowserRail')
+    const railClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={railClient}>
+        <FileBrowserRail projectDir={ROOT} onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    // All mode, which is where the rail owns the notice.
+    const railNotice = await screen.findByText(
+      i18n.i18nT('components.gitPanel.filter_refused'),
+    )
+    expect(railNotice).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18n.i18nT('pages.chat.fileBrowserRail.git_status_failed')),
+    ).toBeNull()
+    errorReport.__resetErrorJournalForTests()
   })
 
   it('reports a changed-mode 503 once with its own copy and structured agent handoff', async () => {

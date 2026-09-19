@@ -8434,7 +8434,14 @@
       "uncommitted": "{{count}} sin confirmar",
       "branch_unavailable": "Rama no disponible",
       "status_failed": "No se pudo leer el estado del repositorio. El historial de commits puede estar desactualizado.",
-      "log_failed": "No se pudo leer el historial de commits."
+      "status_failed_no_history": "No se pudo leer la lista de cambios.",
+      "log_failed": "No se pudo leer el historial de commits.",
+      "uncommitted_capped": "más de {{count}} sin confirmar",
+      "showing_first": "primeros {{count}} mostrados",
+      "filter_refused": "La configuración de Git de este repositorio establece un programa de conversión (como Git LFS), por lo que Kiro mantiene estas comprobaciones desactivadas aquí. No se pueden mostrar los cambios ni el historial, y reintentar no servirá de nada.",
+      "filter_refused_title": "Kiro no puede comprobar si hay cambios en este repositorio",
+      "refresh_unavailable": "Actualización no disponible mientras estas comprobaciones estén desactivadas",
+      "filter_refused_unreadable": "Kiro no pudo leer la configuración de Git de este repositorio, por lo que mantiene estas comprobaciones desactivadas aquí. No se pueden mostrar los cambios ni el historial hasta que esa lectura funcione."
     },
     "workspaceTree": {
       "status_failed": "No se pudo leer el estado del repositorio."

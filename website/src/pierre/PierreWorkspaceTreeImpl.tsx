@@ -28,6 +28,11 @@ import { i18nT } from '../i18n/t'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel, type ContributedFileMenuItem, type ReportFileMenuError } from '../apps/fileMenuContributions'
 import { downloadFileToDisk } from '../utils/fileReadUrl'
 import { findReport } from '../utils/errorReport'
+import {
+  gitFilterRefusalCause,
+  gitFilterRefusalCopyKey,
+  isGitFilterRefusal,
+} from '../utils/gitStatusError'
 import { normalizeWindowsPath } from '../utils/fileTokens'
 import { errMessage } from '../utils/thunkError'
 import { recallExpandedPaths, rememberExpandedPaths } from './treeExpansionMemory'
@@ -623,10 +628,20 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   if (mode === 'changed' && statusError) {
     return (
       <div className="h-full p-2">
+        {/* A filter-driver refusal is NOT an outage, so it must not wear the
+            generic failed copy here either: that spelling is permanent for an
+            LFS-configured repository and names no cause, which is the defect
+            the refusal codes exist to end. Same localized sentence the Git
+            panel shows. */}
+        {/* NO title, for the same reason as the rail: `inline` puts title and
+            message in one flex row, which at tree width stacks the title into
+            two-word fragments. The message carries the cause. */}
         <ErrorNotice
           variant="inline"
           className="whitespace-normal"
-          message={i18nT('components.workspaceTree.status_failed')}
+          message={isGitFilterRefusal(statusError)
+            ? i18nT(gitFilterRefusalCopyKey(gitFilterRefusalCause(statusError)))
+            : i18nT('components.workspaceTree.status_failed')}
           report={findReport(errMessage(statusError))}
           askAgent
           testId="workspace-tree-status-error"

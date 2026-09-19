@@ -8434,7 +8434,14 @@
       "uncommitted": "{{count}} non committati",
       "branch_unavailable": "Branch non disponibile",
       "status_failed": "Impossibile leggere lo stato del repository. La cronologia dei commit potrebbe non essere aggiornata.",
-      "log_failed": "Impossibile leggere la cronologia dei commit."
+      "status_failed_no_history": "Non è stato possibile leggere l'elenco delle modifiche.",
+      "log_failed": "Impossibile leggere la cronologia dei commit.",
+      "uncommitted_capped": "oltre {{count}} non committati",
+      "showing_first": "primi {{count}} mostrati",
+      "filter_refused": "La configurazione Git di questo repository imposta un programma di conversione (come Git LFS), quindi Kiro mantiene questi controlli disattivati qui. Modifiche e cronologia non possono essere mostrate e riprovare non servirà.",
+      "filter_refused_title": "Kiro non può verificare le modifiche di questo repository",
+      "refresh_unavailable": "Aggiornamento non disponibile mentre questi controlli sono disattivati",
+      "filter_refused_unreadable": "Kiro non ha potuto leggere la configurazione Git di questo repository, quindi mantiene questi controlli disattivati qui. Modifiche e cronologia non possono essere mostrate finché quella lettura non riesce."
     },
     "workspaceTree": {
       "status_failed": "Impossibile leggere lo stato del repository."

@@ -3098,7 +3098,14 @@
       "not_a_repository": "Not a Git repository",
       "not_a_repository_help": "This project folder is not a Git repository. If the repository is in a subfolder, click the folder name below the message box.",
       "status_failed": "Couldn’t read the repository status. Commit history may be out of date.",
-      "log_failed": "Couldn’t read the commit log."
+      "status_failed_no_history": "Couldn’t read the changes list.",
+      "log_failed": "Couldn’t read the commit log.",
+      "uncommitted_capped": "{{count}}+ uncommitted",
+      "showing_first": "first {{count}} shown",
+      "filter_refused": "This repository's Git config sets up a conversion program (such as Git LFS), so Kiro keeps these checks off here. Changes and history can't be shown, and retrying won't help.",
+      "filter_refused_title": "Kiro can't check this repository for changes",
+      "refresh_unavailable": "Refresh unavailable while these checks are off",
+      "filter_refused_unreadable": "Kiro couldn't read this repository's Git config, so it keeps these checks off here. Changes and history can't be shown until that read succeeds."
     },
     "workspaceTree": {
       "status_failed": "Couldn’t read the repository status."
