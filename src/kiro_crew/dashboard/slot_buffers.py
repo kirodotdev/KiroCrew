@@ -291,7 +291,9 @@ def drop_committed_restored_notes(
     return [entry for entry in notes if entry.get("id") not in committed]
 
 
-def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
+def _sanitize_restored_context(
+    raw: object, max_chars: int = MAX_DEFERRED_NOTE_CHARS
+) -> dict[str, Any] | None:
     """Validate a persisted context half against the pending-context schema.
 
     A context entry that fails validation is dropped (``None``) while the
@@ -301,6 +303,11 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     poison pill that re-raises at every flush seam. Rebuilt with exactly the
     known keys, so a stale ``noteSession`` stamp is discarded (the flush stamps
     the live session at delivery).
+
+    *max_chars* is the enqueue boundary's own content bound, which differs by
+    queue: a /note context half is bound by the note's, a directly queued entry
+    by the context endpoint's. Passing the wrong one drops legitimate content,
+    so the caller names it rather than this function assuming one.
     """
     if not isinstance(raw, dict):
         return None
@@ -309,7 +316,7 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     injected_at = raw.get("injectedAt")
     max_age = raw.get("maxAge")
     ephemeral = raw.get("ephemeral", True)
-    if not isinstance(content, str) or not content or len(content) > MAX_DEFERRED_NOTE_CHARS:
+    if not isinstance(content, str) or not content or len(content) > max_chars:
         return None
     if not isinstance(source, str) or not source or len(source) > 64:
         return None
@@ -334,9 +341,64 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
         "ephemeral": ephemeral,
         "injectedAt": injected_at,
     }
+    ctx_id = raw.get("ctxId")
+    if isinstance(ctx_id, str) and 0 < len(ctx_id) <= 64:
+        # Dropped here, a restored entry re-spills from scratch on every later
+        # final save; a malformed one falls back to the content/stamp dedupe.
+        entry["ctxId"] = ctx_id
     if max_age is not None:
         entry["maxAge"] = max_age
     return entry
+
+
+def serialize_pending_context(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Snapshot the live context queue for persistence.
+
+    Each entry is COPIED: the save holds its value across a lock acquire, and the
+    queue is mutated on the event loop by the context endpoint and cleared by the
+    drain, so a shared dict would let a write that lands mid-save change what is
+    committed.
+    """
+    return [dict(entry) for entry in entries if isinstance(entry, dict)]
+
+
+def sanitize_restored_pending_context(
+    raw: object,
+    *,
+    max_entries: int,
+    max_chars: int,
+    max_entry_bytes: int,
+) -> list[dict[str, Any]]:
+    """Validate a persisted ``pending_context`` value back into queue entries.
+
+    On-disk metadata is a trust boundary and this queue is drained straight into an
+    LLM prompt, so every entry is re-checked by the same schema validator the /note
+    half uses rather than trusted.
+
+    Two bounds beyond the schema, both of which the endpoint enforces before it
+    answers 200, so a value past either can only be tampering or corruption:
+    *max_entry_bytes* rejects one oversized entry, because *max_chars* does not
+    bound the SERIALIZED size of a line read and rewritten whole under the history
+    lock; *max_entries* bounds the count, dropping the OLDEST to match the live
+    enqueue's own eviction order so a restart does not reorder the next drain.
+    """
+    if not isinstance(raw, list):
+        return []
+    kept: list[dict[str, Any]] = []
+    for item in raw:
+        entry = _sanitize_restored_context(item, max_chars)
+        if entry is None:
+            continue
+        try:
+            cost = len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
+        except (TypeError, ValueError):
+            continue
+        if cost > max_entry_bytes:
+            continue
+        kept.append(entry)
+    if len(kept) > max_entries:
+        del kept[: len(kept) - max_entries]
+    return kept
 
 
 def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:

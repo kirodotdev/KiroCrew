@@ -11943,6 +11943,9 @@ def _build_pending_context_entry(
             status=429,
         )
     entry: dict[str, object] = {
+        # Minted where the 200 is issued, not at save time: the persisted union
+        # dedupes on it, so every save of one entry must carry the same id.
+        "ctxId": uuid.uuid4().hex,
         "content": content,
         "source": source,
         "ephemeral": ephemeral,

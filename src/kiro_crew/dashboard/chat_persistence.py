@@ -46,7 +46,9 @@ from kiro_crew.dashboard.slot_buffers import (
     committed_filtered_note_ids,
     drop_committed_restored_notes,
     sanitize_restored_deferred_notes,
+    sanitize_restored_pending_context,
     serialize_deferred_notes,
+    serialize_pending_context,
     union_deferred_notes,
 )
 from kiro_crew.dashboard.slot_queue_repository import (
@@ -54,7 +56,10 @@ from kiro_crew.dashboard.slot_queue_repository import (
     sanitize_restored_queue,
 )
 from kiro_crew.dashboard.state import (
+    _MAX_PENDING_CONTEXT,
+    _MAX_PERSISTED_CONTEXT_BYTES,
     _TRANSIENT_ROLES,
+    MAX_CONTEXT_CONTENT,
     DashboardState,
     _ChatSlot,
     _normalize_slot_key,
@@ -72,6 +77,7 @@ from kiro_crew.history import (
     carry_provenance,
     carry_unowned_metadata,
     latest_transcript_ts,
+    merge_pending_context,
     transcript_sort_key,
     update_metadata_off_loop,
 )
@@ -1443,6 +1449,16 @@ def _rehydrate_slot_from_history(
         # Stamped whatever was restored (including nothing), so the first flush
         # after a restart re-persists only a queue that actually changed.
         slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
+        _restored_context = sanitize_restored_pending_context(
+            meta.get("pending_context"),
+            max_entries=_MAX_PENDING_CONTEXT,
+            max_chars=MAX_CONTEXT_CONTENT,
+            max_entry_bytes=_MAX_PERSISTED_CONTEXT_BYTES,
+        )
+        if _restored_context:
+            # Needs no user action, unlike the prompts above: the drain clears the
+            # queue in the step that appends its row, so a persisted entry ran nowhere.
+            slot._pending_context[:] = _restored_context
         mm = meta.get("memory_mode", "persistent")
         slot.memory_mode = mm
         if mm != "persistent":
@@ -2011,6 +2027,15 @@ def _apply_recent_session(
         slot._queue[:] = _restored_queue
         logger.info("Restored %d queued prompt(s) for slot %s", len(_restored_queue), slot_name)
     slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
+    _restored_context = sanitize_restored_pending_context(
+        meta.get("pending_context"),
+        max_entries=_MAX_PENDING_CONTEXT,
+        max_chars=MAX_CONTEXT_CONTENT,
+        max_entry_bytes=_MAX_PERSISTED_CONTEXT_BYTES,
+    )
+    if _restored_context:
+        # Mirror of the hand-back in _rehydrate_slot_from_history.
+        slot._pending_context[:] = _restored_context
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm
     if mm != "persistent":
@@ -3400,6 +3425,9 @@ def _save_slot_to_history(
                     # window, never a fresh read: a re-read here would be a
                     # second, unpaired observation of the queue.
                     "queued_prompts": queue_snapshot,
+                    # CLEARABLE too, and live state: the disk side belongs to a
+                    # foreign line, which ``_refresh_under_lock`` decides below.
+                    "pending_context": serialize_pending_context(slot._pending_context[:]),
                     # None means "follow the global threshold" and is the
                     # cleared value (rehydrate reads it with ``is not None``),
                     # so the override is CLEARABLE: written even when None,
@@ -3521,6 +3549,13 @@ def _save_slot_to_history(
                     meta.get("deferred_notes"),
                     serialize_deferred_notes(slot._deferred_notes[:]),
                 )
+                if not _line_is_this_slots(slot, meta):
+                    # Foreign line: same rule as the full save. No ``final`` here --
+                    # this merge is never a slot's last save, so a deferral is retried.
+                    merged_fields["pending_context"] = merge_pending_context(
+                        meta.get("pending_context"),
+                        serialize_pending_context(slot._pending_context[:]),
+                    )
                 return True
 
             applied = state.conversation_log.update_metadata_if(
@@ -3906,6 +3941,19 @@ def _save_slot_to_history(
             ]
             if surviving_hold:
                 meta_line["deferred_notes"] = surviving_hold
+            # The disk side is taken only on a FOREIGN line: unioning on the slot's
+            # own line would re-read entries the drain just consumed, forever.
+            _foreign_line = bool(existing_meta) and not _line_is_this_slots(slot, existing_meta)
+            _merged_context = merge_pending_context(
+                existing_meta.get("pending_context") if _foreign_line else None,
+                serialize_pending_context(slot._pending_context[:]),
+                # A closing or rows-only save is the last one, so an over-budget
+                # deferral would have no later save to retry it.
+                final=closed or rows_only,
+                archive_key=history_key,
+            )
+            if _merged_context:
+                meta_line["pending_context"] = _merged_context
             # Durable copy of the queued user prompts. OWNED, and the whole
             # value is decided here, so an emptied queue is cleared by absence.
             #

@@ -1150,6 +1150,9 @@ _CHIP_STATUS_KEYS = ("ci", "state", "mergeable", "mergeStateStatus")
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
 # FIFO ceiling on a slot's pending-context queue (app-kit context inject +
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
+MAX_CONTEXT_CONTENT = 40_000
+_JSON_WORST_CASE_BYTES_PER_CHAR = 12
+_MAX_PERSISTED_CONTEXT_BYTES = MAX_CONTEXT_CONTENT * _JSON_WORST_CASE_BYTES_PER_CHAR + 4096
 _MAX_PENDING_CONTEXT = 50
 
 
