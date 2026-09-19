@@ -19196,8 +19196,7 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Ein Zug läuft gerade — versuche es erneut, sobald er abgeschlossen ist.",
-      "workspace_unavailable": "Der konfigurierte Projektordner ist nicht verfügbar — prüfe, ob er existiert, und versuche es erneut."
+      "turn_in_flight": "Ein Zug läuft gerade — versuche es erneut, sobald er abgeschlossen ist."
     },
     "channelOrigin": {
       "direct_message": "Direktnachricht"

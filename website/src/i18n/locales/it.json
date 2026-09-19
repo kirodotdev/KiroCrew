@@ -19480,8 +19480,7 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Un turno è in corso — riprova quando sarà terminato.",
-      "workspace_unavailable": "La cartella di progetto configurata non è disponibile: verifica che esista e riprova."
+      "turn_in_flight": "Un turno è in corso — riprova quando sarà terminato."
     },
     "channelOrigin": {
       "direct_message": "Messaggio diretto"

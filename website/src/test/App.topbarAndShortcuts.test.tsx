@@ -1,7 +1,7 @@
 // App-level behaviour outside routing: the top bar's system metrics and Kiro
 // credits pill, the agent / reasoning effort / approval mode / model cycling
-// shortcuts, and two source contracts on the shell's source (the mobile nav drawer insets,
-// the single import-outcome notice mount). App.test.tsx covers routing; the
+// shortcuts, and three source contracts on the shell's source (the mobile nav drawer insets,
+// the single import-outcome notice mount, the single agent-switch notice mount). App.test.tsx covers routing; the
 // module mocks and the matchMedia / ResizeObserver stubs below are copied from it
 // word for word.
 import { describe, it, expect, vi } from 'vitest'
@@ -324,9 +324,10 @@ describe('onCycleAgent keyboard shortcut', () => {
     const noticeText = await screen.findByText(
       REAL_FAILURE,
     )
-    // An invalid agent name BROKE the switch, so it takes the assertive `role="alert"`. `warn`
-    // (`role="status"`) is reserved for the two refusals that withheld it without breaking
-    // anything -- covered in AgentSwitchNotice.test.tsx, which owns that axis.
+    // Every switch failure takes the assertive `role="alert"`, a refusal that merely withheld
+    // the switch included: toning one down to a polite `role="status"` is what the blocking
+    // `errors-use-error-notice` rule names as the violation. AgentSwitchNotice.test.tsx pins
+    // that for the withheld case.
     // Exactly one region -- one nested inside the notice would double-announce.
     const live = noticeText.closest('[role="alert"]')
     expect(live).not.toBeNull()
@@ -888,6 +889,64 @@ describe('import outcome notice', () => {
     // The only other branch is the dashboard, and its copy is in the local pane.
     expect(src).toContain(') : isEmbed ? (')
     const dashboard = src.indexOf('<ImportSessionOutcomeNotice />', src.indexOf('<LocalOverlayRoot hidden='))
+    expect(dashboard).toBeGreaterThan(-1)
+    expect(dashboard).toBeLessThan(src.indexOf('</LocalOverlayRoot>'))
+  })
+})
+
+describe('agent-switch notice host', () => {
+  it('renders in a popout window, where the toast is the only surface', async () => {
+    // `isPopout` is read from `window.location.pathname`, not from the router,
+    // so the popout branch is reached by setting the path before the first
+    // render. Driving the real Alt+Shift cycle rather than dispatching the
+    // notice directly is what makes this a proof: that shortcut is not
+    // layout-gated, it runs in this window, and the toast is its ONLY surface
+    // -- there is no in-place copy to fall back on.
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    const previousPath = window.location.pathname
+    window.history.replaceState({}, '', '/popout/chat/slot-1')
+    try {
+      ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new ApiError(400, REAL_FAILURE, JSON.stringify({ error: REAL_FAILURE })),
+      )
+      store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: true, agent: 'kirocrew' }] })
+      store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+      renderWithProviders(<App />, { route: '/popout/chat/slot-1' })
+
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
+      })
+
+      const notice = await screen.findByTestId('agent-switch-notice')
+      expect(notice).toBeInTheDocument()
+      expect(within(notice).getByText(REAL_FAILURE)).toBeInTheDocument()
+      // It still announces here: a window that shows the failure but does not
+      // read it out is the same dead end for a screen-reader user.
+      expect(notice.querySelector('[role="alert"]')).not.toBeNull()
+    } finally {
+      window.history.replaceState({}, '', previousPath)
+    }
+  })
+
+  it('is mounted for every layout: popout and embed above the branch, the dashboard in its local pane', () => {
+    // Same contract as the import-outcome notice above, and for a sharper
+    // reason: several of this notice's dispatchers have no second surface. The
+    // session pickers close on failure, the auto-compact write fires its last
+    // one from an unmount, and the keyboard cycle has no anchor at all -- so a
+    // layout that renders no host shows those failures nowhere. The dashboard's
+    // copy sits in the local pane's overlay root: it is a fixed layer rendered
+    // in place, so that pane's display:none is the only thing that hides it
+    // while a remote Crew shows.
+    const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
+    const frames = '{(isPopout || isEmbed) && agentSwitchNotice && ('
+    expect(src.split('<AgentSwitchNotice').length - 1).toBe(2)
+    expect(src.split(frames).length - 1).toBe(1)
+    expect(src.indexOf(frames)).toBeGreaterThan(src.indexOf('<WsContext.Provider'))
+    expect(src.indexOf(frames)).toBeLessThan(src.indexOf('{isPopout ? ('))
+    // The only other branch is the dashboard, and its copy is in the local pane.
+    expect(src).toContain(') : isEmbed ? (')
+    const dashboard = src.indexOf('<AgentSwitchNotice', src.indexOf('<LocalOverlayRoot hidden='))
     expect(dashboard).toBeGreaterThan(-1)
     expect(dashboard).toBeLessThan(src.indexOf('</LocalOverlayRoot>'))
   })
