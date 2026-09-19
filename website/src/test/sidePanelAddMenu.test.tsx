@@ -183,7 +183,7 @@ describe('newMenuSections', () => {
     expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
       ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser', 'terminal'],
-      ['logs', 'context'],
+      ['logs', 'context', 'crewlog'],
     ])
   })
 

@@ -126,6 +126,7 @@ from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401
     api_crew_log_unit_projection,
     api_session_crew_log,
     api_session_crew_log_projection,
+    api_session_crew_log_projections,
     install_crew_log_publisher,
 )
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401

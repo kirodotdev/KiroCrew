@@ -124,7 +124,16 @@ export const CHUNK_BUDGETS = {
   // was set at 3.7% over its own measurement, below the 5% convention, and
   // ordinary catalog growth since then used that margin up. Back to the 5%
   // convention over the measured size.
-  t: 861 * KB, // measured 820.3 KB on the capability-inheritance build rebased onto f382f0a70 (~5% headroom)
+  //
+  // Re-measured 2026-09-19 on the crew-log right-panel branch: the analyze build
+  // emits the chunk at 884,506 B (863.8 KB) against the 861 KB ceiling. The growth
+  // is catalog copy only: the new panel contributes 96 keys per catalog across the
+  // 12 shipped languages plus the generated pseudolocale, and the chunk report
+  // counts the same 12 modules with no new dependency. The previous ceiling was
+  // set at 5% over ITS measurement and ordinary catalog growth has now spent that
+  // margin, which is the drift this comment has recorded twice before. Back to 5%
+  // over the current measurement.
+  t: 904 * KB, // measured 863.8 KB on the crew-log panel build (~4.7% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

@@ -10,7 +10,7 @@ import {
 } from './panelTabRegistry'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins'
+export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 /** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
@@ -79,6 +79,7 @@ export const VIEW_DATA_SOURCE: Record<ViewKind, 'slot' | 'chat-transcript'> = {
   subagents: 'slot',
   workflows: 'slot',
   logs: 'slot',
+  crewlog: 'slot',
   context: 'slot',
   side: 'slot',
   browser: 'slot',
@@ -184,6 +185,7 @@ const VIEW_TITLE_KEY: Record<ViewKind, string> = {
   subagents: 'hooks.usePanelTabs.subagents',
   workflows: 'hooks.usePanelTabs.workflows',
   logs: 'hooks.usePanelTabs.logs',
+  crewlog: 'hooks.usePanelTabs.crewlog',
   context: 'hooks.usePanelTabs.context',
   side: 'hooks.usePanelTabs.side',
   browser: 'hooks.usePanelTabs.browser',

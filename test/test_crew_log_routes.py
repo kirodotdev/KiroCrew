@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -124,8 +125,356 @@ async def test_both_reads_refuse_a_caller_that_is_not_the_owner():
 @pytest.mark.asyncio
 async def test_the_module_stands_behind_the_private_member_guard():
     """Every ``api_`` route here is wrapped, so one added later is refused by default."""
-    for handler in (routes.api_session_crew_log, routes.api_session_crew_log_projection):
+    for handler in (
+        routes.api_session_crew_log,
+        routes.api_session_crew_log_projection,
+        routes.api_session_crew_log_projections,
+    ):
         assert getattr(handler, "__wrapped__", None) is not None
+
+
+def test_every_crew_log_route_is_reachable_from_the_router():
+    """Registration is where a handler that is not EXPORTED bites.
+
+    The route table reaches these handlers through the handlers PACKAGE, so a
+    handler added to this module and left out of that package's re-export raises
+    at ``register`` -- the gateway then fails to boot, which the unit tests here
+    cannot see because they call the functions directly.
+
+    A SUBSET, not an equal set: the same router also mounts the unit-keyed door the
+    ``kirocrew-crew-log`` MCP server reads through, and those paths belong to that
+    feature's own tests. Asserting the whole set here would redden this test every
+    time someone else adds a crew-log route, which teaches the next person to widen
+    the assertion rather than to read it.
+    """
+    from aiohttp import web as _web
+
+    from kiro_crew.dashboard.routes import sessions as sessions_routes
+
+    app = _web.Application()
+    sessions_routes.register(app)
+    paths = {
+        resource.canonical
+        for resource in app.router.resources()
+        if "crew-log" in str(resource.canonical)
+    }
+    assert {
+        "/api/sessions/{id}/crew-log",
+        "/api/sessions/{id}/crew-log/projection/{name}",
+        "/api/sessions/{id}/crew-log/projections",
+    } <= paths
+
+
+# --- which unit a read addresses -----------------------------------------
+
+
+class _Provider:
+    """The one attribute ``session_id_of`` reads off a live provider."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+
+
+class _Sessions:
+    """A SessionManager stand-in: an exact key lookup, the way the resolver uses it.
+
+    Shared by the tests below and by the unit-keyed door's ``_State``: both address a
+    unit through one slot key, so one stand-in serves both and lives above the first
+    of them.
+    """
+
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self._mapping = mapping
+
+    def get_provider(self, key: str) -> object | None:
+        found = self._mapping.get(key)
+        return _Provider(found) if found else None
+
+
+def _request_with_sessions(kind: str, session_id: str, mapping: dict[str, str], name: str = ""):
+    """A request whose app really holds a dashboard state with *mapping*.
+
+    A real ``web.Application`` rather than the default mocked app: the resolution
+    reads ``request.app["state"]``, and a mock answers every lookup with another
+    mock, so a test built on one would pass whatever the handler did.
+    """
+    state = MagicMock()
+    state.sessions = _Sessions(mapping)
+    # A REAL slot lookup, not the MagicMock's auto-attribute: the read resolves a
+    # slot's effective session key, and a Mock answers that with a truthy object
+    # that is not a key -- so every test here would exercise a path no gateway has.
+    # Tests about a channel-linked slot override this with their own.
+    state.get_slot = lambda name: None
+    app = web.Application()
+    app["state"] = state
+    if kind == "page":
+        request = make_mocked_request("GET", f"/api/sessions/{session_id}/crew-log", app=app)
+        request.match_info["id"] = session_id
+        return request
+    if kind == "folds":
+        request = make_mocked_request(
+            "GET", f"/api/sessions/{session_id}/crew-log/projections", app=app
+        )
+        request.match_info["id"] = session_id
+        return request
+    request = make_mocked_request(
+        "GET", f"/api/sessions/{session_id}/crew-log/projection/{name}", app=app
+    )
+    request.match_info["id"] = session_id
+    request.match_info["name"] = name
+    return request
+
+
+@pytest.mark.asyncio
+async def test_a_read_addressed_by_slot_key_folds_that_slot_s_unit():
+    """A chat surface holds a SLOT key; the unit is keyed by the ACP session id.
+
+    Without the resolution this answers an empty fold for a session that has
+    entries, which is a panel that is always blank rather than one that is wrong
+    in a visible way.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    fold = await routes.api_session_crew_log_projection(
+        _request_with_sessions("fold", "chat-7", {"chat-7": SESSION}, name="status")
+    )
+    body = _body(fold)
+    assert body["seq"] == handle.last_seq
+    assert body["value"]["turns_completed"] == 1
+    # The answer names what the CALLER asked about, so a client polling by slot key
+    # can match the response to its request.
+    assert body["session_id"] == "chat-7"
+
+    page = _body(
+        await routes.api_session_crew_log(
+            _request_with_sessions("page", "chat-7", {"chat-7": SESSION})
+        )
+    )
+    assert page["exists"] is True
+    assert page["last_seq"] == handle.last_seq
+    # The page read builds its payload around the unit it opened; it must still
+    # answer with the id the caller sent, or a slot-addressed client is handed an
+    # ACP id it never asked about.
+    assert page["session_id"] == "chat-7"
+
+
+@pytest.mark.asyncio
+async def test_the_batch_read_answers_every_fold_from_one_resolution():
+    """All five folds, resolved once and folded once, so they cannot disagree.
+
+    Five per-name reads each resolve the session for themselves, so a session
+    replaced mid-flight can leave some answers describing the unit going away and
+    some the one arriving. This route removes that window: one resolution, one pass
+    over one file.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    body = _body(
+        await routes.api_session_crew_log_projections(
+            _request_with_sessions("folds", "chat-7", {"chat-7": SESSION})
+        )
+    )
+    assert body["session_id"] == "chat-7"
+    assert set(body["projections"]) == set(crew_log.PROJECTION_NAMES)
+    assert body["projections"]["status"]["value"]["turns_completed"] == 1
+    # Every fold came from the same read, so none of them can be ahead of the file
+    # the others were folded from.
+    assert {fold["seq"] for fold in body["projections"].values()} <= {0, handle.last_seq}
+
+
+@pytest.mark.asyncio
+async def test_the_batch_read_of_an_unresolvable_key_is_empty_not_an_error():
+    """A slot with no unit reads back five empty folds, the same as no entries."""
+    _opened(_log())
+    body = _body(
+        await routes.api_session_crew_log_projections(
+            _request_with_sessions("folds", "chat-new", {})
+        )
+    )
+    assert body["session_id"] == "chat-new"
+    assert body["projections"]["status"]["seq"] == 0
+    assert body["projections"]["status"]["value"]["lifecycle"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_a_read_addressed_by_the_acp_id_still_reads_that_unit():
+    """An ACP id is not a session KEY, so the registry misses and the id stands."""
+    handle = _log()
+    _opened(handle)
+    body = _body(
+        await routes.api_session_crew_log_projection(
+            _request_with_sessions("fold", SESSION, {"chat-7": SESSION}, name="status")
+        )
+    )
+    assert body["seq"] == handle.last_seq
+    assert body["session_id"] == SESSION
+
+
+@pytest.mark.asyncio
+async def test_an_id_the_registry_recognises_is_resolved_even_if_it_looks_like_a_unit():
+    """The registry WINS over the verbatim branch, and that ordering is deliberate.
+
+    Nothing enforces that a provider's session id can never equal a live session
+    key -- the two namespaces are minted by different code -- so the ordering
+    decides what happens if one ever does: a recognised id is resolved, which is
+    the branch a chat surface depends on for every read it makes. Pinned here so
+    the precedence is a decision with a test behind it rather than a side effect
+    of an `or`, and so a reader of the spec's addressing section can see which way
+    a collision would fall.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    # The caller names something shaped like a unit id, and the registry happens to
+    # serve it: the resolved unit is read, not the given string.
+    body = _body(
+        await routes.api_session_crew_log_projection(
+            _request_with_sessions(
+                "fold", "acp-looking-id", {"acp-looking-id": SESSION}, name="status"
+            )
+        )
+    )
+    assert body["value"]["turns_completed"] == 1
+    assert body["session_id"] == "acp-looking-id"
+
+
+@pytest.mark.asyncio
+async def test_a_channel_born_slot_folds_the_session_its_turns_run_on():
+    """A channel slot's provider is registered under its LINKED key, not its own.
+
+    A slot born from a channel message runs its turns on the channel's session and
+    carries that key in ``linked_session_key`` (``slack:<ts>``), so the ACP provider
+    sits under that key. The resolver is an exact registry lookup whose only retry is
+    the ``dashboard:`` form, so sending the bare slot key missed the provider and
+    folded an empty record for every channel-linked session -- and never recovered,
+    because the mapping is stable rather than racy.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    # The registry knows ONLY the linked channel key, which is the real arrangement.
+    request = _request_with_sessions(
+        "fold", "chat-9", {"slack:1789822000.42": SESSION}, name="status"
+    )
+    request.app["state"].get_slot = lambda name: (
+        SimpleNamespace(key="chat-9", linked_session_key="slack:1789822000.42")
+        if name == "chat-9"
+        else None
+    )
+    body = _body(await routes.api_session_crew_log_projections(request))
+    assert body["projections"]["status"]["value"]["turns_completed"] == 1
+    assert body["resolved"] is True
+    # Still the caller's own id on the wire, the rule every read here follows.
+    assert body["session_id"] == "chat-9"
+
+
+@pytest.mark.asyncio
+async def test_an_id_naming_no_slot_reaches_the_resolver_unchanged():
+    """An ACP unit id names no slot, and must not be rewritten on its way through."""
+    handle = _log()
+    _opened(handle)
+    request = _request_with_sessions("fold", SESSION, {}, name="status")
+    request.app["state"].get_slot = lambda name: None
+    body = _body(await routes.api_session_crew_log_projection(request))
+    assert body["seq"] == handle.last_seq
+    assert body["session_id"] == SESSION
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_key_reads_back_an_empty_fold():
+    """A slot that never ran a turn has no unit, and an empty fold is the answer."""
+    _opened(_log())
+    body = _body(
+        await routes.api_session_crew_log_projection(
+            _request_with_sessions("fold", "chat-new", {}, name="status")
+        )
+    )
+    assert body["seq"] == 0
+    assert body["value"]["lifecycle"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_fold_says_whether_a_unit_was_addressable_at_all():
+    """An empty fold has two causes and a reader must not be told the wrong one.
+
+    A slot whose ACP session was torn down -- an idle reset -- still has its record
+    on disk under the retired id, so answering its panel "nothing recorded for this
+    session" is FALSE. The two cases are indistinguishable from the fold alone (both
+    are seq 0), so the answer carries whether a unit was named for the given id.
+    """
+    _opened(_log())
+    torn_down = _body(
+        await routes.api_session_crew_log_projections(
+            _request_with_sessions("folds", "chat-idle", {})
+        )
+    )
+    assert torn_down["projections"]["status"]["seq"] == 0
+    assert torn_down["resolved"] is False
+
+    live = _body(
+        await routes.api_session_crew_log_projections(
+            _request_with_sessions("folds", "chat-7", {"chat-7": SESSION})
+        )
+    )
+    assert live["resolved"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_batch_read_reports_whether_the_writer_owed_anything():
+    """A fold read that raced the writer must not present itself as current.
+
+    The emitter queues an append and returns, so a turn can end with entries still
+    owed -- and the refresh that turn triggers would fold a file it has not finished
+    writing. The read waits briefly and then says which happened, rather than
+    handing back a value that is behind the record with nothing to show it.
+    """
+    handle = _log()
+    _opened(handle)
+    body = _body(
+        await routes.api_session_crew_log_projections(_request_with_sessions("folds", SESSION, {}))
+    )
+    assert body["writes_drained"] is True
+
+    with patch.object(routes, "_settle_writes", return_value=False):
+        raced = _body(
+            await routes.api_session_crew_log_projections(
+                _request_with_sessions("folds", SESSION, {})
+            )
+        )
+    assert raced["writes_drained"] is False
+
+    # The folds are still served: a read that could not confirm the drain is worth
+    # less than one that could, and far more than no answer at all.
+    assert set(raced["projections"]) == set(crew_log.PROJECTION_NAMES)
+
+
+@pytest.mark.asyncio
+async def test_the_settle_step_waits_on_the_emitter_s_own_flush():
+    """The drain must be the emitter's, not a local guess at what quiet means.
+
+    A batch the writer has already CLAIMED is absent from the per-session queue and
+    cannot be seen there, so a predicate this module wrote for one session would
+    report quiet in exactly the case that matters. ``emit.flush`` is the emitter's
+    answer for a caller that must read the file it just wrote, and this pins that it
+    is what gets called, with a bounded wait rather than an unbounded one.
+    """
+    from kiro_crew.crew_log import emit
+
+    with patch.object(emit, "flush", return_value=True) as flush:
+        assert routes._settle_writes() is True
+    flush.assert_called_once_with(timeout=routes._SETTLE_SECONDS)
+    assert 0 < routes._SETTLE_SECONDS <= 2.0
+
+
+@pytest.mark.asyncio
+async def test_a_read_without_dashboard_state_uses_the_id_it_was_given():
+    """No registry to ask (a mocked or partially built app) is not a reason to fail."""
+    handle = _log()
+    _opened(handle)
+    body = _body(await routes.api_session_crew_log_projection(_projection_request("status")))
+    assert body["seq"] == handle.last_seq
 
 
 # --- the page read --------------------------------------------------------
@@ -715,22 +1064,6 @@ class _Slot:
         self._app = app
         self.is_restricted = restricted
         self.linked_session_key = ""
-
-
-class _Sessions:
-    """A SessionManager stand-in: one slot key maps to one live ACP session id."""
-
-    def __init__(self, mapping: dict[str, str]) -> None:
-        self._mapping = mapping
-
-    def get_provider(self, key: str) -> object | None:
-        found = self._mapping.get(key)
-        return _Provider(found) if found else None
-
-
-class _Provider:
-    def __init__(self, session_id: str) -> None:
-        self.session_id = session_id
 
 
 class _State:
