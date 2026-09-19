@@ -565,6 +565,11 @@ class TestBootAppliesTheScenario:
 
 
 class TestUpRefusesAnUnknownScenario:
+    @pytest.fixture(autouse=True)
+    def _available_backend(self, monkeypatch):
+        # These cases test seed validation, not the host's service backend.
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
+
     @pytest.mark.parametrize("scenario", ["no-such-scenario", "Rich"])
     def test_refuses_before_touching_the_host(self, scenario: str, monkeypatch, capsys) -> None:
         """The refusal must land before provisioning, port allocation or a start:

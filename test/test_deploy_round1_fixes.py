@@ -1,6 +1,7 @@
 """Tests for PR #6 round-1 security fixes (F1-F6)."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -9,8 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import _find_posix_test_shell, requires_symlinks
 from kiro_crew.deploy import handlers, pending
+
+
+def _bash():
+    shell = _find_posix_test_shell() if os.name == "nt" else shutil.which("bash")
+    assert shell, "Syntax checks require native Git Bash on Windows or Bash on POSIX"
+    return shell
 
 # ─── F1: staging root in config_dir, symlink-preemptable defense ───────────
 
@@ -207,7 +214,77 @@ def test_deploy_sh_passes_bash_syntax():
     if not script.exists():
         pytest.skip("deploy.sh not found")
     result = subprocess.run(
-        ["bash", "-n", str(script)],
-        capture_output=True, text=True,
+        [_bash(), "-n", str(script)],
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     assert result.returncode == 0, f"bash -n failed: {result.stderr}"
+
+
+@pytest.mark.parametrize("round_number", [1, 2, 16, 29])
+@pytest.mark.parametrize("platform", ["posix", "nt"])
+@pytest.mark.parametrize("available", [True, False])
+def test_syntax_resolver_requires_native_bash(monkeypatch, round_number, platform, available):
+    import importlib
+    from types import SimpleNamespace
+
+    module = importlib.import_module(f"test_deploy_round{round_number}_fixes")
+    bash = "/usr/bin/bash" if platform == "posix" else "C:/Program Files/Git/bin/bash.exe"
+    expected = bash if available else None
+    calls = []
+
+    def which(name):
+        assert platform == "posix", "Windows must not select PATH Bash or the WSL launcher"
+        assert name == "bash", "the POSIX shared resolver returns sh, not necessarily Bash"
+        calls.append("bash")
+        return expected
+
+    def native():
+        assert platform == "nt", "POSIX must explicitly resolve Bash rather than sh"
+        calls.append("native")
+        return expected
+
+    monkeypatch.setattr(module, "os", SimpleNamespace(name=platform))
+    monkeypatch.setattr(module, "shutil", SimpleNamespace(which=which))
+    monkeypatch.setattr(module, "_find_posix_test_shell", native)
+    if available:
+        assert module._bash() == bash
+    else:
+        with pytest.raises(AssertionError, match="require native Git Bash"):
+            module._bash()
+    assert calls == (["native"] if platform == "nt" else ["bash"])
+
+
+@pytest.mark.parametrize(
+    "round_number,class_name,test_name,args",
+    [
+        (1, None, "test_deploy_sh_passes_bash_syntax", ()),
+        (2, None, "test_deploy_sh_syntax", ()),
+        (2, None, "test_reaper_sh_syntax", ()),
+        (16, "TestF5ReaperRetryOnFailure", "test_reaper_sh_bash_syntax_valid", ()),
+        (29, "TestF2BoundaryPreflight", "test_bash_syntax_valid", ("deploy-backend.sh",)),
+        (29, "TestF2BoundaryPreflight", "test_bash_syntax_valid", ("install-reaper.sh",)),
+    ],
+)
+def test_syntax_assertion_rejects_invalid_bash(
+    monkeypatch, round_number, class_name, test_name, args
+):
+    import importlib
+    from types import SimpleNamespace
+
+    module = importlib.import_module(f"test_deploy_round{round_number}_fixes")
+    subject = getattr(module, class_name)() if class_name else module
+    run = subprocess.run
+    checked = []
+
+    def invalid_script(argv, **kwargs):
+        assert argv[:2] == [module._bash(), "-n"]
+        # Feed syntax only; -n must reject it without executing any command.
+        result = run(argv[:2], input="if then\n", **kwargs)
+        checked.append(result.returncode)
+        assert result.returncode != 0
+        return result
+
+    monkeypatch.setattr(module, "subprocess", SimpleNamespace(run=invalid_script))
+    with pytest.raises(AssertionError, match="bash -n failed"):
+        getattr(subject, test_name)(*args)
+    assert len(checked) == 1

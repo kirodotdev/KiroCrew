@@ -318,9 +318,35 @@ class TestCIProgress(unittest.TestCase):
             all(
                 "ci_pytest_progress" not in json.dumps(value)
                 for name, value in workflow["jobs"].items()
-                if name != "backend-test-windows"
+                if name not in {"backend-test-windows", "backend-test"}
             )
         )
+
+    def test_linux_wiring_preserves_scope_and_failure_verdict(self):
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["backend-test"]
+        self.assertEqual(job["timeout-minutes"], 60)
+        self.assertEqual(job["env"]["SHARD_COUNT"], 8)
+        step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests"))
+        command = step["run"]
+        self.assertNotIn("continue-on-error", step)
+        self.assertNotIn("PYTEST_ADDOPTS", command)
+        self.assertEqual(step["env"]["PYTHONPATH"], "${{ github.workspace }}")
+        self.assertIn("-p scripts.ci_pytest_progress", command)
+        self.assertIn('--ci-progress-dir "$RUNNER_TEMP/pytest-progress"', command)
+        self.assertIn("--max-worker-restart=0", command)
+        self.assertEqual(command.count('"${PROGRESS[@]}"'), 4)
+        self.assertEqual(command.count("--timeout=120"), 4)
+        self.assertEqual(command.count("-p scripts.ci_file_shards"), 2)
+        self.assertIn("--cov=kiro_crew --cov=sage_lib", command)
+        self.assertIn("--cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging", command)
+        self.assertIn("--cov=src/kiro_crew/apps/builtins/code_review_sage/tests", command)
+        upload = next(s for s in job["steps"] if s.get("name") == "Upload Linux pytest progress")
+        self.assertEqual(upload["if"], "${{ always() }}")
+        self.assertEqual(upload["with"]["name"], "linux-pytest-progress-${{ matrix.group }}")
+        self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/pytest-progress/*.jsonl")
 
 
 if __name__ == "__main__":

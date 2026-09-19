@@ -80,7 +80,7 @@ concurrency:
 jobs:
   ratchet-gates:
     name: Backend ratchet & baseline gates
-    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 25
     env:
       # Judge the integrated tree, not a diff. See the scope note in the header:
@@ -191,7 +191,7 @@ jobs:
 
   frontend-ceiling:
     name: Frontend eslint ceiling
-    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -235,7 +235,7 @@ jobs:
   report:
     name: Render ratchet verdict
     needs: [ratchet-gates, frontend-ceiling]
-    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # always() so the verdict is rendered even when a gate job failed; the push
     # guard keeps a manual workflow_dispatch from mutating the tracking issue.

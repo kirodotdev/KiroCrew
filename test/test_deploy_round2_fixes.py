@@ -2,11 +2,21 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+from conftest import _find_posix_test_shell
+
+
+def _bash():
+    shell = _find_posix_test_shell() if os.name == "nt" else shutil.which("bash")
+    assert shell, "Syntax checks require native Git Bash on Windows or Bash on POSIX"
+    return shell
 
 # ─── F2: artifact store lookup offloaded to thread ─────────────────────────
 
@@ -172,7 +182,10 @@ def test_deploy_sh_syntax():
     """F6: deploy.sh passes bash -n syntax check."""
     script = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / \
         "skills" / "artifact-deploy" / "scripts" / "deploy.sh"
-    result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    result = subprocess.run(
+        [_bash(), "-n", str(script)],
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
     assert result.returncode == 0, f"bash -n failed: {result.stderr}"
 
 
@@ -278,5 +291,8 @@ def test_reaper_sh_syntax():
     """F7: reaper.sh passes bash -n syntax check."""
     script = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / \
         "skills" / "artifact-deploy" / "scripts" / "reaper.sh"
-    result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    result = subprocess.run(
+        [_bash(), "-n", str(script)],
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
     assert result.returncode == 0, f"bash -n failed: {result.stderr}"

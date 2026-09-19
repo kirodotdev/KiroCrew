@@ -8,8 +8,9 @@
 #
 # WHICH RUNNER: the matcher keys off RUNNER_ENVIRONMENT == "self-hosted", which is
 # GitHub's own answer and the same value ci.yml already gates this job's non-root
-# boundary assertion on. Only one Linux test job is routed there -- backend shard 1,
-# on the CodeBuild-hosted label -- so that is the environment these entries describe.
+# boundary assertion on. Fleet routing can select multiple backend shards.
+# The IPv6 case has required native hosted coverage; ordinary fleet shards exclude
+# its capability marker rather than relying on this expected-failure entry.
 #
 # WHY A NODE-ID LIST AND NOT A COLLECT-IGNORE: the whole-file lists are the blunt
 # tool, and one of these files holds over 300 tests that pass there. Each entry
@@ -28,12 +29,3 @@
 # The runner has no IPv6 loopback: binding ::1 raises OSError [Errno 99], "Cannot
 # assign requested address". The other parametrizations bind IPv4 and pass.
 test/test_platform_compat.py::test_native_tcp_peer_identifies_client_process_not_server[10-::1]
-
-# The runner's filesystem gives no `link`, so the durable-body sequence observed is
-# ['fsync_file', 'fsync_dir'] where the test asserts ['fsync_file', 'publish']. The
-# test's own docstring ties the expected order to `link` being available.
-test/test_prompts.py::TestCreateAndDeletePinTheDirectory::test_the_body_is_durable_before_the_name_appears
-
-# The runner maps the unprivileged user's home so that the resolved home is /root,
-# which is the exact string this test asserts the generated unit does not contain.
-test/test_service.py::TestLinuxPrivilegeResolution::test_unit_home_matches_the_resolved_user_not_process_home

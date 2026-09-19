@@ -379,15 +379,30 @@ async def test_fork_suffixes_past_reserved_windows_basename(tmp_path):
     agents_dir.mkdir()
     _write_template(agents_dir, "mytemplate")
     _seed_config("con", "mytemplate")
+    from kiro_crew.agent import agents_spec_lock
+    from kiro_crew.dashboard.handlers import agents
 
-    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+    # Include the real advisory-lock file in the pre-operation snapshot.
+    with agents_spec_lock(agents_dir):
+        pass
+    before = {p.name: p.read_bytes() for p in agents_dir.iterdir()}
+
+    with (
+        patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
+        patch.object(agents, "_write_spec_file", wraps=agents._write_spec_file) as writer,
+    ):
         resp = await api_agent_fork(_fork_request("mytemplate", {"crew": "con"}))
 
     assert resp.status == 200
     body = json.loads(resp.text)
     assert body["template"] == "con-2"
-    assert not (agents_dir / "con.json").exists()
     assert (agents_dir / "con-2.json").exists()
+    after = {p.name: p.read_bytes() for p in agents_dir.iterdir()}
+    assert set(after) == set(before) | {"con-2.json"}
+    assert {name: after[name] for name in before} == before
+    expected = {**json.loads(before["mytemplate.json"]), "name": "con-2"}
+    assert json.loads(after["con-2.json"]) == expected
+    writer.assert_called_once_with(agents_dir / "con-2.json", expected)
 
 
 @pytest.mark.asyncio
