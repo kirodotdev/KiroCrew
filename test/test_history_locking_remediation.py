@@ -1243,6 +1243,7 @@ class TestOnLoopCallersOffload:
         slot.title = "My Title"
         slot._title_origin = "auto"
         slot._title_refresh_mark = 8
+        slot._title_low_signal = False
         slot._title_epoch = 0
 
         asyncio.run(chat_title._persist_title(state, slot))
@@ -1256,6 +1257,7 @@ class TestOnLoopCallersOffload:
         # reload.
         assert persisted["title_origin"] == "auto"
         assert persisted["title_refresh_mark"] == 8
+        assert persisted["title_low_signal"] is False
 
     def test_api_session_delete_runs_delete_off_loop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

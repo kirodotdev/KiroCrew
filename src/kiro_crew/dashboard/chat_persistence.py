@@ -133,6 +133,16 @@ def _rehydrate_title_refresh_mark(stored: object) -> int:
     return 0
 
 
+def _rehydrate_title_low_signal(stored: object) -> bool:
+    """Resolve the persisted low-signal flag; absent/invalid means False.
+
+    A legacy session written before the field existed rehydrates as False —
+    the conservative default, since re-arming the early refresh on old
+    sessions would spend one-liner calls their budget never accounted for.
+    """
+    return stored is True
+
+
 def _rehydrate_slot_title(
     slot: _ChatSlot,
     raw_title: str,
@@ -153,6 +163,7 @@ def _rehydrate_slot_title(
     slot._titled = titled
     slot._title_origin = _rehydrate_title_origin(titled, metadata.get("title_origin"))
     slot._title_refresh_mark = _rehydrate_title_refresh_mark(metadata.get("title_refresh_mark"))
+    slot._title_low_signal = _rehydrate_title_low_signal(metadata.get("title_low_signal"))
 
 
 _MAX_HISTORY_CHARS = 8000

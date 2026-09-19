@@ -101,10 +101,10 @@ from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_gra
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
-    _maybe_auto_title,
     _rephrase_plan_lite,
     _reset_auto_run_for_new_plan,
     maybe_refresh_title,
+    title_then_refresh,
 )
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
@@ -7380,7 +7380,15 @@ async def _finish_queue_cycle(
         # the next landed turn owns the ordinary post-processing attempt.
         return
     if not slot._titled:
-        title_task = asyncio.create_task(_maybe_auto_title(state, slot))
+        # Chain a refresh check behind the titling attempt (waiting out a
+        # still-running on-send attempt first — see title_then_refresh): when
+        # the attempt locks a LOW-SIGNAL title (a URL/ticket-key echo — see
+        # chat_title._is_low_signal_title), the early refresh milestone is
+        # already due at this very chat_done, and a one-message session gets
+        # no later chat_done to catch it. For an ordinary title the chained
+        # call returns without any LLM work (not due), same as the else-branch
+        # call below.
+        title_task = asyncio.create_task(title_then_refresh(state, slot))
         state._background_tasks.add(title_task)
         title_task.add_done_callback(state._background_tasks.discard)
     else:

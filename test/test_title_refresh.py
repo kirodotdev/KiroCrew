@@ -19,6 +19,7 @@ Locked-in invariants:
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -265,18 +266,14 @@ class TestRefreshReplyValidation:
 # ── the refresh prompt: bounded, recent-windowed, KEEP-escaped ────────────────
 class TestRefreshPrompt:
     def test_prompt_carries_current_title_and_keep_instruction(self):
-        prompt = _build_refresh_prompt(
-            [{"role": "user", "content": "hello"}], "My current title"
-        )
+        prompt = _build_refresh_prompt([{"role": "user", "content": "hello"}], "My current title")
         assert prompt is not None
         assert "My current title" in prompt
         assert "KEEP" in prompt
         assert "===== CONVERSATION TO NAME =====" in prompt
 
     def test_prompt_windows_the_recent_tail(self):
-        messages = [
-            {"role": "user", "content": f"topic-{i} discussion"} for i in range(30)
-        ]
+        messages = [{"role": "user", "content": f"topic-{i} discussion"} for i in range(30)]
         prompt = _build_refresh_prompt(messages, "T")
         assert prompt is not None
         assert "topic-29" in prompt
@@ -291,9 +288,7 @@ class TestRefreshPrompt:
         assert max(len(line) for line in transcript.splitlines() if line) <= 210
 
     def test_current_title_is_bounded(self):
-        prompt = _build_refresh_prompt(
-            [{"role": "user", "content": "hello"}], "t" * 500
-        )
+        prompt = _build_refresh_prompt([{"role": "user", "content": "hello"}], "t" * 500)
         assert prompt is not None
         assert "t" * 81 not in prompt
 
@@ -334,9 +329,7 @@ class TestManualRegenerateWindow:
         monkeypatch.setattr(chat_title, "_ui_language", lambda: "")
 
         slot = _ChatSlot("chat-1-1")
-        slot.messages = [
-            {"role": "user", "content": f"topic-{i} discussion"} for i in range(30)
-        ]
+        slot.messages = [{"role": "user", "content": f"topic-{i} discussion"} for i in range(30)]
         # A tool-heavy final turn: the raw tail is entirely non-conversational
         # rows, which the prompt builder filters out.
         slot.messages += [{"role": "tool", "content": f"tool-row-{i}"} for i in range(12)]
@@ -401,9 +394,7 @@ class TestOriginRecording:
         )
 
     @pytest.mark.asyncio
-    async def test_auto_title_stands_down_when_rename_lands_mid_generation(
-        self, monkeypatch
-    ):
+    async def test_auto_title_stands_down_when_rename_lands_mid_generation(self, monkeypatch):
         slot = _ChatSlot("chat-1-1")
         slot.messages = [{"role": "user", "content": "hello world task"}]
 
@@ -718,8 +709,7 @@ class TestSlotCreatePinIsFinal:
         # And the refresh refuses to touch the pinned name.
         calls = _patch_generator(monkeypatch, "Model idea")
         slot.messages = [
-            {"role": "user", "content": f"m{i}"}
-            for i in range(_TITLE_REFRESH_MILESTONES[0])
+            {"role": "user", "content": f"m{i}"} for i in range(_TITLE_REFRESH_MILESTONES[0])
         ]
         await maybe_refresh_title(_fake_state(), slot)
         assert calls == []
@@ -771,9 +761,9 @@ class TestResumeRehydratesProvenance:
             resp = await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard_s1"})
             assert resp.status == 200
             slot = state._slots["s1"]
-            assert slot._title_origin == _TITLE_ORIGIN_USER, (
-                "legacy origin-less title must stay conservative (never refreshed)"
-            )
+            assert (
+                slot._title_origin == _TITLE_ORIGIN_USER
+            ), "legacy origin-less title must stay conservative (never refreshed)"
 
     @pytest.mark.asyncio
     async def test_resume_with_caller_title_is_a_pin(self, tmp_path, monkeypatch):
@@ -902,9 +892,9 @@ class TestResumeTitleEchoIsNotAPin:
             assert resp.status == 200
             slot = state._slots["s1"]
             assert slot.title == "Auto name"
-            assert slot._title_origin == _TITLE_ORIGIN_AUTO, (
-                "an echoed title must not be classified as a user pin"
-            )
+            assert (
+                slot._title_origin == _TITLE_ORIGIN_AUTO
+            ), "an echoed title must not be classified as a user pin"
             assert slot._title_refresh_mark == 8
 
     @pytest.mark.asyncio
@@ -1014,9 +1004,7 @@ class TestRefreshDurableMarkGate:
 
 class TestRefreshPushGuard:
     @pytest.mark.asyncio
-    async def test_rename_during_final_persist_is_not_overwritten_in_sidebar(
-        self, monkeypatch
-    ):
+    async def test_rename_during_final_persist_is_not_overwritten_in_sidebar(self, monkeypatch):
         """A rename landing during the refresh's final persist await has
         already broadcast its name; the refresh must not push its stale title
         over it. The push (if any) must carry the slot's CURRENT title."""
@@ -1068,3 +1056,317 @@ class TestResumeCorruptedTitleMetadata:
             # applies via the never-titled pin branch.
             assert slot.title == "Caller name"
             assert slot._title_origin == _TITLE_ORIGIN_USER
+
+
+# ── low-signal first-message titles: the early refresh milestone ─────────────
+class TestLowSignalDetection:
+    """_is_low_signal_title: deterministic, no LLM call."""
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "https://t.corp.amazon.com/V2371928461 can you investigate…",
+            "Investigate www.example.com outage",
+            "Research ticket V2371919238",
+        ],
+    )
+    def test_url_and_opaque_id_titles_are_low_signal(self, title):
+        messages = [{"role": "user", "content": "unrelated opener"}]
+        assert chat_title._is_low_signal_title(title, messages) is True
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Login timeout triage",
+            "Fix PR #7353 emoji icons",  # short numbers stay below the bar
+            "Port 8080 already in use",
+        ],
+    )
+    def test_topic_titles_are_not_low_signal(self, title):
+        messages = [{"role": "user", "content": "something else entirely"}]
+        assert chat_title._is_low_signal_title(title, messages) is False
+
+    def test_first_message_echo_is_low_signal(self):
+        messages = [{"role": "user", "content": "please look into the flaky build"}]
+        echo = chat_title._fallback_title_from_messages(messages)
+        assert chat_title._is_low_signal_title(echo, messages) is True
+
+
+class TestEarlyRefreshGating:
+    @pytest.mark.asyncio
+    async def test_low_signal_title_is_due_at_one_user_message(self, monkeypatch):
+        calls = _patch_generator(monkeypatch, "S3 bucket policy violation triage")
+        slot = _titled_slot(1)
+        slot._title_low_signal = True
+        await maybe_refresh_title(_fake_state(), slot)
+        assert calls == ["Initial auto title"]
+        assert slot.title == "S3 bucket policy violation triage"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_title_is_not_due_at_one_user_message(self, monkeypatch):
+        calls = _patch_generator(monkeypatch, "New Title")
+        slot = _titled_slot(1)
+        assert slot._title_low_signal is False
+        await maybe_refresh_title(_fake_state(), slot)
+        assert calls == []
+        assert slot.title == "Initial auto title"
+
+    @pytest.mark.asyncio
+    async def test_early_attempt_consumes_flag_and_milestone(self, monkeypatch):
+        calls = _patch_generator(monkeypatch, "")  # KEEP
+        slot = _titled_slot(1)
+        slot._title_low_signal = True
+        state = _fake_state()
+        await maybe_refresh_title(state, slot)
+        assert len(calls) == 1
+        assert slot._title_low_signal is False, "spent with the attempt"
+        assert slot._title_refresh_mark == 1
+        await maybe_refresh_title(state, slot)
+        assert len(calls) == 1, "the early milestone never re-arms"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_milestones_survive_an_early_spend(self, monkeypatch):
+        """The early refresh must not eat the turn-8/24 budget."""
+        calls = _patch_generator(monkeypatch, "")
+        slot = _titled_slot(1)
+        slot._title_low_signal = True
+        state = _fake_state()
+        await maybe_refresh_title(state, slot)
+        assert len(calls) == 1
+        for i in range(_TITLE_REFRESH_MILESTONES[0] - 1):
+            slot.messages.append({"role": "user", "content": f"more {i}"})
+        await maybe_refresh_title(state, slot)
+        assert len(calls) == 2, "first ordinary milestone still fires"
+
+    @pytest.mark.asyncio
+    async def test_low_signal_flag_never_overrides_a_manual_rename(self, monkeypatch):
+        calls = _patch_generator(monkeypatch, "New Title")
+        slot = _titled_slot(1, origin=_TITLE_ORIGIN_USER)
+        slot._title_low_signal = True
+        await maybe_refresh_title(_fake_state(), slot)
+        assert calls == []
+        assert slot.title == "Initial auto title"
+
+
+class TestLowSignalLockSites:
+    @pytest.mark.asyncio
+    async def test_url_opener_title_locks_flagged(self, monkeypatch):
+        async def _fake_generate(_state, _messages):
+            return "Research ticket V2371919238"
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fake_generate)
+        monkeypatch.setattr(chat_title, "_reveal_title", _noop)
+        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        monkeypatch.setattr(chat_title, "maybe_suggest_folder", _noop)
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [
+            {"role": "user", "content": "https://t.corp.amazon.com/V2371919238 investigate"}
+        ]
+        await chat_title._maybe_auto_title(_fake_state(), slot)
+        assert slot._titled is True
+        assert slot._title_low_signal is True
+
+    @pytest.mark.asyncio
+    async def test_topic_title_locks_unflagged(self, monkeypatch):
+        async def _fake_generate(_state, _messages):
+            return "Login timeout triage"
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fake_generate)
+        monkeypatch.setattr(chat_title, "_reveal_title", _noop)
+        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        monkeypatch.setattr(chat_title, "maybe_suggest_folder", _noop)
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [{"role": "user", "content": "the login page times out on submit"}]
+        await chat_title._maybe_auto_title(_fake_state(), slot)
+        assert slot._titled is True
+        assert slot._title_low_signal is False
+
+    @pytest.mark.asyncio
+    async def test_definitive_fallback_locks_flagged(self, monkeypatch):
+        async def _fake_generate(_state, _messages):
+            return ""  # SKIP
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fake_generate)
+        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        monkeypatch.setattr(chat_title, "maybe_suggest_folder", _noop)
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [
+            {"role": "user", "content": "please look into the flaky build on main"},
+            {"role": "assistant", "content": "done"},
+        ]
+        await chat_title._maybe_auto_title(_fake_state(), slot)
+        assert slot._titled is True
+        assert slot._title_low_signal is True, "a fallback is an echo of the opener"
+
+    @pytest.mark.asyncio
+    async def test_manual_regenerate_clears_the_flag(self, monkeypatch):
+        """A regenerated title comes from the recent tail — not an echo."""
+
+        async def _fake_generate(_state, _messages):
+            return "Real topic name"
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fake_generate)
+        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [
+            {"role": "user", "content": "https://t.corp.amazon.com/V123456789"},
+            {"role": "assistant", "content": "investigated the bucket policy"},
+        ]
+        slot.title = "https://t.corp.amazon.com/V123456789"
+        slot._titled = True
+        slot._title_origin = _TITLE_ORIGIN_AUTO
+        slot._title_low_signal = True
+
+        state = _fake_state()
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"slot": "chat-1-1"}
+        state._slots = {"chat-1-1": slot}
+        await chat_title.api_chat_slot_generate_title(request)
+        assert slot.title == "Real topic name"
+        assert slot._title_low_signal is False
+
+
+class TestLowSignalPersistence:
+    @pytest.mark.asyncio
+    async def test_persist_writes_the_flag_both_ways(self):
+        """True -> False must reach disk: a stale True would re-arm the early
+        milestone on every restart."""
+        state = _fake_state()
+        recorded: list[dict] = []
+        state.conversation_log.update_metadata = lambda _k, fields: recorded.append(fields)
+        slot = _titled_slot(1)
+        slot._title_low_signal = True
+        await chat_title._persist_title(state, slot)
+        slot._title_low_signal = False
+        await chat_title._persist_title(state, slot)
+        assert [f["title_low_signal"] for f in recorded] == [True, False]
+
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [(True, True), (False, False), (None, False), ("true", False), (1, False)],
+    )
+    def test_rehydrate_mapping(self, stored, expected):
+        assert chat_persistence._rehydrate_title_low_signal(stored) is expected
+
+    def test_rehydrate_slot_title_restores_the_flag(self):
+        slot = _ChatSlot("chat-1-1")
+        chat_persistence._rehydrate_slot_title(
+            slot,
+            "https://t.corp.amazon.com/V123456789",
+            titled=True,
+            metadata={"title_origin": "auto", "title_low_signal": True},
+        )
+        assert slot._title_low_signal is True
+
+
+class TestChainedTriggerWaitsForOnSendAttempt:
+    """chat_done's title→refresh chain vs a still-running ON-SEND attempt.
+
+    Regression (review finding): when the on-send titling task was still
+    awaiting its LLM call at chat_done, the chained ``_maybe_auto_title``
+    bounced off the ``_title_in_flight`` guard and ``maybe_refresh_title``
+    bounced off the not-titled guard; the low-signal title then locked AFTER
+    both, and a one-message session — which gets no later chat_done — kept the
+    URL echo indefinitely. ``title_then_refresh`` must wait the attempt out.
+    """
+
+    @staticmethod
+    def _patch_title_path(monkeypatch, generate):
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", generate)
+        monkeypatch.setattr(chat_title, "_reveal_title", _noop)
+        # NOTE: _persist_title stays REAL (against the MagicMock state) — the
+        # refresh's durable-mark gate skips generation when persistence fails.
+        monkeypatch.setattr(chat_title, "maybe_suggest_folder", _noop)
+
+    @staticmethod
+    def _one_message_url_slot() -> _ChatSlot:
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [
+            {"role": "user", "content": "https://t.corp.amazon.com/V2371919238 investigate"},
+            {"role": "assistant", "content": "found the offending bucket policy"},
+        ]
+        return slot
+
+    @pytest.mark.asyncio
+    async def test_waits_out_in_flight_attempt_then_refreshes(self, monkeypatch):
+        gate = asyncio.Event()
+
+        async def _slow_generate(_state, _messages):
+            await gate.wait()
+            return "Research ticket V2371919238"  # URL echo → low-signal
+
+        self._patch_title_path(monkeypatch, _slow_generate)
+        refresh_calls = _patch_generator(monkeypatch, "S3 bucket policy triage")
+
+        slot = self._one_message_url_slot()
+        state = _fake_state()
+        # The on-send attempt is still awaiting its LLM call at chat_done.
+        slot._title_task = asyncio.create_task(chat_title._maybe_auto_title(state, slot))
+        await asyncio.sleep(0)  # let it take the in-flight guard
+        assert slot._title_in_flight is True
+
+        chained = asyncio.create_task(chat_title.title_then_refresh(state, slot))
+        await asyncio.sleep(0)
+        assert not chained.done(), "chain must wait, not bounce off the guards"
+        assert refresh_calls == []
+
+        gate.set()  # LLM answers; the on-send attempt locks the low-signal title
+        await chained
+        assert refresh_calls == ["Research ticket V2371919238"]
+        assert slot.title == "S3 bucket policy triage"
+
+    @pytest.mark.asyncio
+    async def test_no_pending_task_runs_straight_through(self, monkeypatch):
+        async def _fast_generate(_state, _messages):
+            return "Research ticket V2371919238"
+
+        self._patch_title_path(monkeypatch, _fast_generate)
+        refresh_calls = _patch_generator(monkeypatch, "S3 bucket policy triage")
+
+        slot = self._one_message_url_slot()
+        assert slot._title_task is None
+        await chat_title.title_then_refresh(_fake_state(), slot)
+        assert refresh_calls == ["Research ticket V2371919238"]
+        assert slot.title == "S3 bucket policy triage"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_attempt_leaves_the_retry_to_do_the_work(self, monkeypatch):
+        gate = asyncio.Event()
+
+        async def _slow_generate(_state, _messages):
+            await gate.wait()
+            return "never returned"
+
+        self._patch_title_path(monkeypatch, _slow_generate)
+        refresh_calls = _patch_generator(monkeypatch, "S3 bucket policy triage")
+
+        slot = self._one_message_url_slot()
+        state = _fake_state()
+        slot._title_task = asyncio.create_task(chat_title._maybe_auto_title(state, slot))
+        await asyncio.sleep(0)
+        slot._title_task.cancel()
+        await asyncio.sleep(0)  # cancellation propagates; guard is released
+
+        async def _fast_generate(_state, _messages):
+            return "Research ticket V2371919238"
+
+        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _fast_generate)
+        await chat_title.title_then_refresh(state, slot)  # must not raise
+        assert slot.title == "S3 bucket policy triage"
+        assert refresh_calls == ["Research ticket V2371919238"]
