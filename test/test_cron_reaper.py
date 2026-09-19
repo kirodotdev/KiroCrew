@@ -58,7 +58,10 @@ class TestCronReaper:
         assert "Reaped" in (job.last_error or "")
         assert "expired1" in svc._reaped_jobs
         assert "expired1" not in svc._job_start_times  # popped early
-        sessions.reset.assert_awaited_once_with("cron:expired1")
+        # ``ends_conversation``: the reaper has given up on the run, so its conversation
+        # is over and its sub-agent runs end with it. Asserting the whole call keeps a
+        # later edit from dropping that and leaving a reaped job's children running.
+        sessions.reset.assert_awaited_once_with("cron:expired1", ends_conversation=True)
         mock_sel().log_tool_invocation.assert_called_once_with(
             session_key="cron:expired1",
             source="cron",

@@ -124,6 +124,7 @@ class _CompactionOwner(Protocol):
         expect_session: Any | None = None,
         skip_if_busy: bool = False,
         clear_conversation: bool = False,
+        ends_conversation: bool = False,
     ) -> bool: ...
 
 

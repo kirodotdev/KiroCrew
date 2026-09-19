@@ -88,6 +88,7 @@ class CleanupOwner(Protocol):
         expect_session: SessionEntry | None = None,
         skip_if_busy: bool = False,
         clear_conversation: bool = False,
+        ends_conversation: bool = False,
     ) -> bool: ...
 
     async def _fire_recycle_callback(self, key: str, *, reason: str) -> None: ...
@@ -802,6 +803,10 @@ class SessionCleanup:
                         exc_info=True,
                     )
 
+            # Expiry recycles a PROCESS; the conversation survives on disk and
+            # resumes through ``session/load``. So this is not a parent end, and the
+            # session's in-flight sub-agent runs are left alone -- they have a
+            # conversation to deliver into, and their own run timeout bounds them.
             if not await self._owner.reset(key, skip_if_busy=True):
                 self._deps.logger.info(
                     "Idle sweep: %s became busy before reset — left running",
