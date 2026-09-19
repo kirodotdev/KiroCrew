@@ -406,6 +406,58 @@ describe('ChatPage ?sid= URL parameter', () => {
       vi.useRealTimers()
     })
 
+    /** The denied record has no expiry and reconnects re-deliver the whole list,
+     *  so "active slot unchanged" stops meaning "still waiting for this link"
+     *  once the restore window has passed. A frame this late still proves the
+     *  banner false — it must retire the notice without moving a user who has
+     *  been sitting in the deadline's session reading or composing. */
+    it('only clears the banner when the key arrives long after the restore window', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({
+        route: '/chat?sid=chat-9-900',
+        activeSlot: 'chat-1-100',
+        slots: [],
+        slotsLoaded: false,
+      })
+      await act(async () => { store.dispatch(sseSlots(slots)) })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      await act(async () => {
+        store.dispatch(sseSlots([...slots, slot('chat-9-900', 'Late Session')]))
+      })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+      expect(store.getState().chat.activeSlot).toBe('chat-1-100')
+      vi.useRealTimers()
+    })
+
+    /** Control for the bound above: a frame still inside the restore window
+     *  resolves the link as before, so the expiry cannot be satisfied by
+     *  refusing every late recovery. */
+    it('still resolves the link when the key arrives inside the restore window', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({
+        route: '/chat?sid=chat-9-900',
+        activeSlot: 'chat-1-100',
+        slots: [],
+        slotsLoaded: false,
+      })
+      await act(async () => { store.dispatch(sseSlots(slots)) })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      await act(async () => {
+        store.dispatch(sseSlots([...slots, slot('chat-9-900', 'Late Session')]))
+      })
+      await vi.advanceTimersByTimeAsync(50)
+      expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
+      expect(store.getState().chat.activeSlot).toBe('chat-9-900')
+      vi.useRealTimers()
+    })
+
     /** A late list entry proves the key exists, but its transcript can still fail
      *  to load. Recovery must replace the stale not-found verdict with the
      *  existing open-session failure instead of clearing every visible error. */
