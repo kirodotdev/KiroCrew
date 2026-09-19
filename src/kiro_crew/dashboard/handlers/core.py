@@ -1972,6 +1972,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # stays config-file-only: it also kills the PTY, which is not a display
     # preference.
     "dashboard.terminal.completion.enabled": {"type": "bool"},
+    # Run-in-terminal focuses the selected terminal tab and copies the command
+    # for a manual paste instead of minting a fresh PTY (Settings → Display →
+    # Terminal). Off by default so the fresh-shell default is unchanged; read by
+    # the dashboard's run-in-terminal handler, so a toggle takes effect on the
+    # next click with no restart. Only a literal `true` turns it on — a
+    # hand-edited non-boolean stays off.
+    "dashboard.terminal.reuse_current": {"type": "bool"},
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.

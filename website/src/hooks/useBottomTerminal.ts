@@ -297,6 +297,34 @@ export function hasTab(id: string): boolean {
   return state.tabs.some(t => t.id === id)
 }
 
+/** Focus the current existing dock terminal and return its session id, or null
+ *  when the panel holds none. This is the "reuse the current terminal" path
+ *  for Run-in-terminal (opt-in via `dashboard.terminal.reuse_current`):
+ *  reusing an existing shell keeps its state (env, cwd, an active `awsume`
+ *  session) that a freshly minted PTY would not have — which is exactly what
+ *  the setting exists to preserve.
+ *
+ *  "Current" means the focused tab, not simply the most recently created one:
+ *  a user may select an older shell because that is where their active login
+ *  lives. A stale or missing active id falls back to the last tab, matching the
+ *  cap fallback in `addTab` and keeping old persisted state recoverable. The
+ *  PTY is NEVER minted here: a null return means the caller must fall back to
+ *  opening a fresh tab, since there is no existing shell to send into. Opens
+ *  the panel so the reused shell is visible, the same as `addTab`. */
+export function reuseCurrentTab(): string | null {
+  const current = state.tabs.find(tab => tab.id === state.activeId) ?? state.tabs[state.tabs.length - 1]
+  if (!current) return null
+  // A tab restored from persistence is a hydration SUSPECT until a live probe
+  // confirms it (see reconcileRestoredTabs). Reusing one before it settles
+  // would copy the command against a tab that reconciliation may then drop,
+  // leaving no terminal and no fresh-tab fallback. While hydration is unsettled
+  // and the chosen tab is such a suspect, return null so the caller mints a
+  // fresh tab, which it owns outright.
+  if (hydratePhase !== 'settled' && restoredIds.has(current.id)) return null
+  set({ ...state, open: true, activeId: current.id })
+  return current.id
+}
+
 /** Remove a tab from the store (the caller disposes the PTY/xterm first).
  *  Closing the last tab also hides the panel. */
 export function removeTab(id: string): void {

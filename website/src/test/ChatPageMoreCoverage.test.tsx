@@ -34,7 +34,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
-import { useBottomTerminal, __resetBottomTerminal, removeTab } from '../hooks/useBottomTerminal'
+import { useBottomTerminal, __resetBottomTerminal, removeTab, addTab, MAX_TERMINALS } from '../hooks/useBottomTerminal'
 import { registerTerminalWs, unregisterTerminalWs } from '../utils/terminalRegistry'
 
 // The run-in-terminal rollback consults the popout probe to avoid tearing a
@@ -43,6 +43,10 @@ let mockTerminalPopoutOpen = false
 vi.mock('../utils/terminalPopout', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/terminalPopout')>()),
   isPopoutOpen: () => mockTerminalPopoutOpen,
+}))
+const copyToClipboardMock = vi.hoisted(() => vi.fn<(text: string) => Promise<boolean>>())
+vi.mock('../utils/clipboard', () => ({
+  copyToClipboard: (text: string) => copyToClipboardMock(text),
 }))
 const disposeTerminalSessionSpy = vi.hoisted(() => vi.fn())
 vi.mock('../components/CliPanel', async (importOriginal) => {
@@ -371,6 +375,8 @@ beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
   for (const k of Object.keys(apiMocks)) delete apiMocks[k]
+  copyToClipboardMock.mockReset()
+  copyToClipboardMock.mockResolvedValue(true)
   disposeTerminalSessionSpy.mockClear()
   alertSpy = makeAlertSpy()
   vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -1107,6 +1113,163 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
       stop()
       if (sessionId) unregisterTerminalWs(sessionId)
       vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('ChatPage run-in-terminal reuse-current (#11641)', () => {
+  const collect = () => {
+    const results: { reqId?: string; ok?: boolean }[] = []
+    const onResult = (e: Event) => { results.push((e as CustomEvent).detail) }
+    window.addEventListener('mc:run-in-terminal-result', onResult)
+    return { results, stop: () => window.removeEventListener('mc:run-in-terminal-result', onResult) }
+  }
+
+  beforeEach(() => { __resetBottomTerminal(); mockTerminalPopoutOpen = false })
+
+  it('focuses the existing terminal and copies the command instead of injecting bytes', async () => {
+    // Setting ON: the handler reads it off the kirocrewConfig query at event
+    // time. A stale fetch mock would read as off, so seed BEFORE render.
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: true } },
+    })
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+
+    // A terminal the user already has open. The security contract is that a
+    // possibly partially typed command is NEVER concatenated with a snippet;
+    // the command is copied for the user to paste after they inspect the shell.
+    let existingId = ''
+    act(() => { existingId = addTab() ?? '' })
+    await waitFor(() => expect(dock.result.current.tabs.length).toBe(1))
+    expect(existingId).toBeTruthy()
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-reuse' },
+        }))
+      })
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-reuse', ok: true, copied: true })
+      expect(copyToClipboardMock).toHaveBeenCalledWith('aws s3 ls')
+      // The selected tab is focused but untouched: no raw PTY bytes and no
+      // second terminal tab are created.
+      expect(dock.result.current.tabs).toHaveLength(1)
+      expect(dock.result.current.tabs[0].id).toBe(existingId)
+      expect(dock.result.current.activeId).toBe(existingId)
+    } finally {
+      stop()
+    }
+  })
+
+  it('reports failure when copying for the selected terminal is refused', async () => {
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: true } },
+    })
+    copyToClipboardMock.mockResolvedValueOnce(false)
+    await renderTurn()
+    act(() => { addTab() })
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-copy-failed' },
+        }))
+      })
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-copy-failed', ok: false, copied: false })
+      const notice = await screen.findByTestId('action-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.textContent).toContain("The command couldn't be copied")
+    } finally {
+      stop()
+    }
+  })
+
+  it('surfaces an ErrorNotice when the config fetch fails so reuse silently reverts (F1)', async () => {
+    // A failed kirocrewConfig read means the saved reuse setting is unknown;
+    // it reads as off and the command opens a fresh terminal. That silent
+    // downgrade is surfaced through ErrorNotice (errors-use-error-notice).
+    apiMocks.kirocrewConfig = vi.fn().mockRejectedValue(new Error('settings unavailable'))
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+
+    const { stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-cfg-failed' },
+        }))
+      })
+      const notice = await screen.findByTestId('action-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.textContent).toContain("terminal settings couldn't be loaded")
+      // The command still runs: a fresh tab is minted.
+      await waitFor(() => expect(dock.result.current.tabs.length).toBe(1))
+    } finally {
+      stop()
+      const id = dock.result.current.tabs[0]?.id
+      if (id) unregisterTerminalWs(id)
+    }
+  })
+
+  it('surfaces an ErrorNotice when the terminal cap blocks the fresh-tab fallback (F3)', async () => {
+    // Reuse on, no reusable tab, and the cap is already full: no fresh tab can
+    // be minted, so the command is neither copied nor run. Say so through
+    // ErrorNotice rather than only the button glyph (errors-use-error-notice).
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: false } },
+    })
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    // Fill to the cap so addDockTerminal returns null.
+    act(() => { for (let i = 0; i < MAX_TERMINALS; i++) addTab() })
+    await waitFor(() => expect(dock.result.current.tabs.length).toBe(MAX_TERMINALS))
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-cap' },
+        }))
+      })
+      const notice = await screen.findByTestId('action-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.textContent).toContain('too many are already open')
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-cap', ok: false })
+      // No tab beyond the cap was minted.
+      expect(dock.result.current.tabs.length).toBe(MAX_TERMINALS)
+    } finally {
+      stop()
+      for (const t of dock.result.current.tabs) unregisterTerminalWs(t.id)
+    }
+  })
+
+  it('falls back to minting a fresh tab when reuse is on but no terminal is open', async () => {
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: true } },
+    })
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    expect(dock.result.current.tabs.length).toBe(0)
+
+    const { stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-none' },
+        }))
+      })
+      // No existing shell to reuse -> the fresh-mint path runs and a tab appears.
+      await waitFor(() => expect(dock.result.current.tabs.length).toBe(1))
+    } finally {
+      stop()
+      const id = dock.result.current.tabs[0]?.id
+      if (id) unregisterTerminalWs(id)
     }
   })
 })

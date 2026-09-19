@@ -10170,7 +10170,10 @@
       "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
       "run_in_terminal_liveness_probe_failed_error": "コマンドは新しいターミナルに送信されませんでした。シェルはまだ実行中の可能性があるため、タブは開いたままにしてあります。",
       "run_in_terminal_shell_alive_error": "コマンドは新しいターミナルに送信されませんでしたが、シェルは実行中です。そこでコマンドを実行できるよう、タブは開いたままにしてあります。",
-      "run_in_terminal_dispatch_rolled_back_error": "コマンドは新しいターミナルに送信されなかったため、そのターミナルを閉じました。"
+      "run_in_terminal_dispatch_rolled_back_error": "コマンドは新しいターミナルに送信されなかったため、そのターミナルを閉じました。",
+      "run_in_terminal_copy_failed_error": "コマンドをコピーできなかったため、ターミナルには何も送信されませんでした。コードブロックからコピーして自分で貼り付けてください。",
+      "run_in_terminal_reuse_config_failed_error": "ターミナル設定を読み込めなかったため、選択したターミナルを再利用せず、新しいターミナルでコマンドを実行しました。",
+      "run_in_terminal_no_tab_error": "コマンドを実行できませんでした：開いているターミナルが多すぎて新しいターミナルを開けません。1 つ閉じてからもう一度お試しください。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
@@ -13431,6 +13434,9 @@
         "terminal_completion": "コマンド補完",
         "terminal_completion_desc": "ターミナルで入力中に補完ポップアップを表示します。Enter は入力した行を実行します。候補を採用するには ↑/↓ の後に Enter、または Tab を押します。オフにするとポップアップは表示されず、シェル自体の Tab 補完はそのまま使えます。",
         "terminal_completion_save_failed": "コマンド補完の設定を保存できませんでした",
+        "terminal_reuse_current": "現在のターミナルを再利用",
+        "terminal_reuse_current_desc": "コマンドを実行せずにコピーします：ターミナルで実行すると、選択中のターミナルタブにフォーカスし、コマンドをコピーします。そのシェルに貼り付ければ、作業ディレクトリ・環境変数・ログイン中のセッションがそのまま保たれます。ターミナルが開いていない場合は新しいターミナルを開いてそこで実行します。",
+        "terminal_reuse_current_save_failed": "ターミナル再利用の設定を保存できませんでした",
         "theme": "テーマ",
         "theme_source": "テーマソース",
         "theme_source_location": "テーマソースの場所",

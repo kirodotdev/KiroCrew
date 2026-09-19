@@ -10170,7 +10170,10 @@
       "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
       "run_in_terminal_liveness_probe_failed_error": "새 터미널로 명령이 전송되지 않았습니다. 셸이 아직 실행 중일 수 있으므로 탭을 열어 두었습니다.",
       "run_in_terminal_shell_alive_error": "새 터미널로 명령이 전송되지 않았지만 셸은 실행 중입니다. 거기서 명령을 실행할 수 있도록 탭을 열어 두었습니다.",
-      "run_in_terminal_dispatch_rolled_back_error": "새 터미널로 명령이 전송되지 않아 해당 터미널을 닫았습니다."
+      "run_in_terminal_dispatch_rolled_back_error": "새 터미널로 명령이 전송되지 않아 해당 터미널을 닫았습니다.",
+      "run_in_terminal_copy_failed_error": "명령을 복사하지 못해 터미널로 아무것도 전송되지 않았습니다. 코드 블록에서 복사하여 직접 붙여 넣으세요.",
+      "run_in_terminal_reuse_config_failed_error": "터미널 설정을 불러오지 못해 선택한 터미널을 재사용하는 대신 새 터미널에서 명령을 실행했습니다.",
+      "run_in_terminal_no_tab_error": "명령을 실행할 수 없습니다: 이미 열린 터미널이 너무 많아 새 터미널을 열 수 없습니다. 하나를 닫고 다시 시도하세요."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
@@ -13431,6 +13434,9 @@
         "terminal_completion": "명령 자동 완성",
         "terminal_completion_desc": "터미널에서 입력하는 동안 자동 완성 팝업을 표시합니다. Enter는 입력한 줄을 실행합니다. 제안을 선택하려면 ↑/↓ 후 Enter 또는 Tab을 누르세요. 끄면 팝업이 숨겨지며 셸 자체의 Tab 완성은 계속 작동합니다.",
         "terminal_completion_save_failed": "명령 자동 완성 설정을 저장하지 못했습니다",
+        "terminal_reuse_current": "현재 터미널 재사용",
+        "terminal_reuse_current_desc": "명령을 실행하지 않고 복사합니다: 터미널에서 실행하면 선택한 터미널 탭에 포커스를 두고 명령을 복사합니다. 그 셸에 붙여 넣으면 작업 디렉터리, 환경 변수, 로그인 세션이 그대로 유지됩니다. 열린 터미널이 없으면 새 터미널을 열어 거기서 명령을 실행합니다.",
+        "terminal_reuse_current_save_failed": "터미널 재사용 설정을 저장하지 못했습니다",
         "theme": "테마",
         "theme_source": "테마 소스",
         "theme_source_location": "테마 소스 위치",

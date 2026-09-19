@@ -10458,7 +10458,10 @@
       "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
       "run_in_terminal_liveness_probe_failed_error": "El comando no se envió al nuevo terminal. Su shell puede seguir en ejecución, por lo que la pestaña se dejó abierta.",
       "run_in_terminal_shell_alive_error": "El comando no se envió al nuevo terminal, pero su shell está en ejecución: la pestaña se dejó abierta para que puedas ejecutar el comando allí.",
-      "run_in_terminal_dispatch_rolled_back_error": "El comando no se envió al nuevo terminal, por lo que ese terminal se cerró."
+      "run_in_terminal_dispatch_rolled_back_error": "El comando no se envió al nuevo terminal, por lo que ese terminal se cerró.",
+      "run_in_terminal_copy_failed_error": "No se pudo copiar el comando, por lo que no se envió nada al terminal. Cópialo desde el bloque de código y pégalo tú mismo.",
+      "run_in_terminal_reuse_config_failed_error": "No se pudo cargar la configuración del terminal, por lo que el comando abrió un terminal nuevo en lugar de reutilizar el que habías seleccionado.",
+      "run_in_terminal_no_tab_error": "No se pudo ejecutar el comando: no se pudo abrir un terminal nuevo porque ya hay demasiados abiertos. Cierra uno e inténtalo de nuevo."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
@@ -13798,6 +13801,9 @@
         "terminal_completion": "Completado de comandos",
         "terminal_completion_desc": "Mostrar el menú de completado al escribir en el Terminal. Intro ejecuta la línea que escribiste; para aceptar una sugerencia, pulsa ↑/↓ y luego Intro, o Tab. Desactivado oculta el menú; el completado con Tab de tu shell sigue funcionando.",
         "terminal_completion_save_failed": "No se pudo guardar la configuración del completado de comandos",
+        "terminal_reuse_current": "Reutilizar el terminal actual",
+        "terminal_reuse_current_desc": "Copia el comando en lugar de ejecutarlo: «Ejecutar en el terminal» enfoca la pestaña de terminal que has seleccionado y copia el comando, para que puedas pegarlo en esa shell y conservar su directorio de trabajo, entorno y sesión iniciada. Si no hay ningún terminal abierto, abre uno nuevo y ejecuta allí el comando.",
+        "terminal_reuse_current_save_failed": "No se pudo guardar la configuración de reutilización del terminal",
         "theme": "Tema",
         "theme_source": "Origen del tema",
         "theme_source_location": "Ubicación del origen del tema",

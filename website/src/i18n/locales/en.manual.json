@@ -4180,7 +4180,10 @@
       "could_not_send_to_side_chat": "Couldn't send to the side chat",
       "run_in_terminal_liveness_probe_failed_error": "The command wasn't sent to the new terminal. Its shell may still be running, so the tab was left open.",
       "run_in_terminal_shell_alive_error": "The command wasn't sent to the new terminal, but its shell is running — the tab was left open so you can run the command there.",
-      "run_in_terminal_dispatch_rolled_back_error": "The command wasn't sent to the new terminal, so that terminal was closed."
+      "run_in_terminal_dispatch_rolled_back_error": "The command wasn't sent to the new terminal, so that terminal was closed.",
+      "run_in_terminal_copy_failed_error": "The command couldn't be copied, so nothing was sent to the terminal. Copy it from the code block and paste it yourself.",
+      "run_in_terminal_reuse_config_failed_error": "Your terminal settings couldn't be loaded, so the command opened a new terminal instead of reusing the one you had selected.",
+      "run_in_terminal_no_tab_error": "The command couldn't run: no new terminal could be opened because too many are already open. Close one and try again."
     },
     "chatSidebar": {
       "adopt_failed": "Could not open this session here.",
@@ -5707,6 +5710,9 @@
         "terminal_completion": "Command completion",
         "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
         "terminal_completion_save_failed": "Could not save the command completion setting",
+        "terminal_reuse_current": "Reuse the current terminal",
+        "terminal_reuse_current_desc": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it opens a new terminal and runs the command there.",
+        "terminal_reuse_current_save_failed": "Could not save the terminal reuse setting",
         "config_load_failed": "Could not load the saved display settings. The shell, recent-session and command completion settings are unavailable until it loads.",
         "recent_tint_save_failed": "Could not save the recent-session highlight count.",
         "credit_usage_scrape": "Spend a few credits to check your balance",

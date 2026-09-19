@@ -10170,7 +10170,10 @@
       "could_not_send_to_side_chat": "无法发送到随手问",
       "run_in_terminal_liveness_probe_failed_error": "命令未发送到新终端。终端进程可能仍在运行，因此标签页保持打开。",
       "run_in_terminal_shell_alive_error": "命令未发送到新终端，但终端进程正在运行，标签页已保持打开，可在其中运行该命令。",
-      "run_in_terminal_dispatch_rolled_back_error": "命令未发送到新终端，因此该终端已关闭。"
+      "run_in_terminal_dispatch_rolled_back_error": "命令未发送到新终端，因此该终端已关闭。",
+      "run_in_terminal_copy_failed_error": "命令无法复制，因此没有发送到终端。请从代码块中自行复制并粘贴。",
+      "run_in_terminal_reuse_config_failed_error": "无法加载你的终端设置，因此命令新开了一个终端，而不是复用你选中的那个。",
+      "run_in_terminal_no_tab_error": "命令无法运行：已打开的终端太多，无法再新开一个。请关闭一个后重试。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
@@ -13431,6 +13434,9 @@
         "terminal_completion": "命令补全",
         "terminal_completion_desc": "在终端中输入时显示补全弹窗。回车执行你输入的那一行；要采用建议，按 ↑/↓ 再回车，或按 Tab。关闭后不显示弹窗；Shell 自带的 Tab 补全仍然可用。",
         "terminal_completion_save_failed": "无法保存命令补全设置",
+        "terminal_reuse_current": "复用当前终端",
+        "terminal_reuse_current_desc": "复制命令而不是运行它：在终端中运行会聚焦你已选中的终端标签页并复制命令，你可以手动粘贴到该 Shell，同时保留其工作目录、环境变量和已登录会话。没有打开终端时，会新开一个终端并在那里运行命令。",
+        "terminal_reuse_current_save_failed": "无法保存终端复用设置",
         "theme": "主题",
         "theme_source": "主题来源",
         "theme_source_location": "主题来源位置",

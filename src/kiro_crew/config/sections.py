@@ -3320,6 +3320,21 @@ class DashboardConfig:
                         ),
                     },
                 },
+                "reuse_current": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Reuse the current terminal",
+                        "help": (
+                            "Run-in-terminal focuses the terminal tab you have "
+                            "selected and copies the command, so you can paste it into "
+                            "that shell and keep its state (working directory, "
+                            "environment, an active login session). With no terminal "
+                            "open, a fresh terminal opens and runs the command. "
+                            "Off = a fresh terminal each time."
+                        ),
+                    },
+                },
                 "completion": {
                     "type": "object",
                     "additionalProperties": True,
