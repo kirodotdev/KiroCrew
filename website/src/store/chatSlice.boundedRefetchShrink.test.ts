@@ -133,7 +133,17 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
     expect(store.getState().chat.slotMessages.bg.length).toBe(111)
 
     await store.dispatch(warmSlotCache('bg'))
-    expect(limitsFor('bg')).toEqual([undefined])
+    // The property, not the mechanism (#10005, as for the switch above). The warm
+    // now asks for a window sized to what the pane holds and only falls back to
+    // unbounded when that window cannot be STITCHED onto the cache. This fixture
+    // is that case by construction -- the cache is the OLDEST 111 rows, the
+    // window is the newest 111, so they are disjoint -- and the unbounded retry
+    // is what keeps the cache whole. A cache that holds the tail (every real
+    // pane) anchors and stays on the one bounded read; see
+    // chatSlice.warmSlotCacheBound.test.ts.
+    const limits = limitsFor('bg')
+    expect(limits[0]).toBeGreaterThanOrEqual(111)
+    expect(limits.at(-1)).toBeUndefined()
     expect(store.getState().chat.slotMessages.bg.length).toBeGreaterThanOrEqual(111)
   })
 
