@@ -2611,7 +2611,54 @@ class AcpPermissionNeeded(AcpError):  # noqa: N818
 
 
 class AcpProcessDied(AcpError):  # noqa: N818
-    """kiro-cli process exited unexpectedly."""
+    """kiro-cli process exited unexpectedly.
+
+    ``resubmit_safe`` answers the one question a caller that wants to RE-RUN the
+    turn has to ask, and answers it at the raise site rather than making that
+    caller reason about the death taxonomy. Mirrors :attr:`AcpError.transient`:
+    the layer that raises knows the classification, so it states it instead of
+    exporting a class hierarchy for consumers to re-derive -- an attribute read
+    keeps the decision out of the consumer's class-matching, which is what
+    ``scripts/check_agent_sdk_boundary.py`` polices at the agent-SDK boundary.
+
+    THE INVARIANT is about WHEN the death was discovered, not about which
+    subsystem noticed. It is THREE-valued, and the third value is the one that
+    matters:
+
+    * ``True`` -- discovered with NO turn in flight, so nothing THIS turn asked for
+      can have run. Only a transport write that never reached the child, and the
+      pre-conversation liveness check, qualify. The claim is about delivery of the
+      write that raised: it does NOT assert that nothing ran earlier on the same
+      session, which is why a caller that re-prompts an already-worked session
+      withdraws it.
+    * ``False`` -- a turn may have been in flight. A tool may already have
+      completed its side effects, so resubmitting the prompt can repeat a
+      mutation. Stated explicitly, never inferred.
+    * ``None`` (the default) -- NOT CLASSIFIED. The raise site has expressed no
+      opinion, so a consumer must fall back to whatever it did before this
+      attribute existed rather than read the silence as a verdict.
+
+    ``None`` rather than ``False`` as the default, which is the whole design.
+    A two-valued flag makes silence indistinguishable from a judgement: an
+    unclassified site reads as "unsafe", and a consumer that refuses on ``False``
+    drops behaviour it would otherwise keep. That population is real, not
+    hypothetical. ``session_provider._translate_dead`` rebuilds every
+    shared-runtime death as ``AcpProcessDied(str(exc))``, so the five
+    ``runtime.py`` ``"process not running"`` raises arrive unclassified, and a
+    refusing default denies them the retry their message wording earns at the
+    consumer's fallback. Silence must therefore route to that fallback question
+    rather than answer it.
+
+    This mirrors :attr:`AcpError.transient`, which is ``None``-by-default for the
+    same reason: an unclassified error falls back to the marker ladder instead of
+    being declared non-transient by omission.
+    """
+
+    resubmit_safe: bool | None = None
+
+    def __init__(self, *args: object, resubmit_safe: bool | None = None, **kw: object) -> None:
+        super().__init__(*args, **kw)  # type: ignore[arg-type]
+        self.resubmit_safe = resubmit_safe
 
 
 class AcpAuthRequired(AcpError):  # noqa: N818
@@ -9501,7 +9548,14 @@ class AcpClient:
                     consecutive_empty += 1
                     if consecutive_empty >= _MAX_CONSECUTIVE_EMPTY and not self._is_process_alive():
                         rc = self._process.returncode if self._process else "?"
-                        raise AcpProcessDied(f"Process exited during prompt (exit code {rc})")
+                        # Explicit False, not the unclassified default: this
+                        # message contains "process exited", so leaving it
+                        # unclassified would send it to the wording fallback and
+                        # retry a death that happened WITH a turn in flight.
+                        raise AcpProcessDied(
+                            f"Process exited during prompt (exit code {rc})",
+                            resubmit_safe=False,
+                        )
                     # Staleness check: if caller set _stale_eligible (text was
                     # streamed) and kiro-cli has gone silent, exit early.
                     # Fold in _last_activity (refreshed by the stderr drain) so a
@@ -10535,15 +10589,52 @@ class AcpClient:
     async def _send_prompt(self, message: str) -> int:
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
         # cannot drift.
-        return await self._send_request(
-            METHOD_PROMPT,
-            {
-                "sessionId": self._session_id,
-                # Offloaded: see the note in session_handle.prompt -- image
-                # reads and base64 encoding must not block the event loop.
-                "prompt": await asyncio.to_thread(build_prompt_blocks, message),
-            },
-        )
+        try:
+            return await self._send_request(
+                METHOD_PROMPT,
+                {
+                    "sessionId": self._session_id,
+                    # Offloaded: see the note in session_handle.prompt -- image
+                    # reads and base64 encoding must not block the event loop.
+                    "prompt": await asyncio.to_thread(build_prompt_blocks, message),
+                },
+            )
+        except AcpProcessDied as exc:
+            # THE one write that submits a prompt, so the only place that may
+            # claim a death is safe to resubmit.
+            #
+            # The claim this makes is exactly "this request never reached the
+            # child", which is all a transport can establish. It does NOT claim
+            # that nothing ran before it: a caller may re-prompt a session that
+            # has already done work, and only that caller knows. Both halves are
+            # required, so the two callers that re-prompt withdraw the claim --
+            # `stream_and_collect` when a tool fired during the call, and the
+            # cron post-token resume on its continuation prompt.
+            #
+            # The claim belongs here rather than at the transport write, because
+            # turn state is not knowable there. The same `_send_request` also
+            # carries `session/steer` and `commands/execute`, and its siblings
+            # `_send_response` / `_send_error` exist ONLY to answer requests the
+            # child raises mid-turn (tool-permission replies, unknown-method
+            # rejections) -- a broken pipe on any of those means a turn WAS in
+            # flight and an earlier tool may already have completed.
+            #
+            # Why a failure HERE implies nothing ran, which is not obvious. The
+            # guarded region is `write()` and `drain()` together, and the claim
+            # holds at either failure site. `write()` hands the payload to the
+            # transport, so a failure there means no byte of the request was ever
+            # queued for the child. `drain()` is the subtler half, and the argument
+            # does NOT rest on how much it flushed: asyncio's drain raises once the
+            # connection is recorded lost, whether or not bytes are still buffered,
+            # so it cannot tell you what the child read. FRAMING is what carries the
+            # claim. Wire messages are newline-delimited JSON-RPC and `_send_request`
+            # appends that newline LAST, so whatever prefix the child managed to
+            # consume is missing its terminator: it has not finished reading a
+            # request and cannot dispatch a tool for one it cannot parse. Partial
+            # consumption IS reachable (a child that reads a prefix then dies raises
+            # here), which is exactly the case framing covers.
+            exc.resubmit_safe = True
+            raise
 
     async def _read_prompt_response(self, req_id: int, timeout: float) -> str:
         output: list[str] = []
