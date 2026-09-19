@@ -8,6 +8,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     model_is_unusable,
     resolve_pin_spelling,
+    resolve_prompt_timeout_for_deadline,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -1774,15 +1776,20 @@ class AcpProvider(LLMProvider):
         # the fallback keeps those guides reachable without a false capability.
         return self._client.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
+    def prompt_timeout_for_deadline(self, deadline: float) -> float:
+        """Resolve the immutable transport budget this ACP session supports."""
+        return resolve_prompt_timeout_for_deadline(deadline)
+
+    async def stream(self, message: str, timeout: float | None = None) -> AsyncIterator[LLMEvent]:
         # The direct client can respawn in ensure_ready; resolve that BEFORE
         # comparing receipts so a recycled conversation receives the full text.
         if isinstance(self._client, AcpClient) and self._private_memory:
             await self._client.ensure_ready()
+        send = self._client.stream_events
+        if timeout is not None:
+            send = partial(self._client.stream_events, timeout=timeout)
         async with aclosing(
-            self.essential_delivery.stream(
-                message, self._client.stream_events, lambda: self.context_incarnation
-            )
+            self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
         ) as events:
             async for e in events:
                 yield self._to_llm_event(e)

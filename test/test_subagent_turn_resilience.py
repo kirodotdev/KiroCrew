@@ -88,6 +88,40 @@ class _FatalError(Exception):
     transient = False
 
 
+class _TimeoutCapableProvider:
+    """Provider double whose type explicitly opts into captured prompt timeouts."""
+
+    def __init__(self, stream_factory) -> None:
+        self._stream_factory = stream_factory
+        self.backend = ""
+        self.cwd = ""
+        self.last_infra_error = None
+        self.session_id = ""
+        self.served_model = ""
+        self._model = ""
+        self.approve_tool = AsyncMock()
+        self.reject_tool = AsyncMock()
+        self.set_model = AsyncMock()
+        self.available_models = MagicMock(return_value=[])
+
+    def prompt_timeout_for_deadline(self, deadline: float) -> float:
+        from kiro_crew.acp.client import resolve_prompt_timeout_for_deadline
+
+        return resolve_prompt_timeout_for_deadline(deadline)
+
+    def stream(self, message: str, timeout: float | None = None):
+        return self._stream_factory(message, timeout=timeout)
+
+    def context_usage_pct(self) -> float:
+        return 0.0
+
+    def context_window_tokens(self) -> int:
+        return 0
+
+    def context_used_tokens(self) -> int:
+        return 0
+
+
 def _text_event(text: str) -> SimpleNamespace:
     return SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=text, runtime_global=False)
 
@@ -210,6 +244,198 @@ async def test_transient_error_posttoken_sends_continue_prompt():
 
 
 @pytest.mark.asyncio
+async def test_captured_timeout_survives_config_cut_across_all_recovery_prompts(monkeypatch):
+    from kiro_crew.acp.client import _PROMPT_TIMEOUT_MARGIN_SECS, resolve_prompt_timeout
+    from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.providers.base import LLMEvent
+
+    cfg = KiroCrewConfig()
+    cfg.agent.chat_turn_timeout_secs = 3600
+    cfg.agent.subagent_timeout_secs = 10800
+    cfg.agent.subagent_timeout_auto = True
+    cfg.agent.subagent_timeout_max_secs = 21600
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    calls: list[tuple[str, float | None]] = []
+
+    def stream_factory(message: str, *args, **kwargs):
+        calls.append((message, kwargs.get("timeout")))
+
+        async def _gen():
+            if len(calls) == 1:
+                raise _TransientError("backend 500")
+            if len(calls) == 2:
+                cfg.agent.subagent_timeout_auto = False
+                cfg.agent.subagent_timeout_max_secs = 10800
+                yield _text_event("partial ")
+                yield LLMEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason=STOP_REASON_TOOL_STALL,
+                    text="verdict=unknown; redirected_output=run.log",
+                )
+                return
+            yield _text_event("finished")
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
+    mgr = _manager(sessions)
+    mgr._default_timeout = 21600
+    mgr._timeout_history_loaded = True
+    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+        info = await _spawn_and_wait(mgr)
+
+    expected = 21600.0 + _PROMPT_TIMEOUT_MARGIN_SECS
+    assert info.error == ""
+    assert [timeout for _, timeout in calls] == [expected, expected, expected]
+    assert calls[0][0] == calls[1][0] == "built_message"
+    assert calls[2][0] != "built_message"
+    assert resolve_prompt_timeout() < expected
+
+
+@pytest.mark.asyncio
+async def test_cancel_recovery_preserves_captured_timeout_after_config_cut(monkeypatch):
+    from kiro_crew.acp.client import _PROMPT_TIMEOUT_MARGIN_SECS, resolve_prompt_timeout
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agent.chat_turn_timeout_secs = 3600
+    cfg.agent.subagent_timeout_secs = 21600
+    cfg.agent.subagent_timeout_auto = True
+    cfg.agent.subagent_timeout_max_secs = 21600
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    calls: list[tuple[str, float | None]] = []
+    first_started = asyncio.Event()
+    recovery_started = asyncio.Event()
+    finish_recovery = asyncio.Event()
+
+    def stream_factory(message: str, *args, **kwargs):
+        calls.append((message, kwargs.get("timeout")))
+
+        async def _gen():
+            if len(calls) == 1:
+                yield _text_event("partial ")
+                first_started.set()
+                await asyncio.Event().wait()
+            recovery_started.set()
+            await finish_recovery.wait()
+            yield _text_event("finished")
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
+    mgr = _manager(sessions)
+    mgr._default_timeout = 21600
+    mgr._timeout_history_loaded = True
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("resumable six-hour job")
+        assert info is not None
+        assert info.timeout_secs == 0
+        await asyncio.wait_for(first_started.wait(), timeout=_START_TIMEOUT)
+        assert info.timeout_secs == 21600
+        assert info.streaming_text and info.tool_count == 0
+
+        # Live configuration affects genuinely fresh runs, never the immutable
+        # deadline already captured by this same-info recovery.
+        cfg.agent.subagent_timeout_secs = 10800
+        cfg.agent.subagent_timeout_auto = False
+        cfg.agent.subagent_timeout_max_secs = 10800
+        mgr._default_timeout = 10800
+
+        task1 = mgr._tasks[info.id]
+        task1.cancel()
+        await asyncio.gather(task1, return_exceptions=True)
+        await asyncio.wait_for(recovery_started.wait(), timeout=_RESPAWN_TIMEOUT)
+        task2 = mgr._tasks[info.id]
+
+        expected = 21600.0 + _PROMPT_TIMEOUT_MARGIN_SECS
+        assert task2 is not task1
+        assert info.timeout_secs == 21600
+        assert [timeout for _, timeout in calls] == [expected, expected]
+        assert resolve_prompt_timeout() < expected
+
+        finish_recovery.set()
+        await task2
+
+    assert info.error == ""
+    assert info.done is True
+    assert mgr._running_count == 0
+
+
+@pytest.mark.asyncio
+async def test_fresh_run_captures_current_lowered_timeout(monkeypatch):
+    from kiro_crew.acp.client import resolve_prompt_timeout_for_deadline
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agent.chat_turn_timeout_secs = 3600
+    cfg.agent.subagent_timeout_secs = 10800
+    cfg.agent.subagent_timeout_auto = False
+    cfg.agent.subagent_timeout_max_secs = 10800
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    calls: list[tuple[str, float | None]] = []
+
+    def stream_factory(message: str, *args, **kwargs):
+        calls.append((message, kwargs.get("timeout")))
+
+        async def _gen():
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
+    mgr = _manager(sessions)
+    mgr._default_timeout = 10800
+    mgr._timeout_history_loaded = True
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("fresh lowered-deadline job")
+        assert info is not None
+        assert info.timeout_secs == 0
+        await mgr._tasks[info.id]
+
+    expected = resolve_prompt_timeout_for_deadline(10800.0)
+    assert info.timeout_secs == 10800
+    assert [timeout for _, timeout in calls] == [expected]
+    assert info.done is True
+    assert mgr._running_count == 0
+
+
+@pytest.mark.asyncio
+async def test_legacy_duck_provider_stream_keeps_one_argument():
+    calls: list[str] = []
+    sessions = _mock_sessions(lambda *_args, **_kwargs: None)
+    provider = sessions._provider
+
+    async def legacy_stream(message: str):
+        calls.append(message)
+        yield _complete_event()
+
+    provider.stream = legacy_stream
+    mgr = _manager(sessions)
+
+    info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    assert calls == ["built_message"]
+
+
+@pytest.mark.asyncio
 async def test_transient_budget_exhausted_propagates():
     """Persistent transient errors fail after TRANSIENT_RETRIES attempts."""
     calls: list[str] = []
@@ -244,9 +470,11 @@ async def test_throttle_fallback_chain_swaps_model_and_annotates():
     prompt is replayed, and the delivered result carries the visible
     fallback warning (never silent)."""
     calls: list[str] = []
+    timeouts: list[float | None] = []
 
     def stream_factory(msg: str, *a, **kw):
         calls.append(msg)
+        timeouts.append(kw.get("timeout"))
 
         async def _gen():
             if len(calls) <= 1 + TRANSIENT_RETRIES:
@@ -257,7 +485,9 @@ async def test_throttle_fallback_chain_swaps_model_and_annotates():
         return _gen()
 
     sessions = _mock_sessions(stream_factory)
-    provider = sessions._provider
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
     provider.available_models = MagicMock(return_value=[{"modelId": "fb-1"}])
     provider.served_model = "primary-model"
     provider._model = "primary-model"
@@ -281,6 +511,8 @@ async def test_throttle_fallback_chain_swaps_model_and_annotates():
     provider.set_model.assert_awaited_once_with("fb-1")
     # Zero activity by construction — the ORIGINAL prompt is replayed.
     assert calls == ["built_message"] * (2 + TRANSIENT_RETRIES)
+    assert timeouts[0] is not None
+    assert timeouts == [timeouts[0]] * len(calls)
     # Visibility: the delivered result is prefixed with the fallback warning.
     assert "fb result" in info.result
     assert "throttled" in info.result and "fb-1" in info.result

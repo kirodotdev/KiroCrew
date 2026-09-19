@@ -270,6 +270,7 @@ harness can get wrong:
 | Member | Contract |
 |---|---|
 | `start` / `shutdown` / `stream` | The turn lifecycle every consumer depends on. |
+| `prompt_timeout_for_deadline` | Optional immutable transport budget for an outer deadline. The default `None` preserves legacy one-argument `stream(message)` calls; capable providers receive the explicit timeout through `agent_sdk.capture_prompt_timeout`. |
 | `approve_tool` / `reject_tool` | Tool-approval responses; a provider that cannot answer must still refuse, never hang. |
 | `context_usage_pct`, `context_usage_unknown`, `context_window_tokens`, `context_used_tokens` | The context meter. `context_usage_unknown` is what distinguishes "0%" from "not measured". |
 | `session_id`, `cleanup_session`, `cwd` | Session identity and cleanup routing; a wrong `cwd` persists the wrong workspace on resume. |

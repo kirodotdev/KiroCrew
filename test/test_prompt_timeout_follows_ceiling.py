@@ -35,6 +35,7 @@ from kiro_crew.acp.client import (
     _PROMPT_TIMEOUT_MARGIN_SECS,
     _effective_prompt_timeout,
     resolve_prompt_timeout,
+    resolve_prompt_timeout_for_deadline,
 )
 from kiro_crew.config.loader import (
     CHAT_TURN_TIMEOUT_MAX,
@@ -47,7 +48,14 @@ from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS
 from kiro_crew.dashboard import turn_dispatch as td
 
 
-def _patch_loaded_ceiling(monkeypatch, value: object, subagent: object = 60) -> None:
+def _patch_loaded_ceiling(
+    monkeypatch,
+    value: object,
+    subagent: object = 60,
+    *,
+    adaptive: bool = False,
+    adaptive_max: object = 21600,
+) -> None:
     """Patch ``KiroCrewConfig.load`` on the CLASS.
 
     The resolver imports the class lazily inside the function and
@@ -58,7 +66,8 @@ def _patch_loaded_ceiling(monkeypatch, value: object, subagent: object = 60) -> 
     ``subagent`` defaults to the loader's own 60s floor, far below
     ``_DEFAULT_PROMPT_TIMEOUT`` and so never binding — that keeps the
     turn-ceiling cases below measuring the ceiling term alone. Pass it
-    explicitly to exercise the subagent term.
+    explicitly to exercise the subagent term. Adaptive fields are always present
+    so tests can prove both the enabled path and its disabled opposite.
     """
     if value is None:
 
@@ -71,6 +80,8 @@ def _patch_loaded_ceiling(monkeypatch, value: object, subagent: object = 60) -> 
         agent=SimpleNamespace(
             chat_turn_timeout_secs=value,
             subagent_timeout_secs=subagent,
+            subagent_timeout_auto=adaptive,
+            subagent_timeout_max_secs=adaptive_max,
         )
     )
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
@@ -148,6 +159,111 @@ class TestResolvePromptTimeout:
         _patch_loaded_ceiling(monkeypatch, 7200, subagent=SUBAGENT_TIMEOUT_SECS)
         assert resolve_prompt_timeout() > float(SUBAGENT_TIMEOUT_SECS)
 
+    def test_transport_outlives_every_possible_adaptive_deadline(self, monkeypatch) -> None:
+        """The configured maximum covers an in-memory raise before persistence."""
+        from kiro_crew.subagent_timeout import AdaptiveTimeoutPolicy
+
+        base = 10800
+        adaptive_max = 21600
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MIN,
+            subagent=base,
+            adaptive=True,
+            adaptive_max=adaptive_max,
+        )
+        policy = AdaptiveTimeoutPolicy(base, adaptive_max, enabled=True)
+        deadline = base
+        while deadline < adaptive_max:
+            deadline = policy.observe(deadline, deadline, completed=False).timeout_secs
+            assert deadline < resolve_prompt_timeout()
+        assert deadline == adaptive_max
+        assert resolve_prompt_timeout() == adaptive_max + _PROMPT_TIMEOUT_MARGIN_SECS
+
+    def test_adaptive_boundary_at_default_keeps_transport_strictly_outer(self, monkeypatch) -> None:
+        """Adaptive mode gets the margin even at the historical no-margin boundary."""
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MIN,
+            subagent=60,
+            adaptive=True,
+            adaptive_max=_DEFAULT_PROMPT_TIMEOUT,
+        )
+        assert resolve_prompt_timeout() == _DEFAULT_PROMPT_TIMEOUT + _PROMPT_TIMEOUT_MARGIN_SECS
+
+    def test_adaptive_ceiling_never_clamps_a_higher_configured_floor(self, monkeypatch) -> None:
+        """The manual floor remains the policy floor and therefore the outer bound."""
+        configured_floor = _DEFAULT_PROMPT_TIMEOUT + 7200.0
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MIN,
+            subagent=configured_floor,
+            adaptive=True,
+            adaptive_max=_DEFAULT_PROMPT_TIMEOUT,
+        )
+        assert resolve_prompt_timeout() == configured_floor + _PROMPT_TIMEOUT_MARGIN_SECS
+
+    def test_disabled_adaptation_ignores_the_adaptive_ceiling(self, monkeypatch) -> None:
+        """The new term must not change configured non-adaptive behavior."""
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MIN,
+            subagent=SUBAGENT_TIMEOUT_SECS,
+            adaptive=False,
+            adaptive_max=86400,
+        )
+        assert resolve_prompt_timeout() == _DEFAULT_PROMPT_TIMEOUT
+
+
+class TestCapturedDeadlinePromptTimeout:
+    def test_three_hour_run_keeps_the_historical_transport_floor(self, monkeypatch) -> None:
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MIN,
+            subagent=SUBAGENT_TIMEOUT_SECS,
+            adaptive=False,
+        )
+
+        assert resolve_prompt_timeout_for_deadline(10800.0) == _DEFAULT_PROMPT_TIMEOUT
+
+    def test_deadline_at_the_floor_gets_an_outer_margin(self, monkeypatch) -> None:
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MIN,
+            subagent=SUBAGENT_TIMEOUT_SECS,
+            adaptive=False,
+        )
+
+        assert resolve_prompt_timeout_for_deadline(_DEFAULT_PROMPT_TIMEOUT) == (
+            _DEFAULT_PROMPT_TIMEOUT + _PROMPT_TIMEOUT_MARGIN_SECS
+        )
+
+    def test_six_hour_deadline_survives_disabled_lower_config(self, monkeypatch) -> None:
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MIN,
+            subagent=SUBAGENT_TIMEOUT_SECS,
+            adaptive=False,
+            adaptive_max=SUBAGENT_TIMEOUT_SECS,
+        )
+
+        assert resolve_prompt_timeout() == _DEFAULT_PROMPT_TIMEOUT
+        assert resolve_prompt_timeout_for_deadline(21600.0) == (
+            21600.0 + _PROMPT_TIMEOUT_MARGIN_SECS
+        )
+
+    def test_larger_chat_turn_ceiling_still_wins(self, monkeypatch) -> None:
+        _patch_loaded_ceiling(
+            monkeypatch,
+            CHAT_TURN_TIMEOUT_MAX,
+            subagent=SUBAGENT_TIMEOUT_SECS,
+            adaptive=False,
+        )
+
+        assert resolve_prompt_timeout_for_deadline(21600.0) == (
+            CHAT_TURN_TIMEOUT_MAX + _PROMPT_TIMEOUT_MARGIN_SECS
+        )
+
 
 class TestEffectivePromptTimeout:
     def test_explicit_caller_timeout_wins(self, monkeypatch) -> None:
@@ -185,18 +301,14 @@ class TestEffectivePromptTimeoutAsync:
         monkeypatch.setattr(acp_client, "resolve_prompt_timeout", _record)
         assert await acp_client._effective_prompt_timeout_async(None) == 1234.0
         assert seen and seen[0] is not loop_thread, (
-            "resolve_prompt_timeout must run via asyncio.to_thread, not inline "
-            "on the event loop"
+            "resolve_prompt_timeout must run via asyncio.to_thread, not inline " "on the event loop"
         )
         assert isinstance(asyncio.get_running_loop(), asyncio.AbstractEventLoop)
 
 
 class TestLoaderBounds:
     def test_day_scale_value_survives_coercion(self) -> None:
-        assert (
-            _safe_int(86400, 7200, CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX)
-            == 86400
-        )
+        assert _safe_int(86400, 7200, CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX) == 86400
 
     def test_above_the_new_max_still_clamps(self) -> None:
         assert (
@@ -215,9 +327,7 @@ class TestLoaderBounds:
 
 
 class TestRaisedCeilingEndToEnd:
-    def test_raised_ceiling_reaches_the_dispatch_unclamped(
-        self, monkeypatch, caplog
-    ) -> None:
+    def test_raised_ceiling_reaches_the_dispatch_unclamped(self, monkeypatch, caplog) -> None:
         """The full path: config → resolver → transport ceiling → dispatch.
 
         With the transport following the configured value, the honesty clamp in
