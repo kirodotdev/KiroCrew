@@ -86,6 +86,12 @@ jobs:
       # https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses, so that
       # host needs its own line. Without it both passes retry five times, exit 1
       # and the lane fails closed with `review incomplete`.
+      #
+      # claude-code-action installs the Claude Code CLI at RUN TIME rather than
+      # from npm: it curls https://claude.ai/install.sh, which then fetches the
+      # version manifest and the binary from downloads.claude.ai. Both hosts need
+      # their own line -- without them the install retries three times with curl
+      # exit 7 and the lane fails closed with `review incomplete`.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -106,6 +112,8 @@ jobs:
             release-assets.githubusercontent.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            claude.ai:443
+            downloads.claude.ai:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr

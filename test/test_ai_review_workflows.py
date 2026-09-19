@@ -11878,3 +11878,62 @@ class TestForkGptLaneMantleEgress:
                 f"{lane} job {name!r} runs no mantle-backed model, so allowing "
                 f"{self.ENDPOINT} widens its egress for nothing"
             )
+
+
+class TestForkLaneClaudeInstallEgress:
+    """`claude-code-action` installs the Claude Code CLI at run time, not from npm.
+
+    Its entrypoint curls `https://claude.ai/install.sh`, which then fetches the
+    version manifest and binary from `downloads.claude.ai`. Under blocking
+    egress neither host is covered by `registry.npmjs.org` or the GitHub hosts
+    already listed, so the install retries three times, each ending
+    `curl: (7) Failed to connect to claude.ai port 443`, and the lane posts
+    `review incomplete` -- reddening every fork PR through `PR Readiness`.
+
+    Allowing only `claude.ai` moves the refusal into the manifest fetch next, so
+    both hosts are required. `workflow_run` lanes always run the DEFAULT
+    branch's yaml, so a PR editing these files cannot exercise its own change;
+    this test is the only pre-merge guard.
+    """
+
+    ENDPOINTS = ("claude.ai:443", "downloads.claude.ai:443")
+    ACTION = "anthropics/claude-code-action"
+
+    @classmethod
+    def _runs_a_model(cls, job: dict) -> bool:
+        return any(cls.ACTION in str(step.get("uses") or "") for step in job.get("steps") or ())
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_every_model_job_allows_both_installer_hosts(self, lane: str) -> None:
+        checked = 0
+        for name, job in _lane_jobs(lane).items():
+            if not self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            checked += 1
+            for endpoint in self.ENDPOINTS:
+                assert endpoint in endpoints, (
+                    f"{lane} job {name!r} runs {self.ACTION} behind a blocking "
+                    f"egress policy but does not allow {endpoint}, so the CLI "
+                    "install is refused and the lane posts `review incomplete` "
+                    "instead of reviewing anything"
+                )
+        assert checked, f"{lane} has no blocking-egress {self.ACTION} job to check"
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_jobs_that_run_no_model_keep_the_narrower_allowlist(self, lane: str) -> None:
+        # Least privilege: fork-security-scope-review.yml blocks egress in four
+        # jobs and installs the CLI in one, so a per-file edit would widen three.
+        for name, job in _lane_jobs(lane).items():
+            if self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            for endpoint in self.ENDPOINTS:
+                assert endpoint not in endpoints, (
+                    f"{lane} job {name!r} installs no CLI, so allowing "
+                    f"{endpoint} widens its egress for nothing"
+                )
