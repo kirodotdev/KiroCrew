@@ -11,6 +11,7 @@ import { useAppPreview } from '../WebAppArtifactCard'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../../lib/widgetSrcdoc'
 import MarkdownRenderer from '../MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
+import { stripMd } from '../notifications/notifMeta'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
@@ -215,16 +216,77 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
   )
 }
 
+/** How much content the mini markdown tile reads before flattening it.
+ *
+ * The same figure the non-mini markdown path hands `MarkdownRenderer`, kept
+ * here so the two clamps move together: both exist because artifact content is
+ * unbounded and neither surface can show more than a screenful of it. */
+const MINI_MD_SCAN_LIMIT = 4000
+
 /** Kind-aware preview for non-iframe artifacts: markdown is rendered, SVG is
  * drawn (sanitized), JSON is pretty-printed, everything else is a raw snippet.
  * All paths are height-capped so cards stay tidy. */
-export function ContentThumb({ content, kind }: { content: string; kind: Artifact['kind'] }) {
+export function ContentThumb({ content, kind, mini = false }: {
+  content: string
+  kind: Artifact['kind']
+  mini?: boolean
+}) {
   if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
+
+  if (mini && kind === 'markdown') {
+    // stripMd drops heading / emphasis / list markers but keeps table pipes, and
+    // a five-line tile has no room to lay a table out: the delimiter row renders
+    // as literal `|---|---|`. Flatten table rows here, so the tile reads as prose
+    // without changing the shared helper that notification previews and the turn
+    // minimap depend on.
+    //
+    // Clamp FIRST, at the same 4000 the non-mini markdown path below uses -- keep
+    // the two in step. The tile shows 240 characters, so everything past the clamp
+    // is discarded either way; doing the tag strip, the split and the per-line pass
+    // over full content first meant a large markdown artifact (the library holds
+    // them; the sibling's own clamp is the proof) paid for all of it on every
+    // render of the folder tile, with no recovery but leaving the gallery.
+    const flat = content
+      .slice(0, MINI_MD_SCAN_LIMIT)
+      .replace(/<[^>]+>/g, ' ')
+      .split('\n')
+      .map(line => {
+        if (!line.includes('|')) return line
+        const cells = line.split('|').map(cell => cell.trim()).filter(Boolean)
+        // A delimiter row carries no content of its own: drop it entirely. The
+        // test is per trimmed CELL, against classes that cannot overlap, so a
+        // pathological run of spaces or dashes in unbounded artifact content
+        // cannot backtrack -- a single anchored regex over the whole line
+        // (`\s*` and `[-:| ]+` both matching a space) could.
+        if (cells.length && cells.every(cell => /^:?-+:?$/.test(cell))) return ''
+        // Cells joined by a bare space read as one run-on phrase -- "Build
+        // Passed" for two separate cells. A middot keeps them legible as the
+        // sequence of values they are, in the width a tile actually has.
+        return cells.join(' · ')
+      })
+      // Rows are joined with the SAME separator as the cells inside them, not
+      // with the newline stripMd would collapse to a bare space. Otherwise the
+      // weaker mark sits at the stronger boundary and the last cell of one row
+      // binds to the first of the next -- "Check · Result Build · Passed" reads
+      // "Result Build" as a pair. Blank lines (a dropped delimiter row, or a
+      // paragraph break) contribute no separator of their own.
+      .filter(line => line.trim())
+      .join(' · ')
+    const text = stripMd(flat).slice(0, 240)
+    return (
+      <div
+        data-testid="artifact-mini-text"
+        className="h-full px-2 py-1.5 overflow-hidden bg-bg-elevated text-[10px] leading-[1.35] text-muted line-clamp-5 break-words"
+      >
+        {text}
+      </div>
+    )
+  }
 
   if (kind === 'markdown') {
     return (
       <div className="px-3 py-2 max-h-[300px] overflow-hidden bg-card msg-content text-[12px] leading-relaxed">
-        <MarkdownRenderer content={content.slice(0, 4000)} />
+        <MarkdownRenderer content={content.slice(0, MINI_MD_SCAN_LIMIT)} />
       </div>
     )
   }

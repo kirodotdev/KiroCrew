@@ -177,7 +177,7 @@ function FolderMiniThumb({ a }: { a: Artifact }) {
   const content = full?.content || ''
   return (
     <div className="h-[84px] rounded-md border border-border overflow-hidden bg-bg-elevated pointer-events-none" title={a.name}>
-      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} mini />}
     </div>
   )
 }
@@ -2102,8 +2102,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
 
 
 /** Browse one publish provider's remote artifacts (provider-routed; vendor
- * copy comes from the provider's own display_name). Renders nothing while
- * loading/failed so the library page never blocks on a remote. */
+ * copy comes from the provider's own display_name). Loading stays quiet so a
+ * remote cannot block the library; failures use a bounded inline notice. */
 function RemoteBrowseSection({ provider, onForked, onCloned }: {
   provider: PublishProviderDescriptor
   onForked: (slug: string) => void
@@ -2144,18 +2144,26 @@ function RemoteBrowseSection({ provider, onForked, onCloned }: {
   // Your Artifacts above, so listing them here too would be a duplicate.
   const notLocal = items.filter(a => !a.local_slug)
   if (isLoading && !notLocal.length) return null
-  // A failed provider browse must not make the whole section vanish — say so,
-  // and offer the retry. The filter box holds a query, not a draft, so the
-  // hand-off is safe.
+  // Remote discovery is optional to the local library, but its failure must
+  // remain actionable without recreating the full-width provider card.
   if (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
     return (
-      <Card className="mt-4">
-        <CardTitle>{i18nT('pages.artifactsPage.on')} {provider.display_name}</CardTitle>
-        <div className="flex items-start gap-2">
-          <ErrorNotice message={error instanceof Error ? error.message : String(error)} askAgent className="flex-1" />
-          <Btn onClick={() => refetch()} className="shrink-0">{i18nT('pages.artifactsPage.retry')}</Btn>
-        </div>
-      </Card>
+      <div className="mt-3 flex max-w-lg items-start gap-2">
+        <ErrorNotice
+          variant="inline"
+          title={provider.display_name}
+          message={errorMessage}
+          askAgent
+          className="min-w-0 flex-1"
+          messageClassName="line-clamp-2"
+          messageTooltip={errorMessage}
+          testId={`remote-browse-error-${provider.name}`}
+        />
+        <Btn onClick={() => refetch()} className="shrink-0">
+          {i18nT('pages.artifactsPage.retry')}
+        </Btn>
+      </div>
     )
   }
   if (!notLocal.length && !search) return null
