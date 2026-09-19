@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,31 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.sel import SecurityEvent, sel
 
 logger = logging.getLogger(__name__)
+
+# ── Previous-stage context budget ──
+# How many of the most recent prior stages are inlined in FULL. Inlining every
+# earlier result at up to 2000 bytes each makes the context grow linearly in the
+# stage index (~18 KB by stage 10) and re-reads all of those files at every later
+# stage boundary. An older stage therefore contributes its path plus one headline,
+# which is what the model needs to decide whether to open it with its file tools;
+# the path is emitted for every stage either way.
+_PREV_FULL_STAGES = 3
+# Bytes read from an older stage's file to find that headline.
+_PREV_HEADLINE_BYTES = 512
+
+# ── Subagent wave wait ──
+# Coarse fallback for the event-driven wave wait. The completion event is a
+# PULSE, and a run can reach a terminal state on a path that never announces
+# (shutdown's ``cancel_all``), so a wait that woke only on the event could hold a
+# stage for its whole budget. Five seconds keeps a lost pulse cheap and still
+# cuts the O(n) ``running_agents_for`` scan rate to a quarter of the 2s tick it
+# replaces.
+_SA_FALLBACK_SECS = 5.0
+# Ceiling on the whole wave wait when the stage budget does not imply a smaller
+# one: the same 15 minutes the old 450-round cap expressed at 2s per round.
+_SA_MAX_WAIT_SECS = 900
+# How often the "waiting for N subagent(s)" status line is re-broadcast.
+_SA_STATUS_EVERY_SECS = 20.0
 
 
 async def _build_stage_context(
@@ -65,18 +91,54 @@ async def _build_stage_context(
     return "\n\n".join(parts)
 
 
+def _result_headline(p: Path) -> str:
+    """The first non-empty, non-separator line of a stage result file.
+
+    Reads only the first :data:`_PREV_HEADLINE_BYTES`, because this is what an
+    OLDER stage contributes to a later stage's context: the whole point of
+    summarising it is not to read the file.
+    """
+    try:
+        with open(p, "rb") as f:
+            raw = f.read(_PREV_HEADLINE_BYTES)
+    except (OSError, ValueError):
+        return ""
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line and not line.startswith("─"):
+            return line[:120]
+    return ""
+
+
 def _read_previous_results(recorded: list[tuple[int, str]]) -> str:
     """Read each recorded stage result and compact it. Blocking.
 
     Split out so the reads can be handed to a worker thread as a unit. It takes
     an already-materialised ``(stage_num, path)`` list rather than the tracker,
     so nothing the event loop mutates is reachable from the worker.
+
+    Only the last :data:`_PREV_FULL_STAGES` entries are inlined in full; every
+    earlier one contributes its headline and its path. ``recorded`` is ordered
+    oldest-first by its caller, which is what makes "the last three" the three
+    most recent.
     """
     _max_per_stage = 2000
     parts: list[str] = []
-    for stage_num, path_str in recorded:
+    _full_from = max(0, len(recorded) - _PREV_FULL_STAGES)
+    for _pos, (stage_num, path_str) in enumerate(recorded):
         p = Path(path_str)
         content = ""
+        if _pos < _full_from:
+            # An older stage: headline plus path, never the body.
+            header = f"### Stage {stage_num}"
+            headline = ""
+            if p.exists() and not is_sensitive_path(str(p)):
+                headline = _result_headline(p)
+            if headline:
+                parts.append(f"{header}\n{headline}\nFull result: `{path_str}`")
+            else:
+                parts.append(f"{header}\nFull result: `{path_str}`")
+            continue
         if p.exists() and not is_sensitive_path(str(p)):
             try:
                 file_size = p.stat().st_size
@@ -514,8 +576,20 @@ async def _stage_loop(
     total = slot._plan_stage_count
     titles = getattr(slot, "_stage_titles", [])
 
-    # Determine starting stage (0-based index)
-    start_idx = tracker.current_stage if tracker._stage_rounds else 0
+    # Determine starting stage (0-based index).
+    #
+    # A stage that produced nothing latches itself for retry (see the
+    # empty-result gate below), and that latch wins: `current_stage` is the
+    # HIGHEST stage key, which the empty stage already registered on entry, so
+    # resuming from it would advance past the stage that did not finish. Reading
+    # the latch does not spend it -- the gates below (plan watchdog, stage
+    # timeout) can exit before any stage is entered, and a latch spent here would
+    # be gone on those paths. `start_stage` spends it, i.e. the retry itself does.
+    _retry_stage = tracker.retry_stage
+    if _retry_stage:
+        start_idx = _retry_stage - 1
+    else:
+        start_idx = tracker.current_stage if tracker._stage_rounds else 0
 
     logger.info(
         "Stage loop start: slot=%s total=%d start_idx=%d auto_run=%s titles=%s",
@@ -651,6 +725,14 @@ async def _stage_loop(
             # NOT `record_round`: a round is a spawn wave, and the cap this PR
             # makes real is the wave budget -- see `OrchestrationTracker.start_stage`.
             tracker.start_stage(stage_num)
+            # The stage's round tally BEFORE its turn runs. The
+            # subagent-completion handler records a round against this same
+            # tracker as each spawn wave closes, so this is what lets the
+            # empty-result gate below tell "this attempt has already been charged"
+            # from "this attempt has cost nothing yet". Read after `start_stage`,
+            # which registers the stage without resetting its tally -- a retry
+            # keeps the rounds its earlier attempts spent.
+            _rounds_at_entry = tracker.round_count(stage_num)
             title = titles[stage_idx] if stage_idx < len(titles) else ""
             label = f"Stage {stage_num}: {title}" if title else f"Stage {stage_num}"
             sep = f"\n\n───── {label} ─────\n"
@@ -796,21 +878,31 @@ async def _stage_loop(
             if _orchestration_stopped(slot, tracker):
                 break
 
-            # Wait for pending subagents spawned during this stage
-            _sa_rounds = 0
-            # Dynamic poll cap. Each poll sleeps 2s, so `stage_timeout // 4`
-            # rounds ≈ half the stage timeout in wall-clock, hard-capped at 450
-            # rounds (15 min). This replaces a fixed 150 (5 min), which was far
-            # shorter than a subagent's own 30-min budget and abandoned
-            # legitimate long-running analysis agents mid-flight.
-            # A falsy stage timeout means "disabled", so fall back to the 15-min
-            # ceiling rather than 0 (which would skip the wait entirely).
-            # Worst case per stage is therefore turn-timeout + subagent-wait;
-            # the total-plan watchdog (separate follow-up) bounds the run.
+            # Wait for pending subagents spawned during this stage.
+            #
+            # Event-driven: the manager pulses
+            # `completion_event(session_key)` once per terminal report, so a
+            # finished wave is observed AT the completion rather than up to 2s
+            # after it, and the O(n) `running_agents_for` scan runs once per
+            # completion instead of once per tick. `_SA_FALLBACK_SECS` is what
+            # keeps a lost pulse from hanging the stage -- the event is
+            # explicitly not a guarantee (an un-announced terminal sets
+            # nothing), so the wait must never depend on it alone.
+            #
+            # The ceiling is now WALL-CLOCK rather than a round count: same value
+            # as before (half the stage budget, capped at 15 min -- 450 rounds at
+            # 2s), but stated in the unit the exhaustion notice reports, so it no
+            # longer moves when the poll interval does. A falsy stage timeout
+            # means "disabled", so fall back to the 15-min ceiling rather than 0
+            # (which would skip the wait entirely). Worst case per stage is
+            # turn-timeout + wave wait; the total-plan watchdog bounds the run.
             if tracker.stage_timeout_seconds:
-                _sa_max_rounds = min(tracker.stage_timeout_seconds // 4, 450)
+                _sa_max_wait = min(tracker.stage_timeout_seconds // 2, _SA_MAX_WAIT_SECS)
             else:
-                _sa_max_rounds = 450
+                _sa_max_wait = float(_SA_MAX_WAIT_SECS)
+            _sa_started = time.monotonic()
+            _sa_status_ts = _sa_started
+            _sa_exhausted = False
             session_key = f"dashboard:{slot.key}"
             if state.subagents is None:
                 # Fail-closed: subagent manager missing — stop auto-run
@@ -880,32 +972,57 @@ async def _stage_loop(
                     "chat_status",
                     {"slot": slot.key, "status": f"Waiting for {len(_pending)} subagent(s)..."},
                 )
-                while (
-                    _pending
-                    and _sa_rounds < _sa_max_rounds
-                    and not _orchestration_stopped(slot, tracker)
-                ):
-                    _sa_rounds += 1
-                    await asyncio.sleep(2)
-                    _pending = state.subagents.running_agents_for(session_key)
-                    # Update status every 10 polls (~20s)
-                    if _pending and _sa_rounds % 10 == 0:
-                        state.broadcast_ws(
-                            "chat_status",
-                            {
-                                "slot": slot.key,
-                                "status": f"Waiting for {len(_pending)} subagent(s)...",
-                            },
-                        )
-                    if _pending is None:
-                        logger.warning(
-                            "Stage %d: running_agents_for returned None during"
-                            " polling for slot %s — stopping auto-run",
-                            stage_num,
-                            slot.key,
-                        )
-                        slot._auto_run = False
-                        break
+                _sa_evt = state.subagents.completion_event(session_key)
+                try:
+                    while _pending and not _orchestration_stopped(slot, tracker):
+                        _now = time.monotonic()
+                        if _now - _sa_started >= _sa_max_wait:
+                            _sa_exhausted = True
+                            break
+                        # Cleared BEFORE the re-read, never after: a completion
+                        # landing in between then SETS the event and the wait
+                        # below returns at once. Clearing after the read is the
+                        # shape that drops exactly that pulse and waits the full
+                        # fallback for a wave that is already finished.
+                        _sa_evt.clear()
+                        _pending = state.subagents.running_agents_for(session_key)
+                        if _pending is None:
+                            logger.warning(
+                                "Stage %d: running_agents_for returned None during"
+                                " the wave wait for slot %s — stopping auto-run",
+                                stage_num,
+                                slot.key,
+                            )
+                            slot._auto_run = False
+                            break
+                        if not _pending:
+                            break
+                        if _now - _sa_status_ts >= _SA_STATUS_EVERY_SECS:
+                            _sa_status_ts = _now
+                            state.broadcast_ws(
+                                "chat_status",
+                                {
+                                    "slot": slot.key,
+                                    "status": f"Waiting for {len(_pending)} subagent(s)...",
+                                },
+                            )
+                        # Never past the wave deadline: the fallback is a poll
+                        # interval, not an extension of the ceiling.
+                        _budget = _sa_max_wait - (time.monotonic() - _sa_started)
+                        if _budget <= 0:
+                            _sa_exhausted = True
+                            break
+                        try:
+                            await asyncio.wait_for(
+                                _sa_evt.wait(), timeout=min(_SA_FALLBACK_SECS, _budget)
+                            )
+                        except (asyncio.TimeoutError, TimeoutError):
+                            pass
+                finally:
+                    # Released on every exit, including the cancellation that a
+                    # Stop delivers straight into the wait above: the waiter
+                    # table is bounded, and an entry nobody consumes is a leak.
+                    state.subagents.release_completion_event(session_key)
             if _pending is None and not slot._auto_run:
                 # Fail-closed: running_agents_for returned None during polling
                 _fc_msg = (
@@ -931,14 +1048,13 @@ async def _stage_loop(
                     )
                 )
                 break
-            if _sa_rounds >= _sa_max_rounds:
-                _wait_secs = _sa_rounds * 2
+            if _sa_exhausted:
+                _wait_secs = int(time.monotonic() - _sa_started)
                 logger.warning(
-                    "Stage %d: subagent wait exhausted after %ds (%d rounds, cap %d) for slot %s",
+                    "Stage %d: subagent wait exhausted after %ds (cap %ds) for slot %s",
                     stage_num,
                     _wait_secs,
-                    _sa_rounds,
-                    _sa_max_rounds,
+                    int(_sa_max_wait),
                     slot.key,
                 )
                 slot._auto_run = False
@@ -973,8 +1089,13 @@ async def _stage_loop(
             # Capture result to disk, split in two: the message walk stays on
             # the loop (it reads live slot state), and the mkdir + write go to a
             # worker. This was one synchronous call on the loop.
+            #
+            # The walk sits OUTSIDE the try: it cannot raise OSError, and the
+            # empty-result gate below reads its answer, so leaving it inside
+            # would make a failed WRITE indistinguishable from a stage that
+            # produced nothing.
+            _raw_parts = _collect_stage_result_parts(slot)
             try:
-                _raw_parts = _collect_stage_result_parts(slot)
                 result_path = await asyncio.to_thread(
                     _write_stage_result, slot.key, stage_num, _raw_parts
                 )
@@ -984,11 +1105,91 @@ async def _stage_loop(
                     "Failed to capture stage %d result to disk", stage_num, exc_info=True
                 )
 
+            # A stage that produced NOTHING has not completed. Until now the
+            # loop advanced on "`_run_chat` returned without raising", so an
+            # empty or refused turn moved the plan forward, marked the stage
+            # completed in `status_summary`, and a Go All run reached
+            # "✅ All N stages complete" having done none of it.
+            #
+            # "Produced work" is deliberately narrow and mechanical: the text
+            # this stage captured is empty after stripping. It is the same
+            # snapshot that was just written to `stage_N_result.md`, so the
+            # verdict matches the artifact on disk rather than a second opinion
+            # about it -- and a stage whose turn was all tool calls with no
+            # assistant text genuinely handed the next stage nothing.
+            #
+            # It is a FAILED ROUND of this stage, not a plan error: the round is
+            # recorded on the tracker (so three empty attempts reach
+            # `MAX_STAGE_ROUNDS` exactly as three fruitless spawn waves do), the
+            # stage is latched for retry so the next Go re-enters IT rather than
+            # the stage after it, and the user is asked -- in the same notice
+            # shape and with the same Go row as every other pause. Auto-run
+            # stops rather than retrying by itself, which is what every other
+            # guard in this loop does (timeout, round cap, subagent failure):
+            # the next attempt is only worth spending if a human still wants it.
+            if not "".join(_raw_parts).strip():
+                # ONE round per attempt, whoever records it. A delegated stage
+                # that spawned a wave and then emitted no assistant text is the
+                # ordinary shape of this case -- it is named in the comment above
+                # -- and its wave has already been charged here by
+                # `_subagent_done`. Recording another would make that single
+                # attempt cost two of the stage's three rounds, so two empty
+                # attempts would exhaust a budget of three. A round is recorded
+                # only when this attempt has not been charged yet, which is what
+                # keeps an empty stage from being retried forever without ever
+                # reaching the cap.
+                _rounds_now = tracker.round_count(stage_num)
+                if _rounds_now > _rounds_at_entry:
+                    _empty_rounds = _rounds_now
+                    _limit_hit = tracker.round_limit_reached(stage_num)
+                else:
+                    _empty_rounds = _rounds_now + 1
+                    _limit_hit = tracker.record_round(stage_num)
+                tracker.mark_stage_for_retry(stage_num)
+                slot._auto_run = False
+                if _limit_hit:
+                    _empty_msg = (
+                        f"⚠️ Stage {stage_num} produced no output, and has now used all "
+                        f"{MAX_STAGE_ROUNDS} of its rounds. Auto-run stopped — send "
+                        f"guidance, then click **Go** to retry this stage."
+                        "\n\n[OPTION: Go | Go All | Cancel]"
+                    )
+                else:
+                    _empty_msg = (
+                        f"⚠️ Stage {stage_num} produced no output, so it is not complete "
+                        f"(attempt {_empty_rounds} of {MAX_STAGE_ROUNDS}). Auto-run "
+                        f"stopped — click **Go** to retry this stage."
+                        "\n\n[OPTION: Go | Go All | Cancel]"
+                    )
+                _empty_msg, _ = redact_exfiltration_urls(_empty_msg)
+                _empty_msg, _ = redact_credentials(_empty_msg)
+                append_and_surface(state, slot, "assistant", _empty_msg, "msg msg-a")
+                sel().log(
+                    SecurityEvent(
+                        event_id=uuid.uuid4().hex,
+                        timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                        event_type="auto_run_empty_stage",
+                        caller_identity=f"dashboard:{slot.key}",
+                        agent=getattr(slot, "agent", ""),
+                        source="dashboard",
+                        operation="stage_produced_nothing",
+                        outcome="stopped",
+                        resources=f"slot={slot.key},stage={stage_num},rounds={_empty_rounds}",
+                    )
+                )
+                # Same exit as the stage gate below: the Go row needs
+                # `needs_input`, and the plan must not be closed out as done.
+                _paused = True
+                return
+
             # Re-check the round cap AFTER the stage's subagent wave: those
             # completions are what push a dashboard stage to its round limit, and
             # they land on this tracker while the stage runs. Placed after the
             # capture above so the completed stage's work is on disk (and its
-            # result recorded) before the plan halts.
+            # result recorded) before the plan halts -- and after the empty-result
+            # gate, so a stage that spent its waves AND produced nothing is
+            # latched for retry by that gate instead of being halted here with no
+            # latch, which would advance past it on the next Go.
             #
             # AUTO-RUN ONLY, like the plan watchdog above and for the same reason.
             # The cap exists to stop an UNATTENDED plan from spinning; an attended
@@ -1231,6 +1432,10 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
                 t = state.subagents._tasks.get(a["id"])
                 if t and not t.done():
                     t.cancel()
+            # Wake a stage loop parked in the wave wait. Those cancellations do
+            # not necessarily announce, so without this the loop would keep the
+            # plan alive until its fallback poll noticed `tracker.stopped`.
+            state.subagents.signal_completion(session_key)
         if not already_cancelled:
             stop_msg = "🛑 Plan cancelled."
             append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")

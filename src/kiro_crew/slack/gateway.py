@@ -8685,6 +8685,15 @@ class GatewayOrchestrator:
 
             if not _flush_only:
                 await _broadcast_subagent_status(info, "done")
+                # Wake anything waiting on this parent's wave (the autopilot
+                # stage loop) BEFORE the injection below, which can take
+                # minutes: ``info.done`` is already True by here — the terminal
+                # report sets it ahead of this announce — so the waiter's own
+                # re-read of the running set sees the same state a poll would
+                # have, just without the wait. Pulsing after the injection would
+                # reintroduce exactly the latency this removes.
+                if self.subagent_mgr:
+                    self.subagent_mgr.signal_completion(info.parent_session_key)
             # Three-way outcome: a user stop is neutral — neither a success nor
             # a failure. The record contract keeps ``error`` unset for stops, so
             # every consumer below must branch on ``user_stopped`` explicitly

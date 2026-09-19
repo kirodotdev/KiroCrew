@@ -192,9 +192,36 @@ async def test_completion_summary_truncates_the_excerpt_at_120_chars(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_completion_summary_falls_back_to_done_for_blank_result(monkeypatch):
-    """Preservation: an empty result file yields '— done', not a crash."""
-    slot = await _run_plan(monkeypatch, ["First"], [""])
+async def test_completion_summary_falls_back_to_done_for_blank_result(monkeypatch, tmp_path):
+    """Preservation: an empty result FILE yields '— done', not a crash.
+
+    The blank file is produced by the write half, not by a stage that emitted
+    nothing: a stage whose captured text is empty does not complete at all (it is
+    a failed round — see ``test/test_autopilot_empty_stage.py``), so driving this
+    through an empty turn would assert on a summary the loop never reaches. Same
+    technique as the deleted-file sibling below, for the same reason: the property
+    under test belongs to ``_completion_excerpts``, and it has to be reached by a
+    path that still exists.
+    """
+    from kiro_crew.dashboard import chat_orchestrator
+    from kiro_crew.dashboard.chat import _stage_loop
+
+    state = _make_state()
+    slot = _make_slot(["First"])
+    _stage_texts(monkeypatch, ["alpha done"])
+
+    real_write = chat_orchestrator._write_stage_result
+
+    def _write_then_blank(slot_key, stage_num, raw_parts):
+        path = real_write(slot_key, stage_num, raw_parts)
+        (tmp_path / "sessions" / slot_key / f"stage_{stage_num}_result.md").write_text(
+            "", encoding="utf-8"
+        )
+        return path
+
+    monkeypatch.setattr(chat_orchestrator, "_write_stage_result", _write_then_blank)
+
+    await _stage_loop(state, slot, auto_run=True)
 
     assert _completion_message(slot).splitlines()[1] == "  Stage 1: First — done"
 

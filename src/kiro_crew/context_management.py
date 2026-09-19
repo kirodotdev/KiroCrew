@@ -116,6 +116,9 @@ class OrchestrationTracker:
         self._plan_timeout: int = 0  # 0 = disabled
         self._plan_start: float = 0.0  # set when the plan's first stage is entered
         self._plan_warned: bool = False  # the 75% notice fires once per plan
+        # 1-based stage the next loop entry must RE-ENTER instead of advancing
+        # past it; 0 means "advance normally". Set when a stage produced nothing.
+        self._retry_stage: int = 0
 
     def stop(self) -> None:
         """User requested stop after escalation."""
@@ -197,6 +200,13 @@ class OrchestrationTracker:
         Slack handler then records against and what the loop resumes from.
         """
         self._stage_rounds.setdefault(stage, 0)
+        # Entering a stage is what spends a retry latch, and the only thing that
+        # does: every gate between the loop's read of :attr:`retry_stage` and this
+        # call can exit without entering a stage, and a latch consumed at that read
+        # would let the next Go skip the stage it named. Cleared unconditionally
+        # rather than only for ``stage == self._retry_stage``, because entering ANY
+        # stage means the loop got past the latch's purpose.
+        self._retry_stage = 0
         # Unconditional: this is the per-STAGE clock, so entering stage 2 must not
         # inherit stage 1's elapsed time.
         self._stage_start = time.monotonic()
@@ -205,6 +215,33 @@ class OrchestrationTracker:
         # every stage boundary refresh the ceiling the watchdog enforces.
         if not self._plan_start:
             self._plan_start = time.monotonic()
+
+    def mark_stage_for_retry(self, stage: int) -> None:
+        """Re-enter *stage* on the next loop entry rather than advancing past it.
+
+        The stage loop otherwise resumes at :attr:`current_stage`, the highest
+        stage key -- which the entered stage already registered through
+        ``start_stage``, so "do not advance" cannot be expressed by leaving the
+        ledger alone. It is a separate latch rather than an un-registration
+        because the stage DID run: its rounds, its result path and its place in
+        ``status_summary`` are all real and must survive the retry.
+        """
+        self._retry_stage = stage
+
+    @property
+    def retry_stage(self) -> int:
+        """The latched retry stage (1-based), or 0 when none. A pure READ.
+
+        Deliberately not consumed here. The loop reads this to pick its starting
+        index, and several gates between that read and the stage it names can exit
+        the loop without entering ANY stage -- the whole-plan watchdog and the
+        stage-timeout check both break before ``start_stage``. A latch spent at the
+        read would be gone on those paths, and the next Go would resume from
+        :attr:`current_stage` and silently skip the stage that produced nothing.
+        The latch is cleared by :meth:`start_stage`, i.e. by the retry actually
+        happening, so exactly one re-entry is bought and nothing buys it early.
+        """
+        return self._retry_stage
 
     def round_limit_reached(self, stage: int) -> bool:
         """True when *stage* has spent its whole round budget.
@@ -424,21 +461,58 @@ Stage N: Verification
 [OPTION: Go | Go All | Cancel]"""
 
 
-# Loose pre-filter: catches plan-like text cheaply. False positives are
-# handled by rephrase_plan(might_not_be_plan=True) which asks the LLM.
-_PLAN_LIKE_RE = re.compile(
-    r"(?:^|\n)\s*(?:Phase|Step|Stage|Part)\s+\d+\s*[:\-—]" r"|(?:^|\n)\s*\d+\.\s+\*\*[A-Z]",
-    re.IGNORECASE,
+# Loose pre-filter: catches plan-like text cheaply, in two shapes — a
+# `Stage 2:` style stage line, and an ordered list whose items are bold-led.
+# Still deliberately loose: a residual false positive is caught downstream by
+# rephrase_plan(might_not_be_plan=True), which asks the LLM. But that answer
+# costs a 2–8s round trip on the cheap background session, so the shapes that
+# carry no plan NUMBERING at all are refused here instead — see
+# ``_ordered_plan_run``.
+_PLAN_STAGE_LINE_RE = re.compile(
+    r"^[ \t]*(?:Phase|Step|Stage|Part)[ \t]+(\d+)[ \t]*[:\-—]",
+    re.IGNORECASE | re.MULTILINE,
 )
+_PLAN_NUMBERED_BOLD_RE = re.compile(r"^[ \t]*(\d+)\.[ \t]+\*\*[A-Z]", re.MULTILINE)
+
+# How many bold-led ordered items a text needs before it counts as plan-like on
+# that shape ALONE. Two is the commonest shape of ordinary prose that is not a
+# plan ("1. **Yes** … 2. **No** …", a two-option write-up), and it carries no
+# stage vocabulary to distinguish it. The stage-line shape names a phase/stage
+# explicitly, so two is enough there.
+_PLAN_BOLD_LIST_MIN = 3
+
+
+def _ordered_plan_run(pattern: re.Pattern[str], text: str) -> int:
+    """Length of the run of *pattern* lines numbered 1, 2, 3, … from the start.
+
+    A plan numbers its steps from 1 and counts up, which is what separates one
+    from a list that merely happens to be numbered. Counting the RUN rather than
+    the matches is what stops three shapes that each counted as two matches
+    before: an excerpt starting mid-list (``3. **Alpha**`` / ``4. **Beta**``),
+    the same line repeated in two worked examples (``Step 1:`` … ``Step 1:``),
+    and an unordered enumeration. ``validate_plan_format`` already demands
+    sequential-from-1 numbering of a real plan, so this is the same reading
+    applied one stage earlier.
+    """
+    expected = 1
+    for m in pattern.finditer(text):
+        if int(m.group(1)) != expected:
+            break
+        expected += 1
+    return expected - 1
 
 
 def looks_like_plan(text: str) -> bool:
     """Cheap heuristic: does the text look like it might be a plan?
 
-    Intentionally loose — false positives are caught downstream by the
-    LLM-based rephrase which can reject non-plans.
+    Intentionally loose — a residual false positive is caught downstream by the
+    LLM-based rephrase, which can answer ``NOT_A_PLAN``. It is not loose enough
+    to fire on any numbered text, because every false positive here buys that
+    LLM call.
     """
-    return len(_PLAN_LIKE_RE.findall(text)) >= 2
+    if _ordered_plan_run(_PLAN_STAGE_LINE_RE, text) >= 2:
+        return True
+    return _ordered_plan_run(_PLAN_NUMBERED_BOLD_RE, text) >= _PLAN_BOLD_LIST_MIN
 
 
 _GO_ALL_RE = re.compile(r"\[OPTION:\s*Go\s*\|\s*Cancel\s*\]")
@@ -469,6 +543,41 @@ def validate_plan_format(text: str) -> tuple[bool, bool, list[str]]:
     return True, len(issues) == 0, issues
 
 
+# Cap on the assistant turn handed to the plan rephrase. The turn can be a
+# whole long answer that merely ENDS in something plan-shaped, and the rephrase
+# fires on every such turn, so an uncapped input pays for the entire answer on a
+# call whose only job is to reshape a header and a stage list. Tail-heavy split:
+# a plan a model appended to an explanation sits at the end.
+REPHRASE_INPUT_MAX_CHARS = 4000
+
+
+def cap_rephrase_input(text: str) -> str:
+    """Return *text* capped at ``REPHRASE_INPUT_MAX_CHARS`` (25% head, 75% tail).
+
+    A plan is small — the template above is ~200 chars and a ten-stage plan
+    under 2000 — so a text that trips this cap is an answer with a plan in it
+    rather than a plan. That matters because the rephrase result REPLACES the
+    turn text when it validates: keeping the cap well above any real plan is
+    what makes the replacement lossless in the case the caller acts on, and the
+    ``[...truncated N chars...]`` marker is what makes a genuinely over-long
+    input visible rather than silently shortened.
+    """
+    if len(text) <= REPHRASE_INPUT_MAX_CHARS:
+        return text
+    # The marker is part of what the model receives, so it is budgeted INSIDE the
+    # cap: splitting the cap between head and tail and then adding a marker would
+    # make the real ceiling the cap plus however long the marker rendered, which
+    # is not the number the name states. Sized from the finished marker (its digit
+    # count varies with the input), and floored so a cap smaller than the marker
+    # still yields both ends rather than negative budgets.
+    dropped = len(text) - REPHRASE_INPUT_MAX_CHARS
+    marker = f"\n\n[...truncated {dropped:,} chars...]\n\n"
+    body_budget = max(2, REPHRASE_INPUT_MAX_CHARS - len(marker))
+    head_budget = body_budget // 4  # 25%
+    tail_budget = body_budget - head_budget  # 75%
+    return f"{text[:head_budget]}{marker}{text[-tail_budget:]}"
+
+
 async def rephrase_plan(
     text: str, issues: list[str], client: Any, *, might_not_be_plan: bool = False
 ) -> str | None:
@@ -477,9 +586,13 @@ async def rephrase_plan(
     When *might_not_be_plan* is True, the LLM is instructed to return the
     input unchanged (prefixed with ``NOT_A_PLAN:``) if it is not an
     execution plan.
+
+    *text* is capped by :func:`cap_rephrase_input` before it reaches either
+    prompt.
     """
     from kiro_crew.llm_helpers import stream_and_collect
 
+    text = cap_rephrase_input(text)
     if might_not_be_plan:
         prompt = (
             "First, decide: is the following text an execution plan with "

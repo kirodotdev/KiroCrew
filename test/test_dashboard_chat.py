@@ -12704,6 +12704,7 @@ class TestOrchestratorPlanGateArming:
         seen: list[bool] = []
 
         async def _rec(s, sl, msg, **kw):
+            sl.append("assistant", "stage output", "msg msg-a")
             seen.append(sl._in_stage_execution)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _rec)
@@ -13036,6 +13037,21 @@ class TestWidgetOriginAutoRunGuard:
         assert "[UI] refresh" in run_chat_mock.call_args[0][2]
 
 
+def _stage_output(text: str = "stage output"):
+    """``side_effect`` for a mocked ``_run_chat`` that a stage can call complete.
+
+    The stage loop reads what a stage CAPTURED to decide whether it produced
+    work, so a bare ``AsyncMock()`` models a stage that emitted nothing — which is
+    now a failed stage rather than a completed one. This appends the one assistant
+    row the real ``_run_chat`` would have left on the slot.
+    """
+
+    async def _run(_state, slot, _message, **_kwargs):
+        slot.append("assistant", text, "msg msg-a")
+
+    return _run
+
+
 class TestPythonStageLoop:
     """Tests for the Python-controlled stage execution loop (_stage_loop).
 
@@ -13082,7 +13098,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_stage_output("gated stage"))
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=False)
@@ -13113,7 +13129,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_stage_output("auto stage"))
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -13146,6 +13162,7 @@ class TestPythonStageLoop:
         call_count = 0
 
         async def _mock_run_chat(s, sl, msg, **kw):
+            sl.append("assistant", "stage output", "msg msg-a")
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
@@ -13237,6 +13254,7 @@ class TestPythonStageLoop:
         seen = []
 
         async def _mock_run_chat(s, sl, msg, **kw):
+            sl.append("assistant", "stage output", "msg msg-a")
             seen.append(sl._in_stage_execution)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
@@ -13531,7 +13549,15 @@ class TestPythonStageLoop:
 
     @pytest.mark.asyncio
     async def test_subagent_wait_loop(self, tmp_path, monkeypatch):
-        """Stage loop waits for pending subagents before advancing."""
+        """Stage loop waits for pending subagents before advancing.
+
+        The wait is driven by the manager's completion event, not a 2s poll, so
+        the fixture supplies a real ``asyncio.Event`` and finishes the wave from
+        the moment the loop asks for it — which is the moment before it starts
+        waiting. The mechanism itself is covered in
+        ``test/test_autopilot_wave_wait_event.py``; what this keeps asserting is
+        the loop-level outcome: a pending wave is waited for, and both stages run.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat import _stage_loop
@@ -13539,29 +13565,37 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=2)
 
-        _poll_count = 0
+        pending = [{"id": "sa-1"}]
+        scans = 0
+        event = asyncio.Event()
 
         def _running_agents(key):
-            nonlocal _poll_count
-            _poll_count += 1
-            # Simulate subagent finishing after 2 polls
-            return [{"id": "sa-1"}] if _poll_count < 3 else []
+            nonlocal scans
+            scans += 1
+            return list(pending)
+
+        def _completion_event(key):
+            # The wave finishes one event-loop tick into the wait.
+            def _finish():
+                pending.clear()
+                event.set()
+
+            asyncio.get_running_loop().call_soon(_finish)
+            return event
 
         state.subagents = MagicMock()
         state.subagents.running_agents_for = _running_agents
+        state.subagents.completion_event = _completion_event
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_stage_output("waited stage"))
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.asyncio.sleep", AsyncMock())
 
-        await _stage_loop(state, slot, auto_run=True)
+        await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), 5)
 
-        # Should have polled for subagents
-        assert _poll_count >= 3
+        # The wave was actually observed rather than skipped.
+        assert scans >= 2
         # Should still complete both stages
         assert run_chat_mock.call_count == 2
 
@@ -13623,7 +13657,9 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for = MagicMock(return_value=[])
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        # Appends the assistant row a real stage turn leaves behind: a stage
+        # that captures nothing is a failed stage, not a completed one.
+        run_chat_mock = AsyncMock(side_effect=_stage_output("resumed stage"))
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         # First Go: runs stage 1 only

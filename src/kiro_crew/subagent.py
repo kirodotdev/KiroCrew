@@ -1679,6 +1679,12 @@ class SpawnApprovalCallback(Protocol):
         pass
 
 
+#: Hard ceiling on :attr:`SubagentManager._completion_waiters`. Entries are
+#: created only by an explicit :meth:`SubagentManager.completion_event` call and
+#: removed by its release, so this is a leak fuse rather than a working limit.
+_MAX_COMPLETION_WAITERS = 64
+
+
 class SubagentManager:
     """Spawn and track isolated background agents."""
 
@@ -1814,6 +1820,11 @@ class SubagentManager:
         # makes that inference unnecessary. Removed by the same ``finally`` that sets
         # the event, so a missing entry always means "nothing left to wait for".
         self._teardown_gates: dict[str, asyncio.Event] = {}
+        #: parent session key -> event pulsed whenever one of its runs reaches a
+        #: terminal report. Created on demand by :meth:`completion_event` and
+        #: dropped by :meth:`release_completion_event`, so the only entries are
+        #: the ones a waiter asked for (today: the autopilot stage loop).
+        self._completion_waiters: dict[str, asyncio.Event] = {}
         # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
         # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
         # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
@@ -2550,6 +2561,52 @@ class SubagentManager:
 
     def running_agents_for(self, parent_key: str) -> list[dict]:
         return self._run_events.running_agents_for_impl(parent_key)
+
+    def completion_event(self, parent_key: str) -> "asyncio.Event":
+        """Event pulsed each time a run belonging to *parent_key* finishes.
+
+        For a caller that would otherwise poll :meth:`running_agents_for` — an
+        O(n) scan over every retained agent — on a timer. The event is a PULSE,
+        not a state: a waiter clears it, re-reads the running set, and waits
+        again, so a completion landing between the clear and the read is still
+        observed on the next wait rather than lost.
+
+        It is not a guarantee. A run can reach a terminal state on a path that
+        never announces (``cancel_all`` at shutdown), so every waiter must keep
+        a timeout of its own; that is why this returns a bare event rather than
+        a helper that waits. Release it with
+        :meth:`release_completion_event` when the wait is over.
+        """
+        evt = self._completion_waiters.get(parent_key)
+        if evt is not None:
+            return evt
+        if len(self._completion_waiters) >= _MAX_COMPLETION_WAITERS:
+            # A detached event nothing ever sets: the caller degrades to its own
+            # fallback timeout instead of this growing without bound. Reachable
+            # only if callers leak registrations, which is why it is logged.
+            logger.warning(
+                "Subagent completion-waiter table is full (%d); %s gets no pulse",
+                _MAX_COMPLETION_WAITERS,
+                parent_key,
+            )
+            return asyncio.Event()
+        evt = asyncio.Event()
+        self._completion_waiters[parent_key] = evt
+        return evt
+
+    def release_completion_event(self, parent_key: str) -> None:
+        """Drop *parent_key*'s completion event. Idempotent."""
+        self._completion_waiters.pop(parent_key, None)
+
+    def signal_completion(self, parent_key: str) -> None:
+        """Pulse *parent_key*'s completion event, if anything is waiting on it.
+
+        Deliberately creates nothing: a parent with no waiter must not leave an
+        entry behind, so the announce path stays free of bookkeeping.
+        """
+        evt = self._completion_waiters.get(parent_key)
+        if evt is not None:
+            evt.set()
 
     def task_memory_rows(self) -> list[dict[str, object]]:
         return self._monitor.task_memory_rows_impl()

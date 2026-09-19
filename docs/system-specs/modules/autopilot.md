@@ -113,10 +113,23 @@ On a planning turn, at end of turn (the plan-detector block in `dashboard/chat_r
 1. `validate_plan_format(text)` checks three things: the `📋 Plan for:` header,
    `Stage N:` lines with strictly sequential numbering, and the `[OPTION: Go |
    … | Cancel]` footer (`context_management.validate_plan_format`).
-2. No header but `looks_like_plan(text)` matches (at least two
-   `Phase|Step|Stage|Part N:` style lines, `context_management.looks_like_plan`):
-   `_rephrase_plan_lite(..., might_not_be_plan=True)` asks the model to either
-   reformat it or answer `NOT_A_PLAN`, in which case nothing is armed.
+2. No header but `looks_like_plan(text)` matches
+   (`context_management.looks_like_plan`): `_rephrase_plan_lite(...,
+   might_not_be_plan=True)` asks the model to either reformat it or answer
+   `NOT_A_PLAN`, in which case nothing is armed.
+
+   The pre-filter is a RUN of numbered lines, not a match count: at least two
+   `Phase|Step|Stage|Part N:` lines numbered 1, 2, 3 …, or at least
+   `_PLAN_BOLD_LIST_MIN` (3) bold-led ordered items numbered the same way. It
+   stays deliberately loose — genuinely plan-shaped prose is the LLM's call — but
+   a false positive costs a 2–8 s round trip on the background session, so three
+   shapes that used to count as two matches no longer do: an excerpt starting
+   mid-list (`3. **Alpha**` / `4. **Beta**`), the same line repeated in two worked
+   examples (`Step 1:` … `Step 1:`), and an unordered enumeration. The bold-list
+   shape needs a longer run than the stage-line shape because it carries no stage
+   vocabulary at all, and two bold items is the commonest shape of ordinary prose
+   (`1. **Yes** …` / `2. **No** …`). Same sequential-from-1 reading
+   `validate_plan_format` already applies to a real plan, one stage earlier.
 3. Header present but invalid: `_rephrase_plan_lite` retries the format once.
    If the result is still invalid, `strip_plan_markers` removes the markers and
    the turn degrades to ordinary chat.
@@ -131,6 +144,16 @@ session rather than the slot's own, releases it in a `finally`, and calls
 `sessions.recycle_background()`: repeated rephrases would otherwise bloat that
 child until a mid-stream recycle killed an in-flight call and blocked every
 chat queued behind it.
+
+`rephrase_plan` caps its input at `REPHRASE_INPUT_MAX_CHARS` (4000) before either
+prompt is built. The `[...truncated N chars...]` marker is budgeted INSIDE that
+cap and the remaining 25 % head + 75 % tail split is taken from what is left, so
+the number in the name is the ceiling on what the model actually receives rather
+than on the source text alone. The turn handed to it can be a whole long answer that merely ENDS in
+something plan-shaped, and the call's only job is to reshape a header and a stage
+list. Tail-heavy because a plan appended to an explanation sits at the end. The
+cap is far above any real plan on purpose: the result REPLACES the turn text when
+it validates, so a cap a plan could reach would silently shorten the transcript.
 
 **Fallback arm.** `assistant_text` is reset at each tool-call boundary, so a
 plan emitted before further tool calls is gone by the final segment. A separate
@@ -188,8 +211,9 @@ approvals live on separate endpoints an iframe cannot reach.
 in the prompt. It creates the tracker if absent, loads the budgets
 (`orchestrator.stage_timeout_seconds` and `orchestrator.max_plan_duration_seconds`)
 whenever `tracker.budgets_unset` says this tracker has never had them applied,
-resumes at `tracker.current_stage` when rounds already exist, and for each stage
-index:
+resumes at `tracker.current_stage` when rounds already exist — unless
+`tracker.retry_stage` names a stage, which wins (see the empty-result gate
+below) — and for each stage index:
 
 **A plan whose stages are gone is refused, before anything else.** If
 `slot._plan_stage_count` is 0 the loop posts `⚠️ This plan is no longer active …`,
@@ -247,13 +271,30 @@ entry.
    instruction. It is appended as a hidden user message (`auto-go` class) and
    passed to `_run_chat`. An exception from `_run_chat` clears `_auto_run`,
    posts a stage-error notice, logs `auto_run_stage_error`, and breaks.
-7. **Wait for the stage's sub-agents.** Polls
-   `state.subagents.running_agents_for("dashboard:<slot>")` every 2s, up to 150
-   rounds (5 minutes), broadcasting a `chat_status` count every 10 polls. This
-   is **fail-closed**: a missing manager, or `running_agents_for` returning
-   `None` either before or during polling, stops auto-run with a notice and a
-   `auto_run_subagent_check_failed` SEL event rather than silently skipping
-   verification. Exhausting the 150 rounds stops auto-run with
+7. **Wait for the stage's sub-agents.** Waits on
+   `SubagentManager.completion_event("dashboard:<slot>")`, pulsed once per
+   terminal report from `_subagent_done`, and re-reads
+   `running_agents_for` on each wake. The event is a PULSE, not a state: the loop
+   CLEARS it before re-reading, so a completion landing between the read and the
+   wait still returns at once instead of being dropped. `_SA_FALLBACK_SECS` (5 s)
+   bounds each wait because the event is explicitly not a guarantee — a run can
+   reach a terminal state on a path that never announces (shutdown's
+   `cancel_all`) — and the plan-Cancel handler pulses the event itself so a cancel
+   is not waiting out that interval. Registration is released in a `finally`;
+   the manager's waiter table is fused at `_MAX_COMPLETION_WAITERS` (64), past
+   which a caller gets a detached event and degrades to its own fallback rather
+   than growing the table.
+
+   This replaces a 2 s poll, which cost the wave up to two seconds of latency and
+   ran the O(n) `running_agents_for` scan on a timer whether anything had happened
+   or not. The ceiling is unchanged in value and now stated in wall clock rather
+   than rounds: `min(stage_timeout // 2, _SA_MAX_WAIT_SECS)` — half the stage
+   budget, capped at 15 minutes — so it no longer moves when the poll interval
+   does. The `chat_status` count is re-broadcast every `_SA_STATUS_EVERY_SECS`
+   (20 s). Still **fail-closed**: a missing manager, or `running_agents_for`
+   returning `None` either before or during the wait, stops auto-run with a notice
+   and an `auto_run_subagent_check_failed` SEL event rather than silently skipping
+   verification. Exhausting the ceiling stops auto-run with
    `auto_run_subagent_timeout`.
 8. **Capture the stage result**, split across the thread boundary.
    `_collect_stage_result_parts` walks the assistant messages back to this
@@ -275,7 +316,41 @@ entry.
    `tracker.current_stage` as each spawn wave finishes, which is why this gate is
    placed after the wave rather than on entry. Placed **after** the capture too,
    so a stage that genuinely finished keeps its result on disk.
-10. If not `auto_run` and another stage remains: post
+10. **A stage that produced nothing is not complete.** If the captured text is
+   empty after stripping — the same snapshot `_write_stage_result` just wrote, so
+   the verdict matches the artifact rather than a second opinion about it — the
+   loop records a round for the stage, latches it with
+   `tracker.mark_stage_for_retry(stage_num)`, clears `_auto_run`, posts
+   `⚠️ Stage N produced no output …` with a fresh
+   `[OPTION: Go | Go All | Cancel]`, logs `auto_run_empty_stage` /
+   `stage_produced_nothing`, and pauses. Before this the loop advanced on
+   "`_run_chat` returned without raising", so an empty or refused turn moved the
+   plan on, showed the stage as `✅ completed` in the next `status_summary`, and
+   let a Go All run reach "✅ All N stages complete" having produced none of it.
+
+   The latch is what makes "do not advance" real: the resume point is
+   `tracker.current_stage`, the highest stage key, which the empty stage
+   registered on ENTRY — so without it the next Go would run the stage after the
+   one that failed. `tracker.retry_stage` is a pure READ and
+   `tracker.start_stage` is what spends it, so exactly one re-entry is bought and
+   nothing buys it early: the gates between the loop's read and the stage it names
+   — the whole-plan watchdog and the stage-timeout check — both break before
+   `start_stage`, and a latch spent at the read would be gone on those paths while
+   `current_stage` still pointed past the failed stage. The stage keeps its rounds
+   and its ledger place because it did run. The rounds are the existing budget: three empty attempts reach
+   `MAX_STAGE_ROUNDS` exactly as three fruitless spawn waves do, and the notice
+   says so — **one round per attempt, whoever records it**. The stage's tally is
+   snapshotted at entry (after `start_stage`, which registers the stage without
+   resetting it), and the gate records a round only when that tally has not moved
+   since: a delegated stage that spawned a wave and then emitted no assistant text
+   is the ordinary shape of this case, and `_subagent_done` has already charged
+   that wave against the same tracker. Charging again would make one attempt cost
+   two of three rounds, so two attempts would exhaust a budget of three.
+   Auto-run stops rather than retrying by itself, like every other guard
+   here (timeout, round cap, subagent failure): the next attempt is only worth
+   spending if a human still wants it. The message walk sits OUTSIDE the capture's
+   `try` so a failed WRITE is never read as a stage that idled.
+11. If not `auto_run` and another stage remains: post
    `✅ Stage N complete. Click **Go** to proceed to …` plus a fresh
    `[OPTION: Go | Go All | Cancel]`, mark the loop paused, and return. The
    user's next Go re-enters `_stage_loop`.
@@ -295,11 +370,19 @@ plus re-plan arm again. Unless the loop paused, it appends `done` and broadcasts
 
 ### Previous-stage context
 
-`_previous_result_paths` inlines up to 2000 bytes per prior stage (30% head,
-70% tail, split in **binary** mode so head and tail budgets are in the same
-units as the size check) and always emits the full path so the model can read
-the rest with its file tools. A result file whose path is sensitive
-(`security.is_sensitive_path`) contributes its path only, never its content.
+`_previous_result_paths` inlines up to 2000 bytes for each of the last
+`_PREV_FULL_STAGES` (3) prior stages (30% head, 70% tail, split in **binary** mode
+so head and tail budgets are in the same units as the size check). Every EARLIER
+stage contributes one headline instead — its first non-separator line, read from
+the first `_PREV_HEADLINE_BYTES` (512) of the file. Each stage always emits its
+full path, so nothing the model could reach before is out of reach; it opens an
+older result with its file tools.
+
+Inlining every prior stage made the context grow with the stage index — ~18 KB by
+stage 10 — and re-read every earlier file at each boundary, on the worker the
+`asyncio.to_thread` hop exists to protect. A result file whose path is sensitive
+(`security.is_sensitive_path`) contributes its path only, never its content or its
+headline.
 
 ## Failure Handling and Escalation
 
@@ -470,8 +553,13 @@ however long the plan runs.
   silence it used to get. See [the stage loop](#execution-the-stage-loop).
 - Mode cannot be switched while the slot is running: `api_chat_slot_mode`
   returns `409`.
-- Sub-agent wait is capped at 5 minutes per stage; a longer fan-out stops
-  auto-run with a possibly-incomplete-results notice rather than waiting.
+- Sub-agent wait is capped at half the stage budget, 15 minutes at most; a
+  longer fan-out stops auto-run with a possibly-incomplete-results notice rather
+  than waiting.
+- An empty stage is detected by the text it captured, so a stage whose entire
+  turn was tool calls with no assistant output reads as "produced nothing". That
+  is deliberate — it handed the next stage nothing either — but it is a
+  mechanical test, not a judgement about whether work happened.
 
 ## Testing
 
@@ -479,6 +567,9 @@ however long the plan runs.
 |------|----------|
 | Tracker limits, timeout, `timeout_human`, caps, stale-session cleanup | `test/test_context_management.py` |
 | Round cap enforced on the dashboard path; stage entry spends no round | `test/test_stage_round_cap_enforced.py` |
+| An empty stage does not advance, spends a round, and re-enters itself on the next Go | `test/test_autopilot_empty_stage.py` |
+| The wave wait is event-driven, its fallback still bounds it, and the waiter table is fused | `test/test_autopilot_wave_wait_event.py` |
+| Only the last three prior stages are inlined | `test/test_autopilot_previous_stage_context.py` |
 | Whole-plan watchdog, the 75% notice, budget loading for a tracker the loop did not build | `test/test_plan_duration_watchdog.py` |
 | Config load off the loop thread, and the cancel/stop windows it opens | `test/test_orchestrator_config_load_off_loop.py` |
 | A plan with no stages is refused out loud rather than silently skipped | `test/test_expired_plan_is_refused.py` |

@@ -287,6 +287,162 @@ def test_looks_like_plan_false_no_matches():
     assert looks_like_plan("Here's what happened: the build failed because of a typo.") is False
 
 
+# ── looks_like_plan: shapes that are numbered but are not plans ──────
+#
+# Every false positive here buys an LLM rephrase on the cheap background session
+# (2-8s) whose only possible answer is NOT_A_PLAN. The filter stays loose on
+# purpose -- prose that genuinely reads like a plan is the downstream call's job
+# -- so what these pin is the one mechanical distinction available without a
+# model: a plan numbers its steps 1, 2, 3, and text that merely contains numbers
+# does not.
+
+
+def test_looks_like_plan_false_two_item_bold_list():
+    """ "1. **Yes** / 2. **No**" is a two-option write-up, not a plan.
+
+    The bold-list shape carries no stage vocabulary at all, so it needs a longer
+    run than the `Stage N:` shape before it counts.
+    """
+    from kiro_crew.context_management import looks_like_plan
+
+    assert looks_like_plan("1. **Yes** we can.\n2. **No** we cannot.") is False
+
+
+def test_looks_like_plan_false_bold_list_not_starting_at_one():
+    """A findings excerpt numbered from the middle of a longer list."""
+    from kiro_crew.context_management import looks_like_plan
+
+    text = "3. **Alpha** did X\n4. **Beta** did Y\n5. **Gamma** did Z"
+    assert looks_like_plan(text) is False
+
+
+def test_looks_like_plan_false_bold_list_all_numbered_one():
+    """Markdown renders `1.` repeated as an ordered list; it is not a sequence."""
+    from kiro_crew.context_management import looks_like_plan
+
+    assert looks_like_plan("1. **Alpha**\n1. **Beta**\n1. **Gamma**") is False
+
+
+def test_looks_like_plan_false_stage_lines_not_starting_at_one():
+    """Prose walking through the middle of a process it already introduced."""
+    from kiro_crew.context_management import looks_like_plan
+
+    text = "Step 2: the lexer runs.\nStep 3: the parser builds the AST."
+    assert looks_like_plan(text) is False
+
+
+def test_looks_like_plan_false_repeated_same_stage_number():
+    """Two worked examples of the same step counted as two matches before."""
+    from kiro_crew.context_management import looks_like_plan
+
+    text = "Step 1: run it with --dry-run.\n\nStep 1: run it for real."
+    assert looks_like_plan(text) is False
+
+
+def test_looks_like_plan_false_markdown_headings():
+    """A write-up whose sections are headings is document structure."""
+    from kiro_crew.context_management import looks_like_plan
+
+    assert looks_like_plan("## Step 1: Parse\n## Step 2: Emit") is False
+
+
+def test_looks_like_plan_true_four_stage_lines():
+    """Preservation: a real header-less plan still reaches the rephrase."""
+    from kiro_crew.context_management import looks_like_plan
+
+    text = "Phase 1: Survey\nPhase 2: Build\nPhase 3: Verify\nPhase 4: Ship"
+    assert looks_like_plan(text) is True
+
+
+# ── cap_rephrase_input ──────────────────────────────────────────────
+
+
+def test_cap_rephrase_input_leaves_a_plan_alone():
+    from kiro_crew.context_management import REPHRASE_INPUT_MAX_CHARS, cap_rephrase_input
+
+    plan = "📋 Plan for: x\n\nStage 1: Do it\n- step\n\n[OPTION: Go | Go All | Cancel]"
+    assert len(plan) < REPHRASE_INPUT_MAX_CHARS
+    assert cap_rephrase_input(plan) == plan
+
+
+def test_cap_rephrase_input_caps_a_long_turn():
+    from kiro_crew.context_management import cap_rephrase_input
+
+    out = cap_rephrase_input("x" * 40_000)
+
+    assert len(out) < 40_000
+    assert "[...truncated" in out
+
+
+def test_cap_rephrase_input_keeps_both_ends():
+    """Head AND tail: the plan is usually at the end, the subject at the start."""
+    from kiro_crew.context_management import REPHRASE_INPUT_MAX_CHARS, cap_rephrase_input
+
+    text = "HEAD" + ("x" * (REPHRASE_INPUT_MAX_CHARS * 3)) + "TAIL"
+
+    out = cap_rephrase_input(text)
+
+    assert out.startswith("HEAD")
+    assert out.endswith("TAIL")
+
+
+def test_cap_rephrase_input_never_exceeds_its_own_cap():
+    """RED BEFORE: the marker was added on top of a full cap's worth of text.
+
+    The marker is part of what the model receives, so a cap that budgets only the
+    source text states a ceiling the function does not honour.
+    """
+    from kiro_crew.context_management import REPHRASE_INPUT_MAX_CHARS, cap_rephrase_input
+
+    for size in (REPHRASE_INPUT_MAX_CHARS + 1, REPHRASE_INPUT_MAX_CHARS * 4, 10_000_000):
+        out = cap_rephrase_input("q" * size)
+        assert len(out) <= REPHRASE_INPUT_MAX_CHARS, f"{size} chars in -> {len(out)} out"
+
+
+def test_cap_rephrase_input_is_tail_heavy():
+    from kiro_crew.context_management import REPHRASE_INPUT_MAX_CHARS, cap_rephrase_input
+
+    text = "a" * (REPHRASE_INPUT_MAX_CHARS * 3)
+
+    out = cap_rephrase_input(text)
+    head, _, tail = out.partition("\n\n[...truncated")
+
+    assert len(head) < len(tail)
+
+
+@pytest.mark.asyncio
+async def test_rephrase_plan_sends_a_capped_prompt():
+    """RED BEFORE: the whole assistant turn went into the prompt.
+
+    Asserted on the prompt the LLM actually receives, because the cap is only
+    worth anything at that boundary.
+    """
+    from kiro_crew.context_management import REPHRASE_INPUT_MAX_CHARS, rephrase_plan
+
+    huge = "y" * (REPHRASE_INPUT_MAX_CHARS * 4)
+    with patch("kiro_crew.llm_helpers.stream_and_collect", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = "NOT_A_PLAN"
+        await rephrase_plan(huge, ["No header"], AsyncMock(), might_not_be_plan=True)
+
+    prompt = mock_stream.call_args.args[1]
+    assert huge not in prompt
+    assert "[...truncated" in prompt
+
+
+@pytest.mark.asyncio
+async def test_rephrase_plan_caps_the_reformat_prompt_too():
+    """Both prompts in this function carry the turn; both must be capped."""
+    from kiro_crew.context_management import REPHRASE_INPUT_MAX_CHARS, rephrase_plan
+
+    huge = "z" * (REPHRASE_INPUT_MAX_CHARS * 4)
+    with patch("kiro_crew.llm_helpers.stream_and_collect", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = ""
+        await rephrase_plan(huge, ["Missing footer"], AsyncMock())
+
+    prompt = mock_stream.call_args.args[1]
+    assert huge not in prompt
+
+
 # ── rephrase_plan (might_not_be_plan) ───────────────────────────────
 
 
