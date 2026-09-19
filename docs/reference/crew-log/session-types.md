@@ -81,6 +81,7 @@ entry's write is the point the interrupted-turn repair runs.
 | `owner` | string | required | Owner, defaulted to `default`. | |
 | `resumed` | bool | required | `true` when this claim re-attached to an existing crew log. | |
 | `class` | object | when the gateway could read the slot's memory mode | What kind of session this log belongs to: `memory` (the slot's memory mode, required inside the object), `app` (the app that owns it, when one does), `channel` (`true` when its conversation is published to a messaging channel), `workspace` (the workspace it belongs to). | |
+| `previous` | object | | `{sid}` — the crew log the SAME slot was writing before this one. Present only on a crew log that was just created while the slot already had one, and only when that crew log's own header names this slot. Absent on the slot's first crew log, on every re-attach, when the gateway could not name the predecessor, and when the named crew log's header does not name this slot or cannot be read. | |
 
 **Invariants** — At most one per create and one per re-attach. The session's
 *starting* model rides here rather than in a `model/selected` entry, which records
@@ -115,6 +116,25 @@ absent field holds only for entries written since. A fold spanning the upgrade m
 read an absent field on an older entry as *unknown*, which is the same misreading
 #12017 exists to remove.
 
+`previous` never names this same session: a re-attach is the same crew log, and a
+self-edge would make a chain walker revisit the crew log it started from.
+
+`previous` always names a crew log of the SAME slot, and that is verified rather
+than assumed. The id reaches the emitter from the slot-to-session mapping, read
+without pruning and latched by whichever allocation observes it first. One limit
+is recorded rather than worked around: an allocation whose replay is still pending
+does not publish its fresh id over the mapping, so for that window a mapping read
+names the crew log BEFORE the newest one — two successive crew logs then cite one
+predecessor and the crew log between them is cited by nobody, which a chain walker
+steps over without any sign that a crew log is missing. Closing that needs a
+deferral that resumes once the predecessor's own writes settle, and it is tracked
+with the rest of the supersede work in #12148. The mapping can also name a crew log
+the slot never wrote, since an entry can be stale or recycled by the time a
+successor cold-starts, so the emitter reads the named crew log's own header —
+written once at create, never rewritten — and records the edge only when that
+header names this slot. A candidate that cannot be verified gets no edge, so a
+reader following one never lands in a crew log the slot never wrote.
+
 ```json
 {"type":"session/opened","seq":1,"time":1789000000000,"src":"gateway","data":{"agent":"kirocrew","slot":"dashboard:3","model":"","cwd":"/home/u/proj","owner":"default","resumed":false}}
 ```
@@ -134,6 +154,15 @@ what was chosen. Whether a request was APPLIED is not recorded here: a reader
 that needs it reads the provider's own outcome rather than comparing the two
 strings. When `model` is empty the served id, once known, appears on the first
 `turn/completed` that reports one.
+
+`resumed` and `previous` answer two different continuities, and a reader needs
+both. `resumed` covers one crew log served again; `previous` covers one SLOT whose
+ACP session was torn down, so its work continues in a crew log with a different
+id. A reader that wants the slot rather than the session folds the newest crew
+log, reads `previous` off the `status` projection, folds that crew log, and
+repeats. A `null` answer is "no edge to follow", never "there was no earlier crew
+log": retention deletes whole segments off the front, and the edge rides on the
+creating entry.
 
 **Since** — #10091.
 

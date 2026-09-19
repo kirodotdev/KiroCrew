@@ -2652,6 +2652,52 @@ def on_class_observed(
     _submit(_job, "appending session/class", session_id)
 
 
+def _candidate_is_same_slot(candidate_sid: str, slot: str) -> bool:
+    """Whether *candidate_sid*'s crew log records *slot* as its own.
+
+    ``previous`` means the crew log the SAME slot was writing, and the reference
+    says so, but the id reaches this emitter from the slot-to-session mapping --
+    a persisted file whose entry can be stale or recycled by the time a successor
+    cold-starts. So the invariant is CHECKED rather than assumed, against the
+    candidate's own header, which is written once at create and never rewritten.
+    Comparing the mapping against itself would prove nothing; the header is the
+    crew log's own statement about which slot it belongs to.
+
+    Answering False on any failure is deliberate, because an edge is worth writing
+    only when the two crew logs are KNOWN to be one slot's. A candidate whose
+    header cannot be read -- retention removed the crew log, or its header line is
+    unreadable -- is not known to be this slot's, and sending a reader down an
+    unverified edge lands it somewhere this slot never wrote, which is worse than
+    ending the walk one link early. A session with no slot has no slot identity to
+    match, so it gets no edge either.
+
+    ``unit_header_slot`` is the accessor rather than ``CrewLog.open`` because this
+    path must not write, and ``open`` does: its torn-tail truncation is
+    unconditional, deliberately so, since trailing bytes that are not a whole line
+    are not a record. Harmless in itself, and still wrong here -- a verification
+    read would take the crew log's lock and rewrite a candidate's file while asking
+    for nothing but one field. The accessor states the opposite contract, no lease
+    and nothing written, and its ``None`` means "cannot prove" rather than "no such
+    field", which is the refusal this function already wanted. It is also stricter
+    than ``open``: it refuses a linked directory, and a header whose own ``id`` does
+    not fold back to the directory holding it, both of which would let one store
+    answer for another unit. Its own docstring names this caller's position exactly
+    -- a unit id reached through a channel the caller does not fully trust.
+
+    Nothing is caught here because the accessor answers ``None`` for every
+    unreadable-crew-log case itself, down to the directory walk and the header
+    parse. Anything it still raises is a bug in this module, and it belongs in the
+    log rather than swallowed into a permanently silent "not the same slot", which
+    would read exactly like a correct refusal while disabling the check for every
+    slot at once.
+    """
+    if not slot or not candidate_sid:
+        return False
+    from kiro_crew.crew_log.store import unit_header_slot
+
+    return unit_header_slot(_KIND, candidate_sid) == slot
+
+
 def on_session_opened(
     session_id: str,
     *,
@@ -2668,6 +2714,7 @@ def on_session_opened(
     app: str = "",
     channel: bool = False,
     workspace: str = "",
+    previous_sid: str = "",
 ) -> None:
     """Create the crew log if this session has none, then echo its header.
 
@@ -2738,6 +2785,25 @@ def on_session_opened(
     the log is opened; a class a session ACQUIRES later (a channel link added
     mid-conversation) is not in them, so a reader that can also see the live
     session applies both and refuses on either.
+
+    ``previous_sid`` names the crew log this SLOT was writing before, and it
+    answers the continuity ``resumed`` cannot. ``resumed`` is true only when this
+    claim re-attached to the same crew log; when the ACP session was instead torn
+    down and a successor cold-started, the successor has a different id and
+    therefore a different unit, and nothing in the record joined the two. So a
+    ``create`` that is handed a DIFFERENT prior id writes ``previous {sid}``, and
+    the comparison is made here rather than trusted from the caller: on the resume
+    path the prior id and this one are the same store, and an edge pointing at
+    itself would make a chain walker loop. Empty, or equal to this session, means
+    no edge is written -- the slot's first crew log, and a predecessor the gateway
+    could not name, are both "nothing to follow" rather than a store with an empty
+    name.
+
+    The edge is a citation and nothing more: this entry records which store came
+    before, and no writer here touches that store. Closing a superseded store's own
+    dangling turn and tool calls needs a same-slot check on the candidate and a
+    deferral that can be resumed, so it is tracked separately rather than attempted
+    from this job.
     """
     if not session_id or not enabled():
         return
@@ -2750,12 +2816,14 @@ def on_session_opened(
     # owes the release and the file still shows that turn open until the entry
     # lands.
     _release_session_live(session_id)
-    # Latched on the FIRST attempt and read back on every later one. The decision
-    # below is derived from filesystem state this job itself changes: a retry after
+    # Latched on the FIRST attempt and read back on every later one. The decisions
+    # below are derived from filesystem state this job itself changes: a retry after
     # the header landed but the entry did not finds ``exists`` true and ``created``
     # false, so an unlatched decision would flip to "nothing new to say" and skip
-    # the entry it still owes -- permanently, and without counting the loss.
-    announce: "dict[str, bool]" = {}
+    # the entry it still owes -- permanently, and without counting the loss. It
+    # holds the supersede edge too, which is a session id rather than a flag, so
+    # the values are not all bools.
+    announce: "dict[str, Any]" = {}
 
     def _job() -> None:
         created = False
@@ -2828,6 +2896,32 @@ def on_session_opened(
         # on every turn rather than only the first, which is what lets a class the
         # session acquires LATER reach the log at all.
         observed = (memory, app, bool(channel), workspace) if memory else None
+        # Latched on the FIRST attempt and read back on every later one, exactly like
+        # ``owed`` below and for the same reason: the decision is derived from
+        # filesystem state this job itself changes, so a retry after the header
+        # landed reads ``exists`` true and ``created`` false, and an unlatched edge
+        # would be dropped there -- silently, and permanently, while the entry it
+        # belongs to still gets written. The latch holds the ID rather than a flag,
+        # so the retry writes the edge the first attempt decided on, and an empty
+        # string is a latched "no edge" that nothing downstream re-tests.
+        #
+        # ``created`` is part of the condition, not just the ``previous_sid``
+        # comparison. A re-attach has a store already, so the unit the caller names
+        # is either this same one or an unrelated one that may still be LIVE, and
+        # repairing that is how a running turn gets an outcome it never had.
+        superseded = announce.setdefault(
+            "superseded",
+            (
+                previous_sid
+                if (
+                    created
+                    and previous_sid
+                    and previous_sid != session_id
+                    and _candidate_is_same_slot(previous_sid, slot)
+                )
+                else ""
+            ),
+        )
         if not announce.setdefault("owed", created or bool(resumed)):
             # Nothing new to say about the OPENING, which is what this entry
             # records. A class that has moved since the last statement of it is
@@ -2857,6 +2951,10 @@ def on_session_opened(
             # string and cannot lose the requested/served pair. The entry states two
             # facts and infers nothing: what the gateway asked for, and what serves.
             data["model_requested"] = model_requested
+        if superseded:
+            # No ``slot`` inside: it is the slot in ``data.slot``, and repeating it
+            # would invite a reader to trust a second copy of one fact.
+            data["previous"] = {"sid": superseded}
         if parent_slot:
             # Written only when there IS a creator, and ``sid`` only when the
             # creator still had a live handle: an empty string in either place

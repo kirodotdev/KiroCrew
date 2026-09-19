@@ -257,6 +257,31 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 note="True when this claim re-attached to an existing crew log.",
             ),
             Field(
+                "previous",
+                JSON_OBJECT,
+                fields=(
+                    Field(
+                        "sid",
+                        JSON_STRING,
+                        required=True,
+                        note=(
+                            "The ACP session id of the store this slot was writing "
+                            "before. A citation of that unit, not a tree key."
+                        ),
+                    ),
+                ),
+                note=(
+                    "The store the SAME slot was writing before this one, present only "
+                    "on a store that was just created while the slot already had one. "
+                    "``resumed`` covers the other continuity -- this claim re-attaching "
+                    "to the same store -- and cannot express this one, because a "
+                    "superseded ACP session has a different id and therefore a "
+                    "different unit. No ``slot`` is repeated inside: it is the slot in "
+                    "``data.slot``. Absent on the slot's first store, and on any store "
+                    "whose predecessor the gateway could not name."
+                ),
+            ),
+            Field(
                 "parent",
                 JSON_OBJECT,
                 fields=(

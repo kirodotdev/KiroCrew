@@ -5958,6 +5958,24 @@ async def _spawn_admitted_prefetch(
     the admission reservation; a ``return`` from any guard below lands there.
     """
     try:
+        # The store this slot was writing, read before the allocation below maps
+        # its own session over it. This is the EARLIER of the two allocation
+        # sites, so it is the only one that can still see the predecessor: once
+        # this registers, the slot's mapping names the successor, and the first
+        # real turn reading the mapping itself would read that successor and
+        # write no `previous` edge at all -- leaving the superseded store
+        # unlinked, so nothing joins the slot's history across the restart, which is
+        # the failure this edge exists to remove. The latch is write-once, so a turn that
+        # observes afterwards cannot replace this with the successor's id.
+        #
+        # Same source as the turn site: the slot-to-session mapping, read
+        # non-pruning. One known limit is recorded rather than worked around here:
+        # an allocation whose replay is still pending defers publishing its fresh
+        # id, so for that window the mapping names the store before the newest one
+        # and the store between them is cited by nobody. Closing that needs a
+        # deferral that resumes once the predecessor's own writes settle, which is
+        # the same mechanism the superseded-tail work needs and is tracked with it.
+        slot.latch_crew_log_previous(sessions.mapped_sid(session_key))
         # speculative=True keeps the one-shot first-turn flag armed for
         # the real first message (atomically, at registration) and
         # refuses resumable keys — unless allow_resume opted in, in
@@ -9340,6 +9358,42 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        # The crew log this slot was last writing to, read BEFORE allocation
+        # publishes the successor's id over it. A slot outlives its ACP session, so
+        # when the session below cold-starts under a NEW id the crew log gains a new
+        # store and this is the only moment the previous one is still nameable: the
+        # emitter records it as `session/opened.data.previous`, a citation only.
+        # That crew log's own dangling turn stays open; nothing here writes into it.
+        # A resume answers the same id, and the emitter compares and writes no edge.
+        #
+        # Through the slot's write-once latch, not straight into a local, because
+        # THIS is not always the first allocation for the slot: an eager prefetch
+        # allocates ahead of the first turn and maps its own session over the key,
+        # so by the time this line runs the mapping can already name the successor.
+        # The latch keeps whichever observation came first, which is the only one
+        # that saw the predecessor; when no prefetch ran, the latch is empty and
+        # this read is that first observation.
+        #
+        # `mapped_sid` is the single source here, and it is the right one of the
+        # two mapping accessors. `resumable_sid` asks "can this id still be
+        # resumed": it stats the ACP transcript on the calling thread, which is a
+        # synchronous store read this coroutine must not make, and it PRUNES the
+        # entry when that file is gone or empty. Both consequences are wrong for a
+        # history citation. The stat is work on the loop for a fact that needs no
+        # file, and the prune erases the id exactly when the two stores disagree --
+        # a crew log unit can outlive a truncated ACP transcript, and that unit is
+        # the one whose tail most needs closing. `mapped_sid` is one dict lookup,
+        # no disk and no mutation, so it is safe here and it still answers when a
+        # resume would not: it asks what the key was last serving, not what can
+        # still be resumed.
+        #
+        # The window a single mapping read cannot close is a replay-pending
+        # allocation. Such an allocation defers publishing its fresh id, so the
+        # mapping keeps naming the store before it; two successive allocations then
+        # cite that same older store and the store between them is cited by nobody,
+        # which a walker steps over with no signal. That is a recorded residual,
+        # tracked with the superseded-tail work rather than handled here.
+        slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -9615,6 +9669,13 @@ async def _run_chat(
             app=_class_app,
             channel=_class_channel,
             workspace=_crew_log_workspace(slot),
+            # Read-and-clear: the latch is owed to exactly one `session/opened`,
+            # and the emitter alone decides whether it becomes an edge -- it
+            # writes one only on a CREATE naming a different store, so handing
+            # the value over on a re-attach costs nothing and leaving it behind
+            # would make the slot's next store cite this store's predecessor
+            # instead of this store.
+            previous_sid=slot.take_crew_log_previous(),
         )
         agent_label = kiro_agent or slot.agent or "default"
         # The label states what the session RUNS on, so a withheld pin reports the

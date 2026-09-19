@@ -2733,6 +2733,15 @@ class SessionManager:
         """Return whether a folded key has resumable state."""
         return self._allocation_boundary().resumable_hint(key)
 
+    def mapped_sid(self, key: str) -> str:
+        """The session ID a folded key maps to, in memory, without pruning.
+
+        For a caller recording HISTORY rather than deciding a resume. Use
+        :meth:`resumable_sid` for the latter: its file check is what makes the
+        answer a resumable session, and this one deliberately omits it.
+        """
+        return self._allocation_boundary().mapped_sid(key)
+
     def seed_conversation(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:
         """Seed a persisted conversation mapping."""
         self._allocation_boundary().seed_conversation(key, sid, provider=provider, cwd=cwd)

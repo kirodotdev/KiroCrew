@@ -142,7 +142,7 @@ def _state_digest(state: dict[str, Any]) -> str:
 #: keys do not moves its digest here, which is what obliges the version bump that
 #: retires savepoints written by the older build.
 _FOLD_STATE_DIGESTS: dict[str, str] = {
-    "status": "c0fcfd81e27d700b",
+    "status": "4d24a49402b82428",
     "usage": "c56df0d14126410f",
     "timeline": "ca89b3c765575d9a",
     "tools": "008b36fed498d32b",
@@ -159,7 +159,7 @@ _FOLD_STATE_DIGESTS: dict[str, str] = {
 #: to be this one. Bumping for a new fold would instead retire every VALID savepoint
 #: of the other folds, costing each a refold to retire nothing. What obliges the bump
 #: is an EXISTING fold's digest moving, and the five above are unchanged.
-_DIGESTS_RECORDED_AT_VERSION = 2
+_DIGESTS_RECORDED_AT_VERSION = 3
 
 
 def _log(unit_id: str = SESSION) -> CrewLog:

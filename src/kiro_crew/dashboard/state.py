@@ -2143,6 +2143,7 @@ class _ChatSlot:
         "_model_withheld_for",
         "served_model",
         "_session_requested_model",
+        "_crew_log_previous_sid",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -2382,6 +2383,16 @@ class _ChatSlot:
         # Session/opened reads this instead of re-resolving at first turn, since
         # an eager allocation can outlive a config change.
         self._session_requested_model: str | None = None
+        # The crew log store this slot was writing BEFORE any allocation this
+        # process performed, latched at the first observation and not overwritten
+        # by a later one. Two sites allocate for a slot -- the eager prefetch and
+        # the first real turn -- and the eager one publishes its successor over
+        # the slot's mapping before the turn runs, so a turn that read the mapping
+        # itself would read the successor and name no predecessor at all. Written
+        # only while empty, because the second observation is the successor rather
+        # than an earlier store. Cleared once `session/opened` has carried it, so
+        # the next supersede of this slot latches afresh. "" = nothing to follow.
+        self._crew_log_previous_sid: str = ""
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
@@ -3950,6 +3961,35 @@ class _ChatSlot:
         user chose.
         """
         self.served_model = model_id or ""
+
+    def latch_crew_log_previous(self, sid: str) -> None:
+        """Remember the crew log store this slot was writing, if none is remembered.
+
+        Called by every site that is about to ALLOCATE a session for this slot,
+        before the allocation publishes its own id over the slot's mapping. The
+        write is conditional on the latch being empty, and that is the whole
+        point: the eager prefetch and the first real turn both allocate, and by
+        the time the turn runs the prefetch has already mapped the successor, so a
+        second observation names the successor rather than an earlier store.
+        Keeping the FIRST observation keeps the predecessor a `session/opened` can
+        cite, and an empty ``sid`` latches nothing rather than latching a store
+        with no name.
+        """
+        if sid and not self._crew_log_previous_sid:
+            self._crew_log_previous_sid = sid
+
+    def take_crew_log_previous(self) -> str:
+        """The latched predecessor store id, clearing it as it is handed over.
+
+        Read-and-clear, because the value is owed to exactly one
+        ``session/opened``: leaving it behind would make the NEXT store of this
+        slot cite a predecessor two links back and skip the store between them,
+        which is the one thing a chain walker cannot detect. Returns ``""`` when
+        nothing is latched, which the emitter reads as "no edge to write".
+        """
+        sid = self._crew_log_previous_sid
+        self._crew_log_previous_sid = ""
+        return sid
 
     def forget_session_model_state(self) -> None:
         """Drop every fact that described the session being torn down.

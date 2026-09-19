@@ -34,6 +34,7 @@ from kiro_crew.messaging.link import (
     split_dm_session_key,
 )
 from kiro_crew.sel import _infer_source, sel
+from kiro_crew.validation import bounded_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,26 @@ def _survives_prune(entry: dict) -> bool:
         or entry.get("slack_thread_ts")
         or entry.get("mirror")
     )
+
+
+def _stash_and_clear_sid(entry: dict) -> bool:
+    """Drop *entry*'s ``sid`` while keeping it as ``discarded_sid``. True if it changed.
+
+    One definition for every path that empties ``sid`` in place, because the
+    three that existed disagreed and the disagreement was reachable: a provider
+    switch stashed the id it dropped, while both stale paths -- the startup
+    prune and the per-read repair -- dropped theirs and left an OLDER id
+    standing in ``discarded_sid``. A history reader then answered that older id
+    as the key's last store, citing a predecessor two links back and orphaning
+    the one between them. Which path emptied the field is not a distinction any
+    reader of it can use, so the field cannot be written by only some of them.
+    """
+    sid = entry.get("sid")
+    if not sid:
+        return False
+    entry["discarded_sid"] = sid
+    entry["sid"] = ""
+    return True
 
 
 # The callable shape a lost-binding announcement is delivered through:
@@ -856,8 +877,7 @@ class SessionMap:
         """
         entry = self._data.get(key)
         if entry is not None and _survives_prune(entry):
-            if entry.get("sid"):
-                entry["sid"] = ""
+            if _stash_and_clear_sid(entry):
                 self._save()
             return
         self._remove_entry(key, reason=UNBIND_REASON_ENTRY_DELETED)
@@ -874,6 +894,52 @@ class SessionMap:
         Alias folding is shared with :meth:`get` via ``_resolve_alias``.
         """
         return self._resolve_alias(key)[1] is not None
+
+    def mapped_sid(self, key: str) -> str:
+        """Read-only, in-memory: the session ID *key* maps to, or ``""``.
+
+        The value half of :meth:`has_hint`, and undecorated for the same reason:
+        one dict lookup through the shared alias fold, no disk and no mutation,
+        so it is safe on the event loop and carries no cross-thread hazard.
+
+        It answers a question :meth:`get` deliberately does not. ``get`` asks
+        "can this ID still be resumed", which is why it stats the transcript and
+        PRUNES the entry when that file is gone or empty. A caller recording
+        HISTORY wants the opposite: the ID this key was last serving, whether or
+        not a resume would now succeed. Routing such a caller through ``get``
+        loses the ID exactly when the two stores disagree -- a crew log unit can
+        outlive a truncated ACP transcript -- and mutates the map as a side
+        effect of being asked to describe it.
+
+        So this is not an alternative spelling of ``get``: a caller deciding
+        whether to RESUME must still use ``get``, whose file check is the whole
+        point, and must not treat a value from here as a resumable session.
+
+        A sid that was emptied in place still answers, from ``discarded_sid``.
+        Three paths empty it and all three record what they dropped, through
+        :func:`_stash_and_clear_sid`: the provider switch, the poisoned
+        conversation discard, and the two stale paths whose transcript went
+        missing. For the resume question an emptied sid IS the answer, which is
+        why ``get`` must not see the stash. For the history question it is not:
+        the emptied id is exactly "the ID this key was last serving", so reading
+        ``sid`` alone would report a key that has served a session all day as
+        having served none, and a successor would cite no predecessor at all.
+        Recording it on only some of those paths is worse than recording it on
+        none, because the field then holds a genuine id that is not the latest
+        one, and a successor cites a predecessor two links back.
+        """
+        entry = self._resolve_alias(key)[1]
+        if not entry:
+            return ""
+        sid = entry.get("sid")
+        if isinstance(sid, str) and sid:
+            return bounded_session_id(sid) or ""
+        # `or ""` rather than a second bounding helper: this reader's callers want
+        # "no id" as the empty string, and the shared bound answers None. Spelling
+        # the sentinel at the call site keeps one definition of the bound, which is
+        # what the two private copies that preceded it could not do -- they had
+        # already diverged on exactly this sentinel.
+        return bounded_session_id(entry.get("discarded_sid")) or ""
 
     @staticmethod
     def _inbound_binding(entry: dict) -> ChannelLink | None:
@@ -1045,13 +1111,18 @@ class SessionMap:
         only the pointer to it is dropped.
         """
         entry = self._data.get(canonical_key(key))
-        if entry and entry.get("sid"):
-            entry["discarded_sid"] = entry["sid"]
-            entry["sid"] = ""
+        if entry and _stash_and_clear_sid(entry):
             self._save()
 
     def get_discarded_sid(self, key: str) -> str:
-        """Return the last sid dropped by :meth:`clear_sid`, or ''."""
+        """Return the last sid dropped from *key* by any path, or ''.
+
+        Written by every path that empties ``sid`` in place -- the provider
+        switch, the startup prune and the per-read stale repair -- through
+        :func:`_stash_and_clear_sid`. Naming only one of them here once let the
+        two stale paths drop a sid without recording it, leaving an older id
+        standing as the key's last store.
+        """
         entry = self._data.get(canonical_key(key))
         if not entry:
             return ""
@@ -1117,7 +1188,7 @@ class SessionMap:
             survives = _survives_prune(entry)
             if sid and not (sessions_dir / f"{sid}.json").exists():
                 if survives:
-                    entry["sid"] = ""
+                    _stash_and_clear_sid(entry)
                     repaired = True
                 else:
                     stale.append(key)

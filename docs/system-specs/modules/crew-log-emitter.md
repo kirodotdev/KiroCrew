@@ -29,6 +29,25 @@ fresh one. When that reset cleared the conversation the successor has a new id a
 crew log; when it did not, the next cold start resumes the same id via `session/load`, so
 `CrewLog.exists` decides between create and open and a resumed session never truncates it.
 
+A create that a slot's PREVIOUS crew log already exists behind is the supersede case, and
+the successor records it: `session/opened.data.previous = {sid}`. The id comes from
+`SessionManager.mapped_sid`, the slot's session mapping read without pruning, latched by
+whichever allocation observes it first. One limit is recorded rather than worked around: an
+allocation whose replay is still pending does not publish its fresh id over the mapping, so for
+that window a mapping read names the crew log BEFORE the newest one, and two successive crew
+logs cite that same predecessor while the crew log between them is cited by nobody -- a chain
+walker steps over it with no signal that it did. Closing that needs a deferral that resumes
+once the predecessor's own writes settle, which is tracked with the rest of the supersede work
+in #12148. `mapped_sid` rather
+than `resumable_sid`: the latter asks "can this id still be resumed", so it stats the ACP
+transcript on the calling thread (a sync store read the turn coroutine must not make) and
+PRUNES the entry when that file is gone or empty, which erases the id exactly when the two
+stores disagree -- and a crew log unit outliving a truncated ACP transcript is the unit whose
+tail most needs closing. A successful resume answers the same id, so the emitter compares and
+writes no self-edge. This is the read side's only way to join one slot's crew logs in order;
+`resumed` cannot, since a superseded session has a different id and therefore a different
+unit.
+
 `owner` and `agent` are header fields, written once at create time. There is no turn id in
 the repo, so a turn is identified by its message boundary, `len(slot.messages)` at turn
 start, and every entry of that turn carries it as `data.turn`. That ordinal, plus
@@ -40,7 +59,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
+| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot was mapped to a different session id, from `mapped_sid` (in-memory, non-pruning); a replay-pending allocation defers publishing its fresh id, so for that window the mapping names the crew log before the newest one and the one between is cited by nobody, which is recorded as a residual on #12148 rather than handled here; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts, credits, `duration_ms`, `stop_reason`, model, provider -- or `stop_reason: "failed"` with `error` and no usage |
@@ -1086,6 +1105,19 @@ which means this claim re-attached to a conversation a different gateway process
 writing. A turn left open in that file belongs to a writer that is gone, so closing it
 records what happened. A warm reuse inside this process passes `resumed=False` and repairs
 nothing.
+
+A create that SUPERSEDES a crew log only NAMES it. The entry records which crew log this slot was
+writing before, and the emitter opens no crew log for writing but this session's own, so no outcome
+for another unit is ever authored here. The candidate is verified before it is named: the emitter
+reads that crew log's own header -- written once at create, never rewritten -- and records the edge
+only when the header's slot equals this slot, because the id arrives from a source that can name a
+crew log the slot never wrote -- a persisted mapping entry can be stale or recycled -- and comparing
+that source against itself would prove nothing. The
+open is a read; `CrewLog.open` claims write ownership only when asked to repair, and nothing here
+asks. A candidate whose header cannot be read gets no edge, since unverifiable is not verified.
+Closing a superseded crew log's dangling turn and tool calls still needs a deferral that can resume
+once that unit's outstanding writes settle rather than being decided once, which the edge neither
+needs nor has; it is tracked with its reproductions as #12148.
 
 `resumed=True` is a BELIEF about a writer this process cannot see, and two things check it,
 because they see different populations. A live turn of OUR OWN contradicts the flag directly

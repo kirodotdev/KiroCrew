@@ -95,6 +95,29 @@ MAX_RESPONSE_LEN = 100_000  # truncate tool responses
 ALLOWED_LESSON_CATEGORIES = frozenset({"tool", "preference", "knowledge"})
 
 
+def bounded_session_id(value: object) -> "str | None":
+    """*value* when it is a non-empty ACP session id within
+    :data:`MAX_ACP_SESSION_ID_LEN`, else ``None``.
+
+    The one spelling of the bound, here because more than one store retains these
+    ids and a bound applied twice is a bound that can diverge -- two same-named
+    private copies had already split on their sentinel before this became shared.
+
+    The id comes from the backend, or is read back from a file an agent can write,
+    so it is input rather than a fact at every retention point. An over-long or
+    non-string value answers "no id" rather than a truncated one, which would name
+    a different unit; and a caller that retains an unbounded string can push a
+    whole record past its own maximum size, where the record is dropped rather
+    than truncated, so one bad value costs a record that had nothing to do with it.
+
+    Callers wanting an empty string rather than ``None`` spell it ``or ""`` at the
+    call site, so the sentinel is the caller's choice and not a second definition.
+    """
+    if not isinstance(value, str) or not value or len(value) > MAX_ACP_SESSION_ID_LEN:
+        return None
+    return value
+
+
 def normalize_lesson_category(value: object, *, strict: bool) -> str:
     """Normalize a lesson category to a usable string label.
 

@@ -828,6 +828,7 @@ def _status_start() -> dict[str, Any]:
         "closed_at": None,
         "close_reason": None,
         "resumed": False,
+        "previous": None,
         "seeded": False,
         "agent": "",
         "owner": "",
@@ -860,6 +861,16 @@ def _status_step(state: dict[str, Any], entry: Entry) -> None:
         if state["opened_at"] is None:
             state["opened_at"] = entry.time
         state["resumed"] = bool(data.get("resumed")) or state["resumed"]
+        # The edge to the crew log this slot was writing BEFORE this one. Kept from
+        # whichever entry carried it rather than refreshed from the newest, because
+        # only the creating entry carries one: a re-attach echo has no ``previous``,
+        # and letting it overwrite would drop the edge a chain walker needs.
+        if state["previous"] is None:
+            previous = data.get("previous")
+            if isinstance(previous, dict):
+                sid = previous.get("sid")
+                if isinstance(sid, str) and sid:
+                    state["previous"] = _as_str(sid)
         for key in ("agent", "owner", "slot", "cwd"):
             value = data.get(key)
             if isinstance(value, str):
@@ -932,6 +943,10 @@ def _status_render(state: dict[str, Any]) -> dict[str, Any]:
         "closed_at": state["closed_at"],
         "close_reason": state["close_reason"],
         "resumed": state["resumed"],
+        # The previous crew log of this SLOT, or null when this is its first one (or
+        # when retention removed the segment that carried the edge). A reader
+        # joining a slot's whole history follows this, one store at a time.
+        "previous": state["previous"],
         "seeded": state["seeded"],
         "agent": state["agent"],
         "owner": state["owner"],
