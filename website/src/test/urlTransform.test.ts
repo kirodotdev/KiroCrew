@@ -30,6 +30,13 @@ describe('urlTransform', () => {
     expect(urlTransform('vscode-insiders://')).toBe('')
   })
 
+  // The '' return is the rejection SENTINEL MdAnchor's rejected-destination
+  // guard consumes (issue #9925): a scheme outside ALLOWED_PROTOCOLS that
+  // defaultUrlTransform also refuses comes back as the empty string.
+  it('rejects a non-allowlisted custom scheme with the empty-string sentinel', () => {
+    expect(urlTransform('obsidian://open?vault=Notes&file=x')).toBe('')
+  })
+
   it('falls back to default for malformed URL', () => {
     expect(urlTransform('vscode://[invalid')).toBe('')
   })
