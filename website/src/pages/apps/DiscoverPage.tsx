@@ -126,7 +126,14 @@ function DiscoverPageBody() {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<Category | 'all'>('all')
-  const [source, setSource] = useState<string | null>(null)
+  const [selectedSources, setSelectedSources] = useState<string[]>([])
+  /* Add or drop one registry key from the multi-select source filter. Union
+     semantics: an app is shown when its source is in the set, so selecting two
+     registries WIDENS the shelf rather than intersecting to nothing (every app
+     belongs to exactly one source). An empty set means "show all", the default
+     and the state the "All sources" row restores. */
+  const toggleSource = (key: string) =>
+    setSelectedSources(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]))
   const [sort, setSort] = useState<'name' | 'category'>('name')
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [successMsg, setSuccessMsg] = useState('')
@@ -158,11 +165,18 @@ function DiscoverPageBody() {
     announceAppsChanged,
   } = useAppsData()
 
+  /* Drop any selected key whose registry (and its cached apps) has disappeared:
+     a removed source must not linger as an invisible filter that hides
+     everything. Returns the previous array unchanged when nothing was pruned,
+     so this settles rather than looping. */
   useEffect(() => {
-    if (!loading && source !== null && !sources.some(row => sourceRowKey(row) === source)) {
-      setSource(null)
-    }
-  }, [loading, source, sources])
+    if (loading) return
+    setSelectedSources(prev => {
+      const valid = new Set(sources.map(sourceRowKey))
+      const next = prev.filter(key => valid.has(key))
+      return next.length === prev.length ? prev : next
+    })
+  }, [loading, sources])
 
   const {
     setError, displayError, dismissError,
@@ -284,13 +298,13 @@ function DiscoverPageBody() {
   const sourceBrowse = useMemo(() => {
     const q = query.trim().toLowerCase()
     return browseApps.filter(a => {
-      if (source !== null && sourceKey(a) !== source) return false
+      if (selectedSources.length > 0 && !selectedSources.includes(sourceKey(a))) return false
       if (!q) return true
       return a.displayName.toLowerCase().includes(q)
         || a.description.toLowerCase().includes(q)
         || (a.tags || []).some(t => t.toLowerCase().includes(q))
     })
-  }, [browseApps, source, query])
+  }, [browseApps, selectedSources, query])
 
   const filteredCategories = useMemo(() => {
     const counts = new Map(categoryCounts(sourceBrowse).map(row => [row.category, row.count]))
@@ -305,9 +319,13 @@ function DiscoverPageBody() {
       : compareText(a.displayName, b.displayName))
   }, [sourceBrowse, category, sort])
 
-  /* Editorial placements survive category picks, but not a search or source
-     filter: unrelated featured apps would contradict the selected source. */
-  const showEditorial = source === null && !query.trim() && featuredSections.length > 0
+  /* Editorial placements survive category AND source picks: those are browse
+     refinements of the grid below, and unmounting the whole top section on the
+     first selection is the jarring layout shift we are avoiding. A search still
+     collapses them — a typed query means the user wants matching results, not
+     the storefront hero. Either way the cards stay derived from the full browse
+     set (all sources), so they are editorial, not filter output. */
+  const showEditorial = !query.trim() && featuredSections.length > 0
 
   // ---- Actions --------------------------------------------------------------
   // Detail navigation, install/update routing, the trust-consent target, and
@@ -384,7 +402,12 @@ function DiscoverPageBody() {
         </>}
       />
 
-      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      {/* `scrollbar-gutter: stable` reserves the vertical scrollbar's width even
+          when no scrollbar shows, so the centered `max-w-[1200px]` column below
+          does not slide horizontally when the app count crosses the overflow
+          threshold (e.g. 25 apps → 5 apps drops the scrollbar). Same fix the
+          chat transcript uses (TranscriptScrollShell). */}
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0" style={{ scrollbarGutter: 'stable' }}>
         {/* Width cap on the content column only (the scrollbar stays at the
             viewport edge). Discover is the one storefront surface: uncapped,
             an ultrawide monitor stretches the lead card's 16:9 art and the
@@ -616,12 +639,13 @@ function DiscoverPageBody() {
                   selected={category}
                   onSelect={setCategory}
                   sources={sources}
-                  selectedSource={source}
-                  onSelectSource={setSource}
+                  selectedSources={selectedSources}
+                  onToggleSource={toggleSource}
+                  onClearSources={() => setSelectedSources([])}
                   onAddSource={() => setSourcesOpen(true)}
                 />
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0" data-testid="discover-app-list">
                 <div className="flex items-center justify-between mb-3 text-[12.5px] text-muted">
                   <span role="status" aria-live="polite">{i18nT('pages.appsPage.app', { count: filteredBrowse.length })}</span>
                   {/* A `<label>` cannot wrap this any more: `SimpleSelect`
@@ -641,7 +665,7 @@ function DiscoverPageBody() {
                   </span>
                 </div>
                 {filteredBrowse.length === 0 ? (
-                  <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={source !== null ? i18nT('appStoreSources.empty') : i18nT('pages.appsPage.try_a_different_search_or_category')} />
+                  <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={selectedSources.length > 0 ? i18nT('appStoreSources.empty') : i18nT('pages.appsPage.try_a_different_search_or_category')} />
                 ) : (
                   /* Two rows to a line on a desktop dashboard. A row is a
                      name, a provenance line and one control -- it never needed

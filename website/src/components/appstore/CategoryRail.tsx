@@ -56,14 +56,18 @@ function sourceTier(s: SourceRow): string {
   return ''
 }
 
-export default function CategoryRail({ categories, total, selected, onSelect, sources, selectedSource, onSelectSource, onAddSource }: {
+export default function CategoryRail({ categories, total, selected, onSelect, sources, selectedSources, onToggleSource, onClearSources, onAddSource }: {
   categories: { category: Category; count: number }[]
   total: number
   selected: Category | 'all'
   onSelect: (c: Category | 'all') => void
   sources: SourceRow[]
-  selectedSource: string | null
-  onSelectSource: (source: string | null) => void
+  /** Registry keys (sourceRowKey) currently applied as filters; empty = show all. */
+  selectedSources: string[]
+  /** Add or drop one source key from the multi-select filter. */
+  onToggleSource: (source: string) => void
+  /** Clear the whole source filter — the "All sources" row. */
+  onClearSources: () => void
   onAddSource: () => void
 }) {
   const item = (label: string, count: number, key: Category | 'all') => {
@@ -93,22 +97,22 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
       <div>
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.sources')}</div>
         <Clickable
-          aria-pressed={selectedSource === null}
-          className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer mb-1.5 ${selectedSource === null ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
-          onClick={() => onSelectSource(null)}
+          aria-pressed={selectedSources.length === 0}
+          className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer mb-1.5 ${selectedSources.length === 0 ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
+          onClick={onClearSources}
         >
           {i18nT('appStoreSources.all')}
         </Clickable>
         {sources.map(s => (
           <Clickable
             key={sourceRowKey(s)}
-            aria-pressed={selectedSource === sourceRowKey(s)}
-            onClick={() => onSelectSource(sourceRowKey(s))}
+            aria-pressed={selectedSources.includes(sourceRowKey(s))}
+            onClick={() => onToggleSource(sourceRowKey(s))}
             /* The whole row carries the tooltip, not just the icon: the icon is a
                14px glyph and a hover target that small is easy to miss, while the
                review claim is the thing a user needs before installing. */
             title={sourceTitle(s)}
-            className={`focus-ring cursor-pointer flex items-center gap-2 px-2.5 py-[7px] border rounded-[9px] text-[12.5px] mb-1.5 ${selectedSource === sourceRowKey(s) ? 'border-accent bg-[var(--accent-subtle)] text-text-strong' : 'border-border bg-card text-text hover:border-border-strong'}`}
+            className={`focus-ring cursor-pointer flex items-center gap-2 px-2.5 py-[7px] border rounded-[9px] text-[12.5px] mb-1.5 ${selectedSources.includes(sourceRowKey(s)) ? 'border-accent bg-[var(--accent-subtle)] text-text-strong' : 'border-border bg-card text-text hover:border-border-strong'}`}
           >
             {/* ONE icon per tier, the same glyphs the External Registries card
                 uses, so the same source is not drawn two ways across the two

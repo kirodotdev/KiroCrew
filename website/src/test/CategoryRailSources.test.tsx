@@ -15,8 +15,9 @@ function renderRail(sources: SourceRow[]) {
       selected="all"
       onSelect={vi.fn()}
       sources={sources}
-      selectedSource={null}
-      onSelectSource={vi.fn()}
+      selectedSources={[]}
+      onToggleSource={vi.fn()}
+      onClearSources={vi.fn()}
       onAddSource={vi.fn()}
     />,
   )
