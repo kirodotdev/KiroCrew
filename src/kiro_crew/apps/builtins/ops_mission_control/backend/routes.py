@@ -2537,9 +2537,16 @@ def _index_ledger_safely() -> dict[str, int]:
     store_obj = None
     try:
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.embeddings import make_sync_embed_fn
         from kiro_crew.vector_memory import VectorMemoryStore
 
         store_obj = VectorMemoryStore(embedding_dim=KiroCrewConfig.load().memory.embedding_dim)
+        # This short-lived store owns the sweep below, so wire it exactly like
+        # the onboarding import's short-lived store. Without this,
+        # backfill_missing_embeddings returns 0 before examining any row and
+        # every deferred ledger projection remains keyword-only.
+        store_obj.embed_fn_factory = make_sync_embed_fn
+        store_obj.embed_fn = make_sync_embed_fn()
         store_obj.init()
         return ledger_index.import_pending(store_obj)
     except Exception:  # noqa: BLE001 — no store, or a broken one, is a supported state
