@@ -52,6 +52,7 @@ from kiro_crew.dashboard.chat_utils import (
     dashboard_slot_key,
     effective_session_key,
     mint_options_token,
+    mirror_is_paused,
     remember_slack_options,
     slack_options_owner_key,
 )
@@ -77,13 +78,21 @@ from kiro_crew.messaging.renderer import (
     chunk_text,
     display_safe_for,
     format_overflow,
+    send_parts_revalidating,
 )
 from kiro_crew.messaging.transport import delivery_confirmed
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
 )
-from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+from kiro_crew.platform.context import current_context
+from kiro_crew.platform.governance_profiles import (
+    HOST_SESSION_KEY,
+    governance_answer_generation,
+    governance_ceiling_unchanged,
+    poll_profiles_fresh,
+    vet_and_audit,
+)
 from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.format import build_options_blocks, extract_options
@@ -1891,10 +1900,125 @@ def _channel_delivery_key(state: DashboardState, caller_session: str, declared_s
     return declared_session
 
 
-async def _deliver_to_channel(
-    state: DashboardState, session_key: str, text: str, *, channel_type: str = ""
+#: ``authored_link`` has TWO states: omitted (an inline caller, revalidated against
+#: this call's own walk) or a captured link (revalidated against it, mid-send re-asks on).
+
+
+def snapshot_channel_link(
+    state: DashboardState,
+    session_key: str,
+    *,
+    skip_paused: bool = False,
+    skip_slack: bool = False,
+) -> tuple[ChannelLink, bool] | None:
+    """Capture the channel binding a piece of work is AUTHORED for, before dispatch.
+
+    Pass the result to ``deliver_to_channel(authored_link=...)``. Needed by any
+    caller that accepts work now and delivers it from a background task: the
+    helper's own ladder walk happens when the TASK runs, so a rebind in between
+    would be read as the binding rather than as a change.
+
+    PAUSE-AWARE ON PURPOSE: it walks the SAME ladder with the SAME ``skip_paused``
+    the delivery will use, so the two agree by construction, and it carries the
+    destination IDENTITY to compare rather than a type to match.
+
+    *skip_slack* is OPT-IN because it changes which destination a walk selects.
+    Slack cannot be delivered by this ladder at all, so a caller that sends Slack on
+    its own leg wants the walk to continue past a Slack row; without it the walk
+    stops on the first live row.
+    """
+    for is_origin, getter in (
+        (True, state.sessions.get_origin_link),
+        (False, state.sessions.get_mirror_link),
+    ):
+        candidate = getter(session_key)
+        if candidate is None:
+            continue
+        if skip_paused and mirror_is_paused(state, session_key, origin=is_origin):
+            continue
+        if skip_slack and getattr(candidate, "channel_type", "") == SLACK_NAMESPACE:
+            continue
+        return candidate, is_origin
+    return None
+
+
+def audit_channel_send(
+    *,
+    session_key: str,
+    tool_name: str,
+    channel_type: str | None,
+    outcome: str,
+    reason: str,
+) -> None:
+    """Record ONE channel-egress decision for the transport leg, allow or deny.
+
+    Module-level rather than a closure so every refusal on this leg files through one
+    emitter and streams into one filterable place. The one refusal that files NO row
+    is the no-transport case, where the install has no channel surface at all: there
+    the refusal is about the INSTALL rather than the request, and a row would name no
+    destination.
+
+    *reason* is a stable CODE, not prose: an operator filters on it to answer
+    "what refused this", so two different refusals must never share one.
+
+    Never raises. A SEL outage must not convert a refusal into an exception on a
+    path whose whole job is to fail closed quietly.
+    """
+    try:
+        _sel().log_tool_invocation(
+            session_key=session_key or "dashboard",
+            tool_name=tool_name,
+            outcome=outcome,
+            downstream_service=channel_type or "channel",
+            resources=f"channel_type={channel_type} reason={reason}",
+        )
+    except Exception:
+        logger.warning("SEL logging failed for channel send", exc_info=True)
+
+
+def _app_messaging_permitted(session_key: str, app: str, tool_name: str) -> bool:
+    """Whether outbound messaging is still permitted. Fail-closed, synchronous.
+
+    Asked per part, not once: the `channels` scope answers where a send may go and cannot
+    see `capabilities.messaging` being revoked between two chunks. An empty `app` is not a
+    skip -- it resolves the per-surface profile and ceiling, which is a dashboard note's
+    enforced path.
+    """
+    try:
+        decision = vet_and_audit(
+            "capabilities.messaging",
+            "",
+            session_key=session_key,
+            tool_name=tool_name,
+            app=app,
+            fail_closed=True,
+        )
+    except Exception:
+        logger.warning("channel send: app messaging re-check failed for %s; denying", session_key)
+        return False
+    return bool(getattr(decision, "permitted", False))
+
+
+async def deliver_to_channel(
+    state: DashboardState,
+    session_key: str,
+    text: str,
+    *,
+    channel_type: str = "",
+    skip_paused: bool = False,
+    skip_slack: bool = False,
+    tool_name: str,
+    authored_link: tuple[ChannelLink, bool] | None = None,
+    request_app: str = "",
 ) -> bool:
     """Governed proactive send to the channel conversation behind *session_key*.
+
+    Returns whether the message was CONFIRMED delivered. It does not return which
+    channel type the ladder picked: with *skip_paused* the walk can legitimately
+    land on a different row than a caller's own pre-read would (a paused origin on
+    one transport, an active mirror on another), so the selection is genuinely not
+    the caller's to guess — but no caller needs it either. It is logged here, at
+    the only place that knows it, rather than handed back for a log line to read.
 
     Rides the same cross-surface ladder as the auto-compact notice and the
     inbound-unbind notice (``chat_runner._resolve_channel_target``) rather than
@@ -1909,48 +2033,145 @@ async def _deliver_to_channel(
     posting to the link it does have would deliver to an audience nobody asked
     for. Empty accepts whatever the link names.
 
+    *skip_paused* makes a DISCONNECTED binding invisible to the walk, so a paused
+    origin does not withhold delivery from an active mirror. Opt-in, because the
+    two kinds of caller differ: a background notice about a conversation is
+    exactly what a disconnect means to suppress, while a send the operator
+    ADDRESSED to a channel is theirs to make regardless. It lives here rather
+    than in the caller so the ladder has ONE spelling and the revalidation below
+    has one home — letting a caller pass its own pre-chosen link
+    instead puts the pause decision before the governance await
+    with no way to re-check it after.
+
+    *tool_name* is the SEL caller identity, so an operator can tell which sender
+    produced an audit row. It is a label, never a permission input.
+
     Fails closed and returns ``False`` — never falls through to another
     destination — for every reason a send can be refused: no link, a link on
     another transport, a governance denial, an unregistered transport, one that
-    cannot send proactively, or a transport error. Each is audited, because a
-    proactive message that reached nobody is exactly what the caller must not
-    read as success.
+    cannot send proactively, a binding that changed while the gate ran, or a
+    transport error. Each is audited, because a proactive message that reached
+    nobody is exactly what the caller must not read as success.
     """
     # Lazy: chat_runner imports this package at module scope (MAX_PROMPT_BYTES,
     # _find_prompt), so a top-level import here would close the cycle.
     from kiro_crew.dashboard.chat_runner import _resolve_channel_target
 
+    # *channel_type* is the caller's FILTER, empty whenever a caller does not constrain
+    # the walk, so it cannot name a destination; see docs/system-specs/modules/messaging.md.
+    audited: dict[str, str] = {"channel_type": channel_type}
+
     def _audit(outcome: str, reason: str) -> None:
-        try:
-            _sel().log_tool_invocation(
-                session_key=session_key or "dashboard",
-                tool_name="send_message",
-                outcome=outcome,
-                downstream_service=channel_type or "channel",
-                resources=f"channel_type={channel_type} reason={reason}",
-            )
-        except Exception:
-            logger.warning("SEL logging failed for channel send", exc_info=True)
+        audit_channel_send(
+            session_key=session_key,
+            tool_name=tool_name,
+            channel_type=audited["channel_type"],
+            outcome=outcome,
+            reason=reason,
+        )
 
     if not session_key or not text:
         _audit("denied", "no_session_key" if not session_key else "empty_text")
         return False
-    # Own inbound conversation first, then the outbound mirror: a channel-born
-    # session has the former, a dashboard session linked to a channel has the
-    # latter, and only one of the two is ever set for a given session.
-    link = state.sessions.get_origin_link(session_key) or state.sessions.get_mirror_link(
-        session_key
-    )
+
+    def _walk_ladder() -> tuple[ChannelLink | None, bool]:
+        """Own inbound conversation first, then the outbound mirror.
+
+        Delegates to :func:`snapshot_channel_link`, which is the SAME walk an
+        authoring caller uses to capture its binding; that shared body is what makes
+        the two agree by construction.
+
+        Returns the chosen link and whether it was the ORIGIN row, because the two
+        mute independently and a pause check needs to name the row it is asking
+        about. A PAUSED candidate is skipped and the walk CONTINUES rather than
+        ending, so a disconnected origin does not withhold delivery from a live mirror.
+
+        Carries *skip_slack* as well as *skip_paused*: every revalidation compares
+        against a caller's snapshot, and a walk with different skips lands on a
+        different row.
+        """
+        walked = snapshot_channel_link(
+            state, session_key, skip_paused=skip_paused, skip_slack=skip_slack
+        )
+        return walked if walked is not None else (None, False)
+
+    walked_link, walked_is_origin = _walk_ladder()
+    # THE REFERENCE THE REVALIDATIONS COMPARE AGAINST: without *authored_link* it is
+    # this call's own walk, which for a dispatched caller reads the REPLACEMENT binding.
+
+    link: ChannelLink | None
+
+    def _binding_unchanged(
+        candidate: ChannelLink | None,
+        candidate_is_origin: bool,
+        expected: ChannelLink | None,
+        expected_is_origin: bool,
+    ) -> bool:
+        """Is *candidate* still the same binding as *expected*?
+
+        SYNCHRONOUS BY DESIGN, and the reason is the whole point of the check: an
+        await in here would yield between the comparison and the caller's send,
+        which is exactly the window the caller calls this to close.
+
+        ``ChannelLink`` is a plain dataclass, so ``==`` compares every field and a
+        field added to it is covered here for free -- a hand-written field list is
+        the copy that silently passes a moved binding the day it forgets one. The
+        two explicit ``is not None`` arms are NOT redundant with ``==``: two absent
+        bindings compare equal, and reading that as "unchanged" would answer the
+        caller's question in the fail-OPEN direction. Both sides are parameters so
+        the pre-dispatch comparison and the per-chunk ones share this body.
+        """
+        return (
+            candidate is not None
+            and expected is not None
+            and candidate == expected
+            and candidate_is_origin == expected_is_origin
+        )
+
+    if authored_link is not None:
+        link, link_is_origin = authored_link
+        audited["channel_type"] = link.channel_type or channel_type
+        if not _binding_unchanged(walked_link, walked_is_origin, link, link_is_origin):
+            # A refusal, never a retarget: delivering to the replacement is the exposure,
+            # and delivering to the original may be equally wrong now the session moved.
+            _audit("denied", "link_changed_before_dispatch")
+            logger.info(
+                "channel send: binding for %s changed between authorization and dispatch; "
+                "refusing",
+                session_key,
+            )
+            return False
+    else:
+        link, link_is_origin = walked_link, walked_is_origin
+        if link is not None:
+            audited["channel_type"] = link.channel_type or channel_type
     if link is None:
-        _audit("denied", "no_channel_link")
+        _audit("denied", "no_channel_link" if not skip_paused else "no_live_channel_link")
         return False
     if channel_type and link.channel_type != channel_type:
         _audit("denied", f"link_is_{link.channel_type}")
         return False
+
+    def _sample_then_resolve() -> tuple[int | None, Any]:
+        # Sample BEFORE the resolve, which is the authorization that reads the ceiling.
+        # Materialise context AND profiles first: either lazy load would bump the counter.
+        current_context()
+        poll_profiles_fresh()
+        try:
+            before: int | None = governance_answer_generation()
+        except Exception:
+            logger.warning("channel send: governance generation unreadable", exc_info=True)
+            before = None
+        # Re-asked on EVERY sample, so a revocation during the chunk awaits refuses the
+        # next part: the ladder answers `channels`, never the app's messaging capability.
+        if not _app_messaging_permitted(session_key, request_app, tool_name):
+            return before, None
+        return before, _resolve_channel_target(state, session_key, link, app=request_app)
+
     try:
         # Off-loop: the ladder's governance gate walks the profile directory,
         # which is unbounded on slow storage.
-        target = await asyncio.to_thread(_resolve_channel_target, state, session_key, link)
+        permit_ceiling, target = await asyncio.to_thread(_sample_then_resolve)
     except Exception:
         # Includes PlatformCompositionError, which _resolve_channel_target
         # re-raises. Refusing the send is the fail-closed answer either way, and
@@ -1967,6 +2188,21 @@ async def _deliver_to_channel(
     resolved, transport = target
     if not resolved.channel_id:
         _audit("denied", "no_conversation_id")
+        return False
+    # NO early refusal on the sampled token here: it spans ceiling AND profile, so an
+    # unrelated profile edit moves it without narrowing this send. Part 1 re-asks below.
+
+    # REVALIDATE at the point of USE: the governance gate above awaits, so the binding
+    # can move. A fresh WALK, not a re-read of one row -- a rebind can move the row.
+    fresh_link, fresh_is_origin = _walk_ladder()
+    # UNCONDITIONAL: the comparand is `link`, this send's own resolved destination, so
+    # every caller has it; skipping it let a revoked binding still receive content.
+    if not _binding_unchanged(fresh_link, fresh_is_origin, link, link_is_origin):
+        _audit("denied", "link_changed_during_resolve")
+        logger.info(
+            "channel send: binding for %s changed while the governance gate ran; refusing",
+            session_key,
+        )
         return False
     # ``display_safe_for`` is the SHARED outbound display sink (redact against the
     # rendered form, then defang mentions ONLY where the platform parses one).
@@ -1987,7 +2223,167 @@ async def _deliver_to_channel(
     parts = chunk_text(
         display_safe_for(text, transport.capabilities), transport.capabilities.max_message_chars
     )
-    for part in parts:
+
+    # A fresh walk plus a fresh resolve re-asks binding, pause, governance and
+    # recipient authorization together; `skip_paused` makes a mid-send pause refuse.
+    async def _still_permitted(index: int) -> bool:
+        async def _settle(error_reason: str, what: str) -> tuple[bool, int | None, Any]:
+            """One off-loop sample+resolve step: ``(ok, ceiling, settled)``.
+
+            ONE spelling for every arm, so a step cannot be added to one and missed in
+            another. ``ok`` False means the failure is already audited and logged.
+            """
+            try:
+                ceiling, settled = await asyncio.to_thread(_sample_then_resolve)
+            except Exception:
+                logger.warning("channel send: %s failed for %s", what, session_key, exc_info=True)
+                _audit("error", error_reason)
+                return False, None, None
+            return True, ceiling, settled
+
+        def _binding_still_ours(deny_reason: str, detail: str) -> bool:
+            """Re-walk the ladder after an await, refusing when the binding moved.
+
+            An UNLINK across an await leaves the resolved id identical while revoking the
+            binding, so the id comparison alone cannot see it.
+            """
+            step_link, step_is_origin = _walk_ladder()
+            if _binding_unchanged(step_link, step_is_origin, link, link_is_origin):
+                return True
+            _audit("denied", deny_reason)
+            logger.warning("channel send: binding for %s changed %s", session_key, detail)
+            return False
+
+        # Part 1 re-asks the RECIPIENT even when the ceiling held: the permit sampled before
+        # the resolve speaks to governance, never to who the recipient now is.
+        if not index:
+            if governance_ceiling_unchanged(permit_ceiling):
+                ok, settled_ceiling, settled = await _settle(
+                    "resolve_failed_before_part_1", "pre-part-1 recipient re-ask"
+                )
+                if not ok:
+                    return False
+                # The generation is validated here, not discarded: the re-ask awaited, so a
+                # tightening inside it would otherwise settle an already-superseded permit.
+                if not governance_ceiling_unchanged(settled_ceiling):
+                    # SAME READING AS THE SIBLING ARMS: a moved token means the answer MAY
+                    # have changed, so re-ask once rather than refusing an unnarrowed send.
+                    ok, settled_ceiling, settled = await _settle(
+                        "resolve_failed_before_part_1", "pre-part-1 generation re-confirm"
+                    )
+                    if not ok:
+                        return False
+                    if (
+                        settled is None
+                        or settled[0].channel_id != resolved.channel_id
+                        or not governance_ceiling_unchanged(settled_ceiling)
+                    ):
+                        _audit("denied", "governance_changed_before_part_1")
+                        logger.warning(
+                            "channel send: governance ceiling for %s narrowed, or kept "
+                            "moving, between the recipient re-ask and the first part; "
+                            "refusing on the superseded permit",
+                            session_key,
+                        )
+                        return False
+                if settled is None or settled[0].channel_id != resolved.channel_id:
+                    _audit("denied", "link_changed_during_recheck_before_part_1")
+                    logger.warning(
+                        "channel send: recipient for %s moved between the resolve and the "
+                        "first part; refusing on the superseded authorization",
+                        session_key,
+                    )
+                    return False
+                return _binding_still_ours(
+                    "link_changed_during_recheck_before_part_1",
+                    "while the pre-part-1 recipient re-ask ran; refusing",
+                )
+            # SAME READING AS MID-SEND: a moved token means the answer MAY have changed,
+            # so re-ask once rather than refusing a send nothing has actually narrowed.
+            ok, confirm_ceiling, confirm = await _settle(
+                "resolve_failed_before_part_1", "pre-part-1 re-confirm"
+            )
+            if not ok:
+                return False
+            if (
+                confirm is None
+                or confirm[0].channel_id != resolved.channel_id
+                or not governance_ceiling_unchanged(confirm_ceiling)
+            ):
+                _audit("denied", "governance_changed_before_part_1")
+                logger.warning(
+                    "channel send: governance ceiling for %s narrowed, or kept moving, "
+                    "between the resolve and the first part; refusing on the superseded "
+                    "permit",
+                    session_key,
+                )
+                return False
+            # The re-confirm awaited, so the binding can have moved across it.
+            return _binding_still_ours(
+                "link_changed_during_recheck_before_part_1",
+                "while the pre-part-1 re-confirm ran; refusing",
+            )
+        # Resolve the AUTHORED link. A pre-resolve walk was a fail-fast the walk below
+        # subsumes, since this resolve awaits and staleness returns either way.
+        ok, recheck_ceiling, recheck = await _settle(
+            f"resolve_failed_mid_send_before_part_{index + 1}", "mid-send re-resolve"
+        )
+        if not ok:
+            return False
+        if recheck is None or recheck[0].channel_id != resolved.channel_id:
+            # Governance narrowed, the recipient left the roster, the transport
+            # was unregistered, or the destination moved. All are refusals.
+            _audit("denied", f"not_permitted_mid_send_before_part_{index + 1}")
+            logger.warning(
+                "channel send: %s no longer permitted mid-send for %s; aborted before "
+                "part %d of %d (%d already delivered)",
+                channel_type or link.channel_type,
+                session_key,
+                index + 1,
+                len(parts),
+                index,
+            )
+            return False
+        # The re-resolve is an await, so the binding can have moved across it. This walk
+        # is the one that binds: nothing yields between it and the send.
+        if not _binding_still_ours(
+            f"link_changed_during_recheck_before_part_{index + 1}",
+            f"while the mid-send re-resolve ran; aborted before part {index + 1} of "
+            f"{len(parts)} ({index} already delivered)",
+        ):
+            return False
+        # A moved token means the answer MAY have changed, so re-ask the permission
+        # rather than truncating; see docs/system-specs/modules/messaging.md.
+        if not governance_ceiling_unchanged(recheck_ceiling):
+            ok, confirm_ceiling, confirm = await _settle(
+                f"resolve_failed_mid_send_before_part_{index + 1}", "mid-send re-confirm"
+            )
+            if not ok:
+                return False
+            if (
+                confirm is None
+                or confirm[0].channel_id != resolved.channel_id
+                or not governance_ceiling_unchanged(confirm_ceiling)
+            ):
+                _audit("denied", f"governance_changed_mid_send_before_part_{index + 1}")
+                logger.warning(
+                    "channel send: governance for %s narrowed, or kept moving, while the "
+                    "mid-send re-resolve ran; aborted before part %d of %d (%d already "
+                    "delivered)",
+                    session_key,
+                    index + 1,
+                    len(parts),
+                    index,
+                )
+                return False
+            return _binding_still_ours(
+                f"link_changed_during_recheck_before_part_{index + 1}",
+                f"while the mid-send re-confirm ran; aborted before part {index + 1} of "
+                f"{len(parts)} ({index} already delivered)",
+            )
+        return True
+
+    async def _send_part(_index: int, part: str) -> bool:
         try:
             # "No exception" is not delivery on its own, and auditing it as such
             # would report a success for a message the user never saw -- the one
@@ -2008,7 +2404,20 @@ async def _deliver_to_channel(
             )
             _audit("error", "empty_message_id")
             return False
+        return True
+
+    if not await send_parts_revalidating(
+        parts, still_permitted=_still_permitted, send_part=_send_part
+    ):
+        return False
     _audit("completed", "delivered")
+    # Logged HERE rather than returned: the selected row is a fact about this delivery,
+    # and the ladder is the only thing that knows which row it was.
+    logger.info(
+        "channel send: delivered to %s for %s",
+        resolved.channel_type or link.channel_type,
+        session_key,
+    )
     return True
 
 
@@ -2236,7 +2645,7 @@ async def api_send_message(request: web.Request) -> web.Response:
     # side-effect boundary.
     #
     # ``target_id`` is what selects THIS leg. ``channel_type`` alone means the
-    # non-Slack conversation the SESSION already belongs to (``_deliver_to_channel``
+    # non-Slack conversation the SESSION already belongs to (``deliver_to_channel``
     # further down); ``channel_type`` + ``target_id`` names an explicit configured
     # destination on that transport, which is this one. So the field pair reads as
     # "which transport, and — if given — which destination on it", and a
@@ -2703,11 +3112,15 @@ async def api_send_message(request: web.Request) -> web.Response:
                     caller_session=caller_session if is_cron_caller else declared_session,
                 )
             if channel_type:
-                sent_channel = await _deliver_to_channel(
+                sent_channel = await deliver_to_channel(
                     state,
                     _channel_delivery_key(state, caller_session, declared_session),
                     channel_text,
                     channel_type=channel_type,
+                    tool_name="send_message",
+                    # The app's own id: an EMPTY one is not a skip, it resolves the
+                    # surface ceiling, so a denied app is vetted against another profile.
+                    request_app=request.get("app", ""),
                 )
             # A separate ``if``, not an ``elif``: ``send_to_slack`` is the single
             # predicate that decides Slack delivery, so it must be false when a
@@ -2876,7 +3289,7 @@ async def api_send_message(request: web.Request) -> web.Response:
     # A named channel that was not reached is a failure, not a notification-only
     # success: the caller asked for a specific conversation, Slack was suppressed
     # as its fallback, and the bell is not a substitute for the surface the user
-    # is actually reading. _deliver_to_channel has already audited which of the
+    # is actually reading. deliver_to_channel has already audited which of the
     # refusals it was.
     if channel_type and not sent_channel and not sent_session:
         return web.json_response(
