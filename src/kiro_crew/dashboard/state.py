@@ -4302,6 +4302,11 @@ class DashboardState:
         # never acquires it.
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
+        # Folder ids a confirmed write has put on disk. ``None`` means UNKNOWN and every
+        # reader fails open; ``_folders`` cannot serve, as it reads deleted pre-write.
+        self._committed_folder_ids: frozenset[str] | None = None
+        # Mirrors ``_committed_folder_ids`` for the tag vocabulary.
+        self._committed_tag_ids: frozenset[str] | None = None
         self._cron_folders: list[dict[str, Any]] = []  # cron job folder groupings
         # Malformed cron_folders.json entries dropped at load time, kept verbatim
         # so save_cron_folders round-trips them back instead of erasing bytes it
@@ -5971,6 +5976,49 @@ class DashboardState:
         """Load usable folder definitions without replacing good state on failure."""
         path = config_dir() / self._FOLDERS_FILE
         self._folders = _FOLDER_REPOSITORY.load(path, self._folders)
+        # Published through the same derivation the commit hook uses, so a load and a
+        # commit cannot disagree about which rows count as vocabulary.
+        self.publish_committed_folder_ids(self._folders)
+
+    def publish_committed_folder_ids(self, snapshot: list[dict[str, Any]]) -> None:
+        """Adopt *snapshot* as the committed folder vocabulary. Call ONLY after a write confirms.
+
+        THE FOLDER MIRROR OF :meth:`publish_committed_tag_ids`, and the single spelling
+        of this derivation. Two sites need the set -- the repository load and
+        ``mutate_folders``' post-commit hook -- and deriving it at each is what lets them
+        disagree on whether an empty-string ``id`` counts.
+
+        ``id`` is TESTED rather than indexed, and an empty string is EXCLUDED: a folder
+        id is a slot's ``folder_id``, where ``""`` already means UNFILED, so admitting it
+        into the vocabulary would make "unfiled" a filing that validates.
+
+        Order matters the same way it does for tags: after the persist returns without
+        raising, never before it and never on a rollback path.
+        """
+        self._committed_folder_ids = frozenset(
+            f["id"] for f in snapshot if isinstance(f.get("id"), str) and f["id"]
+        )
+
+    def publish_committed_tag_ids(self, snapshot: list[dict[str, Any]]) -> None:
+        """Adopt *snapshot* as the committed tag vocabulary. Call ONLY after a write confirms.
+
+        ORDER IS THE WHOLE POINT: after the persist returns without raising, never
+        before it and never on a rollback path. A snapshot published optimistically
+        would be exactly the uncommitted state that reading ``_tags`` already exposes,
+        and would reintroduce the hazard by the back door.
+
+        Takes the list that was actually serialized rather than re-reading
+        ``self._tags``, so the vocabulary cannot disagree with the bytes on disk even
+        if a later mutation touches the live list.
+
+        ``id`` is TESTED rather than indexed: every writer today mints a str id, but
+        this runs on the persist path for every tag mutation, and one malformed row
+        must not raise AFTER the bytes already landed -- that would report a failed
+        write that in fact succeeded.
+        """
+        self._committed_tag_ids = frozenset(
+            t["id"] for t in snapshot if isinstance(t.get("id"), str) and t["id"]
+        )
 
     def save_folders(self) -> None:
         """Persist folder definitions for synchronous boot-time callers."""
@@ -6290,23 +6338,26 @@ class DashboardState:
     async def mutate_folders(
         self,
         mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]],
-        on_committed: Callable[[], None] | None = None,
+        on_committed: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> _T:
         """Serialize a folder mutation and confirm its off-loop persistence.
 
         ``on_committed`` runs under the repository lock only after the write
         is proven, so callers can attach side effects that must not outlive a
-        rolled-back or no-op transaction.
+        rolled-back or no-op transaction. It receives the snapshot that landed.
         """
 
-        def _mark_committed() -> None:
+        def _mark_committed(snapshot: list[dict[str, Any]]) -> None:
             # This runs under the repository lock and only after the write is
             # confirmed.  A failed/no-op transaction must not make clients
             # re-fetch a tree that never changed, and concurrent commits must
             # not collapse two monotonic generation bumps into one.
             self._folders_generation = self.folders_generation() + 1
+            # From the SNAPSHOT that was serialized, never the live list: a later mutation
+            # touching ``self._folders`` first would disagree with the bytes.
+            self.publish_committed_folder_ids(snapshot)
             if on_committed is not None:
-                on_committed()
+                on_committed(snapshot)
 
         return await _FOLDER_REPOSITORY.mutate(
             lambda: self._folders,
@@ -6375,6 +6426,10 @@ class DashboardState:
             # seeded below) or parsed as a list — INCLUDING a legitimately-
             # empty [] — so restore-time pruning of dangling ids is safe.
             self._tags_authoritative = vocab_ok
+            if vocab_ok:
+                # Knownness is decided here and nowhere else: a parsed document IS the
+                # committed vocabulary, and an unparsable one leaves the set UNKNOWN.
+                self.publish_committed_tag_ids(self._tags)
         except Exception:
             logger.warning("Failed to load tags", exc_info=True)
             # Treat a parse error like a present file: do not re-seed.
