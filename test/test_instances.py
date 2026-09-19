@@ -6412,6 +6412,104 @@ class TestSsmTransportSelection:
         await mgr.shutdown()
 
 
+class TestSsmMintOutputRedaction:
+    """The SSM mint's error tail must be no weaker than the SSH mint's.
+
+    Both transports raise ``TokenMintError`` from a partially-successful mint --
+    the remote printed its success URL and then exited non-zero -- so both build
+    an error message out of a stream that can be holding a live token. The SSH
+    transport routes that through ``_redacted_output_tail``, which adds a
+    ``?token=`` URL-param pass and a token-shape pass on top of the generic
+    ``redact()``. A second, weaker copy of that helper on the SSM side leaks the
+    shapes those two extra passes exist to catch, which is what these tests pin.
+    """
+
+    # SYNTHETIC, never a real token: the two-segment `payload.signature` shape
+    # `dashboard/token_auth.generate_token` mints (one dot), with a deliberately
+    # short payload and signature so it clears neither of the bounds
+    # `security`'s own two-segment link-token pattern keys on. A real token is
+    # already redacted by that pattern; this value stands in for the shapes that
+    # are not -- a remote of a different Kiro Crew vintage, or a truncated write.
+    _SYNTHETIC_TOKEN = "eyJzdWIiOiJzeW50aGV0aWMiLCJleHAiOjF9.c3ludGhldGljLXNpZ25hdHVyZQ"
+
+    # SYNTHETIC opaque bearer value: no `eyJ` prefix and no dot, so no token-SHAPE
+    # pattern can recognise it. Only the ``?token=`` URL-param pass catches this,
+    # which is what makes it a separate vector rather than a restatement.
+    _OPAQUE_TOKEN = "9f3c1ab77d2e4f508c6b1e0a4d7c2f91b5e8a03c"
+
+    # The vectors are named because they fail for DIFFERENT reasons, which the
+    # mutation matrix confirms: dropping the token-shape pass kills the first two,
+    # dropping the ``?token=`` URL-param pass kills only the third. An `eyJ`-shaped
+    # value in a URL is caught by the shape pass on its own, so without an opaque
+    # third vector the URL-param pass would be untested here.
+    _VECTORS = (
+        ("bare_two_segment_token", "{token}", _SYNTHETIC_TOKEN),
+        (
+            "two_segment_token_in_success_url",
+            "http://localhost:5476?token={token}",
+            _SYNTHETIC_TOKEN,
+        ),
+        ("opaque_token_in_success_url", "http://localhost:5476?token={token}", _OPAQUE_TOKEN),
+    )
+
+    @staticmethod
+    def _patch_failing_mint(monkeypatch, stdout: str):
+        """Make the send-command chokepoint report a partially-successful mint."""
+        from kiro_crew.cloud import ssm as cloud_ssm
+
+        def fake_run_command(target, command, profile, region, **kwargs):
+            return cloud_ssm.CommandResult(status="Failed", stdout=stdout, stderr="", exit_code=1)
+
+        monkeypatch.setattr(cloud_ssm, "run_command", fake_run_command)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("vector_name, stdout_template, secret", _VECTORS)
+    async def test_failed_ssm_mint_never_carries_a_token_into_its_error(
+        self, monkeypatch, vector_name, stdout_template, secret
+    ):
+        """A partially-successful SSM mint must not put a token in its exception.
+
+        The raised message travels straight into the operator's log, so the
+        assertion is on the real boundary (the exception text), not on the helper
+        in isolation.
+        """
+        from kiro_crew.instances import ssm_token_mint as sm
+
+        stdout = f"starting mint\n{stdout_template.format(token=secret)}\n"
+        self._patch_failing_mint(monkeypatch, stdout)
+
+        with pytest.raises(sm.TokenMintError) as excinfo:
+            await sm.mint_remote_token_ssm("i-0123456789abcdef0", ttl="20h")
+
+        message = str(excinfo.value)
+        assert (
+            secret not in message
+        ), f"{vector_name}: token reached the raised TokenMintError message"
+        # The tail must still carry a reason -- a fix that redacts everything
+        # would pass the leak assertion while destroying the error's usefulness.
+        assert "starting mint" in message
+
+    @pytest.mark.parametrize("vector_name, stdout_template, secret", _VECTORS)
+    def test_ssm_tail_is_no_weaker_than_the_ssh_tail(self, vector_name, stdout_template, secret):
+        """Pin the INVARIANT, not just today's three vectors.
+
+        ``ssm_token_mint``'s tail helper claims to mirror ``token_mint``'s
+        intent. Asserting the mirror directly means the day the SSH side learns a
+        new token shape, the SSM side cannot silently stay behind: this fails
+        instead of a leak going unnoticed.
+        """
+        from kiro_crew.instances import ssm_token_mint as sm
+        from kiro_crew.instances import token_mint as tm
+
+        text = f"starting mint\n{stdout_template.format(token=secret)}\n"
+        assert secret not in tm._redacted_output_tail(
+            text
+        ), f"{vector_name}: the SSH-side reference itself leaked -- fix that first"
+        assert secret not in sm._redacted_tail(
+            text
+        ), f"{vector_name}: SSM tail is weaker than the SSH tail it mirrors"
+
+
 class TestSsmDiagnostics:
     """The SSM diagnosis ladder reports the first broken link, SSM-worded."""
 
