@@ -586,6 +586,33 @@ icon; an unrecognised or absent name renders a generic panel glyph.
 App backends are accessible through the Gateway's reverse proxy at
 `/apps/{name}/api/{path}`, which avoids CORS issues for dashboard UI pages.
 
+#### Backend process environment
+
+A `backend.entryPoint` process (every `backend.type`: Python, ASGI, Node and
+exec alike) does **not** inherit the Gateway's environment. It receives an
+allowlist of location hints (`PATH`, `HOME`, `TMPDIR`, the Windows
+equivalents, the toolchain homes such as `NODE_PATH` / `PYTHONPATH`) plus the
+variables the Gateway sets for it. Anything else in the operator's shell —
+`KIROCREW_PORT` included — is deliberately stripped, so the contract below is
+the only way a backend learns about the Gateway that started it:
+
+| Variable | Value |
+|----------|-------|
+| `PORT` | The TCP port the backend must listen on (the declared `backend.port`, or the auto-assigned one) |
+| `KIROCREW_APP_NAME` | The app's name, as installed |
+| `KIROCREW_HOME` | The Gateway's resolved data home (the directory holding `apps/`, `config.json`, …) |
+| `KIROCREW_GATEWAY_URL` | Loopback base URL of the Gateway that spawned this backend, e.g. `http://127.0.0.1:7790` — no trailing slash, no path. Use it for every call back into the Gateway (`/api/token/local`, `/api/...`, the `/apps/<name>/api/` proxy). It names the port this Gateway is serving, including a `--port N` override, so **never hardcode `localhost:5476`**: on a Gateway started on another port that call fails with a bare `fetch failed`. Always a loopback host — the one the Gateway actually listens on: `127.0.0.1` for the default bind, `KIROCREW_BIND=0.0.0.0` (a container binding all interfaces) or `127.0.0.1`; `[::1]` (so `http://[::1]:7790`) for `KIROCREW_BIND=::1` or `::` (an IPv6 wildcard is not dual-stack here). **Absent in two cases**, and withheld rather than guessed in both: (1) a Gateway started with `--port auto` spawns its enabled apps at boot before the OS has assigned the port — the next spawn sets it (an app disable/enable or update, or the next Gateway start on a fixed port; nothing respawns a backend automatically); (2) `KIROCREW_BIND` names an address no accepted loopback URL reaches — a specific non-loopback interface (e.g. `10.0.0.5`), or an alternate loopback such as `127.0.0.2`, which the Gateway's `Host`-header check would refuse. Treat absence as "not available", not as `localhost:5476` |
+| `KIROCREW_PROXY_SECRET` | The per-app secret the reverse proxy signs `X-KiroCrew-Proxy` with (see [Proxy Authentication](api-reference.md#proxy-authentication-server-side)); absent only when the app has no secret file yet |
+
+Platform overrides the Gateway itself was started with (`KIROCREW_PROJECT_DIR`,
+`KIROCREW_EDITION_DIR`, `KIROCREW_PROFILE`, the governance policy paths and the
+`KIROCREW_DEVFLEET_*` trusted-binary overrides) are forwarded as well when set;
+credentials and network-fetch configuration never are.
+
+The bundled Python client (`packages/kirocrew-client-py`) reads
+`KIROCREW_GATEWAY_URL` as its default `base_url`, so a backend built on it
+needs no port logic at all.
+
 #### `backend.hooks` — In-Gateway Python Entry Points
 
 Instead of (or alongside) a standalone backend process, an app can register
