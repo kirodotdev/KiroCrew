@@ -67,18 +67,22 @@ logger = logging.getLogger(__name__)
 # Any file older than this threshold is garbage regardless of PID liveness.
 _LAUNCHER_MAX_AGE_SECONDS = 3600
 
-#: Run-directory artifact families the sweep reclaims, by filename prefix ->
-#: accepted suffixes. Every family tags the writing process's PID right after the
-#: prefix. ``kirocrew_sandbox_``: per-spawn launchers and Seatbelt profiles,
-#: consumed once at exec. ``kirocrew_pi_gate_``: the pi tool-gate launcher and
-#: the sealed extension copy (``acp/client.py``), written once per gateway
-#: process and reused by its later spawns.
+#: Artifact families the sweep reclaims, by filename prefix -> accepted
+#: suffixes. Every family tags the writing process's PID after the prefix.
 _SANDBOX_ARTIFACT_PREFIX = "kirocrew_sandbox_"
+_PI_GATE_ARTIFACT_PREFIX = "kirocrew_pi_gate_"
+# Named ONCE because two sweeps accept this family: the run dir still holds artifacts
+# written before they moved, and the gate dir holds the current ones. Two spellings could
+# drift and leave one of those directories unswept. ``.tmp`` is the mkstemp stage both pi
+# artifacts pass through before publication.
+_PI_GATE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".sh", ".cmd", ".ts", ".tmp")
 _RUN_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
     _SANDBOX_ARTIFACT_PREFIX: (".sb", ".py"),
-    # ``.tmp`` is the mkstemp stage both pi artifacts are written under before
-    # the rename; a crash between the two leaves it behind under the same PID.
-    "kirocrew_pi_gate_": (".sh", ".cmd", ".ts", ".tmp"),
+    # The run sweep accepts pi artifacts as well as sandbox launchers.
+    _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
+}
+_PI_GATE_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
 }
 
 # Bind-mount SOURCES staged by the namespace launcher (empty dirs/files bound
@@ -480,6 +484,27 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # an owner address-bar launch. The gateway installer runs outside the agent
     # sandbox, so it can still replace the managed copy.
     "playwright-cli",
+    # The pi gate launcher and sealed extension must be readable and executable by
+    # the enforced harness's child, but never writable by it. The launcher cache
+    # accepts an existing path after ``isfile`` without re-verifying its content, so
+    # a writable child could plant the launcher a later session executes.
+    #
+    # On the precreate and no-follow lists above as well, for the same reasons
+    # ``playwright-cli`` is: ``mount(2)`` cannot seal an absent path, so a leaf left
+    # off them stays WRITABLE in-sandbox until pi first runs, and the mounted NAME has
+    # to stay the real directory because the gateway later execs out of it.
+    #
+    # What is NOT shared is the REFUSAL. ``_materialize_sealable_ceilings`` walks every
+    # Linux spawn whatever the backend is, so a squat here raising out of that walk
+    # would let anything that can write the data home stop every unrelated session on
+    # the host from launching. The leaf is therefore the sole
+    # ``_CREW_OWNER_CHECKED_DIR_LEAVES`` entry: the walk warns and skips instead.
+    # Nothing is softened for pi -- ``acp/client.py``'s ``_pi_gate_artifact_dir``
+    # creates the leaf 0700 and refuses a dangling symlink, a symlink, a junction, a
+    # non-directory and a wrong mode, and it runs before the sandbox is built on every
+    # pi spawn, so the session that actually reads the directory is the one that pays
+    # for the squat.
+    "pi-gate",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -968,6 +993,11 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "memory_stores",
     "profiles",
     "playwright-cli",
+    # Pi's gate launcher and sealed extension. Materialised here rather than only by
+    # the adapter so the directory is a read-only mountpoint before ANY sandbox starts,
+    # including the first pi spawn on a fresh install. A refusal over this leaf does not
+    # abort an unrelated backend -- see ``_CREW_OWNER_CHECKED_DIR_LEAVES``.
+    "pi-gate",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -976,8 +1006,29 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "playwright-cli",
     "subagents",
     "member-memory-bindings",
+    "pi-gate",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
+#: Read-only directory leaves whose OWNING adapter re-checks these same states itself.
+#:
+#: ``_materialize_sealable_ceilings`` runs on EVERY Linux spawn, so a refusal raised for a
+#: leaf that only one backend reads would let a squat at that name abort an unrelated
+#: session -- a spawn-wide denial of service reachable by anything that can write the data
+#: home. For a leaf listed here the walk WARNS and continues instead of raising.
+#:
+#: That is only sound while the owner refuses the identical states on its own path before
+#: it spawns, so each entry names its owner:
+#:
+#:   * ``pi-gate`` -- ``acp.client._pi_gate_artifact_dir`` raises
+#:     ``AcpToolGateUnroutable`` for a dangling symlink, for a symlink to a directory and
+#:     for a regular file at the leaf, and it is the only reader of the gate launcher
+#:     inside. A pi session therefore still refuses every squat this walk skips.
+#:
+#: The leaf stays on the precreate list above, so the ordinary install still gets the
+#: directory created and sealed before any sandbox starts; only the FAILURE mode is
+#: narrowed to the backend that owns the name.
+_CREW_OWNER_CHECKED_DIR_LEAVES: tuple[str, ...] = ("pi-gate",)
+assert set(_CREW_OWNER_CHECKED_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
@@ -1421,6 +1472,46 @@ def _publish_empty_ceiling(
                 os.unlink(tmp)
 
 
+def _materialize_one_ceiling_dir(target: str) -> bool:
+    """Create one absent sealable DIRECTORY ceiling; report whether it was created.
+
+    Split out of :func:`_materialize_sealable_ceilings` so that its caller can decide,
+    per leaf, whether a refusal aborts the spawn. Every check here stays unconditional:
+    a state that is unsafe to seal always raises :class:`SandboxCeilingUnsealable` out of
+    this function, and only the caller's ``_CREW_OWNER_CHECKED_DIR_LEAVES`` lookup turns
+    one into a warning.
+    """
+    strict_nofollow = os.path.basename(target) in _CREW_NOFOLLOW_READONLY_DIR_LEAVES
+    _refuse_if_dangling_symlink(target)
+    if strict_nofollow:
+        _refuse_if_symlink_leaf(target)
+    if os.path.exists(target):
+        if strict_nofollow:
+            _require_real_dir_nofollow(target)
+        else:
+            # Present, so the launcher will seal it -- but say so when the seal is
+            # reachable around rather than through this path.
+            _warn_if_alias_backed(target)
+        return False
+    if not os.path.isdir(os.path.dirname(target)):
+        return False
+    try:
+        # 0o700 needs no reassertion: a umask can only clear bits, never add them.
+        os.mkdir(target, 0o700)
+    except FileExistsError:
+        if strict_nofollow:
+            # A competing creator may have planted a link after the check above.
+            # Re-check the winner without following it before trusting the name.
+            _require_real_dir_nofollow(target)
+        return False
+    except OSError as exc:
+        _warn_unsealed_ceiling(target, exc)
+        raise SandboxCeilingUnsealable(
+            f"cannot create the governance ceiling {target}: {exc}"
+        ) from exc
+    return True
+
+
 def _materialize_sealable_ceilings() -> list[str]:
     """Create every absent sealable ceiling; return the paths actually created.
 
@@ -1450,6 +1541,11 @@ def _materialize_sealable_ceilings() -> list[str]:
     * a **creation failure** other than ``EEXIST`` — a read-only mount, or a filesystem
       with no hardlink support.
 
+    **One narrowing.** A leaf on ``_CREW_OWNER_CHECKED_DIR_LEAVES`` warns instead of
+    refusing, because this walk runs for every backend while that leaf has exactly one
+    reader, which refuses the same states itself before it spawns. Without the narrowing a
+    squat at such a name would abort every unrelated session on the host.
+
     ``EEXIST`` is benign for ordinary ceilings: another spawn or the operator won
     the race and the launcher seals the winner. Strict executable directories have
     a higher bar. Their winner is re-checked with ``lstat`` and must be a real
@@ -1463,35 +1559,21 @@ def _materialize_sealable_ceilings() -> list[str]:
     dir_targets, file_targets = _sealable_absent_ceilings()
 
     for target in dir_targets:
-        strict_nofollow = os.path.basename(target) in _CREW_NOFOLLOW_READONLY_DIR_LEAVES
-        _refuse_if_dangling_symlink(target)
-        if strict_nofollow:
-            _refuse_if_symlink_leaf(target)
-        if os.path.exists(target):
-            if strict_nofollow:
-                _require_real_dir_nofollow(target)
-            else:
-                # Present, so the launcher will seal it -- but say so when the seal is
-                # reachable around rather than through this path.
-                _warn_if_alias_backed(target)
-            continue
-        if not os.path.isdir(os.path.dirname(target)):
-            continue
         try:
-            # 0o700 needs no reassertion: a umask can only clear bits, never add them.
-            os.mkdir(target, 0o700)
-        except FileExistsError:
-            if strict_nofollow:
-                # A competing creator may have planted a link after the check above.
-                # Re-check the winner without following it before trusting the name.
-                _require_real_dir_nofollow(target)
-            continue
-        except OSError as exc:
-            _warn_unsealed_ceiling(target, exc)
-            raise SandboxCeilingUnsealable(
-                f"cannot create the governance ceiling {target}: {exc}"
-            ) from exc
-        created.append(target)
+            if _materialize_one_ceiling_dir(target):
+                created.append(target)
+        except SandboxCeilingUnsealable:
+            if os.path.basename(target) not in _CREW_OWNER_CHECKED_DIR_LEAVES:
+                raise
+            # Only this leaf's owning adapter reads it, and that adapter refuses the same
+            # state on its own spawn path. Raising here would instead abort a kiro, codex
+            # or other session over a directory it never opens.
+            logger.warning(
+                "sandbox: leaving the governance ceiling %s unsealed for this spawn — it "
+                "cannot be sealed safely, and the adapter that owns it refuses the same "
+                "state itself before it spawns",
+                safe_terminal_line(target),
+            )
 
     for target in file_targets:
         parent = os.path.dirname(target)
@@ -6859,7 +6941,7 @@ def _parse_pid_segment(pid_str: str) -> int | None:
 
 
 def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = None) -> int:
-    """Remove orphan sandbox files from <config_dir>/run/ and legacy /tmp.
+    """Remove orphan sandbox files from runtime artifact directories and legacy /tmp.
 
     A file is removed when EITHER:
       - The tagged PID is dead (os.kill probe fails), OR
@@ -6890,51 +6972,98 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
     now = time.time()
     if legacy_dir is None:
         legacy_dir = _LEGACY_LAUNCHER_DIR
-    run_dir = str(data_home / "run")
+    artifact_dirs = (
+        (str(data_home / "run"), _RUN_DIR_ARTIFACTS),
+        (str(data_home / "pi-gate"), _PI_GATE_DIR_ARTIFACTS),
+    )
     removed = 0
 
-    # ── Sweep <config_dir>/run/ (PID + age) ──
-    if os.path.isdir(run_dir):
-        for entry in os.listdir(run_dir):
-            prefix = next((p for p in _RUN_DIR_ARTIFACTS if entry.startswith(p)), None)
-            if prefix is None:
-                continue
-            suffix = next((x for x in _RUN_DIR_ARTIFACTS[prefix] if entry.endswith(x)), None)
-            if suffix is None:
-                continue
-            filepath = os.path.join(run_dir, entry)
-            # Age check first — handles the spawner-PID design flaw. Not for the
-            # pi gate artifacts: those are written once per gateway process and
-            # REUSED by every later spawn of that process, so their age says
-            # nothing, and the PID in their name is the owner's own.
-            try:
-                mtime = os.stat(filepath).st_mtime
-            except OSError:
-                continue
-            if prefix == _SANDBOX_ARTIFACT_PREFIX and (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+    # ── Sweep runtime artifact directories (PID + age) ──
+    for artifact_dir, families in artifact_dirs:
+        artifact_fd: int | None = None
+        try:
+            if platform_compat.IS_WINDOWS:
+                # Windows has no os-level pinned-directory primitive, so this
+                # check-then-act arm retains an accepted replacement window.
+                if platform_compat.is_link_or_junction(artifact_dir):
+                    logger.warning(
+                        "Refusing to sweep linked or non-directory artifact directory: %s",
+                        artifact_dir,
+                    )
+                    continue
+                if not os.path.isdir(artifact_dir):
+                    continue
+                entries = os.listdir(artifact_dir)
+            else:
                 try:
-                    os.remove(filepath)
-                    removed += 1
-                except OSError:
-                    pass
-                continue
-            # Fresh file — fall back to PID liveness check
-            middle = entry[len(prefix) : -len(suffix)]
-            pid = _parse_pid_segment(middle.split("_", 1)[0])
-            if pid is None:
-                continue
-            # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
-            # TERMINATES the target process on Windows (see platform_compat).
-            try:
-                alive = platform_compat.pid_exists(pid)
-            except OverflowError:
-                alive = False  # absurd pid digits from a corrupt filename — stale
-            if not alive:
+                    artifact_fd = os.open(
+                        artifact_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                except OSError as exc:
+                    if exc.errno == errno.ENOENT:
+                        continue
+                    if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                        logger.warning(
+                            "Refusing to sweep linked or non-directory artifact directory: %s",
+                            artifact_dir,
+                        )
+                        continue
+                    raise
+                with os.scandir(artifact_fd) as iterator:
+                    entries = [entry.name for entry in iterator]
+
+            for entry in entries:
+                prefix = next((p for p in families if entry.startswith(p)), None)
+                if prefix is None:
+                    continue
+                suffix = next((x for x in families[prefix] if entry.endswith(x)), None)
+                if suffix is None:
+                    continue
+                filepath = os.path.join(artifact_dir, entry)
+                # Age check first — handles the spawner-PID design flaw. Not for the
+                # pi gate artifacts: those are written once per gateway process and
+                # REUSED by every later spawn of that process, so their age says
+                # nothing, and the PID in their name is the owner's own.
                 try:
-                    os.remove(filepath)
-                    removed += 1
+                    if artifact_fd is None:
+                        mtime = os.stat(filepath).st_mtime
+                    else:
+                        mtime = os.stat(entry, dir_fd=artifact_fd, follow_symlinks=False).st_mtime
                 except OSError:
-                    pass
+                    continue
+                if prefix == _SANDBOX_ARTIFACT_PREFIX and (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+                    try:
+                        if artifact_fd is None:
+                            os.remove(filepath)
+                        else:
+                            os.unlink(entry, dir_fd=artifact_fd)
+                        removed += 1
+                    except OSError:
+                        pass
+                    continue
+                # Fresh file — fall back to PID liveness check
+                middle = entry[len(prefix) : -len(suffix)]
+                pid = _parse_pid_segment(middle.split("_", 1)[0])
+                if pid is None:
+                    continue
+                # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
+                # TERMINATES the target process on Windows (see platform_compat).
+                try:
+                    alive = platform_compat.pid_exists(pid)
+                except OverflowError:
+                    alive = False  # absurd pid digits from a corrupt filename — stale
+                if not alive:
+                    try:
+                        if artifact_fd is None:
+                            os.remove(filepath)
+                        else:
+                            os.unlink(entry, dir_fd=artifact_fd)
+                        removed += 1
+                    except OSError:
+                        pass
+        finally:
+            if artifact_fd is not None:
+                os.close(artifact_fd)
 
     # ── Sweep legacy /tmp/kirocrew_sandbox_*.py (age only, no PID segment) ──
     if os.path.isdir(legacy_dir):
