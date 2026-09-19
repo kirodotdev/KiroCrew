@@ -937,6 +937,68 @@ def _run_app_mcp_server(app_name: str) -> None:
     runner()
 
 
+def _handle_app_import(args: argparse.Namespace) -> None:
+    """Convert a manifest-declared plugin package into an app directory.
+
+    Conversion reads and copies only: nothing in the source package is imported or
+    executed while this command runs. It says nothing about later -- a converted
+    MCP server entry names a command, and enabling the emitted app launches it
+    like any other app's. See ``kiro_crew.apps.plugin_import``.
+    """
+    from kiro_crew.apps.plugin_import import (
+        PluginImportError,
+        convert_plugin_package,
+        find_plugin_manifest,
+        normalize_app_name,
+        read_manifest_name,
+    )
+
+    source = Path(args.source).expanduser()
+    try:
+        manifest_path, _ = find_plugin_manifest(source)
+        # The manifest is foreign input, and the module that owns its contract
+        # does the parsing: it refuses a document that is not a JSON object and
+        # reads a non-string `name` as absent. Parsing it here instead loses both
+        # checks, and every refusal it raises is a PluginImportError the arm
+        # below already prints.
+        manifest_name = read_manifest_name(manifest_path)
+        derived = normalize_app_name(
+            getattr(args, "name", None) or (manifest_name or source.resolve().name)
+        )
+    except PluginImportError as exc:
+        print(f"❌ {exc.code}: {exc.message}", file=sys.stderr)
+        sys.exit(1)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"❌ cannot read the plugin manifest: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    out_dir = Path(args.out).expanduser() if getattr(args, "out", None) else Path(f"{derived}-app")
+    try:
+        report = convert_plugin_package(source, out_dir, name_override=derived)
+    except PluginImportError as exc:
+        print(f"❌ {exc.code}: {exc.message}", file=sys.stderr)
+        sys.exit(1)
+
+    print(report.render_text())
+    print(f"\n✅ wrote {out_dir / 'app.json'}")
+
+    if not getattr(args, "install", False):
+        print(f"\n   Run: kirocrew app install {out_dir}")
+        return
+
+    result = install_app(str(out_dir))
+    if not result.ok:
+        print(f"❌ {result.error}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✅ {result.message}")
+    reg = register_app(result.name)
+    if reg.skills:
+        print(f"   Skills: {', '.join(reg.skills)}")
+    for err in reg.errors:
+        print(f"   ⚠️  {err}")
+    print(f"\n   Run: kirocrew app enable {result.name}")
+
+
 def _handle_app(args: argparse.Namespace) -> None:
     """Dispatch app subcommands: install, list, enable, disable, uninstall, info."""
     action = getattr(args, "app_action", None)
@@ -946,6 +1008,10 @@ def _handle_app(args: argparse.Namespace) -> None:
         # manifest mcpServers). stdout is the JSON-RPC channel — never print to
         # it here, or the handshake breaks.
         _run_app_mcp_server(args.name)
+        return
+
+    if action == "import":
+        _handle_app_import(args)
         return
 
     if action == "install":
