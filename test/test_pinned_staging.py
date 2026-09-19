@@ -17,6 +17,7 @@ import errno
 import json
 import os
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -907,6 +908,289 @@ def test_a_linked_destination_root_raises_the_refusal_not_a_raw_oserror(
     with pytest.raises(pinned_fs.PinnedPathRefusal) as excinfo:
         pinned_fs.stage_tree_pinned(src, holder / "dest", what="tree")
     assert "symbolic link or not a directory" in str(excinfo.value)
+
+
+# ── The window between creating a directory and opening it ──────────
+
+
+def _vanishing_mkdir(
+    target: Path, *, once: bool, counter: list[int], plant: Path | None = None
+) -> Callable[..., None]:
+    """A ``mkdir`` that makes *target* and then removes it again, as a remover would.
+
+    The removal lands exactly where a concurrent one would: after the directory
+    exists and before anything has opened it. Deterministic, so the window is a
+    test fixture rather than something to reproduce under load. With *plant*, a
+    link to that path is left at the name instead of nothing, which is the other
+    thing an actor who won the race can do.
+    """
+    real_mkdir = os.mkdir
+
+    def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if name != target.name or (once and counter):
+            return
+        counter.append(1)
+        os.rmdir(name, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if plant is not None:
+            _symlink_or_skip(target, plant)
+
+    return vanishing
+
+
+@pinned_only
+def test_a_destination_removed_between_its_mkdir_and_its_open_is_re_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Creating a directory and opening it are two syscalls (GH-12043).
+
+    A removal between them is an interleaving no ordering closes, and tolerating
+    only the `FileExistsError` half handled a concurrent writer while a concurrent
+    remover ended the operation. The pair is re-run, so the caller gets the
+    descriptor it asked for.
+    """
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    target = parent / "dest"
+    removals: list[int] = []
+    monkeypatch.setattr(os, "mkdir", _vanishing_mkdir(target, once=True, counter=removals))
+
+    fd = pinned_fs.create_and_open_dir_pinned(target, what="destination")
+    try:
+        assert removals == [1], "the race did not happen, so the retry is not what passed"
+        assert os.fstat(fd).st_ino == target.stat().st_ino
+    finally:
+        os.close(fd)
+
+
+@pinned_only
+def test_a_destination_removed_on_every_attempt_names_the_whole_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exhaustion reports the PATH, not the bare leaf `openat` was handed.
+
+    `'dest'` on its own reads as a working-directory bug and is not one -- that
+    unreadable filename is half of what GH-12034 cost, and it is asserted as the
+    contract rather than left to whichever `openat` lost. The attempt count is
+    asserted too: this must report rather than spin.
+    """
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    target = parent / "dest"
+    removals: list[int] = []
+    monkeypatch.setattr(os, "mkdir", _vanishing_mkdir(target, once=False, counter=removals))
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        pinned_fs.create_and_open_dir_pinned(target, what="destination")
+    assert excinfo.value.filename == str(target)
+    assert str(target) in str(excinfo.value)
+    assert "was removed" in str(excinfo.value)
+    # The exact ceiling, not merely "more than one": an assertion that only read
+    # the constant would stay green if the bound were raised to fifty, and a
+    # fifty-deep retry on a directory something is deleting is the failure mode
+    # the bound exists to prevent.
+    assert len(removals) == pinned_fs._CREATE_ATTEMPTS == 3
+    assert not target.exists()
+
+
+@pinned_only
+def test_the_retry_does_not_weaken_the_must_create_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An occupied name is still refused, and refused on the FIRST attempt.
+
+    `must_create` exists so that meeting an existing directory is a refusal to
+    report, not a condition to work around. A retry that re-asked `mkdir` without
+    re-asking this would paper over exactly what the flag is for, so both halves
+    are pinned: the refusal type, and that no second attempt is made.
+    """
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    target = parent / "dest"
+    target.mkdir()
+    attempts: list[int] = []
+    real_mkdir = os.mkdir
+
+    def counting(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        if name == target.name:
+            attempts.append(1)
+        real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "mkdir", counting)
+
+    with pytest.raises(pinned_fs.PinnedPathRefusal) as excinfo:
+        pinned_fs.create_and_open_dir_pinned(target, what="destination", must_create=True)
+    assert "already exists" in str(excinfo.value)
+    assert attempts == [1], "must_create was re-attempted instead of refusing"
+
+
+@pinned_only
+def test_a_link_planted_at_the_name_mid_sequence_is_refused_not_re_attempted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a REMOVAL is re-run. A link that replaces the directory is refused, once.
+
+    This is the property that makes the retry safe: it is reached from
+    `FileNotFoundError` alone, so an actor who removes the directory and plants a
+    link where it was meets `O_NOFOLLOW` on the first attempt and gets the module's
+    refusal, with nothing created inside what the link points at.
+    """
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    target = parent / "dest"
+    removals: list[int] = []
+    monkeypatch.setattr(
+        os, "mkdir", _vanishing_mkdir(target, once=True, counter=removals, plant=victim)
+    )
+
+    with pytest.raises(pinned_fs.PinnedPathRefusal) as excinfo:
+        pinned_fs.create_and_open_dir_pinned(target, what="destination")
+    assert "symbolic link or not a directory" in str(excinfo.value)
+    assert removals == [1]
+    assert list(victim.iterdir()) == [], "the retry wrote through the planted link"
+
+
+@pinned_only
+def test_a_parent_removed_under_its_pin_is_reported_rather_than_re_attempted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing can be created inside an unlinked directory, so this reports at once.
+
+    The retry is for a directory that was removed after it existed; a pinned PARENT
+    that is gone makes every further attempt fail identically, and spending two more
+    on it would only delay the same answer.
+    """
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    target = parent / "dest"
+    attempts: list[int] = []
+    real_mkdir = os.mkdir
+
+    def removing_the_parent(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        if name == target.name:
+            attempts.append(1)
+            os.rmdir(parent)
+        real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "mkdir", removing_the_parent)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        pinned_fs.create_and_open_dir_pinned(target, what="destination")
+    assert excinfo.value.filename == str(target)
+    assert attempts == [1]
+
+
+@pinned_only
+def test_a_parent_that_never_existed_is_not_reported_as_a_removal(tmp_path: Path) -> None:
+    """The removal report is a claim about what happened, so it is not made loosely.
+
+    A parent that simply is not there fails in `pin_parent`, above the sequence, and
+    keeps its own error -- otherwise every ordinary mistyped path would read as a
+    concurrent removal.
+    """
+    with pytest.raises(FileNotFoundError) as excinfo:
+        pinned_fs.create_and_open_dir_pinned(tmp_path / "absent" / "dest", what="destination")
+    assert "was removed" not in str(excinfo.value)
+
+
+@pinned_only
+def test_a_destination_this_call_only_MET_is_never_re_created_when_it_vanishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry covers a directory this call made. A met one is reported instead.
+
+    Found by review. When `mkdir` raises `FileExistsError` the destination was already
+    there holding the caller's files, so re-creating it after a removal hands back an
+    EMPTY directory -- and a merge (`must_create=False`) then stages the archive into
+    it and reports success while the files it was merging with are gone for good. The
+    contents are unrecoverable either way; what this pins is that the loss is reported
+    rather than hidden behind a fresh directory.
+    """
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    target = parent / "dest"
+    target.mkdir()
+    (target / "pre-existing.txt").write_text("the user's file\n", encoding="utf-8")
+    attempts: list[int] = []
+    real_mkdir = os.mkdir
+
+    def removing_the_met_directory(
+        name: object, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> None:
+        if name == target.name:
+            attempts.append(1)
+            try:
+                real_mkdir(name, mode, dir_fd=dir_fd)
+            finally:
+                # Whatever mkdir answered, the directory is gone by the time the open
+                # runs: the removal lands in the window, taking the file with it.
+                if target.exists():
+                    (target / "pre-existing.txt").unlink()
+                    target.rmdir()
+            return
+        real_mkdir(name, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", removing_the_met_directory)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        pinned_fs.create_and_open_dir_pinned(target, what="destination")
+    assert excinfo.value.filename == str(target)
+    assert "already existed when this call met it" in str(excinfo.value)
+    assert attempts == [1], "a met destination's removal was re-attempted"
+    assert not target.exists(), "the met destination was re-created empty"
+
+
+@pinned_only
+def test_a_merge_whose_destination_vanishes_mid_create_fails_instead_of_reporting_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The product-level shape of the case above, through `stage_tree_pinned`.
+
+    A merge passes `must_create=False` because meeting an existing destination is what
+    merging IS. If that destination is removed inside the create-then-open window, the
+    files the merge was adding to are gone; the one thing that must not happen is the
+    archive landing in a fresh empty directory and the merge returning normally, which
+    would report success over unrecoverable loss.
+    """
+    src = tmp_path / "source"
+    src.mkdir()
+    (src / "from-archive.txt").write_text("archive\n", encoding="utf-8")
+
+    dst = tmp_path / "live"
+    dst.mkdir()
+    (dst / "only-on-disk.txt").write_text("not in the archive\n", encoding="utf-8")
+    real_mkdir = os.mkdir
+    removals: list[int] = []
+
+    def removing_the_live_tree(
+        name: object, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> None:
+        # ONCE, and only for the destination this merge MET. A wrapper that removed the
+        # directory on every attempt would make the call fail by exhaustion whatever the
+        # code does, and would assert nothing: the discriminating run is the one where a
+        # retry WOULD succeed, into a directory recreated after the live tree was lost.
+        if name == dst.name and not removals:
+            removals.append(1)
+            try:
+                real_mkdir(name, mode, dir_fd=dir_fd)
+            finally:
+                if dst.exists():
+                    (dst / "only-on-disk.txt").unlink()
+                    dst.rmdir()
+            return
+        real_mkdir(name, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", removing_the_live_tree)
+
+    with pytest.raises(OSError):
+        pinned_fs.stage_tree_pinned(src, dst, what="tree", skip_existing=True)
+    assert removals == [1]
+    assert not (dst / "from-archive.txt").exists(), (
+        "the merge staged the archive into a directory recreated after the live tree "
+        "was removed, which reports success over the loss"
+    )
 
 
 def test_metadata_falls_back_to_a_path_where_fd_operations_do_not_exist(

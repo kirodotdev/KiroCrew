@@ -1014,6 +1014,68 @@ class TestManifestOnDisk:
             path = manifest_mod.cached_manifest_path("0.6.0")
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
+    @pytest.mark.skipif(
+        not pinned_fs.supports_pinned_walk(), reason="the descriptor-relative create path"
+    )
+    def test_a_release_folder_removed_before_its_open_names_the_whole_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Creating the folder and opening it are two calls, and a removal fits between.
+
+        The `FileExistsError` half of that race was tolerated and this half was not
+        (GH-12043): the open failed with `ENOENT` on the bare relative name `'0.6.0'`,
+        which names no directory and reads as a working-directory bug. It is reported
+        with the whole path now -- and still reported, not re-created, because the
+        actor that removes a release folder here is the cache's own eviction.
+        """
+        real_mkdir = os.mkdir
+        removals: list[int] = []
+
+        def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+            real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+            if name == "0.6.0":
+                removals.append(1)
+                os.rmdir(name, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+            monkeypatch.setattr(os, "mkdir", vanishing)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+        assert removals == [1], "the race did not happen, so this asserts nothing"
+        assert excinfo.value.filename == str(folder)
+        assert "release folder was removed" in str(excinfo.value)
+        assert not folder.exists(), "an evicted release folder was re-created"
+
+    @pytest.mark.skipif(
+        not pinned_fs.supports_pinned_walk(), reason="the descriptor-relative create path"
+    )
+    def test_a_cache_root_removed_under_its_pin_names_the_release_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other end of the same sequence: the root goes, so the `mkdir` has nowhere.
+
+        Reported separately from the folder's own removal because the two are
+        different conditions, and reported with the path for the same reason: the
+        errno carries only `'0.6.0'`.
+        """
+        real_mkdir = os.mkdir
+
+        def removing_the_root(
+            name: object, mode: int = 0o777, *, dir_fd: int | None = None
+        ) -> None:
+            if name == "0.6.0":
+                os.rmdir(manifest_mod.cache_root())
+            real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+            monkeypatch.setattr(os, "mkdir", removing_the_root)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+        assert excinfo.value.filename == str(folder)
+        assert "cache root was removed" in str(excinfo.value)
+
 
 # ── eviction ──
 
