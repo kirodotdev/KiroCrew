@@ -679,7 +679,9 @@ class TestExpireIdle:
         _register(mgr, "dashboard:1", last_used=0.0)
         with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
             await mgr._expire_idle(1)
-        reset.assert_awaited_once_with("dashboard:1", skip_if_busy=True)
+        reset.assert_awaited_once_with(
+            "dashboard:1", skip_if_busy=True, skip_if_injecting=True
+        )
 
     @pytest.mark.asyncio
     async def test_an_orphaned_dashboard_session_ignores_the_clock(self, mgr) -> None:

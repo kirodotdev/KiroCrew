@@ -129,6 +129,8 @@ class SessionLifecycleOwner(Protocol):
 
     def _fold_key(self, key: str) -> str: ...
 
+    def _has_pending_injection(self, key: str) -> bool: ...
+
     def _has_allocation_reservation(self, key: str) -> bool: ...
 
     def session_generation(self, key: str) -> int: ...
@@ -167,6 +169,7 @@ class SessionLifecycleOwner(Protocol):
         *,
         expect_session: _SessionEntry | None = None,
         skip_if_busy: bool = False,
+        skip_if_injecting: bool = False,
         clear_conversation: bool = False,
     ) -> bool: ...
 
@@ -466,6 +469,7 @@ class SessionLifecycleService:
         *,
         expect_session: _SessionEntry | None = None,
         skip_if_busy: bool = False,
+        skip_if_injecting: bool = False,
         clear_conversation: bool = False,
     ) -> bool:
         """Kill a live session while preserving the exact reset semantics."""
@@ -478,6 +482,28 @@ class SessionLifecycleService:
                 return False
             if skip_if_busy and current is not None and current.semaphore.locked():
                 return False
+            # A completion injection commits a turn to this session BEFORE it
+            # acquires the semaphore, so the check above cannot see one. A caller
+            # that asks the counter itself still races this lock: acquiring it
+            # suspends, and an injection beginning in that gap is invisible to
+            # any read taken earlier. Asking again HERE is what makes the answer
+            # atomic with the pop, which is why identity and the semaphore are
+            # re-validated under this lock too. Opt-in, so a user-initiated reset
+            # still wins over an injection. Fail closed and locally, so an
+            # unreadable counter declines this reset rather than raising through
+            # a sweep that has other candidates to visit.
+            if skip_if_injecting:
+                try:
+                    injecting = owner._has_pending_injection(key)
+                except Exception:
+                    logger.debug(
+                        "Injection probe failed for session %s; keeping it",
+                        key,
+                        exc_info=True,
+                    )
+                    injecting = True
+                if injecting:
+                    return False
             session = owner._sessions.pop(key, None)
             owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)

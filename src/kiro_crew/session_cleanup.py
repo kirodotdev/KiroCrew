@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
@@ -87,6 +88,7 @@ class CleanupOwner(Protocol):
         *,
         expect_session: SessionEntry | None = None,
         skip_if_busy: bool = False,
+        skip_if_injecting: bool = False,
         clear_conversation: bool = False,
     ) -> bool: ...
 
@@ -112,6 +114,11 @@ def _no_attached_subagents(key: str) -> bool:
     return False
 
 
+def _no_pending_injection(key: str) -> bool:
+    """Default injection probe: a manager with no gateway injects nothing."""
+    return False
+
+
 @dataclass(slots=True)
 class CleanupState:
     """Mutable state exclusively owned by :class:`SessionCleanup`."""
@@ -126,6 +133,19 @@ class CleanupState:
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
     active_dashboard_slots: set[str] | None = None
+    # Every session key a dashboard slot has owned since boot, which is what
+    # makes "this session's owner is gone" answerable for a key of ANY shape.
+    # ``active_dashboard_slots`` alone cannot answer it: absence from that set
+    # is equally true of a session that never had a slot and is legitimately
+    # running without one (a cron fire, a task step, a hook), so reaping on
+    # absence alone would kill live work. A key recorded here and now absent
+    # from the live set had an owner and lost it. Channel-owned keys are
+    # deliberately never recorded: a tab viewing a Slack thread does not own it.
+    # Pruned every sweep to the keys that still have a live session OR a slot
+    # open right now, so it is bounded by the union of those two sets. An open
+    # slot's key is kept even with no session yet, because a slot publishes its
+    # linked key before the first turn creates that session.
+    slot_owned_keys: set[str] = field(default_factory=set)
     watchdog: SessionWatchdog | None = None
 
 
@@ -173,6 +193,14 @@ class CleanupDeps:
     # AWAITABLE: the dashboard's probe reads the task store, and the sweep
     # asking is on the gateway loop.
     has_attached_subagents: Callable[[str], bool | Awaitable[bool]] = _no_attached_subagents
+    # Whether a completion injection is in flight for *key*: a turn already
+    # committed to that session whose semaphore is NOT held yet, because the
+    # store read that precedes ``get_or_create`` is awaited first. The gateway
+    # honours this counter at its own three reset sites; the sweep is the fourth
+    # resetter and needs the same fact. Synchronous -- it reads one counter --
+    # and defaults to "nothing injecting" so a manager without a gateway keeps
+    # its existing behaviour.
+    has_pending_injection: Callable[[str], bool] = _no_pending_injection
 
 
 class SessionCleanup:
@@ -400,12 +428,32 @@ class SessionCleanup:
                         self.state.rss_max_mb,
                     )
                     continue
+                # Ask the injection counter AGAIN, here. The wrapper above asks
+                # it once before suspending on the sub-agent probe, so an
+                # injection that STARTS inside that await is invisible to that
+                # read -- the same window the orphan branch closes, and reachable
+                # on this path for the same reason: while a completion injection
+                # is committed to this session it holds no semaphore and has no
+                # running child, so neither ``skip_if_busy`` nor
+                # ``expect_session`` can see it. Synchronous by contract, and
+                # nothing between here and ``reset`` may suspend.
+                if self._injection_pending(key):
+                    self._deps.logger.debug(
+                        "RSS recycle: session %s began an injection mid-check; skipping",
+                        key,
+                    )
+                    continue
                 # reset revalidates both object identity and the busy semaphore
-                # under its own lock after the unlocked RSS measurement.
+                # under its own lock after the unlocked RSS measurement, and
+                # ``skip_if_injecting`` puts the counter read under that same
+                # lock. The read above is a cheap early-out that also names its
+                # own reason in the log; this one is the atomic answer, because
+                # acquiring the lock suspends and an injection can begin there.
                 recycled = await self._owner.reset(
                     key,
                     expect_session=session,
                     skip_if_busy=True,
+                    skip_if_injecting=True,
                 )
                 if not recycled:
                     continue
@@ -424,8 +472,26 @@ class SessionCleanup:
                 # One victim cannot suppress the rest of this tick.
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
 
+    def _injection_pending(self, key: str) -> bool:
+        """Fail-closed read of "is a completion injection in flight for *key*?".
+
+        Synchronous by contract, which is what lets it be asked in the last
+        breath before ``reset`` without reopening the window it closes. An
+        unreadable counter is an unknown turn, not the absence of one, so it
+        keeps the session.
+        """
+        try:
+            return bool(self._deps.has_pending_injection(key))
+        except Exception:
+            self._deps.logger.debug(
+                "Injection probe failed for session %s; keeping it",
+                key,
+                exc_info=True,
+            )
+            return True
+
     async def _has_attached_subagents(self, key: str) -> bool:
-        """Fail-closed wrapper around the injected sub-agent probe.
+        """Fail-closed wrapper around the injected work probes.
 
         A probe that raises is a probe that cannot see the children, not a
         session with none; recycling on that answer is exactly the hazard the
@@ -434,15 +500,32 @@ class SessionCleanup:
         An AWAITABLE answer is awaited: the dashboard's probe reads the task
         store off the loop, and a sync probe (a double, a build with no queue)
         answers straight away.
+
+        A PENDING COMPLETION INJECTION also counts as attached work, and is
+        asked FIRST because it costs no await. The gateway increments that
+        counter before awaiting the injected turn's store read, so in the window
+        before ``get_or_create`` the session holds no semaphore, has no running
+        child (the delivering sub-agent is already ``done``) and, with its tab
+        closed, no in-flight delivery either. Every signal this guard otherwise
+        reads is absent while a turn is committed to that session, and the reset
+        discards the very runtime the injection is about to write into.
+
+        That read happens BEFORE the probe below suspends, so it cannot see an
+        injection that starts inside the await. It is therefore not sufficient on
+        its own: a caller that resets after awaiting this wrapper re-asks
+        ``_injection_pending`` immediately before the act. Both such callers do
+        -- the idle sweep's orphan branch and the RSS recycle.
         """
         try:
+            if self._injection_pending(key):
+                return True
             answer = self._deps.has_attached_subagents(key)
             if isinstance(answer, Awaitable):
                 answer = await answer
             return bool(answer)
         except Exception:
             self._deps.logger.debug(
-                "RSS recycle: sub-agent probe failed for session %s; keeping it",
+                "Work probe failed for session %s; keeping it",
                 key,
                 exc_info=True,
             )
@@ -732,11 +815,63 @@ class SessionCleanup:
             self._deps.logger.warning("Orphan MCP sweep failed", exc_info=True)
 
     def set_active_dashboard_slots(self, slot_keys: set[str]) -> None:
-        self.state.active_dashboard_slots = set(slot_keys)
+        """Adopt the dashboard's open-slot set as the live-owner authority.
+
+        Publishing also RECORDS the keys as slot-owned, which is what later lets
+        the sweep tell a session whose owner is gone from one that never had an
+        owner. Recorded on publish rather than at session creation because this
+        is the one call that already knows the answer.
+        """
+        live = set(slot_keys)
+        self.state.active_dashboard_slots = live
+        # Record slot-owned keys ONLY. A channel conversation is owned by its
+        # channel, not by the tab that views it: a dashboard slot opened on a
+        # Slack thread publishes the THREAD's own key, so dismissing that tab
+        # says nothing about whether the thread is finished. Recording those
+        # keys would put a live conversation on the terminated-owner axis and
+        # tear its runtime down mid-thread. The sweep already skips
+        # ``channel:``-prefixed keys for this reason; the other channel
+        # namespaces (``slack:`` and its siblings) do not carry that prefix,
+        # so the exclusion has to be spelled here as well.
+        self.state.slot_owned_keys |= {k for k in live if not is_channel_session_key(k)}
+        # Bound the record HERE as well as in the sweep, because the sweep is
+        # not guaranteed to run: ``session.timeout_secs=0`` sets
+        # ``idle_sweep_enabled`` false, and the prune lives inside the sweep, so
+        # the record would then grow with every key ever published and nothing
+        # would ever shrink it. Same expression as the sweep's prune -- a key is
+        # worth remembering only while it has a live session or an open slot --
+        # which makes the two idempotent rather than two policies. Reading the
+        # session map unlocked is sound here: this method is synchronous and
+        # every caller reaches it on the event loop, so no await can interleave.
+        self.state.slot_owned_keys &= set(self._owner._sessions) | live
+
+    def _owner_is_gone(self, key: str) -> bool:
+        """Whether *key*'s owning dashboard slot existed and is now closed.
+
+        Two populations answer yes, to deliberately different questions. A
+        ``dashboard:`` key is owned by a slot by construction, so the live set
+        alone settles it; that is the long-standing behaviour and is unchanged.
+        Any OTHER key is owned by a slot only if one claimed it -- a
+        channel-born slot contributes its channel key, a linked slot its
+        ``linked_session_key`` -- so it must have appeared in a published live
+        set before its absence from that set means anything. Without that
+        record, absence is equally true of a cron fire, a task step or a hook
+        that is running right now and never had a tab.
+
+        False while no live set has been published at all, so a build with no
+        dashboard never reaps on this axis.
+        """
+        live = self.state.active_dashboard_slots
+        if live is None or key in live:
+            return False
+        return key.startswith("dashboard:") or key in self.state.slot_owned_keys
 
     async def _expire_idle(self, timeout_secs: int) -> None:
         now = self._deps.monotonic()
-        expired: list[tuple[str, bool]] = []
+        # The session object travels with its key: every judgement below is
+        # about THAT incarnation, and the reset must not land on a different one
+        # that took the key while this sweep was suspended.
+        expired: list[tuple[str, bool, SessionEntry]] = []
         total_checked = 0
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
@@ -748,13 +883,24 @@ class SessionCleanup:
                 if session.semaphore.locked():
                     continue
                 idle = now - session.last_used > timeout_secs
-                orphaned = (
-                    key.startswith("dashboard:")
-                    and self.state.active_dashboard_slots is not None
-                    and key not in self.state.active_dashboard_slots
-                )
+                orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
-                    expired.append((key, orphaned))
+                    expired.append((key, orphaned, session))
+            # A key is only worth remembering while the thing it describes still
+            # exists, which bounds the record by two finite sets rather than by
+            # uptime: the live session map, and the open slots themselves.
+            #
+            # The second half is load-bearing. A slot publishes its linked key
+            # as soon as it opens, which can be BEFORE any turn has created that
+            # session, so a prune against the session map alone forgets the
+            # record while the slot is still open. The session appears on the
+            # first turn, the tab then closes, and nothing marks it as ever
+            # having had an owner -- it would sit outside this axis and wait out
+            # the idle clock. A key kept only because it is in the live set
+            # cannot be reaped while it stays there, since _owner_is_gone
+            # requires absence from that same set.
+            live_now = self.state.active_dashboard_slots or set()
+            self.state.slot_owned_keys &= set(self._owner._sessions) | live_now
 
         if expired:
             self._deps.logger.warning(
@@ -765,10 +911,62 @@ class SessionCleanup:
         elif total_checked:
             self._deps.logger.debug("Idle sweep: %d checked, 0 expired", total_checked)
 
-        for key, is_orphan in expired:
+        for key, is_orphan, scanned in expired:
+            # BOTH axes, before the split. A turn already committed to this
+            # session must not be reset under it, and the axis that found the
+            # session says nothing about that: the idle clock can elect a
+            # never-tabbed ``cron:`` parent whose ``last_used`` went stale during
+            # a long sub-agent run, exactly while that sub-agent's completion
+            # injection is suspended on its store read. Cheap, synchronous, and
+            # for the idle branch this is also the last read before its reset.
+            if self._injection_pending(key):
+                self._deps.logger.info(
+                    "Idle sweep: %s has a completion injection in flight - left running",
+                    key,
+                )
+                continue
             if is_orphan:
+                # A closed tab is not the same as finished work. With session
+                # sharing on, sub-agents run on the parent's runtime after the
+                # parent's own turn ends, so the busy semaphore cannot see them
+                # and the probe is the only witness. Fail-closed: a probe that
+                # cannot answer keeps the session.
+                if await self._has_attached_subagents(key):
+                    self._deps.logger.info(
+                        "Idle sweep: %s still has sub-agent work - left running",
+                        key,
+                    )
+                    continue
+                # Ask the injection counter AGAIN, here. The read above happened
+                # before the sub-agent probe suspended, and an injection that
+                # STARTS inside that await would be invisible to it -- which is
+                # the closed-tab case this guard exists for. Everything from here
+                # to ``reset`` is synchronous.
+                if self._injection_pending(key):
+                    self._deps.logger.info(
+                        "Idle sweep: %s began an injection mid-sweep - left running",
+                        key,
+                    )
+                    continue
+                # Re-ask against the CURRENT live set, not the one the scan
+                # read. Two awaits stand between them: the scan drops the lock,
+                # and the probe above reads the task store off-loop. A slot can
+                # reopen in either window, and reaping on the stale answer is
+                # how a session the user just resumed loses its runtime.
+                #
+                # Position is the point. This must be the LAST read of the live
+                # set before the act, so it sits AFTER the probe and nothing
+                # between it and ``reset`` may suspend -- the counter, the
+                # turn-active read and the expire callback below are all
+                # synchronous. Asking any earlier reopens the window it closes.
+                if not self._owner_is_gone(key):
+                    self._deps.logger.info(
+                        "Idle sweep: %s regained its slot before reset - left running",
+                        key,
+                    )
+                    continue
                 self._deps.logger.warning(
-                    "Expiring orphaned dashboard session (slot gone): %s",
+                    "Expiring orphaned session (slot gone): %s",
                     key,
                 )
             else:
@@ -802,9 +1000,81 @@ class SessionCleanup:
                         exc_info=True,
                     )
 
-            if not await self._owner.reset(key, skip_if_busy=True):
+            # Release the record together with the incarnation it describes, but
+            # ONLY when the owner is gone. The prune above runs during the scan,
+            # before any reset pops a key, so a record that survives an orphan
+            # reap outlives its session: a cron fire or task step arriving under
+            # the SAME key before the next scan is present at prune time,
+            # inherits the record, and is then judged orphaned even though this
+            # incarnation never had a tab. Keying by string is what makes that
+            # inheritance possible.
+            #
+            # An IDLE reap is the opposite case and must keep the record. There
+            # the slot is typically still open -- that is why the owner-gone
+            # test said no -- and the record describes the SLOT's claim, which
+            # outlives any one session under it. Releasing it here would leave
+            # the slot's next session unrecorded, so closing that tab later
+            # would not reap it and it would wait out the idle clock instead.
+            #
+            # Discard BEFORE the reset rather than after it succeeds. A publish
+            # landing inside reset's await re-adds the key, which is the right
+            # answer when a slot reopens for it; a discard placed after would
+            # erase that fresh record instead. set.discard is synchronous, so
+            # it does not reopen the window the re-assert above closes.
+            if is_orphan:
+                self.state.slot_owned_keys.discard(key)
+
+            # Pin the reset to the incarnation this sweep actually judged, on the
+            # orphan path. Every test above -- idle or orphaned, the probe, the
+            # live-set re-assert -- was asked about ``scanned``, and two awaits
+            # separate the first of them from here, so the key may by now hold a
+            # DIFFERENT session: a fire under the same cron key, or a tab
+            # reopened and a turn taken. ``reset`` revalidates identity under its
+            # own lock and declines on a mismatch, so a fresh incarnation keeps
+            # its runtime instead of inheriting a verdict about its predecessor.
+            #
+            # The idle path is spelled separately rather than passing
+            # ``expect_session=None``, so it keeps asking nothing about identity:
+            # that axis is not what this change touches. Both paths DO pass
+            # ``skip_if_injecting``, because both reach ``reset`` and ``reset``
+            # suspends on the registry lock, so on either one an injection can
+            # begin after this sweep's own read and before the pop.
+            if is_orphan:
+                reset_done = await self._owner.reset(
+                    key,
+                    expect_session=scanned,
+                    skip_if_busy=True,
+                    skip_if_injecting=True,
+                )
+            else:
+                reset_done = await self._owner.reset(key, skip_if_busy=True, skip_if_injecting=True)
+            if not reset_done:
+                # The release above ran BEFORE the reset, so a reset that
+                # DECLINED leaves the record stripped from a session that is
+                # still registered. Put it back. Without this the key leaves
+                # the terminated-owner axis for good: while its tab stays
+                # closed it is absent from the live set, carries no
+                # ``dashboard:`` prefix, and nothing else re-adds it, so it
+                # would hold its runtime and its per-session MCP servers until
+                # the idle clock -- the cost this axis exists to cut short, for
+                # a session that survived only because it was momentarily busy.
+                #
+                # Conditioned on ``is_orphan`` because only that path released
+                # the record: adding a key here on the idle path could CREATE a
+                # record for a session no slot ever claimed, which is exactly
+                # what puts a cron fire or task step on this axis wrongly. Also
+                # conditioned on the SAME session still holding the key, which
+                # covers both reasons a reset declines. Busy: the session the
+                # release described is still there, so the claim is still its
+                # claim and goes back. Replaced: some other incarnation took the
+                # key, and handing IT the record would grant a claim it never
+                # made -- the inheritance this release exists to prevent. A
+                # publish that re-added the key inside the await is unaffected,
+                # since set.add is idempotent; that is the reopened-slot case.
+                if is_orphan and self._owner._sessions.get(key) is scanned:
+                    self.state.slot_owned_keys.add(key)
                 self._deps.logger.info(
-                    "Idle sweep: %s became busy before reset — left running",
+                    "Idle sweep: %s not reset (busy, or the key changed hands) — left running",
                     key,
                 )
             else:

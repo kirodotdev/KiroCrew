@@ -73,6 +73,19 @@ Four mechanisms clean up processes. They are complementary — not redundant.
    Kills sessions idle for >``timeout_secs`` (default 60 min) via
    ``reset()`` → ``provider.shutdown()`` → SIGKILL process tree.
    Protected keys: ``_PERSISTENT_KEYS`` (``_bg`` and ``_hb``).
+   Also expires on a second, clock-independent axis: the session's owning
+   dashboard slot is gone (``_owner_is_gone``). A ``dashboard:`` key is
+   slot-owned by construction; a key of any other shape counts as slot-owned
+   only if a published live set once carried it, which is what keeps a
+   ``cron:`` fire or a ``taskrunner:{id}:task{n}`` step that never had a tab
+   from being read as finished. That axis refuses a session with attached
+   sub-agent work, then re-asserts against the live set as the last read before
+   the reset, with no await in between. BOTH axes refuse a session with a
+   completion injection in flight: a turn already committed to a session is not
+   finished work, whichever test elected it. *Cannot be replaced by the idle clock* — a finished session holds its
+   runtime and its per-session MCP servers for the whole timeout, so the live
+   process count is the number of unreaped sessions times the servers each one
+   spawns.
    **Known limitation**: ``last_used`` is only bumped on ``get_or_create()``,
    not on every LLM round-trip. A task runner step doing continuous work for
    >60 min without a new ``get_or_create()`` call could be swept. This is
@@ -1247,6 +1260,8 @@ class SessionManager:
             # Resolved per call, not captured: the dashboard installs the probe
             # after this manager (and possibly its cleanup boundary) exists.
             has_attached_subagents=lambda key: self._has_attached_subagents(key),
+            # Same reason, different owner: the gateway installs this one.
+            has_pending_injection=lambda key: self._has_pending_injection(key),
         )
 
     def _cleanup_boundary(self) -> SessionCleanup:
@@ -1675,6 +1690,9 @@ class SessionManager:
         # Installed by the dashboard once its state exists (set_subagent_probe);
         # None means "no dashboard, so no children can be attached".
         self._subagent_probe: "Callable[[str], bool | Awaitable[bool]] | None" = None
+        # Installed by the gateway once it owns this manager (set_injection_probe);
+        # None means "no gateway, so no completion injection can be in flight".
+        self._injection_probe: "Callable[[str], bool] | None" = None
         self._allocation_state = SessionRegistryState(
             start_sem=asyncio.Semaphore(_MAX_CONCURRENT_COLD_STARTS)
         )
@@ -2248,6 +2266,7 @@ class SessionManager:
         *,
         expect_session: _Session | None = None,
         skip_if_busy: bool = False,
+        skip_if_injecting: bool = False,
         clear_conversation: bool = False,
     ) -> bool:
         """Reset a live session while preserving its persistence entry."""
@@ -2255,6 +2274,7 @@ class SessionManager:
             key,
             expect_session=cast(Any, expect_session),
             skip_if_busy=skip_if_busy,
+            skip_if_injecting=skip_if_injecting,
             clear_conversation=clear_conversation,
         )
 
@@ -2412,6 +2432,32 @@ class SessionManager:
         if probe is None:
             return False
         return probe(key)
+
+    def set_injection_probe(self, fn: "Callable[[str], bool] | None") -> None:
+        """Install the "is a completion injection in flight for *key*?" predicate.
+
+        Cleanup consults it before expiring a session: the gateway commits a
+        turn to a parent session, then awaits that turn's store read before
+        acquiring the session, so for the length of that await the session looks
+        idle to every other signal. ``None`` uninstalls it (no gateway, nothing
+        injecting). Synchronous by contract -- the gateway answers from a
+        counter, and cleanup asks it in the last breath before ``reset``.
+        """
+        self._injection_probe = fn
+
+    def _has_pending_injection(self, key: str) -> bool:
+        """Answer the installed injection probe, or False when none is installed.
+
+        Coerced to ``bool`` here, unlike the sub-agent probe: this predicate is
+        synchronous by contract, so there is no awaitable to hand onward.
+
+        A raising probe propagates: the cleanup boundary treats that as
+        "attached" so the session is kept.
+        """
+        probe = self._injection_probe
+        if probe is None:
+            return False
+        return bool(probe(key))
 
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Delegate the ordered compaction gate ladder."""

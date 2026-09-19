@@ -607,7 +607,122 @@ send time.
   the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
   60min). Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
-  (`dashboard:{slot_key}`) idle-expire like any other session. The policy is
+  (`dashboard:{slot_key}`) idle-expire like any other session.
+  A session is also expired on a second, clock-independent axis: its owning
+  dashboard slot is gone. `SessionCleanup._owner_is_gone()` answers that, and it
+  asks a deliberately different question of two populations. A
+  `dashboard:`-prefixed key is slot-owned by construction, so absence from
+  `CleanupState.active_dashboard_slots` settles it; that set is published by
+  `chat_utils._sync_dashboard_slots`, which sends the *effective* key of every
+  open slot. A key of any other shape, such as a channel-born slot's channel key
+  or a linked slot's `linked_session_key` (`taskrunner:{id}:chat:{tok}`,
+  `cron:{job}`), is slot-owned only if a published live set once carried it.
+  That is recorded in `CleanupState.slot_owned_keys` at publish time and pruned
+  to the keys that still have a live session OR a slot open right now, so the
+  record is bounded by two finite sets rather than by uptime. That prune runs at
+  BOTH ends, each sweep and each publish, because the sweep is not guaranteed to
+  run at all: `session.timeout_secs=0` leaves `idle_sweep_enabled` false, and the
+  sweep is where the other prune lives, so a record bounded only there would grow
+  with every key ever published and never shrink. The two use one expression, so
+  they are idempotent rather than two policies. The
+  second half of that bound is load-bearing: a slot publishes its linked key as
+  soon as it opens, which can precede the first turn that creates the session,
+  and a prune against the session map alone would forget the record while the
+  slot is still open. A key kept only because it is in the live set cannot be
+  reaped while it stays there, since `_owner_is_gone` requires absence from that
+  same set. A key that `messaging.link.is_channel_session_key` recognises is
+  never recorded at all: a dashboard slot opened on a channel conversation
+  publishes the CONVERSATION's own key (`slack:{ts}` and its siblings), which
+  the channel owns, so dismissing that viewer proves nothing about whether the
+  thread is finished and reaping it would tear a live conversation's runtime
+  down mid-thread. The sweep already skips `channel:`-prefixed keys for the same
+  reason; the other channel namespaces do not carry that prefix, so the
+  exclusion is spelled at the record as well.
+
+  The record describes ONE incarnation, so on the TERMINATED-OWNER path it
+  is released just before that session's `reset`, not left for the next sweep's
+  prune: the prune runs during the scan, ahead of every reset, so a record left
+  behind outlives its session and a later fire arriving under the same key would
+  inherit a claim it never made and be reaped though it never had a tab. An IDLE
+  reap deliberately keeps the record: there the slot is typically still open,
+  which is why the owner-gone test said no, and the record describes the SLOT's
+  claim, which outlives any one session under it. The
+  release sits before the `reset` rather than after it succeeds, so a publish
+  landing inside `reset`'s await re-adds the key, which is the right answer when
+  a slot reopens for it. A `reset` that DECLINES because the session turned busy
+  restores the record itself, because the release described a session that is
+  still registered: without that restore the key would leave this axis entirely
+  while its tab stays closed, since it is absent from the live set, carries no
+  `dashboard:` prefix and nothing else re-adds it, and would fall back to the
+  idle clock. That restore is also conditioned on the terminated-owner path, so
+  a declined idle reset cannot CREATE a claim for a session no slot ever made
+  one for. The record is what makes the axis safe:
+  without it, absence from the live set is equally true of a `cron:` fire, a
+  `taskrunner:{id}:task{n}` step or a `hook:` session that is running right now
+  and never had a tab, so reaping on absence alone would end live work instead
+  of finished work. Two further guards apply to this axis only, and the probe
+  call one of them makes carries a third question the RSS recycle shares. It
+  consults the
+  same `CleanupDeps.has_attached_subagents` probe the RSS recycle uses,
+  fail-closed, because with session sharing on a parent's children run on its
+  runtime after its own turn ends and the busy semaphore cannot see them. That
+  same wrapper answers a second question FIRST, and synchronously: whether a
+  completion injection is in flight for the key
+  (`CleanupDeps.has_pending_injection`, installed by the gateway over its
+  `_cron_injecting` counter). The gateway raises that counter before awaiting
+  the injected turn's store read, so until `get_or_create` runs the session
+  holds no permit, the delivering sub-agent is already `done` and so absent from
+  the running set, and a closed tab leaves no in-flight delivery either: every
+  other signal reads "finished" while a turn is already committed to that
+  session, and the reset discards the runtime that turn is about to write into.
+  The counter is the only witness, which is why the gateway's own three reset
+  sites consult it and the sweep, as the fourth resetter, now does too. It is
+  read inside the SHARED fail-closed wrapper, so the RSS recycle honours it as
+  well, and an unreadable counter keeps the session like any other unanswerable
+  probe. The sweep asks it in its own right, BEFORE the axis split, so both reap
+  branches honour it: the axis that elected a session says nothing about whether
+  a turn is committed to it, and the clock alone can elect a never-tabbed
+  `cron:{job}` parent whose `last_used` went stale during the very sub-agent run
+  whose completion injection is in flight. For the idle branch that read is the
+  last one before its reset. The two branches that suspend on the sub-agent probe
+  -- the orphan branch and the RSS recycle -- read the counter ONCE MORE after
+  that probe, because it suspends and an injection starting inside its await is
+  invisible to any earlier read. On both, that re-read is the last statement
+  before `reset` and nothing between them suspends. Neither read is the atomic
+  one, though: `reset` itself suspends on the registry lock before it validates
+  anything, so an injection beginning while that lock is contended is invisible
+  to every read a caller took first. Both resetters therefore pass
+  `reset(skip_if_injecting=True)`, which asks the counter UNDER that lock beside
+  the identity and semaphore re-validations, so the answer is atomic with the
+  pop. The sweep's own reads stay as a cheap early-out that names its own reason
+  in the log. The option is opt-in, so a user-initiated reset still wins over an
+  injection, and it fails closed locally: an unreadable counter declines that one
+  reset rather than raising through a sweep with other candidates to visit.
+  The guard DEFERS the reap rather
+  than exempting the key: once the counter returns to zero the next sweep expires
+  it, so the runtime this axis exists to release is not held for good by a window
+  that has closed.
+  Every verdict this sweep reaches is about ONE incarnation, so on this axis the
+  reset is pinned to it: the scan carries the session object out with its key and
+  passes it as `reset(expect_session=...)`, which revalidates identity under the
+  registry lock and declines on a mismatch. Two awaits separate the scan from the
+  act, so the key can change hands in between -- a cron job firing again, a tab
+  reopened and a turn taken -- and a key-only reset would hand that newcomer a
+  verdict reached about its predecessor. The record restore on a declined reset
+  is conditioned on the same identity, which covers both reasons for a decline:
+  a session that is merely busy is the one whose claim was released, so the claim
+  goes back, while a key that changed hands must not have a claim invented for
+  its new holder. The idle axis keeps its long-standing key-only reset. And
+  the answer is then re-asserted against the current live set. That re-assert
+  must be the LAST read of the live set before `reset`, which is why it sits
+  after the probe rather than before it: two awaits separate the scan from the
+  act, the lock release and the probe's off-loop task-store read, and a slot can
+  reopen in either window. Everything between the re-assert and `reset` is
+  synchronous by requirement, so a check placed any earlier reopens the window
+  it exists to close and a session the user has just resumed loses its runtime.
+  While no live set has been published at all
+  (`active_dashboard_slots is None`) the axis expires nothing, so a build with
+  no dashboard keeps the idle timer as its only reaper. The policy is
   **re-read every tick**, not frozen at loop start: `_adopt_idle_policy()` runs
   at the top of the loop and again before each sleep, taking
   `session.timeout_secs` and `session.watchdog_rss_max_mb` off the manager's
@@ -725,7 +840,15 @@ send time.
   (installed by `chat_utils.wire_session_subagent_probe()` from both
   `server.py` start paths via `SessionManager.set_subagent_probe`, built over
   the shared attached-children predicate) right before `reset`, and a probe
-  that raises counts as attached. That predicate is a COROUTINE
+  that raises counts as attached. The same wrapper asks one further question
+  before that coroutine probe: whether a completion injection is in flight
+  (`CleanupDeps.has_pending_injection`), so the ceiling cannot recycle a runtime
+  an already-committed turn is about to write into either. The recycle then asks
+  that counter AGAIN once the probe returns, as the last statement before
+  `reset`: the wrapper's read happens before the probe suspends, so an injection
+  starting inside that await would otherwise be invisible on this path, and
+  neither `skip_if_busy` nor `expect_session` can see it -- an injecting session
+  holds no semaphore, and the injected turn resolves to the same object. That predicate is a COROUTINE
   (`chat_utils.subagents_attached_async`): its queued half reads the task store
   and this sweep runs on the gateway loop, so `set_subagent_probe` accepts an
   awaitable answer and the cleanup boundary awaits it; a sync probe (a double, a
