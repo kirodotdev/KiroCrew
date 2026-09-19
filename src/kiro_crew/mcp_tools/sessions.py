@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
 from kiro_crew.context import RECALL_ROLES
@@ -76,6 +77,16 @@ def schemas() -> list[dict[str, Any]]:
                         "description": "Search across all workspaces instead of just the current one (default false).",
                         "default": False,
                     },
+                    "crew": {
+                        "type": "string",
+                        "description": (
+                            "Optional: target a remote crew (its instance id or name from "
+                            "the crew switcher) instead of local history — searches that "
+                            "crew's own sessions over the tunnel. The crew must be "
+                            "connected. Local-only filters (before/after/all_workspaces) do "
+                            "not apply in crew mode."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -106,6 +117,15 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "description": "Allow reading a session from a different workspace than the caller's (default false — deny cross-workspace).",
                         "default": False,
+                    },
+                    "crew": {
+                        "type": "string",
+                        "description": (
+                            "Optional: read the full transcript from a remote crew (its "
+                            "instance id or name) instead of local history. Pair with a "
+                            "session_key returned by search_chat_history/list_sessions run "
+                            "with the same crew. The crew must be connected."
+                        ),
                     },
                 },
                 "required": ["session_key"],
@@ -148,6 +168,14 @@ def schemas() -> list[dict[str, Any]]:
                             "with zero cost."
                         ),
                         "default": False,
+                    },
+                    "crew": {
+                        "type": "string",
+                        "description": (
+                            "Optional: list a remote crew's sessions (its instance id or "
+                            "name) instead of local ones, over the tunnel. The crew must be "
+                            "connected. 'summarize' does not apply in crew mode."
+                        ),
                     },
                 },
             },
@@ -197,6 +225,156 @@ def _history_memory_visible(key: str, scope: str | None, index: dict[str, tuple[
         return False
 
 
+# ── crew scope: delegate to the local gateway's MCP-only crew-read endpoints ──
+#
+# When a read tool is called with crew=<id|name>, it reads that REMOTE crew's
+# sessions instead of the local ConversationLog. The MCP process cannot touch
+# the tunnel, so it GETs the local gateway's internal-secret crew-sessions
+# endpoints (handlers_instances.api_crew_sessions_*), which proxy over the
+# tunnel and return already-redacted rows. The local (no-crew) branches below
+# are unchanged.
+
+
+def _crew_scope_refusal(memory_scope: str | None) -> str:
+    """Refuse a crew-scoped read from a session fenced to a private member store.
+
+    ``memory_scope`` is the store name for a Crew Member bound to a private V2
+    store, ``""`` for an ordinary session, and ``None`` when the install has no
+    private boundaries at all — so a NON-EMPTY value is the fenced case.
+
+    A remote crew's transcripts carry no local private-store provenance:
+    ``private_history_session_index()`` holds records for this crew's own
+    members only, so ``_history_memory_visible`` has nothing to check a peer key
+    against. Reading a peer crew's whole corpus is the boundary crossing the
+    fence exists to prevent, so it fails closed here rather than reaching the
+    tunnel and relying on a local index that cannot vouch for the answer.
+    """
+    if memory_scope:
+        return "Access denied: a private-memory session cannot read another crew's sessions."
+    return ""
+
+
+def _crew_caller_key() -> "tuple[str, str]":
+    """The caller's STRICTLY resolved key for a crew read, or a refusal.
+
+    A crew read must not fall back to :func:`mcp_core._resolve_session_key`, the
+    lenient resolution that includes the ``/proc`` ancestor walk. Two things go
+    wrong if it does, and the second is a disclosure:
+
+    * Under the lenient walk a subagent resolves to its PARENT slot, so the
+      request would carry an authority the caller does not hold.
+    * When resolution degrades to empty, ``_get`` omits ``X-Session-Key``
+      ENTIRELY -- and the peer-read gate treats an absent key as the gateway/CLI
+      trust root, because that is what a loopback ``curl`` holding the internal
+      secret looks like. A degraded agent identity is then indistinguishable
+      from the gateway itself and is admitted.
+
+    So the failure is refused HERE, where the caller is known to be an MCP tool
+    and absence means "identity unavailable", rather than at the route, where
+    absence is a legitimate trust root that cannot be taken away without
+    breaking the CLI.
+
+    The key this returns is the key that goes on the wire: the three helpers
+    below take it as a REQUIRED parameter and hand it to ``_get``, so re-resolving
+    at the request cannot check one identity and act as another. Requiring it
+    positionally is deliberate -- a future crew call site that forgets it is a
+    ``TypeError`` rather than a silent return to the lenient walk.
+    """
+    return mcp_core.require_strict_session_key(
+        "Error: reading another crew's sessions requires a verified session."
+    )
+
+
+def _crew_qs(params: "dict[str, str]") -> str:
+    """The URL-encoded query for a crew read, WITHOUT a leading ``?``.
+
+    Empty params are dropped so an absent optional never becomes ``key=``. The
+    gateway owns tunnel auth, peer-reply byte caps, and redaction.
+
+    The ``?`` stays at each call site rather than being added here, and each call
+    site spells its own literal path instead of receiving one as an argument.
+    That is what lets ``test_every_transport_call_resolves_to_a_path`` vouch for
+    these three sites: its resolver truncates a path at the first ``?``, so the
+    literal prefix must be visible in the f-string. Routing all three through one
+    ``_get`` with a ``path`` parameter made the resolved path start with an
+    unknown, and the guard cannot vouch for a call whose endpoint it cannot name.
+    """
+    return urlencode({k: v for k, v in params.items() if v not in ("", None)})
+
+
+def _crew_error(crew: str, verb: str, resp: object) -> str:
+    msg = resp.get("error") if isinstance(resp, dict) else "unreachable"
+    return mcp_core._redact_history_output(f"Crew '{crew}' {verb} failed: {msg}")
+
+
+def _crew_search_history(crew: str, query: str, limit: int, session_key: str) -> str:
+    qs = _crew_qs({"crew": crew, "q": query, "limit": str(limit)})
+    resp = mcp_core._get(f"/api/crew-sessions/search?{qs}", session_key)
+    if not isinstance(resp, dict) or resp.get("error"):
+        return _crew_error(crew, "search", resp)
+    rows = resp.get("sessions") or []
+    if not rows:
+        return mcp_core._redact_history_output(f"No matching conversations found on crew '{crew}'.")
+    lines = [
+        f"\U0001f50e Chat history matches on crew '{crew}' (snippets only — use "
+        f"get_chat_session with crew='{crew}' to read a full thread):"
+    ]
+    for r in rows:
+        lines.append("\n---")
+        lines.append(f"**{r.get('title') or r.get('key')}**  ·  `{r.get('key')}`")
+        if r.get("date"):
+            lines.append(f"_{r['date']}_")
+        if r.get("snippet"):
+            lines.append(f"\n{r['snippet']}")
+    return mcp_core._redact_history_output("\n".join(lines))
+
+
+def _crew_list_sessions(crew: str, limit: int, session_key: str) -> str:
+    qs = _crew_qs({"crew": crew, "limit": str(limit)})
+    resp = mcp_core._get(f"/api/crew-sessions/list?{qs}", session_key)
+    if not isinstance(resp, dict) or resp.get("error"):
+        return _crew_error(crew, "session list", resp)
+    rows = resp.get("sessions") or []
+    if not rows:
+        return mcp_core._redact_history_output(f"No sessions found on crew '{crew}'.")
+    lines = [f"\U0001f5c2\ufe0f Sessions on crew '{crew}' ({len(rows)}, newest first):"]
+    for r in rows:
+        key = r.get("key")
+        title = r.get("title") or key
+        meta_bits = []
+        if r.get("agent"):
+            meta_bits.append(f"agent={r['agent']}")
+        if r.get("messages") is not None:
+            meta_bits.append(f"~{r['messages']} msgs")
+        if r.get("created"):
+            meta_bits.append(str(r["created"])[:16])
+        lines.append("\n---")
+        lines.append(f"**{title}**  ·  `{key}`")
+        if meta_bits:
+            lines.append(f"_{'  ·  '.join(meta_bits)}_")
+        if r.get("preview"):
+            lines.append(f"\n{r['preview']}")
+    return mcp_core._redact_history_output("\n".join(lines))
+
+
+def _crew_get_session(crew: str, key: str, max_messages: int, session_key: str) -> str:
+    qs = _crew_qs({"crew": crew, "key": key, "max_messages": str(max_messages)})
+    resp = mcp_core._get(f"/api/crew-sessions/read?{qs}", session_key)
+    if not isinstance(resp, dict) or resp.get("error"):
+        return _crew_error(crew, "session read", resp)
+    msgs = resp.get("messages") or []
+    if not msgs:
+        return mcp_core._redact_history_output(
+            f"No readable messages for `{key}` on crew '{crew}'."
+        )
+    lines = [f"\U0001f4dc Conversation `{key}` on crew '{crew}':", ""]
+    for m in msgs:
+        role = str(m.get("role", "?")).title()
+        lines.append(f"**{role}:** {m.get('content', '')}")
+        lines.append("")
+    return mcp_core._redact_history_output("\n".join(lines))
+
+
 def search_chat_history(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SEARCH_CHAT_HISTORY_SCHEMA)
     query = args["query"]
@@ -205,6 +383,17 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     memory_scope, memory_index, refusal = _history_memory_scope()
     if refusal:
         return refusal
+    crew = args.get("crew")
+    if crew:
+        # Remote crew scope: read that crew's sessions over the tunnel. Local
+        # filters (before/after/all_workspaces) do not apply in this v1.
+        refusal = _crew_scope_refusal(memory_scope)
+        if refusal:
+            return refusal
+        caller_key, refusal = _crew_caller_key()
+        if refusal:
+            return refusal
+        return _crew_search_history(crew, query, limit, caller_key)
     # A supplied-but-unparseable date (one that passes the regex but names no
     # real calendar day, like Feb 30) must ERROR, not be silently dropped — a silent
     # drop would return the UNFILTERED set and mislead the caller.
@@ -335,6 +524,19 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
         )
         return "Invalid session_key."
 
+    crew = args.get("crew")
+    if crew:
+        # Remote crew scope: read the transcript from that crew over the tunnel.
+        # The local key guard above still applies as defense-in-depth; the
+        # gateway re-vets the key before it reaches the peer path.
+        refusal = _crew_scope_refusal(memory_scope)
+        if refusal:
+            return refusal
+        caller_key, refusal = _crew_caller_key()
+        if refusal:
+            return refusal
+        return _crew_get_session(crew, key, max_messages, caller_key)
+
     cl = ConversationLog()
     if not cl.has_log(key):
         mcp_core.sel().log_tool_invocation(
@@ -424,6 +626,17 @@ def list_sessions(name: str, args: dict[str, Any]) -> str:
     memory_scope, memory_index, refusal = _history_memory_scope()
     if refusal:
         return refusal
+    crew = args.get("crew")
+    if crew:
+        # Remote crew scope: list that crew's sessions over the tunnel.
+        # 'summarize' (LLM pass on local sessions) does not apply in crew mode.
+        refusal = _crew_scope_refusal(memory_scope)
+        if refusal:
+            return refusal
+        caller_key, refusal = _crew_caller_key()
+        if refusal:
+            return refusal
+        return _crew_list_sessions(crew, limit, caller_key)
 
     cl = ConversationLog()
     session_key = mcp_core._resolve_session_key()

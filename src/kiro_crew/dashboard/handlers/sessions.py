@@ -1397,11 +1397,27 @@ async def api_sessions_search(request: web.Request) -> web.Response:
 
 
 async def api_session_detail(request: web.Request) -> web.Response:
-    """GET /api/sessions/{key} — return messages for a session."""
+    """GET /api/sessions/{key} — return messages for a session.
+
+    ``?exclude_incognito=1`` (opt-in) refuses an incognito/temporary transcript,
+    returning ``[]``. The crew-scoped read proxy (``crew=`` on get_chat_session)
+    sets it so a remote agent cannot read a marked session that the local
+    get_chat_session also refuses (EB-7b). The dashboard's own click-through does
+    NOT set it, so its behavior is unchanged.
+    """
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response([])
+    if request.query.get("exclude_incognito") in ("1", "true", "yes"):
+        # Off the loop for the same reason as the read_messages call below:
+        # get_metadata stats the transcript and parses its first line, which is
+        # blocking file IO, and every other conversation_log read in this module
+        # is already wrapped. Doing it inline stalled every other request for the
+        # duration — on the one path a remote agent can reach.
+        meta = await asyncio.to_thread(state.conversation_log.get_metadata, key)
+        if is_incognito_transcript((meta or {}).get("memory_mode")):
+            return web.json_response([])
     # read_messages() opens and parses the transcript on a cache miss, which for
     # the multi-MB sessions a long-lived store accumulates is 100-300 ms of
     # blocking file IO — on the event loop, stalling every other request. Off the
