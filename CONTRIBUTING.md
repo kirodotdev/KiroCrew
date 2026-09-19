@@ -490,6 +490,16 @@ CodeQL is the one lane a fork cannot run. Everything else — tests, lint,
 typecheck, coverage, build — runs normally from either place. An unapproved run
 keeps readiness at `action required`; that is the state only a maintainer clears.
 
+Auto-approval also depends on your **PR description**. The `Fork PR Description`
+check requires four headings from the
+[PR template](.github/PULL_REQUEST_TEMPLATE.md) to be present — `## Problem /
+Motivation`, `## Why it matters`, `## What changed`, and `## Tests` — and holds
+auto-approval of your workflow runs until they are. If you replace the template
+wholesale or drop one of these, the check fails; add the heading and save the
+description (no push needed — it re-runs on edit). It checks only that the
+heading is present, not that it is filled, but leaving it empty just moves the
+objection to the AI reviewers, so write real content under each.
+
 Details, including which workflow each lane keys on:
 [docs/ci/ci-and-reviews.md#fork-prs](docs/ci/ci-and-reviews.md#fork-prs).
 

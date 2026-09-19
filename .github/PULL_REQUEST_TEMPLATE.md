@@ -1,6 +1,22 @@
-<!-- Fill in each section below. Omit a section only when it is genuinely not
-     applicable, and say so (e.g. "N/A — ..."). Keep the diff and this
-     description in sync: every claim here must be supported by the diff. -->
+<!-- Fill in each section below. Keep the diff and this description in sync:
+     every claim here must be supported by the diff.
+
+     FOUR HEADINGS ARE REQUIRED — do not delete them:
+       ## Problem / Motivation
+       ## Why it matters
+       ## What changed          (a suffix after the heading is fine)
+       ## Tests
+     A PR from a fork whose description is missing any of these fails the
+     "Fork PR Description" check, and its workflow runs stay unapproved until
+     the heading is added — no push needed, editing the description re-runs the
+     check (see .github/workflows/fork-pr-description.yml). The check only
+     verifies the heading is PRESENT; the AI reviewers judge whether the prose
+     under it actually explains the change, so fill each with real content.
+
+     Every OTHER section may be omitted when genuinely not applicable — say so
+     (e.g. "N/A — ..."). A few carry their own rule inline: Screenshots / video
+     is mandatory for a user-visible UI change, and Pattern harvest is required
+     for a fix/revert PR. -->
 
 ## Problem / Motivation
 
@@ -46,7 +62,9 @@
 
 ## Tests
 
-<!-- Automated tests added/updated and the behavior each one locks in. -->
+<!-- Required (see the note at the top). Automated tests added/updated and the
+     behavior each one locks in. No new tests? Say why here (e.g. "N/A —
+     docs-only change") rather than deleting the heading. -->
 
 ## Manual verification
 
