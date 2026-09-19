@@ -1,4 +1,4 @@
-"""V1 preserves eager session recall; V2 leaves fragment retrieval to its tool."""
+"""Both memory versions leave history and fragment retrieval to the recall tool."""
 
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -40,18 +40,19 @@ def test_v2_prompt_lifecycles_leave_retrieval_to_the_tool(env, monkeypatch):
     assert all(call.kwargs["query_text"] == "" for call in rules.call_args_list)
 
 
-def test_v1_new_session_keeps_history_and_query_ranked_retrieval(tmp_path):
+def test_v1_new_session_keeps_preferences_and_defers_history_to_recall(tmp_path):
     memory = MemoryStore(workspace=tmp_path / "workspace")
     memory.write_preferences("Use a concise reply.")
     memory.write_projects("The active project is Beacon.")
-    memory.read_recent_history = Mock(return_value="Earlier daily history sentinel")
-    semantic = Mock(return_value="[Semantic Memory]\nEarlier fact sentinel")
-    episodic = Mock(return_value="[Episodic Memory]\nEarlier event sentinel")
+    forbidden = Mock(side_effect=AssertionError("prompt construction attempted eager retrieval"))
+    memory.read_recent_history = forbidden
+    preferences = Mock(return_value="[Semantic Memory]\nPreference fact sentinel")
     lessons = Mock(return_value="[Lessons Learned]\nRelevant correction sentinel")
     memory._vector_store = SimpleNamespace(
         algorithm_version="v1",
-        get_semantic_context=semantic,
-        get_episodic_context=episodic,
+        get_semantic_context=forbidden,
+        get_episodic_context=forbidden,
+        get_preferences_context=preferences,
         has_any_lesson=lambda: True,
         get_lessons_context=lessons,
     )
@@ -64,27 +65,19 @@ def test_v1_new_session_keeps_history_and_query_ranked_retrieval(tmp_path):
     first, _ = builder.build_message(query, True, "session")
     for sentinel in (
         "Use a concise reply.",
-        "The active project is Beacon.",
-        "Earlier daily history sentinel",
-        "Earlier fact sentinel",
-        "Earlier event sentinel",
+        "Preference fact sentinel",
         "Relevant correction sentinel",
+        "memory_recall",
+        "[End of memory activity index]",
     ):
         assert sentinel in first
-    assert "[Memory tools]" not in first
-    memory.read_recent_history.assert_called_once()
-    semantic.assert_called_once()
-    episodic.assert_called_once()
+    forbidden.assert_not_called()
+    preferences.assert_called_once()
     lessons.assert_called_once()
-    assert semantic.call_args.kwargs["query_text"] == query
-    assert episodic.call_args.kwargs["query_text"] == query
-    assert lessons.call_args.kwargs["query_text"] == query
-    assert episodic.call_args.kwargs["cap"] == 3000
 
     builder.build_message("Continue the same session", False, "session")
-    memory.read_recent_history.assert_called_once()
-    semantic.assert_called_once()
-    episodic.assert_called_once()
+    forbidden.assert_not_called()
+    preferences.assert_called_once()
     lessons.assert_called_once()
 
 

@@ -3787,6 +3787,7 @@ async def handle_message(
         # the session (set by SessionManager.stop_turn), consumed one-shot.
         # Use getattr for prev_turn_cancelled so test doubles (AsyncMock)
         # don't raise AttributeError on coroutine-returning mock chains.
+        _user_text_range = (0, len(text))
         _session = getattr(sessions, "_sessions", {}).get(session_key)
         if (
             _session is not None
@@ -3797,6 +3798,8 @@ async def handle_message(
             _session.prev_turn_cancelled = False
             _preamble = build_cancelled_turn_preamble(context_builder.conversation_log, session_key)
             if _preamble:
+                offset = len(_preamble) + 2
+                _user_text_range = (offset, offset + len(text))
                 text = _preamble + "\n\n" + text
 
         # Fetch thread parent message when starting a new session in an
@@ -3892,6 +3895,7 @@ async def handle_message(
                 blocks_reads=_slack_blocks_reads,
                 model_window=_model_window,
                 runtime_source="slack",
+                user_text_range=_user_text_range,
                 context_provider=client,
             )
         else:

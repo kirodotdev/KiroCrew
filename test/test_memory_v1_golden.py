@@ -1,17 +1,9 @@
-"""Golden characterization of the v1 default memory path.
+"""Golden characterization of the compact V1 default memory path.
 
-This module is the regression net for "the default agent's assembled first turn is
-unchanged". Everything else about memory is covered by behavioural tests that each
-assert one property; nothing else pins the WHOLE payload — the set of injected
-blocks, their order, their byte extents, the recall order inside each memory block,
-and the embed accounting behind them. Without that, "unchanged" is an assertion
-rather than a fact, because a block can be added, reordered, or silently doubled in
-size without any single-property test noticing.
-
-The contract this establishes is stated in
-``docs/system-specs/common/testing-conventions.md`` § Golden payload tests: after a
-change to the memory path, this file is re-run UNEDITED. Needing to edit it is the
-definition of a regression, and the edit is the thing a reviewer reads.
+Pins the assembled first turn's block set, order, character extents, complete
+preferences/rules and zero startup embedding calls. Explicit activity readers
+retain their own bounded/ranked assertions below. Changes to these expectations
+must accompany the owning context-admission spec, never a blind snapshot update.
 
 Determinism, and what is deliberately stubbed:
 
@@ -358,15 +350,13 @@ EXPECTED_BLOCK_ORDER = [
     "[CURRENT AGENT] kirocrew",
     "[WORKSPACE IDENTITY]",
     "[DOCUMENTATION]",
-    "[Memory -- persistent user profile and recent activity log.",
+    "[Memory -- stable user profile.",
     "## User Preferences",
-    "## Active Projects",
-    "## Recent History",
     "[Semantic Memory -- factual key-value pairs.",
-    "[Episodic Memory -- relevant past conversation fragments.]",
     "[End of memory]",
+    "[Memory tools]",
     "[Skills:]",
-    "[Learned corrections -- user-taught rules from past mistakes.",
+    "[Learned corrections -- retained rules from past mistakes.",
     "[END OF SESSION CONTEXT]",
     "[CURRENT USER REQUEST -- respond to this]",
 ]
@@ -375,6 +365,9 @@ EXPECTED_BLOCK_ORDER = [
 #: starts injecting one of these is a change to the default path even when every
 #: block above is still byte-identical.
 EXPECTED_ABSENT = {
+    "## Active Projects": "notebook facts are retrieved on demand",
+    "## Recent History": "daily activity is retrieved on demand",
+    "[Episodic Memory": "episodes are retrieved on demand",
     "[CONTEXT SCOPE]": "nothing was withheld (context_groups=None)",
     "[USER PROFILE]": "onboarding questions unanswered",
     "[UI LANGUAGE]": "dashboard.language is the follow-the-browser sentinel",
@@ -487,11 +480,11 @@ EXPECTED_EXTENTS = {
     "[CURRENT AGENT]": 196,
     "[WORKSPACE IDENTITY]": 376,
     "[DOCUMENTATION]": 235,
-    "[Memory —": 1029,
-    "[Skills:]": 353,
-    "[Learned corrections": 296,
+    "[Memory —": 1249,
+    "[Skills:]": 310,
+    "[Learned corrections": 320,
 }
-EXPECTED_TOTAL = 5595
+EXPECTED_TOTAL = 5796
 
 
 def test_session_context_char_extents(seeded: Seeded) -> None:
@@ -503,16 +496,11 @@ def test_session_context_char_extents(seeded: Seeded) -> None:
 
 
 def test_total_stays_under_the_production_ceiling(seeded: Seeded) -> None:
-    """The default build's global ceiling is the un-scaled budget base.
-
-    ``skills.lazy_load`` is off by default, so ``max_context_chars`` is
-    ``caps.base``, not the Σ-of-sections ``caps.max_context``. Both are read from
-    ``_resolve_caps`` rather than restated.
-    """
+    """The optional sections share one fixed allowance in either skills mode."""
     caps = ctx._resolve_caps(None)
     assert KiroCrewConfig.load().skills.lazy_load is False
     payload = _session_context(seeded)
-    assert len(payload) <= caps.base < caps.max_context
+    assert len(payload) <= caps.base == caps.max_context
 
 
 def test_memory_sub_block_bodies_fit_their_own_caps(seeded: Seeded) -> None:
@@ -529,9 +517,9 @@ def test_memory_sub_block_bodies_fit_their_own_caps(seeded: Seeded) -> None:
     semantic = memory_block[memory_block.index("[Semantic Memory") :]
     semantic = semantic[: semantic.index("[End of semantic memory]")]
     assert len(semantic) <= caps.semantic
-    episodic = memory_block[memory_block.index("[Episodic Memory") :]
-    episodic = episodic[: episodic.index("[End of episodic memory]")]
-    assert len(episodic) <= min(ctx._EPISODIC_INJECT_CAP, caps.episodic)
+    assert "[Episodic Memory" not in memory_block
+    assert _PREFERENCES in memory_block
+    assert _PROJECTS not in payload and _HISTORY_DAY not in payload
 
 
 @pytest.mark.parametrize("section", ["prefs", "projects", "memory_history"])
@@ -553,7 +541,19 @@ def test_oversized_memory_file_truncates_exactly_at_its_cap(seeded: Seeded, sect
     target.write_text(filler * (cap // len(filler) + 20), encoding="utf-8")
     seeded.memory._invalidate_history_cache()
 
-    payload = _session_context(seeded)
+    payload = seeded.memory.get_context(
+        query=QUERY,
+        prefs_cap=caps.prefs,
+        projects_cap=caps.projects,
+        history_cap=caps.memory_history,
+        include_activity=True,
+    )
+    startup = _session_context(seeded)
+    if section == "prefs":
+        assert target.read_text(encoding="utf-8") in startup
+    else:
+        assert target.read_text(encoding="utf-8") not in startup
+        assert "Memory activity index" in startup
     marker = {
         "prefs": "## User Preferences",
         "projects": "## Active Projects",
@@ -586,7 +586,8 @@ def test_semantic_recall_order(seeded: Seeded) -> None:
 
 def test_episodic_recall_order(seeded: Seeded) -> None:
     """Relevance gate then decay ranking; the older, more relevant row leads."""
-    payload = _session_context(seeded)
+    payload = seeded.memory.get_context(query=QUERY, include_activity=True)
+    assert "[Episodic Memory" not in _session_context(seeded)
     block = payload[payload.index("[Episodic Memory") : payload.index("[End of episodic memory]")]
     rows = [line for line in block.splitlines() if re.match(r"^\d+\. ", line)]
     assert rows == [f"1. {EP_TOP[0]}", f"2. {EP_MID[0]}"]
@@ -595,7 +596,10 @@ def test_episodic_recall_order(seeded: Seeded) -> None:
 
 def test_lesson_recall_order(seeded: Seeded) -> None:
     """Lessons are ranked, never relevance-gated: the 0-scoring rule still ships."""
-    payload = _session_context(seeded)
+    payload = seeded.vectors.get_lessons_context(QUERY)
+    startup = _session_context(seeded)
+    for rule in (LESSON_TOP, LESSON_MID, LESSON_OFF):
+        assert rule in startup
     block = payload[
         payload.index("[Learned corrections") : payload.index("[End of learned corrections]")
     ]
@@ -625,10 +629,8 @@ def test_recall_order_is_stable_across_repeated_builds(seeded: Seeded) -> None:
 _MEMORY_MARKERS = (
     "[Memory --",
     "## User Preferences",
-    "## Active Projects",
-    "## Recent History",
     "[Semantic Memory --",
-    "[Episodic Memory --",
+    "[Memory tools]",
     "[Learned corrections --",
     "[Skills:]",
     "[CRITICAL RULES --",
@@ -724,30 +726,22 @@ def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
 # ── 6. Embed accounting: 3 calls, 1 inference ────────────────────────────────
 
 
-def test_one_build_makes_three_embed_calls_and_one_inference(seeded: Seeded) -> None:
-    """Three retrieval paths embed the query; the lru_cache collapses them to one.
-
-    The three are semantic ranking, episodic recall and lesson ranking, in that
-    order — each embeds the QUERY only, never a row (rows carry write-time
-    vectors). ``make_sync_embed_fn``'s ``lru_cache`` is keyed on
-    ``(text, model_id)``, so the identical query text costs exactly one inference
-    and the other two are hits. Both numbers are asserted: 3 alone would not notice
-    the cache being lost, and 1 alone would not notice a fourth retrieval path
-    riding the cache for free.
-    """
+def test_startup_does_not_embed_but_explicit_readers_share_one_inference(seeded: Seeded) -> None:
+    """Only explicit activity and lesson ranking embed, through the shared cache."""
     _session_context(seeded)
-
+    assert seeded.embed_fn_calls == []
+    assert seeded.inference_calls == []
+    seeded.memory.get_context(query=QUERY, include_activity=True)
+    seeded.vectors.get_lessons_context(QUERY)
     assert seeded.embed_fn_calls == [QUERY, QUERY, QUERY]
     assert seeded.inference_calls == [QUERY]
 
 
-def test_a_second_build_is_served_entirely_from_the_embedding_cache(seeded: Seeded) -> None:
-    """The cache spans builds, so a second identical build pays no inference."""
+def test_a_second_build_still_does_not_retrieve_activity(seeded: Seeded) -> None:
+    """Repeated startup does not rely on an embedding cache to stay cheap."""
     _session_context(seeded)
-    seeded.embed_fn_calls.clear()
-    seeded.inference_calls.clear()
     _session_context(seeded)
-    assert seeded.embed_fn_calls == [QUERY, QUERY, QUERY]
+    assert seeded.embed_fn_calls == []
     assert seeded.inference_calls == []
 
 
@@ -757,11 +751,11 @@ def test_an_empty_query_skips_episodic_recall_and_lesson_ranking(seeded: Seeded)
     assert seeded.embed_fn_calls == []
     assert seeded.inference_calls == []
     assert "[Episodic Memory" not in payload
-    # Recency order, so the last-written semantic row leads and no row is dropped.
+    # Query-free startup keeps stable preferences, not recency-filled facts.
     block = payload[payload.index("[Semantic Memory") : payload.index("[End of semantic memory]")]
     rows = [line for line in block.splitlines() if line.startswith(("pref.", "user."))]
-    assert rows[0] == f"{SEM_OFF[0]}: {SEM_OFF[1]}"
-    assert len(rows) == 3
+    assert rows == [f"{key}: {value}" for key, value in (SEM_TOP, SEM_MID)]
+    assert SEM_OFF[0] not in payload
 
 
 # ── 7. The default store resolves to the legacy path ─────────────────────────

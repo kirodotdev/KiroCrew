@@ -1635,7 +1635,10 @@ parent's tree. `mcp_core.py` offers two resolvers:
   its own MCP child resolves to its **parent** slot, which would let it mutate
   the wrong conversation.
 - `_resolve_session_key()` (lenient, still walks ancestors) is only for read-only
-  and telemetry callers where misattribution is harmless.
+  and telemetry callers where misattribution is harmless. `skill_search` is
+  read-only but NOT harmless to misattribute: its gateway route returns the
+  session project's confined skill bodies, so it resolves through the strict
+  gate and degrades to the global-only search when no signed identity exists.
 
 **What names a session on the stub path: the stub session token.** The injected
 caller context above is the only identity channel a pooled backend has, and every
@@ -1962,3 +1965,22 @@ these real MCP transports through `sandboxed_spawn_argv` and `popen_limited`,
 which applies resource limits after exec rather than running Python in a fork
 child. Temporary launcher profiles are cleaned up even when spawning fails;
 synthetic tool events are not memory-access evidence.
+
+### Compact skill discovery descriptions
+
+Crew-owned `skill_search`, `skill_discover` and `skill_fetch` descriptions keep
+local versus public-registry scope, read-only semantics, result limits, explicit
+load instructions and the untrusted-content/sibling-file caveat. Full procedures
+stay in the skill files rather than in repeated discovery prose. This affects
+only the descriptors Crew owns; external MCP descriptions, Tool Search thresholds
+and native serialization are unchanged and outside the measured assembly boundary.
+
+Session-bound `skill_search` uses the already-admitted read route
+`/api/skills/-/discover?scope=installed&q=...`, delegating to `/api/skills`' local
+search branch. No authentication paths or policy controls are expanded. The
+server resolves only that session's project, applies the catalog's repo-scope
+filter and identical-content deduplication, and loads confined project bodies
+through `SkillsLoader.load_skill` with a shared 24,750-byte read allowance.
+Those results contain safe names and content, not live project paths. Sessionless
+CLI search remains global-only. Mixed CJK/English keywords use memory's existing
+CJK-pair tokenizer. Native tool schemas and Tool Search thresholds are unchanged.
