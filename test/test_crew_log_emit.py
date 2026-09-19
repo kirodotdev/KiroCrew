@@ -20,8 +20,9 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew import executors
+from kiro_crew import executors, session_map
 from kiro_crew.crew_log import crew_log_path, crew_log_root, emit
+from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.dashboard import server as server_module
 from kiro_crew.platform_compat import file_lock
@@ -4735,3 +4736,438 @@ def test_the_live_turn_cap_overage_is_reported_once_not_per_event(monkeypatch, c
         "the live-turn cap overage was reported "
         f"{len(overage_lines)} times, not once: {[r.getMessage() for r in overage_lines]}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# A superseded crew log: the `previous` edge, and its interrupted tail
+# --------------------------------------------------------------------------- #
+
+#: The successor id a superseded-session test opens after ``SESSION``. A restart
+#: cold-starts the slot's ACP session under a new id, which is why the successor
+#: gets a crew log of its own rather than re-attaching to this one.
+SUCCESSOR = "acp-sess-0002"
+
+
+def _open_successor(**kwargs) -> None:
+    """Open ``SUCCESSOR`` on the same slot ``_open_session`` uses."""
+    emit.on_session_opened(
+        SUCCESSOR,
+        agent="kirocrew",
+        slot="chat-7",
+        model="claude-opus-5",
+        cwd="/home/dev/project",
+        owner="default",
+        **kwargs,
+    )
+
+
+def test_a_new_store_for_a_slot_that_had_one_names_it_as_previous():
+    """The edge `resumed` cannot express, because the successor is a different unit.
+
+    A slot outlives its ACP session. When the session is torn down and the
+    successor cold-starts under a new id, `CrewLog.exists` is false for that id,
+    so the emitter CREATES a second crew log for one slot. `resumed` is correctly
+    false there -- nothing re-attached -- and without this edge no field in either
+    file says the two belong to the same slot.
+    """
+    _open_session()
+    assert emit.flush()
+    _open_successor(previous_sid=SESSION)
+    assert emit.flush()
+
+    opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
+    assert len(opened) == 1
+    assert opened[0]["data"]["previous"] == {"sid": SESSION}
+    # Not redefined: the successor did not re-attach to anything.
+    assert opened[0]["data"]["resumed"] is False
+    # The edge is written on the SUCCESSOR only. The superseded log was written by
+    # a session that never learns its successor's id, the same asymmetry `parent`
+    # is recorded on the child for.
+    assert "previous" not in _body(SESSION)[0]["data"]
+
+
+def test_a_slots_first_store_names_no_previous():
+    """Absent, not empty: "first crew log" has to be readable as its own case.
+
+    A `previous` carrying an empty sid would read as an earlier crew log with an
+    empty name, and a chain walker would try to open it.
+    """
+    _open_session()
+    assert emit.flush()
+    assert "previous" not in _body(SESSION)[0]["data"]
+
+
+def test_a_resume_of_the_same_store_writes_no_previous_edge():
+    """A store cannot be its own predecessor, and the emitter decides that here.
+
+    The caller passes the id the slot was MAPPED to, which on the resume path is
+    this session itself. Normally that is harmless because a resume re-attaches
+    and never creates. The case that needs the comparison is a resumed session
+    whose crew log is GONE: retention removes whole crew logs, so `session/load`
+    can succeed while `CrewLog.exists` is false, and the emitter then creates a
+    second crew log under the SAME id it was handed as the predecessor. Taking the
+    caller's value on trust writes `previous {sid: <self>}` there, and a chain
+    walker revisits the store it started from.
+
+    Mutation guard: dropping the `previous_sid != session_id` comparison writes a
+    self-edge here.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    assert emit.flush()
+
+    # Retention's effect on this unit, without waiting for retention.
+    _log_path(SESSION).unlink()
+    emit.reset_caches()
+    assert not lg.CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+    emit.on_session_opened(
+        SESSION, agent="kirocrew", slot="chat-7", resumed=True, previous_sid=SESSION
+    )
+    assert emit.flush()
+
+    opened = [e for e in _body(SESSION) if e["type"] == "session/opened"]
+    assert len(opened) == 1, "the re-created crew log carries exactly one opener"
+    assert "previous" not in opened[0]["data"]
+    # And a reader stepping back from it is not sent to itself.
+    assert crew_log_projection.read_projection(SESSION, "status").value["previous"] is None
+
+
+def test_a_warm_reuse_of_a_live_store_writes_nothing_at_all():
+    """The silent case is still silent, edge or no edge.
+
+    Every turn calls this, and a warm reuse of a crew log this process already
+    holds has nothing new to say. A `previous_sid` arriving on such a turn (the
+    map names this same session, which is the ordinary steady state) must not turn
+    a silent claim into a second opener.
+    """
+    _open_session()
+    assert emit.flush()
+    before = len(_body(SESSION))
+
+    emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", previous_sid=SESSION)
+    assert emit.flush()
+    assert len(_body(SESSION)) == before, "a warm reuse appended something"
+
+
+def test_a_re_attach_writes_no_edge_and_repairs_no_other_unit():
+    """Only a CREATE may name a predecessor, because only a create superseded one.
+
+    A re-attach already has its store, so a unit the caller names alongside it is
+    either that same store or an unrelated one, and an unrelated one may still be
+    LIVE. Writing the edge there would claim a supersede that did not happen, and
+    the repair that follows it would close a turn some other session is running,
+    which is the "two outcomes for one turn" the store refuses everywhere else.
+
+    Mutation guard: dropping `created` from the latch condition writes the edge and
+    repairs the bystander here.
+    """
+    # A bystander with work in flight, on a different slot.
+    bystander = "acp-sess-bystander"
+    emit.on_session_opened(bystander, agent="kirocrew", slot="chat-9")
+    emit.on_turn_started(bystander, 1, "user")
+    assert emit.flush()
+
+    _open_session()
+    assert emit.flush()
+    emit.reset_caches()
+    # A re-attach to a store that EXISTS, handed an unrelated unit as predecessor.
+    emit.on_session_opened(
+        SESSION, agent="kirocrew", slot="chat-7", resumed=True, previous_sid=bystander
+    )
+    assert emit.flush()
+
+    for entry in [e for e in _body(SESSION) if e["type"] == "session/opened"]:
+        assert "previous" not in entry["data"]
+    assert [
+        e for e in _body(bystander) if e["type"] == "turn/completed"
+    ] == [], "the bystander's live turn was closed by another session's re-attach"
+
+
+def test_superseding_a_store_closes_the_turn_its_writer_left_open():
+    """The repair the restart case could never reach.
+
+    `_close_interrupted_tail` hangs off the `exists` branch and needs
+    `resumed=True`. A successor with a NEW id takes `create` instead, so the one
+    crew log that was actually interrupted was the one crew log never repaired:
+    its last `turn/started` stayed open for the rest of the file's life.
+
+    A supersede is a stronger precondition than the resume flag it replaces here.
+    `resumed` is a belief about a writer this process cannot see; a supersede is a
+    fact -- the slot's session was torn down, so nothing can append to the
+    previous unit as that session again.
+
+    Mutation guard: removing the `_close_superseded` call leaves the turn open.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_tool_called(SESSION, 1, name="fs_read", call_id="c-1")
+    assert emit.flush()
+
+    _open_successor(previous_sid=SESSION)
+    assert emit.flush()
+
+    superseded = _body(SESSION)
+    turn_closers = [e for e in superseded if e["type"] == "turn/completed"]
+    assert len(turn_closers) == 1
+    assert turn_closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
+    tool_closers = [e for e in superseded if e["type"] == "tool/completed"]
+    assert len(tool_closers) == 1
+    assert tool_closers[0]["data"]["status"] == "unknown"
+    assert tool_closers[0]["data"]["call_id"] == "c-1"
+    # Append-only: the closers are new lines with continuing seqs, and the opener
+    # they answer is untouched.
+    assert [e["seq"] for e in superseded] == sorted(e["seq"] for e in superseded)
+
+
+def test_superseding_a_store_leaves_an_unmatched_child_open():
+    """A child of a generation this process cannot answer for stays open.
+
+    No `child_gone` predicate is passed for a superseded unit. This process's
+    registry lists ITS OWN children, and the supersede that matters is a restart,
+    whose children belonged to a process that is gone: a registry with none of
+    them running would report every one finished on no evidence, and an `unknown`
+    outcome would then stand beside the real one a surviving child can still
+    file. Leaving it open leaves a reader behind rather than wrong.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    assert emit.flush()
+
+    _open_successor(previous_sid=SESSION)
+    assert emit.flush()
+
+    superseded = _body(SESSION)
+    # The turn IS closed; only the child is left alone.
+    assert [e for e in superseded if e["type"] == "turn/completed"]
+    assert [e for e in superseded if e["type"] == "subagent/failed"] == []
+
+
+def test_a_previous_store_that_is_gone_does_not_cost_the_successors_entry():
+    """Best-effort: the successor's own record is what the job owes.
+
+    Retention removes whole crew logs, so a successor can name a predecessor that
+    is already gone. The repair's refusal must not take the entry naming it down
+    with it -- that would lose the edge as well as the repair.
+    """
+    _open_successor(previous_sid="acp-sess-never-existed")
+    assert emit.flush()
+
+    opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
+    assert len(opened) == 1
+    assert opened[0]["data"]["previous"] == {"sid": "acp-sess-never-existed"}
+
+
+def test_the_previous_edge_survives_a_retry_that_finds_the_header_already_written():
+    """Latched with the create decision, for the same reason that one is.
+
+    A retry after the header landed but the entry did not reads `exists` true and
+    `created` false. An unlatched edge would be dropped exactly there, silently
+    and permanently, while the entry it belongs to still gets written.
+
+    Mutation guard: reading `created` instead of the latch drops `previous` here.
+    """
+    _open_session()
+    assert emit.flush()
+
+    calls = {"n": 0}
+    real_append = lg.CrewLog.append
+
+    def _fail_the_first_append(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1 and self.id == SUCCESSOR:
+            raise OSError("the entry did not land, the header did")
+        return real_append(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lg.CrewLog, "append", _fail_the_first_append)
+        _open_successor(previous_sid=SESSION)
+        assert emit.flush()
+        assert emit.flush()
+
+    opened = [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
+    assert len(opened) == 1, "the retried entry landed more or less than once"
+    assert opened[0]["data"]["previous"] == {"sid": SESSION}
+
+
+def test_a_reader_joins_both_stores_of_one_slot_through_the_status_fold():
+    """The read side: one slot's history, joined across the supersede boundary.
+
+    Each fold reads ONE crew log, which is what the routes and the crew-log MCP
+    server address. `previous` is what lets a reader that wants the SLOT rather
+    than the session step from the newest crew log to the one before it, one fold
+    at a time, through the projection route that already exists.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    assert emit.flush()
+    _open_successor(previous_sid=SESSION)
+    emit.on_turn_started(SUCCESSOR, 1, "user")
+    emit.on_turn_completed(SUCCESSOR, 1, stop_reason="end_turn")
+    assert emit.flush()
+
+    newest = crew_log_projection.read_projection(SUCCESSOR, "status").value
+    assert newest["slot"] == "chat-7"
+    assert newest["turn_open"] is False
+    # The edge a reader follows to reach the rest of this slot's history.
+    assert newest["previous"] == SESSION
+
+    older = crew_log_projection.read_projection(newest["previous"], "status").value
+    assert older["slot"] == "chat-7", "one slot, two crew logs"
+    assert older["previous"] is None, "the oldest crew log ends the walk"
+    # The superseded turn is CLOSED, so a reader of the whole slot sees one
+    # finished turn and one interrupted one rather than a turn that never ends.
+    assert older["turn_open"] is False
+    assert older["last_stop_reason"] == "interrupted"
+
+
+def test_the_repair_waits_rather_than_overtake_a_write_the_predecessor_still_owes():
+    """A synthetic outcome must never land ahead of a real one that is queued.
+
+    A supersede proves no further ACP work reaches the previous session, but it
+    says nothing about writes already accepted for it. A transient append failure
+    puts the predecessor's own `turn/completed` into retry backoff; closing the
+    tail ahead of that puts an `interrupted` in the file and lets the real
+    completion land underneath it, so a fold reads two outcomes for one turn with
+    no way to tell which happened -- the exact state the repair exists to prevent.
+
+    The debt is injected rather than raced into existence: what is under test is
+    what the guard DOES when entries are owed, and `_owes_entries` has its own
+    tests for whether it counts them correctly.
+
+    Mutation guard: dropping the `_owes_entries` guard writes the synthetic closer
+    here.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_tool_called(SESSION, 1, name="fs_read", call_id="c-1")
+    assert emit.flush()
+
+    real_owes = emit._owes_entries
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(emit, "_owes_entries", lambda sid: sid == SESSION or real_owes(sid))
+        _open_successor(previous_sid=SESSION)
+        assert emit.flush()
+
+    # The successor's own record still lands; only the repair stands down.
+    assert [e for e in _body(SUCCESSOR) if e["type"] == "session/opened"]
+    superseded = _body(SESSION)
+    assert [
+        e for e in superseded if e["type"] == "turn/completed"
+    ] == [], "a synthesised closer overtook a write the predecessor still owed"
+    assert [e for e in superseded if e["type"] == "tool/completed"] == []
+
+    # Once nothing is owed, a later supersede of the same unit does close it, so
+    # the guard defers the repair rather than cancelling it.
+    emit.on_session_opened("acp-sess-0003", agent="kirocrew", slot="chat-7", previous_sid=SESSION)
+    assert emit.flush()
+    closers = [e for e in _body(SESSION) if e["type"] == "turn/completed"]
+    assert len(closers) == 1
+    assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
+
+
+def test_the_turn_path_reads_the_predecessor_through_the_non_pruning_accessor():
+    """A source ratchet, because the two accessors are one identifier apart.
+
+    `mapped_sid` and `resumable_sid` differ by a filesystem stat and a prune, and
+    at this call site that difference is a sync store read on the gateway loop
+    plus the loss of the very edge being recorded. Both spellings type-check, both
+    return the id on the happy path, and every behavioural test of the emitter
+    passes either way, because the emitter is handed the value rather than
+    choosing it. So the choice is pinned where it is made.
+
+    It is pinned at EVERY site, not one: the slot has two allocation sites -- the
+    eager prefetch and the first real turn -- and a spelling that is right at one
+    and wrong at the other leaves the prefetched half of the fleet recording no
+    edge, which is the shape that shipped broken once already. A site added later
+    that feeds the latch from anything but `mapped_sid` reds this.
+
+    Mutation guard: swapping either call site to `resumable_sid` reds this.
+    """
+    runner = Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_runner.py"
+    source = runner.read_text(encoding="utf-8")
+    latches = [line.strip() for line in source.splitlines() if "latch_crew_log_previous(" in line]
+    # Both allocation sites, and each reading the non-pruning accessor. The
+    # `sessions` receiver differs because the prefetch is handed the boundary
+    # directly and the turn reaches it through `state`.
+    assert latches == [
+        "slot.latch_crew_log_previous(sessions.mapped_sid(session_key))",
+        "slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))",
+    ], f"the predecessor is latched somewhere unexpected: {latches}"
+    # Spent exactly once, at the emitter call. A second consumer would hand the
+    # same edge to two entries; none would leave it for the slot's next store.
+    takes = [line.strip() for line in source.splitlines() if "take_crew_log_previous(" in line]
+    assert takes == [
+        "previous_sid=slot.take_crew_log_previous(),"
+    ], f"the predecessor edge is consumed somewhere unexpected: {takes}"
+
+
+def test_the_predecessor_is_read_without_pruning_the_mapping():
+    """The turn path reads the mapped id, not the resumable one.
+
+    `SessionMap.get` answers "can this id still be resumed", so it stats the ACP
+    transcript and PRUNES the entry when that file is gone or empty. Both are
+    wrong for a history citation: the stat is synchronous store work on the
+    gateway loop, and the prune erases the id exactly when the two stores
+    disagree -- a crew log unit can outlive a truncated ACP transcript, and that
+    unit is the one whose tail most needs closing.
+
+    Mutation guard: routing the turn path back through `resumable_sid` answers
+    None here, so the successor records no edge and the predecessor's tail is
+    never closed.
+    """
+    mapping = session_map.SessionMap()
+    mapping.set("dashboard:chat-7", SESSION, provider="", cwd="")
+
+    # The history read answers, and it is read FIRST because that is the order the
+    # turn path uses -- nothing has pruned the entry yet.
+    assert mapping.mapped_sid("dashboard:chat-7") == SESSION
+
+    # The resumable read, on the same live entry, answers None AND removes it:
+    # there is no ACP transcript on disk for that id.
+    assert mapping.get("dashboard:chat-7") is None
+    assert (
+        mapping.has_hint("dashboard:chat-7") is False
+    ), "get() pruned the entry, which is why the history read must not go through it"
+
+
+def test_the_mapped_read_touches_no_file():
+    """Safe on the gateway loop because it reads memory, not the store.
+
+    An unmapped key answers "" rather than raising, since the emitter turns that
+    into an absent edge: a slot's first ever session has nothing to name.
+    """
+    mapping = session_map.SessionMap()
+    mapping.set("dashboard:chat-7", SESSION, provider="", cwd="")
+
+    def _no_disk(*_args, **_kwargs):
+        raise AssertionError("mapped_sid touched the filesystem")
+
+    # Patched AFTER construction, which loads the map from disk by design.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "exists", _no_disk)
+        patch.setattr(Path, "stat", _no_disk)
+        assert mapping.mapped_sid("dashboard:chat-7") == SESSION
+        assert mapping.mapped_sid("dashboard:never-seen") == ""
+
+
+def test_a_store_whose_front_retention_removed_reports_no_edge():
+    """`null` is "no edge to follow", never "there was no earlier crew log".
+
+    The edge rides on the creating `session/opened`, which lives at the front of
+    the file, and retention deletes whole segments off the front. A reader that
+    read a missing edge as "this is the slot's first crew log" would silently
+    claim a slot's history began at the oldest segment that survived.
+    """
+    _open_session()
+    assert emit.flush()
+    _open_successor(previous_sid=SESSION)
+    assert emit.flush()
+    assert crew_log_projection.read_projection(SUCCESSOR, "status").value["previous"] == SESSION
+
+    _log_path(SUCCESSOR).unlink()
+    folded = crew_log_projection.read_projection(SUCCESSOR, "status").value
+    assert folded["previous"] is None
+    assert folded["lifecycle"] == "unknown", "and the fold says it could not read an opener"

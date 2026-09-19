@@ -2496,6 +2496,7 @@ def on_session_opened(
     resumed: bool = False,
     parent_slot: str = "",
     parent_sid: str = "",
+    previous_sid: str = "",
 ) -> None:
     """Create the crew log if this session has none, then echo its header.
 
@@ -2549,6 +2550,26 @@ def on_session_opened(
     crew log in an entry that can never be corrected. Both empty means nobody
     created this session (a person's own tab, a fork) and no ``parent`` is
     written at all, so a fold can tell "no creator" from "creator unknown".
+
+    ``previous_sid`` names the crew log this SLOT was writing before, and it
+    answers the continuity ``resumed`` cannot. ``resumed`` is true only when this
+    claim re-attached to the same crew log; when the ACP session was instead torn
+    down and a successor cold-started, the successor has a different id and
+    therefore a different unit, and nothing in the record joined the two. So a
+    ``create`` that is handed a DIFFERENT prior id writes ``previous {sid}``, and
+    the comparison is made here rather than trusted from the caller: on the resume
+    path the prior id and this one are the same store, and an edge pointing at
+    itself would make a chain walker loop. Empty, or equal to this session, means
+    no edge is written -- the slot's first crew log, and a predecessor the gateway
+    could not name, are both "nothing to follow" rather than a store with an empty
+    name.
+
+    Superseding a crew log also makes its writer provably gone, which is the one
+    precondition the interrupted-turn repair needs. So the same ``create`` closes
+    the previous unit's open turn and open tool calls. That repair had been
+    unreachable from this case: it hangs off the ``exists`` branch below, and a
+    successor with a new id never takes that branch, so the crew log that was
+    actually interrupted was the one crew log never repaired.
     """
     if not session_id or not enabled():
         return
@@ -2561,12 +2582,14 @@ def on_session_opened(
     # owes the release and the file still shows that turn open until the entry
     # lands.
     _release_session_live(session_id)
-    # Latched on the FIRST attempt and read back on every later one. The decision
-    # below is derived from filesystem state this job itself changes: a retry after
+    # Latched on the FIRST attempt and read back on every later one. The decisions
+    # below are derived from filesystem state this job itself changes: a retry after
     # the header landed but the entry did not finds ``exists`` true and ``created``
     # false, so an unlatched decision would flip to "nothing new to say" and skip
-    # the entry it still owes -- permanently, and without counting the loss.
-    announce: "dict[str, bool]" = {}
+    # the entry it still owes -- permanently, and without counting the loss. It
+    # holds the supersede edge too, which is a session id rather than a flag, so
+    # the values are not all bools.
+    latched: "dict[str, Any]" = {}
 
     def _job() -> None:
         created = False
@@ -2635,7 +2658,24 @@ def on_session_opened(
             )
             created = True
         _remember(session_id, log)
-        if not announce.setdefault("owed", created or bool(resumed)):
+        # Latched on the FIRST attempt and read back on every later one, exactly like
+        # ``owed`` below and for the same reason: the decision is derived from
+        # filesystem state this job itself changes, so a retry after the header
+        # landed reads ``exists`` true and ``created`` false, and an unlatched edge
+        # would be dropped there -- silently, and permanently, while the entry it
+        # belongs to still gets written. The latch holds the ID rather than a flag,
+        # so the retry writes the edge the first attempt decided on, and an empty
+        # string is a latched "no edge" that nothing downstream re-tests.
+        #
+        # ``created`` is part of the condition, not just the ``previous_sid``
+        # comparison. A re-attach has a store already, so the unit the caller names
+        # is either this same one or an unrelated one that may still be LIVE, and
+        # repairing that is how a running turn gets an outcome it never had.
+        superseded = latched.setdefault(
+            "superseded",
+            (previous_sid if (created and previous_sid and previous_sid != session_id) else ""),
+        )
+        if not latched.setdefault("owed", created or bool(resumed)):
             return
         data: dict[str, Any] = {
             "agent": agent or _DEFAULT_AGENT,
@@ -2657,6 +2697,10 @@ def on_session_opened(
             # string and cannot lose the requested/served pair. The entry states two
             # facts and infers nothing: what the gateway asked for, and what serves.
             data["model_requested"] = model_requested
+        if superseded:
+            # No ``slot`` inside: it is the slot in ``data.slot``, and repeating it
+            # would invite a reader to trust a second copy of one fact.
+            data["previous"] = {"sid": superseded}
         if parent_slot:
             # Written only when there IS a creator, and ``sid`` only when the
             # creator still had a live handle: an empty string in either place
@@ -2666,6 +2710,12 @@ def on_session_opened(
                 parent["sid"] = parent_sid
             data["parent"] = parent
         log.append("session/opened", data, src=_SRC_GATEWAY)
+        if superseded:
+            # AFTER the entry, and best-effort. The new crew log's own record is what
+            # this job owes; the previous unit is a file no writer owns any more, and
+            # the store's closers are documented best-effort, so a repair that cannot
+            # run must not cost the entry that names it.
+            _close_superseded(superseded, session_id)
 
     def _flag_creation_failed() -> None:
         # The creating record died with no crew log file behind it: no later append
@@ -2681,6 +2731,71 @@ def on_session_opened(
         exempt_ceiling=True,
         on_permanent_drop=_flag_creation_failed,
     )
+
+
+def _close_superseded(previous_sid: str, successor_sid: str) -> None:
+    """Close the open turn and tool calls of a crew log the slot has left behind.
+
+    The precondition the interrupted-turn repair needs is "the writer of this file
+    is gone", and a supersede is the one place that is a FACT rather than a belief:
+    the slot's ACP session was torn down and a successor cold-started under a
+    different id, so nothing can append to the previous unit as that session again.
+    Compare the resume path, where ``resumed`` is the caller's belief about a writer
+    it cannot see and has to be checked against this process's own live turns.
+
+    No ``child_gone`` predicate is passed, so an unmatched ``subagent/spawned``
+    stays open. This process's registry answers for ITS OWN children, and the
+    supersede that matters here is a gateway restart, whose children belonged to a
+    process that is gone: a registry with none of them running would report every
+    one of them finished on no evidence and write an ``unknown`` outcome beside the
+    real one a surviving child can still file. Leaving them open leaves a reader
+    behind rather than wrong, which is the direction the store documents.
+
+    Best-effort, and every failure is the same kind of answer. A previous unit
+    retention already removed, or one that never got a file, raises ``no_ledger``.
+    A unit another PROCESS still owns raises ``already_owned``, which is the store
+    refusing to let two writers state outcomes for one turn -- correct, and not
+    this caller's to force. Both leave the tail open, which is the state every
+    reader of this log already has to tolerate.
+    """
+    # The one refusal that is not a failure: this process still OWES entries for the
+    # previous unit. A supersede proves no further ACP work will reach that session,
+    # but it says nothing about writes already accepted for it -- a transient append
+    # failure puts the predecessor's own ``turn/completed`` into retry backoff, and
+    # closing the tail ahead of it would put a synthesised ``interrupted`` in the
+    # file and let the real completion land underneath it, which is the two-outcomes
+    # state the repair exists to prevent. The debt set is the exact record of what is
+    # still queued, claimed, retained or owed as a loss marker, so it answers this
+    # directly. Leaving the tail open here is the same direction every other refusal
+    # takes, and the retry that lands writes the REAL outcome, which is better than
+    # the synthetic one.
+    if _owes_entries(previous_sid):
+        logger.info(
+            "session log %s superseded %s: its interrupted tail was NOT closed -- this "
+            "process still owes entries for it, and their real outcomes must not land "
+            "under a synthesised one",
+            successor_sid,
+            previous_sid,
+        )
+        return
+    try:
+        previous = _crew_log().CrewLog.open(_KIND, previous_sid)
+        written = previous.repair_interrupted_turn()
+    except Exception as exc:  # noqa: BLE001 - every failure leaves the tail open
+        logger.info(
+            "session log %s superseded %s: its interrupted tail was NOT closed (%s)",
+            successor_sid,
+            previous_sid,
+            exc,
+        )
+        return
+    if written:
+        logger.info(
+            "session log %s superseded %s: closed its interrupted tail with %d closer(s)",
+            successor_sid,
+            previous_sid,
+            written,
+        )
 
 
 def on_turn_started(

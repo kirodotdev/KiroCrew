@@ -926,6 +926,9 @@ class SessionAllocationService:
     def resumable_hint(self, key: str) -> bool:
         return self._owner._session_map.has_hint(self._owner._fold_key(key))
 
+    def mapped_sid(self, key: str) -> str:
+        return self._owner._session_map.mapped_sid(self._owner._fold_key(key))
+
     def seed_conversation(
         self,
         key: str,
