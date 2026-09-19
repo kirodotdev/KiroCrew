@@ -28,6 +28,23 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   a gateway restart), an ownerless directory is never deleted, and a garbled
   owner file is left for a human.
 
+kiro-cli's own log rides along. The CLI writes ``kiro-log/kiro-chat.log`` (plus
+``mcp.log`` / ``lsp.log`` beside it) under ``$XDG_RUNTIME_DIR`` when that is
+set, else ``$TMPDIR`` -- ONE file per machine, unlinked by whichever process
+starts next once it passes 10 MiB. Every long-lived kiro-cli then keeps
+writing into its own unlinked inode, which ``du`` cannot see and nothing
+frees until the process exits; on Linux the runtime dir is a RAM-backed
+tmpfs, so a host running many concurrent agents fills it and systemd stops
+creating transient scopes. :func:`scratch_env` therefore pins
+``KIRO_CHAT_LOG_FILE`` into this process's OWN scratch directory (the same
+place the ``TMPDIR`` fallback already puts it on macOS), so the log is
+per-process, on disk, and reclaimed with the directory. kiro-cli never
+bounds a log while running, so :func:`cap_kiro_cli_logs` rotates any that
+outgrows :data:`KIRO_CLI_LOG_CAP_BYTES` in place. The pin is set only where
+that cap can run (:data:`_CAN_CAP_LOGS`): a pinned log nothing bounds is
+worse than the CLI's own 10 MiB unlink, so Windows keeps kiro-cli's default
+location until the cap runs there.
+
 Sweep hygiene follows the house rules of :mod:`kiro_crew.agents_janitor`:
 ``os.lstat`` classification, symlinks never followed, deletion only for
 direct children of the managed root, per-entry fail-open.
@@ -77,6 +94,33 @@ OwnerOutcome = Literal["recorded", "unwritable", "refused", "stale"]
 _UNOWNED_GRACE_SECONDS = 3600.0
 
 _LABEL_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+#: kiro-cli's log directory INSIDE a scratch dir, and the files it writes there.
+#: The chat log MUST keep its default name: kiro-cli places ``mcp.log`` and
+#: ``lsp.log`` beside the chat log only when it is named ``kiro-chat.log``.
+KIRO_CLI_LOG_SUBDIR = "kiro-log"
+KIRO_CLI_CHAT_LOG_NAME = "kiro-chat.log"
+KIRO_CLI_LOG_NAMES = (KIRO_CLI_CHAT_LOG_NAME, "mcp.log", "lsp.log")
+#: kiro-cli's own override for the chat log path.
+KIRO_CHAT_LOG_FILE_ENV = "KIRO_CHAT_LOG_FILE"
+#: A live kiro-cli log larger than this is rotated in place. At the CLI's
+#: default level a process writes a few KiB a minute; ``KIRO_LOG_LEVEL=debug``
+#: writes ~40 MiB a minute, and the cap exists for that setting.
+KIRO_CLI_LOG_CAP_BYTES = 64 * 1024 * 1024
+#: Newest bytes preserved in ``<name>.1`` when a log is rotated.
+KIRO_CLI_LOG_KEEP_BYTES = 8 * 1024 * 1024
+#: How often the gateway runs :func:`cap_kiro_cli_logs`. Bounds the overshoot
+#: past the cap to ``interval x write rate``.
+KIRO_CLI_LOG_CAP_INTERVAL_SECONDS = 300
+
+#: The cap needs ``openat``-style descriptor-relative opens and ``O_NOFOLLOW``
+#: to act on a directory the SUBJECT process owns; without them it does nothing.
+_CAN_CAP_LOGS = (
+    hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "pread")
+    and os.open in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+)
 
 
 class ScratchBoundaryError(Exception):
@@ -301,14 +345,160 @@ def record_owner(path: Path, pid: int) -> OwnerOutcome:
 
 
 def scratch_env(path: Path) -> dict[str, str]:
-    """Env exports pointing a child's temp AND scratch at *path*.
+    """Env exports pointing a child's temp, scratch AND kiro-cli log at *path*.
 
     ``TMPDIR``/``TMP``/``TEMP`` cover ``tempfile`` and shell ``mktemp`` on
     both platforms; ``KIROCREW_SCRATCH`` is the prompt-visible name for
     deliberate work products (clones, logs, screenshots).
+    ``KIRO_CHAT_LOG_FILE`` pins kiro-cli's log to ``<path>/kiro-log/kiro-chat.log``
+    so it is per-process (see the module docstring), but only where
+    :func:`cap_kiro_cli_logs` can bound it (:data:`_CAN_CAP_LOGS`); elsewhere
+    (Windows) the key is omitted and kiro-cli keeps its default location. Where
+    set, it overrides any inherited value, because an inherited value names a
+    path SHARED with other processes, which is the failure this exists to prevent.
     """
     value = str(path)
-    return {"TMPDIR": value, "TMP": value, "TEMP": value, "KIROCREW_SCRATCH": value}
+    env = {
+        "TMPDIR": value,
+        "TMP": value,
+        "TEMP": value,
+        "KIROCREW_SCRATCH": value,
+    }
+    if _CAN_CAP_LOGS:
+        env[KIRO_CHAT_LOG_FILE_ENV] = str(path / KIRO_CLI_LOG_SUBDIR / KIRO_CLI_CHAT_LOG_NAME)
+    return env
+
+
+def cap_kiro_cli_logs(
+    *,
+    cap_bytes: int = KIRO_CLI_LOG_CAP_BYTES,
+    keep_bytes: int = KIRO_CLI_LOG_KEEP_BYTES,
+) -> int:
+    """Periodic: rotate in place every kiro-cli log under scratch past *cap_bytes*.
+
+    kiro-cli holds each log open in append mode for the life of the process
+    and checks size only at startup, so an outside bound has to act on the
+    OPEN file: the newest *keep_bytes* are copied to ``<name>.1`` and the log
+    is truncated to zero. ``O_APPEND`` makes the writer's next record land at
+    the new end, so no hole is created. Records written between the tail copy
+    and the truncate are lost; this is a diagnostic log, and losing a few
+    lines beats losing the disk.
+
+    Every scratch directory is OWNED by a sandboxed agent process while this
+    runs unsandboxed, so nothing here trusts a name the agent controls: the
+    ``kiro-log`` directory is opened ``O_NOFOLLOW`` and every member is opened
+    relative to that descriptor, also ``O_NOFOLLOW``; a member is acted on only
+    if the fstat of the descriptor actually opened shows a regular file with a
+    single link owned by this uid (a planted hard link would otherwise truncate
+    the file it points at); the rotated copy is created ``O_EXCL`` after
+    unlinking the old name, never written through an existing entry. Per-entry
+    fail-open. Platforms without descriptor-relative opens do nothing.
+
+    Returns the number of logs rotated.
+    """
+    if not _CAN_CAP_LOGS:
+        return 0
+    root = scratch_root()
+    if platform_compat.is_link_or_junction(root):
+        logger.warning("agent-scratch: managed root %r is a link; skipping log cap", _SUBDIR)
+        return 0
+    try:
+        entries = list(os.scandir(root))
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        logger.debug("agent-scratch: could not list %s; skipping log cap", root, exc_info=True)
+        return 0
+    rotated = 0
+    for entry in entries:
+        child = root / entry.name  # name-composed: cannot escape the root
+        if not _is_plain_dir(child):
+            continue
+        rotated += _cap_log_dir(child / KIRO_CLI_LOG_SUBDIR, cap_bytes, keep_bytes)
+    if rotated:
+        hint = ""
+        if os.environ.get("KIRO_LOG_LEVEL", "").lower() in ("debug", "trace"):
+            hint = "; KIRO_LOG_LEVEL=%s in the gateway environment is the likely cause" % (
+                os.environ["KIRO_LOG_LEVEL"],
+            )
+        logger.warning(
+            "agent-scratch: rotated %d kiro-cli log(s) larger than %d MiB%s",
+            rotated,
+            cap_bytes // (1024 * 1024),
+            hint,
+        )
+    return rotated
+
+
+def _cap_log_dir(log_dir: Path, cap_bytes: int, keep_bytes: int) -> int:
+    """Rotate the oversized members of one ``kiro-log`` directory; see the caller."""
+    try:
+        dir_fd = os.open(log_dir, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    except OSError:
+        # Absent (the CLI has not logged yet), or a link (ELOOP) -- never followed.
+        return 0
+    try:
+        return sum(
+            1
+            for name in KIRO_CLI_LOG_NAMES
+            if _rotate_in_place(dir_fd, name, cap_bytes, keep_bytes)
+        )
+    finally:
+        os.close(dir_fd)
+
+
+def _rotate_in_place(dir_fd: int, name: str, cap_bytes: int, keep_bytes: int) -> bool:
+    """Tail-copy then truncate ``name`` (relative to *dir_fd*) when it exceeds the cap."""
+    try:
+        fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        return False  # absent, a link, or unopenable: nothing to bound
+    try:
+        info = os.fstat(fd)
+        # Judge the descriptor we hold, not the name: a regular file, with the
+        # one link kiro-cli gave it, owned by us. Anything else was planted.
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            return False
+        if info.st_size <= cap_bytes:
+            return False
+        keep = min(keep_bytes, info.st_size)
+        try:
+            tail = os.pread(fd, keep, info.st_size - keep)
+            _write_rotated(dir_fd, name + ".1", tail)
+        except OSError:
+            # The copy is a courtesy; the truncate is the bound. A full disk is
+            # exactly when the copy fails and the truncate matters most.
+            logger.debug("agent-scratch: could not keep a tail of %s", name, exc_info=True)
+        os.ftruncate(fd, 0)
+        return True
+    except OSError:
+        logger.debug("agent-scratch: could not rotate %s", name, exc_info=True)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _write_rotated(dir_fd: int, name: str, data: bytes) -> None:
+    """Replace ``name`` under *dir_fd* with *data*, never writing through an existing entry."""
+    try:
+        os.unlink(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    # O_EXCL after the unlink: an entry re-planted in between (a link, a hard
+    # link) makes this fail with EEXIST instead of being written through.
+    fd = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=dir_fd,
+    )
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+    finally:
+        os.close(fd)
 
 
 def _is_plain_dir(path: Path) -> bool:

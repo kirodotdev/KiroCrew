@@ -14480,6 +14480,8 @@ _SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
 _AGENTS_JANITOR_TASK: "asyncio.Task[None] | None" = None
 #: Strong ref for the liveness-keyed agent-scratch sweep loop.
 _AGENT_SCRATCH_SWEEP_TASK: "asyncio.Task[None] | None" = None
+#: Strong ref for the kiro-cli log cap loop.
+_KIRO_CLI_LOG_CAP_TASK: "asyncio.Task[None] | None" = None
 
 
 async def run_gateway(
@@ -14608,6 +14610,28 @@ async def run_gateway(
 
         _AGENT_SCRATCH_SWEEP_TASK = asyncio.create_task(
             _run_agent_scratch_sweep(), name="agent-scratch-sweep"
+        )
+
+    # ── kiro-cli log cap (fire-and-forget, every 5 minutes) ──
+    # Each spawned kiro-cli logs into its own scratch dir (agent_scratch
+    # .scratch_env pins KIRO_CHAT_LOG_FILE there) and never bounds that log
+    # while running; at KIRO_LOG_LEVEL=debug one process writes ~40 MiB a
+    # minute for as long as it lives. The hourly sweep above is too slow for
+    # that rate, so this loop rotates any oversized log in place. Same
+    # posture: offloaded, fail-open, sleep-first, skipped in test_mode.
+    global _KIRO_CLI_LOG_CAP_TASK
+    if not test_mode:
+
+        async def _run_kiro_cli_log_cap() -> None:
+            while True:
+                await asyncio.sleep(agent_scratch.KIRO_CLI_LOG_CAP_INTERVAL_SECONDS)
+                try:
+                    await asyncio.to_thread(agent_scratch.cap_kiro_cli_logs)
+                except Exception:
+                    logging.getLogger(__name__).debug("kiro-cli log cap failed", exc_info=True)
+
+        _KIRO_CLI_LOG_CAP_TASK = asyncio.create_task(
+            _run_kiro_cli_log_cap(), name="kiro-cli-log-cap"
         )
 
     # ── Anonymous usage beacon (at most one HTTP GET per day) ──
