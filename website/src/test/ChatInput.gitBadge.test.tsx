@@ -55,6 +55,27 @@ describe('ChatInput footer git-status badge', () => {
     expect(badge().getAttribute('title')).toBe('7 uncommitted')
   })
 
+  it('marks the count as a floor when the server capped the listing', () => {
+    // The status response caps its file list, so the count here is a floor.
+    // Rendering it bare states the cap as the total -- the same undercount the
+    // Git panel's pill avoids, one screen away and on the same query.
+    renderWithProviders(
+      <ChatInput {...defaultProps} projectGitDirty={500} projectGitDirtyTruncated />,
+    )
+    const el = badge()
+    expect(el).toHaveTextContent('500+')
+    expect(el.getAttribute('title')).toBe('500+ uncommitted')
+  })
+
+  it('leaves a complete listing unqualified', () => {
+    renderWithProviders(
+      <ChatInput {...defaultProps} projectGitDirty={500} projectGitDirtyTruncated={false} />,
+    )
+    const el = badge()
+    expect(el.getAttribute('title')).toBe('500 uncommitted')
+    expect(el.textContent).not.toContain('+')
+  })
+
   it('keeps the badge at narrow (compact) shelf widths, icon-only chips notwithstanding', async () => {
     // shelfCompact flips when the measured shelf width drops below 340px.
     // Report a 320px shelf through the ResizeObserver, then assert the badge
