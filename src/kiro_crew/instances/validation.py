@@ -1,4 +1,4 @@
-"""Injection-safe validation for SSH and SSM connection inputs.
+"""Injection-safe validation for SSH, SSM and loopback connection inputs.
 
 The ``SshTunnelManager`` and token-mint helper pass ``ssh_host`` and
 ``remote_bin`` into ``ssh`` argv lists, or ``ssm_target``/``aws_profile``/
@@ -20,6 +20,12 @@ remain:
 Validation lives here, with the tunnel manager, rather than in the registry:
 the registry does a light early-reject charset check, but this is the
 authoritative guard applied immediately before a command line is built.
+
+The ``loopback`` transport builds no command line and carries no per-record
+destination address: it dials the fixed ``constants.LOOPBACK_HOST``. Its stored
+``remote_port`` is range-checked before that dial. The transport is available only
+inside a Kiro Crew pod whose config enables the verification seam, which is what
+:class:`LoopbackValidationError` names.
 """
 
 from __future__ import annotations
@@ -74,6 +80,25 @@ class SshValidationError(ValueError):
 
 class SsmValidationError(ValueError):
     """Raised when an ssm_target, aws_profile, or aws_region fails validation."""
+
+
+class LoopbackValidationError(ValueError):
+    """Raised when loopback admission or its stored port fails validation."""
+
+
+def validate_loopback_port(value: object) -> int:
+    """Return *value* as a valid TCP port for the loopback transport."""
+    if isinstance(value, bool):
+        raise LoopbackValidationError(f"loopback remote_port must be 1-65535, got {value!r}")
+    if isinstance(value, int):
+        port = value
+    elif isinstance(value, str) and value.isdigit():
+        port = int(value)
+    else:
+        raise LoopbackValidationError(f"loopback remote_port must be 1-65535, got {value!r}")
+    if not 1 <= port <= 65535:
+        raise LoopbackValidationError(f"loopback remote_port must be 1-65535, got {value!r}")
+    return port
 
 
 def validate_ssh_host(ssh_host: str) -> str:
