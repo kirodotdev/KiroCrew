@@ -899,9 +899,17 @@ jobs:
                 echo "::warning::a candidate row carried a credential shape (an access-key id, an ARN, an account id or a credential-bearing assignment) in prose the classifier does not read, and that FIELD was removed. Every row is still adjudicated, on the bytes the reviewer wrote; only the removed field's explanation is absent from this run's report."
                 ;;
               11)
-                echo "rc=corpus-credential" >> "$GITHUB_OUTPUT"
-                echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads. The corpus travels to the adjudication legs as a public artifact and must stay byte-faithful for the classifier, so that field can be neither published nor rewritten -- and dropping the row would silently remove the boundary it probes. Re-run so the reviewer proposes the operation without the embedded credential."
-                exit 1
+                # NOT a refusal here, for the same reason as the catch-all below.
+                # Exit 11 writes nothing, so the shape is still in `candidates.json`
+                # and `validate` runs on the reviewer's own bytes. If the offending
+                # row survives normalization, the probe on the NORMALIZED corpus
+                # refuses the run there -- the byte the legs would classify is the
+                # byte that decides. If `validate` drops that row instead (a
+                # duplicate of the committed corpus is dropped during
+                # normalization), the base ref admitted that run, and refusing it
+                # here would red a case base passed. The field is named now because
+                # this is the only step that can attribute it.
+                echo "::warning::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads verbatim, so that field can be neither published nor rewritten. Left to validate and to the probe on the normalized corpus: if the row survives normalization the run is refused there, and re-running so the reviewer proposes the operation without the embedded credential is the remedy."
                 ;;
               *)
                 # NOT a refusal, and that is the point. The prune reads exactly one
