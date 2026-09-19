@@ -64,7 +64,7 @@ Parameters are the `agent.adaptive_*` keys; numbers below are their defaults.
 
 | Rule | When | Effect |
 |---|---|---|
-| **Decrease** | pressure is **corroborated**: a signal from `SUFFICIENT_ALONE` (`loop_lag`, `memory`) or **>= 2 distinct** signals in one sample; and >= `DEFAULT_DECREASE_COOLDOWN_SECS` (30) since the last decrease | exec cap -> `clamp(max(ceil(cap x 0.5), healthy_in_flight), floor, cap - 1)`; gate capacity -> `max(gate_floor, ceil(cap x 0.5))` at most `cap - 1`. Successes counted before the cut are discarded. |
+| **Decrease** | pressure is **corroborated**: a signal from `SUFFICIENT_ALONE` (`loop_lag`, `memory`) or **>= 2 distinct** signals in one sample; and >= `DEFAULT_DECREASE_COOLDOWN_SECS` (30) since the last decrease | exec cap -> `clamp(max(ceil(cap x 0.5), healthy_in_flight), floor, cap - 1)`; gate capacity -> `max(gate_floor, ceil(cap x 0.5))` at most `cap - 1`. Successes counted before the cut are discarded on the track whose cap moved; a track already at its floor keeps its earned successes. |
 | **Hold** | a single soft signal, or pressure inside the cooldown, or clear but inside the hysteresis band | nothing moves |
 | **Increase** | no signal at all AND `loop_lag < DEFAULT_LAG_INCREASE_MS` (100) AND `memory >= resource_pressure_gb` (4 GB) AND >= `DEFAULT_INCREASE_CLEAN_SECS` (30) since the last pressure AND since the last increase AND >= `DEFAULT_INCREASE_SUCCESSES` (20) since the last change AND demand at the cap (exec: `running + queued >= cap`; gate: `queued > 0` or `in_flight >= capacity`) | `+1` on the track that qualified, never above its ceiling; at most one increase per window |
 | **Pause** | severe pressure for `severe_samples` (2) consecutive samples | exec cap `0` (no new grants), gate at its floor; running work untouched |
@@ -191,7 +191,10 @@ concurrency timeouts, the plain x0.5 descent to the floor, minimum progress and
 the healthy-work bound; a single soft signal never cuts, one slow server is not
 the host, lag and memory cut alone; a single provider's 429s never move either
 cap but are reported; cooldown blocks a second cut and discards pre-cut
-successes; a noisy lag series around the threshold never oscillates and the
+successes on the cut track only -- a gate-only cut with exec at its floor leaves
+the exec completions counted, so the 20th completion afterwards still buys
+exec its `+1`, and a pause / resume likewise resets only the tracks it moved;
+a noisy lag series around the threshold never oscillates and the
 increase side needs the hysteresis band; +1 per clean window with demand and
 successes, no demand no increase, the gate earns on inits; pause -> probe ->
 resume, a probe meeting pressure re-pauses, one severe sample is not a pause;

@@ -245,6 +245,9 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
     async def store_ready():
         order.append("store")
 
+    def release_dispatch():
+        order.append("dispatch")
+
     def start_adaptive():
         order.append("adaptive")
         raise ReachedController
@@ -255,6 +258,7 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
         SimpleNamespace(
             wait_taskq_ready=AsyncMock(side_effect=taskq_ready),
             dependency_coordinator_async=AsyncMock(side_effect=build_coordinator),
+            release_queue_dispatch=MagicMock(side_effect=release_dispatch),
         ),
         raising=False,
     )
@@ -303,7 +307,9 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
         # before EACH loop-side wiring pass reads it: its first build rebuilds
         # the wait schedule from every waiting row, which is also why the pass
         # sits AFTER the READY print (`test_memory_startup` pins that).
-        # "ready" below is the MEMORY barrier, not the READY line.
+        # "ready" below is the MEMORY barrier, not the READY line, and
+        # "dispatch" is the durable subagent queue opening after it: a recovered
+        # row admitted before the barrier starts without its memory store.
         assert order == [
             "bound",
             "coordinator",
@@ -312,6 +318,7 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
             "taskq",
             "store",
             "coordinator",
+            "dispatch",
             "adaptive",
         ]
         assert (

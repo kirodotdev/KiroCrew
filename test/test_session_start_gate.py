@@ -31,6 +31,11 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 # ── harness ───────────────────────────────────────────────────────────────────
 
+# Upper bound for a wait that is otherwise pinned to a real signal. It exists so
+# a genuine hang fails as this test rather than as pytest's own --timeout; it is
+# never the thing a passing run measures.
+_SETTLE_BACKSTOP = 30.0
+
 
 @pytest.fixture(autouse=True)
 def _fast_paths(monkeypatch):
@@ -270,16 +275,30 @@ async def test_timeout_then_late_response_is_adopted(backend):
             _feed(reader, {"id": req_id, "result": {"sessionId": "late-sid"}})
             # KAS activates the injected agent with set_mode after session/new;
             # answer whatever control-plane request the tail issues.
-            deadline = asyncio.get_event_loop().time() + 2.0
             answered: set[int] = set()
-            while not collector.settled.is_set():
-                if asyncio.get_event_loop().time() > deadline:
-                    raise AssertionError("collector never settled")
-                for rid in list(rt._pending_requests):
-                    if rid != req_id and rid not in answered:
-                        answered.add(rid)
-                        _feed(reader, {"id": rid, "result": {}})
-                await asyncio.sleep(0)
+
+            async def _answer_control_plane() -> None:
+                while not collector.settled.is_set():
+                    for rid in list(rt._pending_requests):
+                        if rid != req_id and rid not in answered:
+                            answered.add(rid)
+                            _feed(reader, {"id": rid, "result": {}})
+                    await asyncio.sleep(0)
+
+            # The settle is awaited on the collector's own signal, not measured
+            # against a wall-clock budget: a loaded runner can spend seconds
+            # inside a handful of loop passes, and a deadline here reads that as
+            # a hang. ``_SETTLE_BACKSTOP`` only keeps a genuine hang from
+            # running to pytest's own --timeout.
+            responder = asyncio.ensure_future(_answer_control_plane())
+            try:
+                await asyncio.wait_for(collector.settled.wait(), timeout=_SETTLE_BACKSTOP)
+            finally:
+                responder.cancel()
+                try:
+                    await responder
+                except asyncio.CancelledError:
+                    pass
             term.assert_not_awaited()
         assert collector.outcome == START_OUTCOME_ADOPTED
         assert [h.session_id for h in adopted] == ["late-sid"]

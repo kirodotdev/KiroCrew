@@ -1,6 +1,7 @@
 """Task-store startup stays off-loop; requests fail closed until attachment."""
 
 import asyncio
+import logging
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -533,3 +534,105 @@ def test_open_default_store_names_the_row_whose_artifact_probe_raised(
         assert reopened.state_of("lost") == model.UNKNOWN_SIDE_EFFECT
     finally:
         reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_pump_claims_nothing_until_the_gateway_releases_it(monkeypatch, caplog):
+    """``defer_queue_dispatch`` holds the durable rows a restart left behind.
+
+    The gateway starts the reaper before its memory barrier, and the reaper's
+    boot dispatch pumps the queue as soon as the loop yields -- which is the
+    barrier's own ``await``. A run admitted there prepares its memory store
+    first, so it either fails on ``MemoryStartupUnavailable`` or starts without
+    its learned memory. While the hold stands every drain request (the boot
+    ``call_later``, the store attach, a dependency wake) returns without a pass
+    and the row stays ``queued`` on disk; ``release_queue_dispatch`` is the one
+    pass that picks it up. A manager built without the flag pumps at once.
+    """
+    from kiro_crew.taskq import model
+
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.subagent")
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", True)
+    dispatched: list[str] = []
+
+    async def record(_admission, params):
+        dispatched.append(str(params.get("_preassigned_id") or ""))
+        return None
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "_dispatch_async_impl", record)
+    manager = SubagentManager(
+        sessions=MagicMock(), ctx_builder=MagicMock(), defer_queue_dispatch=True
+    )
+    passes = 0
+    original_pass = manager._drain_queue_pass
+
+    async def counting_pass():
+        nonlocal passes
+        passes += 1
+        await original_pass()
+
+    monkeypatch.setattr(manager, "_drain_queue_pass", counting_pass)
+    try:
+        await manager.wait_taskq_ready()
+        store = manager._taskq
+        assert store is not None and manager._queue_dispatch_held
+        # The row a restart left behind, written through the product's own door.
+        assert _accept_through_the_sync_door(manager, "survivor") is None
+        manager.start_reaper()  # arms the boot dispatch: call_later(0, _drain_queue)
+        manager._drain_queue()  # what the store attach and a dependency wake do
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
+        assert passes == 0 and dispatched == []
+        # The refusals are not silent: exactly one debug line names the hold,
+        # so a release that never happens is diagnosable from the log alone.
+        held_lines = [r for r in caplog.records if "taskq pump refusing passes" in r.getMessage()]
+        assert len(held_lines) == 1
+        row = await store.run(store.get, "survivor")
+        assert row is not None and row.state == model.QUEUED
+
+        manager.release_queue_dispatch()
+        assert not manager._queue_dispatch_held
+        drain = manager._drain_task
+        assert drain is not None
+        await drain
+        assert passes == 1
+        assert dispatched == ["survivor"]
+
+        manager.release_queue_dispatch()  # idempotent: no second pass
+        assert passes == 1
+    finally:
+        await manager.cancel_all()
+        if manager._taskq is not None:
+            await asyncio.to_thread(manager._taskq.close)
+
+
+@pytest.mark.asyncio
+async def test_an_unheld_manager_pumps_a_recovered_row_at_once(monkeypatch):
+    """The default keeps every existing caller's behaviour: no hold, no release needed."""
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", True)
+    dispatched: list[str] = []
+
+    async def record(_admission, params):
+        dispatched.append(str(params.get("_preassigned_id") or ""))
+        return None
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "_dispatch_async_impl", record)
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    try:
+        await manager.wait_taskq_ready()
+        assert not manager._queue_dispatch_held
+        assert _accept_through_the_sync_door(manager, "survivor") is None
+        manager.start_reaper()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        drain = manager._drain_task
+        if drain is not None:
+            await drain
+        assert dispatched == ["survivor"]
+    finally:
+        await manager.cancel_all()
+        if manager._taskq is not None:
+            await asyncio.to_thread(manager._taskq.close)

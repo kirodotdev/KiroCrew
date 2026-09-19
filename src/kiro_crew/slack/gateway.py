@@ -10101,8 +10101,30 @@ class GatewayOrchestrator:
             on_orphan_dm=_orphan_dm,
             completion_keep=self._cfg.agent.completion_keep,
             completion_keep_chars=self._cfg.agent.completion_keep_chars,
+            # Rows that survived the restart are claimed by the manager's pump,
+            # which the reaper start below kicks as soon as the loop yields --
+            # that yield is ``run()``'s memory barrier. Hold the pump until
+            # ``_start_subagent_dispatch_after_memory_ready`` opens it.
+            defer_queue_dispatch=True,
         )
         self.subagent_mgr.start_reaper()
+
+    async def _start_subagent_dispatch_after_memory_ready(self) -> None:
+        """Open the durable subagent queue only after the memory fence completes.
+
+        A recovered run prepares its memory store first, so admitting it during
+        the barrier either fails it on ``MemoryStartupUnavailable`` or starts it
+        without its learned memory. Same shape as the cron and heartbeat guards:
+        an unprepared fence is a programming error here, not a wait.
+        """
+        if self.subagent_mgr is None:
+            return
+        startup = getattr(self, "_memory_startup", None)
+        if startup is not None and (startup.stopped or not startup.ready):
+            raise RuntimeError(
+                "Subagent queue dispatch cannot start before memory preparation completes"
+            )
+        self.subagent_mgr.release_queue_dispatch()
 
     def _register_child_liveness(self) -> None:
         """Give the crew log's repair a way to ask whether a child still runs.
@@ -13254,7 +13276,8 @@ class GatewayOrchestrator:
         # built by the dashboard server). AFTER the READY print, not before it:
         # the coordinator's first build runs `rebuild()` over every waiting row,
         # and `test_memory_startup` pins that no such work precedes readiness.
-        # Nothing dispatches in between -- the dashboard workers and cron start
+        # Nothing dispatches in between -- the subagent pump is held closed
+        # (``defer_queue_dispatch``) and the dashboard workers and cron start
         # further down, after the memory barrier.
         await self._ensure_subagent_coordinator()
         self._wire_runner_admission()
@@ -13271,6 +13294,9 @@ class GatewayOrchestrator:
             # Also off-loop for the health wiring the controller start does: the
             # pass above binds no coordinator when it wired no admission.
             await self._ensure_subagent_coordinator()
+            # Memory is prepared and the store is bound: the durable rows that
+            # survived the restart may start now.
+            await self._start_subagent_dispatch_after_memory_ready()
             self._start_adaptive_controller()
             # The manager exists and readiness is past, so the session ledger's
             # repair can be given its child-liveness probe. Before the dashboard

@@ -888,6 +888,16 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   `unknown`, so such a run ends `unknown_side_effect` (never silently re-run)
   unless its tombstone proves an outcome; the existing orphan reconciliation
   still delivers the notification.
+- **Boot rows wait for the memory fence.** That boot wake-up is armed while the
+  gateway is still inside its memory barrier, so the gateway builds the manager
+  with `defer_queue_dispatch=True`: `_queue_dispatch_held` makes
+  `_drain_queue_impl` refuse every pass, claiming nothing, and
+  `release_queue_dispatch()` — called only from
+  `_start_subagent_dispatch_after_memory_ready()` once the fence is ready — opens
+  the pump and drains whatever accumulated. A manager built without the flag
+  (tests, tools) pumps as soon as it can. The first refused pass logs one debug
+  line naming the queue depth and store state, so a hold that is never released
+  is visible instead of presenting as rows accepted but never claimed.
 - **Memory pressure defers.** See admission order step 3. SEL outcomes:
   `deferred_low_memory` / `deferred_memory_critical` (store) vs the legacy
   `refused_low_memory` / `refused_memory_critical`.

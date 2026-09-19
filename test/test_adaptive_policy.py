@@ -22,6 +22,7 @@ from kiro_crew.adaptive.policy import (
     ACTION_DECREASE,
     ACTION_FIXED,
     ACTION_HOLD,
+    ACTION_INCREASE,
     ACTION_PAUSE,
     ACTION_PROBE,
     ACTION_RESUME,
@@ -224,6 +225,71 @@ class TestCooldownAndHysteresis:
         assert pol.exec_cap == 3
         d = pol.observe(_sample(62.0, completions=50, running=3, queued=2))
         assert d.action == ACTION_HOLD  # 0 successes since the cut
+
+    def test_a_gate_only_cut_keeps_the_exec_track_earned_successes(self) -> None:
+        """Exec already at its floor, the gate cut by a lag sample: the exec
+        completions counted so far survive, and the 20th completion afterwards
+        still buys exec its ``+1``.
+
+        This is the shape of a host that ran one subagent at a time for two
+        days: every ``>= 250 ms`` loop-lag tick lowered the gate (or held it at
+        its floor) and, with both tracks reset on every transition, wiped the
+        exec completions earned since the last exec change. Serial completions
+        take 15-30 minutes each here, so re-owing 20 of them after each tick
+        meant the exec cap never climbed back from 1.
+        """
+        pol = AdaptivePolicy(
+            _params(
+                exec_ceiling=4,
+                exec_initial=1,
+                gate_initial=4,
+                gate_floor=1,
+                increase_successes=20,
+            )
+        )
+        pol.observe(_sample(0.0))  # first sample fixes the clean-window baseline
+        d = pol.observe(_sample(35.0, completions=19, running=1, queued=5))
+        assert d.action == ACTION_HOLD and pol.exec_cap == 1  # 19 < 20
+        d = pol.observe(_sample(40.0, loop_lag_ms=300.0, completions=19, running=1, queued=5))
+        assert d.action == ACTION_DECREASE
+        assert (pol.exec_cap, pol.gate_cap) == (1, 2)  # exec at floor, gate cut
+        # 31 s of clean samples later the 20th completion lands.
+        d = pol.observe(_sample(71.0, completions=20, running=1, queued=5))
+        assert d.action == ACTION_INCREASE, d
+        assert pol.exec_cap == 2
+
+    def test_an_exec_only_cut_keeps_the_gate_track_earned_inits(self) -> None:
+        """The mirror image: gate at its floor, exec cut, the gate's inits survive."""
+        pol = AdaptivePolicy(
+            _params(
+                exec_ceiling=8,
+                exec_initial=4,
+                gate_initial=1,
+                gate_floor=1,
+                gate_ceiling=8,
+                increase_successes=20,
+            )
+        )
+        pol.observe(_sample(0.0))
+        busy = SpawnGateStats(capacity=1, in_flight=1, queued=2, successes=19)
+        d = pol.observe(_sample(40.0, loop_lag_ms=300.0, spawn_gate=busy, running=4, queued=4))
+        assert d.action == ACTION_DECREASE
+        assert (pol.exec_cap, pol.gate_cap) == (2, 1)  # exec cut, gate at floor
+        busy = SpawnGateStats(capacity=1, in_flight=1, queued=2, successes=20)
+        d = pol.observe(_sample(71.0, spawn_gate=busy, running=0, queued=0))
+        assert d.action == ACTION_INCREASE, d
+        assert (pol.exec_cap, pol.gate_cap) == (2, 2)  # exec had no demand
+
+    def test_the_cut_track_still_discards_its_own_successes(self) -> None:
+        """Per-track means the moved track IS reset: exec cut, exec re-owes 20."""
+        pol = AdaptivePolicy(_params(exec_ceiling=8, exec_initial=4, increase_successes=20))
+        pol.observe(_sample(0.0))
+        d = pol.observe(_sample(40.0, loop_lag_ms=300.0, completions=19, running=4, queued=4))
+        assert d.action == ACTION_DECREASE and pol.exec_cap == 2
+        d = pol.observe(_sample(71.0, completions=20, running=2, queued=4))
+        assert d.action == ACTION_HOLD and pol.exec_cap == 2  # 1 success since the cut
+        d = pol.observe(_sample(102.0, completions=39, running=2, queued=4))
+        assert d.action == ACTION_INCREASE and pol.exec_cap == 3
 
     def test_noisy_series_around_the_threshold_does_not_oscillate(self) -> None:
         """Lag bouncing between 120 ms and 260 ms: one cut, then holds.

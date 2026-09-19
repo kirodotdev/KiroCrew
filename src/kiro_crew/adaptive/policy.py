@@ -23,7 +23,8 @@ Rules, with fixed tuning constants owned by this module:
   that is currently succeeding frees nothing (nothing is ever killed) and would
   only be undone. That is what turns 10 concurrent starts with 4 timing out
   into 6, then 4. Cooldown 30 s between decreases; the successes counted
-  before a decrease are discarded.
+  before a decrease are discarded on the track that was cut, and only there
+  -- a track already at its floor keeps the successes it has earned.
 * **Increase** (additive). ``+1`` per track when the sample is clear on the
   hysteresis side (lag < 100 ms, memory >= pressure line, no signal at all),
   at least 30 s have passed since the last pressure AND since the last
@@ -332,12 +333,13 @@ class AdaptivePolicy:
     # -- transitions ---------------------------------------------------------
 
     def _pause(self, sample: Sample, report: PressureReport, why: str) -> Decision:
+        old_exec, old_gate = self._exec_cap, self._gate_cap
         self._paused = True
         self._probing = False
         self._exec_cap = 0
         self._gate_cap = self._p.gate_floor
         self._last_decrease_at = sample.t
-        self._reset_bases(sample)
+        self._reset_bases(sample, old_exec, old_gate)
         return self._emit(ACTION_PAUSE, f"paused: {why}", report)
 
     def _while_paused(self, sample: Sample, report: PressureReport) -> Decision:
@@ -362,6 +364,7 @@ class AdaptivePolicy:
             return self._emit(ACTION_PAUSE, "probe met corroborated pressure; re-paused", report)
         base = self._probe_base if self._probe_base is not None else sample.completions
         if sample.completions > base and not report.any:
+            old_exec, old_gate = self._exec_cap, self._gate_cap
             self._paused = False
             self._probing = False
             self._probe_base = None
@@ -371,7 +374,7 @@ class AdaptivePolicy:
             self._gate_cap = _clamp(
                 self._p.gate_floor + 1, self._p.gate_floor, self._p.gate_ceiling
             )
-            self._reset_bases(sample)
+            self._reset_bases(sample, old_exec, old_gate)
             self._last_increase_at = sample.t
             return self._emit(ACTION_RESUME, "probe completed; resuming at floor + 1", report)
         return self._emit(ACTION_HOLD, "probe in flight", report)
@@ -383,10 +386,11 @@ class AdaptivePolicy:
         new_gate = _decrease_target(self._gate_cap, 0, self._p.gate_floor, self._p.decrease_factor)
         if new_exec == self._exec_cap and new_gate == self._gate_cap:
             return self._emit(ACTION_HOLD, "pressure at the floor; nothing left to cut", report)
+        old_exec, old_gate = self._exec_cap, self._gate_cap
         self._exec_cap = new_exec
         self._gate_cap = new_gate
         self._last_decrease_at = sample.t
-        self._reset_bases(sample)
+        self._reset_bases(sample, old_exec, old_gate)
         return self._emit(
             ACTION_DECREASE,
             "corroborated pressure: " + ",".join(sorted(report.signals)),
@@ -433,9 +437,23 @@ class AdaptivePolicy:
 
     # -- helpers -------------------------------------------------------------
 
-    def _reset_bases(self, sample: Sample) -> None:
-        self._exec_success_base = sample.completions
-        self._gate_success_base = sample.spawn_gate.successes
+    def _reset_bases(self, sample: Sample, old_exec: int, old_gate: int) -> None:
+        """Discard the successes counted before a cap change -- on the track
+        that MOVED, and only there.
+
+        The two tracks share one pressure verdict but earn separately, and a
+        cut on one is not evidence about the other. Resetting both on every
+        transition made the exec track re-owe its full ``increase_successes``
+        each time the gate alone was cut: with exec already at its floor, one
+        corroborated loop-lag sample lowered the gate, wiped the exec
+        completions earned since the last exec change, and the exec cap never
+        climbed back. A track whose cap did not change keeps its base, so its
+        earned position survives the other track's transition.
+        """
+        if self._exec_cap != old_exec:
+            self._exec_success_base = sample.completions
+        if self._gate_cap != old_gate:
+            self._gate_success_base = sample.spawn_gate.successes
 
     def _emit(self, action: str, reason: str, report: Optional[PressureReport]) -> Decision:
         prev = self._last

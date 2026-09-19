@@ -7,7 +7,7 @@ import json
 import textwrap
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from member_memory_helpers import env as _member_env
@@ -163,11 +163,12 @@ def test_run_publishes_ready_before_wait_and_starts_dispatchers_afterward():
     ready = source.index('print(f"KIROCREW_READY:')
     signals = source.index("self._install_shutdown_signal_handlers()")
     waited = source.index("await self._wait_for_memory_preparation()")
+    subagent_dispatch = source.index("await self._start_subagent_dispatch_after_memory_ready()")
     dashboard_workers = source.index("self._start_dashboard_workers_after_memory_ready()")
     cron = source.index("await self._start_cron_after_memory_ready()")
     heartbeat = source.index("await self._init_heartbeat()")
 
-    assert ready < signals < waited < dashboard_workers < cron < heartbeat
+    assert ready < signals < waited < subagent_dispatch < dashboard_workers < cron < heartbeat
     admission = next(
         node
         for node in ast.walk(tree)
@@ -478,6 +479,75 @@ async def test_schedulers_refuse_to_arm_before_memory_preparation(monkeypatch):
         gateway.cron_svc.start.assert_awaited_once()
     finally:
         await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_subagent_queue_dispatch_opens_only_after_memory_preparation(monkeypatch):
+    """The durable subagent queue is a dispatcher too, and it is guarded like cron.
+
+    ``_init_subagents`` runs before the barrier and starts the reaper, whose boot
+    dispatch pumps recovered rows on the next loop yield. The manager is built
+    with the pump held (``defer_queue_dispatch=True``) and this is the only call
+    that opens it; before the fence is ready it is a programming error.
+    """
+    gateway = _gateway(monkeypatch)
+    gateway.subagent_mgr = SimpleNamespace(release_queue_dispatch=MagicMock())
+    try:
+        with pytest.raises(RuntimeError, match="before memory preparation"):
+            await gateway._start_subagent_dispatch_after_memory_ready()
+        gateway.subagent_mgr.release_queue_dispatch.assert_not_called()
+
+        assert gateway._memory_startup.complete()
+        await gateway._start_subagent_dispatch_after_memory_ready()
+        gateway.subagent_mgr.release_queue_dispatch.assert_called_once_with()
+
+        gateway.subagent_mgr = None  # a gateway with no manager has nothing to open
+        await gateway._start_subagent_dispatch_after_memory_ready()
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+    boot = inspect.getsource(GatewayOrchestrator._init_subagents)
+    assert "defer_queue_dispatch=True" in boot, (
+        "the gateway's manager must be built with its pump held: _init_subagents "
+        "starts the reaper before run() reaches the memory barrier"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_run_fails_on_a_closed_memory_fence_instead_of_running_without_memory(
+    monkeypatch,
+):
+    """``MemoryStartupUnavailable`` from the store preparation is the fence, not
+    an optional-recall miss: the run must not reach the provider without the
+    memory it was spawned with. A chat turn is refused at admission in the same
+    state; the run fails with the fence's own reason."""
+    from test_subagent import _mock_ctx_builder_auto_spawn, _mock_sessions
+
+    from kiro_crew.execution_context import execution_for_store
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+    sessions = _mock_sessions()
+    manager = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder_auto_spawn())
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="fenced01",
+        task="task",
+        parent_session_key="dashboard:a",
+    )
+    manager._log_spawned(info)
+    prepare = AsyncMock(
+        side_effect=MemoryStartupUnavailable("Memory is being restored and prepared")
+    )
+    monkeypatch.setattr("kiro_crew.context.prepare_store_vectors", prepare)
+    try:
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            with pytest.raises(MemoryStartupUnavailable, match="restored and prepared"):
+                await asyncio.wait_for(manager._run_inner(info, "subagent:fenced01"), 10)
+        prepare.assert_awaited_once()
+        provider = sessions.get_or_create.return_value[0]
+        provider.stream.assert_not_called()
+    finally:
+        await manager.cancel_all()
 
 
 @pytest.mark.asyncio

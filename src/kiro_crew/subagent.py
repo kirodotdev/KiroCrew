@@ -1730,11 +1730,22 @@ class SubagentManager:
         completion_keep: str = "head",
         completion_keep_chars: int = COMPLETION_KEEP_DEFAULT_CHARS,
         memory_mode_for_session: Callable[[str], str] | None = None,
+        defer_queue_dispatch: bool = False,
     ):
         self._sessions = sessions
         self._memory_mode_for_session = memory_mode_for_session
         self._ctx_builder = ctx_builder
         self._on_done = on_done
+        #: While True the staggered pump admits nothing: the durable rows that
+        #: survived a restart wait for :meth:`release_queue_dispatch`. The
+        #: gateway sets it so the boot drain (``start_reaper`` /
+        #: ``_initialize_taskq``) cannot claim a row during the memory barrier;
+        #: a manager built without it (tests, tools) pumps as soon as it can.
+        self._queue_dispatch_held = bool(defer_queue_dispatch)
+        #: Set by the pump the first time it refuses a pass under the hold, so
+        #: a hold that is never released leaves one debug line behind instead
+        #: of the silent "accepted, never claimed" queue this fix diagnoses.
+        self._queue_dispatch_hold_logged = False
         # ``_max_concurrent`` is the EFFECTIVE cap every admission read site
         # consults: ``min(user cap, adaptive cap)``. The user's resolved cap
         # (``agent.max_subagents`` / auto-size) is the ceiling in
@@ -2205,6 +2216,21 @@ class SubagentManager:
 
     def start_reaper(self) -> None:
         return self._monitor.start_reaper_impl()
+
+    def release_queue_dispatch(self) -> None:
+        """Open the pump held by ``defer_queue_dispatch`` and drain once.
+
+        Called by the gateway after the memory barrier. Every drain request
+        that landed while the hold stood (the boot dispatch's ``call_later``,
+        the store attach, a dependency wake) returned without a pass, so this
+        one pass is what picks up the rows they would have. Idempotent: a
+        manager that was never held, or was already released, drains nothing
+        extra here.
+        """
+        if not self._queue_dispatch_held:
+            return
+        self._queue_dispatch_held = False
+        self._drain_queue()
 
     async def _reconcile_orphans(self) -> None:
         return await self._monitor._reconcile_orphans_impl()

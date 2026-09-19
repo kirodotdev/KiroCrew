@@ -77,6 +77,31 @@ class _PumpMixin(ManagerComponent):
         store = self._manager._admission.taskq_store()
         if not self._manager._queue and store is None:
             return
+        # The gateway holds the pump closed between the durable store's open
+        # and the memory barrier (``defer_queue_dispatch``): rows that survived
+        # a restart are claimed by this pump, and a run started before memory
+        # is prepared either fails on ``MemoryStartupUnavailable`` or runs
+        # without its learned memory. ``release_queue_dispatch`` opens the hold
+        # and drains once, so nothing that asked in between is lost. Read with
+        # a default so a minimal facade without the attribute still pumps.
+        if getattr(self._manager, "_queue_dispatch_held", False):
+            # One line, not one per pass: a hold that is never opened would
+            # otherwise look exactly like the silent "accepted, never claimed"
+            # queue this hold exists to prevent. Only a real manager reaches
+            # here (a facade without the flag pumped above), so the companion
+            # flag is always present.
+            if not self._manager._queue_dispatch_hold_logged:
+                self._manager._queue_dispatch_hold_logged = True
+                # ``logger``, not ``_glue_logger``: an ``*_impl`` runs on
+                # ``subagent``'s globals (``bind_component_globals``), where
+                # this module's own logger name does not exist.
+                logger.debug(
+                    "taskq pump refusing passes: dispatch held until the memory "
+                    "barrier releases it (in-memory queue=%d, durable store=%s)",
+                    len(self._manager._queue),
+                    "attached" if store is not None else "none",
+                )
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:

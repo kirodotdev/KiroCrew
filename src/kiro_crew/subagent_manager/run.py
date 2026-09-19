@@ -1149,12 +1149,20 @@ class RunEventCoordinator(ManagerComponent):
         # blocking file IO. A private store that cannot be prepared refuses the
         # turn; it cannot continue with Global memory.
         from kiro_crew.context import prepare_store_vectors
+        from kiro_crew.memory_startup import MemoryStartupUnavailable
 
         if info.memory_mode != "temporary":
             try:
                 await prepare_store_vectors(
                     self._manager._ctx_builder, info.memory_store, session_key=session_key
                 )
+            except MemoryStartupUnavailable:
+                # Not an optional-recall miss: the gateway's memory fence is
+                # closed (still preparing, stopped, or this store's restore
+                # failed). A chat turn is refused at admission in that state;
+                # a run admitted here would execute with its memory silently
+                # absent, so it fails with the fence's own reason instead.
+                raise
             except (OSError, ValueError, RuntimeError):
                 # Learned recall is optional for prompt construction. Explicit
                 # memory tools still report the unavailable captured store.
