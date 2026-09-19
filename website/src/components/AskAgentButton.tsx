@@ -66,6 +66,7 @@ export default function AskAgentButton({
   report,
   message,
   variant = 'link',
+  warn = false,
   hard = false,
   onHandoff,
   className = '',
@@ -74,6 +75,12 @@ export default function AskAgentButton({
   message?: string
   /** `link` for inline use next to an error line; `solid` for a primary action in a fallback card. */
   variant?: 'link' | 'solid'
+  /**
+   * Severity of the SURFACE this sits on, mirroring `ErrorNotice`'s own `warn`
+   * axis — not this button's own importance. Affects the `link` variant only:
+   * `solid` is an accent-filled primary action and carries no severity colour.
+   */
+  warn?: boolean
   /** Force a full page load (crash fallbacks, where the live tree is suspect). */
   hard?: boolean
   /**
@@ -103,11 +110,17 @@ export default function AskAgentButton({
   }
 
   const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'
+  // The link's hue tracks the SURFACE's severity, and has to. Danger-tinted rather than muted
+  // grey, because inside an alert a grey link reads as unrelated chrome — but on a `warn`
+  // notice a DANGER link reports the very failure that notice is saying did not happen, which
+  // is the louder misread of the two. The underline is what marks this as the banner's action
+  // in both cases, so severity moves the hue and nothing else.
+  const linkTint = warn
+    ? 'text-warn/80 hover:text-warn decoration-warn/30 hover:decoration-warn'
+    : 'text-danger/80 hover:text-danger decoration-danger/30 hover:decoration-danger'
   const skin = variant === 'solid'
     ? 'px-4 py-1.5 rounded-lg text-[13px] font-medium bg-accent text-accent-fg border-none hover:opacity-90'
-    // Danger-tinted, not muted grey: inside a red alert a grey link reads as
-    // unrelated chrome. Underline marks it as the action in the banner.
-    : 'text-[12px] font-medium text-danger/80 hover:text-danger bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2'
+    : `text-[12px] font-medium bg-transparent border-none p-0 underline underline-offset-2 ${linkTint}`
 
   return (
     <button

@@ -28,6 +28,22 @@ export function isTurnInFlightError(error: unknown): boolean {
 }
 
 /**
+ * True for the 503 a switch answers when the configured workspace root cannot be
+ * resolved. Detected here rather than left to the generic path because that path
+ * prefers the API layer's message, which for this one is the backend's own English
+ * prose -- unlocalized, on a localized page.
+ */
+export function isWorkspaceUnavailableError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { status, body } = error as { status?: unknown; body?: unknown }
+  return (
+    status === 503
+    && typeof body === 'string'
+    && parseErrorCode(body) === 'workspace_unavailable'
+  )
+}
+
+/**
  * Convert an agent-switch failure into copy the chat surface can show.
  *
  * A `turn_in_flight` 409 gets its own copy first: the dropdown picker is
@@ -48,6 +64,9 @@ export function agentSwitchFailureMessage(error: unknown): string {
   if (isTurnInFlightError(error)) {
     return i18nT('utils.agentSwitchFeedback.turn_in_flight')
   }
+  if (isWorkspaceUnavailableError(error)) {
+    return i18nT('utils.agentSwitchFeedback.workspace_unavailable')
+  }
   // `errMessage` owns reading a message off a rejection object, including the
   // plain serialized form a Redux Toolkit thunk boundary produces, so this stops
   // hand-rolling that cast and cannot drift from the other readers of the shape.
@@ -61,4 +80,17 @@ export function agentSwitchFailureMessage(error: unknown): string {
   const message = typeof error === 'object' && error !== null ? errMessage(error) : ''
   if (message.trim()) return message
   return i18nT('components.errorBoundary.something_went_wrong')
+}
+
+/**
+ * Whether a hand-off to the agent helps with this refusal.
+ *
+ * Only the unavailable workspace: that one needs someone to look at the machine, so a fresh
+ * chat is the remedy. A turn already in flight clears itself, and the hand-off would create
+ * and activate a NEW session — moving the user off the very turn the notice told them to
+ * wait for, to ask about a condition that is already resolving. Keyed on the copy this
+ * module produced, so it cannot disagree with the branch that chose it.
+ */
+export function agentSwitchOffersHandoff(message?: string | null): boolean {
+  return !!message && message === i18nT('utils.agentSwitchFeedback.workspace_unavailable')
 }

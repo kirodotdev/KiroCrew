@@ -15671,7 +15671,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Um turno está em andamento — tente novamente quando ele terminar."
+      "turn_in_flight": "Um turno está em andamento — tente novamente quando ele terminar.",
+      "workspace_unavailable": "A pasta do projeto configurada não está disponível — verifique se ela existe e tente novamente."
     },
     "channelOrigin": {
       "direct_message": "Mensagem direta"
