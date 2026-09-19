@@ -7,6 +7,7 @@ persona injection, and other helpers used across chat_*.py modules.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -14,6 +15,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -41,6 +43,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _normalize_slot_key,
     append_and_surface,
+    note_crew_log_class,
     parse_cls_meta,
 )
 from kiro_crew.history import transcript_sort_key
@@ -798,6 +801,63 @@ def effective_session_key(slot: _ChatSlot) -> str:
     :func:`session_key_for` for the ones that have no slot YET.
     """
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
+
+
+@contextlib.contextmanager
+def settling_key(slot: _ChatSlot, state: Any) -> Iterator[None]:
+    """Exclude a ``linked_session_key`` rebind for the settle-and-arm region.
+
+    An arm names a session key, so a rebind landing between the key a settle resolved
+    against and the transfer that publishes the arm leaves it owed to a binding nobody is
+    on. Wrap the whole region -- the settle, the commit, and the transfer -- so the key
+    cannot move underneath it.
+
+    A SYNCHRONOUS non-blocking guard rather than :attr:`_ChatSlot._lock`, for two
+    independently disqualifying reasons: seven of the eight writers are synchronous
+    functions, which cannot acquire an asyncio lock at all, and one transfer already runs
+    inside an ``async with slot._lock`` block, where a second acquisition of a
+    non-reentrant lock never returns. Deferring rather than blocking also cannot deadlock.
+
+    A writer arriving inside the region parks its key (:func:`bind_linked_session_key`);
+    this applies it on the way out, so the rebind is delayed rather than lost.
+    """
+    slot._key_settling += 1
+    try:
+        yield
+    finally:
+        slot._key_settling -= 1
+        if slot._key_settling == 0 and isinstance(slot._key_deferred, str):
+            pending, slot._key_deferred = slot._key_deferred, None
+            slot.linked_session_key = pending
+            note_crew_log_class(state, slot)
+
+
+def bind_linked_session_key(slot: _ChatSlot, key: str, state: Any) -> bool:
+    """Bind *slot* to session *key*, or park the bind while an arm is settling.
+
+    The single writer of ``linked_session_key``. Returns whether the key landed now; a
+    parked key is applied when the settling region unwinds.
+
+    A depth that is not an ``int`` is not a settling region, so the key lands. Parking is
+    the direction that LOSES a bind on an object that never unwinds one, so an unrecognised
+    shape resolves to assigning rather than to deferring.
+    """
+    depth = getattr(slot, "_key_settling", 0)
+    if isinstance(depth, int) and depth > 0:
+        slot._key_deferred = key
+        return False
+    slot.linked_session_key = key
+    note_crew_log_class(state, slot)
+    return True
+
+
+def key_rebind_deferred(slot: _ChatSlot) -> bool:
+    """Whether a rebind parked inside the current settling region.
+
+    Only a parked KEY counts: anything else is no rebind, so a settle is not refused on an
+    object that merely carries the attribute.
+    """
+    return isinstance(getattr(slot, "_key_deferred", None), str)
 
 
 def subagents_attached(

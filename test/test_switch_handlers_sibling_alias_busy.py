@@ -82,6 +82,9 @@ def _mock_state(*slots: _ChatSlot) -> DashboardState:
     state._slots = {s.key: s for s in slots}
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock(return_value=True)
+    state.sessions.resolve_arm_cwd = AsyncMock(
+        side_effect=lambda key, cwd: cwd or "/workspace/_default"
+    )
     # The window under test: B's provider.start() has not registered yet.
     state.sessions.get_provider = MagicMock(return_value=None)
     # No transcript store: the control cases run the commit path to its 200,
