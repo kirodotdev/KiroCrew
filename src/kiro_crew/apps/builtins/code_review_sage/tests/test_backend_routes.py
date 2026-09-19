@@ -1088,6 +1088,34 @@ class TestRestartClearsAStrandedPostingFlag(unittest.TestCase):
         self.assertEqual(run["status"], "interrupted")
         self.assertFalse(run["posting"])
 
+    def test_restart_marks_an_attempting_delivery_indeterminate(self):
+        path = self._write_runs([{"run_id": "r4", "status": "done", "posting": True}])
+        record = {
+            "delivery_intent": {
+                "operation_id": "4" * 32,
+                "state": "attempting",
+                "target": "target",
+                "revision": "head",
+                "payload_digest": "digest",
+                "selected_keys": [],
+            }
+        }
+        writes: list[dict] = []
+
+        def write_result(updated, root=None, run_id=None):
+            writes.append(dict(updated))
+
+        with (
+            unittest.mock.patch.object(self.routes, "_runs_file", lambda: path),
+            unittest.mock.patch.object(self.routes.results, "list_results", return_value=[record]),
+            unittest.mock.patch.object(self.routes.results, "write_result", write_result),
+        ):
+            self.routes._load_runs()
+
+        self.assertEqual(record["delivery_intent"]["state"], "indeterminate")
+        self.assertIn("restart", record["delivery_intent"]["error"].lower())
+        self.assertEqual(len(writes), 1)
+
 
 class TestGroupedPostAppliesKeysPerChange(unittest.TestCase):
     """A multi-change selection is one request, and each group keeps its own keys.
@@ -1332,6 +1360,21 @@ class TestOrphanReapDoesNotBlockStartup(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(
             threads[0], threading.current_thread().name,
             "the reap must run on a worker thread, not the loop thread")
+
+    async def test_startup_loads_restart_reconciliation_off_the_loop(self):
+        app = web.Application()
+        threads = []
+
+        def _load() -> None:
+            threads.append(threading.current_thread().name)
+
+        with unittest.mock.patch.object(self.routes, "_load_runs", _load):
+            self.routes.register_routes(app)
+            for hook in app.on_startup:
+                await hook(app)
+
+        self.assertEqual(len(threads), 1)
+        self.assertNotEqual(threads[0], threading.current_thread().name)
 
     async def test_a_failing_reap_never_breaks_startup(self):
         app = web.Application()
