@@ -2,6 +2,7 @@ import type React from 'react'
 import { Folder, Check, ChevronRight } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
+import { offlineProps } from '../utils/offline'
 import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
@@ -21,6 +22,11 @@ interface FolderMoveSubmenuProps {
   readonly label?: string
   /** Label for the "no folder (root)" entry. */
   readonly rootLabel?: string
+  /** Offline verb phrase (e.g. "move folders"). When set, this renders as a dimmed
+   *  inert row carrying the offline tooltip instead of a trigger, so there is no
+   *  submenu to open and no pick to drop — a submenu that opens while the pick is
+   *  refused reads as success and loses the write silently. */
+  readonly offlineVerb?: string
 }
 
 /**
@@ -79,6 +85,7 @@ export default function FolderMoveSubmenu({
   variant,
   label = 'Move to folder',
   rootLabel = 'No folder (root)',
+  offlineVerb,
 }: FolderMoveSubmenuProps) {
   // Pick the primitive family for this surface. Both families share the same
   // props shape, so the body below is identical regardless of variant.
@@ -86,6 +93,26 @@ export default function FolderMoveSubmenu({
   const SubTrigger = variant === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+
+  // Offline this is a plain row, not a trigger. `disabled` on a SubTrigger is
+  // honoured by the Radix primitive but NOT on touch, where the same component
+  // renders a role="button" div (PhoneSubTriggerDiv) whose click and Enter/Space
+  // handlers call onToggle unconditionally — `disabled` lands in ...rest on a
+  // <div>, where it means nothing. So the submenu expanded, a pick ran, and the
+  // caller's guard swallowed it. With no trigger there is no pick to swallow,
+  // and the chevron goes too because nothing here expands.
+  if (offlineVerb) {
+    return (
+      <div
+        role="menuitem"
+        className="relative flex select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] opacity-40 text-muted cursor-not-allowed"
+        {...offlineProps(false, offlineVerb, label)}
+      >
+        <Folder size={13} className="shrink-0 text-muted" />
+        <span className="flex-1">{label}</span>
+      </div>
+    )
+  }
 
   return (
     <Sub>

@@ -15873,8 +15873,16 @@
       "saving": "Сохранение..."
     },
     "offline": {
+      "delete_artifacts": "удаление артефактов",
+      "delete_folders": "удалять папки",
+      "dimmed_actions_need_connection": "Шлюз не в сети — неактивным действиям нужно подключение",
       "disabled_gateway_offline": "{{label}}: недоступно — шлюз не в сети",
       "gateway_offline_reconnect": "Шлюз не в сети — подключись снова, чтобы {{action}}",
+      "move_folders": "перемещать папки",
+      "name_not_saved_keep_field_open": "Шлюз не в сети — ещё не сохранено. Оставь это поле открытым и подключись снова.",
+      "rename_folders": "переименовывать папки",
+      "save_folder_names": "сохранение имён папок",
+      "star_artifacts": "установку или снятие отметки артефактов",
       "submit_comments": "отправить комментарии"
     },
     "popoutController": {

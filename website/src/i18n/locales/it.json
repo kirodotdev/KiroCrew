@@ -15675,8 +15675,16 @@
       "saving": "Salvataggio in corso..."
     },
     "offline": {
+      "delete_artifacts": "eliminare gli artefatti",
+      "delete_folders": "eliminare cartelle",
+      "dimmed_actions_need_connection": "Gateway offline — le azioni attenuate richiedono una connessione",
       "disabled_gateway_offline": "{{label}} disattivato — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — riconnettiti per {{action}}",
+      "move_folders": "spostare le cartelle",
+      "name_not_saved_keep_field_open": "Gateway offline — non ancora salvato. Lascia questo campo aperto e riconnettiti.",
+      "rename_folders": "rinominare le cartelle",
+      "save_folder_names": "salvare i nomi delle cartelle",
+      "star_artifacts": "contrassegnare o rimuovere il contrassegno dagli artefatti",
       "submit_comments": "inviare i commenti"
     },
     "popoutController": {
