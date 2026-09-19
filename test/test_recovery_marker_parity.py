@@ -33,7 +33,10 @@ import re
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
+# Both, deliberately: the declarations live in the leaf module, and scanning the dashboard
+# module as well keeps a partial move -- one prefix left behind -- inside the guard's reach.
 _BACKEND = _REPO / "src" / "kiro_crew" / "dashboard" / "state.py"
+_BACKEND_LEAF = _REPO / "src" / "kiro_crew" / "constants.py"
 _FRONTEND = _REPO / "website" / "src" / "pages" / "chat" / "RecoveryCard.tsx"
 
 # `SOMETHING_RECOVERY_PREFIX = "[...]"` at column 0.
@@ -49,9 +52,11 @@ _FRONTEND_ENTRY_RE = re.compile(r"\[\s*'(?P<kind>[a-z_]+)'\s*,\s*'(?P<prefix>\[[
 
 
 def _backend_markers() -> dict[str, str]:
-    found = _BACKEND_RE.findall(_BACKEND.read_text(encoding="utf-8"))
-    assert found, "no *_RECOVERY_PREFIX constants found in state.py"
-    return {name: prefix for name, prefix in found}
+    found: dict[str, str] = {}
+    for path in (_BACKEND_LEAF, _BACKEND):
+        found.update(dict(_BACKEND_RE.findall(path.read_text(encoding="utf-8"))))
+    assert found, "no *_RECOVERY_PREFIX constants found in constants.py or state.py"
+    return found
 
 
 def _frontend_markers() -> dict[str, str]:
