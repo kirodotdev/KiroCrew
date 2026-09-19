@@ -828,11 +828,13 @@ class TestCopyInstalledTheme:
     ) -> None:
         # On a case-insensitive filesystem (default macOS APFS),
         # Path.resolve() preserves the caller's spelling while PosixPath
-        # comparison is case-sensitive: a source supplied as
+        # comparison is case-sensitive: a source stored and supplied as
         # themes/LCARS/subpack lexically misses dest themes/lcars even though
-        # they are the same directory on disk. A lexical-only guard misses the
-        # case variant and promotion deletes the source. The inode fallback
-        # must catch it. Skipped where case spelling creates distinct paths.
+        # they are the same directory on disk. Keep the source spelling exact
+        # so descriptor containment permits staging; otherwise an earlier read
+        # refusal prevents this test from reaching the destination guard.
+        # The inode fallback must catch the differently spelled destination.
+        # Skipped where case spelling creates distinct paths.
         probe = tmp_path / "CaseProbe"
         probe.mkdir()
         if not (tmp_path / "caseprobe").exists():
@@ -842,24 +844,28 @@ class TestCopyInstalledTheme:
 
         monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
         themes_root = tv_mod._themes_dir()
-        src = themes_root / "lcars" / "subpack"
+        src = themes_root / "LCARS" / "subpack"
         src.mkdir(parents=True)
         _write(
             src / "theme.json",
             {"slug": "lcars", "name": "LCARS", "emoji": "🖖", "level": 0, "formatVersion": 1},
         )
         _write(src / "variables.json", _VALID_VARS)
-        sibling = themes_root / "lcars" / "unrelated-sibling.txt"
+        sibling = src.parent / "unrelated-sibling.txt"
         sibling.write_text("precious", encoding="utf-8")
-        case_variant = themes_root / "LCARS" / "subpack"
+        expected_manifest = (src / "theme.json").read_bytes()
+        expected_variables = (src / "variables.json").read_bytes()
+        assert src.parent.samefile(themes_root / "lcars")
 
-        theme, err, status = th_mod._do_install("local", {"path": str(case_variant)})
+        theme, err, status = th_mod._do_install("local", {"path": str(src)})
 
         assert theme is None and status == 400, (theme, err, status)
         assert err is not None and "inside the install destination" in err
-        assert (src / "theme.json").is_file(), "install deleted its own source"
-        assert sibling.is_file(), "install deleted an unrelated sibling"
-        assert not any(p.name.startswith(".install-staging-") for p in themes_root.iterdir())
+        assert (src / "theme.json").read_bytes() == expected_manifest
+        assert (src / "variables.json").read_bytes() == expected_variables
+        assert sibling.read_text(encoding="utf-8") == "precious"
+        assert not list(themes_root.glob(".install-staging-*"))
+        assert not list(themes_root.glob(".lcars.old-*"))
 
     def test_install_validates_the_staging_snapshot_not_the_source(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

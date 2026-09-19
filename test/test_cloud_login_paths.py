@@ -9,9 +9,11 @@ real, owner-only, non-symlink directory.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
+import sys
 
 import pytest
 
@@ -175,35 +177,51 @@ class TestPrivateLoginDir:
         assert stat.S_IMODE(loose.stat().st_mode) == 0o777
 
     @_needs_posix_bash
-    def test_guard_reads_mode_back_through_bsd_stat_with_bash(self, tmp_path):
-        # macOS ships BSD stat, which has no -c and spells the octal mode
-        # -f %Lp. A shim with that surface stands in for Darwin on a Linux
-        # host: it rejects -c the way BSD does and answers -f %Lp from the real
-        # stat, so a GNU-only read-back fails here exactly as it does on macOS.
-        real_stat = shutil.which("stat")
-        assert real_stat is not None
+    @pytest.mark.parametrize("chmod_applies", [True, False])
+    def test_guard_reads_mode_back_through_bsd_stat_with_bash(self, tmp_path, chmod_applies):
+        # Exercise BSD's -f %Lp surface even on GNU hosts, but read the actual
+        # mode with Python: delegating to stat -c makes this fixture GNU-only.
+        # A successful no-op chmod must still fail the mode read-back.
+        loose = tmp_path / ".kirocrew"
+        loose.mkdir(mode=0o755)
+        loose.chmod(0o755)
         shim = tmp_path / "shim"
         shim.mkdir()
+        mode_reader = (
+            "import os, stat, sys; "
+            'print(format(stat.S_IMODE(os.stat(sys.argv[1]).st_mode), "o"))'
+        )
         fake_stat = shim / "stat"
         fake_stat.write_text(
             "#!/bin/sh\n"
             'case "$1" in\n'
             '  -c) echo "stat: illegal option -- c" >&2; exit 1 ;;\n'
-            f'  -f) [ "$2" = "%Lp" ] || exit 1; exec "{real_stat}" -c %a "$3" ;;\n'
+            '  -f) [ "$2" = "%Lp" ] || exit 1; '
+            f'exec {shlex.quote(sys.executable)} -I -c {shlex.quote(mode_reader)} "$3" ;;\n'
             "  *) exit 1 ;;\n"
-            "esac\n"
+            "esac\n",
+            encoding="utf-8",
         )
         fake_stat.chmod(0o755)
-        env = {
-            "HOME": str(tmp_path),
-            "PATH": f"{shim}{os.pathsep}{os.environ.get('PATH', '')}",
-        }
+        if not chmod_applies:
+            fake_chmod = shim / "chmod"
+            fake_chmod.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_chmod.chmod(0o755)
+        env = {"HOME": str(tmp_path), "PATH": f"{shim}{os.pathsep}{os.defpath}"}
         res = subprocess.run(
             [_BASH, "-c", login._login_dir_guard()],
             env=env,
+            cwd=tmp_path,
+            timeout=10,
             capture_output=True,
             **UTF8_TEXT,
         )
-        assert res.returncode == 0, res.stderr
-        for rel in (".kirocrew", ".kirocrew/login"):
-            assert stat.S_IMODE((tmp_path / rel).stat().st_mode) == 0o700
+        if chmod_applies:
+            assert res.returncode == 0, res.stderr
+            for rel in (".kirocrew", ".kirocrew/login"):
+                assert stat.S_IMODE((tmp_path / rel).stat().st_mode) == 0o700
+        else:
+            assert res.returncode != 0
+            assert "cannot make it private" in res.stderr
+            assert stat.S_IMODE(loose.stat().st_mode) == 0o755
+            assert not (loose / "login").exists()
