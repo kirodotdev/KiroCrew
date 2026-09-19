@@ -127,7 +127,6 @@ src/kiro_crew/apps/builtins/personal_shopper/tests/test_routes.py
 src/kiro_crew/apps/builtins/personal_shopper/tests/test_store.py
 src/kiro_crew/apps/builtins/pptx_maker/backend/library.py
 src/kiro_crew/apps/builtins/workflows/server.py
-src/kiro_crew/apps/cron_sdk.py
 src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/dev_mode.py
@@ -341,7 +340,6 @@ test/test_api_models_retry.py
 test/test_api_shutdown.py
 test/test_app_backend.py
 test/test_app_backend_stale_reap.py
-test/test_app_bridges.py
 test/test_app_cli.py
 test/test_app_config_self_heal.py
 test/test_app_context.py
