@@ -2,260 +2,93 @@
 
 ## Overview
 
-Persistent memory, skill system, and config-driven hooks. Assembled by
-`ContextBuilder` and injected into ACP prompts.
+Memory V2 is a development-stage replacement with one stable `member_id` mapped
+to one stable `store_id` and one managed SQLite database. Facts, learned rules,
+episodes, learned history, source spans, revisions, full-text search, embeddings
+and vector validity belong to that database. Manual persona, rules, briefing,
+preference/project anchors and project guides remain owner-managed documents.
+Global V1 and legacy named V1 retain their existing files, algorithms, eager
+session recall and retention policy.
 
-Private V2 execution and consolidation also require the enforced Crew OS
-filesystem sandbox: Linux/WSL namespaces or macOS outer Seatbelt, with the
-spawn layer's resolved mode and the member DM's selected backend. The persisted
-enablement is `agent.sandbox=auto`. Off/unconfined execution, unavailable
-isolation and Kiro internal delegation refuse with a specific reason; native
-Windows member execution directs the user to the WSL/Linux gateway. Owner
-dashboard memory management stays available. Global V1 retains its own data,
-original memory tables and existing prompt retrieval. Optional tool-driven recall,
-revision metadata and the record editor apply to both versions without
-converting V1 into a member store or replacing its eager session recall.
+The frozen `ExecutionContext(member_id, store, selection_kind, template_id,
+memory_mode, app)` in the owning session, run or scheduled-job record is the
+routing authority. Admission resolves it once before awaiting preparation.
+Display names, provider templates and project paths cannot select a store.
+New member IDs exclude both live member IDs and retained store owner IDs, so
+deleting and recreating a name cannot reinterpret an earlier execution's identity.
+Manual context resolves captured member IDs strictly; only explicitly named member
+inputs resolve configured aliases, never as a fallback for a missing captured ID.
+Cross-member `target_member` dispatch follows existing tool, delegation and app
+permissions; omitted targets inherit the parent, and continuations retain their
+saved context. A provider conversation requires a new session to change member.
 
-Opening an existing V1 database creates shared record-metadata and revision
-tables and reconciles record identities even before any V2 opt-in. This changes
-the SQLite file; preserving V1 means retaining its original memory rows, lineage,
-algorithms and context behavior, not byte-for-byte file identity. V1 retains
-only the latest 20 accepted revision snapshots per record, including catch-up
-when an existing journal opens. Every proposal and current record remain intact.
-V2 revision history has no automatic purge.
+Member memory is not an adversarial same-host confidentiality boundary. Prompt
+instructions and filesystem allow/deny policy reduce mistakes; managed database,
+WAL and SHM files cannot be edited through agent file tools, and glob omits managed
+state. There is no separate memory binding registry, session/run grant, PID proof,
+HMAC proof, hidden filesystem view or private-memory platform refusal. Ordinary
+transport authentication, owner/app authorization, credentials, SEL integrity,
+mandatory enterprise policy and host sandbox controls still apply.
 
-Private provider startup requires `ACP_BACKENDS_PRIVATE_MEMORY_MCP` membership.
-Kiro, Claude Code and KAS qualify; unknown or merely selectable backends do not.
-This direct-tool capability and the OS sandbox checks are both required.
+Built-in named-store writes run gateway-side. The ordinary Linux/macOS sandbox
+therefore exposes `memory_stores/` read-only, while allowing cross-member reads.
+For Linux's directory mount, an absent root is created empty without provisioning
+a database or changing member configuration. Existing named V1 root links remain
+supported and Global V1 paths are untouched. This is an integrity rule only where
+the ordinary sandbox is active, not a memory confidentiality or universal write
+guarantee; sandbox-off code, external host tools and pre-existing writable aliases
+remain outside it. No per-member sandbox machinery is introduced.
 
-Private internal HTTP recall, lesson operations and explicit consolidation use
-the protected process/session binding under `member-memory-bindings/pids/`, or
-a fresh delegated MCP proof validated against that binding. A shared local
-secret and caller-provided session header alone cannot select a member's store.
-`/api/memory/recall` is a mixed internal/browser route: MCP's internal secret
-reaches the same protected-session handler, while dashboard requests use their
-normal cookie. Adding the transport route does not grant store authority.
-Unverifiable calls return `403 member_session_unverified`; they never access
-global memory instead. See [security](security.md#overview) for the filesystem
-and caller-proof boundary.
+Manual member essentials resolve directly from canonical member identity without
+opening SQLite. The optional learned-rule block can report member-memory
+unavailable while manual essentials remain usable. Incognito allows reads and
+blocks all learned writes; Temporary neither reads nor writes memory, including
+lessons. Ordinary V2 recall has no persistent side effects: it does not touch
+access timestamps, reconcile metadata, rebuild indexes or repair model signatures.
+Explicit maintenance owns derived-vector repair. Validity and exact content/model
+checks remain necessary before publishing a vector.
 
-Subagent memory calls require the full `subagent:<run-id>` key's live allocation,
-including the original key reused by a continuation. Dashboard slots, restriction
-markers and retained transcripts cannot answer for a stopped child. The admitted
-protected memory mode must permit the operation. Recognition does not select a
-private store: the protected process/session proof above still supplies that
-authority.
+`create_member_database(path, member_id=..., store_id=...)` exclusively provisions
+a new database. `open_member_database` uses SQLite `mode=rw`, validates the stored
+identity, format and required schema, and never creates or migrates a database.
+`read_member_database_identity` inspects an existing database read-only. Missing,
+corrupt, mismatched and unsupported files produce an error and retain their bytes.
+Admission normalizes missing or corrupt database errors from the selected SQLite
+driver to member-memory unavailability, without falling back to Global memory.
+Admission uses the identity reader's selected driver, including its stdlib fallback
+when a bundled `pysqlite3` package is incomplete.
+The identity check is an integrity check of canonical admission, not another
+authorization system. This format has no old-V2 compatibility, migration or
+feature rollback framework. Real existing data is preserved. Routine online
+backup, staged restore, startup recovery and live-handle coordination remain.
 
-The hidden proof-signing key is staged as 32 owner-only bytes and fsynced before
-atomic publication without replacement. Concurrent creators adopt the first
-valid key. A crash before publication leaves the final name absent; corrupt
-committed key material refuses proof issuance and is never rotated automatically.
-Atomic publication requires hard-link support in the data-home filesystem. A
-filesystem without that capability refuses key creation without publishing a
-partial key; ordinary POSIX filesystems and NTFS support this operation.
+Opening V1 retains its established additive metadata reconciliation and latest-20
+accepted revision retention. V2 retains all fact/rule/episode revisions and learned
+daily history, without duplicating the full daily body on each history edit.
+Consolidation publishes its accepted records, proposals, history, FTS projection
+and durable source-span receipt in one SQLite transaction. A retry after a lost
+transcript acknowledgement reads that receipt and acknowledges only the committed
+span, even if later messages have arrived. Receipts retain the original total,
+message count and canonical-content SHA256 rather than another transcript copy;
+an edited or shortened prefix refuses acknowledgement. Receipts are not pruned.
 
-Channel-visible member-memory refusals remove local paths, credentials and
-exfiltration URLs before truncation. The shared messaging dispatcher and the
-Slack, Discord and Telegram dispatchers use the same redaction layers while
-retaining the actionable refusal. They do not start a Global provider on failure.
-Existing members keep their exact declared Global or named Memory V1 binding,
-including a member selected by `default_agent`. The UI labels that memory V1.
-The owner can choose Create private memory in Crew Manager, the member's
-Workspace · Memory pane. That explicit choice creates an empty V2 store and
-preserves the V1 source; Copy memories transfers only selected records.
-Discovery sync registers ordinary agents with Global V1; it never allocates a
-private store or treats template discovery as owner consent. Repeated sync leaves
-existing Global V1, named V1 and V2 bindings unchanged. A reinstalled package
-agent starts on V1 rather than inheriting its archived private store. Explicit
-member creation still creates V2, and a discovered V1 agent can use the existing
-Create private memory action to opt in.
-An existing V2 member never becomes V1
-because its configuration, manifest, database or protected session record is
-missing or damaged. Such failures require recovery and cannot initialize a
-replacement or silently change the conversation's authority.
+### Canonical routing and storage module map
 
-Dashboard member creation and explicit V1-to-V2 setup, plus CLI creation
-and `--provision-memory`, check the member DM's effective backend and OS sandbox
-before allocating private files or publishing its binding. Unsupported execution
-returns an actionable refusal (`409 member_memory_unavailable` on HTTP, exit 1
-on CLI); it cannot create a new V1 member instead. The check also precedes
-retirement of existing V1 providers. Ordinary V1 edits and management of an
-already-owned V2 store remain available. Runtime admission repeats the check,
-since configuration and OS capabilities can change after creation; Crew tasks
-and consolidation separately require their configured default backend to support V2.
-
-`memory.private_provisioning_enabled` defaults to true and controls admission
-of new private allocations through the same creation guard. During a provisioning
-or storage incident, setting it to false stops new private stores
-and one-way V1 opt-ins while keeping established members available. Deleting a
-member archives that member; it neither pauses discovery of other members nor
-blocks another creation request, so deletion cannot serve this operator policy.
-The owner sets this central policy through the existing typed
-`PATCH /api/config/kirocrew` or configuration
-file. Dashboard member creation, CLI create and explicit V1-to-V2 setup then
-refuse before allocation and before V1 provider retirement; they never substitute
-a new V1 binding. Ordinary discovery sync remains available even when private
-provisioning is paused or private execution is unsupported, because it creates
-no private store. The next admission reads the current
-configuration, without requiring a gateway restart. A present non-boolean field
-loads as false, while an absent field retains the true default; API writes require
-an actual JSON boolean. Existing V2 execution, management, backup and recovery
-retain their normal ownership and isolation gates, and idempotent setup of an
-already-owned V2 store remains available. Existing V1 bindings remain usable.
-This operator control neither cancels an already-admitted operation nor disables
-memory preparation or withdraws the shared startup and dispatch changes.
-The creation guard also refuses the loader's degraded `memory` or whole-file
-marker, so unreadable settings cannot authorize creation through default values.
-Advisory schema validation preserves a malformed `memory` section for the loader
-to record; the same refusal applies with or without the optional validator.
-
-If private allocation completes but member configuration publication fails, the
-creator checks that exact new generation under the config sidecar lock. Only an
-undeclared store with no agent reference is retired; its files remain preserved.
-A completed or competing publication keeps the store active. Dashboard workers
-finish before cancellation cleanup inspects the result, and an idempotent request
-for an existing V2 store never offers it for this cleanup. Unreadable configuration
-preserves the allocation and reports the original failure; cleanup cannot guess
-that the current configuration leaves the store unreferenced. A retired failed allocation does not block a new
-owner retry from the unchanged V1 binding.
-
-The proof gate also applies to attempts to address Global V1 from a private
-process, including headerless requests. Private authority comes from the
-process-protected store, not a caller-selected session or editable transcript.
-Trusted member assignment pins an immutable session/store record under the
-read-only binding root before preparation. Dashboard member selection, protected
-subagent dispatch and the scheduler publish these assignments. An unsigned
-channel transcript cannot mint one; metadata downgrade or reassignment fails
-after restart.
-Session-control creation resolves the effective agent's memory and workspace
-binding off the event loop. Resolution failures return `agent_unverifiable`
-before allocation. Creation applies `require_memory_delegation` to the caller's
-canonical history key and the selected store before allocating a slot or pinning
-its identity. Private callers may create only same-store workers; Global callers
-retain member assignment. Unreadable identities and cross-store requests return
-`403 memory_delegation_denied`, without exposing filesystem diagnostics. After
-awaited preparation, creation rechecks the live caller object, history key, agent
-and memory store before allocation; a changed selection refuses the request.
-Async turn admission, vector-store preparation and member consolidation perform
-protected binding reads, store validation, initial SQLite/FAISS construction and
-profile reads in worker threads. Store cache generation and retirement checks
-still surround construction; no cache lock is held across an await. Global
-consolidation uses the same off-loop profile-read scheduling with unchanged
-content and write policy.
-
-Named-store preparation gives one worker ownership from construction through
-initialization, embedding wiring, validation and cache publication. Cancellation
-is serialized against publication. A published store belongs to the cache; every
-unpublished store, including an initialization failure, a race loser or a
-cache-generation mismatch, is closed by that worker after its final use.
-Cancellation never closes a connection while initialization is using it. No
-cache lock is held across blocking I/O or an await.
-
-Private consolidation allocates an ephemeral member-bound provider session,
-records its own billing and removes that provider after release. It never uses
-the shared V1 background provider. The default background path is unchanged.
-
-Memory content endpoints honor the selected store for import, context preview
-and observability. During validated private preferences/projects writes,
-identity or filesystem failures return a stable `503 store_unavailable`, without
-including exception text or local store paths in the response. The gateway log
-retains the store, exception type and reason through operational-log credential
-redaction. These failures preserve both profile documents; owner authorization
-still precedes the write, and invalid essential content remains a distinct 400.
-Legacy Markdown migration is Global V1 only and refuses a
-named store; private members copy selected starting knowledge through the owner
-workflow. Automatic episode promotion refuses V2, where changes and forgetting
-remain explicit. Embedding configuration continues to describe the installation.
-
-Global audit diagnostics show failed fetches through `ErrorNotice` with retry.
-A failed next page keeps the events already loaded. An empty-history message
-appears only after a successful fetch.
-Global episodic delete failures retain the row and submitted search, show
-`ErrorNotice` beside the failed action, and offer retry for that same record.
-Semantic write errors and rejected embedding setup restarts also use
-`ErrorNotice`; unsaved drafts stay in place and these notices do not navigate to
-an agent. A rejected restart stops its pending indicator and keeps Retry available.
-
-Owner controls use Fact, Rule and Experience consistently. Starting-knowledge
-copy explains that the source stays unchanged before the user selects it. A
-rejected copy always shows a failure notice, including responses without a reason.
-Bulk controls explain replace and forget before selection and require a preview.
-The empty list has no page-selection checkbox. Recovery explains preserved copies
-before restore; its manual backup summary distinguishes empty stores from failures.
-Advanced memory groups have translated labels while their stored identifiers stay
-unchanged. Global V1 keeps its ordinary browsers visible; its record editor opens
-from Manage memory.
-The store picker has no generic creation modal; members obtain their stores
-through member creation or the explicit legacy initialization action. A Global
-store without source groups shows one muted capability explanation. Actual
-analysis failures remain errors. Pending proposals display their own recorded
-source and provenance, with equal visual weight for accepting or keeping the
-current value.
-
-### Emergency withdrawal of private execution
-
-The allocation pause above is a live admission control, not an execution stop.
-The following is a draft maintenance patch for withdrawing private execution
-while retaining V1 and the shared repairs. It is not applied to the normal build
-and has no deployment or CI validation claim. A maintainer must adapt and validate
-it against the release being withdrawn before deploying it.
-
-Replace only `_private_memory_mcp_failure` in `member_memory_auth.py` with:
-
-```python
-def _private_memory_mcp_failure(backend: str) -> str:
-    """Maintenance withdrawal: admit no new private ACP execution."""
-    return (
-        "Private member execution and new private memory creation are paused "
-        "by this maintenance build. Keep the existing memory assignments. "
-        "Install a repaired build and restart the gateway to resume private members."
-    )
-```
-
-The block above is illustrative. No test compares it against the shipped
-`_private_memory_mcp_failure`, so a change to either side is not caught
-automatically; a maintainer applying it must re-read the current helper and
-validate the replacement on a populated temporary home (Global and named V1,
-member creation and execution refusals, preserved private files and bindings,
-and admission after restoring the normal helper) before deploying it. That
-validation does not establish that a real installation's process fleet was
-stopped or a maintenance release was deployed; those operator checks remain
-required.
-
-The private creation guard, context preparation and member consolidation consult
-this helper through the private execution check. Direct `AcpClient`, `AcpRuntime`
-and `AcpProvider.prepare_private_memory` also check it before publishing a private
-provider. V1 skips this private-only admission. The refusal retains the private
-assignment and cannot substitute Global or a colleague's store.
-
-Deployment requires a stopped installation:
-
-1. Set `memory.private_provisioning_enabled=false`, then stop every gateway,
-   provider, CLI writer and scheduled/task process using the home. Disable service
-   auto-restart. Check every host sharing the data; a disconnected dashboard does
-   not prove that child processes stopped. Stop if ownership is ambiguous.
-2. Preserve and verify an owner-restricted offline archive of the complete home
-   and all external memory/profile roots, including config, manifests, protected
-   identities, databases and SQLite sidecars, journals/staged restores, backups
-   and diagnostic keys/logs. Resolve or deliberately defer pending restores;
-   the maintenance patch retains startup recovery.
-3. Validate the maintenance build in CI and deploy that exact build to every
-   installation using the home. From a stopped state, verify ordinary V1 remains
-   usable and V2 creation, direct chat, Crew/child work, schedules and resume
-   refuse before provider startup. These are required checks, not reported results.
-4. Keep all member/store assignments and private directories intact. To resume,
-   stop the installation again, install the reviewed repaired build and restart
-   with those assignments. Re-enable allocation only when intended.
-
-This patch cannot revoke an already-running provider in an old process. Trusted
-raw storage scripts must not bypass product admission. Owner management,
-recovery, backups and storage repair remain available, so private storage is not
-read-only. No private data is deleted or converted by the patch. V1 auxiliary
-tables and shared initialization remain in place; this is not a schema rollback
-or a remedy for a defect in shared initialization. Never run a pre-V2 binary over
-the home or repoint a private member to V1. A complete feature revert loses both
-the private identity interpretation and shared repairs; the stopped maintenance
-build preserves them.
+- `execution_context.py` owns frozen `ExecutionContext` and `MemoryStoreRef`,
+  decoding the owning record, member ID lookup, session capture and inherited
+  mode tightening. It carries routing data; ordinary auth remains independent.
+- `memory_stores.py` resolves configured store paths and explicit member creation.
+  `members.py` owns persisted member IDs and manual member documents.
+- `memory_schema.py` defines the authoritative member tables. `vector_memory.py`
+  owns exclusive creation, strict open, learned reads/writes, FTS and vectors;
+  `memory_record_metadata.py` maintains revisions, proposals and provenance.
+- `memory.py` is the facade for manual documents and learned history. V2 learned
+  operations delegate to its admitted SQLite handle; V1 keeps its file layout.
+- `history_consolidation.py` publishes a member span atomically and recovers its
+  receipt. `context.py` and `member_essential_context.py` assemble manual context
+  from the captured member, with an optional SQLite learned-rule component.
+- `member_memory_backup.py` and `memory_startup.py` coordinate ordinary backup,
+  staged restoration and connection lifetime without a second identity authority.
 
 ### V1 accepted-revision retention
 
@@ -283,7 +116,7 @@ V2 has no automatic history retention limit.
 
 ### The six memory layers
 
-Six distinct storage layers, each with its own store and write path. A fresh V1
+V1 has six distinct storage layers, each with its own store and write path. V2 unifies learned layers in SQLite. A fresh V1
 session reads preferences, projects, decayed daily history, semantic memory and
 query-ranked episodic memory and lessons. Warm V1 follow-ups retain native
 conversation history without repeating this injection. V2 session context
@@ -298,8 +131,8 @@ Context window (reference budget 165,000 chars, ~55k tokens)
   Preferences            Projects            Recent history
   (preferences.md)       (projects.md)       (history/{date}.md)
   V1: consolidator-      V1: consolidator-   V1: multi-tier decay
-      replaced              replaced        V2: full retention
-  V2: owner-managed     V2: owner-managed
+      replaced              replaced        V1 daily files only
+  V2: manual anchors    V2: manual anchors
         |                     |                     |
         +---------------------+---------------------+
                               |
@@ -313,30 +146,34 @@ Context window (reference budget 165,000 chars, ~55k tokens)
     lesson.* keys at confidence 1.0, user-explicit always wins
 ```
 
-Layers 1 to 3 are Markdown files under a memory store's markdown root; layers 4
-to 6 are rows in that store's `memory.db` behind a `VectorMemoryStore` (lessons
-fall back to `lessons.jsonl` only when that store is absent or holds no lessons
-yet). There is ONE such store on the default path — the global one every
-install already runs — plus a private named store for each Crew Member. Which
-surfaces reach which is in
-[Memory across surfaces and channels](#memory-across-surfaces-and-channels), and
-the distinction is whether the caller carries a crew or session store binding. Each layer
-is detailed in its own section below, with a single conflict ladder in "Conflict
-resolution: which layer wins".
+In V1, layers 1 to 3 are Markdown files and layers 4 to 6 are database rows;
+its existing JSONL lesson fallback remains. In V2 only manual preference/project
+anchors remain files. Learned history, facts, episodes and lessons share one
+SQLite authority with no JSONL fallback. Global V1 and each configured named
+store are separate destinations selected by the owning execution context.
+See [Memory across surfaces and channels](#memory-across-surfaces-and-channels).
 
 ## Memory (`memory.py`)
 
-Structured files under `~/.kiro/crew/workspace/memory/`:
+Global V1 uses structured files under `~/.kiro/crew/workspace/memory/`:
 - `preferences.md` — learned user preferences (V1 legacy consolidation may replace the file; V2 is owner-managed)
 - `projects.md` — active project context (V1 legacy consolidation may replace the file; V2 is owner-managed). Its `# Active Projects` header contract is owned by `memory.normalize_projects_document(content, *, today=)`, which `MemoryStore.write_projects`, `MemoryStore.write_private_profile_validated` and the dashboard's `_validate_private_profile_update` all call before writing. The three used to carry their own copy, and the dashboard one lives in a different package from the two store ones, so a change to either pair could not see the other. `today` is a parameter rather than read inside, so each write keeps its own single clock read. The two branches trim ASYMMETRICALLY, and that is the shipped contract rather than an oversight: an already-headed document is written as `content.strip() + "\n"`, while an unheaded one wraps the RAW content, so surrounding whitespace survives in exactly one of the two branches.
-- `history/{date}.md` — daily conversation summaries (append-only; heartbeat age pruning applies only to V1)
+- `history/{date}.md` — V1 daily conversation summaries. V2 stores current daily content in `memory_history` in its database.
+
+V2 `MemoryStore` is a facade over an attached, prepared `VectorMemoryStore` for
+learned history and search. Its initialization creates no files. Manual profiles
+use the existing guarded filesystem reader and owner write path; they are not
+copied into the learned search index. A missing database is an explicit service
+failure, never an empty learned store or a JSONL fallback.
 
 ### A store's three paths, and where the index actually lives
+
+The separate Markdown/history and `memory_index.db` layout below is the V1 contract. V2 has `memory.db` and optional manual profiles only; `memory_fts` lives in that database.
 
 A memory store's markdown tree, vector file and FTS index are three separate on-disk
 paths, and which one a store name resolves to is owned by `memory_stores.py` — see
 [config](config.md#named-memory-stores-memory_storespy) for the resolvers, the
-store-name shape rule and strict private ownership validation.
+store-name shape rule and canonical member/store identity validation.
 
 | Path | Holds | `"default"` |
 |---|---|---|
@@ -364,191 +201,27 @@ it behind the `memory_stores/` fence. The snapshot `memory` component and
 named store's index rides beside its markdown; `scripts/sync-to-remote.sh` still
 names only the root paths.
 
-### Named stores ride the backup paths
+### Named stores and backup paths
 
-`memory_stores/` is a tree of the snapshot `memory` component
-(`snapshot.COMPONENTS["memory"].trees`), and `portability.create_export_zip` walks it
-with the same pinned walk it uses for `workspace/`. A bundle that declares `memory`
-therefore carries every named store — markdown, vector file, FTS index,
-`lessons.jsonl`, `member-memory.json` — not only the default store's root files. Three
-rules make the tree a component without making its runtime state one:
+Named V1 keeps its existing Markdown, JSONL and separate derived FTS layout.
+V2 member recovery uses `member_memory_backup` and the managed database plus
+manual preference/project anchors. Derived FAISS files may be rebuilt from
+SQLite and are not another learned authority. The database's stable member and
+store identity is checked before snapshot creation, staging and activation.
 
-- **The host-local half never rides, in either direction.**
-  `memory_stores.is_host_local_store_state(rel_parts)` is the ONE predicate naming
-  it: the member signing key (`MEMBER_API_KEY_FILE`, regenerated on the restoring host
-  exactly as `sel_hmac.key` is), the private execution logs
-  (`EXECUTION_LOGS_DIR_NAME`, per-process diagnostics of runs that happened here) and
-  the local rolling-backup directories (`MEMBER_BACKUPS_DIR_NAME`, and a named V1
-  store's own `STORE_BACKUP_DIR_NAME`, which hold that host's recovery copies and any
-  pending-restore journal — the default store's `<home>/backups/` sits outside every
-  component for the same reason). The snapshot applies it at staging
-  (`_staging_ignore`) and at extraction (`_never_ships`, by PATH, because a
-  `backups` folder is an ordinary name anywhere but `memory_stores/<store>/`); the
-  export applies it in `_keep_store_for_export` and the import strips it from an
-  extracted archive before either mode copies (`_strip_host_local_store_state`). The
-  writers spell these names through the same constants, so the exclusion cannot drift
-  from what they create. Retirement records under `MEMBER_MEMORY_ARCHIVE_DIR`
-  (`.archived-members/`) are also host-local: replace and rollback preserve them in
-  place, and archives cannot import or reset this host's retirement decisions. This
-  prevents an older configuration from reactivating a retired generation, even when
-  its marker predates the restore. Member deletion, package-sync pruning and failed
-  allocation retirement acquire namespace admission before the configuration lock;
-  failed-publication rollback keeps that order. Cache release happens outside namespace
-  admission because a cold cache constructor can hold the cache lock while awaiting it.
-- **A store's databases are product databases.** `memory_stores.named_store_product_file`
-  recognises `memory_stores/<name>/memory.db` and `.../memory_index.db` by shape (a
-  well-formed store name, the exact filename), and `snapshot.is_product_tree_database`
-  extends the fixed `PRODUCT_TREE_DATABASES` set with it: a store's database is copied
-  through the SQLite backup API, refused at snapshot time when it is not a readable
-  database, and validated strictly before a restore installs it. Merge keeps each
-  existing named store whole and installs only stores the destination lacks
-  (`_merge_named_stores`), so a manifest and its databases stay in one generation.
-  Both restore output and the import summary name each store kept
-  (`memory_stores/<name> (kept the existing store …)`). Empty and Markdown-only
-  destination directories are also kept: missing SQLite files do not prove that local
-  preferences, lessons or a provisioning operation can be overwritten. Use replace to
-  deliberately take the archive's whole store. The
-  redaction pass treats the store index as derived (dropped for a rebuild) and the
-  store vector file as payload, as it does their root twins.
-- **The export lifts the agent fence for this tree only, and the routes are
-  owner-only.** `is_sensitive_path` is True for every store path so a crew's agent
-  cannot read another crew's memory; `portability._open_verified(..., fenced_ok=True)`
-  admits those paths on the `memory_stores/` walk alone, because the export is the
-  operator downloading their own install. Containment, the regular-file and
-  single-link checks and the lexical filter above all still apply, and the filter is
-  what keeps the signing key out. What makes "the operator" true is the route:
-  `GET /api/portability/export` and `POST /api/portability/import` run
-  `require_owner_dashboard_request` after authentication, so a non-owner dashboard
-  subject (an allow-listed messaging user holding a `!dashboard` token) gets the
-  standard `owner_only` 403 and the archive is never built.
-- **An import validates the memory it will install before it moves anything.**
-  `apply_import_zip` runs the restore's own `_refuse_corrupt_source_databases` over the
-  `memory` component in both modes (replace installs everything, merge only what the
-  destination lacks -- a named store the destination lacks being exactly the case that
-  would otherwise copy a torn `memory.db` verbatim). A refusal reaches the handler as
-  `SourceComponentUnsound` and is answered `409` with the sentence, not `500`.
-- **Named-store readers participate in replacement admission.** The dashboard's
-  named V1 Markdown cache holds a shared store-use lock on POSIX without requiring a vector
-  database. The lock is released when neither the cache nor an in-flight request
-  retains the object; V2 keeps its vector-tier admission. Snapshot staging holds shared
-  locks across both tree copying and database restaging, and ZIP export holds them
-  across the named-store walk. SQLite export opens sources read-only, so a vanished
-  database is refused rather than recreated empty. These are generation barriers, not
-  a transaction spanning every file or every store. Writers outside these admission
-  paths still require a stopped gateway for replace.
-- **Namespace changes are serialized before enumerating stores.**
-  `memory_stores.memory_store_namespace_lock` holds the stable
-  `.member-backups/.namespace.lock` across replace's enumeration, backup, mutation and
-  rollback, on every platform. Provisioning and configuration publication take the same
-  lock; publication revalidates the store after acquisition, so a store removed between
-  allocation and publication cannot be acknowledged as a successful create. Merge and
-  backup readers also take it to avoid copying a half-provisioned store. Public named
-  `MemoryStore` and `LessonStore` read/write operations hold this lock across the
-  complete call, including read-modify-write and index updates. This covers Windows
-  Markdown-only stores without relying on an open SQLite handle, and protects named
-  lesson JSONL on every platform. Nested calls share a thread-local, per-root hold;
-  exception exit releases it. Operation-local file/configuration locks follow namespace
-  admission; replace probes the separate lifetime locks without waiting. Global V1
-  operations do not acquire this namespace lock. The namespace lock is released on
-  acquisition failures as well as successful or rolled-back replacements. Async callers
-  offload the entire store operation with `asyncio.to_thread` or an existing executor,
-  including cold `ContextBuilder.get_memory_for` construction and JSONL reads. Passing
-  `load_all()` as an executor argument does not offload it; the call belongs inside the
-  worker. The synchronous-I/O ratchet is lexical and does not prove indirect store calls
-  safe, so endpoint tests also assert that locked operations run off the event loop.
-  Offloaded context calls still declare `memory_store`. The offline evaluator passes
-  `DEFAULT_MEMORY_STORE`: its `ContextBuilder` registers the supplied scenario memory
-  as the default cache entry, rather than selecting a crew or the configured default.
-- **Replace holds every store's lifetime lock for its whole duration.**
-  `member_memory_backup.hold_stores_for_replace(root, names)` takes the EXCLUSIVE lock
-  on each store's `.member-backups/<name>/.store-use.lock` -- the lock every open named
-  `VectorMemoryStore` (V1 or V2) holds shared for its connection's lifetime -- without waiting, and
-  `_do_replace` holds them across phase one, the mutations and any rollback. A store
-  that is open makes the acquisition fail at once and `_do_replace` raises
-  `NamedStoresInUse` before anything is saved or moved (the empty rollback directory is
-  removed); a store opened WHILE the replace runs blocks inside
-  `acquire_store_use_lock` until it finishes and then opens what the replace put there.
-  Without either half, the removal of a store directory would leave that process writing
-  into an unlinked database whose rows vanish at its next restart (POSIX keeps an open
-  file alive past its unlink) -- the case the gateway-running check cannot see is an
-  import applied inside the running gateway, or a second process. The names held are
-  the live stores AND the archive's, so a store the archive introduces is held before
-  anything can find it. Every named `VectorMemoryStore.init()` first takes namespace
-  admission, then acquires its shared lifetime lock and opens SQLite. Cold initialization
-  cannot create an unenumerated directory during replace; a completed open before
-  enumeration is visible and its lifetime lock makes replace refuse. This applies to
-  direct CLI and audit openers as well as `ContextBuilder` workers, without maintaining
-  a second list of declared names. `ensure_memory_store_dir` and pending member-restore
-  activation also hold namespace admission when creating or publishing directories.
-  The namespace lock holds new provisioning until the replace
-  finishes; writers that bypass both locks still require a stopped gateway.
-  Two consequences shape the
-  replace: `memory_stores/` is cleared
-  entry by entry (`_clear_store_directories`) and its root-level host-local entries --
-  `.member-backups/`, `.execution-logs/`, `.member-api-key` -- stay in place, because
-  the held lock is the file at that path and removing the directory would let a new
-  opener create a fresh, unheld lock beside the held handle; and the archive's tree is
-  copied into that kept root (`must_create=False` for the root alone, every child still
-  refused on collision). A named V1 store's own `backups/` sits inside its store
-  directory and goes with it into the rollback set. Recovery also clears only store
-  children and copies the saved directories into the kept root, so the root, lock inodes
-  and rollback copy survive a failed replace. The per-store lifetime lock is a no-op
-  on Windows, where SQLite's open handle denies deleting the database; the namespace
-  lock still serializes provisioning and replacement there.
+SQLite online backup provides a transaction-consistent snapshot including
+committed WAL content. A raw copy of `memory.db` is insufficient while its WAL is
+live. Namespace admission and store-lifetime coordination prevent a directory
+replacement while a writer retains a handle. Startup recovery runs before memory
+consumers open the selected generation. Failures retain the old data and report
+unavailability; no read creates a replacement database.
 
-**Archive boundary.** Backup archives contain the selected private memory in cleartext.
-Owner-only directory permissions on snapshot staging and ZIP extraction restrict other
-OS users; they do not extend the agent's `memory_stores/` path fence to arbitrary
-archive or temporary paths. The operator must keep backup outputs and temporary roots
-outside untrusted agent access. This change does not claim archive encryption or a
-whole-install, cross-file transactional backup.
-
-**Replace and the bundle's silence.** Replace clears each memory tree and refills it
-from the archive, so a store directory the archive lacks is removed (into the rollback
-set) — the destination's stores end up matching the archive's. The store rollback
-copy lives at `<home>/memory_stores/.member-backups/pre-restore-<timestamp>/`,
-inside the same agent-hidden fence as the live stores, never in the ordinary
-`<home>/pre-restore-<timestamp>/` rollback directory. The save excludes root-level
-host-local entries (including its own destination), keeps each store's internal V1
-`backups/`, and prints the private rollback path, including in an incomplete-rollback
-failure report. Its directory is allocated independently
-so repeated restores cannot share a rollback set even when the ordinary one is empty.
-A bundle written before
-the tree was a component is silent for a different reason, so `MANIFEST.json`'s
-`version` (`snapshot.MANIFEST_VERSION`, 4; the export's own `EXPORT_MANIFEST_VERSION`,
-3) is what `_bundle_carries_named_stores` reads: replacing from an older bundle leaves
-the live tree untouched and prints that it did, while the rest of `memory` is
-replaced. Replace also keeps the tree on its list whether or not `workspace` is
-selected — the two `workspace/` subtrees defer to the workspace pass, `memory_stores/`
-is under no other component's tree. A staged tree that holds no file (a home whose
-`memory_stores/` contains only runtime state) does not count as payload for the
-declared-without-payload refusal. Restored store entries land owner-only (`0o700` /
-`0o600` in the tar filter), as provisioning makes them.
-
-**A named store starts EMPTY.** Nothing is copied from the default store and nothing
-is inferred from it: no preferences, no projects, no history, no semantic or episodic
-rows, no lessons. A crew bound to a fresh store therefore knows nothing on its first
-turn, which is the point — the isolation is the file boundary, so there is no
-migration, no cutover and no `CONTRACT_VERSION` bump.
-
-`MemoryStore` takes the index path as `index_db=` instead of deriving it, so store
-policy stays in one place. Omitting it keeps the pre-existing derivation and its
-quirk: a bare `MemoryStore()` names `<home>/memory_index.db` while
-`MemoryStore(workspace=workspace_dir())` names `<home>/workspace/memory_index.db`,
-though both share one markdown tree — and both forms are live (`cli.py`, `context.py`).
-That costs a duplicated rebuild, not a wrong answer, because the index is fully
-DERIVED: `rebuild_index` regenerates it from `preferences.md`, `projects.md` and
-`history/*.md` and reads no index state. Only the root copy is in the snapshot, so
-closing the quirk means giving EVERY caller a store name. A named store already gets
-one — `get_memory_for` passes `index_db=memory_index_path_for(store)` explicitly — but
-the two default construction forms are deliberately untouched, so the quirk is still
-open on the default path and
-`TestIndexIsPerStore::test_the_two_default_construction_forms_still_disagree` still
-pins it.
-
-FTS5 search via that `memory_index.db` (SQLite via `pysqlite3-binary` on Linux for FTS5/UPSERT compat, stdlib `sqlite3` on macOS). The virtual table is created with `tokenize='porter unicode61'`, so keyword matching is porter-stemmed inside SQLite. (This is a different stemmer from the `snowballstemmer` pass used by the vector store's keyword-fallback *scoring* in `vector_memory.py`; two independent code paths, do not conflate them.) Self-healing: corrupted DB auto-rebuilt. Incremental updates on writes, full rebuild on gateway startup and every `_FTS_REBUILD_TICKS = 15` heartbeat ticks (~15 min at the 60s default interval). Connection leak prevention: all FTS methods use try/finally.
-
-Context injection includes source citations per section. Agent can update memory files via kiro-cli's file tools.
+`MemoryStore` keeps Global V1 index placement unchanged:
+`MemoryStore()` uses `<home>/memory_index.db`, while an explicitly supplied
+workspace retains its existing workspace-relative path. V1 FTS supports literal
+quoted-token search, incremental file indexing and explicit/periodic rebuilds.
+Its corrupt derived index can be rebuilt from the source files. V2 FTS belongs
+to its authoritative database and has no delete-and-recreate recovery path.
 
 ### Knowledge library duplicate ownership
 
@@ -577,16 +250,15 @@ window (`range(181)`) and picks a rendering per day by age.
 | 181–364 days | Not read into context | Still on disk as a backup |
 | 365+ days | Deleted from disk by heartbeat prune | Too old to be worth the scan |
 
-V2 history reads retain full daily content without age tiers or a date cutoff.
-The explicit reader uses the existing bounded snapshot (366 entries / 8 MiB),
-so response size is limited without deleting, summarizing or de-indexing older
-files. Ordinary V2 message context does not read these history files. Named-store
-constructors pass the resolved `memory_version`; attaching a prepared V2 vector
-tier also enables retention and invalidates any previously decayed cache.
-One bounded snapshot validates its private store once and reuses that result
-only within the call. Every file open still checks containment, links, the
-opened inode and size limits. Dashboard profile and history reads run off the
-event loop.
+V2 history reads select full daily content from `memory_history`, bounded to the
+newest 366 stored daily entries and 8 MiB per response, with no age cutoff or
+stored-content decay. The facade returns structured entries with logical
+`history:YYYY-MM-DD` paths. SQLite serialization and compare-and-swap protect daily
+edits; edits replace that day's body rather than retaining duplicate full copies.
+SQLite checks each day's byte length before returning its body to Python. A day
+larger than 8 MiB is refused without truncating or deleting it; editable-history
+GET and PUT retain the existing `store_unavailable` (503) error response.
+Ordinary V2 message context does not scan learned history.
 
 `MemoryStore.get_context()` retains `history_cap=25_000` as its default for
 programmatic readers. V1 `ContextBuilder` calls it with the scaled history cap
@@ -595,7 +267,7 @@ this history scan. Timestamps use local timezone.
 
 V1 session context and explicit readers invoke `read_recent_history`; V2 prompt
 construction does not. A V1 read stats and reads up to 181 daily files synchronously;
-V2 uses the bounded full-entry snapshot described above. The assembled string is
+V2 uses the bounded full-entry snapshot described above. The V1 assembled string is
 TTL-cached (`_HISTORY_CACHE_TTL_SECS = 5.0`) on the `MemoryStore` instance,
 keyed on `(days, today)` so the decay window shifting at midnight invalidates
 naturally; `append_history` and `prune_history` call `_invalidate_history_cache()`
@@ -605,17 +277,27 @@ so a new or pruned entry is visible immediately.
 
 For V1, `prune_history(keep_days)` deletes daily files older than `keep_days` (default 365). It runs once per day via heartbeat (`_PRUNE_TICKS = 1440`), parses `YYYY-MM-DD.md` filenames and skips non-date files. For V2 it returns zero without deleting anything, regardless of the age setting.
 
-V2 preference/project reads and FTS rebuilds share the guarded private reader.
-An existing refused source raises a reason instead of being treated as empty;
-owner preference/project routes expose that failure as HTTP 503 with a named
-store and reason, while removing host paths and credentials from the response. A rebuild
-considers every valid dated history file, including files older than the
-snapshot's 366-file window, and streams bounded file bodies into one SQLite
-transaction. If any source or database operation fails, rollback preserves the
-previous visible index. This bounds body buffering without imposing a storage
-age limit. V1 retains its original reader and rebuild behavior.
+V2 preference/project reads preserve the guarded manual-file reader. A refused
+source remains an error, not an empty document. V2 FTS rebuild is an explicit
+transaction over current database facts, rules, episodes and history; it reads no
+learning sidecars and creates no separate database. Every normal content mutation
+updates its FTS projection in the same transaction. Recall checks current record
+status and validity before returning matches. V1 keeps its file reader and
+self-healing derived-index behavior.
 
 ### Consolidation (`history.py` `HistoryConsolidator`)
+
+For V2, `VectorMemoryStore.apply_consolidation` is the publication boundary.
+The original transcript snapshot determines a stable source span; the caller
+revalidates it after extraction. One immediate SQLite transaction publishes facts,
+correction proposals, episodes, lessons, history revisions, FTS and its receipt.
+Storage failure rolls back the whole pass. Verified corrections compare their
+pre-extraction record revision in that transaction. Embeddings are deferred for
+maintenance and cannot hold the write lock during provider inference. Before a
+retry calls a provider, a committed receipt recovers a lost transcript progress
+acknowledgement and leaves later appended messages pending.
+
+The following file-oriented flow and independent writes describe V1.
 
 How a user message becomes durable memory:
 
@@ -643,7 +325,7 @@ Two separate consolidation paths with independent triggers:
 | Path | Trigger | What it updates | Offset tracking |
 |------|---------|-----------------|-----------------|
 | Preferences/projects | 30 messages (per session, `_CONSOLIDATION_THRESHOLD`) | Semantic entries; V1 legacy mode also updates `preferences.md` and `projects.md` | In-memory `_prefs_offset` dict |
-| Daily history + lessons | 3h idle (per session, `history_idle_hours` = 3.0) | `history/{date}.md`, episodic entries, `lessons.jsonl` (or `lesson.*` in vector store) | Persisted `last_consolidated` in JSONL metadata |
+| Daily history + lessons | 3h idle (per session, `history_idle_hours` = 3.0) | V1: daily Markdown and vector/JSONL lessons. V2: history, episodes and lessons in one SQLite transaction | Transcript `last_consolidated`; V2 also retains an atomic source-span receipt |
 
 Per-consolidation extraction caps (`vector_memory_constants.py`, also
 interpolated into the LLM prompt so the model is told the same numbers):
@@ -658,7 +340,7 @@ are enabled only for V1 when `memory.migrated` is false. V2 always treats its
 current preference/project documents as read-only extraction context, regardless
 of that global migration setting. New facts and proposed corrections use the
 structured revision-aware path; background consolidation cannot remove core
-material by replacing a private Markdown document.
+material by replacing a manual member document.
 
 Both versions freeze a deep copy of the extraction transcript and revalidate
 its generation, original message prefix and new user turns after the model
@@ -673,13 +355,12 @@ The prefs path does NOT advance the persisted `last_consolidated` marker — onl
 
 Idle detection: `_last_activity[key]` updated on every `maybe_consolidate()` call. `check_idle_sessions()` called every heartbeat tick (60s), fires history consolidation when `now - last_activity > history_idle_secs` and there are unconsolidated messages.
 
-**Both paths write to the store the SESSION names, not the one the consolidator was
-constructed with.** `_consolidate` resolves the session's store through
-`context.store_of_session(log, key)` — the same resolver every turn-running surface
-reads with — and takes markdown, lessons and vectors from it; an absent
-`memory_store` key means the global store. Full rules, including why absence is the
-signal and why the key is slot-owned, are in
-[The write path](#the-write-path).
+**Both paths write to the session's captured store.** `_consolidate` captures the
+canonical execution context before its first await and refuses incognito or
+temporary sessions before reading their transcripts. V2 uses that context's exact
+member store and commits learned records, history and the retry receipt in one
+SQLite transaction. V1 retains `context.store_of_session(log, key)` and its
+Markdown and lesson fallback behavior. See [The write path](#the-write-path).
 
 Neither path owns a timer. The prefs path is checked inline on every
 `maybe_consolidate()`; the history path is driven entirely by the heartbeat
@@ -696,7 +377,7 @@ outlive the incognito or temporary boundary that prohibits derived memory.
 
 ### Lesson Extraction from Chat
 
-The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). All lesson writes go through `write_lesson()` which provides substring dedup and topic-overlap dedup (shared keywords ≥ 50% of the LARGER of the two keyword sets → newer replaces older). When vector memory is not active, falls back to `lessons.jsonl` via `LessonStore.save()`.
+The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). V1 lesson writes use `write_lesson()` with substring and topic-overlap dedup (shared keywords ≥ 50% of the LARGER of the two keyword sets → newer replaces older), or `LessonStore.save()` when vector memory is inactive. V2 publishes lessons inside the consolidation transaction and never constructs a JSONL fallback.
 
 ### Configuration
 
@@ -1109,49 +790,29 @@ unconstrained and are identified by `id` alone. A semantic row's `id` is determi
 from its key (`semantic_item_id`, the `key:` namespace), which is why no writer needs
 `last_insert_rowid()` — the engine has no such call.
 
-**Existing V1 files are not migrated by this implementation.** `detect_lineage`
-answers from the schema table, so a silo whose `memory.db` predates the crew
-lineage keeps its existing schema. The product direction is eventual, explicit
-V1-to-V2 migration after private V2 is validated and tuned. Maintaining both
-policies is a transition, not a commitment to permanent parallel algorithms.
-The future **V2 migration sign-off** is the decision gate: supported-platform
-isolation and recovery checks pass, a held-out retrieval evaluation supports the
-chosen thresholds, and the owner can review a migration preview with a tested
-rollback path. That gate permits proposing a migration; it does not authorize
-automatic conversion. The migration implementation and owner approval remain
-separate work.
-This PR implements no migration or cutover. Initializing an existing member provisions a separate
-empty private V2 store and retains the old data; it does not reinterpret or
-upgrade that old file. Newly provisioned stores start empty (see
-[A store's three paths](#a-stores-three-paths-and-where-the-index-actually-lives)).
+**V1 keeps its existing lineage.** New member stores are created explicitly with
+the crew row schema, record metadata/revisions, history/revisions, consolidation
+receipts and FTS. The `member_database` singleton records `format_version=1`,
+`member_id` and `store_id`. The expected stable identity comes from canonical
+admission. Ordinary opens validate it and the schema without repair or migration.
+Legacy unowned crew-lineage files retain V1 behavior. Unsupported old private V2
+files are refused unchanged; no path reinterprets them as V1.
 
-**Lineage metadata and private identity have different authority.** The
-`schema_lineage` row is advisory because `detect_lineage` reads the schema table.
-An unowned, markerless crew-schema file remains the supported legacy V1 case. A
-store opened with a positively validated private V2 manifest atomically records
-`private_memory_version`, `store_name`, and `owner_member` in the existing
-`memory_meta` table. From that point onward a raw `VectorMemoryStore(path)` open
-requires the external manifest to exist and match those durable values. A lost or
-mismatched manifest, including after restoring a V2 database backup, fails closed
-instead of downgrading the same file to V1. None of these rows is written on the
-default v1 lineage, because adding rows to the operator's own `memory.db` is the
-one thing this seam exists to avoid.
-
-**Whole-install portability remains separate from member recovery.** The existing
-snapshot and export/import components enumerate the global files and workspace
-trees; they do not include per-member stores. Members now have dedicated full
-bundle backup and staged restore under
-[Automatic backups](#automatic-backups-memory_backuppy). The injection audit
-`scan_memory` also opens every declared store and labels each finding with its
-store. Whole-install export redaction does not scan member files that the export
-does not include.
+**Whole-install portability includes named stores.** Snapshot and export/import
+carry member SQLite databases and manual profiles, using SQLite backup to include
+committed WAL contents without shipping WAL or SHM files. Merge keeps an existing
+store whole; replace coordinates namespace and active-handle locks. Host-local
+execution logs and backup directories remain outside the bundle. Dedicated member
+recovery is described under [Automatic backups](#automatic-backups-memory_backuppy).
+The injection audit `scan_memory` opens declared stores, including learned history,
+revisions and consolidation evidence, and labels each finding with its store.
 
 ### Semantic Memory
 
 The scoring descriptions in this section and Episodic Memory describe Global
-**V1**. Owned member stores opt into the separate
+**V1**. Newly created member stores use the separate
 [Member V2 retrieval policy](#member-v2-retrieval-policy). A nondefault filename
-alone does not enable V2; the member ownership manifest must identify version 2.
+alone does not enable V2; canonical admission must supply the stable member/store identity to the explicit database open.
 
 SQLite table `semantic_memory` — structured key-value store with:
 - **Allowed keys**: `_BUILTIN_PREFIXES` is `pref.*`, `project.*`, `user.*`, `lesson.*` (+ user-configurable `extra_prefixes`). The first three are the fact prefixes the consolidation prompt offers the LLM; `lesson.*` is the lessons tier writing into the same table.
@@ -1274,14 +935,15 @@ term-overlap one while still printing a plausible F1.
 
 Global Memory is **V1**. Explicit member creation allocates a unique empty **V2**
 store before publication. Automatic discovery registers agents on Global V1.
-Existing members keep their exact V1 binding until the
-owner chooses private memory. Store ownership and algorithm version are recorded
-in config, the protected manifest and the database. Private stores cannot be
-shared or rebound. The one binding that may move is a V1 binding on a name the
-shape rule refuses, and only to `default` or to fresh V2 memory — see
-[config](config.md#named-memory-stores-memory_storespy), `unusable_legacy_binding`.
-Choosing V2 preserves the V1 source and imports nothing
-automatically. Ownership validation is specified in
+Existing members retain their exact V1 binding. Only explicit new member
+creation provisions a member database; member edits never migrate a V1 binding
+or create a replacement for missing memory. Existing V1 data is preserved.
+The crew editor describes each member's memory ownership and states that V2 is
+available only when creating a new crew member. Existing members retain their
+current version and have no migration or provisioning action in the editor.
+Canonical configuration records the immutable member/store IDs, and the database
+identity validates those exact IDs. Display names, templates and workspaces do
+not select the store; a member database cannot be shared or rebound. Ownership validation is specified in
 [config](config.md#named-memory-stores-memory_storespy).
 
 Both versions record accepted changes in additive revision metadata. Content
@@ -1298,29 +960,25 @@ binding must be included and still passes all ownership checks. Creation refuses
 every occupied member key, including null or malformed entries, with
 `MemberAlreadyExists`; the dashboard preserves its `agent_exists` conflict response.
 
-Private execution also withholds Global V1 at the OS filesystem boundary, including
-the database, sidecars, temporary/superseded files, global markdown memory and
-backups. Direct shell access cannot bypass the explicit selected-copy operation.
-The member's own structured memory remains gateway-managed through its trusted
-binding. The [security module](security.md) describes private administrative-root
-views, live project/runtime directories and isolated execution logs. Ordinary
-Global V1 assistant processes keep their existing filesystem access.
+Member identity controls product routing. It does not provide an OS filesystem
+confidentiality boundary. Owner-selected copying leaves the source unchanged;
+raw agent file writes cannot modify managed SQLite state.
 
 | User flow | Memory behavior |
 |---|---|
 | Ordinary assistant without a selected member | Existing Global Memory V1 behavior |
-| Member DM, without Crew Mode | The member's exact V1 binding until owner opt-in; its exclusive V2 store after opt-in and for new members |
-| Crew Mode | Each delegate retains its own binding. V2 delegates cannot use Global, legacy V1 or a peer's store by proxy; handoffs share explicit tasks and results |
+| Member DM, without Crew Mode | The owning execution record's member/store IDs; existing V1 bindings stay V1, explicit newly created members use V2 |
+| Crew Mode | Each delegate retains its own binding. A target member is explicit and admitted by ordinary delegation/tool/app policy; omitted targets inherit the parent |
 | Scheduled work | `member_id` pins the member separately from its provider template. Creation, firing and resumed chat validate the pinned store |
-| Restart or continuation | Trusted persisted identity restores the same store; subagent transcripts cannot replace protected run identity |
-| Unavailable or corrupt memory | Execution reports the reason before submitting the task. No automatic global fallback or creation of a replacement empty database |
+| Restart or continuation | The owning record retains the same frozen execution context |
+| Unavailable or corrupt memory | Learned-memory operations report unavailability; manual essentials remain usable. No global fallback or replacement empty database |
 
 The Memory tab has separate global and member views. Member links address
 `/settings/overview?view=memory&store=<store>`; every member data request carries
 that explicit owner-authorized store. The global settings and global vector
-browser do not mount inside a member view. The private view supplies its own
+browser do not mount inside a member view. The member view supplies its own
 compact identity header and a single Overview back action. It uses the app's
-theme colors, the owning member's avatar with a private lock badge, category
+theme colors, the owning member's avatar, category
 icons, three-line card previews and
 reduced-motion-aware transitions. Full content and readable source/copy
 provenance open in a detail dialog rather than filling the browsing surface.
@@ -1357,28 +1015,21 @@ confirms the result after completion. Forget keeps its recovery explanation
 visible before and after preview: there is no direct Undo in the editor, and a
 backup containing the records restores the whole store after a gateway restart.
 Provenance translates known bare source tags while preserving exact copied-item
-keys and concrete conversation references. Legacy members show Memory V1 and
-an optional private-memory action. A V2 member requires its valid private
-identity before work and cannot use Global or another store on failure.
-Global and named V1 summary counts reuse the Semantic and Episodic labels from
-the existing V1 diagnostic tiles. Private V2 summaries retain Facts and lessons
-and Experiences.
+keys and concrete conversation references. Legacy members show Memory V1.
+Explicit new member creation provisions an empty SQLite database and preserves
+all existing member and Global V1 bytes. Existing native context does not switch
+member identity in place; a new selection requires a new session. Existing
+members cannot opt into a replacement store through an update. No old V2
+compatibility, migration or downgrade mechanism is provided.
 
-The Crew Manager notice distinguishes new private members from existing V1
-members. Passive V1 notes describe only the current memory. V1-to-V2 opt-in
-shows a separate confirmation that the next chat starts fresh and the member
-cannot return to V1; existing data and chats stay. Cancelling keeps the binding.
-Manage memory shows a visible reason while unsaved edits disable navigation.
-During opt-in, Creating private memory is a `role=status` announcement tied to
-the current member and editor opening; unrelated busy work does not announce it.
-The Global V1 inline editor opens under Edit saved memories and retains its
-existing Lessons terminology. The shared record editor labels directive records
-Lessons, while the stored kind and API value remain `directive`.
+Global and named V1 summary counts retain Semantic and Episodic labels. Member
+V2 summaries show Facts and lessons and Experiences. Manage memory gives a
+visible reason while unsaved edits disable navigation. The shared record editor
+labels directives Lessons; the stored kind and API value remain `directive`.
 
-V1-to-V2 opt-in clears the member's cached thread destination. The next Open
-member action obtains the server's fresh private conversation key; old V1 history
-and native context are not copied. A mismatched or unavailable private identity
-is shown as unavailable, never as a usable legacy store.
+Missing or mismatched database identity makes learned memory unavailable.
+The canonical member still supplies manual persona, rules and project context;
+it never selects Global or another member's learned memory as a fallback.
 
 Run `kirocrew doctor` on the gateway host to diagnose an unavailable member
 binding. Its Member Memory Bindings section checks every configured member
@@ -1395,7 +1046,7 @@ V2 labels owner changes as Edit and retained older experiences as Replaced
 experiences. Recall explains which context the member would receive; the record
 list remains available for browsing and editing. Included rules have a summary
 and a details disclosure rather than an empty badge. Recovery attributes removed
-older backups to the configured backup limit. The member header shows its private
+older backups to the configured backup limit. The member header shows its member
 ownership without repeating the picker's version badge.
 
 The list defines Facts as saved details, Rules as working guidance, and
@@ -1439,15 +1090,16 @@ specified under [Automatic backups](#automatic-backups-memory_backuppy).
 ### Member V2 essential context
 
 `member_essential_context.py` separates essential material from on-demand
-fragment recall. `member_for_store()` derives the owner from a positively
-owned V2 store and validates its exclusive binding. A supplied member that
-disagrees with that owner is an error. V1 and unowned legacy stores retain
-their existing context path.
+fragment recall. The frozen execution context supplies the canonical member ID
+directly; `member_config_for_id()` finds its unique configuration record without
+opening the database or deriving identity from a store, template or display name.
+The selected member and execution template both contribute their manual context.
+V1 and unowned legacy stores retain their existing context path.
 
 The owner persona and execution prompt share one project-first template resolver.
 A distinct execution template contributes its admitted prompt, resources and
 context settings to the same complete snapshot and digest. Its changes or source
-removals refresh that snapshot without changing the private memory owner. Sources
+removals refresh that snapshot without changing the canonical member. Sources
 shared by both templates occur once; a source changing between their reads refuses
 preparation. Conditional guides on a framework without native selectors have
 an explicit activation path: a user `#guide` reference or a matching file path
@@ -1476,7 +1128,7 @@ execution template is the owner's template, its custom persona appears only in
 the per-turn essential envelope, not again in the session-start prompt. A
 different execution template still supplies its task instructions. An inherited
 exact product-prompt URI stays in the product session-start path, not in
-essentials. Essential sources are validated on every private member turn; their
+essentials. Essential sources are validated on every member turn; their
 complete snapshot is submitted only when the conversation needs it.
 
 `ContextBuilder` injects the owner's identity, current permanent rules and
@@ -1491,7 +1143,7 @@ development prompt overrides and the global user prompt override therefore do
 not become project essentials or spend the essential envelope's budget. A
 custom persona, including one on a template named `kirocrew`, remains essential
 and passes the same file-admission checks as other declared sources. The member's
-working briefing keeps its existing bounded/platform-gated reader; it is not
+working briefing keeps its existing bounded reader; it is not
 unbounded archival memory.
 
 Admitted project essentials are the active project's root `AGENTS.md` and
@@ -1502,7 +1154,7 @@ declared prompt may be inline or a file source. Missing optional root files
 are allowed; an unreadable declared source or malformed/shadowed template
 fails with its name instead of silently substituting a different persona.
 Template resources cannot import Global V1 memory or another member's state;
-the owner's preferences/projects use the separately validated private reader.
+the owner's preferences/projects use the separately validated manual-document reader.
 Declared globs have bounded enumeration and do not follow linked directories.
 Wildcard-matched entries classified by the existing managed-source check are
 excluded before descent or content reads. A broad `*/AGENTS.md` resource therefore
@@ -1524,14 +1176,14 @@ stages a complete snapshot on the actual serving provider, which suppresses its
 wire envelope after successful consumption while its content, source list and
 scope remain unchanged. Fresh, resumed and post-compaction conversations receive
 a snapshot; changed content or scope receives one complete replacement, explicitly
-superseding sources absent from its source list. Ordinary private chats, member
+superseding sources absent from its source list. Ordinary member chats, member
 DMs, messaging, cron and delegated runs use the same provider receipt contract
 specified in [providers](providers.md#essential-context-delivery-contract).
 A provider-parametrized wire test covers both dedicated and shared adapters:
 fresh delivery, warm suppression, observable clear/compaction, one complete
 retransmission and renewed suppression. Only the model transport is simulated;
 this pins the adapter/receipt pairing, not unobservable native history behavior.
-Admission, protected identity and permanent-rule checks are not cached by a
+Canonical identity and permanent-rule checks are not cached by a
 receipt. A missing declared source still refuses; missing optional root guides
 change the snapshot instead. There is no mtime-only content cache or automatic
 retrieval on the warm path.
@@ -1568,7 +1220,7 @@ If the store disappears from configuration during validation, the save returns
 `503 store_unavailable` and preserves the current document.
 Turn-time validation still catches subsequently edited project files and names
 the three largest sources when the complete envelope is too large.
-Current private preferences/projects are included when memory context is
+Current member preferences/projects are included when memory context is
 allowed. Explicit memory/project context exclusions and temporary-session read
 restrictions continue to withhold their respective materials; permanent conduct
 and owner identity still apply.
@@ -1577,9 +1229,9 @@ and owner identity still apply.
 
 `VectorMemoryStore.algorithm_version` reports `v1` or `v2`; `policy_revision`
 reports `member-v2` for owned member stores. `memory_store_version()` selects
-the policy from the private store's ownership manifest. The global filename and
-unowned legacy files keep V1. A V2 manifest over a V1 database is refused: there
-is no implicit migration or schema reinterpretation.
+the policy from the canonical member/store configuration. The database integrity
+identity must match that admission. Global and unowned legacy files keep V1;
+there is no implicit creation, migration or schema reinterpretation.
 
 Only V2 uses the automatic conflict proposal policy. A changed inferred value or
 metadata patch becomes a durable proposal; model confidence cannot authorize an
@@ -1836,18 +1488,17 @@ and resolve their own path rather than reading the one the shared open composes.
 
 ### Automatic backups (`memory_backup.py`)
 
-**Private V2 backup covers the whole member memory.**
-`member_memory_backup.py` creates `memory.<UTC microsecond timestamp>-<UUID>.zip` containing a
-SQLite online copy of `memory.db` plus the present `memory/preferences.md`,
-`memory/projects.md`, dated `memory/history/*.md` and `lessons.jsonl` files.
-Derived FTS/FAISS indexes are rebuilt; configuration, arbitrary files and other
-members are excluded. Each file is read once and hashed from the archived
-bytes. SQLite is transaction-consistent; the Markdown/JSONL files are individual
-read snapshots, not one transaction synchronized with all database writes.
+**Member V2 backup covers its database and manual anchors.**
+`member_memory_backup.py` creates an ordinary ZIP snapshot containing an online
+SQLite backup of `memory.db` plus present `memory/preferences.md` and
+`memory/projects.md`. All learned state, FTS and vectors are transaction-consistent
+inside the database. Manual files are individually read and hashed. No learned
+Markdown history, JSONL lessons, separate FTS database, old manifest or derived
+FAISS files belong to the bundle. Configuration and unrelated files are excluded.
 
 The versioned snapshot manifest records store identity, exclusive owner,
 creation time and SHA-256 for each allowed file. Backups live in
-`memory_stores/.member-backups/<store>/`, inside the existing protected tree
+`memory_stores/.member-backups/<store>/`, inside managed storage
 but outside the member directory that restoration replaces. The ordinary
 retention count and interval apply to ZIP snapshots independently per member.
 Unique names preserve multiple snapshots taken at the same instant. Listing,
@@ -1860,10 +1511,8 @@ paths, duplicate ZIP entries, links, undeclared files and foreign-store
 databases are refused. Extraction writes allowlisted files into a fresh private
 stage rather than using archive path extraction. Limits are 8,192 files and
 1 GiB uncompressed; the manifest itself is bounded separately.
-When a database has durable private-memory markers, its V2 version and member
-owner must also match before snapshot creation, staging or activation. Older
-snapshots without these markers remain compatible through their validated
-outer store and owner manifest.
+The database format and stable member/store identity must match before snapshot
+creation, staging or activation. Unsupported old formats are refused.
 
 **A restore request changes no live memory.** It returns `pending: true` and
 `restart_required: true`. Only `apply_pending_member_restores()` at the gateway
@@ -1926,7 +1575,7 @@ visible spacing.
 No pending restore is an idempotent success. The shared activation lock excludes
 racing startup; cancellation refuses after a tree has been displaced. Removing
 the journal is the atomic cancellation point, followed by best-effort cleanup
-of the verified protected stage; a cleanup failure can leave an inert temporary
+of the verified stage; a cleanup failure can leave an inert temporary
 tree but cannot leave a partially deleted snapshot scheduled for activation.
 After ordinary cancellation or completed startup, GET returns false/false/null.
 If recovery already failed at startup, cancellation clears the pending intent
@@ -1943,8 +1592,7 @@ If the entire member directory is missing, explicit owner restore may recover
 it using exclusive configuration ownership plus the matching backup manifest.
 The journal records whether a prior directory existed when restoration was
 staged; only an explicitly missing original permits activation without a
-preserved prior tree. An existing directory with a missing or mismatched owner
-marker is refused. This recovery exception never relaxes ordinary memory reads.
+preserved prior tree. An existing directory with a missing or mismatched database identity is refused. This recovery exception never relaxes ordinary memory reads.
 Restore refusal responses retain the concrete reason (`restore_refused`), including
 an already-pending restore, rather than labeling every refusal as corruption.
 
@@ -1991,7 +1639,7 @@ self-contained file with no WAL to pair.
   The loader preserves this value and `memory.backup_enabled` (default true)
   across reload/save, so disabling automatic backups or extending recovery
   retention survives a gateway restart. Automatic retention prunes only the
-  backup directory of the store it just copied and never touches archived stores.
+  backup directory of the store it just copied and never touches unreferenced retained stores.
   Manual dashboard backups use the same configured retention in their worker.
 - **Enumeration**: the heartbeat and the `kirocrew memory backup` command share one
   helper that visits the default store, declared named V1 stores and actively owned
@@ -1999,15 +1647,16 @@ self-contained file with no WAL to pair.
   would adopt an abandoned or restored directory the operator never declared and then
   copy it forever. Each resolved path is confirmed to belong to the store that asked for
   it, independently of strict binding resolution.
-  Archived files and backup listings remain available for owner inspection, but
-  archived stores are excluded from these passes. Restore requires an active
-  exclusive binding; there is no archive reattachment UI.
+  Unreferenced retained files remain untouched. Routine maintenance excludes
+  stores without their active canonical member binding. Restore requires the
+  configured member/store identity; no retirement marker or archive reattachment
+  framework exists.
 - **Fail soft per store**: one unreadable store must not prevent another eligible
   store's backup, so the loop counts failures instead of propagating them.
 
 **V1 restore is staged and recoverable.** `restore_from_backup` requires the
 source's structural V1 lineage for Global. Named V1 also accepts the established
-unowned crew-schema shape. Both refuse either private ownership marker, empty
+unowned crew-schema shape. Both refuse a `member_database` identity, empty
 databases and unrelated SQLite files without publishing a restore journal or
 changing current memory. It uses SQLite's online backup API to stage a
 self-contained copy, verifies integrity and the same source admission on that snapshot, and
@@ -2467,17 +2116,19 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 `HistoryConsolidator._consolidate()` now extracts structured data alongside existing fields:
 - `"semantic"` array → `_write_semantic()` for each (max 20 per consolidation), always under `source="consolidation:<key>"`. An LLM confidence claim never grants `user_explicit` authority, so the conflict rule protects genuine user-stated facts. Extracted lesson writes likewise retain their automatic consolidation source in both versions.
 - `"episodic"` array → `write_episodic()` for each (max 10 per consolidation)
-- Dual-write mode: when `config.memory.migrated` is False, also writes markdown files (backward compat)
+- V1 alone retains Markdown dual writes while `config.memory.migrated` is false. V2 publishes all learned changes and its source-span receipt in one SQLite transaction.
 
 The store's `algorithm_version` selects the update policy. V1 keeps its existing
 confidence and source precedence, direct consolidation deletion, same-value
 refresh and automatic lesson source. Semantic consolidation keeps its automatic
 source even at confidence 1.0. V1's audit log remains best effort.
-Private V2 keeps inferred changes and deletions as review proposals unless a
+Member V2 keeps inferred changes and deletions as review proposals unless a
 correction has matching revision and transcript evidence. Its consolidator
 retains the actual automatic source and supplies record metadata and correction
-evidence fields. A named store with the legacy schema still follows V1 unless
-its validated private marker selects V2.
+evidence fields. Only explicit member database admission selects V2; an existing
+legacy named store continues to use V1. Consolidation captures the session
+execution context before yielding and refuses incognito or temporary learning
+before reading transcript bodies, opening learned memory or billing a model.
 
 ### Dashboard Endpoints
 
@@ -2508,7 +2159,7 @@ its validated private marker selects V2.
 | POST | `/api/memory/consolidate` | Trigger consolidation for one session (restricted-mode check only) |
 | GET | `/api/memory/context-preview?q=` | Preview injected semantic + episodic context |
 | GET | `/api/memory/observability?q=` | `stats` + `rejections` + `context_preview`, plus `reads` — the read-volume counters (see above). `reads` is resolved LAST, so it INCLUDES the reads this request itself performed; that is what lets a caller issue the same `q` twice and compare the two objects |
-| GET | `/api/memory/recall?q=` | V2 task recall with evidence. Explicit `store` requires the dashboard owner; the MCP path requires a positive process/session proof and one recognized, non-temporary session, then uses its trusted recorded private binding. A shared internal secret plus session header is insufficient. Invalid or unavailable private memory returns an explicit error |
+| GET | `/api/memory/recall?q=` | V2 task recall with evidence. Explicit `store` requires the dashboard owner; the authenticated MCP path uses the owning session's canonical execution context and requires memory reads to be allowed. Invalid or unavailable member memory returns an explicit error |
 | POST | `/api/memory/seed` | Owner-only selective copy. Body: destination `store`, `source_store`, and 1–50 unique `{kind, id}` items. Destination must be V2; V1 and V2 sources are read-only inputs. Each response item reports imported, existing or rejected with its reason |
 
 **The memory-mutation gate ("gated" above).** Every route that writes durable
@@ -2533,13 +2184,10 @@ route's own operation name (`preferences.write`, `projects.write`, `history.writ
 `memory.import`, `memory.promote`), and every non-2xx body carries a machine-readable
 `code`.
 
-Gateway-created child context retains an admitted privacy mode separately from
-its store. `ContextBuilder.build_message` honors temporary mode even when a
-caller omits `blocks_reads`; continuation setup skips vector preparation and
-mirrors restricted mode into child history for consolidation. Runtime-key modes
-are recovered from the existing protected binding tree after restart, never
-from editable transcript mode. The in-process mode map lasts for the context
-builder's gateway lifetime; it is not an independent persistent authority.
+Gateway-created child context retains privacy mode in the same canonical execution
+record as member/store identity. Temporary skips database opening and lesson reads;
+Incognito permits reads but refuses durable learned changes. A continuation retains
+its recorded mode and member; it never infers them from a provider template.
 
 The matching GET on each markdown route is a **read** path and is deliberately
 ungated — gating it would blank the Memory tab for every session the probe cannot
@@ -2552,7 +2200,7 @@ hidden source bytes with display placeholders. Existing stored content stays int
 The server also refuses its replacement with `409 memory_document_redacted`.
 Clean documents stay editable. V1 preferences/projects reuse their in-lock baseline
 comparison; V2 performs admission inside its existing private-profile validation
-lock. V2 history GET returns today's guarded document, and PUT compares that
+lock. V2 history GET returns today's database content, and PUT compares that
 exact target under the same cross-process append lock as consolidation. V1 keeps
 its recent-history aggregate and uncached aggregate comparison. Both replace
 only today's file. Retained V2 aggregate reads remain available through
@@ -2579,7 +2227,7 @@ projects, daily history, FTS) and `vector_memory_for_store` (semantic, episodic,
 lessons). `migrate` validates the selector and refuses named stores because legacy
 Markdown migration belongs to Global V1. `promote` selects the requested store
 and refuses V2, whose experiences are not automatically promoted or retired.
-`consolidate` follows the protected binding of its target session and verifies
+`consolidate` follows the canonical execution record of its target session and verifies
 the caller's authority over that session; a store selector cannot retarget it.
 Embedding configuration and `settings` remain installation-wide controls.
 
@@ -2893,9 +2541,9 @@ concurrent native write from being duplicated.
 User-taught corrections ("always do X", "never do Y"). Single write path through `vector_memory.write_lesson()`:
 
 1. **Vector memory** (primary): stored as `lesson.<md5hash>` semantic entries with `confidence=1.0, source=user_explicit`. The value is a mapping `{"rule", "category", "negative"}`, plus `"repo_scope"` when the lesson is restricted to one repository — the NOT-clause is a separate field; legacy in-band `"rule — NOT: negative"` rows stay readable without migration. Injected via `get_lessons_context()` — separate from `[Semantic Memory]` block. A scoped lesson is gated by `project_scope.project_scope_satisfied` against the session's active project BEFORE the shown/omitted counts are computed, using the same rule as a skill's `repo_scope`.
-2. **JSONL fallback** (`~/.kiro/crew/lessons.jsonl`): only used when vector memory is not initialized. Read-only migration source once vector memory is active.
+2. **V1 JSONL fallback** (`~/.kiro/crew/lessons.jsonl`): only used when vector memory is not initialized. Read-only migration source once vector memory is active.
 
-**Priority**: vector lessons override JSONL. The fallback is keyed on whether the
+**V1 priority**: vector lessons override JSONL. V2 never constructs a JSONL lesson store or falls back to one; an empty SQLite lesson table is a valid empty result. The fallback is keyed on whether the
 vector store holds any renderable lesson at all (`has_any_lesson()`), NOT on whether
 the rendered block came back empty. The two are different: no rows means the JSONL
 store is still the authority (the first-boot migration window), while rows that exist
@@ -3029,7 +2677,7 @@ remain one rule rather than being guessed apart. A legacy volatile row stays
 available to listing and manual deletion, never reaches a prompt, and carries
 `withheld_reason="volatile_session_fact"` in the lessons API so `learn_list` marks it
 `WITHHELD`. Vector population checks use the same renderability predicate, so a store
-containing only withheld rows does not suppress the JSONL lesson fallback.
+containing only withheld rows does not suppress the V1 JSONL lesson fallback.
 The `learn_add` MCP handler, task runner, consolidation, dashboard POST route, headless
 `--slack-only` route, and direct writers therefore enforce the same boundary. The MCP
 handler renders the reason as `Error: volatile_session_fact: ...` and asks for a reusable
@@ -3037,7 +2685,7 @@ behavioral rule instead. An imperative concrete model choice belongs in
 `agent.role_models.<role>`. Model-family guidance and plain model-version references
 remain durable.
 
-**Migration**: `migrate_from_markdown()` reads `lessons.jsonl` and writes each entry as `lesson.*` semantic key with `source=migration, confidence=0.9`. User-explicit lessons (confidence 1.0) can't be overwritten by migration.
+**V1 migration**: `migrate_from_markdown()` reads `lessons.jsonl` and writes each entry as `lesson.*` semantic key with `source=migration, confidence=0.9`. User-explicit lessons (confidence 1.0) can't be overwritten by migration. V2 refuses this importer.
 
 Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block. V1 session context retains query-ranked, project-scoped lessons; V2 selects bounded, project-scoped lessons without a query embedding. Explicit lesson readers can use hybrid relevance and fill the caller's character budget, reporting shown and omitted counts; the JSONL path caps at `_MAX_LESSONS_IN_CONTEXT = 50`. The JSONL store retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that. The listing surface is bounded too — `GET /api/lessons` returns one `limit`/`offset` window and carries `total` and `truncated` so `learn_list` can say `Showing N of M`; `VectorMemoryStore.get_lessons(limit, offset)` honours the offset only on the bounded read, and the unbounded read the scorers use ignores it. Contract: [learn-cron-dashboard](learn-cron-dashboard.md).
 
@@ -3070,376 +2718,40 @@ lesson beat a contradicting preference in the same prompt.
 
 ### Memory across surfaces and channels
 
-**A private V2 store belongs to exactly one Crew Member.** Its trusted binding
-follows direct conversation, Crew delegation, scheduled work and restart.
-Unbound ordinary sessions use the existing global V1 store; an unverifiable
-private session fails instead of falling back to that global store. Legacy
-named V1 stores retain their own files. `test/test_memory_v1_golden.py` pins
-the preserved V1 policies and eager session recall. Shared metadata, record
-editing and optional MCP recall do not convert V1 or replace its prompt path.
+`ExecutionContext` is the immutable value passed across dashboard, channel,
+subagent, schedule and workflow dispatch. It carries stable member identity,
+`MemoryStoreRef(store_id, member_id)`, selection kind, provider template, privacy
+mode and app ownership. The owning session/run/job record persists it. There is
+no second memory-only registry to synchronize. A context is resolved before
+awaited preparation and passed unchanged through queues and continuations.
 
-Private member workflow execution is explicitly unsupported until author and
-worker sessions can retain the complete protected memory identity. Workflow
-service admission rejects private parents before any model work instead of
-silently executing on Global V1; this includes replay and reruns after restart.
+Member names and provider template IDs are separate namespaces. A member selects
+its exact configured store; changing a display name, template or project cannot
+retarget that database. The global value is explicit `store_id="default"` with
+no member ID. Invalid or unavailable member selection does not fall back to it.
+Cross-member dispatch uses explicit `target_member` and ordinary delegation,
+application and tool permissions. Without a target, child work inherits the
+parent. A provider session with native context cannot be relabeled as another
+member; create a new session.
 
-Deleting or package-pruning a Crew Member retires its private store by removing
-the member binding while retaining the ownership record and files for explicit
-recovery. A later member with the same display name is a new generation and is
-provisioned with a fresh random store identity; it never inherits the retired
-generation's history implicitly. The retained store consequently fails normal
-private-store authorization while it is unbound. Sync publishes the new member
-and its ownership record together so a successful sync cannot expose an agent
-whose private store is undeclared.
-After committed deletion or pruning, context and dashboard caches release that
-store's Markdown, lesson, SQLite, FAISS and scoring handles. A cache generation
-check prevents an in-flight constructor from republishing an evicted store.
+`ContextBuilder.ensure_store` prepares the database in a worker thread and caches
+only a validated handle. It calls `open_member_database` for V2 and the existing
+V1 initializer for V1. It configures the embedding callable without reconciling
+V2 storage on a read. Initialization, failed construction, cancellation and
+cache retirement retain their existing handle ownership and locking rules.
 
-On the **default path** a workspace splits three of the six layers and no more:
-`get_memory_for()` hands every non-default *workspace* the default workspace's
-`VectorMemoryStore`, so semantic, episodic and lesson rows are global — a lesson taught
-in a Slack DM applies in the dashboard and vice versa. The Markdown layers
-(`preferences.md`, `projects.md`, `history/`) and the JSONL `LessonStore` are
-per-workspace-directory, so those ARE isolated when channels are configured onto
-different workspaces.
+V2 manual essentials resolve directly from canonical member configuration and
+use guarded document reads without database preparation. Optional SQLite lessons
+are included only when reads are permitted and the database is available. A
+missing learned service produces an explicit diagnostic while manual essentials
+remain usable. No JSONL/global learned fallback exists. Temporary performs no
+learned-memory reads. Incognito permits ordinary read-only recall and denies
+writes, corrections, lesson deletion and consolidation.
 
-On a **named store** all six layers are isolated, because all three handles are that
-store's own: its markdown tree, its FTS index, and its `memory.db` holding its semantic,
-episodic and lesson rows. **A named store must never be handed the global
-`VectorMemoryStore`.** Handing it one is what reduces the crew editor's Memory Store
-control to a read-side illusion: markdown splits, and every crew's semantic, episodic and
-lesson rows still land in one table. A silo whose `memory.db` already exists stays on the
-v1 lineage for the life of that file — only a newly created one gets the crew schema (see
-[Two schema lineages](#two-schema-lineages)).
-
-The JSONL lessons tier is per-target for the same reason. When the resolved store has no
-vector lessons to answer with, a named store reads its OWN `lessons.jsonl` through
-`get_lessons_for(workspace, memory_store)`; the default and workspace paths read
-`self.lessons`, the global store the builder was constructed with. Without that split a
-crew's `[Learned corrections]` block is the operator's global corrections, which is the
-one thing a silo exists to prevent.
-
-The three `/api/lessons` routes (`handlers/cron.py`) are bound by the same rule and reach
-it the same way: `_session_memory_store` reads the caller's binding off its session
-metadata, that binding picks the vector tier, and `_lesson_jsonl_store` picks the JSONL
-tier — **the destination follows the BINDING, never the population.** A named store starts
-empty unless the owner explicitly copies selected knowledge, so "this store holds no lesson rows" is the
-ordinary state of a freshly bound crew, and the answer to it is that store's own
-`lessons.jsonl`. Key the fallback on population instead and an empty silo lists the
-operator's lessons, substring-deletes one of them, and files the crew's own correction into
-the one file every other crew is injected with. A silo also takes no workspace union or
-`scope: "workspace"` arm: a store name and a workspace name are separate namespaces and the
-store is the tighter scope, exactly as `_target_key` resolves them.
-
-#### Two namespaces, two arguments
-
-`get_memory_for(workspace=None, memory_store=None)` and
-`get_lessons_for(workspace=None, memory_store=None)` take a workspace and a store
-SEPARATELY, and must keep doing so. A store name and a workspace name are different
-namespaces, so a single key cannot hold both: collapse them and a crew bound to store
-`acme` alongside a workspace also called `acme` shares one cache slot and one path
-resolution, letting whichever is built first decide where the other one reads.
-`_target_key(workspace, memory_store)` is the only thing that mints cache keys, and
-there are three shapes:
-
-| Key | Means | Vectors |
-|---|---|---|
-| `"default"` | the global store; seeded eagerly in `ContextBuilder.__init__` | the global `VectorMemoryStore` |
-| `"ws:<name>"` | a named workspace on the default path | the global one, shared |
-| `"store:<name>"` | a named memory store | that store's own; mandatory for private V2, optional for legacy V1 |
-
-`:` cannot appear in a store name (`validate_memory_store_name`), so the prefixes
-cannot collide with each other or with `"default"`.
-
-#### The five resolution cases
-
-`_resolved_store_name(memory_store)` answers with a non-default store name, or `""`
-meaning "use the default path". Only an absent/empty argument or the literal
-`"default"` selects that path. A supplied invalid identity is an error:
-
-| Caller passes | Resolves to | Cache key |
-|---|---|---|
-| `None` or `""` | `""` | `"default"`, or `"ws:<name>"` when a workspace is given |
-| `"default"` | `""` — short-circuited before any config read | as above |
-| a declared, usable non-default name | that name | `"store:<name>"` |
-| an **undeclared** name | `UnknownMemoryStore` from `require_memory_store` | no cache entry |
-| a **malformed** name | `UnknownMemoryStore`; no name repair or global fallback | no cache entry |
-
-Validation checks the declared store, private ownership and readable database
-before using a named cache entry. A missing or unreadable member store is never
-replaced with the global store or an automatically created empty database.
-The opened database inode must have exactly one filesystem link; a hard-linked
-alias is refused because path resolution alone cannot show that two store paths
-share one SQLite file.
-
-#### `ensure_store` is async, and separate on purpose
-
-`await ContextBuilder.ensure_store(name)` stands up a named store's own
-`VectorMemoryStore` once and caches it in `_vector_stores`, keyed by resolved store name.
-It returns `None` for the default store (whose vector store is the global one, wired at
-startup). A private V2 failure raises; a declared legacy V1 store may return
-`None` and retain its own Markdown/keyword path.
-
-Before returning either a cached store or the freshly published winner,
-`ensure_store` awaits `align_store_embedding_space` off-loop, without holding
-the cache lock. A store opened while model configuration is still being written
-keeps its existing width and vectors. After persistence, alignment adopts the
-ready candidate's width and signature together; unpublished-store ownership
-stays with the preparation worker.
-
-It cannot live inside `get_memory_for`. That method is synchronous, is called
-unconditionally on every context build, and holds `_stores_lock`; `VectorMemoryStore.init()`
-is blocking file IO end to end (owner-only sweeps, `sqlite3.connect`, the WAL pragma,
-three migrations, a FAISS load) whose documented caller contract is to offload it. A
-blocking init there would stall the event loop for every caller that builds context
-inline and serialize every embed worker on a store's first touch. `init()` also has no
-idempotence guard — it reassigns `self._db` — so a lazily-initializing sync resolver is
-exactly the shape that leaks a connection. One instance per `db_path` is likewise an
-invariant rather than an optimization: two instances over one file do not share
-`_db_lock`, which voids the serialization the store's own writes depend on, so a
-construction race closes the loser.
-
-**Private V2 requires `ensure_store` before context assembly.** An unprepared
-private tier raises with the member store's identity. A legacy V1 named store
-may still use its own Markdown/keyword path, without borrowing global rows.
-`prepare_store_vectors` translates preparation failures into a concrete private
-memory error before a turn-running surface starts provider execution.
-
-#### How a turn-running surface names its store
-
-There are exactly two ways a call site answers "which silo does this turn read", and
-which one applies is decided by what identity the surface holds:
-
-- **A crew alias in scope** → `resolve_agent_bindings(cfg, alias, project).memory_store_name`.
-  This is the dashboard chat turn (`chat_runner`) and a `spawn_run(crew=…)` subagent,
-  where the crew is what the caller was asked for.
-- **Only a session key in scope** → `context.store_of_session(conversation_log, key)`,
-  which validates the recorded `meta["memory_store"]`. Protected subagent run
-  identity is authoritative before transcript metadata is consulted. So is a
-  protected **member** binding: when a session carries one (a chat slot is issued
-  its member identity through the binding, not through the transcript), the
-  immutable binding is the trusted authority and the agent-editable transcript is
-  a lower-trust cross-check that can lag it. Transcript metadata recording no
-  named store yet — an absent `memory_store` key, blank, or the literal `default`,
-  all of which resolve to global V1 — is that lag, not a disagreement, so the
-  binding resolves the store. Only metadata that NAMES A DIFFERENT store is a real
-  disagreement and refuses: metadata can never widen or redirect the binding, only
-  fail to have caught up to it (GH #11862). This
-  is every channel surface. `context.session_store_for_turn(ctx_builder, key)` is the
-  pair a turn needs — that resolution, then `prepare_store_vectors` — and it is what
-  Slack (native and transport), Discord, Telegram, the shared `messaging/dispatch`
-  pipeline, auto-nudge, and both subagent-completion injections call.
-
-`store_of_session` is also what `history_consolidation._consolidate` resolves the write
-side with, which is the point: one conversation's reads and its
-consolidations name one silo. `dashboard/handlers/_shared._session_memory_store` is a
-thin adapter over it (a `DashboardState` rather than a log), not a second implementation
-— two copies is how the dashboard's answer and a channel's answer drift apart for one
-session. An absent key, blank or literal `default` retains global V1. Ordinary
-legacy calls without a log also remain global. A non-string recorded identity,
-unreadable metadata or failed named-store validation raises with its reason;
-the read never falls back to global memory.
-
-**Never derive the store from `agent`.** On every channel surface that field is a
-kiro-cli agent name — a namespace disjoint from `cfg.agents` — so a store derived from
-one resolves to `default` for exactly the crew that configured otherwise, silently, and
-toward the operator's own memory. `scripts/check_memory_store_seam.py`'s
-`store-not-derived-from-agent` rule fails the build for it.
-
-#### The write path
-
-A consolidation learns its store from the session's OWN metadata, not from the
-consolidator's constructor:
-
-- `session_control.create_session` records `memory_store` in birth metadata **only when
-  the resolved binding is not the default store.** ABSENCE means global, so a default
-  user's metadata line stays byte-identical and a session carrying no such key is
-  unambiguously global rather than "global as of whenever it was saved". The birth dict is
-  the only transcript record for a session that is created and then sits idle.
-  For a private V2 member, authorized creation also pins the protected session
-  assignment before writing that dict. This keeps an empty newborn transcript
-  from being mistaken for unverified V1 history on its first turn or after restart.
-  A pre-existing unverified transcript or native session still refuses creation.
-- `memory_store` is in `history.SLOT_OWNED_META_KEYS`, so current slot metadata
-  owns its presence or absence instead of carrying a stale historical value
-  forward. Private member bindings themselves are immutable.
-- `context.store_of_session(log, key)` answers `""` for no key, the literal default or a
-  blank value. Every other value passes strict named-store validation; invalid
-  or unavailable identity aborts that consolidation without a global write. When a
-  protected member binding exists, it is the authority: a transcript recording no
-  named store yet (absent, blank or `default`) resolves to the binding, and only a
-  differently-named store disagrees and raises.
-- `_consolidate` then resolves all three handles for a named store — markdown via
-  `get_memory_for(memory_store=…)`, lessons via `get_lessons_for(memory_store=…)`,
-  vectors via `await ensure_store(…)` — and passes them into
-  `_write_structured_memory(result, key, vector_store)` and
-  `_save_lessons(raw, vector_store, lesson_store)`. Omitting them keeps the global
-  handles, which is what the workspace and default arms want.
-
-The riskiest read on that path is `get_all_semantic`: those rows go into the
-consolidation prompt and the prompt instructs the model to update and DELETE them, so a
-global fetch under a crew's consolidation would show crew B the operator's own semantic
-table and let its turn delete it. That fetch reads the resolved store, never
-`self._vector_store`.
-
-#### Routing a task to a crew
-
-Two tools, one grammar. `route_crew(task)` RANKS the crews whose `triggers` match and
-reports each one's score, `description` and resolved `memory_store`; `select_crew`
-returns the roster for the model to judge. They exist together because the questions
-differ — the same task should reach the same crew when a caller wants determinism, and a
-model should weigh prose when it does not.
-
-Scoring lives in `trigger_match`, shared with `SkillsLoader.get_triggered_skills`. One
-definition on purpose: two would agree on the easy phrasings and diverge on the ones that
-decide a route, and the symptom would be a task handled by the wrong crew — the leak a
-per-crew silo exists to prevent, arriving through the router rather than through the
-store. A crew with no `triggers` is not a candidate, which is the operator's opt-out, and
-no match returns NOTHING rather than the closest crew.
-
-Acting on a route means `spawn_run(crew=…)`, which is the only spawn form that carries a
-crew's store and template together. `spawn_run(agent=<crew name>)` is accepted and runs
-against the DEFAULT store, because `agent` is a template namespace — the reason
-`select_crew`'s guidance names `crew=` explicitly.
-
-#### What is NOT isolated yet
-
-Member-bound execution names its private store. The following unowned V1
-surfaces and shared tools remain outside that per-member scope:
-
-- **Unowned unattended and offline surfaces read the global store.** A scheduled
-  job with `member_id` now validates and uses that member's private store on
-  creation, firing and resume. Jobs without member ownership, the heartbeat,
-  the webhook agent runner
-  (`dashboard/handlers/hooks.py`), the task runner's planner and executor, and
-  `eval/runner.py` pass no store. That is the correct answer for each rather than a
-  pending fix: an unowned job's `agent_id` / `agent_sequence` entries are provider
-  template names rather than member identities; the heartbeat is one process-wide key on the fixed
-  `kirocrew-heartbeat` template; the webhook's `agent` is validated against INSTALLED
-  kiro templates and its `hook:` session is ephemeral, so it records no binding; the
-  task runner's per-step session keys are synthesized, and giving a run the store of
-  the conversation it was started FROM is a design decision about whose memory a task
-  run belongs to rather than a resolution of identity in scope; the eval harness runs a
-  synthetic key in a throwaway workspace. The omission stays visible in
-  `test_memory_store_seam.EXPECTED_BACKLOG` rather than being papered over with a
-  keyword that changes nothing.
-
-  What IS covered: the dashboard chat turn and `spawn_run` resolve a crew alias through
-  `resolve_agent_bindings`; Slack (native and transport), Discord, Telegram, the shared
-  `messaging/dispatch` pipeline, auto-nudge, and both subagent-completion injections
-  resolve the session's own recorded binding through `context.session_store_for_turn`.
-  The store is RESOLVED or CARRIED, never derived from `agent`.
-
-  Delegated runs are likewise covered: `SubagentInfo` carries a `memory_store`, and
-  `spawn_run(crew=…)` resolves a named crew's store through `resolve_agent_bindings`.
-
-  A channel conversation reaches a silo exactly when its session records one — a thread
-  taken over from (or resumed into) a crew-bound dashboard session, or a channel slot
-  whose crew was switched from the dashboard. A channel that was never bound to a crew
-  records no key and runs the v1 path, which is nearly every channel conversation.
-- **The dashboard Memory panel reaches any DECLARED store, for the OWNER only.** The
-  markdown documents, semantic rows, episodic rows, events, carve and stats are read
-  and edited per store through the owner-gated `?store=`, and the retired, backup,
-  and restore routes are store-scoped in the same way (see
-  [Which store a dashboard route reads](#which-store-a-dashboard-route-reads-store)).
-  What is still GLOBAL-store-only is every route that carries no store parameter and
-  opens the gateway's own handles: the memory graph, `observability`,
-  `context-preview`, `promote`, `migrate` and `import`. So a silo can be browsed and
-  edited from its private UI while promotion and the graph remain separate global
-  tools. Those global controls do not mount inside the private member view.
-  `consolidate` is the exception that
-  needs no parameter: it triggers one SESSION's consolidation, and the consolidator
-  resolves that session's own store from its metadata. A non-owner dashboard session
-  keeps reading the global store, exactly as before.
-- **`security.scan_memory` DOES scan a named store** — it is the one reader on this list
-  that reaches one. It enumerates the declared table through `usable_store_names`, opens
-  each store's `resolve_store_path` directly, and attributes every finding with a `store`
-  key; see [security](security.md). What it still does not reach is a silo that is not
-  DECLARED, which is deliberate rather than pending.
-- **The markdown export surfaces cannot read a named store.** `markdown_snapshot` and
-  `read_history_entries` go through `_guarded_entry` →
-  `hooks.safe_read_file_bytes_nolink`, whose resolved-path check calls `is_sensitive_path`
-  — True for anything under the `memory_stores/` fence — so a named store answers with
-  empty entries. Nothing reaches it today: both callers are `kirocrew memory` CLI verbs
-  anchored on `_markdown_memory_store()`, the default store. The ordinary context read
-  path does plain reads and is unaffected, and so are the store-scoped dashboard
-  markdown routes — `read_preferences` / `read_projects` / `read_recent_history` read
-  plainly and never enter `_guarded_entry`, which is why a silo's documents are
-  editable from the Memory panel while `markdown_snapshot` still answers empty for it.
-- **The skills catalog remains shared.** `_run_skill_detection` /
-  `_process_auto_skills` write through `SkillsLoader` into the single skills root.
-  Private V2 consolidation skips that export so a member's private experience
-  cannot automatically become a skill visible to other members. V1 behavior is
-  unchanged.
-- **Per-store `embedding_provider` has no effect, and cannot be given one as written.**
-  `MemoryStoreConfig.embedding_provider` is merged into `effective_memory_config` by
-  `resolve_memory_store_config`, but `_build_store_vectors` reads top-level `cfg.memory`,
-  and the embedder underneath is `get_shared_embedder()` — a process-wide singleton
-  holding one ~700MB model. Two stores on two backends would mean two resident models and
-  two incomparable vector spaces, so this stays inherit-or-restate.
-
-What differs per channel is what gets *recorded* and what reaches the model:
-
-| Surface | Activation | What lands in the `ChannelHistory` buffer | Consolidation | Episodic extraction |
-|---------|-----------|--------------------------------------------|---------------|---------------------|
-| Slack DM (`D`-prefixed id) | `always` (`slack_dm_activation` default) | every authorized message, though it is largely redundant with ACP native session history | yes, both paths | yes |
-| Group channel | `mention` (default for an unlisted channel) | ONLY the messages the bot acts on (a mention, or a reply in a thread it already has a session for); a plain bystander message returns before the push | yes, on the turns it answers | yes |
-| Group channel | `observe` | every authorized message, mention or not, which is the point of the mode | yes, on the turns it answers | yes |
-| Group channel | `off` | nothing: the handler returns before any push. The `!channel` owner command is the one exception it lets through, so the channel can be re-enabled | no | no |
-| Dashboard tab | n/a | no channel buffer (no `channel_id`); ACP native session history covers it | yes, both paths | yes |
-
-The `mention` row is the easy one to get wrong: the buffer is NOT a passive
-recording of channel traffic in that mode. The activation gate returns before
-`channel_history.push`, so the depth the bot can see is the depth of its own
-prior involvement.
-
-Buffer limits, per `ChannelHistory`:
-
-| Mode | Entries | TTL | Clock | Durability |
-|------|---------|-----|-------|------------|
-| default (`mention`) | `_DEFAULT_MAX_ENTRIES` = 50 | `_DEFAULT_TTL_SECS` = 300s | monotonic | in-process only, lost on restart |
-| `observe` | `OBSERVE_MAX_ENTRIES` = 200 | `OBSERVE_TTL_SECS` = 604800s (1 week) | wall clock (required for persistence) | JSONL on disk |
-
-The observe pair is operator-tunable: `slack/gateway.py` constructs
-`ChannelHistory` with `observe_max_entries=observe_max_messages` (default 200)
-and `observe_ttl_secs=observe_ttl_hours × 3600` (default 168.0 hours). The
-default 50/300s pair has no config knob.
-
-A channel quiet for longer than the 5-minute default TTL presents an empty
-buffer even though the bot was there. `observe` buffers persist to
-`~/.kiro/crew/history/<channel_id>.jsonl` (path-validated: refused if it escapes
-the history root or hits `is_sensitive_path`) and are lazily compacted on load,
-dropping entries past the TTL and rewriting the file. `set_observe()` /
-`unset_observe()` re-`deque` an existing buffer to the other `maxlen`, and
-`unset_observe()` deletes the JSONL file.
-
-**The `_user_authorized` injection gate.** `slack/events.py` resolves
-`_user_authorized = is_allowed_user(sender_id)` before anything observable
-happens. No unauthorized sender's text ever reaches the buffer, via two distinct
-mechanisms:
-
-- The **observe** push happens EARLY (before the activation gates, since observe
-  mode records non-mentions), so it carries its own explicit predicate:
-  `should_record_observe_history(channel_history, _user_authorized)`, defined in
-  `security.py` so the rule lives with the other security controls.
-- The **non-observe** push happens late, after `if not _user_authorized: return`,
-  so it is covered by that early return rather than by a second predicate.
-
-This is a prompt-injection control, not a courtesy: the buffer is injected
-verbatim into a later turn's context, so a recorded stranger's message would
-become instructions the model reads on the next authorized `@mention`. For the
-same reason the ordering is load-bearing: the auth check, the message
-interceptor, and the activation-off/governance gates all run BEFORE the first
-push, transcription, or file download, because content that reaches the buffer
-has already bypassed every later gate. The ephemeral "not authorized" reply is
-deliberately deferred until after the activation checks so observe/mention
-channels are not spammed with rejections, but the SEL `denied` event is emitted
-immediately at the auth check, so the audit trail is complete either way.
-
-Even when recorded, channel context is treated as untrusted: `build_message()`
-passes `context_for()` output through `_neutralize_structural_markers()` so
-other users' text cannot forge a prompt boundary, and each formatted line is
-truncated to 300 chars.
+V2 `MemoryStore` delegates history and search to its attached vector store;
+preferences/projects remain manual documents. Consolidation, record edits and
+learned-rule operations address the exact prepared SQLite service. V1 retains
+workspace Markdown, JSONL fallback, separate FTS and its original eager recall.
 
 ## Skills (`skills.py`)
 
@@ -3825,12 +3137,70 @@ delivery; that call is in-memory and safe inline. A cheap `SKILL.md` substring
 gate runs before the offload, so a tool call touching no skill costs a substring
 scan; observer failures in either phase are logged and swallowed.
 
+**Provider registry — two built-ins.** `_build_registry()` registers `skillsh`
+(the public catalog) and `github` (a repository *addressed* rather than searched),
+each through the same `admits_registry("skill", name, api_base)` policy gate, with
+edition-contributed providers appended after. The network layer is one
+implementation: `skill_providers/_http.py` owns the internal-address screen, the
+per-provider redirect allowlist and the bounded body read, and each provider binds
+its own allowlist and SEL audit label onto it. A provider carrying its own copy of
+those checks would drift, and the drift would be found as a bypass — so a new
+provider inherits the boundary instead of restating it.
+
+The `github` provider is an **import, not a subscription**, and that posture is
+what makes it safe without a review step: `owner/repo[@ref][:path]` resolves the
+ref to a commit ONCE, every discovered row's id carries that FULL commit (so the
+preview and the install fetch what discovery showed rather than re-resolving a
+branch that moved; an abbreviated ref would be re-resolved, and a branch whose
+name is hex can shadow a 7-character prefix), the bundle is read from
+`raw.githubusercontent.com` pinned to the full commit, and
+`.skill-import-source.json` records it beside the installed files. Nothing reads
+that record back, so upstream cannot change an imported skill; re-importing is the
+update path and goes through the same human-only gate.
+
+**A bundle is complete or it is refused**, which is one rule covering every way a
+file could be left out: a failed fetch, a body that is not UTF-8, a per-file or
+running-total size ceiling, a file count over the ceiling, two names that collide
+where case is ignored, a truncated git-tree response, an install key that the
+handler's 64-character `_slugify` would truncate onto another skill's key, and a
+directory that merely *contains* skills rather than being one. Each refusal logs
+its reason. The alternative — writing the subset — reports success for a skill
+missing a file its own instructions reference, so it fails later, elsewhere, as a
+puzzle. Paths go through ONE allowlist -- a segment matches
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, depth at most 4, no two paths equal under
+`casefold` -- which is narrower than any filesystem and narrower than the bundle
+writer's own `".." in rel_path` guard. An allowlist rather than a refusal list
+because a refusal list is something review can keep extending: successive rounds
+named Windows-illegal characters, control characters, trailing dots and spaces,
+byte-versus-character limits, Unicode normalisation, reserved device names and
+component length, each a separate clause. Stating what is permitted ends that.
+Three rules survive beside it, for the cases the shape permits: `..` anywhere, a
+trailing dot, and a reserved device stem. The cost is real and accepted -- a
+repository carrying `my file.md` is refused rather than imported -- and it buys the
+property that an import lands complete or names the file it cannot take.
+`TestWriterCompatibility` pins both directions. `fetch_skill_bundle` can only answer `None`, so the
+reason currently reaches the log rather than the user — an error channel on the
+`SkillProvider` Protocol is follow-up work. Branch tracking / re-sync is deliberately out of scope (#746 covers the
+adjacent design). Requests are unauthenticated (60/hour/IP), so private
+repositories are not reachable. An installed skill's key comes from the provider, not from its id:
+`_slugify` lowercases and folds `/`, `@` and `:` all onto `-`, so it is not
+injective over these ids and `foo-bar` would share a key with `foo/bar`. The
+optional `install_slug` hook (documented on the Protocol in `base.py`, probed by
+`_install_slug` in the handler) lets a provider supply
+`<label>-<12 hex of sha256(owner/repo:path)>` instead. The digest covers the
+case-sensitive identity and excludes the ref, so re-importing at a newer commit
+lands on the same key and hits the existing 409 -- an update, not a second copy.
+The hook is additive: a provider that omits it, including `skillsh`, keeps the
+derived-from-id key exactly, and whatever a provider returns is still slugified
+and still gated by `_SAFE_SLUG_RE`, so it names a key without widening what a key
+may be.
+
 **Registry discovery — `skill_discover` / `skill_fetch` MCP tools (`kirocrew-core`).**
 The agent-facing twins of the dashboard's Skills → Discover panel, covering the
 skills that are *not* on disk. Both are read-only and reach the existing
-`skill_providers/` registry (skills.sh today) through the gateway rather than the
-network directly, so provider timeouts, the 1 MiB response cap, the SSRF
-denylist, and `_redact_external` all still apply:
+`skill_providers/` registry through the gateway rather than the network directly,
+so provider timeouts, the 1 MiB response cap, the SSRF denylist, and
+`_redact_external` all still apply:
 
 | Tool | Endpoint | Returns |
 |------|----------|---------|
@@ -4579,6 +3949,18 @@ Foreign-agent hooks are never imported. Hook scripts, hook commands, matchers,
 and hook runtime state are unsupported items: scan/apply may report their
 presence, but must not copy or register them.
 
+Webhook `register_hook` captures the calling session's complete execution record
+before writing its existing `hooks.json` entry. That entry owns the member/store,
+template, app and privacy snapshot alongside its context summary; there is no
+separate protected binding registry. Incognito and Temporary callers cannot
+register persistent hooks: the tool refuses before writing the summary, lock or
+session record. A persistent delivery captures the registration before queueing,
+then passes that immutable context to its worker and prompt. Closing the parent
+or editing the member's template does not reinterpret an existing registration.
+Malformed identity refuses instead of falling back to Global. Existing ordinary
+Global hooks retain their behavior, and webhook token, signature, owner/app and
+governance checks remain independent of memory routing.
+
 ### Script hooks (`ScriptHook`, `run_script_hook`) — the shell per platform
 
 A script hook's `command` is a single shell command line stored in
@@ -4672,7 +4054,7 @@ Merge rules (implemented in `_merge_kiro_hooks()` in `agent.py`):
 ### Record editing and revisions (V1 and V2)
 
 Global V1 retains its Key/Value/Set form in the shared editor, using the existing
-unscoped semantic-write API. The form never renders for a named or private store.
+unscoped semantic-write API. The form never renders for a named or member store.
 Its pending request disables duplicate submission, failures keep both fields for
 retry, and its draft participates in the memory-page navigation guard. Successful
 writes refresh the paged record list. Existing-record corrections in either
@@ -4875,13 +4257,11 @@ original member and document mounted. Old initialization-error metadata is
 displayed as historical diagnostic text and does not suppress retry of a valid
 V1 conversation.
 
-### Private workflow execution
+### Member workflow execution
 
-Dynamic workflows bind their run and worker sessions through the existing
-protected session registry. The workflow identity is immutable across authoring,
-worker reuse, restart and subtree replay. Each private prompt is built after
-`inherit_session_memory` and store preparation; a provider template selects a
-role, never another store. Private run payloads remain under the hidden memory
-root. Worker MCP calls keep their real process/session proof and ordinary
-ownership checks. See [workflows](workflows.md) for the execution and access
-contract. Invalid or retired memory refuses execution without Global V1 fallback.
+Dynamic workflows persist their canonical execution context in the run record.
+Worker creation and reuse, restart and subtree replay retain that identity.
+Provider templates select task roles, not memory owners. Ordinary authenticated
+MCP calls use the worker session record; no memory-specific process proof or
+hidden run-payload directory is involved. See [workflows](workflows.md) for
+workflow ownership and execution permissions.

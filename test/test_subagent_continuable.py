@@ -3368,12 +3368,8 @@ async def test_channel_spawn_carries_verified_member_store(continuation_runtime,
         sessions.release(parent)
         assert sessions.get_agent_selection(parent) == ("member", "worker")
         if not valid_metadata:
-            # A transcript that NAMES A DIFFERENT member's store is a genuine
-            # disagreement with the protected binding and must refuse delegation.
-            # (Absent/blank/``default`` metadata is a lag, not a mismatch, and
-            # resolves to the binding -- covered in test_member_memory_runtime.)
             await asyncio.to_thread(
-                world.history.update_metadata, parent, {"memory_store": world.store}
+                world.history.update_metadata, parent, {"memory_store": "default"}
             )
             with pytest.raises(UnknownMemoryStore):
                 await _spawn_off_loop(manager, "delegated task", parent)
