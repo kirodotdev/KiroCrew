@@ -13690,6 +13690,11 @@ async def _run_chat(
             _flush_segment(state, slot, assistant_text, broadcast=False)
 
         if _answer_text:
+            # Get the withheld tail onto the wire BEFORE any plan reformat, so
+            # the answer is visible while the bounded, cosmetic round-trip runs
+            # instead of leaving the turn blank for the whole of it. No-op when
+            # the redactor holds nothing.
+            _flush_text_stream()
             # ── Plan format validation (planning turn only) ─────
             # `_orch_planning` excludes stage-execution turns, so a stage turn
             # whose output contains plan-like text can never re-arm/re-count.

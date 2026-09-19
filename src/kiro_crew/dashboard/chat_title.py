@@ -755,6 +755,13 @@ def _extract_and_redact_plan_metadata(text: str) -> tuple[list[str], str, list[l
     return titles, goal, descriptions
 
 
+#: Bound on the plan-reformat round-trip. The rephrase is cosmetic: when it
+#: does not return inside this window the turn keeps the model's original text
+#: rather than holding the answer -- and the turn's own finalize -- behind a
+#: second LLM call that a slow or flaky backend can stall indefinitely.
+_PLAN_REPHRASE_TIMEOUT = 20.0
+
+
 async def _rephrase_plan_lite(
     state: DashboardState,
     text: str,
@@ -762,8 +769,34 @@ async def _rephrase_plan_lite(
     *,
     might_not_be_plan: bool = False,
 ) -> str | None:
-    """Rephrase a plan using the cheap background session (kirocrew-lite)."""
+    """Rephrase a plan using the cheap background session (kirocrew-lite).
 
+    Bounded END TO END. Acquiring the shared background session can itself
+    block behind another background turn, so a bound around only the prompt
+    left the caller held at the acquire: the rephrase logged "asking LLM to
+    reformat" and then produced nothing until a manual Stop, and the
+    prompt-level timeout never fired.
+    """
+    try:
+        return await asyncio.wait_for(
+            _rephrase_plan_turn(state, text, issues, might_not_be_plan=might_not_be_plan),
+            timeout=_PLAN_REPHRASE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Plan rephrase timed out after %.0fs; keeping the original text",
+            _PLAN_REPHRASE_TIMEOUT,
+        )
+        return None
+
+
+async def _rephrase_plan_turn(
+    state: DashboardState,
+    text: str,
+    issues: list[str],
+    *,
+    might_not_be_plan: bool,
+) -> str | None:
     async with contextlib.AsyncExitStack() as stack:
         try:
             bg = await stack.enter_async_context(

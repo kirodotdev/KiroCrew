@@ -431,14 +431,25 @@ _PLAN_LIKE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: An explicit stage marker. Required alongside the count below: a bare
+#: numbered list of bolded items is how an ordinary answer enumerates findings
+#: or options, and treating that alone as a plan sent every such answer through
+#: a background reformat round-trip -- the round-trip that held the turn.
+_PLAN_STAGE_RE = re.compile(
+    r"(?:^|\n)\s*(?:Phase|Step|Stage|Part)\s+\d+\s*[:\-—]", re.IGNORECASE
+)
+
 
 def looks_like_plan(text: str) -> bool:
     """Cheap heuristic: does the text look like it might be a plan?
 
-    Intentionally loose — false positives are caught downstream by the
-    LLM-based rephrase which can reject non-plans.
+    Deliberately stricter than "two numbered items": the count alone matched
+    any list of bolded points, which is ordinary prose. A plan must also name
+    at least one stage (``Stage 1:`` and friends). The downstream LLM rephrase
+    still confirms and may reject a false positive, so this errs toward
+    cheapness rather than coverage.
     """
-    return len(_PLAN_LIKE_RE.findall(text)) >= 2
+    return bool(_PLAN_STAGE_RE.search(text)) and len(_PLAN_LIKE_RE.findall(text)) >= 2
 
 
 _GO_ALL_RE = re.compile(r"\[OPTION:\s*Go\s*\|\s*Cancel\s*\]")

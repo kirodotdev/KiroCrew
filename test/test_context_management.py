@@ -260,11 +260,29 @@ def test_looks_like_plan_true():
     assert looks_like_plan("Phase 1: Setup\n- Install deps\nPhase 2: Build\n- Compile") is True
 
 
-def test_looks_like_plan_true_numbered_bold():
+def test_looks_like_plan_false_numbered_bold_without_stage():
+    """A numbered list of bolded points is ordinary prose, not a plan.
+
+    Matching that shape sent every such answer (findings, options) through a
+    background reformat round-trip it did not need, and that round-trip is what
+    held the turn. A plan must also name a stage.
+    """
     from kiro_crew.context_management import looks_like_plan
 
     assert (
         looks_like_plan("1. **Analysis**: check\n2. **Implementation**: code\n3. **Test**: verify")
+        is False
+    )
+
+
+def test_looks_like_plan_true_numbered_bold_with_stage():
+    """The same list qualifies once an explicit stage marker is present."""
+    from kiro_crew.context_management import looks_like_plan
+
+    assert (
+        looks_like_plan(
+            "Stage 1: Analysis\n1. **Check** the input\n2. **Implementation**: code"
+        )
         is True
     )
 
