@@ -10184,6 +10184,8 @@
         "aria_show_details": "Mostrar detalhes da ferramenta: {{label}}",
         "open_in_side_panel": "Abrir {{path}} no painel lateral",
         "opened_in_the_side_panel": "Aberto no painel lateral",
+        "app_not_viewable_here": "Um aplicativo desta etapa não pode ser visto aqui. Peça ao agente para mostrá-lo novamente.",
+        "app_not_viewable_here_named": "O aplicativo {{server}} desta etapa não pode ser visto aqui. Peça ao agente para mostrá-lo novamente.",
         "wait_end_now": "Encerrar espera",
         "wait_ending": "Encerrando…",
         "wait_remaining": "restam {{time}}",

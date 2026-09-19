@@ -10043,6 +10043,8 @@
         "aria_show_details": "Details für Werkzeug {{label}} anzeigen",
         "open_in_side_panel": "{{path}} im Seitenpanel öffnen",
         "opened_in_the_side_panel": "Im Seitenbereich geöffnet",
+        "app_not_viewable_here": "Eine App aus diesem Schritt ist hier nicht sichtbar. Bitte den Agenten, sie erneut anzuzeigen.",
+        "app_not_viewable_here_named": "Die App {{server}} aus diesem Schritt ist hier nicht sichtbar. Bitte den Agenten, sie erneut anzuzeigen.",
         "wait_end_now": "Warten beenden",
         "wait_ending": "Wird beendet…",
         "wait_remaining": "{{time}} übrig",

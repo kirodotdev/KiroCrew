@@ -10043,6 +10043,8 @@
         "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",
         "open_in_side_panel": "{{path}} সাইড প্যানেলে খোলো",
         "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে",
+        "app_not_viewable_here": "এই ধাপের অ্যাপ এখানে দেখা যায় না। এজেন্টকে অ্যাপটি আবার দেখাতে বলুন।",
+        "app_not_viewable_here_named": "এই ধাপের {{server}} অ্যাপ এখানে দেখা যায় না। এজেন্টকে অ্যাপটি আবার দেখাতে বলুন।",
         "wait_end_now": "অপেক্ষা শেষ করো",
         "wait_ending": "শেষ করা হচ্ছে…",
         "wait_remaining": "{{time}} বাকি",

@@ -10043,6 +10043,8 @@
         "aria_show_details": "टूल के लिए विवरण दिखाएँ: {{label}}",
         "open_in_side_panel": "{{path}} को साइड पैनल में खोलें",
         "opened_in_the_side_panel": "साइड पैनल में खोला गया",
+        "app_not_viewable_here": "इस स्टेप का ऐप यहाँ दिखाई नहीं देता। एजेंट से इसे प्रदर्शित करने के लिए कहें।",
+        "app_not_viewable_here_named": "इस स्टेप का {{server}} ऐप यहाँ दिखाई नहीं देता। एजेंट से इसे प्रदर्शित करने के लिए कहें।",
         "wait_end_now": "प्रतीक्षा खत्म करो",
         "wait_ending": "खत्म किया जा रहा है…",
         "wait_remaining": "{{time}} शेष",

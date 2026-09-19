@@ -16,7 +16,7 @@ from collections.abc import Iterator, Mapping
 from itertools import islice
 from pathlib import Path
 
-from kiro_crew import model_registry
+from kiro_crew import mcp_apps_render, model_registry
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import agent_model_map
 from kiro_crew.atomic_write import atomic_write
@@ -39,6 +39,7 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_meta_for_role,
     _sync_dashboard_slots,
     effective_session_key,
+    session_key_for,
     slot_history_key,
     slot_transcript_key,
 )
@@ -629,6 +630,13 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
             # No rollback here: _rehydrate_slot_from_history undoes its own
             # partial slot and restricted key, so every caller gets it rather
             # than only the ones that remembered to compensate.
+        # Restore-time recovery of an app flag whose claim outlived it, after the
+        # handler above rather than inside it: a failure here must not mark the
+        # tab unrestored over a display flag. This driver's reads are inline by
+        # construction, so the spool read is too.
+        _recovered_slot = state._slots.get(key)
+        if _recovered_slot is not None:
+            _recover_mcp_app_claims(_recovered_slot)
         # One yield point per tab, reached on EVERY outcome. A failing tab still
         # costs real I/O, so a run of failing tabs that skipped the yield would
         # monopolise the loop and feed the stall watchdog. The sync driver just
@@ -894,6 +902,11 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             except Exception:
                 logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
                 unrestored.add(key)
+            # Same recovery as the inline driver, with the spool read awaited:
+            # this driver runs on the loop, where a scan would stall the gateway.
+            _recovered_slot = state._slots.get(key)
+            if _recovered_slot is not None:
+                await _recover_mcp_app_claims_async(_recovered_slot)
             # sleep(0) yields to the ready queue without adding wall-clock delay.
             # Reached on EVERY outcome, including a failing tab (see the
             # generator's note) — and still needed with the reads offloaded,
@@ -906,6 +919,84 @@ async def restore_open_slots_async(state: DashboardState) -> int:
         # disable open-tab persistence for the rest of the process's life.
         state.restoring_open_slots = False
     return restored
+
+
+def _reconcile_mcp_app_claims(slot: _ChatSlot, claims: list[set[str]]) -> None:
+    """Recover app flags whose claim reached disk but whose row flag did not.
+
+    A gateway death between ``_take_claim``'s sidecar write and the slot save
+    that would have persisted ``meta["mcp_app"]`` leaves a SPENT claim on an
+    unflagged row, so the app is gone with nothing saying it existed. Nothing
+    else recovers it: the in-turn recovery is in ``handle_tool_result``, whose
+    only caller is the live turn path, and the marker that would let a replay
+    re-detect it was stripped before the row was written.
+
+    Best-effort by construction. It is a display flag, not state anything else
+    reads, so a failure here must leave the restore itself untouched -- a session
+    that loads without a notice is the state we already had, while a restore that
+    raises loses the whole transcript.
+
+    Two phases, split the way every restore path here splits: *claims* is read on
+    a worker thread by :func:`_read_mcp_app_claims` and handed in, while this half
+    only touches memory and is safe on the loop. Call it AFTER the restore has
+    marked the slot clean -- a recovered flag has to leave it dirty again, since
+    the sidecar it came from is swept at its TTL and an unsaved recovery is a
+    notice lost for good.
+    """
+    try:
+        if mcp_apps_render.apply_claimed_rows(claims, slot.messages):
+            slot._dirty = True
+    except Exception:
+        logger.debug("mcp-apps claim reconcile failed for %s", slot.key, exc_info=True)
+
+
+def _read_mcp_app_claims(session_key: str) -> list[set[str]]:
+    """One row group per spent claim for *session_key*, read from the spool.
+
+    Grouped rather than flattened: each claim is one app occurrence and only the
+    grouping says which rows belong to which, so a flat set would let one
+    occurrence's lead marker suppress another's after a reset reissued a call id.
+
+    Takes the KEY, not a slot, because one caller has no slot yet: the targeted
+    rehydration must read the spool in its prefetch phase, before the slot exists
+    at all. Every caller must pass the CANONICAL producing-session key -- what
+    ``effective_session_key`` answers for a built slot and ``session_key_for`` for
+    a name plus its persisted link -- since the claim records that key and the bare
+    slot key every other chat event routes on matches nothing here, recovering
+    nothing in silence.
+
+    This is the FILESYSTEM half, so a loop-affine caller must hand it to a worker
+    thread (:func:`_recover_mcp_app_claims_async`). Best-effort: an unreadable
+    spool returns nothing to recover rather than failing a restore.
+    """
+    try:
+        return mcp_apps_render.load_claimed_row_groups(session_key)
+    except Exception:
+        logger.debug("mcp-apps claim read failed for %s", session_key, exc_info=True)
+        return []
+
+
+def _recover_mcp_app_claims(slot: _ChatSlot) -> None:
+    """Recover app flags for *slot*, reading the spool inline.
+
+    For the restore drivers whose reads are inline by construction -- the
+    generator behind :func:`restore_open_slots` and its recent-sessions twin. A
+    loop-affine driver must use :func:`_recover_mcp_app_claims_async` instead, or
+    it stalls the gateway on a spool scan.
+    """
+    _reconcile_mcp_app_claims(slot, _read_mcp_app_claims(effective_session_key(slot)))
+
+
+async def _recover_mcp_app_claims_async(slot: _ChatSlot) -> None:
+    """:func:`_recover_mcp_app_claims`, with the spool read off the event loop.
+
+    Same prefetch-then-apply split the async restore drivers already use for
+    their transcript reads: the scan runs on a worker thread, the flagging is
+    pure memory and stays here.
+    """
+    _reconcile_mcp_app_claims(
+        slot, await asyncio.to_thread(_read_mcp_app_claims, effective_session_key(slot))
+    )
 
 
 def _attach_variants(slot: _ChatSlot, m: dict) -> None:
@@ -1767,6 +1858,10 @@ async def rehydrate_slot_from_history_async(
     (a ✕ during the read) and :func:`_deletion_during_read` (the session deleted,
     or deleted and recreated, during the read). Returning ``None`` for either is
     part of the contract — the callers already handle a ``None`` result.
+
+    A rebuilt slot also gets its MCP-app claim recovery here, so every caller has
+    it without asking; see the comment at that call for why it is not each
+    caller's job.
     """
     if not state.conversation_log:
         return None
@@ -1789,6 +1884,26 @@ async def rehydrate_slot_from_history_async(
     if messages is None:
         return None
     meta = _meta
+    # Read the spool HERE, in the awaiting phase, not after the build. The two
+    # race re-checks below are placed synchronously and immediately before the
+    # build precisely so no await can reopen the windows they close, and an await
+    # AFTER the build reopens the deletion one a step later: the slot is published
+    # by then, so a deletion landing during that await leaves the caller holding a
+    # slot for a session that has been deleted, and the delete-won save discards
+    # what it accepts. The remedy is the split this module uses everywhere else --
+    # filesystem work in the prefetch phase, the apply synchronous.
+    #
+    # The key has to be derived rather than asked of a slot, because there is no
+    # slot yet: ``session_key_for`` is the same rule ``effective_session_key``
+    # applies, and the builder below sets ``linked_session_key`` from this very
+    # metadata field, so the two answer alike. ``history_key`` is NOT the fallback
+    # -- it resolves the transcript FILE and its own docstring says the session key
+    # cannot be recovered that way, so a channel-born slot would be addressed as a
+    # ``dashboard:`` session that does not exist.
+    _claims = await asyncio.to_thread(
+        _read_mcp_app_claims,
+        session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
+    )
     # Tab-close race. The user can click ✕ while the read above is in flight.
     # The close pops the slot and records a tombstone synchronously on the loop,
     # but persists the ``closed`` flag only after its own awaits — so the
@@ -1827,7 +1942,7 @@ async def rehydrate_slot_from_history_async(
             gone,
         )
         return None
-    return _rehydrate_slot_from_history(
+    _restored = _rehydrate_slot_from_history(
         state,
         slot_name,
         kiro_model_map=model_map,
@@ -1837,6 +1952,26 @@ async def rehydrate_slot_from_history_async(
         _prefetched_member_identity=_member_id,
         _prefetched_agent=agent,
     )
+    if _restored is not None:
+        # Claim recovery belongs HERE, not in each caller: this function is how
+        # anything outside this module rebuilds one slot from disk by TARGETED
+        # history rehydration -- `channel_slots.surface_channel_session` reaches a
+        # slot by its own route, so "the only way" would overstate it -- and it has
+        # eight such callers (members, messaging, files, two in the Slack
+        # gateway, Issue Radar, Spec Builder). Hooking them one at a time is how
+        # the bulk drivers were first wired and two of four were missed; a caller
+        # added later would silently restore a row whose flag the crash lost.
+        #
+        # SYNCHRONOUS, and after the build so the slot the recovery may mark dirty
+        # is the one the caller receives. No await may separate the deletion
+        # re-check above from this line, which is why the spool read happened back
+        # in the prefetch phase -- the apply itself only touches memory.
+        #
+        # The live-slot early return above is deliberately NOT covered: nothing was
+        # read from disk there, its flags are already in memory, and messaging's
+        # cache hit would pay a spool scan per lookup.
+        _reconcile_mcp_app_claims(_restored, _claims)
+    return _restored
 
 
 def _recent_session_slot_name(key: str) -> str | None:
@@ -2213,6 +2348,11 @@ def _restore_recent_sessions_steps(
             agent=agent,
         )
         restored += 1
+        # Recover an app flag whose claim outlived its row, as the open-slots
+        # driver does. This driver's reads are inline by construction.
+        _recovered_slot = state._slots.get(slot_name)
+        if _recovered_slot is not None:
+            _recover_mcp_app_claims(_recovered_slot)
         # One yield point per restored session (see _restore_open_slots_steps).
         yield restored
     _sync_dashboard_slots(state)
@@ -2341,6 +2481,11 @@ async def restore_recent_sessions_async(
                 agent=agent,
             )
             restored += 1
+            # Same recovery, with the spool read awaited: this driver is
+            # loop-affine, so a scan here would stall the gateway.
+            _recovered_slot = state._slots.get(slot_name)
+            if _recovered_slot is not None:
+                await _recover_mcp_app_claims_async(_recovered_slot)
             await asyncio.sleep(0)
         _sync_dashboard_slots(state)
     finally:

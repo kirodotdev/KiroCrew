@@ -9903,6 +9903,8 @@
         "blocked_by_security_policy": "セキュリティポリシーによりブロックされました",
         "open_in_side_panel": "{{path}} をサイドパネルで開く",
         "opened_in_the_side_panel": "サイドパネルで開きました",
+        "app_not_viewable_here": "このステップのアプリはここでは表示できません。エージェントにもう一度表示してもらってください。",
+        "app_not_viewable_here_named": "このステップの {{server}} アプリはここでは表示できません。エージェントにもう一度表示してもらってください。",
         "wait_end_now": "待機を終了",
         "wait_ending": "終了中…",
         "wait_remaining": "残り {{time}}",

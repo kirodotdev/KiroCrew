@@ -234,7 +234,6 @@ src/kiro_crew/knowledge/spend.py
 src/kiro_crew/knowledge/store.py
 src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
-src/kiro_crew/mcp_apps_render.py
 src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
@@ -671,7 +670,6 @@ test/test_mcp_api_port_resolution.py
 test/test_mcp_app_panel_config.py
 test/test_mcp_apps_call_endpoint.py
 test/test_mcp_apps_e2e.py
-test/test_mcp_apps_render.py
 test/test_mcp_artifact_folders.py
 test/test_mcp_artifacts.py
 test/test_mcp_core.py

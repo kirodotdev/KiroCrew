@@ -762,6 +762,24 @@ def slot_history_key(slot: _ChatSlot) -> str:
     return _history_key_for(slot.key)
 
 
+def session_key_for(slot_key: str, linked_session_key: str = "") -> str:
+    """:func:`effective_session_key`'s rule, for a slot that does not exist yet.
+
+    The restore paths build slots FROM disk, so a step that has to address the
+    session before the build has only the slot NAME and the persisted
+    ``linked_session_key`` from the transcript's metadata. This is the same
+    relationship :func:`slot_transcript_key` has to the slot's FILE -- except that
+    one resolves the file and cannot recover the session key at all, so it is the
+    wrong fallback here and a channel-born slot would be addressed as a
+    ``dashboard:`` session that does not exist.
+
+    :func:`effective_session_key` delegates to this rather than repeating it: a
+    second spelling of the rule would drift, and a restore asking with a key the
+    live path never uses matches nothing and fails in SILENCE.
+    """
+    return linked_session_key or _history_key_for(slot_key)
+
+
 def effective_session_key(slot: _ChatSlot) -> str:
     """The session key for *slot* — the session its turns run on.
 
@@ -776,9 +794,10 @@ def effective_session_key(slot: _ChatSlot) -> str:
     turns run on, mirroring its links. For the slot's TRANSCRIPT use
     :func:`slot_history_key`, which resolves the unbound-channel-slot case onto
     the file the read paths actually use. Reserve :func:`_history_key_for` for
-    the cases that genuinely start from a slot key with no slot in hand.
+    the cases that genuinely start from a slot key with no slot in hand, and
+    :func:`session_key_for` for the ones that have no slot YET.
     """
-    return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
+    return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
 
 
 def subagents_attached(

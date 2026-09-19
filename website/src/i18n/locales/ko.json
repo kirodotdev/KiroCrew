@@ -9903,6 +9903,8 @@
         "blocked_by_security_policy": "보안 정책에 의해 차단되었습니다",
         "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
         "opened_in_the_side_panel": "사이드 패널에서 열었습니다",
+        "app_not_viewable_here": "이 단계에서 만들어진 앱은 여기에서 보이지 않습니다. 에이전트에게 다시 보여달라고 요청하세요.",
+        "app_not_viewable_here_named": "이 단계에서 만들어진 {{server}} 앱은 여기에서 보이지 않습니다. 에이전트에게 다시 보여달라고 요청하세요.",
         "wait_end_now": "대기 종료",
         "wait_ending": "종료 중…",
         "wait_remaining": "{{time}} 남음",

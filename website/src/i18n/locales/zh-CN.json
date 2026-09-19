@@ -9902,6 +9902,8 @@
         "aria_show_details": "展开工具详情：{{label}}",
         "open_in_side_panel": "在侧边面板中打开 {{path}}",
         "opened_in_the_side_panel": "已在侧边栏中打开",
+        "app_not_viewable_here": "这一步生成的应用在此处无法查看。请让代理再演示一次。",
+        "app_not_viewable_here_named": "这一步生成的 {{server}} 应用在此处无法查看。请让代理再演示一次。",
         "wait_end_now": "结束等待",
         "wait_ending": "正在结束…",
         "wait_remaining": "剩余 {{time}}",

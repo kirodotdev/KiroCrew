@@ -9,7 +9,7 @@ import { readToolRiskRecord, toolRiskFieldOf } from './toolRiskRecord'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
-import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown } from 'lucide-react'
+import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown, AppWindow } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import ErrorNotice from '../../components/ErrorNotice'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
@@ -188,6 +188,49 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     const sk = slot ?? s.chat.activeSlot
     return toolCallId && sk ? s.chat.mcpApps?.[mcpAppKey(sk, toolCallId)] : undefined
   })
+
+  // An auto-approved call writes TWO tool rows under one `tool_call_id` (the
+  // pre-approval pill and the post-approval one), and the durable app flag is
+  // stored on both, so a bare flag check would draw the notice twice and read as
+  // two lost apps rather than one. The BACKEND marks one of them: it stamps
+  // `mcp_app_lead` on the first row it flags for that call, and only that row
+  // draws.
+  //
+  // Read rather than derived, because deriving it here cannot work. Two client
+  // rules were tried and each failed on a transcript-preserving reset, which
+  // leaves a historical row holding an id the backend later reissues: keying on
+  // the first row for the id picked the stale row, which the backend does not
+  // flag, so nothing drew at all; keying on the first FLAGGED row picked the
+  // stale row whenever IT had had an app of its own, so the newer app's notice
+  // was suppressed instead. The transcript simply does not say which rows belong
+  // to one call -- only the turn that wrote them does, and the marker is that
+  // turn speaking. It also removes the scan: no row index, no ordering compare.
+  //
+  // Every row carrying `mcp_app` is written by the code that also writes this
+  // marker, since both arrive together, so there is no earlier flagged row to
+  // fall back for. A flagged row without the marker is therefore a non-lead
+  // sibling and is meant to stay bare.
+  const isFirstRowForCall = message.meta?.mcp_app_lead === true
+
+  // Did this call produce an MCP App? Persisted by the backend on the tool row
+  // (`_meta["mcp_app"]`, chat_runner.py) when the app's single-use render was
+  // claimed, because the payload is the only carrier of the app and it is
+  // live-only: owner-scoped WS, a callback capability, and a spool record that
+  // expires. A reload, a bounded-cache eviction, a guest WebSocket and an
+  // unattended run with no viewer all leave `mcpApp` undefined with nothing to
+  // rebuild from, and this flag is what tells those apart from a row that never
+  // had an app. Rows written before the field existed read undefined and render
+  // nothing.
+  const hadMcpApp = message.meta?.mcp_app === true
+
+  // The server name for the ABSENCE NOTICE, read from the row's own persisted meta
+  // rather than from `mcpServer` below. The two disagree whenever a `tool_call_id`
+  // is shared: `mcpServer` prefers the matching tool-log entry, and a
+  // transcript-preserving reset can hand a NEWER call an id an older row also
+  // carries, so that lookup resolves to the newer call and names ITS server in a
+  // notice about this row's app. A row's meta is written with the row and no later
+  // call can reassign it, which is the property the notice needs.
+  const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon. All transcript scans go
@@ -1134,7 +1177,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           diagram used to be reads as a broken render. Clicking it re-focuses —
           or re-creates — the tab, which is the route back after the user closes
           it, since auto-open does not re-open a tab they dismissed. */}
-      {mcpApp && (appInPanel
+      {mcpApp ? (appInPanel
         ? (
           <button
             type="button"
@@ -1145,7 +1188,33 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             <span>{i18nT('pages.chat.toolCallLine.opened_in_the_side_panel')}</span>
           </button>
         )
-        : <McpAppFrame payload={mcpApp} />)}
+        : <McpAppFrame payload={mcpApp} />)
+        /* The app this call produced is not on screen. Say so where the frame
+           would have been: the tool's own text survives a reload and can
+           describe a diagram the reader cannot see, and an unmarked gap gives
+           them no way to tell a degraded view from a turn that was only ever
+           text. The copy names the outcome and the way back rather than the
+           cause, because the causes differ (reload, eviction, a guest socket,
+           an unattended run) while the remedy is one: ask the agent again.
+           Plain content rather than an ErrorNotice -- nothing failed, and this
+           is the designed lifecycle. */
+        : hadMcpApp && isFirstRowForCall && (
+          <div className="mt-1.5 flex items-center gap-2 px-1.5 py-0.5 -ml-1.5 text-[12px] leading-5 text-muted">
+            <AppWindow size={13} aria-hidden />
+            {/* Name the app when the ROW knows which one it was -- `noticeServer`,
+                the row's own persisted `meta.mcp_server` (`_tool_identity_fields`),
+                never the log-preferring `mcpServer`, which a reused `tool_call_id`
+                can point at a newer call's server. It survives a reload for the
+                same reason, which matters because a reload is the main way this
+                notice is reached. The backend omits the field rather than sending
+                it empty when it has no identity, and the generic string covers
+                exactly that case. Two notices in one transcript then name two
+                different apps instead of reading as one app reported twice. */}
+            <span>{noticeServer
+              ? i18nT('pages.chat.toolCallLine.app_not_viewable_here_named', { server: noticeServer })
+              : i18nT('pages.chat.toolCallLine.app_not_viewable_here')}</span>
+          </div>
+        )}
     </motion.div>
   )
 })
