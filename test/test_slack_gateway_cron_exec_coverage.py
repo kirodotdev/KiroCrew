@@ -1890,3 +1890,73 @@ class TestTaskNotifyChannelRouting:
 
         deliver.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
+
+
+class TestCronResolvesAgentAlias:
+    """A cron whose agent is a KiroCrew ALIAS must dispatch the alias's real
+    kiro agent mode + workspace, not the alias verbatim.
+
+    Regression: a cron created in a Slack channel carries that channel's agent
+    alias (e.g. ``in-3d``) in ``job.agent_id``. kiro-cli only accepts a
+    materialized agent MODE, so dispatching the alias failed every run with
+    "Agent mode 'in-3d' is not available on this session … its
+    ~/.kiro/agents/in-3d.json is likely missing". The Slack chat path already
+    collapses the alias via resolve_agent_bindings; the cron path did not.
+    """
+
+    @staticmethod
+    def _cfg_with_alias(ws_dir: str) -> Any:
+        from kiro_crew.config.loader import (
+            KiroCrewAgentConfig,
+            WorkspaceConfig,
+        )
+
+        return KiroCrewConfig(
+            agents={
+                "in-3d": KiroCrewAgentConfig(
+                    kiro_agent="kirocrew",
+                    workspace="in-3d",
+                    memory_store="default",
+                ),
+            },
+            workspaces={"in-3d": WorkspaceConfig(dir=ws_dir)},
+        )
+
+    @pytest.mark.asyncio
+    async def test_alias_agent_id_dispatches_resolved_kiro_agent_and_cwd(self, tmp_path):
+        ws_dir = str(tmp_path / "in-3d-ws")
+        orch = _make_orchestrator()
+        orch._cfg = self._cfg_with_alias(ws_dir)
+        orch.sessions = _message_arm_sessions()
+        orch.dashboard_state = _mock_dashboard_state()
+        # agent_id is the channel alias; the fix must resolve it to kirocrew.
+        job = _job(id="ja1", name="alias probe", agent_id="in-3d")
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            await callback(job)
+
+        orch.sessions.get_or_create.assert_awaited()
+        kw = orch.sessions.get_or_create.await_args.kwargs
+        # Dispatched the alias's kiro_agent, NOT the raw alias 'in-3d'.
+        assert kw.get("agent") == "kirocrew"
+        # Ran in the alias's workspace, not the default cwd.
+        assert kw.get("cwd") == ws_dir
+
+    @pytest.mark.asyncio
+    async def test_unknown_agent_is_passed_through_unchanged(self, tmp_path):
+        """A non-alias agent (already a real mode, or unmapped) is unchanged:
+        the resolver misses and the raw value is dispatched with cwd=None."""
+        ws_dir = str(tmp_path / "in-3d-ws")
+        orch = _make_orchestrator()
+        orch._cfg = self._cfg_with_alias(ws_dir)
+        orch.sessions = _message_arm_sessions()
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(id="ja2", name="passthrough probe", agent_id="kirocrew-lite")
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            await callback(job)
+
+        kw = orch.sessions.get_or_create.await_args.kwargs
+        # Not an alias in config.agents → dispatched verbatim, no workspace cwd.
+        assert kw.get("agent") == "kirocrew-lite"
+        assert kw.get("cwd") is None
