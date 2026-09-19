@@ -93,7 +93,7 @@ from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -530,8 +530,7 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
     if exc is not None:
         try:
             tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            redacted_tb, _ = redact_credentials(tb)
-            redacted_tb, _ = redact_exfiltration_urls(redacted_tb)
+            redacted_tb = redact(tb)
             logger.error("Background task failed:\n%s", redacted_tb)
         except Exception as redaction_err:
             # Include the redaction failure class so bugs in the redactor are visible,

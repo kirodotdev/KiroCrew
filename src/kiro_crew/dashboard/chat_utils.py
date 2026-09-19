@@ -49,6 +49,7 @@ from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
     oauth_url_contains_credential,
+    redact,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -525,8 +526,7 @@ def _append_compaction_notice(state: DashboardState, slot: _ChatSlot, msg_text: 
     so a future caller passing unredacted LLM-derived text (e.g. a compaction
     summary) can never leak a credential/exfil URL. Both passes are idempotent.
     """
-    msg_text, _ = redact_credentials(msg_text)
-    msg_text, _ = redact_exfiltration_urls(msg_text)
+    msg_text = redact(msg_text)
     meta = {"kind": "compaction"}
     append_and_surface(
         state, slot, "assistant", msg_text, "msg msg-a", meta=meta, extra={"kind": "compaction"}
@@ -555,8 +555,7 @@ def _broadcast_compaction_result(
     if status_type == "completed":
         slot._compaction_fail_streak = 0
         slot._compaction_fail_cooldown_until = 0.0
-        summary, _ = redact_credentials(event.title)
-        summary, _ = redact_exfiltration_urls(summary)
+        summary = redact(event.title)
         msg_text = (
             f"✅ Conversation compacted: {summary}" if summary else "✅ Conversation compacted."
         )
@@ -577,8 +576,7 @@ def _broadcast_compaction_result(
             # once/twice. Nothing new to say — don't spam identical notices.
             return None
 
-        error, _ = redact_credentials(event.title or "unknown error")
-        error, _ = redact_exfiltration_urls(error)
+        error = redact(event.title or "unknown error")
         if streak <= _COMPACTION_NOTICE_SHOW_FIRST_N:
             msg_text = f"❌ Compaction failed: {error}"
         else:

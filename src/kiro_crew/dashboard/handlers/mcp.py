@@ -57,7 +57,7 @@ from kiro_crew.mcp_utils import (
     mcp_server_alias,
 )
 from kiro_crew.platform.governance import may_skip_gate_now
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -784,8 +784,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
             d["status"] = "disabled"
         err = d.get("error")
         if err:
-            err, _ = redact_credentials(err)
-            err, _ = redact_exfiltration_urls(err)
+            err = redact(err)
             d["error"] = err
         result.append(d)
     # Annotated HERE too, not only on the probe endpoints. This is the endpoint

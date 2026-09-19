@@ -29,7 +29,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import is_link_or_junction
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_with_findings
 from kiro_crew.skill_trust import ReviewedProjectChanged as _ReviewedProjectChanged
 from kiro_crew.skill_trust import (
     TrustStoreFull,
@@ -652,8 +652,7 @@ def _local_prompt_entry(name: str, project_dir: Path | None) -> dict[str, Any] |
 def _redact_prompt(p: dict[str, Any]) -> None:
     """Redact credential patterns and exfiltration URLs from prompt metadata."""
     for field in ("description", "path"):
-        p[field], _ = redact_credentials(p[field])
-        p[field], _ = redact_exfiltration_urls(p[field])
+        p[field] = redact(p[field])
 
 
 async def api_prompts(request: web.Request) -> web.Response:
@@ -871,8 +870,7 @@ async def api_prompt_detail(request: web.Request) -> web.Response:
     # given, so a redacted copy must never be offered as an edit base: saving it
     # would replace the real token with the redaction marker. The write path
     # cannot detect that after the fact, so the read path says so here.
-    content, cred_hits = redact_credentials(content)
-    content, url_hits = redact_exfiltration_urls(content)
+    content, cred_hits, url_hits = redact_with_findings(content)
     out = dict(p)
     _redact_prompt(out)
     # Strip full filesystem path — return display-only relative path
@@ -1746,8 +1744,7 @@ async def _api_user_prompt_detail(request: web.Request, name: str, scope: str) -
             {"error": "file too large", "code": "content_too_large"}, status=413
         )
     body = content or ""
-    body, cred_hits = redact_credentials(body)
-    body, url_hits = redact_exfiltration_urls(body)
+    body, cred_hits, url_hits = redact_with_findings(body)
     # Metadata gets the same treatment as the unscoped branch: a description read
     # out of frontmatter is file content too, and can carry a token.
     out = {

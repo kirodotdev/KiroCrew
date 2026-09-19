@@ -73,7 +73,7 @@ from kiro_crew.platform.update_layout import set_release_channel, wheel_update_c
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
 from kiro_crew.platform_compat import reexec_launcher, reexec_python_module
 from kiro_crew.safety_override import flush_breadcrumb_writes
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
 
@@ -1384,8 +1384,7 @@ async def _build_frontend(proj: str, state: DashboardState) -> None:
     from kiro_crew import frontend
 
     def _push(step: str, msg: str) -> None:
-        msg, _ = redact_credentials(msg)
-        msg, _ = redact_exfiltration_urls(msg)
+        msg = redact(msg)
         # frontend emits ("warning", detail); show it as a non-fatal build note.
         state.push_update_progress("building", msg)
 
@@ -1417,8 +1416,7 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     def _publish(step: str, message: str) -> None:
         # dep_sync hands pip's output over raw; this is the surface that publishes
         # it, so redaction and the length cap belong here.
-        message, _ = redact_credentials(message)
-        message, _ = redact_exfiltration_urls(message)
+        message = redact(message)
         if len(message) > 1000:
             message = message[:1000] + "\n…(truncated)"
         state.push_update_progress(step, message)
@@ -2708,8 +2706,7 @@ async def api_update_approve(request: web.Request) -> web.Response:
             # basic-auth credentials in the URL), and the kiro_crew logger
             # feeds the ring buffer that /api/logs streams to the dashboard —
             # a raw log line is the same exposure as a raw progress push.
-            message, _ = redact_credentials(str(exc))
-            message, _ = redact_exfiltration_urls(message)
+            message = redact(str(exc))
             logger.warning("In-app wheel update failed: %s", message)
             await _audit("failed", error=message, resources=f"v{pending.version}")
             state.push_update_progress("failed", message)

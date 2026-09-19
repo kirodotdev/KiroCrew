@@ -20,7 +20,7 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import _get_skills
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, provider_available
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
@@ -71,8 +71,7 @@ def _redact_external(text: str) -> str:
     """
     if not text:
         return text
-    scrubbed, _ = redact_credentials(text)
-    scrubbed, _ = redact_exfiltration_urls(scrubbed)
+    scrubbed = redact(text)
     return _URL_SECRET_PARAM_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", scrubbed
     )
@@ -421,8 +420,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "Fetch timed out"}, status=504)
     except Exception as exc:
-        scrubbed, _ = redact_credentials(str(exc))
-        scrubbed, _ = redact_exfiltration_urls(scrubbed)
+        scrubbed = redact(str(exc))
         logger.warning("Failed to fetch skill %r from %s: %r", _safe_skill_id, provider_name, scrubbed)
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),

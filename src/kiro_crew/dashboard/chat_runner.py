@@ -309,6 +309,7 @@ from kiro_crew.security import (
     StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
+    redact,
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
@@ -2276,14 +2277,11 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     # (path not on the sensitive-path list) would briefly appear in the chip
     # diff. Redact in place so both the live and persisted views are clean.
     for entry in deduped.values():
-        entry["path"], _ = redact_credentials(entry["path"])
-        entry["path"], _ = redact_exfiltration_urls(entry["path"])
+        entry["path"] = redact(entry["path"])
         if entry["before"]:
-            entry["before"], _ = redact_credentials(entry["before"])
-            entry["before"], _ = redact_exfiltration_urls(entry["before"])
+            entry["before"] = redact(entry["before"])
         if entry["after"]:
-            entry["after"], _ = redact_credentials(entry["after"])
-            entry["after"], _ = redact_exfiltration_urls(entry["after"])
+            entry["after"] = redact(entry["after"])
     # No-op entries (before == after, e.g. an idempotent format-on-save)
     # are deliberately KEPT: the dashboard renders an explicit "no changes"
     # caption for them (FileChangeChips) instead of a contentless diff, so
@@ -2404,8 +2402,7 @@ def _redact_acp_string(s: str) -> str:
     """
     if not s:
         return s
-    s, _ = redact_credentials(s)
-    s, _ = redact_exfiltration_urls(s)
+    s = redact(s)
     return s
 
 
@@ -4476,8 +4473,7 @@ def _resolve_prompt_mention(
     # line operate on exactly what the agent receives.
     content = _strip_yaml_frontmatter(content)
 
-    content, _ = redact_credentials(content)
-    content, _ = redact_exfiltration_urls(content)
+    content = redact(content)
 
     # Inject SOP as instructions the agent must follow
     expanded = f"Execute the following instructions:\n\n{content}"
@@ -4626,8 +4622,7 @@ def _expand_dollar_skills(
     blocks: list[str] = []
     names: list[str] = []
     for _token, name, body in resolved:
-        body, _ = redact_credentials(body)
-        body, _ = redact_exfiltration_urls(body)
+        body = redact(body)
         blocks.append(f"[Skill: {name}]\n\n{body}")
         names.append(name)
 
@@ -5904,8 +5899,7 @@ async def _handle_workflow_command(
                 f"`{started.get('run_id')}` from revision {started.get('revision')}. "
                 "Its result will appear here when it finishes."
             )
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    text = redact(text)
     slot.append("assistant", text, "msg msg-a")
     sel().log_tool_invocation(
         session_key=session_key,
@@ -8659,8 +8653,7 @@ async def _run_chat(
                 desc = f" — {p['description']}" if p["description"] else ""
                 lines.append(f"- `@{p['fullName']}`{desc}")
         text = "\n".join(lines)
-        text, _ = redact_credentials(text)
-        text, _ = redact_exfiltration_urls(text)
+        text = redact(text)
         slot.append("assistant", text, "msg msg-a")
         sel().log_tool_invocation(
             session_key="",
@@ -12715,8 +12708,7 @@ async def _run_chat(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )
             elif event.kind == EVENT_AGENT_SWITCHED:
-                new_agent, _ = redact_credentials(event.text)
-                new_agent, _ = redact_exfiltration_urls(new_agent)
+                new_agent = redact(event.text)
                 if new_agent and (
                     private_member or (slot.mode == "member" and new_agent != slot.agent)
                 ):
@@ -13592,8 +13584,7 @@ async def _run_chat(
                 logger.info("Deferred compaction result: %s", compaction_result)
                 if compaction_result["type"] == "completed":
                     _restore_skills_context_after_compaction()
-                    summary, _ = redact_credentials(compaction_result.get("summary", ""))
-                    summary, _ = redact_exfiltration_urls(summary)
+                    summary = redact(compaction_result.get("summary", ""))
                     msg = (
                         f"✅ Conversation compacted: {summary}"
                         if summary
@@ -13614,8 +13605,7 @@ async def _run_chat(
                     # the text is backend-echoed, so it is not trusted to be
                     # free of credentials or exfiltration URLs even though the
                     # provider already redacts once at its own boundary.
-                    error, _ = redact_credentials(compaction_result.get("summary", ""))
-                    error, _ = redact_exfiltration_urls(error)
+                    error = redact(compaction_result.get("summary", ""))
                     error = error.strip()
                     if len(error) > _COMPACT_FAIL_REASON_MAX_CHARS:
                         # A notice is a one-line receipt, not a log: a provider

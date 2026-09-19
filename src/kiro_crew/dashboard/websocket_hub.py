@@ -367,8 +367,11 @@ class WebSocketHub:
         safe_data: dict[str, Any] = {}
         for key, value in data.items():
             if isinstance(value, str):
-                value, _ = redact_credentials(value)
-                value, _ = redact_exfiltration_urls(value)
+                # URL pass FIRST: it matches whole token-bearing URLs, and a credential
+                # replaced ahead of it destroys the pattern this pass keys on, leaving
+                # the destination standing. Both redactors stay the injected providers
+                # so a loaded companion's extra patterns still apply.
+                value = redact_credentials(redact_exfiltration_urls(value)[0])[0]
             safe_data[key] = value
         payload: dict[str, Any] = {
             "type": "browser_event",

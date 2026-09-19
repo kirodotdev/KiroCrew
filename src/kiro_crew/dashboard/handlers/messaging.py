@@ -85,7 +85,12 @@ from kiro_crew.notifications.bus import (
 )
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
 from kiro_crew.platform_compat import IS_MACOS
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.solo_spawn import (
@@ -2851,8 +2856,7 @@ async def api_send_message(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("SEL logging failed for send_message", exc_info=True)
     if channel_code:
-        safe_detail, _ = redact_credentials(channel_detail)
-        safe_detail, _ = redact_exfiltration_urls(safe_detail)
+        safe_detail = redact(channel_detail)
         detail = f"{channel_target} delivery failed: {safe_detail}"
         # Both responses are spelled out inline, with a literal status and a
         # literal body, rather than sharing a hoisted dict or computing the
@@ -2867,8 +2871,7 @@ async def api_send_message(request: web.Request) -> web.Response:
             )
         return web.json_response({"ok": False, "error": detail, "code": channel_code}, status=502)
     if slack_attempted and not sent_slack:
-        safe_error, _ = redact_credentials(slack_error)
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(slack_error)
         return web.json_response(
             {"ok": False, "error": f"Slack delivery failed: {safe_error}", "slack": False},
             status=502,
@@ -2980,8 +2983,7 @@ async def api_slack_pins(request: web.Request) -> web.Response:
             # it to the caller (same output contract as send_message).
             pins = await slack.list_pins(channel)
             for pin in pins:
-                safe_text, _ = redact_credentials(pin.get("text", ""))
-                safe_text, _ = redact_exfiltration_urls(safe_text)
+                safe_text = redact(pin.get("text", ""))
                 pin["text"] = safe_text
             result["pins"] = pins
         _sel().log_tool_invocation(
@@ -2995,8 +2997,7 @@ async def api_slack_pins(request: web.Request) -> web.Response:
         )
         return web.json_response(result)
     except Exception as e:
-        safe_error, _ = redact_credentials(str(e))
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(str(e))
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -3083,8 +3084,7 @@ async def api_slack_reactions(request: web.Request) -> web.Response:
         )
         return web.json_response({"ok": True})
     except Exception as e:
-        safe_error, _ = redact_credentials(str(e))
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(str(e))
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -3116,8 +3116,7 @@ async def api_delete_message(request: web.Request) -> web.Response:
         await slack.delete_message(channel, ts)
     except Exception as e:
         safe_error = str(e).split("\n")[0][:200]
-        safe_error, _ = redact_credentials(safe_error)
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(safe_error)
         return web.json_response({"error": f"Delete failed: {safe_error}"}, status=502)
     return web.json_response({"ok": True})
 
@@ -3249,8 +3248,7 @@ async def api_update_message(request: web.Request) -> web.Response:
         await slack.update_message(channel, ts, text, blocks)
     except Exception as e:
         safe_error = str(e).split("\n")[0][:200]
-        safe_error, _ = redact_credentials(safe_error)
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(safe_error)
         return web.json_response(
             {"error": f"Update failed: {safe_error}", "code": "update_failed"}, status=502
         )
@@ -3362,8 +3360,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
                     downstream_service="slack",
                     resources=f"user={user_id} reason=missing_scope needed={needed}",
                 )
-                needed, _ = redact_credentials(needed)
-                needed, _ = redact_exfiltration_urls(needed)
+                needed = redact(needed)
                 return web.json_response({"error": _missing_scope_message(needed)}, status=403)
         logger.exception("slack-profile: failed for %s", user_id)
         _sel().log_tool_invocation(

@@ -896,8 +896,16 @@ of its own: the sequencing lives in `redact_with_findings`, which
 sits beside `redact` and is the single home of the URLs-then-credentials order —
 redacting a credential first leaves a placeholder inside a URL that the
 exfiltration matcher then fails to recognise, so that sequencing is a security
-property and belongs in one place rather than re-spelled per caller (several
-existing callers hand-sequence the reverse order; migrating them is separate).
+property and belongs in one place rather than re-spelled per caller. That property
+is now gated rather than merely stated: `test_redaction_pair_order.py` refuses a NEW
+hand-sequenced reversed pair anywhere under `src/kiro_crew/`, in either spelling (a
+two-statement pair, or one nested expression whose inner call runs first), and pins
+the sites not yet migrated in a shrink-only baseline so paying one off without
+pruning its entry fails. The `dashboard` package's 37 reversed sites compose through
+`redact` instead; the remaining 47 pairs in 36 files are the pinned baseline. The one
+nested-expression exception, `metrics/schema.py`, is pinned NOT as a defect: it
+compares the redacted text against its input only for a boolean, and both orders
+answer that boolean identically for every input measured.
 Two further properties are deliberate: the seam is populated for EVERY app with no
 permission gating it (it only removes data, and an app refused the seam ships its
 own regexes instead — a control that looks present and is not), and it carries no
