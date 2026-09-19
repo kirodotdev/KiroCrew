@@ -1,4 +1,5 @@
 import { Monitor, Sun, Moon, Pencil } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
 import { useTheme } from '../../hooks/useTheme'
 import { Card, CardTitle } from '../../components/ui'
@@ -25,12 +26,16 @@ const FONT_FAMILY_LABEL_KEY: Record<FontFamily, string> = {
   mono: 'pages.overview.displayTab.mono',
   system: 'pages.overview.displayTab.system',
   opendyslexic: 'pages.settings.displayPanel.font_family_option_opendyslexic',
+  // Labelled for the compile-time proof, but not offered as a quick-toggle here:
+  // 'custom' needs the installed-font picker, which lives in Settings → Display.
+  custom: 'pages.settings.displayPanel.font_family_option_custom',
 }
 
 export default function DisplayTab() {
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   const { preference, setTheme, colorTheme, setColorTheme, allThemes } = useTheme()
   const editor = useThemeEditor()
+  const navigate = useNavigate()
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
 
   return (
@@ -50,11 +55,24 @@ export default function DisplayTab() {
       <Card>
         <CardTitle>{i18nT('pages.overview.displayTab.font')} <InfoTip text={i18nT('pages.overview.displayTab.change_the_dashboard_font_family_persists_across')} /></CardTitle>
         <div className="flex items-center gap-2">
-          {FONT_FAMILY_OPTIONS.map(({ value: f }) => (
+          {FONT_FAMILY_OPTIONS.filter(({ value: f }) => f !== 'custom').map(({ value: f }) => (
             <button key={f} className={BTN + ' ' + active(family === f)} onClick={() => setFontFamily(f)}>
               {i18nT(FONT_FAMILY_LABEL_KEY[f])}
             </button>
           ))}
+          {/* When Custom is the active family, show it as a selected, non-toggling
+              chip so the setting never reads as unset here (a habitual click on a
+              preset would otherwise silently leave Custom). The picker itself
+              lives in Settings → Display, so this chip routes there instead. */}
+          {family === 'custom' && (
+            <button
+              className={BTN + ' ' + active(true)}
+              onClick={() => navigate('/settings/display')}
+              title={i18nT('pages.overview.displayTab.custom_font_configure_in_settings')}
+            >
+              {i18nT(FONT_FAMILY_LABEL_KEY.custom)}
+            </button>
+          )}
         </div>
       </Card>
       <Card>

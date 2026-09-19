@@ -1500,4 +1500,17 @@ export default [
       'i18next/no-literal-string': 'off',
     },
   },
+
+  // CUSTOM FONT PICKER CANDIDATES: the sibling of monoFontCandidates.ts for the
+  // "Custom" Font Family option's picker. Same names-only rationale — every
+  // literal is a font family name matched by value against the machine's font
+  // book, so a translated name resolves to nothing. Kept in its own module so the
+  // exemption stays tight; the picker's own copy (label, description, free-text
+  // row) lives in the catalog.
+  {
+    files: ['src/utils/customFontCandidates.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
 ]

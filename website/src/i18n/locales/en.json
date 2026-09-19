@@ -8333,7 +8333,8 @@
         "view": "View",
         "zoom_font": "Zoom & Font",
         "zoom_level": "Zoom Level",
-        "font_family_option_opendyslexic": "OpenDyslexic"
+        "font_family_option_opendyslexic": "OpenDyslexic",
+        "font_family_option_custom": "Custom"
       },
       "importPanel": {
         "agent_data": "Agent data",
