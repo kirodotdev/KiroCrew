@@ -290,8 +290,9 @@ class TestResolveAgentModel:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "researcher.json").write_text('{"name": "researcher"}', encoding="utf-8")
-        with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents), patch(
-            "kiro_crew.session._read_agent_spec", side_effect=RuntimeError("bad spec")
+        with (
+            patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents),
+            patch("kiro_crew.session._read_agent_spec", side_effect=RuntimeError("bad spec")),
         ):
             assert SessionManager._resolve_agent_model("researcher") == "auto"
 
@@ -300,10 +301,28 @@ class TestResolveAgentModel:
 
 
 class TestRuntimePidProbes:
-    def test_a_runtime_reporting_a_nonpositive_pid_is_omitted(self, mgr) -> None:
-        mgr._bg_runtime = SimpleNamespace(
-            is_alive=lambda: True, pid=0, _spawn_monotonic=1.0
+    def test_the_row_carries_the_backend_session_id_only_within_its_bound(self, mgr) -> None:
+        # The id is backend-authored and retained on every Sessions poll, so it is
+        # bounded where it is retained: an oversize one is carried as None, never
+        # truncated to a string that would name a different crew log unit.
+        from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
+
+        _register(
+            mgr, "dashboard:fits", provider=_provider(session_id="s" * MAX_ACP_SESSION_ID_LEN)
         )
+        _register(
+            mgr, "dashboard:long", provider=_provider(session_id="s" * (MAX_ACP_SESSION_ID_LEN + 1))
+        )
+        _register(mgr, "dashboard:empty", provider=_provider(session_id=""))
+        _register(mgr, "dashboard:none", provider=_provider())
+        rows = {r["key"]: r for r in mgr.runtime_pids()}
+        assert rows["dashboard:fits"]["sid"] == "s" * MAX_ACP_SESSION_ID_LEN
+        assert rows["dashboard:long"]["sid"] is None
+        assert rows["dashboard:empty"]["sid"] is None
+        assert rows["dashboard:none"]["sid"] is None
+
+    def test_a_runtime_reporting_a_nonpositive_pid_is_omitted(self, mgr) -> None:
+        mgr._bg_runtime = SimpleNamespace(is_alive=lambda: True, pid=0, _spawn_monotonic=1.0)
         assert [r for r in mgr.runtime_pids() if r["key"] == "Background runtime"] == []
 
     def test_a_raising_liveness_probe_drops_only_that_row(self, mgr) -> None:
@@ -324,9 +343,7 @@ class TestRuntimePidProbes:
             raise RuntimeError("probe exploded")
 
         mgr._bg_runtime = SimpleNamespace(is_alive=boom, pid=42)
-        mgr._subagent_runtimes["dashboard:a"] = SimpleNamespace(
-            is_alive=lambda: True, pid=99
-        )
+        mgr._subagent_runtimes["dashboard:a"] = SimpleNamespace(is_alive=lambda: True, pid=99)
         assert mgr._companion_runtime_pids() == {99}
 
 
@@ -353,8 +370,9 @@ class TestWarmPoolQueueRaces:
     async def test_refresh_defaults_survives_a_lost_entry(self, mgr) -> None:
         mgr._warm_pool = _RacedQueue()
         mgr._discard_pool_provider = AsyncMock()
-        with patch.object(mgr, "start_pool", AsyncMock()), patch(
-            "kiro_crew.session.build_provider_factory", return_value=MagicMock()
+        with (
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
         ):
             await mgr.refresh_defaults()
         mgr._discard_pool_provider.assert_not_called()
@@ -364,8 +382,9 @@ class TestWarmPoolQueueRaces:
         mgr._warm_pool = _RacedQueue()
         mgr._discard_pool_provider = AsyncMock()
         stale = _register(mgr, "dashboard:a")
-        with patch.object(mgr, "start_pool", AsyncMock()), patch(
-            "kiro_crew.session.build_provider_factory", return_value=MagicMock()
+        with (
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
         ):
             await mgr.reload_provider_factory()
         assert mgr._sessions == {}
@@ -436,9 +455,7 @@ class TestPoolDecisionMetric:
 
 class TestDiscardPoolProvider:
     @pytest.mark.asyncio
-    async def test_a_base_exception_during_shutdown_still_dispatches_the_kill(
-        self, mgr
-    ) -> None:
+    async def test_a_base_exception_during_shutdown_still_dispatches_the_kill(self, mgr) -> None:
         """A non-``Exception`` BaseException (a cancellation-class escape) must
         not skip the hard kill — the provider would leak its whole process tree."""
 
@@ -476,7 +493,9 @@ class TestDiscardPoolProvider:
 class TestEvictStaleSession:
     @pytest.mark.asyncio
     async def test_a_failing_shutdown_still_leaves_the_entry_evicted(self, mgr) -> None:
-        sess = _register(mgr, "task:step1", provider=_provider(shutdown=AsyncMock(side_effect=OSError)))
+        sess = _register(
+            mgr, "task:step1", provider=_provider(shutdown=AsyncMock(side_effect=OSError))
+        )
         await mgr._evict_stale_session("task:step1", sess)
         assert "task:step1" not in mgr._sessions
 
@@ -667,9 +686,11 @@ def no_child_scan():
     They read ``/proc`` (or spawn ``ps``/``pgrep`` on macOS) and are the reason
     a naive reset test cannot run on a CI runner.
     """
-    with patch("kiro_crew.acp.client._get_child_pids", return_value=[]), patch(
-        "kiro_crew.acp.client._capture_child_records", return_value={}
-    ), patch("kiro_crew.acp.client._kill_escaped_children") as sweep:
+    with (
+        patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+        patch("kiro_crew.acp.client._capture_child_records", return_value={}),
+        patch("kiro_crew.acp.client._kill_escaped_children") as sweep,
+    ):
         yield sweep
 
 
@@ -682,9 +703,7 @@ class TestResetTeardown:
         ``_active_proc`` is the only handle to the process — reset must find it,
         or the post-shutdown liveness check silently probes nothing."""
         probed: list[int] = []
-        monkeypatch.setattr(
-            platform_compat, "pid_exists", lambda pid: probed.append(pid) or False
-        )
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: probed.append(pid) or False)
         provider = _provider(_active_proc=SimpleNamespace(returncode=None, pid=4242))
         _register(mgr, "dashboard:a", provider=provider)
 
@@ -771,9 +790,7 @@ class TestDrainActiveTurns:
 
 class TestCloseAll:
     @pytest.mark.asyncio
-    async def test_every_teardown_step_can_fail_and_shutdown_still_completes(
-        self, mgr
-    ) -> None:
+    async def test_every_teardown_step_can_fail_and_shutdown_still_completes(self, mgr) -> None:
         """Shutdown is the last chance to release kiro-cli's native session
         locks, so no single failing step may abort the rest of it."""
         mgr.drain_active_turns = AsyncMock(side_effect=RuntimeError("drain exploded"))
@@ -835,9 +852,7 @@ class TestStopTurnHooks:
         assert sess.prev_turn_cancelled is True
 
     @pytest.mark.asyncio
-    async def test_a_failing_hard_hook_still_reports_a_hard_stop(
-        self, mgr, no_child_scan
-    ) -> None:
+    async def test_a_failing_hard_hook_still_reports_a_hard_stop(self, mgr, no_child_scan) -> None:
         provider = _provider(
             cancel=AsyncMock(return_value="acked"),
             runtime_info=lambda: (None, None),
@@ -870,9 +885,7 @@ class TestRecycleBackgroundRefusals:
         assert sess.semaphore._value == 1
 
     @pytest.mark.asyncio
-    async def test_a_full_background_session_with_no_factory_keeps_its_provider(
-        self, mgr
-    ) -> None:
+    async def test_a_full_background_session_with_no_factory_keeps_its_provider(self, mgr) -> None:
         provider = _provider(context_usage_pct=lambda: 88.0)
         sess = _register(mgr, BACKGROUND_KEY, provider=provider)
         await mgr.recycle_background()
@@ -881,9 +894,7 @@ class TestRecycleBackgroundRefusals:
         assert sess.semaphore._value == 1
 
     @pytest.mark.asyncio
-    async def test_a_failing_shutdown_of_the_replaced_provider_is_swallowed(
-        self, cfg
-    ) -> None:
+    async def test_a_failing_shutdown_of_the_replaced_provider_is_swallowed(self, cfg) -> None:
         old = _provider(
             context_usage_pct=lambda: 88.0,
             shutdown=AsyncMock(side_effect=OSError("shutdown exploded")),
@@ -904,9 +915,7 @@ class TestRecycleBackgroundRefusals:
 
 class TestOpenTaskSession:
     @pytest.mark.asyncio
-    async def test_reusing_a_live_session_adopts_the_callers_approval_policy(
-        self, mgr
-    ) -> None:
+    async def test_reusing_a_live_session_adopts_the_callers_approval_policy(self, mgr) -> None:
         """A later step of the same run may escalate to auto-approval; the
         reused session must adopt it rather than keep the first step's policy."""
         sess = _register(mgr, "taskrunner:run1:step2", approval_policy="")

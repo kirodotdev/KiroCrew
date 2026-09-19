@@ -43,6 +43,7 @@ from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.subagent import _CLK_TCK, _subtree_cpu_jiffies
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
+    from kiro_crew.crew_log.tree import SessionTree, TreeNode
     from kiro_crew.session import SessionManager
     from kiro_crew.subagent import SubagentManager
 
@@ -113,6 +114,19 @@ def _spend_for_session(
     return aliased if isinstance(aliased, dict) else None
 
 
+def _bare_slot_key(key: str) -> str:
+    """The slot key a crew log records for session *key*.
+
+    A dashboard session's key is ``dashboard:{slot.key}`` (see
+    :func:`session_title`), and its crew log -- and any child's ``parent.slot``
+    citing it -- carries the bare ``slot.key``. Every other session key is its
+    own slot spelling.
+    """
+    if key.startswith("dashboard:"):
+        return key[len("dashboard:") :]
+    return key
+
+
 def session_title(key: str, get_slot: Callable[[str], object]) -> dict[str, object]:
     """Resolve a session key to a human title for display.
 
@@ -161,6 +175,46 @@ class SessionMemorySampler:
         # observations; the first sample per pid can only seed the baseline.
         self._cpu_prev: dict[int, tuple[int, float]] = {}
         self._history: deque[tuple[float, float]] = deque(maxlen=history_len)
+        # The session tree's scanner and its head cache, built on the first scan
+        # that is allowed to run (see ``_lineage``). Owned here so the cache lives
+        # as long as the sampler does, one per gateway.
+        self._tree: Optional["SessionTree"] = None
+
+    def _lineage(self, rows: list[dict[str, object]]) -> "tuple[dict[str, TreeNode], bool, int]":
+        """Who opened whom, folded from the crew logs; whether the store held more
+        session logs than the scan admits; and that cap (``TREE_UNIT_CAP``), so
+        the payload can say "N+" without this module importing the storage
+        package on a flag-off boot. ``({}, False, 0)`` with the crew log off. The live rows' logs are admitted first (their ACP session
+        ids name their units), so past the cap it is closed sessions' logs that
+        go unread, not a row's on screen -- while the live rows fit in the cap,
+        and except a slot restarted since it was opened, whose parent lives only
+        in its older, closed log (``SessionTree``'s docstring; spec section 6).
+
+        BLOCKING (a ``stat`` per live row, a listing that stops one past the cap,
+        and a ``stat`` per admitted log), so it is called from
+        :meth:`_blocking_sample`, never from the coroutine.
+
+        The crew log is optional behind ``KIROCREW_CREW_LOG`` and this module is
+        on the dashboard's boot path, so the storage package is imported here,
+        lazily, and only once the flag says there is a store to read -- the same
+        split the emitter and the crew-log routes keep, pinned by the tests that
+        launch with the flag unset and assert the package never loaded. Asking
+        the emitter is the one import that is safe: it is pure glue and loads
+        nothing until a write or a read reaches storage.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.enabled():
+            return {}, False, 0
+        if self._tree is None:
+            from kiro_crew.crew_log.tree import SessionTree
+
+            self._tree = SessionTree()
+        from kiro_crew.crew_log.tree import TREE_UNIT_CAP
+
+        live = [sid for sid in (row.get("sid") for row in rows) if isinstance(sid, str)]
+        nodes = self._tree.snapshot(live)
+        return nodes, self._tree.over_cap, TREE_UNIT_CAP
 
     # ── history ────────────────────────────────────────────────────────────
     def record_total(self, total_mb: float, *, now: Optional[float] = None) -> None:
@@ -236,6 +290,11 @@ class SessionMemorySampler:
         return {
             "per_pid": out,
             "spend": slot_spend(),
+            # Who opened whom, folded from the crew logs, and the count of logs
+            # the scan left unread past its cap. Here rather than in the coroutine
+            # for the same reason as the two above: it lists and stats every
+            # session log's directory.
+            "lineage": self._lineage(rows),
         }
 
     def _prune_cpu_baselines(self, live_pids: set[object]) -> None:
@@ -279,7 +338,47 @@ class SessionMemorySampler:
         assert isinstance(per_pid, dict)
         spend = samples["spend"]
         assert isinstance(spend, dict)
+        lineage_sample = samples["lineage"]
+        assert isinstance(lineage_sample, tuple)
+        lineage, lineage_over_cap, lineage_cap = lineage_sample
+        assert isinstance(lineage, dict)
+        assert isinstance(lineage_over_cap, bool)
+        assert isinstance(lineage_cap, int)
         now_wall = time.time()
+
+        # Which LIVE row a creator citation lands on. A crew log names a slot the
+        # way ``session_create`` attributed it -- the bare slot key for a dashboard
+        # session -- while a row's key is the full session key, so both spellings
+        # point at the row. A slot bound to a channel or cron conversation runs
+        # under ``linked_session_key`` while its log still carries the dashboard
+        # slot key, the same split ``_spend_for_session`` bridges, so the alias
+        # ``spend_slot_by_session`` supplies is a third spelling of the same row.
+        # The join is by slot, never by pid or title.
+        def slot_spellings(row_key: str) -> list[str]:
+            spellings = [row_key, _bare_slot_key(row_key)]
+            if isinstance(spend_slot_by_session, dict):
+                aliased = spend_slot_by_session.get(row_key)
+                if isinstance(aliased, str) and aliased:
+                    spellings.append(aliased)
+            return spellings
+
+        live_key_of: dict[str, str] = {}
+        for row in rows:
+            row_key = row.get("key")
+            if isinstance(row_key, str) and row_key:
+                for spelling in slot_spellings(row_key):
+                    live_key_of.setdefault(spelling, row_key)
+
+        def parent_of(key: object) -> Optional[dict[str, object]]:
+            # An empty tree (crew log off, or nothing on disk) means no row has a
+            # creator, and the tree module stays unimported -- ``_lineage`` is
+            # the only place that loads it, and only behind the flag.
+            if not lineage or not isinstance(key, str):
+                return None
+            from kiro_crew.crew_log.tree import parent_payload
+
+            node = next((lineage[s] for s in slot_spellings(key) if s in lineage), None)
+            return parent_payload(node, live_key_of, key)
 
         sessions_out: list[dict[str, object]] = []
         total_mb = 0.0
@@ -337,13 +436,16 @@ class SessionMemorySampler:
                     # Cumulative over the credits window, not a rate: credits are
                     # only known per completed turn. null means this slot has no
                     # measured turn in the window, which is not the same as zero.
-                    "credits": (
-                        round(float(spend_row["credits"]), 3) if spend_row else None
-                    ),
+                    "credits": (round(float(spend_row["credits"]), 3) if spend_row else None),
                     "turns": (int(spend_row["turns"]) if spend_row else None),
                     "uptime_s": (
                         round(now_wall - created, 1) if isinstance(created, float) else None
                     ),
+                    # The session that opened this one through session_create, as
+                    # its own crew log records it; null for a session nobody
+                    # created. ``key`` is the creator's live row when there is
+                    # one, which is the edge the Sessions table nests on.
+                    "parent": parent_of(key),
                 }
             )
             # Count each runtime ONCE, at its UNDIVIDED size. The split above is
@@ -369,6 +471,17 @@ class SessionMemorySampler:
                 # Surfaced so the UI can label the number as a ceiling rather
                 # than implying exact attribution.
                 "rss_is_upper_bound": True,
+                # Whether the store held more session logs than the lineage
+                # scan admits (TREE_UNIT_CAP, sent beside it so the page can
+                # say "N+"). Live rows' logs are admitted first, so what went
+                # unread is closed sessions' logs; a live row loses its edge
+                # only when it was restarted since it was opened (its parent
+                # lives in its older, closed log) or the live rows alone exceed
+                # the cap. Said on every payload because a store that large is
+                # worth knowing about.
+                # False within the cap or with the crew log off (cap 0 then).
+                "lineage_over_cap": lineage_over_cap,
+                "lineage_cap": lineage_cap,
             },
             "history": self.series(),
         }
