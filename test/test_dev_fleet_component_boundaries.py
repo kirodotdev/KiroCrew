@@ -11,6 +11,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     fleet_state,
     http_api,
     live,
+    release_channel_pin,
     repository,
     runtime,
     server,
@@ -21,6 +22,7 @@ _COMPONENTS = (
     runtime,
     repository,
     live,
+    release_channel_pin,
     fleet_state,
     worktree_ops,
     http_api,
@@ -124,6 +126,11 @@ def test_route_manifest_and_http_adapter_ownership_are_stable() -> None:
         ("POST", "/api/pod/provision", "api_dev_fleet_pod_provision"),
         ("POST", "/api/pod/provision/dismiss", "api_dev_fleet_pod_provision_dismiss"),
         ("POST", "/api/rebase", "api_dev_fleet_rebase"),
+        (
+            "POST",
+            "/api/release-channel/create",
+            "api_dev_fleet_release_channel_create",
+        ),
         # NOT here: /api/restart-gateway and /api/make-live. They touch the live-target
         # pointer (or its cutover latch), which is masked from this sandboxed backend and
         # every child it spawns; the gateway process serves them under
