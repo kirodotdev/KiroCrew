@@ -44,7 +44,7 @@ from kiro_crew.monitoring.models import (
     MonitorCreationSurface,
     MonitorState,
 )
-from kiro_crew.platform import PlatformCompositionError
+from kiro_crew.platform import PlatformCompositionError, redact_via_context
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -144,6 +144,12 @@ async def authorize_and_update_monitor(
             logger.error("monitor update SEL audit unavailable", exc_info=True)
             return False
         return True
+
+    # Audited like every other denial here, and still ahead of the mutation.
+    if scrub_policy_unavailable():
+        error = "safety checks are temporarily unavailable — monitor not updated"
+        await _audit("denied", error)
+        return None, error, 503
 
     if (
         isinstance(wake_instructions, str)
@@ -313,19 +319,32 @@ async def authorize_and_stop_monitor(
     user_reason: str = "",
 ) -> tuple[Any | None, str | None, int]:
     """Audit before retaining one ownership-resolved user-stop outcome."""
-    try:
-        await asyncio.to_thread(
-            lambda: sel().log_tool_invocation(
-                session_key=session_key,
-                source=source,
-                tool_name="monitor_stop",
-                outcome="invoked",
-                critical=True,
-                metadata={"caller": caller},
+
+    async def _audit(outcome: str, error: str = "") -> bool:
+        try:
+            await asyncio.to_thread(
+                lambda: sel().log_tool_invocation(
+                    session_key=session_key,
+                    source=source,
+                    tool_name="monitor_stop",
+                    outcome=outcome,
+                    error=error,
+                    critical=True,
+                    metadata={"caller": caller},
+                )
             )
-        )
-    except Exception:
-        logger.error("monitor stop denied: SEL audit unavailable", exc_info=True)
+        except Exception:
+            logger.error("monitor stop denied: SEL audit unavailable", exc_info=True)
+            return False
+        return True
+
+    # Audited, and still ahead of the mutation: the caller serializes the returned
+    # loop, so committing first would yield a 503 after a write.
+    if scrub_policy_unavailable():
+        error = "safety checks are temporarily unavailable — monitor not stopped"
+        await _audit("denied", error)
+        return None, error, 503
+    if not await _audit("invoked"):
         return None, "audit log unavailable — monitor not stopped", 503
     loop = await svc.stop_monitor(loop_id, user_reason=user_reason)
     if loop is None:
@@ -571,6 +590,29 @@ def message_is_echoed_projection(current: Any, message: Any) -> bool:
     return message == stored or message == scrub_loop_text(stored)
 
 
+def scrub_policy_unavailable() -> bool:
+    """True when the active credential policy cannot scrub, so nothing may be written.
+
+    Both authorizers mutate and then hand a nudge loop back to a caller that
+    SERIALIZES it through a fail-closed projection. Without this gate a request
+    reached the store, COMMITTED, and only then raised while rendering the
+    response: HTTP 500 with the mutation persisted and audited as a success, so a
+    retry applies it twice. Asking ONCE up front -- before the critical
+    ``invoked`` audit and before the mutation -- turns that into an audited 503.
+
+    ``redact_via_context("")`` is the probe: the shim calls
+    ``current_context().credentials.redact(text)`` with no short-circuit, so
+    composition is exercised regardless of the text, and an empty string scrubs
+    nothing real. Only ``PlatformCompositionError`` counts -- every other adapter
+    failure already degrades inside the shim, so the projection still succeeds.
+    """
+    try:
+        redact_via_context("")
+    except PlatformCompositionError:
+        return True
+    return False
+
+
 async def authorize_and_update_nudge(
     *,
     svc: Any,
@@ -730,6 +772,14 @@ async def authorize_and_update_nudge(
     # unattended.
     if active is not None and not isinstance(active, bool):
         return _deny("active must be a boolean", 400)
+
+    # After the 400s above, deliberately: a malformed request should still learn
+    # WHAT is malformed rather than be told the policy is unavailable.
+    if scrub_policy_unavailable():
+        return _deny(
+            "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+            503,
+        )
 
     def _critical_invoked_audit() -> None:
         sel().log_tool_invocation(
@@ -1069,6 +1119,13 @@ async def authorize_and_add_nudge(
         admission_check = _dashboard_admission
     if len(message) > 8000:
         return _deny("message too long (max 8000 chars)", 400)
+    # BEFORE the sentinel unlink below, which is unconditional: probing afterwards
+    # destroyed an operator's live stop file and only then refused the arm.
+    if scrub_policy_unavailable():
+        return _deny(
+            "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+            503,
+        )
     if monitor is None:
         get_by_slot = getattr(svc, "get_by_slot", None)
         existing = get_by_slot(slot_key) if callable(get_by_slot) else None
