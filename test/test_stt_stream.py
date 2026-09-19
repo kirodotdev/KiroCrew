@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -928,6 +929,8 @@ class TestConfigPutRoundTrip:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_get("/api/config/stt", handlers.api_stt_config)
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 
@@ -967,6 +970,8 @@ class TestConfigPutRoundTrip:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 
         async with TestClient(TestServer(app)) as client:
@@ -1006,6 +1011,8 @@ class TestConfigPutRoundTrip:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_get("/api/config/stt", handlers.api_stt_config)
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 
@@ -1075,6 +1082,8 @@ class TestSttLanguageCodes:
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
+        # The config endpoint resolves owner identity from `app["state"]`.
+        app["state"] = SimpleNamespace(owner_id="owner-1")
         app.router.add_get("/api/config/stt", handlers.api_stt_config)
         app.router.add_put("/api/config/stt", handlers.api_stt_config)
 
@@ -1317,6 +1326,11 @@ class _FakeLocalSession:
         self.kwargs: dict = {}
         self.fed: list[bytes] = []
         self.prepared = False
+        #: Which thread each synchronous model probe was called on. Both resolve the
+        #: model, and resolving the CUSTOM selection reads and validates
+        #: ``config.json``, so both must be offloaded -- recorded rather than counted
+        #: because the defect is WHERE the call ran, not whether it ran.
+        self.call_threads: dict[str, int] = {}
         #: Counted, not just flagged: the refusal path starts a detached
         #: transfer, so a test needs to see that prepare was entered even
         #: though the socket closed before it returned.
@@ -1350,9 +1364,11 @@ class _FakeLocalSession:
         return self._pending_audio
 
     def pending_download(self):
+        self.call_threads["pending_download"] = threading.get_ident()
         return self._pending
 
     def pending_load(self) -> bool:
+        self.call_threads["pending_load"] = threading.get_ident()
         return self._pending_load
 
     async def prepare(self) -> list:
@@ -1899,6 +1915,31 @@ class TestLocalStreamingSession:
             assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_neither_model_probe_runs_on_the_gateway_event_loop(self, monkeypatch):
+        """Both synchronous probes are offloaded, not just the one that was noticed.
+
+        ``pending_download`` and ``pending_load`` each call ``models.resolve``, and
+        resolving the ``custom`` selection reads and jsonschema-validates
+        ``config.json``. On the single gateway event loop that is the stall this
+        feature would otherwise have introduced, and ``pending_download`` returning
+        None is exactly the path that goes on to ask ``pending_load`` -- so offloading
+        one and leaving the other inline moves the stall rather than removing it.
+        Asserted on the thread each probe ran on, because an inline call is
+        indistinguishable from an offloaded one by call count.
+        """
+        loop_thread = threading.get_ident()
+        session = self._install(monkeypatch, _FakeLocalSession(pending=None, pending_load=True))
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json())["stage"] == stt.STAGE_PREPARING
+            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+        assert session.call_threads.keys() == {"pending_download", "pending_load"}
+        assert session.call_threads["pending_download"] != loop_thread
+        assert session.call_threads["pending_load"] != loop_thread
 
     @pytest.mark.asyncio
     async def test_no_preparing_frame_when_the_model_is_already_resident(self, monkeypatch):

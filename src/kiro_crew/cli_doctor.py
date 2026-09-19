@@ -3139,7 +3139,7 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
     state — the background download retries with backoff on every boot.
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
-    from kiro_crew.embeddings import redact_model_url  # circular-safe (no loader)
+    from kiro_crew.url_redaction import redact_model_url  # circular-safe (no config import)
 
     url = _resolve_model_url()
     safe = redact_model_url(url)

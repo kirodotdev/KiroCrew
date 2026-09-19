@@ -2,7 +2,7 @@
 
 No test here loads a real recogniser or touches the network. The engine's one
 seam onto the native library is ``WhisperEngine._build_model``, so a fake stands
-in there; the downloader's one seam is ``urllib.request.urlopen``. Both are
+in there; the downloader's one seam is ``models._urlopen``. Both are
 patched per test, which is also what keeps a native context from outliving a test
 on an xdist worker.
 """
@@ -215,7 +215,7 @@ def _stub_urlopen(payload: bytes):
         def __exit__(self, *_exc):
             return False
 
-    def _open(_url, timeout=None):
+    def _open(_url, timeout=None, **_kw):
         # Asserted rather than merely tolerated: without a timeout a stalled
         # connection holds its worker for the life of the process, and the only
         # symptom is a progress bar frozen at some percentage — which is exactly
@@ -236,7 +236,7 @@ def _pin(monkeypatch, tmp_path, payload: bytes) -> models.WhisperModel:
 def test_a_verified_download_lands_at_the_final_path(monkeypatch, tmp_path):
     payload = b"weights" * 100
     model = _pin(monkeypatch, tmp_path, payload)
-    monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(payload))
+    monkeypatch.setattr(models, "_urlopen", _stub_urlopen(payload))
     path = models._download_blocking(model)
     assert path.read_bytes() == payload
     assert not list(tmp_path.glob("*.part")), "staging file must not survive"
@@ -245,7 +245,7 @@ def test_a_verified_download_lands_at_the_final_path(monkeypatch, tmp_path):
 def test_a_tampered_payload_is_refused_and_leaves_no_file(monkeypatch, tmp_path):
     """The pin is the whole defence for a network fetch."""
     model = _pin(monkeypatch, tmp_path, b"the real weights")
-    monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(b"the fake weights"))
+    monkeypatch.setattr(models, "_urlopen", _stub_urlopen(b"the fake weights"))
     with pytest.raises(models.ModelDownloadError, match="sha256 mismatch"):
         models._download_blocking(model)
     assert not (tmp_path / model.filename).exists()
@@ -255,7 +255,7 @@ def test_a_tampered_payload_is_refused_and_leaves_no_file(monkeypatch, tmp_path)
 def test_a_truncated_payload_is_refused(monkeypatch, tmp_path):
     payload = b"weights" * 100
     model = _pin(monkeypatch, tmp_path, payload)
-    monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(payload[:-10]))
+    monkeypatch.setattr(models, "_urlopen", _stub_urlopen(payload[:-10]))
     with pytest.raises(models.ModelDownloadError, match="bytes"):
         models._download_blocking(model)
     assert not (tmp_path / model.filename).exists()
@@ -266,10 +266,10 @@ def test_a_non_https_url_is_refused_before_any_request(monkeypatch, tmp_path):
     model = _pin(monkeypatch, tmp_path, payload)
     monkeypatch.setenv(models.MODEL_URL_ENV, "http://mirror.example/whisper")
 
-    def _explode(_url):
+    def _explode(_url, **_kw):
         raise AssertionError("must not open a plaintext connection")
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", _explode)
+    monkeypatch.setattr(models, "_urlopen", _explode)
     with pytest.raises(models.ModelDownloadError, match="non-https"):
         models._download_blocking(model)
 
@@ -301,7 +301,7 @@ def test_an_oversized_response_is_refused_before_it_fills_the_disk(monkeypatch, 
         def __exit__(self, *_exc):
             return False
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", lambda _u, timeout=None: _Endless())
+    monkeypatch.setattr(models, "_urlopen", lambda _u, timeout=None, **_kw: _Endless())
 
     with pytest.raises(models.ModelDownloadError, match="exceeds the pinned"):
         models._download_blocking(model)
@@ -341,7 +341,7 @@ def test_a_transfer_stops_within_one_chunk_of_the_pinned_size(monkeypatch, tmp_p
             return False
 
     monkeypatch.setattr(models.os, "fdopen", _watch)
-    monkeypatch.setattr(models.urllib.request, "urlopen", lambda _u, timeout=None: _Endless())
+    monkeypatch.setattr(models, "_urlopen", lambda _u, timeout=None, **_kw: _Endless())
 
     with pytest.raises(models.ModelDownloadError):
         models._download_blocking(model)
@@ -374,11 +374,11 @@ def test_an_unreachable_host_does_not_leak_the_staging_descriptor(monkeypatch, t
         adopted.append(handle)
         return handle
 
-    def _unreachable(_url, timeout=None):
+    def _unreachable(_url, timeout=None, **_kw):
         raise urllib.error.URLError("host is down")
 
     monkeypatch.setattr(models.os, "fdopen", _spy)
-    monkeypatch.setattr(models.urllib.request, "urlopen", _unreachable)
+    monkeypatch.setattr(models, "_urlopen", _unreachable)
 
     with pytest.raises(urllib.error.URLError):
         models._download_blocking(model)
@@ -399,7 +399,7 @@ def test_the_base_url_is_overridable_for_a_mirror(monkeypatch):
 def test_progress_is_reported_against_the_pinned_total(monkeypatch, tmp_path):
     payload = b"w" * 4096
     model = _pin(monkeypatch, tmp_path, payload)
-    monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(payload))
+    monkeypatch.setattr(models, "_urlopen", _stub_urlopen(payload))
     seen: list[tuple[int, int]] = []
     models._download_blocking(model, on_progress=lambda d, t: seen.append((d, t)))
     assert seen and seen[-1] == (len(payload), model.size_bytes)
@@ -408,7 +408,7 @@ def test_progress_is_reported_against_the_pinned_total(monkeypatch, tmp_path):
 def test_cancellation_stops_the_transfer(monkeypatch, tmp_path):
     payload = b"w" * 4096
     model = _pin(monkeypatch, tmp_path, payload)
-    monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(payload))
+    monkeypatch.setattr(models, "_urlopen", _stub_urlopen(payload))
     with pytest.raises(models.ModelDownloadError, match="cancelled"):
         models._download_blocking(model, should_cancel=lambda: True)
     assert not list(tmp_path.glob("*"))
@@ -440,10 +440,10 @@ def _present_model(monkeypatch, tmp_path, payload: bytes = b"weights") -> models
 async def test_the_store_returns_a_present_model_without_downloading(monkeypatch, tmp_path):
     model = _present_model(monkeypatch, tmp_path)
 
-    def _explode(_url, timeout=None):
+    def _explode(_url, timeout=None, **_kw):
         raise AssertionError("must not download a model already on disk")
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", _explode)
+    monkeypatch.setattr(models, "_urlopen", _explode)
     store = models.ModelStore()
     assert await store.ensure(model) == tmp_path / model.filename
     assert store.status["step"] == "ready"
@@ -466,11 +466,11 @@ async def test_a_present_model_is_verified_against_its_pin_not_just_its_size(mon
 
     downloaded: list[str] = []
 
-    def _record(_url, timeout=None):
+    def _record(_url, timeout=None, **_kw):
         downloaded.append("fetch")
         raise OSError("network down")
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", _record)
+    monkeypatch.setattr(models, "_urlopen", _record)
     monkeypatch.delenv(models.SKIP_DOWNLOAD_ENV, raising=False)
     store = models.ModelStore()
     assert await store.ensure(model) is None
@@ -499,7 +499,7 @@ async def test_the_pin_check_is_not_cached_against_forgeable_metadata(monkeypatc
     assert path.stat().st_size == before.st_size
     assert path.stat().st_mtime_ns == before.st_mtime_ns
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(b"the real weights"))
+    monkeypatch.setattr(models, "_urlopen", _stub_urlopen(b"the real weights"))
     monkeypatch.delenv(models.SKIP_DOWNLOAD_ENV, raising=False)
     assert await store.ensure(model) == path
     assert path.read_bytes() == b"the real weights", "the swapped file must be replaced"
@@ -552,10 +552,10 @@ async def test_a_failed_download_is_reported_not_raised(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
     monkeypatch.delenv(models.SKIP_DOWNLOAD_ENV, raising=False)
 
-    def _fail(_url, timeout=None):
+    def _fail(_url, timeout=None, **_kw):
         raise OSError("network down")
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", _fail)
+    monkeypatch.setattr(models, "_urlopen", _fail)
     store = models.ModelStore()
     assert await store.ensure(models.resolve("base")) is None
     assert store.status["step"] == "failed"
@@ -1194,7 +1194,7 @@ def test_a_planted_link_at_a_predictable_staging_path_is_not_followed(
         else:
             planted.hardlink_to(victim)
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(payload))
+    monkeypatch.setattr(models, "_urlopen", _stub_urlopen(payload))
     assert models._download_blocking(model) == target
     assert victim.read_text(encoding="utf-8") == "do not overwrite me"
     assert target.read_bytes() == payload
@@ -1222,7 +1222,7 @@ def test_each_staging_file_gets_its_own_name(monkeypatch, tmp_path):
         def __exit__(self, *_exc):
             return False
 
-    monkeypatch.setattr(models.urllib.request, "urlopen", lambda _u, timeout=None: _Recorder())
+    monkeypatch.setattr(models, "_urlopen", lambda _u, timeout=None, **_kw: _Recorder())
     for _ in range(3):
         with pytest.raises(models.ModelDownloadError):
             models._download_blocking(model)
