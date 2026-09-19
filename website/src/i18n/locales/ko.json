@@ -12022,7 +12022,11 @@
         "workspace": "워크스페이스",
         "auto_create_hint": "{{productName}}은(는) 완료된 세션에서 자동으로 스킬 초안을 작성할 수도 있습니다 — 기본적으로 꺼져 있으며 <settingRef/>로 제어됩니다.",
         "approval_required_hint": "후보는 여기서 승인을 기다립니다. <settingRef/>가 꺼져 있으면 스크립트가 없는 스킬은 자동으로 게시될 수 있습니다 — 스크립트가 포함된 스킬은 항상 검토가 필요합니다.",
-        "scripts_always_require_review": "번들된 스크립트는 스킬 승인을 꺼도 항상 수동 검토가 필요합니다."
+        "scripts_always_require_review": "번들된 스크립트는 스킬 승인을 꺼도 항상 수동 검토가 필요합니다.",
+        "related_skills": "관련 스킬",
+        "audit_duplicate": "중복",
+        "audit_subsumed": "포함됨",
+        "audit_overlapping": "겹침"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "에이전트가 읽는 Markdown 규칙. 언제 적용되는지는 각 파일의 포함 모드가 정합니다: 항상, 일치하는 파일에만, 또는 필요할 때. 전역 파일은 ~/.kiro/steering에 있으며 어디서나 적용되고, 작업 공간 파일은 <project>/.kiro/steering에 있으며 해당 프로젝트에만 적용됩니다.",

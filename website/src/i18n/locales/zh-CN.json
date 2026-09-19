@@ -12022,7 +12022,11 @@
         "workspace": "工作区",
         "auto_create_hint": "{{productName}} 还可以从已完成的会话中自动起草技能 — 默认关闭，由 <settingRef/> 控制。",
         "approval_required_hint": "候选技能在此等待你的批准。当 <settingRef/> 关闭时，纯文本技能可以自动发布 — 包含脚本的技能始终需要审查。",
-        "scripts_always_require_review": "捆绑的脚本始终需要人工审查，即使已关闭技能审批。"
+        "scripts_always_require_review": "捆绑的脚本始终需要人工审查，即使已关闭技能审批。",
+        "related_skills": "相关技能",
+        "audit_duplicate": "重复",
+        "audit_subsumed": "已包含",
+        "audit_overlapping": "有重叠"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "智能体读取的 Markdown 约定。每个文件的包含模式决定何时生效：始终、仅匹配文件时，或按需。全局文件位于 ~/.kiro/steering 并处处生效；工作区文件位于 <project>/.kiro/steering，仅对该项目生效。",

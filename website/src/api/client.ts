@@ -3592,8 +3592,11 @@ export const api = {
     del('/api/steering/' + key.split('/').map(encodeURIComponent).join('/'), undefined, sessionKey, projectHeader(projectKey)).then(j),
 
   // Auto-skill pending queue + lifecycle pin
+  skillsAudit: () => fetch('/api/skills/-/audit').then(j),
   skillsPending: () => fetch('/api/skills/-/pending').then(j),
   skillPendingDetail: (slug: string) => fetch('/api/skills/-/pending/' + encodeURIComponent(slug)).then(j),
+  restagePendingSkill: (slug: string, target: string) =>
+    post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/restage', { target }).then(j),
   approvePendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', {}).then(j),
   dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
   dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),

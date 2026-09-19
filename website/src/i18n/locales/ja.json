@@ -12022,7 +12022,11 @@
         "workspace": "ワークスペース",
         "auto_create_hint": "{{productName}}は完了したセッションからスキルを自動的に下書きすることもできます — デフォルトでオフ、<settingRef/>で制御されます。",
         "approval_required_hint": "候補はここで承認を待ちます。<settingRef/> がオフの場合、スクリプトを含まないスキルは自動的に公開できます — スクリプトを含むスキルは常にレビューが必要です。",
-        "scripts_always_require_review": "バンドルされたスクリプトは、スキルの承認をオフにしていても常に手動レビューが必要です。"
+        "scripts_always_require_review": "バンドルされたスクリプトは、スキルの承認をオフにしていても常に手動レビューが必要です。",
+        "related_skills": "関連スキル",
+        "audit_duplicate": "重複",
+        "audit_subsumed": "包含済み",
+        "audit_overlapping": "重なりあり"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "エージェントが読む Markdown 規約。適用タイミングは各ファイルのインクルードモードで決まります: 常時、一致するファイルのときだけ、または必要時。グローバルファイルは ~/.kiro/steering にあり、どこでも適用されます。ワークスペースファイルは <project>/.kiro/steering にあり、そのプロジェクトだけに適用されます。",

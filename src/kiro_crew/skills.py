@@ -3337,6 +3337,179 @@ class SkillsLoader:
             return best_name
         return None
 
+    @staticmethod
+    def _audit_trigger_words(triggers: str) -> set[str]:
+        """Return positive trigger words for symmetric audit comparisons."""
+        words: set[str] = set()
+        for raw in (triggers or "").split(","):
+            phrase = raw.strip()
+            if phrase and not phrase.startswith("!"):
+                words.update(words_of(phrase))
+        return words
+
+    @staticmethod
+    def _jaccard(left: set[str], right: set[str]) -> float:
+        """Return word-set Jaccard similarity, or zero for two empty sets."""
+        union = left | right
+        return len(left & right) / len(union) if union else 0.0
+
+    def audit(
+        self,
+        *,
+        duplicate_threshold: float = 0.85,
+        overlap_threshold: float = 0.5,
+    ) -> list[dict]:
+        """Audit pending and live skills pairwise and return overlap clusters.
+
+        The audit is deterministic and embedding-free. It compares description
+        word-set Jaccard similarity plus positive trigger-word Jaccard similarity,
+        using the stronger signal as the pair score. Every pair is considered, so
+        the implementation is intentionally O(n²); current skill libraries are
+        small enough that avoiding an index keeps the result easy to explain.
+        """
+        if not 0 <= overlap_threshold <= duplicate_threshold <= 1:
+            raise ValueError("thresholds must satisfy 0 <= overlap <= duplicate <= 1")
+
+        entries: list[dict] = []
+        for pending in self.list_pending_skills():
+            description = str(pending.get("description", ""))
+            triggers = str(pending.get("triggers", ""))
+            entries.append(
+                {
+                    "id": f"pending:{pending['slug']}",
+                    "kind": "pending",
+                    "name": str(pending.get("name") or f"auto/{pending['slug']}"),
+                    "slug": pending["slug"],
+                    "description_words": words_of(description),
+                    "trigger_words": self._audit_trigger_words(triggers),
+                }
+            )
+        for name, skill_file, within in self._iter():
+            meta = self._cached_frontmatter(skill_file, within=within)
+            entries.append(
+                {
+                    "id": f"live:{name}",
+                    "kind": "live",
+                    "name": name,
+                    "description_words": words_of(meta.get("description", "")),
+                    "trigger_words": self._audit_trigger_words(meta.get("triggers", "")),
+                }
+            )
+
+        by_id = {entry["id"]: entry for entry in entries}
+        relations: list[dict] = []
+        adjacency: dict[int, set[int]] = {index: set() for index in range(len(entries))}
+        for left_index in range(len(entries)):
+            for right_index in range(left_index + 1, len(entries)):
+                left = entries[left_index]
+                right = entries[right_index]
+                description_score = self._jaccard(
+                    left["description_words"], right["description_words"]
+                )
+                trigger_score_value = self._jaccard(left["trigger_words"], right["trigger_words"])
+                score = max(description_score, trigger_score_value)
+                pending = left if left["kind"] == "pending" else right
+                live = left if left["kind"] == "live" else right
+                pending_live = left["kind"] != right["kind"]
+                trigger_subset = (
+                    pending_live
+                    and bool(pending["trigger_words"])
+                    and pending["trigger_words"] <= live["trigger_words"]
+                )
+                if score >= duplicate_threshold:
+                    classification = "duplicate"
+                elif pending_live and (trigger_subset or description_score >= overlap_threshold):
+                    classification = "subsumed"
+                elif score >= overlap_threshold:
+                    classification = "overlapping"
+                else:
+                    continue
+                adjacency[left_index].add(right_index)
+                adjacency[right_index].add(left_index)
+                relations.append(
+                    {
+                        "classification": classification,
+                        "score": round(score, 4),
+                        "description_score": round(description_score, 4),
+                        "trigger_score": round(trigger_score_value, 4),
+                        "members": [left["id"], right["id"]],
+                    }
+                )
+
+        rank = {"overlapping": 0, "subsumed": 1, "duplicate": 2}
+        clusters: list[dict] = []
+        visited: set[int] = set()
+        for start in range(len(entries)):
+            if start in visited or not adjacency[start]:
+                continue
+            stack = [start]
+            component: set[int] = set()
+            while stack:
+                current = stack.pop()
+                if current in component:
+                    continue
+                component.add(current)
+                stack.extend(adjacency[current] - component)
+            visited.update(component)
+            member_ids = {entries[index]["id"] for index in component}
+            component_relations = [
+                relation for relation in relations if set(relation["members"]) <= member_ids
+            ]
+            classification = max(
+                (relation["classification"] for relation in component_relations),
+                key=rank.__getitem__,
+            )
+            members = []
+            for index in sorted(component, key=lambda item: entries[item]["id"]):
+                entry = entries[index]
+                member = {
+                    "id": entry["id"],
+                    "kind": entry["kind"],
+                    "name": entry["name"],
+                }
+                if entry["kind"] == "pending":
+                    member["slug"] = entry["slug"]
+                members.append(member)
+            update_targets = []
+            for relation in component_relations:
+                pair = [by_id[member_id] for member_id in relation["members"]]
+                if {entry["kind"] for entry in pair} != {"pending", "live"}:
+                    continue
+                pending_entry = next(entry for entry in pair if entry["kind"] == "pending")
+                live_entry = next(entry for entry in pair if entry["kind"] == "live")
+                if relation["classification"] not in ("duplicate", "subsumed") or not live_entry[
+                    "name"
+                ].startswith(f"{AUTO_SKILL_NAMESPACE}/"):
+                    continue
+                update_targets.append(
+                    {
+                        "pending_slug": pending_entry["slug"],
+                        "target": live_entry["name"],
+                        "classification": relation["classification"],
+                        "score": relation["score"],
+                    }
+                )
+            clusters.append(
+                {
+                    "classification": classification,
+                    "score": max(relation["score"] for relation in component_relations),
+                    "members": members,
+                    "relations": component_relations,
+                    "update_targets": sorted(
+                        update_targets,
+                        key=lambda item: (-item["score"], item["target"]),
+                    ),
+                }
+            )
+        clusters.sort(
+            key=lambda cluster: (
+                -rank[cluster["classification"]],
+                -cluster["score"],
+                tuple(member["id"] for member in cluster["members"]),
+            )
+        )
+        return clusters
+
     def create_auto_skill(
         self,
         slug: str,
@@ -4114,6 +4287,77 @@ class SkillsLoader:
             "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
             "scripts": scripts,
         }
+
+    def restage_as_update(self, pending_slug: str, target_live_name: str) -> str | None:
+        """Re-stage a pending candidate as an update to a live auto-skill.
+
+        The replacement is written through :meth:`stage_skill_candidate` before
+        the original pending directory is dismissed. If either step fails, the
+        original remains reviewable and any replacement is rolled back.
+        """
+        if not self._is_pending_slug_safe(pending_slug):
+            return None
+        target_slug = self._auto_slug_from_name(target_live_name)
+        if not self._is_pending_slug_safe(target_slug):
+            return None
+        target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
+        if target_live_name not in (target_slug, target_name):
+            return None
+        if self.read_auto_skill_body(target_name) is None:
+            return None
+        detail = self.get_pending_skill(pending_slug)
+        if detail is None:
+            return None
+        raw_meta = detail.get("meta")
+        meta: dict = raw_meta if isinstance(raw_meta, dict) else {}
+        parsed = self._parse_frontmatter_text(str(detail.get("content", "")))
+        raw_scripts = detail.get("scripts")
+        scripts: list[dict] = raw_scripts if isinstance(raw_scripts, list) else []
+        if any(
+            not isinstance(script, dict)
+            or not isinstance(script.get("filename"), str)
+            or "/" in script["filename"]
+            or "\\" in script["filename"]
+            or ".." in script["filename"]
+            for script in scripts
+        ):
+            return None
+        raw_reuse_count = parsed.get("reuse_count", "0")
+        try:
+            reuse_count = max(0, int(raw_reuse_count))
+        except (TypeError, ValueError):
+            reuse_count = 0
+        provenance = AutoSkillProvenance(
+            session_key=parsed.get("session_key", ""),
+            created_at=parsed.get("created_at", "") or AutoSkillProvenance.now_iso(),
+            refined_at=parsed.get("refined_at", ""),
+            reuse_count=reuse_count,
+            pinned=parsed.get("pinned", "").strip().lower() in ("true", "1", "yes"),
+        )
+        suffix = "-update"
+        stem = pending_slug[: 63 - len(suffix)].rstrip("-")
+        replacement_name = self.stage_skill_candidate(
+            f"{stem}{suffix}",
+            description=str(meta.get("description", parsed.get("description", ""))),
+            triggers=str(meta.get("triggers", parsed.get("triggers", ""))),
+            procedure_md=self.strip_frontmatter(str(detail.get("content", ""))),
+            provenance=provenance,
+            scripts=scripts,
+            source=str(meta.get("source", "consolidation")),
+            kind="update",
+            target=target_name,
+            base_version=self.get_auto_skill_version(target_name),
+        )
+        if replacement_name is None:
+            return None
+        replacement_slug = replacement_name.split("/", 1)[1]
+        replacement_dir = self._pending_root() / replacement_slug
+        if not (replacement_dir / "SKILL.md").is_file():
+            return None
+        if not self.dismiss_pending_skill(pending_slug):
+            self.dismiss_pending_skill(replacement_slug)
+            return None
+        return replacement_name
 
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
         """Shared candidate-layout guard for BOTH approve paths.

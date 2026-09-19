@@ -12,6 +12,7 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsAudit: vi.fn(),
 }))
 // A stub ApiError declared inside vi.hoisted so the mock factory (hoisted above
 // the imports) can close over it: createSkill.onError branches on
@@ -92,6 +93,32 @@ describe('SkillsTab', () => {
     await waitFor(() => expect(screen.getByText('Foo')).toBeInTheDocument())
     expect(screen.getByText('foo')).toBeInTheDocument()
     expect(screen.getByText(/Loaded by 2 agents/)).toBeInTheDocument()
+  })
+
+  it('lists queue-wide audit clusters from the Skills toolbar', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'one', name: 'one', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [
+          { id: 'live:deploy-one', kind: 'live', name: 'deploy-one' },
+          { id: 'live:deploy-two', kind: 'live', name: 'deploy-two' },
+        ],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+    renderWithQuery()
+    await screen.findByText('One')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Related skills' }))
+
+    await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/Overlapping/)).toBeInTheDocument()
+    expect(screen.getByText('deploy-one · deploy-two')).toBeInTheDocument()
   })
 
   it('shows singular form when exactly one agent loads the skill', async () => {

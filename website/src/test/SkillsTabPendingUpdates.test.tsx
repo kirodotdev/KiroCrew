@@ -12,8 +12,10 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsAudit: vi.fn(),
   skillsPending: vi.fn(),
   skillPendingDetail: vi.fn(),
+  restagePendingSkill: vi.fn(),
   approvePendingSkill: vi.fn(),
   dismissPendingSkill: vi.fn(),
 }))
@@ -77,6 +79,7 @@ beforeEach(() => {
   mockApi.skills.mockResolvedValue([])
   mockApi.skill.mockResolvedValue({ name: 'x', content: '---\nname: x\n---\nbody' })
   mockApi.skillsPending.mockResolvedValue({ pending: [] })
+  mockApi.skillsAudit.mockResolvedValue({ clusters: [] })
 })
 
 describe('SkillsTab pending updates', () => {
@@ -87,6 +90,46 @@ describe('SkillsTab pending updates', () => {
     expect(
       screen.getByText(/Adds new requirements to auto\/deploy-helper/),
     ).toBeTruthy()
+  })
+
+  it('shows a related live skill and re-stages the candidate as an update', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'subsumed',
+        score: 0.75,
+        members: [
+          { id: 'pending:fresh-skill', kind: 'pending', name: 'auto/fresh-skill', slug: 'fresh-skill' },
+          { id: 'live:auto/deploy-helper', kind: 'live', name: 'auto/deploy-helper' },
+        ],
+        relations: [{
+          classification: 'subsumed',
+          score: 0.75,
+          members: ['pending:fresh-skill', 'live:auto/deploy-helper'],
+        }],
+        update_targets: [{
+          pending_slug: 'fresh-skill',
+          target: 'auto/deploy-helper',
+          classification: 'subsumed',
+          score: 0.75,
+        }],
+      }],
+    })
+    mockApi.restagePendingSkill.mockResolvedValue({
+      staged: 'auto/fresh-skill-update',
+      target: 'auto/deploy-helper',
+    })
+
+    renderWithQuery()
+
+    expect(await screen.findByText(/Related skills: auto\/deploy-helper/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+    await waitFor(() =>
+      expect(mockApi.restagePendingSkill).toHaveBeenCalledWith(
+        'fresh-skill',
+        'auto/deploy-helper',
+      ),
+    )
   })
 
   it('shows the server-computed diff with the version transition on Review', async () => {
