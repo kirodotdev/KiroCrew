@@ -153,3 +153,25 @@ def redact_for_display(text: str, redactor: Callable[[str], str]) -> tuple[str, 
             # redacted form: losing formatting beats leaking the key.
             return canonical_safe, True
     return safe, changed
+
+
+#: Characters of a user's own message a surface repeats when it echoes that
+#: message into the OTHER surface of a linked session (the ``💬`` echo). Long
+#: enough to read the question, short enough that a pasted log does not become
+#: the thread.
+MIRROR_ECHO_CHARS = 500
+
+
+def mirror_echo_text(raw_user_message: str, redactor: Callable[[str], str]) -> str:
+    """Prepare a user message for a cross-surface echo: redact the FULL text, then cut.
+
+    Redaction runs first, over the whole message and in display form: bounding
+    first can cut a credential at the boundary into fragments no redaction regex
+    matches, and a credential the user typed with markdown between its halves is
+    whole once the client renders the markup away. The truncation is the echo's
+    length contract, applied last so it can only ever shorten text that has
+    already been scanned. One definition, so the Slack echo and the channel-neutral
+    echo cannot drift on either the order or the limit.
+    """
+    safe, _ = redact_for_display(raw_user_message or "", redactor)
+    return safe[:MIRROR_ECHO_CHARS]

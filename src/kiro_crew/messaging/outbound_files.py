@@ -47,6 +47,11 @@ prompt-injected agent chooses what it writes:
 
 * a denylist check (:func:`kiro_crew.security.is_sensitive_path`), so
   ``![x](~/.aws/credentials)`` cannot be turned into an upload
+* a containment check against the caller's approved tree(s) -- ``within_root``
+  takes one root or several (a Slack turn passes the session's cwd AND the
+  dashboard's uploads directory), and a reference must sit inside one of them;
+  the read below is then pinned to THAT root, so a link planted in one tree
+  that resolves into another is refused rather than admitted by the union
 * a refusal to follow a symlink, so the bytes come from the inode the written
   path names rather than from wherever a link points
 * a descriptor-pinned read (:func:`safe_read_file_bytes_nolink`), so a hardlinked
@@ -77,8 +82,10 @@ import asyncio
 import logging
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence, Union
 
 from kiro_crew.hooks import (
     FileTooLargeError,
@@ -296,7 +303,19 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
 
 
 def _finish_destination(raw: str) -> str | None:
-    """Strip the optional ``<...>`` wrapper or trailing ``"title"`` from *raw*."""
+    """Strip the optional ``<...>`` wrapper or trailing ``"title"`` from *raw*.
+
+    A wrapped destination is the composer's producer form (``mdImageDest`` in
+    ``website/src/utils/fileTokens.ts``, mirrored by
+    :func:`kiro_crew.uploads.markdown_image_dest`): the path is percent-encoded
+    (``%`` written as ``%25``) so the renderer can decode exactly the wrapped form.
+    This is that decode, the Python twin of ``mdImageDestToPath``: unwrap, then
+    percent-decode; a malformed sequence or one that decodes to a control
+    character keeps the text as written, and a BARE destination is never decoded,
+    because it is either the pass-through-safe alphabet (decode is the identity)
+    or pre-existing history that must stay verbatim -- a legacy file literally
+    named ``photo%20copy.png`` must not become ``photo copy.png``.
+    """
     if "\r" in raw or "\n" in raw:
         return None
     dest = raw.strip()
@@ -308,7 +327,7 @@ def _finish_destination(raw: str) -> str | None:
         end = dest.find(">")
         if end == -1:
             return None  # unterminated -- don't guess at the path
-        dest = dest[1:end].strip()
+        dest = _percent_decode_wrapped(dest[1:end].strip())
     # Bare destination: a `"title"` suffix is separated by whitespace, so the path
     # ends at the first space.
     elif " " in dest or "\t" in dest:
@@ -316,6 +335,25 @@ def _finish_destination(raw: str) -> str | None:
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in dest):
         return None
     return dest or None
+
+
+def _percent_decode_wrapped(dest: str) -> str:
+    """Percent-decode a producer-wrapped destination, or return it unchanged.
+
+    Mirrors the frontend's ``decodeLocalPath``: a sequence that is not valid
+    percent-encoding, or one that decodes to a control character, is left as
+    written rather than guessed at. ``errors="strict"`` makes a broken UTF-8
+    sequence raise, which is the "malformed" case.
+    """
+    if "%" not in dest:
+        return dest
+    try:
+        decoded = urllib.parse.unquote(dest, errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return dest
+    if any(ord(ch) < 32 for ch in decoded):
+        return dest
+    return decoded
 
 
 def md_destination(rest: str) -> str | None:
@@ -418,13 +456,58 @@ def _payload_passes_redaction(data: bytes) -> bool:
     return checked == source
 
 
+#: What a caller may pass as the approved tree(s): one root, several, or ``None``
+#: for no containment (tests of the other gates only -- every transport passes a
+#: root). A root is a ``str`` or any ``PathLike``.
+RootLike = Union[str, "os.PathLike[str]"]
+UploadRoots = Union[RootLike, Sequence[RootLike], None]
+
+
+def _normalize_roots(within_root: UploadRoots) -> tuple[str, ...] | None:
+    """``None`` stays ``None``; a single root becomes a one-tuple; a sequence is kept.
+
+    An EMPTY root (``""``) is kept rather than dropped so that a caller who
+    authorized nothing still gets every reference refused: ``_matching_root``
+    never matches an empty root, which is the pre-existing behaviour for the
+    single-root form.
+    """
+    if within_root is None:
+        return None
+    if isinstance(within_root, (str, os.PathLike)):
+        return (os.fspath(within_root),)
+    return tuple(os.fspath(root) for root in within_root)
+
+
+def _matching_root(path: Path, roots: tuple[str, ...]) -> str | None:
+    """The first root *path* sits under lexically, or ``None``.
+
+    Each root is a separate approved tree -- the session's cwd, the dashboard's
+    uploads directory -- and a reference must sit inside ONE of them. The match
+    is returned rather than a boolean because the read below is pinned to the
+    root that admitted the path: the descriptor's real location has to resolve
+    inside the SAME tree the name did, so a symlink planted in one root that
+    points into another is refused instead of laundered through the union.
+    """
+    abs_path = os.path.abspath(path)
+    for root in roots:
+        if not root:
+            continue
+        try:
+            abs_root = os.path.abspath(root)
+            if os.path.commonpath((abs_path, abs_root)) == abs_root:
+                return abs_root
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def _inspect(
     dest: str,
     path: Path,
     alt: str,
     budget: int,
     max_file_bytes: int | None,
-    within_root: str | None,
+    within_root: UploadRoots,
 ) -> OutboundFile | Rejection:
     """Decide whether *path* can be uploaded; return the file OR a rejection.
 
@@ -446,12 +529,11 @@ def _inspect(
         read_cap = max_file_bytes
         over_reason = REASON_OVER_FILE_BYTES
         over_detail = f"larger than this channel's {max_file_bytes}-byte per-file limit"
-    if within_root is not None:
-        try:
-            root = os.path.abspath(within_root)
-            if not within_root or os.path.commonpath((os.path.abspath(path), root)) != root:
-                return Rejection(dest, REASON_SENSITIVE, "outside the approved workspace")
-        except (OSError, ValueError):
+    roots = _normalize_roots(within_root)
+    read_root: str | None = None
+    if roots is not None:
+        read_root = _matching_root(path, roots)
+        if read_root is None:
             return Rejection(dest, REASON_SENSITIVE, "outside the approved workspace")
     try:
         # A linked ANCESTOR defeats local_destination's lexical UNC screen:
@@ -485,9 +567,7 @@ def _inspect(
         if not path.is_file():
             return Rejection(dest, REASON_MISSING, "no such file")
         try:
-            data = safe_read_file_bytes_nolink(
-                str(path), within_root=within_root, max_bytes=read_cap
-            )
+            data = safe_read_file_bytes_nolink(str(path), within_root=read_root, max_bytes=read_cap)
         except FileTooLargeError:
             return Rejection(dest, over_reason, over_detail)
         if data is None:
@@ -642,7 +722,7 @@ def upload_filename(file: "OutboundFile", index: int = 0) -> str:
 
 
 def extract_local_refs(
-    text: str, *, limits: ExtractLimits | None = None, within_root: str | None = None
+    text: str, *, limits: ExtractLimits | None = None, within_root: UploadRoots = None
 ) -> ExtractResult:
     """Pull local raster references out of *text* for a transport to upload.
 
@@ -753,7 +833,7 @@ def _apply_cuts(text: str, cuts: list[tuple[int, int]]) -> str:
 
 
 async def extract_local_refs_off_loop(
-    text: str, *, within_root: str, limits: ExtractLimits | None = None
+    text: str, *, within_root: UploadRoots, limits: ExtractLimits | None = None
 ) -> ExtractResult:
     """Async form of :func:`extract_local_refs`, run off the event loop.
 
