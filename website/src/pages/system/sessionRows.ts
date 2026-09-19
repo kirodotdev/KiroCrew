@@ -4,7 +4,10 @@
  * The atom is a SESSION. Everything that consumes resources on behalf of a user
  * is one: dashboard chat, Slack, Discord, an agent cron, and a subagent task. A
  * task is not a different kind of thing, it is a session that has a parent, so
- * it nests one level via `subRows` and that edge survives every grouping choice.
+ * it nests via `subRows` and that edge survives every grouping choice. A session
+ * opened by another session through `session_create` has a parent too — its own
+ * crew log names the creator — and it nests under that creator the same way, to
+ * whatever depth the creating went.
  *
  * Sorting, filtering, grouping, aggregation and expansion all belong to
  * `@tanstack/react-table`, which is why this module builds a tree and stops.
@@ -17,8 +20,9 @@ import { fmtDuration, fmtNumber, fmtPercent, fmtUnit, type FormatUnit } from '..
 type Payload = Awaited<ReturnType<typeof api.sessionsMemory>>
 export type SessionPayloadRow = Payload['sessions'][number]
 export type TaskPayloadRow = Payload['tasks'][number]
+export type SessionParent = NonNullable<SessionPayloadRow['parent']>
 
-/** One table row. Tasks hang off their session in `subRows`. */
+/** One table row. Tasks and created sessions hang off their session in `subRows`. */
 export interface SessionRow {
   kind: 'session' | 'task'
   id: string
@@ -38,6 +42,19 @@ export interface SessionRow {
   shared: boolean
   /** Route to the row's chat window, or null when it has none to open. */
   href: string | null
+  /**
+   * The creator this session's crew log cites, or null for one nobody created.
+   * Kept on the row whether or not the tree could nest it: an orphan (creator
+   * not running) is a top-level row that still knows who opened it.
+   */
+  parent: SessionParent | null
+  /**
+   * True when `buildTree` placed this session under its creator's row. The one
+   * grouping-proof answer to "does the row's place already say who opened it":
+   * under a fold a top-level row's parent row is a synthetic group row, so the
+   * table cannot read nesting off the row tree.
+   */
+  nested: boolean
   subRows?: SessionRow[]
 }
 
@@ -175,7 +192,65 @@ function taskRow(t: TaskPayloadRow): SessionRow {
     pid: t.pid,
     shared: t.shared,
     href: null,
+    parent: null,
+    nested: false,
   }
+}
+
+function sessionRow(s: SessionPayloadRow): SessionRow {
+  return {
+    kind: 'session',
+    id: s.key,
+    name: rowName(s),
+    agent: s.agent,
+    channel: s.channel,
+    rssMb: s.rss_mb,
+    peakMb: null,
+    cpuCores: s.cpu_cores,
+    procs: s.procs,
+    mcp: s.mcp,
+    credits: s.credits ?? null,
+    turns: s.turns ?? null,
+    uptimeS: s.uptime_s,
+    pid: s.pid,
+    shared: !s.owns_runtime,
+    href: sessionChatPath(s.key),
+    parent: s.parent ?? null,
+    nested: false,
+  }
+}
+
+/**
+ * The session a row nests under, or null when it is a top-level row.
+ *
+ * The backend already resolved `parent.key` to a LIVE creator (null when the
+ * creator is not running, or when the crew logs formed a cycle), so the edge is
+ * followed as given. Two things are still refused here, because a table must
+ * never fail to paint on a payload it did not produce: a key that names no row
+ * in this payload, and a chain that returns to its own start. A member of such a
+ * chain becomes a top-level row; a row that merely hangs off the chain keeps
+ * its edge, since its parent is now a root.
+ */
+function nestsUnder(
+  session: SessionPayloadRow,
+  byKey: Map<string, SessionPayloadRow>,
+): string | null {
+  const parentKey = session.parent?.key ?? null
+  if (parentKey == null || parentKey === session.key || !byKey.has(parentKey)) return null
+  const seen = new Set<string>()
+  let cursor: string | null = parentKey
+  while (cursor != null) {
+    if (cursor === session.key) return null
+    // Some OTHER key repeats: the chain leads into a cycle this row is not on.
+    // Its members detach themselves (each sees its own key come back), so this
+    // row's parent is, or hangs off, a root -- the edge is safe to keep.
+    if (seen.has(cursor)) break
+    seen.add(cursor)
+    const next: SessionPayloadRow | undefined = byKey.get(cursor)
+    const nextKey = next?.parent?.key ?? null
+    cursor = nextKey != null && nextKey !== next?.key && byKey.has(nextKey) ? nextKey : null
+  }
+  return parentKey
 }
 
 /**
@@ -184,40 +259,41 @@ function taskRow(t: TaskPayloadRow): SessionRow {
  * Order is not decided here: the table owns sorting, so imposing one would make
  * the first paint disagree with every subsequent one.
  *
+ * A session whose crew log names a running creator nests under that creator, and
+ * a task nests under the session that spawned it wherever THAT session sits, so
+ * a worker's tasks show under the worker, under the conductor that opened it.
+ *
  * A task whose `parent` matches no session is emitted as a TOP-LEVEL row rather
  * than dropped. Dropping it is the contradiction this page exists to remove: the
  * footer counts `tasks.length`, so an unmatched task would be counted in
  * "Task sessions" and be absent from the table above it. An orphan happens for
  * real — an app-spawned task can carry an empty parent key, and a task can
  * outlive the session that spawned it — and it is still a live runtime the
- * reader may need to act on.
+ * reader may need to act on. A created session whose creator is gone is a
+ * top-level row for the same reason, and its row still carries the citation.
  */
 export function buildTree(sessions: SessionPayloadRow[], tasks: TaskPayloadRow[]): SessionRow[] {
-  const sessionKeys = new Set(sessions.map(s => s.key))
-  const rows = sessions.map(s => {
-    const mine = tasks.filter(t => t.parent === s.key).map(taskRow)
-    return {
-      kind: 'session' as const,
-      id: s.key,
-      name: rowName(s),
-      agent: s.agent,
-      channel: s.channel,
-      rssMb: s.rss_mb,
-      peakMb: null,
-      cpuCores: s.cpu_cores,
-      procs: s.procs,
-      mcp: s.mcp,
-      credits: s.credits ?? null,
-      turns: s.turns ?? null,
-      uptimeS: s.uptime_s,
-      pid: s.pid,
-      shared: !s.owns_runtime,
-      href: sessionChatPath(s.key),
-      ...(mine.length > 0 ? { subRows: mine } : {}),
+  const byKey = new Map(sessions.map(s => [s.key, s] as const))
+  const rows = new Map(sessions.map(s => [s.key, sessionRow(s)] as const))
+  const roots: SessionRow[] = []
+  for (const s of sessions) {
+    const row = rows.get(s.key)!
+    const under = nestsUnder(s, byKey)
+    if (under == null) {
+      roots.push(row)
+      continue
     }
-  })
-  const orphans = tasks.filter(t => !sessionKeys.has(t.parent)).map(taskRow)
-  return orphans.length > 0 ? [...rows, ...orphans] : rows
+    const owner = rows.get(under)!
+    row.nested = true
+    ;(owner.subRows ??= []).push(row)
+  }
+  for (const t of tasks) {
+    const owner = rows.get(t.parent)
+    if (owner == null) continue
+    ;(owner.subRows ??= []).push(taskRow(t))
+  }
+  const orphans = tasks.filter(t => !byKey.has(t.parent)).map(taskRow)
+  return orphans.length > 0 ? [...roots, ...orphans] : roots
 }
 
 /** The largest value per numeric column, for the heat tint. Tasks included. */

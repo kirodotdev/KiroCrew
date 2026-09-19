@@ -545,6 +545,144 @@ def unit_header_slot(kind: str, unit_id: str) -> "str | None":
     return slot if isinstance(slot, str) and slot else None
 
 
+def unit_dir_for(kind: str, unit_id: str) -> "Path | None":
+    """The unit directory for *unit_id* under *kind*'s root, or None.
+
+    One ``stat``, no read. For the one reader that must find NAMED units ahead
+    of the store's order (the session tree admits the live sessions' logs first,
+    :mod:`kiro_crew.crew_log.tree`). None for an absent directory, a linked entry
+    (it answers for a directory outside the tree), a root the store refuses
+    (:func:`_checked_crew_log_root`) and an id that cannot be named; a caller
+    reads None as "nothing to read here", never as an error.
+    """
+    require_kind(kind)
+    try:
+        named = _checked_crew_log_root(kind) / _store_name(unit_id)
+        if is_link(named) or not named.is_dir():
+            return None
+        return named
+    except (CrewLogError, OSError):
+        return None
+
+
+def unit_dirs(kind: str, *, limit: int, exclude: "Collection[str]" = ()) -> tuple[list[Path], bool]:
+    """Up to *limit* unit directories under *kind*'s root, in the directory's own
+    order, and whether at least one more exists; ``([], False)`` when none. A
+    directory whose name is in *exclude* is neither listed nor counted: the
+    caller already holds it.
+
+    The enumeration for the one reader that looks ACROSS units (the session
+    tree, :mod:`kiro_crew.crew_log.tree`). Bounded in WORK, not only in what it
+    retains: the listing stops as soon as *limit* candidates are in hand and one
+    more has been seen, so a root holding a million unit directories costs the
+    caller *limit* + 1 candidate checks and never a walk of the million. The
+    price is that nothing is said about how many more there are -- only THAT
+    there are -- and that the admitted set follows the directory's iteration
+    order rather than the names: for the tree that is the right trade, since
+    the live sessions' logs are admitted by name ahead of this listing and the
+    closed sessions' logs it lists do not decide anything a row on screen shows.
+    ``([], False)`` alike for an absent root, for a root the store refuses
+    (:func:`_checked_crew_log_root`) and for one that cannot be listed: a reader
+    of many units reports the units it can prove, and a root it cannot vouch
+    for proves none. A linked entry is skipped for the reason
+    :func:`unit_header_slot` skips one -- it answers for a directory outside
+    the tree.
+    """
+    excluded = frozenset(exclude)
+    kept: list[Path] = []
+    try:
+        root = _checked_crew_log_root(kind)
+        if not root.is_dir():
+            return [], False
+        for child in root.iterdir():
+            if child.name in excluded or is_link(child) or not child.is_dir():
+                continue
+            if len(kept) >= max(0, limit):
+                # One past the limit is all the caller needs to know.
+                return kept, True
+            kept.append(child)
+    except (CrewLogError, OSError):
+        return [], False
+    return kept, False
+
+
+def oldest_segment(directory: Path) -> Path | None:
+    """The surviving segment of *directory* with the lowest first seq, or ``None``.
+
+    Where a unit's history starts TODAY: ``log.jsonl`` while it survives,
+    otherwise the lowest-numbered later segment retention left behind. One
+    ``stat`` in the common case: the head segment is checked by name before the
+    directory is listed.
+    """
+    head = directory / LOG_FILE
+    try:
+        if head.is_file():
+            return head
+        found = [
+            (first, child)
+            for child in directory.iterdir()
+            if (first := _segment_first_seq(child)) is not None
+        ]
+    except OSError:
+        return None
+    if not found:
+        return None
+    found.sort(key=lambda pair: pair[0])
+    return found[0][1]
+
+
+def read_head(path: Path) -> "tuple[dict[str, Any] | None, Entry | None, bool]":
+    """Line 1 of *path* parsed as its header object, line 2 as its first entry,
+    and whether a line 2 EXISTS at all.
+
+    Header and entry are ``None`` when absent or when they cannot be delivered
+    intact -- the abort posture of :func:`_read_header_line`, for the same
+    reason: skipping a damaged line 1 would hand back an ENTRY as the header, a
+    wrong answer rather than a missing one. The third value is what lets a
+    caller tell two ``None`` entries apart: a header with NO line behind it is a
+    normal transient (the emitter creates the file and appends
+    ``session/opened`` in two writes, and a read can land between them), while
+    a line that is there and does not parse is damage, and a caller that cached
+    nothing for it would read it again forever.
+
+    A line 2 with no terminator that does not parse is the transient, not the
+    damage: the read landed inside the append, and the same bytes complete on
+    the same inode a moment later. Reporting it as "no line behind the header
+    yet" keeps a caller from caching a refusal it would otherwise hold for as
+    long as the file exists. A terminated line that does not parse, and an
+    unterminated one that does parse (the write landed short of its newline),
+    are both final and reported as such.
+
+    A file that cannot be opened or read raises the :class:`OSError` as is.
+    Every ``None`` above is a verdict on bytes this function saw; a read that
+    failed saw none, and reporting it as damage would let a caller cache a
+    permanent refusal for a moment's I/O fault (or for a unit retention removed
+    between the caller's ``stat`` and this open). The caller decides whether
+    that is a retry next pass or a unit that is gone.
+    """
+    with open(path, "rb") as source:
+        records = iter(strict_raw_records(source, path, cap=MAX_ENTRY_BYTES))
+        try:
+            raw_header = next(records, b"").strip()
+        except UnreadableRecord:
+            return None, None, False
+        header = _parses_to_object(raw_header) if raw_header else None
+        if not header:
+            return None, None, False
+        try:
+            raw_entry = next(records, None)
+        except UnreadableRecord:
+            return header, None, True
+    if raw_entry is None:
+        return header, None, False
+    parsed = _parses_to_object(raw_entry.strip())
+    if parsed is None and not raw_entry.endswith((b"\n", b"\r")):
+        # Mid-append: nothing final to report yet.
+        return header, None, False
+    entry = None if parsed is None else Entry.from_dict(parsed)
+    return header, entry, True
+
+
 def _remove_unit_contents(directory: Path) -> "tuple[int, int]":
     """Delete everything in *directory* except the lease. ``(failures, history_gone)``.
 

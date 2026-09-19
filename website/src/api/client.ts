@@ -3210,6 +3210,13 @@ export const api = {
       rss_mb: number | null; procs: number | null; mcp: number | null
       cpu_cores: number | null; uptime_s: number | null
       credits: number | null; turns: number | null
+      /**
+       * The session that opened this one through session_create, as the child's
+       * own crew log records it; null for a session nobody created. `key` is the
+       * creator's live session key when it is running (the edge the table nests
+       * on) and null when it is not, so the citation outlives the creator.
+       */
+      parent: { slot: string; key: string | null } | null
     }[]
     tasks: {
       id: string; task: string; agent: string; parent: string
@@ -3220,6 +3227,15 @@ export const api = {
     totals: {
       rss_mb: number; runtimes: number; host_mb: number | null
       host_pct: number | null; rss_is_upper_bound: boolean
+      /**
+       * Whether the store held more session logs than the lineage scan admits
+       * (`lineage_cap`), on this sample; false within the cap or with the crew
+       * log off (cap 0 then). The live sessions' logs are read first, so what
+       * went unread is closed sessions' logs: no row on this page is affected.
+       * A fact, not a count: counting would mean walking the whole store.
+       */
+      lineage_over_cap: boolean
+      lineage_cap: number
     }
     history: { t: number; mb: number }[]
   }>,
