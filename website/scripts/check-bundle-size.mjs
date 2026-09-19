@@ -124,7 +124,7 @@ export const CHUNK_BUDGETS = {
   // was set at 3.7% over its own measurement, below the 5% convention, and
   // ordinary catalog growth since then used that margin up. Back to the 5%
   // convention over the measured size.
-  t: 861 * KB, // measured 820.3 KB on the capability-inheritance build rebased onto f382f0a70 (~5% headroom)
+  t: 863 * KB, // measured 862.1 KB on the guided-review-fix build rebased onto cff7de541 (locale keys for the new feature surface); 820.3 KB on the capability-inheritance build
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

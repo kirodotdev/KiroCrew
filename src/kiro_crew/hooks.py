@@ -2786,11 +2786,18 @@ def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
     if not _stat.S_ISREG(os.fstat(fd).st_mode):
         return False
     opened_path = _fd_real_path(fd)
-    return (
-        opened_path is not None
-        and os.path.normcase(os.path.normpath(opened_path)) == os.path.normcase(path)
-        and not is_sensitive_path(opened_path)
-    )
+    if opened_path is None:
+        return False
+    opened_cmp = os.path.normcase(os.path.normpath(opened_path))
+    path_cmp = os.path.normcase(path)
+    # os.path.normcase is the identity on POSIX, so on a case-insensitive
+    # filesystem (default macOS APFS) the fd's real path arrives in the
+    # canonical on-disk case while the validated path keeps the caller's
+    # spelling — the same directory, spelled differently. Lower both on
+    # darwin, where case-insensitivity is the filesystem default.
+    if sys.platform == "darwin":
+        opened_cmp, path_cmp = opened_cmp.lower(), path_cmp.lower()
+    return opened_cmp == path_cmp and not is_sensitive_path(opened_path)
 
 
 def safe_read_file(path: str) -> str:
@@ -3021,8 +3028,18 @@ def safe_read_file_bytes_nolink(
             if fd_real is None:
                 return None  # cannot verify containment -> fail closed
             root_real = os.path.realpath(within_root)
+            # On a case-insensitive filesystem (default macOS APFS) the fd's
+            # real path arrives in the canonical on-disk case while the root
+            # keeps the caller's spelling — `themes/LCARS` and `themes/lcars`
+            # are one directory there. Compare case-insensitively only on
+            # darwin, where case-insensitivity is the filesystem default;
+            # case-sensitive Linux keeps the exact match.
+            if sys.platform == "darwin":
+                fd_real_cmp, root_real_cmp = fd_real.lower(), root_real.lower()
+            else:
+                fd_real_cmp, root_real_cmp = fd_real, root_real
             try:
-                contained = os.path.commonpath([fd_real, root_real]) == root_real
+                contained = os.path.commonpath([fd_real_cmp, root_real_cmp]) == root_real_cmp
             except ValueError:
                 contained = False
             if not contained:
@@ -3135,8 +3152,18 @@ def _pinned_replace(
             if fd_real is None:
                 return None  # cannot verify containment -> fail closed
             root_real = os.path.realpath(within_root)
+            # On a case-insensitive filesystem (default macOS APFS) the fd's
+            # real path arrives in the canonical on-disk case while the root
+            # keeps the caller's spelling — `themes/LCARS` and `themes/lcars`
+            # are one directory there. Compare case-insensitively only on
+            # darwin, where case-insensitivity is the filesystem default;
+            # case-sensitive Linux keeps the exact match.
+            if sys.platform == "darwin":
+                fd_real_cmp, root_real_cmp = fd_real.lower(), root_real.lower()
+            else:
+                fd_real_cmp, root_real_cmp = fd_real, root_real
             try:
-                contained = os.path.commonpath([fd_real, root_real]) == root_real
+                contained = os.path.commonpath([fd_real_cmp, root_real_cmp]) == root_real_cmp
             except ValueError:
                 contained = False
             if not contained:

@@ -1,12 +1,21 @@
 # Code Review Sage
 
-A self-evolving deep code reviewer packaged as a built-in KiroCrew app. Reviews
-**GitHub pull requests**, learns per-repository from shipped fixes + review
+A self-evolving code reviewer packaged as a built-in Kiro Crew app. Reviews
+**local Git working trees first**, learns per-repository from shipped fixes + review
 comments + design discussions, and produces a prioritized **Focus Report** so
 you know which changes actually deserve scrutiny. Findings are read **in the
 app**, next to the pull request they came from — nothing is written to the pull
 request unless you turn on `review.auto_post`, which publishes them as a PENDING
 (draft) review for you to submit.
+
+The Local view is the review → feedback → fix loop for uncommitted changes. It
+fingerprints the reviewed working tree, validates every inline finding against an
+added line, persists dispositions and human guidance, and refuses a fix when the
+working tree has moved since the review. The fix agent receives only the selected
+findings and never commits or pushes on the user's behalf. Applying a fix is a
+governed Task Runner lifecycle — a retained candidate worktree whose apply,
+commit, push, and discard steps are user-confirmed state transitions — specified
+in `docs/system-specs/modules/taskrunner.md` (Review-Fix Lifecycle).
 
 ## Ask the reviewer
 
@@ -61,7 +70,8 @@ code_review_sage/
 ├── __init__.py              # exposes register_routes
 ├── backend/
 │   ├── __init__.py
-│   └── routes.py            # /api/apps/code-review-sage routes
+│   ├── routes.py            # /api/apps/code-review-sage routes
+│   └── fix_tasks.py         # review-fix task endpoints + Task Runner-backed actions
 ├── sage_lib/
 │   ├── store.py             # data layout self-heal + config
 │   ├── review_driver.py     # code-enforced 1-isolated-spawn-per-change loop

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { RunReport } from '../apps/code-review-sage/lib/types'
 
 // Render markdown-bearing prose as a tagged span so the test can (a) read the
@@ -175,5 +176,81 @@ describe('ReportView', () => {
     const link = screen.getByRole('link', { name: /Open shared copy/ })
     expect(link.getAttribute('href')).toBe('/artifacts/focus-report-x')
     expect(screen.queryByRole('button', { name: /Share/ })).not.toBeInTheDocument()
+  })
+
+  it('moves the clear and share actions into an overflow menu once a selection is ticked', async () => {
+    const user = userEvent.setup()
+    const onStartFix = vi.fn()
+    const onArchive = vi.fn()
+    render(
+      <ReportView report={makeReport({ report_slug: null })} onArchive={onArchive} onStartFix={onStartFix} />,
+    )
+    // Tick a fix on the red row's finding.
+    fireEvent.click(screen.getByText('Red PR title').closest('button') as HTMLButtonElement)
+    await user.click(screen.getAllByRole('checkbox', { name: /to fix/i })[0]!)
+
+    // Two of the row's actions are now the primary button + the kebab; the
+    // clears and Share live behind the kebab, not beside it.
+    expect(screen.getByRole('button', { name: /Ask to fix/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /More actions/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Share/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Clear/i })).not.toBeInTheDocument()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /More actions/i }), {
+      pointerId: 1, button: 0, ctrlKey: false, isPrimary: true,
+    })
+    await user.click(await screen.findByText('Clear fix selection'))
+    expect(await screen.findByRole('button', { name: /Share/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /More actions/i })).not.toBeInTheDocument()
+    expect(onStartFix).not.toHaveBeenCalled()
+    expect(onArchive).not.toHaveBeenCalled()
+  })
+
+  it('keeps the dedicated fix button when only a fix selection is active', async () => {
+    // A single selection still fits the row cap (fix + kebab = 2): the fix
+    // action must keep its discoverable button, not hide behind the menu.
+    const user = userEvent.setup()
+    const onStartFix = vi.fn()
+    render(
+      <ReportView report={makeReport({ report_slug: null })} onStartFix={onStartFix} />,
+    )
+    fireEvent.click(screen.getByText('Red PR title').closest('button') as HTMLButtonElement)
+    await user.click(screen.getAllByRole('checkbox', { name: /to fix/i })[0]!)
+
+    expect(screen.getByRole('button', { name: /Fix 1 selected findings/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /More actions/ })).toBeInTheDocument()
+    // No comment selection -> no Draft button, no comment clear.
+    expect(screen.queryByRole('button', { name: /Draft/ })).not.toBeInTheDocument()
+  })
+
+  it('moves the fix action into the overflow when comment and fix selections are both active', async () => {
+    // `max-two-buttons-per-row` counts the kebab: comment + fix + kebab would
+    // be 3, so the fix action drops into the overflow menu while BOTH
+    // selections are active — and it still fires from there.
+    const user = userEvent.setup()
+    const onStartFix = vi.fn()
+    const onPostSelection = vi.fn(async () => {})
+    render(
+      <ReportView
+        report={makeReport({ report_slug: null })}
+        onStartFix={onStartFix}
+        onPostSelection={onPostSelection}
+      />,
+    )
+    fireEvent.click(screen.getByText('Red PR title').closest('button') as HTMLButtonElement)
+    await user.click(screen.getAllByRole('checkbox', { name: /to draft/i })[0]!)  // ship summary
+    await user.click(screen.getAllByRole('checkbox', { name: /to fix/i })[0]!)
+
+    // Row cap respected: comment button + kebab only.
+    expect(screen.getByRole('button', { name: /Draft 1 selected finding/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Fix 1 selected findings/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /More actions/ })).toBeInTheDocument()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /More actions/i }), {
+      pointerId: 1, button: 0, ctrlKey: false, isPrimary: true,
+    })
+    await user.click(await screen.findByText('Fix 1 selected findings'))
+    expect(onStartFix).toHaveBeenCalledTimes(1)
+    expect(onStartFix.mock.calls[0]![0]).toHaveLength(1)
   })
 })
