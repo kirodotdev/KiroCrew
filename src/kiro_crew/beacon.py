@@ -180,6 +180,15 @@ try:
 except ImportError:
     _BAKED_DISTRIBUTION = ""
 
+# COMMIT is a newer field of the same generated module: a _build_info.py stamped
+# before the bundle-freshness guard existed carries DISTRIBUTION but not COMMIT,
+# so a missing name (which ``from ... import`` also raises as ImportError) must
+# not unbind _BAKED_DISTRIBUTION. Kept as its own import for that reason.
+try:
+    from ._build_info import COMMIT as _BAKED_COMMIT  # type: ignore[import-not-found]
+except ImportError:
+    _BAKED_COMMIT = ""
+
 # Fallback when a version string carries no parseable release number.
 UNKNOWN_VERSION = "unknown"
 
@@ -249,6 +258,18 @@ def baked_distribution() -> str:
     """
     raw = str(_BAKED_DISTRIBUTION or "").strip().lower()
     return raw if raw in KNOWN_DISTRIBUTIONS else ""
+
+
+def baked_commit() -> str:
+    """Return the git commit SHA stamped into the package tree, or "".
+
+    Reads the module-level :data:`_BAKED_COMMIT` (the seam tests patch) so the
+    dashboard bundle-freshness guard can compare the running backend's build
+    commit against the one recorded in ``dist/build-id.json``. Empty in a source
+    checkout (no ``_build_info.py``) or when git was unavailable at packaging
+    time, in which case the guard skips silently rather than false-warning.
+    """
+    return str(_BAKED_COMMIT or "").strip()
 
 
 def distribution() -> str:
