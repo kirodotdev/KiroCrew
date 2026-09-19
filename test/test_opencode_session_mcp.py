@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 import pytest
+from real_adapter_gate import MEASURED_OPENCODE_VERSION, require_real_adapter
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import session_mcp
@@ -921,7 +922,20 @@ def _opencode_bin() -> str | None:
 _BIN = _opencode_bin()
 
 
-@pytest.mark.skipif(_BIN is None, reason="opencode not installed")
+def _require_opencode() -> None:
+    """Gate a live measurement on the harness, without a skip a lane can hide behind.
+
+    The codex file's ``_require_codex_acp`` with this backend's resolver and pin:
+    absent locally it skips, absent under ``KIROCREW_E2E_REQUIRE=1`` it fails, so
+    the lane that installs the pinned harness cannot report success having measured
+    nothing.
+    """
+    require_real_adapter(
+        _BIN, what="opencode", install=f"npm i -g opencode-ai@{MEASURED_OPENCODE_VERSION}"
+    )
+
+
+@pytest.mark.real_adapter
 def test_real_opencode_acp_accepts_the_crew_stdio_element():
     """ANTI-DRIFT GUARD, and the measurement this whole projection rests on.
 
@@ -958,10 +972,12 @@ def test_real_opencode_acp_accepts_the_crew_stdio_element():
     ``HOME`` and ``XDG_*`` tree, so the operator's own opencode configuration is
     neither read nor written.
 
-    Skips cleanly where the harness is absent, which is CI. Its companion
+    Skips where the harness is absent, and FAILS instead where a lane declares it
+    must be there. Its companion
     :func:`test_the_real_adapter_guard_is_reachable_at_all` is what keeps the skip
     from becoming permanent silence.
     """
+    _require_opencode()
     assert _BIN is not None
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         root = Path(w)
@@ -1056,9 +1072,11 @@ def test_real_opencode_acp_accepts_the_crew_stdio_element():
 def test_the_real_adapter_guard_is_reachable_at_all():
     """A skip-only guard is a guard nobody notices has stopped running.
 
-    This does not assert the harness is installed -- CI has no opencode. It asserts
-    the RESOLVER the guard skips on is the spawn's own, so a rename there turns the
-    guard permanently green without anyone seeing it.
+    This does not assert the harness is installed -- most runners have none, and
+    the lane that installs it enforces presence with ``KIROCREW_E2E_REQUIRE``
+    instead. It asserts the RESOLVER the guard
+    reads is the spawn's own, so a rename there cannot turn the guard permanently
+    green without anyone seeing it.
     """
     from kiro_crew.acp.client import _resolve_self_served_bin
 

@@ -165,6 +165,16 @@ structural reason the same missing-tools defect shipped on four harnesses in a r
    checks it. The declaration is what code reads; the onboarding table is what a
    human reads BEFORE writing any of this, so a gap recorded in only one of the
    two is a gap the next author misses.
+7. **Measure the adapter, in the lane.** Anything you learn by driving the real
+   adapter belongs in a guarded contract test, and those run in CI's `Real Adapter
+   Contract Tests` lane: it runs `npm ci` on the locked manifest in
+   `test/real_adapters/` and sets `KIROCREW_E2E_REQUIRE=1`, so an absent adapter
+   fails the lane instead of skipping it. Mark the new test `@pytest.mark.real_adapter`,
+   call the gate in its body, and add the adapter's exact version to that manifest
+   (then `npm install --package-lock-only` there and commit both files); a
+   measurement no lane runs is a measurement that stops being true without telling
+   anyone. Dependabot bumps the manifest weekly, and that bump PR's run of the lane
+   is where a new release's drift shows up -- re-measure there, never relax.
 
 The folder makes a mirror easy to find and easy to copy. The test is what asks
 the question. Both are needed — a folder alone is just a tidier place to forget.

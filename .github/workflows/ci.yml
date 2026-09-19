@@ -1588,6 +1588,182 @@ jobs:
           pytest -q -n0 --timeout=180 --no-cov \
             src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests/
 
+  # ── Real-adapter contract lane (the measurements no other runner makes) ──
+  # The codex and opencode projections rest on facts about the ADAPTER, not about
+  # Crew: which `mcpServers` element shape a `session/new` accepts, whether the
+  # named child is really launched, what environment reaches it, and which
+  # transports are refused outright. Those cannot be asserted from Crew's side, so
+  # they are measured against a real adapter -- and every guarded test skipped on
+  # every runner, because no runner had one installed. A guard that never runs
+  # where drift arrives is the one place drift is invisible: a codex-acp release
+  # that reshaped the element would break every codex session's MCP surface with
+  # nothing red to say so.
+  #
+  # Per pull request rather than nightly. The facts change when the adapter revs,
+  # but what makes them load-bearing changes when Crew's own projection changes,
+  # and this lane is what tells the author of that change. The whole job is ~5
+  # minutes with the install cached.
+  real-adapter-contract:
+    name: Real Adapter Contract Tests
+    needs: [changes, await-fast-gate]
+    # Skipped on a frontend-only diff, like every other backend lane: nothing the
+    # frontend surface can change moves an adapter contract, and the install is a
+    # registry download this job should not make to prove that. Deliberately NOT a
+    # narrower path filter -- what makes these facts load-bearing is any change to
+    # Crew's projection, and the selector cannot prove which backend file that is.
+    if: needs.changes.outputs.only_frontend != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # THE point of this job. Every guarded test skips where its adapter is absent
+      # -- correct on a developer's box, and what kept these contracts unmeasured in
+      # CI. Here the adapters are installed deliberately, so an absent one is a
+      # FAILURE: without this a broken npm install produces a green job that
+      # asserted nothing, which is the state the lane exists to end.
+      #
+      # This is the repository's EXISTING switch for "this job declared its
+      # preconditions must hold" -- the E2E scenario suites, the Playwright gate and
+      # the gateway-boot matrix all read the same name -- rather than a second
+      # spelling of it. Each job sets it for its own module set; this job's set is
+      # the `real_adapter` marker below.
+      KIROCREW_E2E_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      # No extras: these tests drive a subprocess adapter and a stub MCP server,
+      # and the rootdir conftest needs the package importable. Neither reaches the
+      # voice or desktop surfaces.
+      - name: Install dependencies
+        run: uv pip install --system -e "." --group dev
+
+      # Node 24, the version every other lane in this file installs. codex-acp is
+      # a Node stdio server and the codex guard also asserts `node` is on PATH.
+      # Node 24, the version every other lane in this file installs. codex-acp is
+      # a Node stdio server and the codex guard also asserts `node` is on PATH.
+      # The npm cache is keyed on the adapters' OWN lockfile -- the repo pattern,
+      # with a different lockfile -- so a warm run pays extraction only.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: test/real_adapters/package-lock.json
+
+      # From the COMMITTED lockfile, never an ad hoc `npm install pkg@X`. The
+      # manifest in test/real_adapters/ pins one exact version per adapter, and
+      # `npm ci` installs the closure that lockfile records -- top-level AND
+      # transitive -- so a cache miss cannot change what this lane measures. A pin
+      # alone does not do that: `npm install pkg@X` re-resolves the package's own
+      # dependency ranges on every run (zizmor adhoc-packages).
+      #
+      # The same manifest is what test/real_adapter_gate.py reads for the measured
+      # versions, and what Dependabot refreshes weekly. A bump therefore arrives as
+      # its own PR, and THAT PR's run of this lane is where adapter drift shows up.
+      # Nothing here holds a credential: the tests fabricate an API key inside a
+      # throwaway CODEX_HOME, and session/new makes no model call.
+      - name: Install the pinned adapters from the lockfile
+        working-directory: test/real_adapters
+        run: npm ci --no-audit --no-fund
+
+      # ASSERTS the pin held, rather than trusting the install: an adapter whose
+      # binary cannot start, or a manifest edited without its lockfile, would
+      # otherwise be measured as if it were the pinned release. The expected
+      # versions come from the manifest through the gate module -- the one reader
+      # the tests use -- so this step and the assertions cannot name different
+      # releases.
+      - name: Assert the installed adapters are the pinned ones
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          sys.path.insert(0, "test")
+          import real_adapter_gate as gate
+
+          modules = gate.MANIFEST_DIR / "node_modules"
+          manifest = modules / gate.CODEX_ACP_PACKAGE / "package.json"
+          codex = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+          assert codex == gate.MEASURED_CODEX_ACP_VERSION, (
+              f"codex-acp {codex} installed, {gate.MEASURED_CODEX_ACP_VERSION} pinned"
+          )
+          # The binary's own answer, not its manifest: this is also the proof the
+          # installed executable starts on this runner.
+          opencode = subprocess.run(
+              [str(modules / ".bin" / "opencode"), "--version"],
+              check=True, capture_output=True, encoding="utf-8", timeout=120,
+          ).stdout.strip()
+          assert opencode == gate.MEASURED_OPENCODE_VERSION, (
+              f"opencode {opencode!r} installed, {gate.MEASURED_OPENCODE_VERSION} pinned"
+          )
+          print(f"codex-acp {codex}, opencode {opencode}: both the pinned release")
+          PY
+
+      - name: Run the real-adapter contract tests
+        # Both resolution ladders read an explicit override first, so the lane
+        # names the entry it installed instead of measuring whatever else a runner
+        # image happens to ship.
+        env:
+          CODEX_ACP_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/@agentclientprotocol/codex-acp/dist/index.js
+          OPENCODE_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/opencode
+        run: |
+          # As in backend-test: the `python` matcher annotates any traceback in the
+          # log, including one printed inside a warning, and never matches a pytest
+          # failure.
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=1200 -m real_adapter \
+            --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
+            test/test_codex_session_mcp.py \
+            test/test_opencode_session_mcp.py
+
+      # The second half of the no-silent-skip rule, and the half that does not trust
+      # the first. KIROCREW_E2E_REQUIRE turns an absent adapter into a failure; this
+      # asserts on the REPORT that the selected cases ran. A variable that never
+      # arrived, a marker selection that matched nothing, or a skip added inside a
+      # test body all reach this step as a skipped or missing case rather than as a
+      # green lane.
+      #
+      # FLOOR, not an inventory: a count can only be raised, so it cannot go stale
+      # the way a copied list of names does, and its one job is to refuse a run that
+      # measured FEWER than the contracts known to exist. Which tests those are is
+      # the marker's business, and the parity test names the files.
+      - name: Require every contract test to have executed
+        if: always()
+        env:
+          MEASURED_CONTRACT_FLOOR: "4"
+        run: |
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["RUNNER_TEMP"]) / "real-adapter-results.xml"
+          cases = list(ET.parse(report).iter("testcase"))
+          floor = int(os.environ["MEASURED_CONTRACT_FLOOR"])
+          names = sorted(case.attrib["name"] for case in cases)
+          assert len(cases) >= floor, f"selected {len(cases)} of at least {floor}: {names}"
+          for case in cases:
+              for tag in ("skipped", "failure", "error"):
+                  found = case.find(tag)
+                  assert found is None, (
+                      f"{case.attrib['name']} reported {tag}: "
+                      f"{found.attrib.get('message', '')[:400]}"
+                  )
+          print(f"{len(cases)} real-adapter contract tests executed, none skipped: {names}")
+          PY
+
   coverage-combine:
     name: Coverage Combine
     needs: [backend-test, changes]

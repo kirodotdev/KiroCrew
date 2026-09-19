@@ -33,6 +33,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from real_adapter_gate import MEASURED_CODEX_ACP_VERSION, require_real_adapter
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import runtime as acp_runtime
@@ -1784,6 +1785,27 @@ def _codex_acp_entry() -> Path | None:
 _ENTRY = _codex_acp_entry()
 
 
+def _require_codex_acp(*, with_node: bool = False) -> None:
+    """Gate a live measurement on the adapter, without a skip a lane can hide behind.
+
+    Absent locally, the test skips as a ``skipif`` did. Absent where the job
+    declared the adapters must be present (``KIROCREW_E2E_REQUIRE=1``, the lane that
+    installs the pinned one to run these), it FAILS -- a lane whose only guard
+    skipped reports success having measured nothing. ``real_adapter_gate`` carries
+    the pinned version, so the release installed and the release these assertions
+    were measured against are one string.
+    """
+    require_real_adapter(
+        _ENTRY,
+        what="codex-acp",
+        install=f"npm i -g @agentclientprotocol/codex-acp@{MEASURED_CODEX_ACP_VERSION}",
+    )
+    if with_node:
+        require_real_adapter(
+            shutil.which("node"), what="node", install="install Node 24 and put it on PATH"
+        )
+
+
 @pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups only")
 def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
     """The leak the outer bound exists to prevent, driven end to end.
@@ -1832,8 +1854,7 @@ time.sleep(300)
         )
 
 
-@pytest.mark.skipif(_ENTRY is None, reason="codex-acp not installed")
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+@pytest.mark.real_adapter
 def test_real_codex_acp_accepts_the_crew_stdio_element():
     """ANTI-DRIFT GUARD, and the measurement the old docstring lacked.
 
@@ -1868,6 +1889,7 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
     model call, so nothing is sent anywhere and the key never leaves the temp
     directory.
     """
+    _require_codex_acp(with_node=True)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         root = Path(w)
         (root / "work").mkdir()
@@ -2096,8 +2118,7 @@ print(json.dumps(out))
 """
 
 
-@pytest.mark.skipif(_ENTRY is None, reason="codex-acp not installed")
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+@pytest.mark.real_adapter
 def test_real_codex_acp_session_close_evicts():
     """ANTI-DRIFT GUARD for ``CodexHarness.teardown`` and codex's membership in
     ``ACP_BACKENDS_SESSION_EVICTION``.
@@ -2123,6 +2144,7 @@ def test_real_codex_acp_session_close_evicts():
     throwaway ``CODEX_HOME`` gets past the auth check that fires before
     ``session/new``; nothing here performs a model call, so nothing leaves the box.
     """
+    _require_codex_acp(with_node=True)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         root = Path(w)
         (root / "work").mkdir()
@@ -2173,7 +2195,7 @@ def test_real_codex_acp_session_close_evicts():
         assert m["fresh_after"], "session/new failed after the closes\n" + context
 
 
-@pytest.mark.skipif(_ENTRY is None, reason="codex-acp not installed")
+@pytest.mark.real_adapter
 def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
     """The frame VOCABULARY the deny channel keys on, pinned against the adapter.
 
@@ -2186,9 +2208,11 @@ def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
     refusal, the unidentified-approval refusal and the tripwire together -- the
     coordinated drift the design review names. Observing them on the wire needs a
     model to call a tool; observing them in the adapter's own shipped source does
-    not, and the entry the spawn resolves IS that source. Skips where the adapter
-    is absent, like its sibling; where it is present, a drift goes red here.
+    not, and the entry the spawn resolves IS that source. Gated like its siblings:
+    a skip where the adapter is absent, a failure where a lane requires it, and a
+    red where it is present and has drifted.
     """
+    _require_codex_acp()
     assert _ENTRY is not None
     source = _ENTRY.read_text(encoding="utf-8", errors="replace")
     for needle in (
@@ -2206,9 +2230,11 @@ def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
 def test_the_real_adapter_guard_is_reachable_at_all():
     """A skip-only guard is a guard nobody notices has stopped running.
 
-    This does not assert the adapter is installed -- CI has no codex-acp. It
-    asserts the RESOLVER the guard skips on is the spawn's own, so a rename there
-    turns the guard permanently green without anyone seeing it.
+    This does not assert the adapter is installed -- most runners have none, and
+    the lane that installs it enforces presence with ``KIROCREW_E2E_REQUIRE``
+    instead. It asserts the RESOLVER the guard
+    reads is the spawn's own, so a rename there cannot turn the guard permanently
+    green without anyone seeing it.
     """
     from kiro_crew.acp.client import _resolve_codex_acp_bin
 
