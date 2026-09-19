@@ -424,16 +424,20 @@ describe('McpTab needs_auth status', () => {
     ).toBeInTheDocument()
   })
 
-  it('explains that Online is a host check, and leaves the rest without a hover explanation', async () => {
+  it('explains that Online is a host check via a focusable InfoTip, and leaves the rest without one', async () => {
     // "Online" is the gateway's own probe result and reads as a stronger claim
     // than it is — it says nothing about whether a given chat session mounted
-    // the server — so it carries the caveat two words cannot. The other statuses
-    // still get none: this stays a named exception rather than blanket hints.
+    // the server — so it carries the caveat two words cannot. That caveat rides
+    // a focusable InfoTip rather than a hover-only `title`, reachable by
+    // keyboard/touch/AT (#8359). The other statuses still get none: this stays
+    // a named exception rather than blanket hints.
     mockApi.mcpServers.mockResolvedValue([remote('ok')])
     renderTab()
 
     const badge = await screen.findByText('Online')
-    expect(badge).toHaveAttribute('title', expect.stringContaining('gateway started this server'))
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    fireEvent.click(trigger)
+    expect(await screen.findByText(/gateway started this server/i)).toBeInTheDocument()
 
     for (const status of ['error', 'outdated', 'disabled'] as const) {
       mockApi.mcpServers.mockResolvedValue([remote(status)])
@@ -442,6 +446,7 @@ describe('McpTab needs_auth status', () => {
         status === 'error' ? 'Error' : status === 'outdated' ? 'Outdated' : 'Disabled',
       )
       expect(other).not.toHaveAttribute('title')
+      expect(within(other.parentElement!).queryByRole('button', { name: 'More information' })).toBeNull()
       unmount()
     }
   })
@@ -498,11 +503,14 @@ describe('probe-failure count', () => {
     expect(screen.getByText('Error')).toBeInTheDocument()
   })
 
-  it('the label explains itself with the failure count', async () => {
+  it('the label explains itself with the failure count via a focusable InfoTip', async () => {
     mockApi.mcpServers.mockResolvedValue([failing()])
     renderTab()
     const badge = await screen.findByText('Failing')
-    expect(badge.closest('[title]')?.getAttribute('title')).toContain('3')
+    // The count rides a focusable InfoTip, not a hover-only title (#8359).
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    fireEvent.click(trigger)
+    expect((await screen.findByRole('tooltip')).textContent).toContain('3')
   })
 
   it('a healthy server is neither labelled nor offered a remount', async () => {
@@ -549,5 +557,36 @@ describe('probe-failure count', () => {
     await waitFor(() => expect(mockApi.mcpResetProbeFailures).toHaveBeenCalled())
     // Still there: the row reflects the server, not the click.
     expect(screen.getByText('Failing')).toBeInTheDocument()
+  })
+})
+
+describe('McpTab badge hints are keyboard/AT-reachable (#8359)', () => {
+  // The needs_auth and ok hints already ride a focusable InfoTip (tested
+  // above). These pin the same reachability contract on the two remaining
+  // badges the issue named: a hover-only `title` is unreachable by keyboard,
+  // touch and AT, so each hint must live on an InfoTip button, not the Badge.
+
+  it('the "Declared" badge explains itself via a focusable InfoTip, not a badge title', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('managed'), probeMode: 'declared', probedAt: 1_700_000_000 },
+    ])
+    renderTab()
+    const badge = await screen.findByText('Declared')
+    expect(badge).not.toHaveAttribute('title')
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    fireEvent.click(trigger)
+    expect((await screen.findByRole('tooltip')).textContent).toBeTruthy()
+  })
+
+  it('the "Failing" badge explains itself via a focusable InfoTip, not a badge title', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('airbnb'), status: 'error', error: 'timeout', probeFailures: 3, probeFailing: true },
+    ])
+    renderTab()
+    const badge = await screen.findByText('Failing')
+    expect(badge).not.toHaveAttribute('title')
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    fireEvent.click(trigger)
+    expect((await screen.findByRole('tooltip')).textContent).toContain('3')
   })
 })

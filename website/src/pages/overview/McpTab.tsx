@@ -579,31 +579,31 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       "it is up", and a peripheral scan of a 12-row table reads
                       colour long before it reads 11px text. */}
                   {s.probeMode === 'declared' && s.status === 'ok' ? (
-                    <Badge variant="warn" title={i18nT('pages.overview.mcpTab.tool_list_read_from_the_package_s_declaration_th')}>
-                      {i18nT('pages.overview.mcpTab.declared')}
-                    </Badge>
-                  ) : (
-                    /* The needs_auth hint is the only default-reachable
-                       explanation of the OAuth probe limitation, so it cannot
-                       live in `title` alone: a native tooltip is hover-only and
-                       so unreachable by keyboard, touch, and AT (#3626). For
-                       needs_auth the badge carries no `title` — InfoTip is the
-                       sole, focusable and tappable affordance for the hint, so
-                       pointer and AT users get the same one path to it rather
-                       than a native tooltip duplicating (and outrunning) it.
-                       Every other status keeps its `title` hint (today that is
-                       only 'ok', whose host-check caveat mcpStatusHint returns;
-                       the rest get undefined and thus no attribute). */
+                    /* The hint rides a focusable InfoTip, not a hover-only
+                       `title`: a native tooltip is unreachable by keyboard,
+                       touch, and AT (#3626, #8359). */
                     <span className="inline-flex items-center gap-1.5">
-                      <Badge
-                        variant={mcpStatusVariant(s.status, mcpAuthState(s))}
-                        title={s.status === 'needs_auth' ? undefined : mcpStatusHint(s.status, s.name, mcpAuthState(s))}
-                      >
+                      <Badge variant="warn">
+                        {i18nT('pages.overview.mcpTab.declared')}
+                      </Badge>
+                      <InfoTip text={i18nT('pages.overview.mcpTab.tool_list_read_from_the_package_s_declaration_th')} placement="top" />
+                    </span>
+                  ) : (
+                    /* The hint rides a focusable InfoTip, not a hover-only
+                       `title`: a native tooltip is unreachable by keyboard,
+                       touch, and AT (#3626, #8359). `mcpStatusHint` returns a
+                       string only for `ok` (the host-check caveat) and
+                       `needs_auth`; every other status returns undefined and
+                       so gets no InfoTip — this stays a named exception rather
+                       than a blanket hint on every badge. */
+                    <span className="inline-flex items-center gap-1.5">
+                      <Badge variant={mcpStatusVariant(s.status, mcpAuthState(s))}>
                         {mcpStatusLabel(s.status, mcpAuthState(s))}
                       </Badge>
-                      {s.status === 'needs_auth' && (
-                        <InfoTip text={mcpStatusHint(s.status, s.name, mcpAuthState(s)) || ''} placement="top" />
-                      )}
+                      {(() => {
+                        const hint = mcpStatusHint(s.status, s.name, mcpAuthState(s))
+                        return hint ? <InfoTip text={hint} placement="top" /> : null
+                      })()}
                     </span>
                   )}
                   {s.probeFailing && (
@@ -620,9 +620,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        already fill the action cell, and a third control there
                        would need an overflow menu this table does not have. */
                     <div className="mt-0.5 flex items-center gap-1.5">
-                      <Badge variant="err" title={i18nT('pages.overview.mcpTab.probe_failing_help', { failures: s.probeFailures ?? 0 })}>
+                      <Badge variant="err">
                         {i18nT('pages.overview.mcpTab.probe_failing')}
                       </Badge>
+                      {/* Focusable InfoTip, not a hover-only `title` (#3626, #8359). */}
+                      <InfoTip text={i18nT('pages.overview.mcpTab.probe_failing_help', { failures: s.probeFailures ?? 0 })} placement="top" />
                       <button
                         className="whitespace-nowrap text-[11px] text-accent hover:text-accent-hover cursor-pointer transition-colors disabled:cursor-not-allowed disabled:text-muted"
                         onClick={() => resetFailures.mutate(s.name)}
