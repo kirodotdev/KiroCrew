@@ -14,6 +14,7 @@ not a code change.
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 from kiro_crew.config.loader import CRED_WAKATIME_API_KEY, KiroCrewConfig
 from kiro_crew.config.paths import config_dir
@@ -37,10 +38,37 @@ def resolve_api_key() -> str:
 
 
 def resolve_base_url(config: KiroCrewConfig | None = None) -> str:
-    """Return the configured API base URL, or the public default."""
+    """Return a vetted API base URL, or the public default.
+
+    The API key is attached as Basic auth to every request against this base
+    URL, and ``config.json`` is agent-writable, so an unvetted base URL is a
+    path for a config rewrite to post the vault key to an attacker endpoint.
+    A configured value is therefore honored only when it is safe:
+
+    * empty -> the public WakaTime API (the common case),
+    * an ``https`` URL whose host is ``wakatime.com`` (or a subdomain),
+    * an ``https`` URL to any host ONLY when ``allow_self_hosted`` is set, a
+      deliberate opt-in for a trusted self-hosted backend.
+
+    Anything else (a non-https scheme, a non-wakatime host without the opt-in,
+    an unparseable value) falls back to the public default rather than sending
+    the key onward.
+    """
     cfg = config or KiroCrewConfig.load()
     configured = (cfg.wakatime.api_base_url or "").strip()
-    return configured or DEFAULT_API_BASE
+    if not configured:
+        return DEFAULT_API_BASE
+    try:
+        parsed = urlsplit(configured)
+    except ValueError:
+        return DEFAULT_API_BASE
+    if parsed.scheme != "https" or not parsed.hostname:
+        return DEFAULT_API_BASE
+    host = parsed.hostname.lower()
+    is_wakatime = host == "wakatime.com" or host.endswith(".wakatime.com")
+    if is_wakatime or cfg.wakatime.allow_self_hosted:
+        return configured
+    return DEFAULT_API_BASE
 
 
 def build_client(config: KiroCrewConfig | None = None) -> WakaTimeClient | None:

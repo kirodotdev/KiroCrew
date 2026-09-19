@@ -93,6 +93,7 @@
         "tool_input": "{\n  \"path\": \"~/notes.md\",\n  \"token\": \"[REDACTED: credential]\"\n}",
         "tool_input_redacted": true,
         "tool_kind": "read",
+        "tool_pending": true,
         "wire_title": "read the deploy notes"
       }
     ],

@@ -301,6 +301,7 @@
         "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
         "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"run_in_background\": false\n}",
         "tool_kind": "execute",
+        "tool_pending": true,
         "wire_title": "Run Command"
       }
     ],

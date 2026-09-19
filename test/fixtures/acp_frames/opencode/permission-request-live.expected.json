@@ -12,6 +12,7 @@
         "tool_call_id": "call_hixtdbkj",
         "tool_input": "{\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
         "tool_kind": "execute",
+        "tool_pending": true,
         "wire_title": "bash"
       }
     ],

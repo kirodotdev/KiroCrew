@@ -6260,7 +6260,9 @@
       "enumValues": null,
       "defaultValue": {
         "enabled": false,
-        "api_base_url": ""
+        "api_base_url": "",
+        "allow_self_hosted": false,
+        "send_heartbeats": false
       }
     },
     {
@@ -6290,10 +6292,42 @@
         "wakatime"
       ],
       "label": "API Base URL",
-      "help": "Override the WakaTime API base URL for a self-hosted, API-compatible backend (Wakapi, Hackatime). Empty uses the public WakaTime API at https://wakatime.com/api/v1.",
+      "help": "Override the WakaTime API base URL for a self-hosted, API-compatible backend (Wakapi, Hackatime). Empty uses the public WakaTime API at https://wakatime.com/api/v1. Only honored when it is an https URL on wakatime.com, OR when Allow self-hosted backend is on; any other value falls back to the public API so the API key cannot be posted to an unapproved host.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "wakatime.allow_self_hosted",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "Allow self-hosted backend",
+      "help": "Permit API Base URL to point at a self-hosted, API-compatible backend (Wakapi, Hackatime) instead of the public WakaTime API. Off by default: with it off, only an https wakatime.com base URL is honored and anything else falls back to the public API, so a config change alone cannot redirect the vault API key to an unapproved endpoint. Turn this on deliberately for a self-hosted backend you trust; the URL must still be https.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "wakatime.send_heartbeats",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wakatime"
+      ],
+      "label": "Send coding-activity heartbeats",
+      "help": "Send a heartbeat to WakaTime after each agent turn that edited files or ran a command, so your Kiro Crew coding time shows up in WakaTime alongside your editor. Off by default: sending activity outward is a separate opt-in from reading your own stats. Requires the WakaTime integration to be enabled. Covers dashboard chat and the messaging channels that run through it (Slack and the other chat surfaces); the task runner, subagents, installed apps, and the standalone kirocrew chat CLI each run their own turn loop and do not emit heartbeats yet.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "teams",
