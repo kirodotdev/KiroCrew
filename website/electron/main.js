@@ -225,6 +225,12 @@ let isQuitting = false;
 let desktopMetricsRecorder = null;
 let windows = null;
 
+// The native-logging result, kept because its `tightenLiveLog` can only run once
+// Chromium has opened `--log-file` — which is after `app.whenReady`, in a
+// different scope from the pre-ready arming call. Null when this process is not
+// the lock winner and so never armed logging at all.
+let nativeLogging = null;
+
 let crashScan = null;
 // Separate from `crashScan` so a scan that failed is not retried on every call:
 // the failure is a broken path or a missing directory, not a transient.
@@ -315,7 +321,7 @@ if (!app.requestSingleInstanceLock()) {
     log: glog,
   });
 
-  initNativeLogging({
+  nativeLogging = initNativeLogging({
     logsDir: path.dirname(gatewayLogPath()),
     appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
     startCrashReporter: (options) => crashReporter.start(options),
@@ -497,6 +503,19 @@ app.whenReady().then(async () => {
   // The crash reporter and the keep-alive safety net above are armed; from
   // here on an exception is recovered, not fatal.
   releaseEarlyBootGuard();
+
+  // Chromium has opened `--log-file` by now, so this is the moment the live log's
+  // mode can be asserted rather than assumed. The pre-create in
+  // `initNativeLogging` only holds if Chromium opened the inode it created; if it
+  // unlinked and recreated the path instead, the file is sitting at the process
+  // umask (0644) with the dashboard session token in it. Idempotent and
+  // fail-soft — it logs and returns false rather than throwing — so it is cheap
+  // enough to run unconditionally on every boot.
+  try {
+    nativeLogging?.tightenLiveLog();
+  } catch (error) {
+    glog("native log post-open chmod failed: " + (error && error.message));
+  }
 
   const frameDecision = windows.platform.linuxFrameDecision;
   if (frameDecision) {
