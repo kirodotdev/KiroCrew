@@ -22,8 +22,14 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/sessions/{id}/agents/{agent_id}/stream", handlers.api_session_agent_stream
     )
-    # Crew log: the projection path is registered first, ahead of the range read
-    # it shares a prefix with, per this module's ordering rule.
+    # Crew log: the projection paths are registered first, ahead of the range read
+    # they share a prefix with, per this module's ordering rule. The batch read is
+    # ahead of the per-name one so its literal path is matched before the pattern
+    # that would otherwise capture "projections" as a name.
+    app.router.add_get(
+        "/api/sessions/{id}/crew-log/projections",
+        handlers.api_session_crew_log_projections,
+    )
     app.router.add_get(
         "/api/sessions/{id}/crew-log/projection/{name}",
         handlers.api_session_crew_log_projection,

@@ -154,6 +154,87 @@ at different seqs.
 |---|---|
 | `GET /api/sessions/{id}/crew-log?from=&to=` | The entries in a seq range, oldest first, with every `ref` on the page resolved (FR-4). |
 | `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. |
+| `GET /api/sessions/{id}/crew-log/projections` | Every fold, keyed by name, from ONE resolution and ONE pass over the unit, so a caller showing them together cannot be handed a mix from two units. Each fold keeps its own `seq`, which differs by design: an entry advances the folds it belongs to and leaves the rest. |
+
+**The BATCH read answers two things the folds cannot.** A fold says what it holds;
+it cannot say why it holds nothing, nor whether it was read mid-write. Both fields
+are on `/crew-log/projections` alone, because both exist for a surface showing five
+folds at once and no caller of the per-name route reads either -- and the settle one
+of them needs is a wait charged to every request that carries it. The per-name and
+page reads resolve their id the same way; they simply do not report these:
+
+`resolved` -- whether a unit was NAMED for the id sent. An empty fold has two
+causes that a reader must not be shown interchangeably: a session with no unit yet --
+one that has not run a turn -- and one whose ACP session was torn down (an idle reset,
+a model or agent switch, a compaction that recycles it) and whose entries are still on
+disk under the retired id. Both arrive as `seq: 0`, so without this flag a surface
+reporting "nothing recorded" states a cause as fact about the reader's own data. The
+panel says the record is not addressable instead, and names both possibilities rather
+than asserting the retired one.
+
+This deliberately does NOT fall back to the persisted session map to find that
+retired id. `SessionMap.get` repairs or removes an entry it judges stale, so
+consulting it would make a panel READ mutate session state, which is the reason
+`crew_log/resolve.py` documents for never touching it. And a retired unit belongs
+to a session this slot no longer is: presenting its totals here would imply a
+whole-life figure, which needs the lineage pointer (`session/opened.data.previous`)
+and a fold that follows it -- neither exists yet (§8).
+
+`writes_drained` -- whether the emitter owed nothing when the fold was taken. An
+append is handed to a queue and the entry point returns, so a turn can END with its
+last entries unwritten, and the refresh that turn's end triggers would fold a file
+the turn has not finished writing. The batch read waits for `emit.flush` up to
+`_SETTLE_SECONDS` first and reports which happened; false means the value may be
+behind, which the footer says rather than presenting it as current. The wait is
+global rather than per session because a batch the writer has already CLAIMED is
+absent from the per-session queue and invisible there, so a session-scoped
+predicate would report quiet in exactly the case that matters.
+
+**`{id}` is a unit id OR a session key, and both reads resolve it the same way.**
+A session's crew log is keyed by the ACP session id the turn path holds, and a
+dashboard caller has no way to learn one: it is on no payload the client reads, and
+putting it on the wire to let a client rewrite it into a path would widen what a
+client is trusted with. So a key that the session registry recognises is resolved
+to the unit it is serving through `crew_log.resolve.unit_for_session_key`, and an
+id the registry does not recognise -- which is what an ACP id is, since it is not a
+session key -- is used VERBATIM. That ordering is what keeps a unit-id-addressed
+read working unchanged, and there are now two such callers on main: the
+`kirocrew-crew-log` MCP server reads a unit by id through the unit-keyed door
+described below, and the `session_projection` frame carries the unit it folded as
+`session_id`, so anything taking an id out of a frame addresses by unit id too.
+Both responses echo the id the CALLER sent, never the resolved one: a client polling
+by key matches the answer to its request, and the internal identity stays off the wire.
+
+**A slot key is resolved to the session its turns RUN on, not to itself.** A
+channel-born slot runs its turns on the channel's own session and carries that key
+in `linked_session_key` (`slack:<ts>`), so the ACP provider is registered under THAT
+key. The resolver is an exact registry lookup whose one retry is the `dashboard:`
+form, so a read that passed the bare slot key would miss the provider and fold an
+empty record for every channel-linked session -- and never recover, because that
+mapping is stable rather than racy. The read therefore asks
+`chat_utils.effective_session_key`, the function that owns the mapping, before it
+asks the resolver. That stays inside the invariant this path depends on: it is a pure
+attribute read, with no disk and no session-state mutation. An id naming no live slot
+passes through untouched, which is what an ACP unit id is.
+
+Nothing enforces that a provider's session id can never equal a live session key --
+the two are minted by different code -- so the ORDER is what decides a collision,
+and it decides it in favour of the registry: an id the registry recognises is
+resolved. That is the branch every chat read depends on, and a test pins it, so the
+precedence is a decision rather than a side effect of the lookup's fallback.
+
+The resolution is POINT-IN-TIME, and inherits exactly the guarantee
+`crew_log/resolve.py` states: it answers which unit a key's work is landing in
+*now*. A reset, an agent/model/effort switch, a compaction that recycles the ACP
+session and a provider swap all start a new unit, so a key-addressed read after one
+of those folds the CURRENT record and not the retired one -- totals drop, and
+nothing in the answer says why. A key whose session was torn down and not
+re-created resolves to nothing and reads back the empty fold at seq 0, which is the
+same answer a session with no entries gets; the difference is not observable from
+here. A reader that must span a slot's retired units needs the lineage pointer
+(`session/opened.data.previous`) and a fold that follows it, which this module does
+not do. The dashboard panel states the limit in its own footer rather than implying
+a whole-life total.
 
 Those two are the BROWSER's door: cookie auth, keyed on a session id the dashboard
 already holds. A second, unit-keyed door serves the `kirocrew-crew-log` MCP server

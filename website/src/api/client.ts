@@ -2726,6 +2726,32 @@ export const api = {
   /** Move explicit selection to trash (§3). */
   sessionInventoryTrash: (uids: string[]) =>
     post('/api/system/session-storage/trash', { uids }).then(j) as Promise<SessionTrashResult>,
+  /** The five session folds of a crew log, keyed by name, in ONE request.
+   *
+   *  The batch route is what makes the answer coherent: it resolves the session
+   *  once and folds once, so all five values come from the same file at the same
+   *  moment. Five per-name requests could not promise that -- a session replaced
+   *  while they were in flight would leave some describing the unit going away and
+   *  some the one arriving, and the panel would show a mix it cannot detect.
+   *
+   *  Each fold still carries its OWN `seq`, because they really do differ: an entry
+   *  advances the folds it belongs to and leaves the rest where they were. */
+  sessionCrewLogProjections: async (slot: string) => {
+    const body = await fetch(`/api/sessions/${encodeURIComponent(slot)}/crew-log/projections`).then(j)
+    const read = body as { projections?: Record<string, unknown>; resolved?: unknown; writes_drained?: unknown }
+    return {
+      folds: read.projections ?? {},
+      // Whether a unit was NAMED for the id sent. An empty fold cannot say why it
+      // is empty, and the two reasons need different words on screen: a slot that
+      // never recorded anything, versus one whose ACP session was torn down and
+      // whose record is still on disk under the retired id.
+      resolved: read.resolved !== false,
+      // False when the writer still owed this process entries as the fold was
+      // taken, so the value may be behind the record. Absent reads as drained: an
+      // older gateway does not send the field and did not race either.
+      writesDrained: read.writes_drained !== false,
+    }
+  },
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
   // Per-turn context injection breakdown for one session. Independent of the
   // telemetry main switch: the usage rows it reads are always written.

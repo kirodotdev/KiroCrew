@@ -4,7 +4,7 @@ import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, History, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
 import { PanelRightLight } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -52,7 +52,7 @@ import { i18nT } from '../../i18n/t'
 type BuiltinTabKind = Exclude<TabKind, `app:${string}`>
 const KIND_ICON: Record<BuiltinTabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
-  logs: <ScrollText size={16} />, context: <Layers size={16} />, side: <MessageCircleQuestionMark size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
+  logs: <ScrollText size={16} />, crewlog: <History size={16} />, context: <Layers size={16} />, side: <MessageCircleQuestionMark size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   summary: <ListTree size={16} />,
   pins: <Pin size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
@@ -94,6 +94,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   subagents: 'pages.chat.sidePanel.menu_subagents',
   workflows: 'pages.chat.sidePanel.menu_workflows',
   logs: 'pages.chat.sidePanel.menu_logs',
+  crewlog: 'pages.chat.sidePanel.menu_crewlog',
   context: 'pages.chat.sidePanel.menu_context',
   side: 'pages.chat.sidePanel.menu_side',
   browser: 'pages.chat.sidePanel.menu_browser',
@@ -112,6 +113,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   subagents: 'pages.chat.sidePanel.menu_subagents_desc',
   workflows: 'pages.chat.sidePanel.menu_workflows_desc',
   logs: 'pages.chat.sidePanel.menu_logs_desc',
+  crewlog: 'pages.chat.sidePanel.menu_crewlog_desc',
   context: 'pages.chat.sidePanel.menu_context_desc',
   side: 'pages.chat.sidePanel.menu_side_desc',
   browser: 'pages.chat.sidePanel.menu_browser_desc',
@@ -178,20 +180,22 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind | 'terminal'; icon:
     items: [
       { kind: 'logs', icon: <ScrollText size={15} /> },
       { kind: 'context', icon: <Layers size={15} /> },
+      { kind: 'crewlog', icon: <History size={15} /> },
     ],
   },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'links', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side', 'git', 'summary', 'pins'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'links', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'crewlog', 'context', 'side', 'git', 'summary', 'pins'])
 
 /** Views behind the Developer Mode consent gate (Settings > Developer) — the
- *  same gate the standalone Developer page uses. Both are raw instrumentation
- *  of the agent's own execution (the session's tool-call log, and the context
- *  window's composition) rather than anything the session produced, so neither
- *  belongs in a non-developer's menu. Gating BOTH empties the diagnostics group
+ *  same gate the standalone Developer page uses. All three are raw
+ *  instrumentation of the agent's own execution (the session's tool-call log,
+ *  the context window's composition, and the folds over the session's crew log)
+ *  rather than anything the session produced, so none belongs in a
+ *  non-developer's menu. Gating all of them empties the diagnostics group
  *  outright when Developer Mode is off — which is exactly the empty-group case
  *  `newMenuSections` drops. */
-const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context'])
+const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context', 'crewlog'])
 
 /** Which `+`-menu entries are offered, given the gates that hide entries:
  *  Terminal is hidden when the feature is disabled server-side, the
@@ -1006,7 +1010,7 @@ export default function SidePanel({
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'changes' | 'issues' | 'links' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
+                  view={t.kind as 'changes' | 'issues' | 'links' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
                   open onToggle={closePanel} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   sources={sources}
