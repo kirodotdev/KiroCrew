@@ -1894,6 +1894,44 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
 #: written a second time, so the two cannot disagree.
 ACP_BACKENDS_SELF_SERVED_ACP: FrozenSet[str] = frozenset(ACP_BACKEND_LAUNCH)
 
+#: The argv0 basename each harness's child process runs as.
+#:
+#: Read by the PID-file reclaim in :mod:`kiro_crew.session_pid`, which asks one
+#: question of a tracked PID it is about to signal: does this PID still name the kind
+#: of process the tracking entry described? That is a recycle guard, and it needs a
+#: name per harness rather than a capability.
+#:
+#: Declared HERE rather than in the reclaim, for the reason every per-backend fact is
+#: declared here: a harness added to :data:`ACP_BACKENDS_KNOWN` and not to this table
+#: is a harness whose orphans the reclaim cannot recognise, and the reclaim's failure
+#: mode for an unrecognised orphan is to drop its tracking entry and spare the
+#: process — so nothing later can find it. ``test_pid_lifecycle`` ratchets the
+#: coverage, so the omission is a red test rather than a leaked process.
+#:
+#: The three self-served harnesses read their own ``ACP_BACKEND_LAUNCH`` row so the
+#: two tables cannot disagree. The rest are spelled out because their launch is
+#: bespoke: kiro-cli serves both the kiro and KAS backends (KAS is kiro-cli's relay),
+#: and the claude, codex and pi adapters are Node entry scripts whose basenames live
+#: with their resolvers in the ACP layer, which this module must not import.
+ACP_BACKEND_PROCESS_NAMES: Mapping[str, str] = {
+    ACP_BACKEND_KIRO: "kiro-cli",
+    ACP_BACKEND_KAS: "kiro-cli",
+    ACP_BACKEND_CLAUDE: "claude-agent-acp",
+    ACP_BACKEND_CODEX: "codex-acp",
+    ACP_BACKEND_PI: "pi-acp",
+    **{backend: record.binary for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
+}
+
+
+def agent_process_markers() -> tuple[str, ...]:
+    """Every harness argv0 basename, sorted and de-duplicated.
+
+    A tuple of substrings for a cmdline match, which is what
+    ``platform_compat.process_matches`` takes. Sorted so the value is stable to read
+    in a log, de-duplicated because kiro and KAS share ``kiro-cli``.
+    """
+    return tuple(sorted(set(ACP_BACKEND_PROCESS_NAMES.values())))
+
 
 def launch_for(backend: str) -> SelfServedLaunch:
     """The launch record for *backend*, raising ``KeyError`` when it has none.

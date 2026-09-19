@@ -50,6 +50,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_PI,
+    ACP_BACKEND_PROCESS_NAMES,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SELF_SERVED_ACP,
     POLICY_ID_BY_BACKEND,
@@ -72,9 +73,14 @@ UNKNOWN = "unknown"
 # These reach the operator as "install this", so they are the names the thing is
 # actually called on disk, not the internal backend ids.
 
-COMPONENT_KIRO_CLI = "kiro-cli"
+# Each executable name is READ from the backend registry, never spelled again. The
+# reclaim sweep projects its marker set from the same table
+# (``session_pid._MANAGED_AGENT_MARKERS``), so a name written twice is a name that can
+# drift -- and a rename that missed one copy leaves the sweep unable to recognise a
+# process Crew spawns, which spares an orphan and then drops its tracking entry.
+COMPONENT_KIRO_CLI = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_KIRO]
 #: The ACP adapter Crew launches for the Claude backend.
-COMPONENT_CLAUDE_ACP_ADAPTER = "claude-agent-acp"
+COMPONENT_CLAUDE_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 #: The Claude CLI handed to that adapter as ``CLAUDE_CODE_EXECUTABLE``. A
 #: separate component because the adapter's SDK does NOT search PATH for it, so
 #: having one without the other is a real, distinguishable half-install.
@@ -82,7 +88,7 @@ COMPONENT_CLAUDE_CODE_CLI = "claude"
 
 #: The codex-acp adapter. ONE component, not two: the adapter ships its own
 #: compatible Codex binary, so there is no second executable Crew resolves.
-COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
+COMPONENT_CODEX_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CODEX]
 
 #: The component of a harness that serves ACP from its own binary is that binary, so
 #: it is read from ``ACP_BACKEND_LAUNCH`` rather than named a second time here. ONE
@@ -90,7 +96,7 @@ COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
 #: adapter beside them to be half-installed.
 #: The pi backend's TWO components: the ``pi-acp`` adapter Crew spawns, and the
 #: ``pi`` agent that adapter spawns in turn. Either can be absent on its own.
-COMPONENT_PI_ACP_ADAPTER = "pi-acp"
+COMPONENT_PI_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_PI]
 COMPONENT_PI_CLI = "pi"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs

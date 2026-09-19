@@ -4049,6 +4049,560 @@ class TestPidStartTokenIdentityGuard:
         assert kills == [], f"recycled PID was killed: {kills}"
 
 
+class TestReclaimOwnsEveryHarnessItTracked:
+    """The reclaim recognises every harness Crew spawns, not two of them.
+
+    A hand-written ``("kiro-cli", "claude")`` pair answered for two of eight, so a
+    dead gateway's codex-acp, opencode, pi-acp, goose or dsh orphan answered "not
+    ours" — and the branch for an unrecognised PID both SPARES the process and DROPS
+    its tracking entry, the one file every sweep keys off to find it. Spared and
+    forgotten.
+
+    The marker set is projected from the backend registry, so the fix is a table a
+    new harness joins rather than an edit here.
+    """
+
+    @staticmethod
+    def _dead_gateway_liveness(gw_pid: int) -> "object":
+        def fake_liveness(pid: int) -> str:
+            return platform_compat.PID_DEAD if pid == gw_pid else platform_compat.PID_ALIVE
+
+        return fake_liveness
+
+    def test_every_registered_backend_has_a_process_name(self) -> None:
+        """Ratchet: a harness with no name is a harness whose orphans leak.
+
+        The reclaim cannot recognise a process it has no name for, and its failure
+        mode is silent — the entry is dropped and the process spared. So the omission
+        has to be a red test rather than something an operator finds later.
+        """
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_PROCESS_NAMES,
+            ACP_BACKENDS_KNOWN,
+            agent_process_markers,
+        )
+
+        missing = sorted(ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROCESS_NAMES))
+        assert not missing, (
+            "these registered backends have no argv0 basename, so the PID-file "
+            f"reclaim cannot recognise their orphans: {missing}"
+        )
+        markers = agent_process_markers()
+        uncovered = sorted(
+            name for name in ACP_BACKEND_PROCESS_NAMES.values() if name not in markers
+        )
+        assert not uncovered, f"named but absent from the marker set: {uncovered}"
+
+    def test_the_self_served_names_come_from_the_launch_table(self) -> None:
+        """The three harnesses with a launch row are not spelled twice."""
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_LAUNCH,
+            ACP_BACKEND_PROCESS_NAMES,
+        )
+
+        for backend, record in ACP_BACKEND_LAUNCH.items():
+            assert ACP_BACKEND_PROCESS_NAMES[backend] == record.binary, (
+                f"{backend!r} names its process twice and the two disagree: "
+                f"{ACP_BACKEND_PROCESS_NAMES[backend]!r} vs {record.binary!r}"
+            )
+
+    def test_the_adapter_basenames_agree_with_the_acp_layer(self) -> None:
+        """The bespoke adapters' own constants READ this table, and must keep doing so.
+
+        The names are declared once, in the registry, and ``acp.client`` indexes it --
+        the import direction that is allowed, since ``agent_sdk.backends`` is a
+        stdlib-only leaf while ``session_pid`` may not import ``kiro_crew.acp`` at all
+        (``check_agent_sdk_boundary`` forbids it, ``test_agent_lifecycle_cycle`` pins the
+        absence). This asserts the equality a re-spelling would break, so a literal
+        reintroduced in either place is caught here rather than by a reclaim sweep
+        failing to recognise the process the adapter spawns.
+        """
+        from kiro_crew.acp import runtime as acp_runtime
+        from kiro_crew.acp.client import (
+            CLAUDE_ACP_BIN,
+            CODEX_ACP_BIN,
+            KIRO_CLI_BIN,
+            PI_ACP_BIN,
+        )
+        from kiro_crew.acp.types import (
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_PI,
+        )
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_PROCESS_NAMES
+
+        assert ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE] == CLAUDE_ACP_BIN
+        assert ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CODEX] == CODEX_ACP_BIN
+        assert ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_PI] == PI_ACP_BIN
+        # kiro's name stays a literal in the resolver's module -- indexing the table there
+        # would make the DEFAULT backend's construction fail at import on a registry miss
+        # -- so the equality is asserted instead, and the runtime module re-exports the
+        # one value rather than declaring a second.
+        assert ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_KIRO] == KIRO_CLI_BIN
+        assert acp_runtime.KIRO_CLI_BIN is KIRO_CLI_BIN
+
+    @pytest.mark.parametrize(
+        "backend, cmdline",
+        [
+            ("kiro", "kiro-cli acp --agent-engine v3 --auth-method cli"),
+            ("kas", "kiro-cli acp --agent-engine v3 --auth-method cli"),
+            ("claude", "node /opt/n/bin/claude-agent-acp"),
+            ("codex", "node /opt/n/bin/codex-acp"),
+            ("pi", "node /opt/n/bin/pi-acp"),
+            ("opencode", "/opt/n/bin/opencode serve"),
+            ("goose", "goose acp"),
+            ("deepseek", "dsh --profile acp"),
+        ],
+    )
+    def test_each_harness_cmdline_is_recognised(self, backend: str, cmdline: str) -> None:
+        """One case per backend, over the command lines they really run as.
+
+        Command lines captured from the installed adapters; ``process_matches`` does a
+        substring test over the whole cmdline on Linux and macOS, so this is the
+        question the reclaim actually asks.
+        """
+        from kiro_crew.session_pid import _MANAGED_AGENT_MARKERS
+
+        assert any(marker in cmdline for marker in _MANAGED_AGENT_MARKERS), (
+            f"{backend}'s orphan reads as unmanaged, so the reclaim would drop its "
+            f"entry and spare it: {cmdline!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            b"/usr/bin/python3\x00/home/u/friendship/app.py",
+            b"/usr/local/bin/mongoose\x00--port\x008080",
+            b"/bin/sh\x00-c\x00echo goosebumps",
+            b"/opt/dshboard/bin/server\x00--serve",
+        ],
+    )
+    def test_a_lookalike_cmdline_does_not_authorize_a_kill(self, cmdline: bytes) -> None:
+        """The kill path matches per argv TOKEN, exactly, not as a substring.
+
+        The projection introduced three-character names: ``dsh`` sits inside
+        ``friendship``, ``goose`` inside ``mongoose``. Under a raw substring test over
+        the whole command line, a recycled PID landing on any of these passes the
+        recycle guard and is signalled.
+        """
+        from kiro_crew.session_pid import _cmdline_names_a_harness
+
+        assert _cmdline_names_a_harness(cmdline) is False
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            b"kiro-cli\x00acp\x00--agent-engine\x00v3",
+            b"node\x00/opt/n/bin/codex-acp",
+            b"node\x00--enable-source-maps\x00/opt/n/bin/codex-acp",
+            b"node\x00/opt/n/bin/pi-acp",
+            b"/opt/n/bin/opencode\x00serve",
+            b"goose\x00acp",
+            b"dsh\x00--profile\x00acp",
+        ],
+    )
+    def test_a_real_harness_cmdline_still_authorizes(self, cmdline: bytes) -> None:
+        """Tightening must not stop recognising the harnesses themselves.
+
+        Two token slots answer: argv0, and the script slot after an interpreter argv0 --
+        a bespoke Node adapter is an entry script with a ``#!/usr/bin/env node``
+        shebang, so the kernel execs the interpreter and the adapter is in argv1. Flags
+        between the two are skipped, since the interpreter may carry its own.
+        """
+        from kiro_crew.session_pid import _cmdline_names_a_harness
+
+        assert _cmdline_names_a_harness(cmdline) is True
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            b"/usr/bin/node\x00build.js\x00--agent\x00goose",
+            b"/usr/bin/vim\x00/home/u/notes/dsh",
+            b"/usr/bin/tail\x00-f\x00/var/log/codex-acp",
+            b"/usr/bin/grep\x00-rn\x00kiro-cli\x00/etc",
+            b"/usr/bin/python3\x00-m\x00pytest\x00test/goose",
+        ],
+    )
+    def test_an_argv_ARGUMENT_does_not_authorize_a_kill(self, cmdline: bytes) -> None:
+        """Only argv0 and an interpreter's script slot may name a harness.
+
+        A process's arguments are chosen by whoever started it and say nothing about
+        what the process IS. Trying the basename of EVERY token therefore answered "this
+        is a harness" for a training script passed ``--agent goose``, an editor opened
+        on a file called ``dsh``, or a ``tail`` on an adapter's log -- and on the reclaim
+        path that answer authorizes a SIGKILL of a PID this gateway never spawned. The
+        interpreter cases are here on purpose: argv0 IS an interpreter in two of them, so
+        the script slot opens, and what closes the hole is that only the FIRST non-flag
+        token after argv0 is read.
+        """
+        from kiro_crew.session_pid import _cmdline_names_a_harness
+
+        assert _cmdline_names_a_harness(cmdline) is False
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            b"/Users/John Smith/.local/bin/node\x00/Users/John Smith/n/bin/codex-acp",
+            b"/Users/John Smith/.local/bin/codex-acp\x00--stdio",
+            b"/opt/My Tools/bin/node\x00/opt/My Tools/bin/pi-acp",
+        ],
+    )
+    def test_a_harness_under_a_spaced_path_is_still_recognised(self, cmdline: bytes) -> None:
+        """Linux ``/proc`` gives exact NUL boundaries; whitespace would break the path.
+
+        A home directory named ``John Smith`` splits
+        ``/Users/John Smith/.local/bin/node`` into ``/Users/John`` plus
+        ``Smith/.local/bin/node`` under a whitespace split, so argv0's basename reads
+        ``John``, the interpreter is not recognised, the script slot never opens, and a
+        REAL adapter is treated as unmanaged -- the leak this module exists to close,
+        reintroduced by the tokenizer.
+        """
+        from kiro_crew.session_pid import _cmdline_names_a_harness
+
+        assert _cmdline_names_a_harness(cmdline) is True
+
+    @pytest.mark.parametrize(
+        "cmdline, expected",
+        [
+            (b"node\x00/opt/n/lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js", True),
+            (b"node\x00/opt/n/lib/node_modules/pi-acp/dist/index.js", True),
+            (b"node\x00/opt/n/lib/node_modules/claude-agent-acp/lib/index.mjs", True),
+            (b"node\x00/opt/n/lib/node_modules/express/dist/index.js", False),
+            (b"node\x00/srv/app/dist/index.js", False),
+            (b"node\x00/srv/notes/goose/app.js", False),
+        ],
+    )
+    def test_a_package_entry_launch_is_recognised_by_its_package_dir(
+        self, cmdline: bytes, expected: bool
+    ) -> None:
+        """The resolver produces two script spellings, so both must be recognised.
+
+        The bin shim (``node /opt/n/bin/codex-acp``) carries the name in the basename. The
+        package entry the resolver builds -- ``_CODEX_ACP_PKG_ENTRY`` is
+        ``<pkg>/dist/index.js`` -- has the basename ``index.js``, which names nothing, so
+        that launch was retained as unmanaged by both reclaim arms forever.
+
+        The lookup stops at the package directory above a generic entry file. Matching any
+        path segment instead would accept a harness name from any directory a script
+        happens to live under, which is why the last case is False: ``goose`` is a
+        directory there but the entry file is not a package entry.
+        """
+        from kiro_crew.session_pid import _cmdline_names_a_harness
+
+        assert _cmdline_names_a_harness(cmdline) is expected
+
+    def test_only_node_spellings_open_the_script_slot(self) -> None:
+        """The interpreter set is authority, so it holds only shapes that exist.
+
+        Every registered backend's bespoke adapter is a Node entry script. A name here
+        widens the slot in which a harness name is accepted, so one added on speculation
+        grants authority for a shape nothing produces.
+        """
+        from kiro_crew.session_pid import _HARNESS_INTERPRETERS
+
+        assert {name.decode() for name in _HARNESS_INTERPRETERS} == {
+            "node",
+            "nodejs",
+            "node.exe",
+        }
+
+    @pytest.mark.parametrize("basename", ["mongoose", "dshx", "xdsh", "gooseberry"])
+    def test_a_lookalike_basename_is_not_taken_for_a_harness(self, basename: str) -> None:
+        """Short generic names must not match as substrings of a basename.
+
+        The projection introduced ``goose`` and ``dsh``, and the two consumers whose
+        subject is an argv0 BASENAME rather than a command line would otherwise accept
+        anything containing them. On the work sweep's negative gate that wrongly
+        excludes a process from being swept; on the untracked-runtime report it names
+        something that is not a harness at all.
+        """
+        from kiro_crew.session_pid import _MANAGED_AGENT_BASENAMES
+
+        assert basename.encode() not in _MANAGED_AGENT_BASENAMES
+
+    def test_every_harness_basename_matches_exactly(self) -> None:
+        """The exact set still covers every harness, plus the two legacy spellings."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_PROCESS_NAMES
+        from kiro_crew.session_pid import _MANAGED_AGENT_BASENAMES
+
+        for name in ACP_BACKEND_PROCESS_NAMES.values():
+            assert name.encode() in _MANAGED_AGENT_BASENAMES, name
+        assert b"claude" in _MANAGED_AGENT_BASENAMES
+        assert b"kiro-cli-chat" in _MANAGED_AGENT_BASENAMES
+
+    def test_macos_reads_a_command_line_rather_than_substring_matching(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """macOS needs the tokenized test as much as Linux does.
+
+        ``_pid_cmdline`` is a ``/proc`` read and answers empty off Linux, so without a
+        darwin source the answer would fall back to a raw substring test over the whole
+        command line — with three-character needles that sit inside ordinary words. That
+        set is strictly more collision-prone than the two-name pair it replaced, so
+        tightening only Linux would leave macOS worse off than before.
+        """
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "darwin")
+        monkeypatch.setattr(sp, "_pid_cmdline", lambda pid, proc_root=None: b"")
+        monkeypatch.setattr(
+            sp.platform_compat,
+            "process_command_line",
+            lambda pid: "/usr/local/bin/mongoose --port 8080",
+        )
+
+        def _unexpected(pid, needles):
+            raise AssertionError("macOS fell back to the substring test")
+
+        monkeypatch.setattr(sp.platform_compat, "process_matches", _unexpected)
+
+        assert sp._is_managed_agent_process(4242) is False
+
+        monkeypatch.setattr(
+            sp.platform_compat,
+            "process_command_line",
+            lambda pid: "node /opt/n/bin/codex-acp",
+        )
+        assert sp._is_managed_agent_process(4242) is True
+
+    def test_the_scope_anchor_is_a_subset_of_the_projection(self) -> None:
+        """The anchor selects from the projection; it does not spell names again.
+
+        Both sets test an exact argv0 basename, so a name written twice can drift. The
+        anchor is deliberately NARROWER — it authorizes an abandoned-scope reclaim to
+        kill, where the projection only feeds a negative sweep gate and a report — and
+        this pins that the narrowness is a selection rather than a stale copy. An empty
+        selection would silently disarm the reaper, so that is checked too.
+        """
+        from kiro_crew.session_pid import (
+            _MANAGED_AGENT_BASENAMES,
+            _MANAGED_AGENT_RUNTIME_BASENAMES,
+            _SCOPE_REAP_ANCHOR_NAMES,
+        )
+
+        assert _MANAGED_AGENT_RUNTIME_BASENAMES <= _MANAGED_AGENT_BASENAMES
+        assert _MANAGED_AGENT_RUNTIME_BASENAMES, (
+            "the scope-reaper anchor selected nothing out of the projection, which "
+            "disarms it — a name in _SCOPE_REAP_ANCHOR_NAMES no longer appears there"
+        )
+        assert len(_MANAGED_AGENT_RUNTIME_BASENAMES) == len(_SCOPE_REAP_ANCHOR_NAMES), (
+            "a name the anchor selects is missing from the projection: "
+            f"{sorted(_SCOPE_REAP_ANCHOR_NAMES - {n.decode() for n in _MANAGED_AGENT_BASENAMES})}"
+        )
+
+    def test_an_unrecognised_argv_orphan_is_never_killed(self, session_pid_file: Path) -> None:
+        """The argv gate refuses the kill, and the entry's fate follows the TOKEN.
+
+        Two questions, two answers. The argv gate authorizes the signal, so an
+        unrecognised PID is never signalled. What happens to the ENTRY depends on which
+        evidence is stronger: a settled token proves this PID still names the process the
+        entry recorded, so dropping the record would spare the process and then make it
+        unfindable by every sweep. A token-less entry has no such proof and is pruned.
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_session_roots
+
+        settled = "999999:99998:sometoken"
+        tokenless = "999999:99997"
+        session_pid_file.write_text(settled + "\n" + tokenless + "\n")
+        kills: list[tuple[int, int]] = []
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=False),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="sometoken"),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                side_effect=self._dead_gateway_liveness(999999),
+            ),
+            patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=1),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+        ):
+            cleanup_orphaned_session_roots()
+
+        remaining = session_pid_file.read_text(encoding="utf-8")
+        assert kills == [], "a matching token authorized a kill the argv test refused"
+        assert settled in remaining, (
+            "the entry was dropped for a process that was not killed, so nothing can "
+            "reclaim that process afterwards"
+        )
+        assert tokenless not in remaining
+
+    def test_a_recognised_orphan_is_killed(self, session_pid_file: Path) -> None:
+        """The whole point: a harness the marker set now covers gets reaped."""
+        from kiro_crew.session_pid import cleanup_orphaned_session_roots
+
+        entry = "999999:99998:sometoken"
+        session_pid_file.write_text(entry + "\n")
+        kills: list[tuple[int, int]] = []
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="sometoken"),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                side_effect=self._dead_gateway_liveness(999999),
+            ),
+            patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=1),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+        ):
+            cleanup_orphaned_session_roots()
+
+        assert (99998, platform_compat.SIGKILL) in kills
+        assert entry not in session_pid_file.read_text(encoding="utf-8")
+
+    def test_the_periodic_kill_phase_prunes_the_entry_it_actually_matched(
+        self, session_pid_file: Path
+    ) -> None:
+        """The write-back matches on entry TEXT, so a rebuilt string prunes nothing.
+
+        ``f"{gw}:{pid}"`` never equals a three-field token-bearing line, so a reaped
+        process's entry survived in the file and every later pass met a dead PID
+        there.
+        """
+        from kiro_crew.session_pid import _kill_confirmed_and_writeback
+
+        my_gw = os.getpid()
+        entry = f"{my_gw}:99998:sometoken"
+        session_pid_file.write_text(entry + "\n")
+        kills: list[int] = []
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="sometoken"),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append(p),
+            ),
+        ):
+            killed = _kill_confirmed_and_writeback(my_gw, [99998], set())
+
+        assert kills == [99998]
+        assert killed == 1
+        assert entry not in session_pid_file.read_text(encoding="utf-8"), (
+            "the three-field entry survived its own process, so the sweep meets a "
+            "dead PID there on every later pass"
+        )
+
+    def test_a_settled_token_with_an_unrecognised_argv_retains_the_entry(
+        self, session_pid_file: Path
+    ) -> None:
+        """Two pieces of evidence disagree, and the stronger one decides the entry.
+
+        A settled token proves the PID still names the process this gateway spawned. If
+        the argv gate does not recognise it -- which is what happens on Windows, where
+        only an image name is readable and an interpreter-hosted adapter reads as
+        ``node.exe`` -- then pruning spares the process AND discards the only record any
+        sweep could find it by. That is the unreclaimable state: spared, then forgotten,
+        which is the exact failure this change exists to remove.
+        """
+        from kiro_crew.session_pid import _sweep_pid_entries
+
+        my_gw = os.getpid()
+        entry = f"{my_gw}:99998:recorded"
+        kills: list[int] = []
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                return_value=platform_compat.PID_ALIVE,
+            ),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="recorded"),
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=False),
+            patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append(p),
+            ),
+        ):
+            killed, killed_or_dead, _candidates = _sweep_pid_entries(
+                [entry],
+                should_skip_tagged=lambda _gw, _p: False,
+                should_skip_bare=lambda _p: True,
+            )
+
+        assert kills == [], "an argv-unrecognised process was signalled"
+        assert killed == 0
+        assert entry not in killed_or_dead, (
+            "the entry was dropped for a process that was not killed, so nothing can "
+            "reclaim that process afterwards"
+        )
+
+    def test_the_periodic_kill_phase_skips_a_candidate_with_no_entry(
+        self, session_pid_file: Path
+    ) -> None:
+        """An entry absent from the kill phase's re-read is skipped, never killed.
+
+        The scan phase reports PIDs across an event-loop hop. If the entry is gone by
+        the time the kill phase re-reads the file, nothing records what that PID was
+        when it was tracked, so the recycle guard has no input at all -- and standing in
+        a rebuilt ``<gw>:<pid>`` default silently took the no-token branch, which skips
+        the guard and signals on the strength of the stale verdict. The unreadable-file
+        arm returns an empty index, so the same default made a transient read failure
+        kill every candidate un-vouched.
+        """
+        from kiro_crew.session_pid import _kill_confirmed_and_writeback
+
+        my_gw = os.getpid()
+        session_pid_file.write_text("")
+        kills: list[int] = []
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append(p),
+            ),
+        ):
+            killed = _kill_confirmed_and_writeback(my_gw, [99998], set())
+
+        assert kills == [], "signalled a PID no entry in the file vouched for"
+        assert killed == 0
+
+    def test_the_periodic_kill_phase_prunes_a_recycled_candidate(
+        self, session_pid_file: Path
+    ) -> None:
+        """The scan and the kill are separated by a loop hop, so identity is re-read.
+
+        Without it the kill phase signalled whatever held the PID by then; the token
+        is subtractive evidence and this is where it subtracts.
+        """
+        from kiro_crew.session_pid import _kill_confirmed_and_writeback
+
+        my_gw = os.getpid()
+        entry = f"{my_gw}:99998:recorded"
+        session_pid_file.write_text(entry + "\n")
+        kills: list[int] = []
+
+        with (
+            patch("kiro_crew.session_pid._pid_start_token", return_value="different"),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append(p),
+            ),
+        ):
+            killed = _kill_confirmed_and_writeback(my_gw, [99998], set())
+
+        assert kills == []
+        assert killed == 0
+        assert entry not in session_pid_file.read_text(encoding="utf-8")
+
+
 class TestSpawnGraceCrossPlatform:
     @_POSIX_ONLY
     def test_grace_applies_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -89,6 +89,7 @@ from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rules
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
@@ -177,7 +178,11 @@ from kiro_crew.agent import (
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_LAUNCH, launch_for
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_PROCESS_NAMES,
+    launch_for,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
@@ -285,10 +290,27 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
 }
 DEFAULT_MODEL = "auto"
 
+# Every adapter/harness executable name below is READ from the backend registry
+# rather than spelled here. The registry is also what the reclaim sweep projects its
+# marker set from (``session_pid._MANAGED_AGENT_MARKERS``), and a name written in both
+# places is a name that can drift -- a rename here that missed the table would leave
+# the sweep unable to recognise the process this module spawns, which spares an orphan
+# and then drops its tracking entry. The import direction is the allowed one: the ACP
+# layer may read ``agent_sdk.backends`` (a stdlib-only leaf it already imports for
+# ``launch_for``), while ``session_pid`` may not import the ACP layer at all --
+# ``scripts/check_agent_sdk_boundary.py`` counts even a type-only import as knowledge.
+# The one name NOT read from the table, and the reason is what happens on a miss. An
+# index raises at import, so a registry that stopped carrying this key would stop the
+# whole module importing -- and this is the DEFAULT backend, so that failure takes the
+# path a user reaches with no configuration at all, for a name that has never varied. The
+# three bespoke adapters below are indexed because their construction is already
+# registry-driven; kiro's is not, and coupling it here would buy one fewer literal at the
+# cost of a new import-time failure mode. Equality with the table is asserted by
+# ``test_pid_lifecycle``, so the two cannot drift silently.
 KIRO_CLI_BIN = "kiro-cli"
 KIRO_CLI_SUBCMD = "acp"
 
-CLAUDE_ACP_BIN = "claude-agent-acp"
+CLAUDE_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 # A self-updating ACP adapter can briefly disappear or remain locked while its
 # executable is replaced. Delay the one permitted startup retry past that window.
 # The delay is the L3 (ACP runtime) rung's base on the shared recovery ladder --
@@ -330,7 +352,7 @@ _CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
 # operations.  The ``codex`` CLI does not serve ACP itself -- it reads ``acp`` as a
 # prompt -- so the adapter is the transport, not an optimization.  It takes no argv
 # beyond its own path: any invocation enters stdio-server mode and blocks on stdin.
-CODEX_ACP_BIN = "codex-acp"
+CODEX_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CODEX]
 CODEX_ACP_NPM_PKG = "@agentclientprotocol/codex-acp"
 _CODEX_ACP_PKG_ENTRY = Path(CODEX_ACP_NPM_PKG) / "dist" / "index.js"
 # Same hoisted-dependency completeness check as the claude adapter, and the same
@@ -423,7 +445,7 @@ def _adapter_spawn_label(argv: Sequence[str], seam: str) -> str:
 # as ``pi --mode rpc --no-themes``; ``pi`` itself has no ``acp`` subcommand. Either
 # can be absent on its own, so the resolver, the probe and the not-found message
 # each name both.
-PI_ACP_BIN = "pi-acp"
+PI_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_PI]
 PI_ACP_NPM_PKG = "pi-acp"
 _PI_ACP_PKG_ENTRY = Path(PI_ACP_NPM_PKG) / "dist" / "index.js"
 # The adapter imports @agentclientprotocol/sdk like the two above, so an entry
