@@ -32,9 +32,12 @@ body text and configuration never leaks into the prompt.
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
+import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -159,7 +162,9 @@ def spec_stem(name: str) -> str:
     return name[: -len(suffix)] if suffix else name
 
 
-def _has_json_twin(directory: Path, md: Path, json_stems: set[str]) -> bool:
+def _has_json_twin(
+    directory: Path, md: Path, json_stems: set[str], dir_fd: int | None = None
+) -> bool:
     """Whether ``<md.stem>.json`` names an existing entry beside *md*.
 
     The stem set answers the exact-case twin. The filesystem answers the rest:
@@ -170,21 +175,93 @@ def _has_json_twin(directory: Path, md: Path, json_stems: set[str]) -> bool:
     filesystem itself, asked for the name this file's overlay would take. On a
     case-sensitive filesystem the probe misses and the two stay distinct
     agents, which is what their distinct overlay files are.
+
+    *dir_fd* asks that same filesystem the same question through a caller's
+    PINNED descriptor rather than by name: ``os.stat`` resolves the twin
+    relative to the directory the caller already opened and validated, so a swap
+    of the directory's NAME after the pin cannot redirect the probe. A by-name
+    ``Path.exists()`` inside a pinned block would follow such a swap and answer
+    for a file in the target tree -- reopening the check-to-use window the pin
+    exists to close, as a silent existence oracle across the privilege boundary
+    between the gateway account and whoever can write the scanned path. Only
+    POSIX has ``dir_fd``; on Windows the caller's HOLD pins the name instead,
+    because a directory cannot be renamed while a handle on it (or on anything
+    beneath it) is open, so the by-name probe resolves the held directory there.
     """
     if md.stem in json_stems:
         return True
-    return (directory / f"{md.stem}{JSON_SUFFIX}").exists()
+    twin = f"{md.stem}{JSON_SUFFIX}"
+    # Both probes are NON-FOLLOWING. The question is only "does this NAME exist
+    # beside *md*", and following it to answer that is what turns the probe into
+    # an outbound authentication: on Windows, statting a name that is a symlink to
+    # ``\\host\share`` IS the SMB/NTLM handshake, and it fires here BEFORE
+    # ``_read_agent_spec``'s resolved-target guard can refuse anything. The hold
+    # and the descriptor protect the DIRECTORY; a child entry planted inside it is
+    # a separate question, and one this feature's own threat model -- an attacker
+    # who can write the scanned path -- says to expect. A link is still a twin for
+    # the collision this predicate is about, since the overlay collides on the
+    # NAME regardless of what the name points at.
+    if dir_fd is not None:
+        try:
+            os.stat(twin, dir_fd=dir_fd, follow_symlinks=False)
+        except (OSError, ValueError):
+            # Absent, unreadable, or an embedded NUL: not a twin. A raised
+            # error must not abort the scan, which would drop every agent.
+            return False
+        return True
+    try:
+        # ``follow_symlinks=False`` (3.12+; the package floor is 3.12) rather than
+        # ``os.lstat``: the probe must stay a PATH-OBJECT call, because the
+        # filesystem's case rule is answered by the directory object the caller
+        # passed -- a case-insensitive volume folds ``Foo.json`` onto ``foo.md``
+        # there, and going around the object to the os module would ask a
+        # different question than the one the caller's filesystem answers.
+        return (directory / twin).exists(follow_symlinks=False)
+    except (OSError, ValueError):
+        return False
+
+
+def split_listed_spec_paths(
+    directory: Path, paths: Iterable[Path], *, dir_fd: int | None = None
+) -> tuple[list[Path], list[Path]]:
+    """``(live, shadowed)`` for spec paths ALREADY listed, without re-walking *directory*.
+
+    The JSON-wins rule for a caller that holds a directory's entries and must
+    not resolve that directory by name a second time: the project scan reads its
+    entries from a PINNED directory (``agent_discovery._pinned_scan_dir``), so
+    re-globbing by path would reintroduce exactly the check-to-use window the pin
+    exists to close. Non-spec entries are ignored, so a raw ``scandir`` listing
+    can be handed over whole.
+
+    A pinned POSIX caller passes its descriptor as *dir_fd*, which is what keeps
+    the twin probe inside the pin too -- see :func:`_has_json_twin`, where the
+    one remaining by-name resolution lives and why Windows does not need this.
+
+    :func:`_split_spec_files` is the same rule reached by walking *directory*
+    itself, and delegates here -- the predicate and the twin test live in one
+    place, so the two entry points cannot drift into disagreeing about which
+    markdown file a JSON twin hides. JSON entries come first in ``live``, which
+    is the order ``iter_agent_spec_files(ordered=False)`` promises its
+    first-match callers.
+    """
+    specs = [p for p in paths if is_agent_spec_name(p.name)]
+    json_files = [p for p in specs if not is_markdown_spec(p)]
+    json_stems = {p.stem for p in json_files}
+    live = list(json_files)
+    shadowed: list[Path] = []
+    for path in specs:
+        if is_markdown_spec(path):
+            twinned = _has_json_twin(directory, path, json_stems, dir_fd)
+            (shadowed if twinned else live).append(path)
+    return live, shadowed
 
 
 def _split_spec_files(directory: Path) -> tuple[list[Path], list[Path]]:
     """``(live, shadowed)``: every spec file, with ``<stem>.md`` beside ``<stem>.json`` set aside."""
-    json_files = list(directory.glob(f"*{JSON_SUFFIX}"))
-    json_stems = {p.stem for p in json_files}
-    live = list(json_files)
-    shadowed: list[Path] = []
-    for path in directory.glob(f"*{MARKDOWN_SUFFIX}"):
-        (shadowed if _has_json_twin(directory, path, json_stems) else live).append(path)
-    return live, shadowed
+    return split_listed_spec_paths(
+        directory,
+        itertools.chain(directory.glob(f"*{JSON_SUFFIX}"), directory.glob(f"*{MARKDOWN_SUFFIX}")),
+    )
 
 
 def iter_agent_spec_files(directory: Path, *, ordered: bool = True) -> list[Path]:

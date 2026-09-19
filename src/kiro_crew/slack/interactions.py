@@ -2246,7 +2246,7 @@ async def _handle_agent_select(
 ) -> None:
     """Handle agent static_select — switch agent and collapse message."""
     from kiro_crew.slack.handler import (
-        _resolve_agent_name,
+        _resolve_agent_name_off_loop,
         _set_default_agent,
         is_owner,
     )
@@ -2266,9 +2266,7 @@ async def _handle_agent_select(
             return
         label = "🔄 Reset to default agent."
     else:
-        # The resolver lists the agents directory and reads the matching spec:
-        # filesystem work, off the loop like the other async callers of it.
-        resolved = await asyncio.to_thread(_resolve_agent_name, agent_name)
+        resolved = await _resolve_agent_name_off_loop(agent_name)
         if not resolved:
             return
         try:

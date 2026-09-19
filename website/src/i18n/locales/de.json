@@ -6441,7 +6441,13 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (nicht installiert)",
+      "agent_not_in_project": "{{agent}} (nicht in diesem Projekt)",
+      "agent_unverified": "{{agent}} (nicht überprüfbar)",
+      "agent_roster_error": "Agenten dieses Verzeichnisses konnten nicht gelesen werden.",
+      "agent_roster_retry": "Erneut versuchen",
+      "agent_roster_loading": "Agenten werden geladen…",
       "agent_not_installed_notice": "Dieser Agent ist nicht installiert, daher wird er von Chats hier nicht verwendet. Wähle einen installierten Agenten.",
+      "agent_not_in_project_notice": "Dieser Agent gehört nicht zu den Projekt-Agenten dieses Verzeichnisses, daher ist Speichern blockiert. Wähle einen von diesem Verzeichnis deklarierten Agenten oder verweise den Ordner auf das Verzeichnis, das ihn enthält.",
       "browse": "Durchsuchen",
       "cancel": "Abbrechen",
       "color": "Farbe",

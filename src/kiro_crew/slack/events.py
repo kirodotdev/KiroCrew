@@ -352,7 +352,7 @@ async def _handle_agent(
     """Switch agent directly if valid name given, otherwise show selector."""
     from kiro_crew.slack.handler import (  # circular import: handler.py imports events.py for command dispatch, creating runtime circular dependency
         _get_default_agent,
-        _resolve_agent_name,
+        _resolve_agent_name_off_loop,
         _set_default_agent,
         is_owner,
     )
@@ -368,8 +368,7 @@ async def _handle_agent(
             await run_config_write(_set_default_agent, "")
             await respond("🔄 Reset to default agent.")
             return
-        # Resolution reads a spec's content; off the loop, like the listing.
-        resolved = await asyncio.to_thread(_resolve_agent_name, name)
+        resolved = await _resolve_agent_name_off_loop(name)
         if resolved:
             await run_config_write(_set_default_agent, resolved)
             await respond(f"🔄 Switched to agent: *{resolved}*")

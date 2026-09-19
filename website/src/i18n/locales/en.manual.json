@@ -2056,7 +2056,13 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (not installed)",
+      "agent_not_in_project": "{{agent}} (not in this project)",
+      "agent_unverified": "{{agent}} (can't verify)",
+      "agent_roster_error": "Couldn't read this directory's agents.",
+      "agent_roster_retry": "Retry",
+      "agent_roster_loading": "Loading agents…",
       "agent_not_installed_notice": "This agent isn’t installed, so chats here won’t use it. Pick an installed agent.",
+      "agent_not_in_project_notice": "This agent isn’t among this directory’s project agents, so Save is blocked. Pick one this directory declares, or point the folder at the directory that has it.",
       "browse": "Browse",
       "cancel": "Cancel",
       "color": "Color",

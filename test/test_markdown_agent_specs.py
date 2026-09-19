@@ -280,6 +280,53 @@ class TestParser:
         assert sorted(p.name for p in iter_agent_spec_files(folding)) == ["Foo.json", "bar.md"]
         assert [p.name for p in shadowed_markdown_specs(folding)] == ["foo.md"]
 
+    def test_the_twin_probe_does_not_follow_a_symlink(self, tmp_path: Path) -> None:
+        """The twin probe answers about the NAME, without traversing it.
+
+        GPT flagged that the probe followed: on Windows, statting a name that is a
+        symlink to ``\\\\host\\share`` IS the outbound SMB/NTLM authentication, and
+        it fires here BEFORE ``_read_agent_spec``'s resolved-target guard can
+        refuse anything. The directory hold and the pinned descriptor protect the
+        scan DIRECTORY from being swapped; a child entry planted inside it is a
+        separate question, and an attacker who can write the scanned path is this
+        feature's own threat model.
+
+        A DANGLING link is the oracle, and it needs no Windows host: a FOLLOWING
+        probe fails on it (the target is absent) and reports "no twin", while a
+        non-following probe sees the link itself and reports the twin it is. The
+        name collides either way -- the overlay file is keyed on the name, not on
+        what the name points at -- so answering "no twin" here would also be
+        wrong on its own terms.
+        """
+        md = tmp_path / "spec.md"
+        md.write_text("# spec", encoding="utf-8")
+        twin = tmp_path / "spec.json"
+        try:
+            twin.symlink_to(tmp_path / "absent-target.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+        assert not twin.exists(), "the link must dangle for this to distinguish the two probes"
+
+        from kiro_crew.agent_spec_format import _has_json_twin
+
+        # Empty stem set, so the filesystem probe is what answers rather than the
+        # exact-case short circuit. This BY-NAME branch is the one Windows takes,
+        # so it runs on every platform -- it is where the UNC traversal would
+        # authenticate.
+        assert _has_json_twin(tmp_path, md, set()) is True
+
+        # Same question through a pinned descriptor. POSIX-only, and gated on the
+        # capability rather than on a platform name: Windows has no ``dir_fd`` for
+        # ``os.stat`` at all, and ``os.open`` on a DIRECTORY raises
+        # PermissionError there, so an unguarded descriptor probe fails on the
+        # shard rather than testing anything.
+        if os.stat in os.supports_dir_fd:
+            dir_fd = os.open(tmp_path, os.O_RDONLY)
+            try:
+                assert _has_json_twin(tmp_path, md, set(), dir_fd) is True
+            finally:
+                os.close(dir_fd)
+
     def test_twins_differing_only_by_case_are_distinct_agents_on_a_case_sensitive_filesystem(
         self, tmp_path: Path
     ) -> None:
@@ -290,6 +337,38 @@ class TestParser:
             (tmp_path / name).write_text("x", encoding="utf-8")
         assert sorted(p.name for p in iter_agent_spec_files(tmp_path)) == ["Foo.json", "foo.md"]
         assert shadowed_markdown_specs(tmp_path) == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="dir_fd is POSIX-only")
+    def test_the_twin_probe_answers_from_the_pinned_descriptor_not_the_directory_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Trap: the project scan reads its entries through a PINNED descriptor, so
+        asking ``<stem>.json``'s existence by NAME would re-resolve the directory
+        and follow a swap of it -- answering for a file in the target tree. That is
+        an existence oracle for any path the gateway account can reach, and it is
+        silent. With ``dir_fd`` the probe resolves relative to the inode already
+        validated, so the NAME is not consulted at all: passing a *directory* that
+        does hold a twin cannot make the answer true."""
+        from kiro_crew.agent_spec_format import _has_json_twin
+
+        pinned = tmp_path / "pinned"
+        decoy = tmp_path / "decoy"
+        pinned.mkdir()
+        decoy.mkdir()
+        (decoy / "a.json").write_text("x", encoding="utf-8")
+        md = pinned / "a.md"
+        md.write_text("x", encoding="utf-8")
+
+        fd = os.open(pinned, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            # The name says twin, the descriptor says no twin. The descriptor wins,
+            # which is the whole point: a by-name probe would return True here.
+            assert _has_json_twin(decoy, md, set(), fd) is False
+            # And the descriptor still finds a real twin beside the pinned file.
+            (pinned / "a.json").write_text("x", encoding="utf-8")
+            assert _has_json_twin(decoy, md, set(), fd) is True
+        finally:
+            os.close(fd)
 
 
 # ── the roster and its cache ────────────────────────────────────────────────
@@ -346,6 +425,31 @@ class TestRoster:
         assert "repobot" in project_agent_names(proj)
         rows = list_agents(agents_dir=agents_dir, project_dir=str(proj))
         assert [(a.name, a.scope) for a in rows] == [("repobot", "project")]
+
+    def test_project_scope_applies_the_json_twin_rule_too(self, tmp_path: Path) -> None:
+        """A project's ``<stem>.md`` beside its ``<stem>.json`` is dropped there as well.
+
+        The project scan does not reach the rule the way the user-level scan
+        does: it enumerates a PINNED directory and applies the rule to the
+        entries it already holds, because re-globbing the directory by name
+        would reopen the check-to-use window the pin closes. So the twin rule
+        needs its own pin here -- reading markdown in a project
+        (``test_project_scope_reads_markdown_too``) stays green even if the
+        shadowing is lost, which is how a project could serve one agent twice.
+        """
+        proj = tmp_path / "repo"
+        d = proj / ".kiro" / "agents"
+        d.mkdir(parents=True)
+        (d / "twin.json").write_text(
+            json.dumps({"name": "twin", "description": "json wins"}), encoding="utf-8"
+        )
+        (d / "twin.md").write_text(_md("twin"), encoding="utf-8")
+        (d / "lone.md").write_text(_md("lone"), encoding="utf-8")
+
+        # The markdown twin is absent, its JSON is present, and the unshadowed
+        # markdown spec beside them still resolves.
+        assert [p.name for p in project_agent_files(proj)] == ["lone.md", "twin.json"]
+        assert {"twin", "lone"} <= set(project_agent_names(proj))
 
     def test_model_map_and_declared_name_scan_read_markdown(self, agents_dir: Path) -> None:
         (agents_dir / "Pkg-bot.md").write_text(_md("bot", model="m-md"), encoding="utf-8")

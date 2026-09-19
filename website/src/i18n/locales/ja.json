@@ -6341,7 +6341,13 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}}（インストールされていません）",
+      "agent_not_in_project": "{{agent}}（このプロジェクトにはありません）",
+      "agent_unverified": "{{agent}}（確認できません）",
+      "agent_roster_error": "このディレクトリのエージェントを読み取れませんでした。",
+      "agent_roster_retry": "再試行",
+      "agent_roster_loading": "エージェントを読み込んでいます…",
       "agent_not_installed_notice": "このエージェントはインストールされていないため、ここでのチャットでは使用されません。インストール済みのエージェントを選んでください。",
+      "agent_not_in_project_notice": "このエージェントはこのディレクトリのプロジェクトエージェントに含まれていないため、保存はブロックされています。このディレクトリが宣言しているエージェントを選ぶか、フォルダーをそのエージェントがあるディレクトリに向けてください。",
       "browse": "参照",
       "cancel": "キャンセル",
       "color": "色",

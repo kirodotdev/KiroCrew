@@ -6541,7 +6541,13 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (no instalado)",
+      "agent_not_in_project": "{{agent}} (no está en este proyecto)",
+      "agent_unverified": "{{agent}} (no se pudo verificar)",
+      "agent_roster_error": "No se pudieron leer los agentes de este directorio.",
+      "agent_roster_retry": "Reintentar",
+      "agent_roster_loading": "Cargando agentes…",
       "agent_not_installed_notice": "Este agente no está instalado, así que los chats de aquí no lo usarán. Elige un agente instalado.",
+      "agent_not_in_project_notice": "Este agente no está entre los agentes de proyecto de este directorio, por lo que Guardar está bloqueado. Elige uno que declare este directorio o apunta la carpeta al directorio que lo tiene.",
       "browse": "Explorar",
       "cancel": "Cancelar",
       "color": "Color",

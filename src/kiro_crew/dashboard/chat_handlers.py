@@ -2867,22 +2867,38 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
         try:
             bindings = await asyncio.to_thread(
-                resolve_agent_bindings, cfg, agent, validate_memory_files=False
+                resolve_agent_bindings,
+                cfg,
+                agent,
+                folder_project or None,
+                validate_memory_files=False,
             )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             if not bindings.requested_resolved:
-                # Log only — the requested binding is the user's intent and is
-                # stored VERBATIM. Rewriting it to whatever currently answers was
-                # destructive: the resolution behind that decision can be
-                # momentarily stale while the overwrite is permanent, so a valid
-                # binding could be silently rebound to the default forever, where a
-                # verbatim name recovers as soon as it resolves. Surfacing the
-                # effective agent to the UI is a separate, non-destructive change.
+                # The requested agent does not resolve right now — in the global
+                # roster or in this session's project scope (`folder_project`).
+                # Keep the name VERBATIM and log only; do NOT rewrite the slot to
+                # the default here.
+                #
+                # `requested_resolved` is False for a TRANSIENT discovery failure
+                # (a project scan that errored) as well as for authoritative
+                # absence, and the two are indistinguishable at this layer.
+                # Rewriting to the default on the transient case would
+                # permanently replace a valid binding that recovers on its own,
+                # so the name is kept verbatim and simply recovers automatically
+                # if the agent comes back. If the agent is genuinely gone, run
+                # time does NOT silently substitute the default: dispatch
+                # (`chat_runner`) fails LOUD with an "agent is unavailable" error
+                # for a non-app slot whose set agent is unresolved, which is the
+                # intended contract — a chat never runs under a different agent
+                # than the one it was configured with.
                 logger.info(
-                    "Slot %s requested agent %r, which currently resolves to %r",
+                    "Slot %s requested agent %r does not resolve now (project=%r);"
+                    " kept verbatim (recovers if it returns; dispatch errors"
+                    " out if it is genuinely gone)",
                     name,
                     agent,
-                    bindings.resolved_alias or "(default)",
+                    folder_project or "",
                 )
         except Exception:
             logger.warning("Failed to resolve bindings for slot create", exc_info=True)

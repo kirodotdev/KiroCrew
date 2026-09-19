@@ -6541,7 +6541,13 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (non installé)",
+      "agent_not_in_project": "{{agent}} (absent de ce projet)",
+      "agent_unverified": "{{agent}} (impossible à vérifier)",
+      "agent_roster_error": "Impossible de lire les agents de ce répertoire.",
+      "agent_roster_retry": "Réessayer",
+      "agent_roster_loading": "Chargement des agents…",
       "agent_not_installed_notice": "Cet agent n’est pas installé, donc les conversations d’ici ne l’utiliseront pas. Choisis un agent installé.",
+      "agent_not_in_project_notice": "Cet agent ne fait pas partie des agents de projet de ce répertoire, donc l’enregistrement est bloqué. Choisissez-en un déclaré par ce répertoire, ou pointez le dossier vers le répertoire qui le contient.",
       "browse": "Parcourir",
       "cancel": "Annuler",
       "color": "Couleur",

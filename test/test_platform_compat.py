@@ -1270,6 +1270,234 @@ class TestPinDirectory:
         assert (tmp_path / "swapped").is_dir()
 
 
+class TestHeldVerifiedChain:
+    """``held_verified_chain``: root-first, open WITHOUT following, inspect the
+    DESCRIPTOR, hold it, then descend.
+
+    The property that distinguishes this from every path-based screen: each
+    component is decided from a descriptor the caller still HOLDS, so nothing can
+    be swapped underneath it after being cleared. Screening without holding only
+    moves the window.
+    """
+
+    @staticmethod
+    def _chain(monkeypatch, *, opens, redirects, closed):
+        """Drive the walk with a stubbed open/inspect pair, recording order."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _open(candidate):
+            opens.append(str(candidate))
+            return 500 + len(opens)
+
+        monkeypatch.setattr(pc, "_win_open_without_following", _open)
+        monkeypatch.setattr(pc, "_fd_redirects", lambda fd: fd in redirects)
+        monkeypatch.setattr(pc.os, "close", lambda fd: closed.append(fd))
+
+    def test_components_are_opened_root_first(self, monkeypatch) -> None:
+        opens: list[str] = []
+        self._chain(monkeypatch, opens=opens, redirects=set(), closed=[])
+        with pc.held_verified_chain(r"C:\Users\me\repo\.kiro") as (refused, absent):
+            assert (refused, absent) == (False, False)
+        assert opens == [
+            r"C:\Users",
+            r"C:\Users\me",
+            r"C:\Users\me\repo",
+            r"C:\Users\me\repo\.kiro",
+        ], opens
+
+    def test_a_redirecting_ancestor_denies_and_stops_the_descent(self, monkeypatch) -> None:
+        """Nothing below a refused component may be opened -- descending past it
+        is the traversal that sends credentials outbound."""
+        opens: list[str] = []
+        # 502 is the SECOND component opened (C:\Users\me).
+        self._chain(monkeypatch, opens=opens, redirects={502}, closed=[])
+        with pc.held_verified_chain(r"C:\Users\me\repo\.kiro") as (refused, absent):
+            assert (refused, absent) == (True, False)
+        assert opens == [r"C:\Users", r"C:\Users\me"], opens
+
+    def test_every_descriptor_is_held_until_the_block_exits(self, monkeypatch) -> None:
+        """The whole point: cleared components stay HELD for the caller's work,
+        so none can be swapped after being screened."""
+        opens: list[str] = []
+        closed: list[int] = []
+        self._chain(monkeypatch, opens=opens, redirects=set(), closed=closed)
+        with pc.held_verified_chain(r"C:\Users\me\repo") as (refused, absent):
+            assert (refused, absent) == (False, False)
+            assert closed == [], "a descriptor was released while the caller still held the chain"
+        assert sorted(closed) == [501, 502, 503], closed
+
+    def test_descriptors_are_released_on_the_denial_path_too(self, monkeypatch) -> None:
+        opens: list[str] = []
+        closed: list[int] = []
+        self._chain(monkeypatch, opens=opens, redirects={503}, closed=closed)
+        with pc.held_verified_chain(r"C:\Users\me\repo") as (refused, absent):
+            assert (refused, absent) == (True, False)
+        assert sorted(closed) == [501, 502, 503], closed
+
+    def test_a_missing_final_component_is_skip_not_denial(self, monkeypatch) -> None:
+        """A checkout with no `.kiro` must not emit a security denial: nothing
+        exists below the final name, so there is nothing to scan."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        opened: list[str] = []
+
+        def _open(candidate):
+            opened.append(str(candidate))
+            if str(candidate) == r"C:\repo\.kiro":
+                raise FileNotFoundError(candidate)
+            return 500 + len(opened)
+
+        monkeypatch.setattr(pc, "_win_open_without_following", _open)
+        monkeypatch.setattr(pc, "_fd_redirects", lambda _fd: False)
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+        with pc.held_verified_chain(r"C:\repo\.kiro") as (refused, absent):
+            assert (refused, absent) == (False, True), (
+                "a missing FINAL component is ABSENT, not refused: the caller "
+                "reports nothing-here without auditing a denial"
+            )
+
+    def test_a_missing_INTERMEDIATE_component_fails_closed(self, monkeypatch) -> None:
+        """The gap that a cleared walk would leave: an absent intermediate name
+        cannot be held, so whatever is planted there before the caller opens a
+        DESCENDANT is traversed by that open. Nothing below it may be cleared.
+        """
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        opened: list[str] = []
+
+        def _open(candidate):
+            opened.append(str(candidate))
+            if str(candidate) == r"C:\repo\.kiro":
+                raise FileNotFoundError(candidate)
+            return 500 + len(opened)
+
+        monkeypatch.setattr(pc, "_win_open_without_following", _open)
+        monkeypatch.setattr(pc, "_fd_redirects", lambda _fd: False)
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+        # `.kiro` is now an INTERMEDIATE component of the requested path.
+        with pc.held_verified_chain(r"C:\repo\.kiro\agents") as (refused, absent):
+            assert (refused, absent) == (False, True), (
+                "a missing INTERMEDIATE component must stop the caller as ABSENT -- "
+                "reporting refused would audit a false denial on an ordinary "
+                "not-yet-created directory, which is what real Windows CI caught"
+            )
+        assert opened[-1] == r"C:\repo\.kiro", opened
+        assert (
+            r"C:\repo\.kiro\agents" not in opened
+        ), "a descendant of a missing component was opened anyway: %r" % (opened,)
+
+    def test_an_unopenable_component_fails_closed(self, monkeypatch) -> None:
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _open(candidate):
+            raise PermissionError(candidate)
+
+        monkeypatch.setattr(pc, "_win_open_without_following", _open)
+        with pc.held_verified_chain(r"C:\repo\.kiro") as (refused, absent):
+            assert (refused, absent) == (True, False)
+
+    def test_realpath_is_never_called(self, monkeypatch) -> None:
+        """``realpath`` resolves THROUGH an ancestor junction: it both fires the
+        probe and makes any comparison built on it compare equal."""
+        opens: list[str] = []
+        self._chain(monkeypatch, opens=opens, redirects=set(), closed=[])
+
+        def _boom(*_a, **_k):  # pragma: no cover - only on regression
+            raise AssertionError("realpath ran inside the ancestor walk")
+
+        monkeypatch.setattr(pc.os.path, "realpath", _boom)
+        with pc.held_verified_chain(r"C:\Users\me\repo") as (refused, absent):
+            assert (refused, absent) == (False, False)
+
+    def test_forward_slashes_decompose_identically(self, monkeypatch) -> None:
+        opens: list[str] = []
+        self._chain(monkeypatch, opens=opens, redirects=set(), closed=[])
+        with pc.held_verified_chain("C:/Users/me/repo") as (refused, absent):
+            assert (refused, absent) == (False, False)
+        assert opens == [r"C:\Users", r"C:\Users\me", r"C:\Users\me\repo"], opens
+
+    def test_posix_is_a_no_op_pass(self, monkeypatch) -> None:
+        """POSIX has O_NOFOLLOW and descriptor scandir, so the callers there use
+        the pinned open instead; this walk must not fabricate a denial."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        with pc.held_verified_chain("/home/me/repo") as (refused, absent):
+            assert (refused, absent) == (False, False)
+
+
+class TestPathRedirects:
+    """``path_redirects``: refuse a name that resolves elsewhere, BEFORE any
+    ``realpath`` follows it, discriminating by reparse TAG.
+
+    Every case drives a stubbed ``os.lstat`` rather than a real directory
+    handle: the tag combinations under test (junction, cloud placeholder) cannot
+    be created on the Linux fleet, and holding a real Windows handle open across
+    an assertion leaves the directory undeletable and breaks tmp_path teardown.
+    """
+
+    @staticmethod
+    def _stat(*, attributes: int = 0, tag: int = 0):
+        return types.SimpleNamespace(st_file_attributes=attributes, st_reparse_tag=tag)
+
+    def test_a_plain_directory_does_not_redirect(self, monkeypatch) -> None:
+        monkeypatch.setattr(pc.os, "lstat", lambda _p: self._stat())
+        assert pc.path_redirects(r"C:\repo\.kiro") is False
+
+    def test_a_name_surrogate_tag_redirects(self, monkeypatch) -> None:
+        """A junction/symlink carries the name-surrogate bit -- the kind whose
+        resolution is what sends SMB credentials to the target host."""
+        monkeypatch.setattr(
+            pc.os,
+            "lstat",
+            lambda _p: self._stat(
+                attributes=pc._FILE_ATTRIBUTE_REPARSE_POINT,
+                tag=pc._REPARSE_NAME_SURROGATE | 0x3,
+            ),
+        )
+        assert pc.path_redirects(r"C:\repo\.kiro") is True
+
+    def test_a_cloud_placeholder_tag_does_not_redirect(self, monkeypatch) -> None:
+        """OneDrive Known Folder Move placeholders are reparse points WITHOUT
+        the name-surrogate bit, and are on by default on Windows 11: refusing
+        them would make a synced checkout's project agents vanish."""
+        monkeypatch.setattr(
+            pc.os,
+            "lstat",
+            lambda _p: self._stat(
+                attributes=pc._FILE_ATTRIBUTE_REPARSE_POINT,
+                tag=0x9000_001A,
+            ),
+        )
+        assert pc.path_redirects(r"C:\Users\me\OneDrive\repo\.kiro") is False
+
+    def test_an_unstattable_path_settles_nothing(self, monkeypatch) -> None:
+        """A failed lstat is not a redirect claim -- the caller's own checks own
+        the missing/unreadable case, so this must not deny on its own."""
+
+        def _raise(_p):
+            raise OSError("gone")
+
+        monkeypatch.setattr(pc.os, "lstat", _raise)
+        assert pc.path_redirects(r"C:\repo\.kiro") is False
+
+    def test_an_embedded_nul_fails_closed_without_raising(self, monkeypatch) -> None:
+        """``os.lstat`` raises ValueError (not OSError) on an embedded NUL; it
+        must not escape as an HTTP 500 from a caller-supplied path."""
+
+        def _raise(_p):
+            raise ValueError("embedded null byte")
+
+        monkeypatch.setattr(pc.os, "lstat", _raise)
+        assert pc.path_redirects("C:\\repo\\\x00") is False
+
+    def test_a_plain_reparse_point_without_the_bit_does_not_redirect(self, monkeypatch) -> None:
+        """The test is the name-surrogate BIT, not the presence of a reparse
+        point: a blanket attribute refusal is what denied cloud-synced repos."""
+        monkeypatch.setattr(
+            pc.os,
+            "lstat",
+            lambda _p: self._stat(attributes=pc._FILE_ATTRIBUTE_REPARSE_POINT, tag=0),
+        )
+        assert pc.path_redirects(r"C:\repo\.kiro") is False
+
+
 # ---------------------------------------------------------------------------
 # POSIX-branch coverage for the new platform_compat helpers. The
 # tests below deliberately exercise the ``if IS_POSIX:`` / Linux ``/proc`` paths

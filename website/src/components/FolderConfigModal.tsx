@@ -9,6 +9,9 @@ import SimpleSelect from './SimpleSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
+import { api } from '../api/client'
+import { useQuery } from '@tanstack/react-query'
+import { useDebouncedValue } from '../apps/file-explorer/hooks'
 import { ChatFolder, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
 
@@ -50,7 +53,7 @@ interface Props {
   folder?: ChatFolder
   /** Every folder — powers the read-only destination breadcrumb. */
   folders: ChatFolder[]
-  installedAgents: { name: string }[]
+  installedAgents: { name: string; scope?: string }[]
   /** Global default agent, shown as what an empty agent choice falls back to. */
   globalDefaultAgent?: string
   /** The tag vocabulary, powering the folder-tag picker. Empty/absent hides the
@@ -119,6 +122,14 @@ export default function FolderConfigModal({
   // What the draft looked like when the modal opened — the baseline for
   // "has the user actually typed something worth protecting?".
   const seedRef = useRef<FolderConfigDraft>(EMPTY)
+  // F3: the inherited effective dir SNAPSHOTTED at seed time. `inheritedDir`
+  // (below) is derived from the live `folders` prop, so an ancestor's project_dir
+  // changing via a prop/server push while this modal is open would otherwise
+  // shift the re-scope baseline underneath the user. `inheritedDirRef` mirrors
+  // the live value each render; the seed effect copies it into
+  // `seededInheritedDir` once, giving an immutable baseline for rescopeUnsettled.
+  const inheritedDirRef = useRef<string | undefined>(undefined)
+  const seededInheritedDir = useRef<string | undefined>(undefined)
   const browseRef = useRef<HTMLButtonElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   // A folder name is prime IME territory (the sidebar's inline input it replaces
@@ -143,6 +154,14 @@ export default function FolderConfigModal({
   // erase an open draft.
   const availableTagsRef = useRef(availableTags)
   availableTagsRef.current = availableTags
+  // Read through a ref for the same reason: the global roster feeds the
+  // dir-cleared reconciliation inside the fetch effect, but must NOT be an
+  // effect dependency — `installedAgents` is a fresh array on many parent
+  // renders, and depending on it would re-run the debounced scan spuriously.
+  const installedAgentsRef = useRef(installedAgents)
+  installedAgentsRef.current = installedAgents
+  // Re-seed the draft whenever the modal opens or retargets to a different
+  // folder. Keyed on the folder id (see the seed effect below).
   const seedKey = mode === 'edit' ? folder?.id : ''
   useEffect(() => {
     if (!open) return
@@ -171,6 +190,9 @@ export default function FolderConfigModal({
       : EMPTY
     setDraft(seeded)
     seedRef.current = seeded
+    // F3: freeze the inherited effective dir as it is at open, so a later
+    // ancestor prop change cannot move the re-scope baseline.
+    seededInheritedDir.current = inheritedDirRef.current
     setPickerOpen(false)
     setSaving(false); setSaveErr('')
   }, [open, mode, seedKey])
@@ -199,6 +221,61 @@ export default function FolderConfigModal({
     const from = mode === 'edit' ? folder?.parent_id : parentId
     return from ? resolveFolderProjectDir(folders, from) : undefined
   }, [folders, mode, folder?.parent_id, parentId])
+  // Mirror the live value so the seed effect (which does not depend on
+  // `inheritedDir`) can snapshot it at open for the F3 immutable baseline.
+  inheritedDirRef.current = inheritedDir
+
+  // The project directory whose agents this folder's chats would actually run
+  // under: the draft's own value when set, else the inherited ancestor value.
+  // This is what the agent roster must be scoped to — NOT the active chat
+  // slot's project, which is what the `installedAgents` prop carries and is
+  // unrelated to the folder being configured.
+  const effectiveProjectDir = draft.projectDir.trim() || inheritedDir || ''
+
+  // Agents discovered under `effectiveProjectDir` (its `.kiro/agents/*.json`),
+  // fetched from the backend's `?project_path=` scope via react-query. `null`
+  // (no dir set) means "use the global `installedAgents` prop"; a non-null array
+  // is that dir's roster (global rows unioned with the dir's project rows, per
+  // /api/agents).
+  //
+  // The folder modal has no chat slot, so `useAgents` — which resolves project
+  // scope from the slot — cannot serve it; this is a slot-independent lookup
+  // keyed on a draft directory the user is still typing. It is a directory-keyed
+  // `useQuery` (project convention: server state lives in react-query, not a
+  // hand-rolled effect) with the directory DEBOUNCED, so a keystroke does not
+  // fire a filesystem scan on the backend until typing settles. A ProjectPicker
+  // selection sets the whole path at once and lands one debounce later too.
+  const debouncedProjectDir = useDebouncedValue(effectiveProjectDir, 300)
+  const projectRosterQuery = useQuery({
+    // sessionKey omitted deliberately: this roster is for the DRAFT directory,
+    // not any slot. The backend reads `project_path` from the query string.
+    queryKey: ['folder-project-agents', debouncedProjectDir],
+    queryFn: () => api.kirocrewAgents(undefined, debouncedProjectDir),
+    // Only scan when a directory is actually set AND the modal is open.
+    enabled: open && !!debouncedProjectDir,
+    // staleTime 0: a re-scope back to a previously-seen dir must REFETCH, not
+    // serve a cached roster instantly — otherwise a fresh cache entry lets a
+    // pick validate against a stale roster without isFetching ever going true,
+    // so Save could persist an agent the dir no longer has. Refetching keeps
+    // isFetching true (and thus Save blocked) until the current scope is
+    // re-validated. The debounce already bounds how often this fires.
+    staleTime: 0,
+    // retry:false so a failed scan is TERMINAL on the first attempt — the whole
+    // error path (rosterScanError, the ErrorNotice + Retry row, the Save gating
+    // comments that say "retry:false, so isError never clears on its own")
+    // assumes isError reflects a settled failure. Without this, react-query's
+    // default 3 silent retries delay isError going true, deferring the terminal
+    // error notice and re-hitting the backend directory scan three times. The
+    // explicit Retry button is the only re-scan path.
+    retry: false,
+  })
+  // `null` when no dir is set OR the scan errored — both fall back to the global
+  // prop roster, so the picker never blanks to a wrong empty selection. Only a
+  // SUCCESSFUL scan replaces the roster with the dir's agents.
+  const projectRoster: { name: string }[] | null =
+    debouncedProjectDir && projectRosterQuery.isSuccess
+      ? projectRosterQuery.data.agents || []
+      : null
 
   // The default agent inherits the same way, so the empty option has to name the
   // agent an empty selection would ACTUALLY run: the nearest ancestor that pins
@@ -213,24 +290,191 @@ export default function FolderConfigModal({
   }, [folders, mode, folder?.parent_id, parentId, globalDefaultAgent])
 
   const trimmedName = draft.name.trim()
-  const canSubmit = trimmedName.length > 0
 
-  // A folder can reference an agent that is no longer installed (uninstalled or
-  // renamed). Without an option for it the select falls back to showing the
-  // first entry — "None" — and Save would then write default_agent:'' and
-  // silently destroy the folder's configuration. Keep the orphan selectable so
-  // it round-trips, flagged so the user knows why it isn't running.
-  const orphanAgent = draft.defaultAgent && !installedAgents.some(a => a.name === draft.defaultAgent)
+  // The roster the picker actually offers: the project directory's agents when
+  // one is set (union of global + that dir's project agents, from the backend),
+  // otherwise ONLY the GLOBAL rows of the `installedAgents` prop. Scoping the
+  // dropdown to the folder's own directory is the whole fix — the prop is the
+  // ACTIVE SLOT's roster, which has nothing to do with the folder being
+  // configured. Its `scope:'project'` rows belong to the active chat's project,
+  // NOT this folder, so with no effective dir they must be excluded: offering
+  // one lets it be saved as the folder default, and every chat opened under a
+  // dir-less folder then fails "unavailable" at dispatch (a foreign
+  // project-scoped agent does not resolve). Only global agents are valid for a
+  // folder that pins no directory of its own.
+  const globalInstalledAgents = installedAgents.filter(a => a.scope !== 'project')
+  const effectiveAgents = projectRoster ?? globalInstalledAgents
+
+  // A folder can reference an agent that is not present in the effective roster —
+  // an edit-mode folder whose saved default_agent was since uninstalled/renamed,
+  // or a directory that does not expose it. Keep it SELECTABLE and flagged so the
+  // user sees why, and BLOCK Save only on a SESSION-CHANGED orphan pick (see
+  // blockingOrphan / canSubmit): a fresh invalid choice is a validation error the
+  // user must resolve, but an edit folder's OWN saved orphan round-trips a benign
+  // rename/recolor (base #1182) — run time fails loud if it is genuinely gone.
+  //
+  const seededEffectiveDir =
+    seedRef.current.projectDir.trim() || seededInheritedDir.current || ''
+  // Roster IN FLIGHT for the current effective dir — the debounce gap (typed dir
+  // has not settled into the debounced value) OR the scan for the settled dir is
+  // pending. This is a TRANSIENT state that resolves on its own. It does NOT
+  // include `isError`: a terminal scan error is settled, not in flight.
+  const rosterInFlight =
+    effectiveProjectDir !== debouncedProjectDir
+    || (!!debouncedProjectDir && projectRosterQuery.isFetching)
+  // Roster UNSETTLED for the orphan FLAG — in flight OR the scan errored. On an
+  // error the roster is unknown (effectiveAgents falls back to the global prop),
+  // so a valid project agent would look absent; suppressing the flag on error
+  // avoids a false "(not installed)" and a global-roster fallback.
+  const rosterUnsettled =
+    rosterInFlight || (!!debouncedProjectDir && projectRosterQuery.isError)
+  // The scan for the current dir FAILED and is terminal (retry:false). The
+  // roster is unknown, so an AGENT selection cannot be validated against the
+  // dir's real scope — but a name-only folder (no agent) has nothing to
+  // validate and still saves. Surfaced via ErrorNotice with a Retry.
+  const rosterScanError = !!debouncedProjectDir && projectRosterQuery.isError
+  // The error row is the ONLY element that names why Save went dead, and it sits
+  // at the bottom of a scrollable modal body — reviewers found it half-clipped at
+  // the fold on every failed scan, so the explanation was below the fold exactly
+  // when it was needed. Bring it into view as the error appears rather than making
+  // the user go looking for it. `block: 'nearest'` scrolls the minimum distance,
+  // so a row already visible does not jump. The optional call keeps this harmless
+  // under jsdom, which does not implement scrollIntoView.
+  const rosterErrorRef = useRef<HTMLSpanElement | null>(null)
+  useEffect(() => {
+    if (!rosterScanError) return
+    rosterErrorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  }, [rosterScanError])
+  // Suppress the orphan FLAG while the roster is unsettled — mid-load OR on a
+  // failed scan — so a valid project agent is not mislabelled "(not installed)".
+  // Once the roster settles SUCCESSFULLY, a selection not in it is flagged so the
+  // user sees WHY: whether they just picked it OR it is an edit folder's saved
+  // agent that is now absent, it shows "(not installed)" in the picker trigger.
+  const orphanAgent = draft.defaultAgent && !rosterUnsettled
+    && !effectiveAgents.some(a => a.name === draft.defaultAgent)
     ? draft.defaultAgent
     : ''
+
+  // Only a SESSION-CHANGED orphan pick BLOCKS Save. The form must not let the
+  // user commit a NEW invalid choice, but it must let an edit folder whose OWN
+  // saved agent went absent still round-trip a benign rename/recolor without
+  // being forced to discard a recoverable binding (base #1182: a saved orphan
+  // round-trips verbatim; and the "don't hold benign edits hostage" rule). The
+  // two are distinguished by the seed: seedRef.current.defaultAgent is what the
+  // folder had when the modal opened, so an orphan EQUAL to it is the pre-existing
+  // saved agent (round-trips), and an orphan DIFFERENT from it is a fresh pick
+  // this session (blocked). If a round-tripped saved orphan is genuinely gone,
+  // run time fails loud at chat start — it never silently runs a different agent.
+  //
+  // The round-trip exception is scoped to the SEEDED directory. Once the user
+  // re-scopes the folder to a DIFFERENT directory that lacks the seeded agent,
+  // the seed-equality no longer describes a benign round-trip — it is a fresh
+  // invalid combination the user created this session (agent X saved under dir A,
+  // dir changed to B where X does not exist). effectiveProjectDir !==
+  // seededEffectiveDir makes that a session change, so a seed-equal orphan under
+  // a changed dir is blocked exactly like any other fresh invalid pick; without
+  // this, `orphanAgent === seedRef.current.defaultAgent` bypasses the block after
+  // B's scan settles and Save would persist X under a directory that lacks it.
+  const blockingOrphan = !!orphanAgent
+    && (orphanAgent !== seedRef.current.defaultAgent
+      || effectiveProjectDir !== seededEffectiveDir)
+
+  // Save is blocked on a name AND on a session-changed orphan pick. Directory
+  // in the settled roster). Directory validity is enforced by the backend (a
+  // non-existent / non-absolute / sensitive path 400s and surfaces as saveErr),
+  // so a saved project_dir is always real; the picker only offers agents from
+  // that real directory's roster. Together the form only ever persists a valid
+  // config for a selection the user made. (Should a saved agent later stop
+  // existing at RUN time, chat start does NOT silently substitute the default —
+  // dispatch fails loud with an "agent unavailable" error — a separate,
+  // run-time concern.)
+  //
+  // `!rescopeUnsettled` closes the stale-roster window: after the user changes
+  // or clears the dir, the roster does not yet describe the new effective dir
+  // (debounce gap, then scan), and the orphan flag is suppressed meanwhile, so
+  // without this a fast Save could persist a pick not in the new scope (the
+  // backend does no agent-vs-scope check — this is the only guard). Scoped to a
+  // re-scope so the initial open of an edit folder's own config is not blocked.
+  //
+  // Keyed on rosterInFlight, NOT rosterUnsettled: a TERMINAL scan error
+  // (retry:false, so isError never clears on its own) must not hold Save
+  // disabled forever — on an error the roster falls back to the global prop and
+  // the orphan flag is suppressed, so there is no stale pick to guard against.
+  // Only an in-flight (transient, self-resolving) re-scope blocks Save.
+  //
+  // Two independent in-flight triggers: (a) the effective dir differs from the
+  // seeded one (a genuine re-scope), and (b) the AGENT differs from its seeded
+  // value while a scan is in flight — even back AT the seeded dir. Without (b),
+  // the return-to-seed path escapes: pick a foreign agent under dir B, change
+  // back to seeded dir A, and effectiveProjectDir === seededEffectiveDir, so the
+  // debounced roster still shows B (where the pick looks valid) and Save would
+  // enable mid-refetch, persisting an agent A's scope lacks. Gating on the
+  // session-changed pick closes that window regardless of which dir is showing.
+  const rescopeUnsettled =
+    rosterInFlight
+    && (effectiveProjectDir !== seededEffectiveDir
+      || draft.defaultAgent !== seedRef.current.defaultAgent)
+  // Blocked when an agent is SELECTED, the current dir's scan ERRORED, AND that
+  // agent is ABSENT from the roster we can still see (on error effectiveAgents
+  // falls back to the global `installedAgents` prop). The pick then cannot be
+  // validated against anything, so saving it would persist a possibly-invalid
+  // project-scoped agent. But a selection that IS present in the fallback roster
+  // — e.g. an edit folder whose saved default_agent is a valid GLOBAL agent,
+  // unrelated to the failing project scan — is validatable against what we can
+  // see, so a benign rename/recolor round-trips rather than being held hostage
+  // (the maintainer's "don't block round-trip edits" rule). NOT extended to the
+  // in-flight/initial-load case on purpose (same round-trip rationale). A
+  // name-only folder (no agent) is never affected.
+  const unvalidatableAgent =
+    rosterScanError
+    && !!draft.defaultAgent
+    && !effectiveAgents.some(a => a.name === draft.defaultAgent)
+  const canSubmit =
+    trimmedName.length > 0 && !blockingOrphan && !rescopeUnsettled && !unvalidatableAgent
 
   // Values and display labels as two PARALLEL arrays, orphan first so it keeps
   // the position its <option> held. The '' ("None" / "Inherit (x)") row is
   // SimpleSelect's `clearLabel` rather than a member of these arrays.
-  const agentNames = installedAgents.map(a => a.name)
-  const agentOptions = orphanAgent ? [orphanAgent, ...agentNames] : agentNames
-  const agentOptionLabels = orphanAgent
-    ? [i18nT('components.folderConfigModal.agent_not_installed', { agent: orphanAgent }), ...agentNames]
+  //
+  // Label wording depends on WHY the agent is absent (UX Review): "(not in this
+  // project)" names the actual problem when the agent may well be installed and
+  // valid elsewhere, rather than "(not installed)", which asserts a false fact
+  // about the agent's global existence. That is true whenever EITHER (a) the
+  // effective dir differs from the seeded one (a re-scope away from where the
+  // folder started), OR (b) the orphan is a SESSION-CHANGED pick (differs from
+  // seedRef.current.defaultAgent) — a pick the user just made under some
+  // directory is presumptively valid there, so losing that directory (including
+  // a create folder's dir being cleared back to its empty seed) is a scope
+  // problem, not an uninstall. Only an orphan that is BOTH seed-equal AND at the
+  // seeded dir (a genuinely uninstalled/removed saved agent, seen on open) keeps
+  // "(not installed)".
+  const orphanIsRescopeOnly =
+    !!orphanAgent
+    && (effectiveProjectDir !== seededEffectiveDir
+      || orphanAgent !== seedRef.current.defaultAgent)
+  const agentNames = effectiveAgents.map(a => a.name)
+  // The pick stays in the options in BOTH unresolved cases, so the trigger always
+  // names what is selected. Without the `unvalidatableAgent` arm a failed scan
+  // drops the pick from `agentOptions`, SimpleSelect falls back to its clear
+  // label, and the trigger reads "Inherit (default)" while Save is disabled for an
+  // agent the user can no longer see — an apparently valid form with a dead Save
+  // and nothing naming the cause. The two arms carry DIFFERENT claims and must not
+  // be merged: a settled roster can say the agent is absent, while a failed scan
+  // can only say it could not be checked.
+  const pinnedAgent = orphanAgent || (unvalidatableAgent ? draft.defaultAgent : '')
+  const agentOptions = pinnedAgent ? [pinnedAgent, ...agentNames] : agentNames
+  const agentOptionLabels = pinnedAgent
+    ? [
+        orphanAgent
+          ? i18nT(
+              orphanIsRescopeOnly
+                ? 'components.folderConfigModal.agent_not_in_project'
+                : 'components.folderConfigModal.agent_not_installed',
+              { agent: orphanAgent },
+            )
+          : i18nT('components.folderConfigModal.agent_unverified', { agent: pinnedAgent }),
+        ...agentNames,
+      ]
     : agentNames
 
   const submit = useCallback(async () => {
@@ -290,7 +534,14 @@ export default function FolderConfigModal({
         title={mode === 'create' ? i18nT('components.folderConfigModal.new_folder') : i18nT('components.folderConfigModal.folder_settings')}
         footer={
           <>
-            <span className="mr-auto text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.enter_to_submit')}</span>
+            {/* Hidden while Save is blocked: the hint promises a submit that
+                Enter would not perform, which reads as the key being broken
+                rather than the form being incomplete. */}
+            {canSubmit && !saving ? (
+              <span className="mr-auto text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.enter_to_submit')}</span>
+            ) : (
+              <span className="mr-auto" />
+            )}
             <Btn onClick={onClose} disabled={saving}>{i18nT('components.folderConfigModal.cancel')}</Btn>
             <Btn primary disabled={!canSubmit || saving} data-testid="folder-config-submit" onClick={submit}>
               {mode === 'create' ? i18nT('components.folderConfigModal.create_folder') : i18nT('components.folderConfigModal.save_changes')}
@@ -588,11 +839,51 @@ export default function FolderConfigModal({
                 data-testid="folder-config-agent-notice"
                 className="text-[11px] text-warn"
               >
-                {i18nT('components.folderConfigModal.agent_not_installed_notice')}
+                {/* Keyed on the SAME predicate as the trigger's label, because the
+                    two sit one line apart and must not contradict each other. The
+                    installed-notice wording is false in the rescope case on all
+                    three counts: the agent IS installed, "pick an installed agent"
+                    is the wrong advice when changing the directory is the other
+                    fix, and "chats here won't use it" is the wrong consequence
+                    when Save is blocked outright. */}
+                {i18nT(
+                  orphanIsRescopeOnly
+                    ? 'components.folderConfigModal.agent_not_in_project_notice'
+                    : 'components.folderConfigModal.agent_not_installed_notice',
+                )}
               </span>
             ) : (
               <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
             )}
+            {rosterScanError ? (
+              <span ref={rosterErrorRef} className="flex items-center gap-1.5 flex-wrap">
+                {/* No hand-off: the same unsaved folder form. The scan failed,
+                    so distinguish "couldn't read" from "no project agents", and
+                    offer a retry rather than leaving Save silently blocked. */}
+                <ErrorNotice
+                  variant="inline"
+                  className="text-[11px]"
+                  message={i18nT('components.folderConfigModal.agent_roster_error')}
+                  testId="folder-config-agent-roster-error"
+                />
+                <button
+                  type="button"
+                  data-testid="folder-config-agent-roster-retry"
+                  onClick={() => projectRosterQuery.refetch()}
+                  className="text-[11px] underline underline-offset-2 text-danger hover:opacity-80 bg-transparent border-none p-0 cursor-pointer"
+                >
+                  {i18nT('components.folderConfigModal.agent_roster_retry')}
+                </button>
+              </span>
+            ) : rosterInFlight ? (
+              /* Save is disabled while the roster is in flight, and the picker
+                 still shows the old scope's agents, so without this the button
+                 just goes dead with nothing explaining why. Mirrors the Tags
+                 field's own loading hint two rows up in this same modal. */
+              <span data-testid="folder-config-agent-roster-loading" className="text-[11px] text-muted-strong">
+                {i18nT('components.folderConfigModal.agent_roster_loading')}
+              </span>
+            ) : null}
           </div>
         </div>
       </Modal>
