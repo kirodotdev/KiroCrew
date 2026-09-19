@@ -10,6 +10,44 @@ export const LAST_PROJECT_KEY = 'kc:papyrus:project'
 /** localStorage key prefix mapping a project to its co-author chat slot. */
 export const SLOT_KEY_PREFIX = 'kc:papyrus:slot:'
 
+// Workspace column geometry. Four surfaces share one row (file tree, editor, PDF,
+// co-author), so each resizable column gets its OWN key: they hold different
+// shapes of content, and one key would mean dragging one silently resized the
+// others. Bounds are what keeps a drag from producing an unusable layout — the
+// editor is the pane carrying the text being written, so the PDF and co-author
+// maxima stop short of squeezing it out.
+
+/** File-tree column: persisted width, and the collapsed flag kept apart from it
+ *  so re-expanding returns the tree to the width the user chose. */
+export const TREE_WIDTH_KEY = 'kc:papyrus:tree-width'
+export const TREE_COLLAPSED_KEY = 'kc:papyrus:tree-collapsed'
+/** 176px = the `w-44` this replaced, so an existing user's layout is unchanged. */
+export const DEFAULT_TREE_WIDTH = 176
+export const MIN_TREE_WIDTH = 120
+export const MAX_TREE_WIDTH = 420
+/** Collapsed strip: wide enough for the expand button's hit target alone. */
+export const COLLAPSED_TREE_WIDTH = 28
+
+/** PDF preview column. Fixed-width with the grip on its LEFT edge, which leaves
+ *  the source column `flex-1` — so widening the window grows the editor rather
+ *  than scaling the preview the user just sized. */
+export const PDF_WIDTH_KEY = 'kc:papyrus:pdf-width'
+export const DEFAULT_PDF_WIDTH = 520
+export const MIN_PDF_WIDTH = 280
+export const MAX_PDF_WIDTH = 900
+
+/** Co-author column. The default is the width the panel opened at before it
+ *  became resizable. */
+export const CHAT_WIDTH_KEY = 'kc:papyrus:chat-width'
+export const DEFAULT_CHAT_WIDTH = 420
+export const MIN_CHAT_WIDTH = 280
+export const MAX_CHAT_WIDTH = 720
+/** Whether the co-author panel is open. Persisting only the WIDTH still lost the
+ *  layout on every return to a paper: the panel came back closed, so the
+ *  workspace the author left was not the one restored. Absent means closed,
+ *  which is the state the panel has always opened at. */
+export const CHAT_OPEN_KEY = 'kc:papyrus:chat-open'
+
 /** Suffixes hidden from the file tree — LaTeX build artifacts, never editable. */
 const ARTIFACT_SUFFIXES = [
   '.aux', '.bbl', '.blg', '.fdb_latexmk', '.fls', '.log', '.out',
