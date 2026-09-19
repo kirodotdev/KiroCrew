@@ -79,7 +79,6 @@ src/pages/AppPage.tsx 0.0   # 0/21
 src/pages/MigrationPage.tsx 0.0   # 0/38
 src/pages/chat/KnowledgePicker.tsx 0.0   # 0/23
 src/pages/chat/PinnedPrompt.tsx 3.5   # 2/57
-src/pages/chat/SidePanel.tsx 69.3   # 124/179
 src/pages/overview/MemoryGraphTab.tsx 68.3   # 97/142
 src/pages/overview/PortabilityTab.tsx 0.0   # 0/60
 src/pages/overview/UsageTab.tsx 0.0   # 0/21

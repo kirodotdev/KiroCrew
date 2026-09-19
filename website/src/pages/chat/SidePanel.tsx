@@ -37,6 +37,9 @@ import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
+import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { SIDE_PANEL_HEIGHT_KEY, SIDE_PANEL_WIDTH_KEY, loadSidePanelDim, sidePanelDimKey, sidePanelWidthGroup } from './sidePanelWidth'
+import { SIDE_PANEL_MOTION_MS, sidePanelDimTransition } from './sidePanelMount'
 import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
 import { mcpAppKey } from '../../store/chatSlice'
@@ -557,6 +560,13 @@ export default function SidePanel({
     if (visibleTabs.some(t => t.id === storedActiveId)) return storedActiveId
     return leadingTab?.id ?? visibleTabs[0]?.id ?? null
   }, [storedActiveId, visibleTabs, leadingTab])
+  // Kind of the tab actually shown, which selects the panel's size bucket (see
+  // sidePanelWidth.ts). A host's leading tab is an identity chip with no
+  // `TabKind`, so it lands in the shared default bucket.
+  const activeTabKind = useMemo(
+    () => visibleTabs.find(t => t.id === activeId)?.kind ?? null,
+    [visibleTabs, activeId],
+  )
   // The fallback is REPORTED to the host, never written back into the store.
   // A host reads what the strip actually shows through `onActiveTabChange`
   // (the Members page gates the Crew summary's data reads on it), so a stored
@@ -602,25 +612,48 @@ export default function SidePanel({
   const [diffSideBySide, setDiffSideBySide] = useDiffSplit()
 
   // Resizable width (the actbar grid column is auto-sized, so the panel owns
-  // its own width).
-  const WIDTH_KEY = 'mc-side-panel-width'
+  // its own width), remembered per TAB GROUP rather than once for the panel —
+  // see sidePanelWidth.ts for which kinds share a bucket. Held as a map keyed by
+  // group so switching tabs reads the other group's size without a round trip
+  // through storage, and a group never dragged in this session falls through to
+  // what is stored (`loadSidePanelDim`).
   const MIN_W = SIDE_PANEL_MIN_W
-  const [width, setWidth] = useState(() => {
-    const v = parseInt(localStorage.getItem(WIDTH_KEY) || '', 10)
-    return !isNaN(v) && v >= MIN_W ? v : 460
-  })
+  const dimGroup = sidePanelWidthGroup(activeTabKind)
+  // Read inside the drag callbacks, which are created once and would otherwise
+  // close over the group that was active when the drag handler was built.
+  const dimGroupRef = useRef(dimGroup); dimGroupRef.current = dimGroup
+  // The bucket a resize drag started on, held for the whole gesture. An
+  // agent-driven app tab can auto-open mid-drag (`openApp` sets `activeId`),
+  // which moves `dimGroup` under the pointer; reading the live group would
+  // retarget the remaining movement and the release to the newly active bucket
+  // and discard the adjustment the user is making. `null` outside a drag.
+  const dragGroupRef = useRef<string | null>(null)
+  /** The bucket a dimension write belongs to: the dragged one during a gesture,
+   *  the active one otherwise. */
+  const writeGroup = useCallback(() => dragGroupRef.current ?? dimGroupRef.current, [])
+  const [widthByGroup, setWidthByGroup] = useState<Record<string, number>>({})
+  const width = useMemo(
+    () => widthByGroup[dimGroup] ?? loadSidePanelDim({ base: SIDE_PANEL_WIDTH_KEY, group: dimGroup, min: MIN_W, fallback: 460 }),
+    [widthByGroup, dimGroup, MIN_W],
+  )
+  const setWidth = useCallback((w: number) => {
+    setWidthByGroup(m => ({ ...m, [writeGroup()]: w }))
+  }, [writeGroup])
   const widthRef = useRef(width); widthRef.current = width
   // Dock position (right column vs bottom row). Bottom dock is height-
   // resizable instead of width-resizable, so it carries its own persisted
   // dimension. Kept separate from width so flipping back and forth restores
   // each orientation's last size.
   const [dock, setDock] = useSidePanelDock()
-  const HEIGHT_KEY = 'mc-side-panel-height'
   const MIN_H = 200
-  const [height, setHeight] = useState(() => {
-    const v = parseInt(localStorage.getItem(HEIGHT_KEY) || '', 10)
-    return !isNaN(v) && v >= MIN_H ? v : 360
-  })
+  const [heightByGroup, setHeightByGroup] = useState<Record<string, number>>({})
+  const height = useMemo(
+    () => heightByGroup[dimGroup] ?? loadSidePanelDim({ base: SIDE_PANEL_HEIGHT_KEY, group: dimGroup, min: MIN_H, fallback: 360 }),
+    [heightByGroup, dimGroup, MIN_H],
+  )
+  const setHeight = useCallback((h: number) => {
+    setHeightByGroup(m => ({ ...m, [writeGroup()]: h }))
+  }, [writeGroup])
   const heightRef = useRef(height); heightRef.current = height
   // Responsive clamp: the user's chosen width is persisted untouched, but the
   // rendered width yields to the window so the chat keeps its reserved
@@ -635,13 +668,26 @@ export default function SidePanel({
   // Bottom-dock height cap: leave the topbar row + a usable chat minimum
   // visible above the panel. Re-measured on resize.
   const [maxH, setMaxH] = useState(() => Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
+  // A window drag fires `resize` continuously, and easing each clamp step
+  // retargets the tween every frame so the edge trails the window instead of
+  // tracking it. An active window resize therefore suppresses the ease the same
+  // way holding the handle does. It decays rather than opting out permanently,
+  // so a DISCRETE clamp change — a sibling column settling — still eases.
+  const [windowResizing, setWindowResizing] = useState(false)
+  const settleRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => {
     const recalc = () => {
       setMaxW(window.innerWidth - measureSidePanelReservedW() - extraReserveW)
       setMaxH(Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
     }
+    const onWindowResize = () => {
+      setWindowResizing(true)
+      clearTimeout(settleRef.current)
+      settleRef.current = setTimeout(() => setWindowResizing(false), SIDE_PANEL_MOTION_MS)
+      recalc()
+    }
     recalc()
-    window.addEventListener('resize', recalc)
+    window.addEventListener('resize', onWindowResize)
     // Observe the header's clusters (their intrinsic width is independent of
     // the panel's own width, so this can't feed back into itself).
     const header = document.querySelector('header.topbar-glass')
@@ -649,7 +695,7 @@ export default function SidePanel({
     if (header) Array.from(header.children)
       .filter(c => !c.hasAttribute('data-topbar-overlay'))
       .forEach(c => ro.observe(c))
-    return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
+    return () => { window.removeEventListener('resize', onWindowResize); ro.disconnect(); clearTimeout(settleRef.current) }
     // `extraReserveW` is a sibling column's LIVE width (the Members roster is
     // drag-resizable), so the clamp re-derives when it moves.
   }, [extraReserveW])
@@ -662,35 +708,107 @@ export default function SidePanel({
   // the new spot each frame — so tabs visibly lag the resize and "catch up"
   // when it stops. During a resize we make the layout transition instant.
   const [resizing, setResizing] = useState(false)
+  // Switching to a tab whose bucket holds a different width moves the panel's
+  // left edge, which the chips' layout projection reads exactly like a drag
+  // frame and springs after. `groupSwitched` covers the render that carries the
+  // switch; `dimAnimating` covers the rest of the eased move, because the edge
+  // now travels over SIDE_PANEL_MOTION_MS rather than jumping — without it the
+  // chips trail the panel for the whole animation and catch up at the end,
+  // which is the same artifact `resizing` exists to suppress.
+  const reduceMotion = useReducedMotion()
+  const paintedGroupRef = useRef(dimGroup)
+  const groupSwitched = paintedGroupRef.current !== dimGroup
+  const [dimAnimating, setDimAnimating] = useState(false)
+  useEffect(() => {
+    // Equal on mount and on any re-render that did not change bucket, so this
+    // never fires an animation the user did not cause.
+    if (paintedGroupRef.current === dimGroup) return
+    paintedGroupRef.current = dimGroup
+    setDimAnimating(true)
+    const t = setTimeout(() => setDimAnimating(false), SIDE_PANEL_MOTION_MS)
+    return () => clearTimeout(t)
+  }, [dimGroup])
   const startWRef = useRef(0)
+  // The width the gesture last computed. `widthRef` follows the RENDERED width,
+  // which belongs to whichever group is active now, so reading it on release
+  // would store another group's width under the dragged group's key.
+  const dragWRef = useRef(0)
   const panelResize = usePointerDrag({
     threshold: 0,
-    onStart: () => { startWRef.current = widthRef.current; setResizing(true) },
+    onStart: () => {
+      dragGroupRef.current = dimGroupRef.current
+      startWRef.current = widthRef.current
+      dragWRef.current = widthRef.current
+      setResizing(true)
+    },
     onMove: ({ dx }) => {
       // Left-edge handle with the right edge pinned: dragging left (dx < 0) widens.
       const max = Math.min(Math.round(window.innerWidth * 0.7), window.innerWidth - measureSidePanelReservedW() - extraReserveW)
-      setWidth(Math.max(MIN_W, Math.min(startWRef.current - dx, max)))
+      const w = Math.max(MIN_W, Math.min(startWRef.current - dx, max))
+      dragWRef.current = w
+      setWidth(w)
     },
-    onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },
+    onEnd: () => {
+      setResizing(false)
+      safeSetItem(sidePanelDimKey(SIDE_PANEL_WIDTH_KEY, writeGroup()), String(dragWRef.current))
+      dragGroupRef.current = null
+    },
   })
   // Top-edge resize for the bottom dock: drag up to grow the panel's height.
   // The bottom edge is pinned to the window, so a negative dy (dragging up)
   // widens the panel.
   const startHRef = useRef(0)
+  const dragHRef = useRef(0)
   const panelResizeV = usePointerDrag({
     threshold: 0,
-    onStart: () => { startHRef.current = heightRef.current; setResizing(true) },
+    onStart: () => {
+      dragGroupRef.current = dimGroupRef.current
+      startHRef.current = heightRef.current
+      dragHRef.current = heightRef.current
+      setResizing(true)
+    },
     onMove: ({ dy }) => {
       const max = Math.max(MIN_H, Math.round(window.innerHeight * 0.85))
-      setHeight(Math.max(MIN_H, Math.min(startHRef.current - dy, max)))
+      const h = Math.max(MIN_H, Math.min(startHRef.current - dy, max))
+      dragHRef.current = h
+      setHeight(h)
     },
-    onEnd: () => { setResizing(false); safeSetItem(HEIGHT_KEY, String(heightRef.current)) },
+    onEnd: () => {
+      setResizing(false)
+      safeSetItem(sidePanelDimKey(SIDE_PANEL_HEIGHT_KEY, writeGroup()), String(dragHRef.current))
+      dragGroupRef.current = null
+    },
   })
+
+  // The remembered size is per tab group, so switching tabs MOVES the panel's
+  // free edge. Ease it on the panel's own open/close curve
+  // (`sidePanelDimTransition`) rather than letting it jump: opening the panel
+  // and moving between tabs inside it are the same edge travelling the same
+  // distance, and a person reads them as one gesture.
+  //
+  // Gated to the group switch this PR introduces, via the `groupSwitched` /
+  // `dimAnimating` pair above: `groupSwitched` carries the switch render,
+  // `dimAnimating` the rest of the eased move. Maximize (`expanded`) and the
+  // browser tab's fill-width mode reach the same `effectiveWidth`, and on the
+  // base they moved the edge INSTANTLY — easing those is a behavior change
+  // this feature does not need, so they keep jumping.
+  //
+  // Suppressed while dragging the resize handle — a transition there makes the
+  // edge lag the pointer — under prefers-reduced-motion, which framer does not
+  // apply to a CSS transition on our behalf, and during a live window resize,
+  // which retargets the tween every frame. Same shape as DiagramLightbox's
+  // `pinching || dragging || reduceMotion` guard.
+  const dimTransition = (groupSwitched || dimAnimating) && !resizing && !windowResizing && !reduceMotion
+    ? sidePanelDimTransition(isBottom ? 'height' : 'width')
+    : undefined
 
   return (
     <div
+      data-testid="side-panel-root"
       className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'}`}
-      style={isBottom ? { height: effectiveHeight, maxHeight: '85vh', width: '100%' } : { width: effectiveWidth, maxWidth: '100vw' }}
+      style={isBottom
+        ? { height: effectiveHeight, maxHeight: '85vh', width: '100%', ...dimTransition }
+        : { width: effectiveWidth, maxWidth: '100vw', ...dimTransition }}
     >
       {isBottom ? (
         /* Top-edge resize handle — drag up/down to size the bottom dock. */
@@ -784,7 +902,7 @@ export default function SidePanel({
               // suppressed on both edges of the selected tab (its pill
               // background already delineates it).
               separator={i > 0 && t.id !== activeId && dynamicTabs[i - 1].id !== activeId}
-              instantLayout={resizing}
+              instantLayout={resizing || groupSwitched || dimAnimating}
               onSelect={() => setActive(t.id)}
               onClose={() => handleCloseTab(t.id)}
             />
