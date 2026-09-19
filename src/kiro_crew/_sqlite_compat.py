@@ -17,7 +17,15 @@ instead.
 from __future__ import annotations
 
 import re
+import sqlite3 as _stdlib_sqlite3
 from functools import lru_cache
+from types import ModuleType
+from typing import TYPE_CHECKING
+
+try:
+    import pysqlite3
+except ImportError:  # pragma: no cover - a wheel exists for some platforms only
+    pysqlite3 = None  # type: ignore[assignment]
 
 
 def fts5_quote_tokens(query: str) -> list[str]:
@@ -166,13 +174,36 @@ def fts5_cjk_match_groups(query: str) -> list[str]:
     return groups
 
 
-try:
-    import pysqlite3 as sqlite3  # type: ignore
-except ImportError:  # pragma: no cover - exercised on platforms without pysqlite3
-    import sqlite3  # type: ignore
+def resolve_sqlite3() -> ModuleType:
+    """Return the driver module the tree binds as ``sqlite3``.
+
+    ``pysqlite3`` when it is really installed, the standard library otherwise.
+    A successful ``import pysqlite3`` does not prove the driver is there: a
+    bundle prune that strips the native extension can leave the package
+    directory behind empty, and Python imports an empty directory as a PEP 420
+    namespace package. Nothing raises, the module has no ``connect``, and the
+    first query dies with ``AttributeError: module 'pysqlite3' has no attribute
+    'connect'`` -- uncaught, at startup. Probing ``connect`` sends that husk
+    down the stdlib path a plain ``except ImportError`` was always meant to
+    take.
+    """
+    if pysqlite3 is None or not hasattr(pysqlite3, "connect"):
+        return _stdlib_sqlite3
+    return pysqlite3
+
+
+# Resolved once per process and re-exported, so every importer binds THIS module
+# object and the probe cannot hold at one import site but not the next. The type
+# checker reads the stdlib module: the two drivers share the DB-API surface this
+# tree uses, and ``pysqlite3`` ships no stubs.
+if TYPE_CHECKING:
+    import sqlite3
+else:
+    sqlite3 = resolve_sqlite3()
 
 __all__ = [
     "sqlite3",
+    "resolve_sqlite3",
     "fts5_available",
     "FTS5_UNAVAILABLE_HINT",
     "require_fts5",

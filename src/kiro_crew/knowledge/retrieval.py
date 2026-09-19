@@ -9,12 +9,7 @@ import struct
 from collections import defaultdict
 from typing import Any
 
-try:
-    import pysqlite3 as sqlite3
-except ImportError:
-    import sqlite3
-
-from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char
+from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char, sqlite3
 from .embedder import embedder_signature
 from .store import KnowledgeStore
 

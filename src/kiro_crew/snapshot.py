@@ -46,10 +46,7 @@ from kiro_crew.memory_stores import (
 if TYPE_CHECKING:
     from kiro_crew import snapshot_redact
 
-try:
-    import pysqlite3 as sqlite3
-except ImportError:
-    import sqlite3
+from kiro_crew._sqlite_compat import sqlite3
 
 try:
     from kiro_crew.config.loader import DASHBOARD_PORT as _DASHBOARD_PORT

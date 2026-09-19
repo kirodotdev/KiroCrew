@@ -21,6 +21,7 @@ import math
 import re
 import struct
 import threading
+import time
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
@@ -36,6 +37,12 @@ from uuid import uuid4
 
 from snowballstemmer import stemmer as _snowball_stemmer
 
+from kiro_crew import memory_record_metadata as record_meta
+from kiro_crew import memory_schema, memory_stores, memory_v2, platform_compat
+from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.config import live
+from kiro_crew.config.loader import config_dir
+
 # Scheduling classes for the shared embedding queue. This module stays decoupled
 # from the embedding BACKEND (it takes an injected ``embed_fn``); these are three
 # int constants, imported rather than duplicated so the two cannot drift. Safe
@@ -47,25 +54,6 @@ from kiro_crew.embeddings import (
     PRIORITY_NORMAL,
     bulk_pace_delay,
 )
-
-try:
-    import pysqlite3 as sqlite3
-
-    # Defense-in-depth: a bundle prune can leave an EMPTY ``pysqlite3`` package
-    # dir (its native ``.so`` removed), so the import succeeds but the module
-    # has no ``connect`` — an AttributeError at first use, not an ImportError.
-    # Treat a pysqlite3 without ``connect`` as absent and fall back to stdlib.
-    if not hasattr(sqlite3, "connect"):
-        raise ImportError("pysqlite3 present but incomplete (no connect)")
-except ImportError:
-    import sqlite3
-
-import time
-
-from kiro_crew import memory_record_metadata as record_meta
-from kiro_crew import memory_schema, memory_stores, memory_v2, platform_compat
-from kiro_crew.config import live
-from kiro_crew.config.loader import config_dir
 from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
@@ -3379,6 +3367,10 @@ class VectorMemoryStore:
         """
         max_rows = max(cap // 15, 20)
 
+        # Two row shapes reach the loop below -- dicts from the candidate
+        # selectors, sqlite3.Row from the no-query path -- and it reads both as
+        # mappings.
+        rows: list
         # Query-aware filtering: hybrid vector + keyword scoring
         if self.algorithm_version == "v2":
             rows = self._semantic_candidates_v2(query_text)[:max_rows]

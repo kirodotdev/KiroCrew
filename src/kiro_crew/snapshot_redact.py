@@ -33,15 +33,11 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Iterator
 
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config.loader import config_dir
 from kiro_crew.memory import INDEX_DB_FILE
 from kiro_crew.memory_stores import MEMORY_DB_FILE, named_store_product_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-
-try:  # pragma: no cover - exercised by whichever binding is installed
-    import pysqlite3 as sqlite3  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover
-    import sqlite3  # type: ignore[no-redef]
 
 # Suffixes read as text. Everything else is either a database (handled through SQL) or
 # opaque bytes, and guessing at an unknown binary format is how a bundle gets corrupted.

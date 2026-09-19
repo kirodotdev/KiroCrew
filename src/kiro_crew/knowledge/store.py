@@ -16,14 +16,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-try:
-    import pysqlite3 as sqlite3
-except ImportError:
-    import sqlite3
-
 from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 
-from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index
+from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3
 
 logger = logging.getLogger(__name__)
 

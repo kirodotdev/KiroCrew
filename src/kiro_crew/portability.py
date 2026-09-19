@@ -24,12 +24,8 @@ from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path, PurePath, PurePosixPath
 
-try:
-    import pysqlite3 as sqlite3
-except ImportError:
-    import sqlite3
-
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.member_memory_backup import hold_stores_for_read

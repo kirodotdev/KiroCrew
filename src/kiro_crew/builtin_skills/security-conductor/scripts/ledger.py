@@ -1557,8 +1557,8 @@ def _dispatch(
         # argparse `choices` already bounds the value, but the safety of the SQL
         # should be readable AT the query, not inferred from an argument
         # declaration two hundred lines away.
-        rows = conn.execute(LIST_QUERIES[args.table]).fetchall()
-        _emit([row_to_dict(row) for row in rows])
+        table_rows = conn.execute(LIST_QUERIES[args.table]).fetchall()
+        _emit([row_to_dict(table_row) for table_row in table_rows])
         return 0
 
     if args.command == "seed-lessons":
@@ -1566,8 +1566,8 @@ def _dispatch(
             print("--budget-bytes must not be negative", file=sys.stderr)
             return 2
         chosen, used = seed_lessons(conn, surface=args.surface, budget_bytes=args.budget_bytes)
-        for row in chosen:
-            print(format_lesson(row))
+        for lesson in chosen:
+            print(format_lesson(lesson))
         if not chosen:
             # Report the shortfall on stderr so stdout stays exactly the seed
             # text a caller splices into a message, empty when nothing fits.
