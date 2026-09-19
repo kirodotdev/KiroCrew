@@ -1720,6 +1720,24 @@ describe('chatSlice thunks', () => {
     expect(chat(store).activeSlot).toBe('fresh')
   })
 
+  it('keeps a Project binding on recreation instead of reapplying the bare directory', async () => {
+    // The project endpoint is the DETACHING path: a slot created with a
+    // project_id already has its workspace resolved by the backend, and
+    // re-applying `project` through that endpoint would strip the identity.
+    apiMock.createChatSlot.mockResolvedValue({
+      key: 'fresh', project: '/resolved/workspace', project_id: 'project-payments',
+    })
+    const store = makeStore()
+    await store.dispatch(createSlot({ project: '/stale/dir', project_id: 'project-payments' }))
+    // Arg 10 is `project_id` (0:name 1:agent 2:model 3:mode 4:memory 5:title
+    // 6:artifact 7:folder 8:instance 9:adopt_remote_slot 10:project_id).
+    expect(apiMock.createChatSlot.mock.calls[0]?.[10]).toBe('project-payments')
+    expect(apiMock.chatSlotProject).not.toHaveBeenCalled()
+    const created = store.getState().dashboard.slots.find(sl => sl.key === 'fresh')
+    expect(created?.project_id).toBe('project-payments')
+    expect(created?.project).toBe('/resolved/workspace')
+  })
+
   it('clears the active view when a delete resolves for the slot still on screen', () => {
     let s = chatReducer(initial, setActiveSlot('doomed'))
     s = chatReducer(s, replaceMessages([msg({ role: 'user', content: 'stale' })]))

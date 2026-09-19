@@ -105,6 +105,7 @@ import CapabilitiesPage from './pages/CapabilitiesPage'
 // chunk sits at its size budget — the import() boundary keeps the page (and
 // its drawer/roster tree) out of the initial bundle.
 const MembersPage = lazy(() => import('./pages/members/MembersPage'))
+const ProjectBundlesPage = lazy(() => import('./pages/ProjectBundlesPage'))
 import ArtifactsPage from './pages/ArtifactsPage'
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import RemoteArtifactDetailPage from './pages/RemoteArtifactDetailPage'
@@ -4722,6 +4723,7 @@ export default function App() {
             <Route path="/knowledge" element={<Navigate to="/capabilities?tab=knowledge" replace />} />
 
             <Route path="/members" element={<ErrorBoundary><Suspense fallback={null}><MembersPage /></Suspense></ErrorBoundary>} />
+            <Route path="/project-bundles" element={<ErrorBoundary><Suspense fallback={null}><ProjectBundlesPage /></Suspense></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
             <Route path="/schedule" element={<SchedulePage />} />
             {/* Agents and Connections live in the Agent Capabilities panel. */}

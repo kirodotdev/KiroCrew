@@ -596,6 +596,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "session file, so this is an egress boundary rather than an internal read.",
     ),
     (
+        "Project session brief",
+        "project_sessions.py",
+        "Project names, descriptions, source labels, and resolved workspace paths "
+        "embedded in a new session's model context. Bundle content and local paths "
+        "can carry credentials or exfiltration URLs, so the complete assembled brief "
+        "passes through the shared redaction chain before truncation.",
+    ),
+    (
         "Dashboard live stream",
         "dashboard/chat_runner.py",
         "Per-chunk StreamRedactor on the chat_chunk WebSocket stream — withholds a "
@@ -1381,6 +1389,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # goes out to a human.
         "context.py",
         "agent.py",
+        # Manifest validation rejects credential-bearing source and MCP-scope
+        # configuration at ingestion. The redactors are predicates for inbound
+        # data here; no value is emitted from this module to a human or service.
+        "project_manifest.py",
+        # Same shape one layer up: the reviewed-bundle digest runs the redactors
+        # as a PREDICATE over a discovery surface's bytes to decide whether the
+        # dashboard could display that file whole. A file whose displayed form
+        # would differ is recorded as unreadable and its body is never carried
+        # anywhere; the redacted text itself is discarded inside the predicate.
+        # The surfaces that SHOW a preview are the registered sinks.
+        "project_review.py",
         # Transfer-side log hygiene: both redact a URL down to scheme+host before it
         # reaches a gateway log line ("Downloading %s from %s", a fetch failure, a
         # manifest that overran its byte bound). The url is operator- or

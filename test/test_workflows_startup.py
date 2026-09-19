@@ -748,9 +748,9 @@ async def test_restored_link_mutations_wait_for_attachment(tmp_path, operation, 
 
     async def mutate():
         if operation == "project_delete":
-            from kiro_crew.dashboard.handlers_project import api_project_delete
+            from kiro_crew.dashboard.handlers_project import api_task_project_delete
 
-            return await api_project_delete(
+            return await api_task_project_delete(
                 _request(state, "DELETE", match_info={"id": "existing"})
             )
         match = {"task_id": "existing", "index": "1"}
@@ -888,12 +888,12 @@ async def test_project_delete_preserves_unrelated_errors():
 
     from test_project_alias import _make_app, _make_request
 
-    from kiro_crew.dashboard.handlers_project import api_project_delete
+    from kiro_crew.dashboard.handlers_project import api_task_project_delete
 
     runner = SimpleNamespace(delete_run=AsyncMock(side_effect=RuntimeError("storage failure")))
     request = _make_request(_make_app(runner), "DELETE", match_info={"id": "existing"})
     with pytest.raises(RuntimeError, match="storage failure"):
-        await api_project_delete(request)
+        await api_task_project_delete(request)
 
 
 @pytest.mark.asyncio

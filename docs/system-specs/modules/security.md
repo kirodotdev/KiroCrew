@@ -15,7 +15,10 @@ KiroCrew implements defense-in-depth security across multiple layers: OS-level p
 
 Private member memory directories (`memory_stores/`) are hidden from agent
 processes. Linux creates the empty root before spawning the sandbox so a member
-created later cannot become visible in an older namespace. Protected run bindings
+created later cannot become visible in an older namespace. The Project registry
+(`projects-registry/`) follows the same precreation rule: its empty owner-only
+root exists before a namespace spawn, so registration state created on first use
+stays behind the hidden-directory mask. Protected run bindings
 live separately in the top-level `member-memory-bindings/` directory, exposed
 read-only and likewise precreated. Sandboxed cron metadata lookup can read an
 identity, but shell commands cannot rewrite it. The writable `trust/` tree carries

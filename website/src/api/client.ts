@@ -25,6 +25,11 @@ import type {
   SubagentInfo,
   UpdateCheckResult,
   WorkflowRunSummary,
+  ProjectBundle,
+  ProjectBundleRemoveResponse,
+  ProjectBundleSyncResponse,
+  ProjectBundlesResponse,
+  ProjectReviewPreview,
 } from '../types'
 import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
 import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
@@ -3872,7 +3877,7 @@ export const api = {
    *  the `remote_already_bound` guard does not fire, and the peer's transcript is
    *  backfilled server-side. Requires `instance_id`; without it the backend
    *  answers `400 adopt_needs_instance`. */
-  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string, adopt_remote_slot?: string) => {
+  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string, adopt_remote_slot?: string, project_id?: string) => {
     // ADOPT deliberately resolves NO default memory mode. The adopted slot carries
     // the PEER session's own `memory_mode` — that mode is the privacy boundary and
     // the session it belongs to already chose it — so sending this machine's
@@ -3895,6 +3900,7 @@ export const api = {
       ...(folder_id ? { folder_id } : {}),
       ...(instance_id ? { instance_id } : {}),
       ...(adopt_remote_slot ? { adopt_remote_slot } : {}),
+      ...(project_id ? { project_id } : {}),
     }).then(j) as Promise<ChatSlot>
   },
   /** Inject silent background context into a slot — consumed on the next user
@@ -4123,6 +4129,28 @@ export const api = {
   // Logs
   logLevel: () => fetch('/api/logs/level').then(j),
   setLogLevel: (level: string) => post('/api/logs/level', { level }).then(j),
+  // Projects (thin Project bundles)
+  projectBundles: () => fetch('/api/project-bundles').then(j) as Promise<ProjectBundlesResponse>,
+  createProjectBundle: (name: string, path: string) =>
+    post('/api/project-bundles', { name, path }).then(j) as Promise<ProjectBundle>,
+  addProjectBundle: (source: string) =>
+    post('/api/project-bundles/add', { source }).then(j) as Promise<ProjectBundle>,
+  syncProjectBundle: (id: string) =>
+    post('/api/project-bundles/' + encodeURIComponent(id) + '/sync', {}).then(j) as Promise<ProjectBundleSyncResponse>,
+  /** The digest-bound preview of the files awaiting review: their paths, status
+   *  and current content. Owner-only, same guards as sync. */
+  projectBundleReviewPreview: (id: string) =>
+    fetch('/api/project-bundles/' + encodeURIComponent(id) + '/review').then(j) as Promise<ProjectReviewPreview>,
+  /** Accept the previewed files. `digest` is the one the preview carried: the
+   *  server recomputes and answers 409 `project_review_moved` when the files
+   *  changed since, so the owner never accepts bytes they were not shown. */
+  reviewProjectBundle: (id: string, digest: string) =>
+    post('/api/project-bundles/' + encodeURIComponent(id) + '/review', { digest }).then(j) as Promise<ProjectBundle>,
+  /** Forget the registration, then delete the two on-disk roots the server
+   *  created for it. Every 200 means the registration is gone; a
+   *  `cleanup_pending` list names what is still on disk. */
+  removeProjectBundle: (id: string) =>
+    del('/api/project-bundles/' + encodeURIComponent(id)).then(j) as Promise<ProjectBundleRemoveResponse>,
   // Task runner
   taskRunnerStatus: () => fetch('/api/taskrunner').then(j),
   startTaskRunner: (spec: string, agent?: string, workspaceDir?: string) => post('/api/taskrunner', { spec, agent: agent || '', workspace_dir: workspaceDir || '' }).then(j),

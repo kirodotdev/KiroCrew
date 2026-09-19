@@ -1373,6 +1373,9 @@ jobs:
           pytest -q --timeout=180 --no-cov \
             test/test_script_hooks.py \
             test/test_cron_script.py \
+            test/test_project_source_materialization.py \
+            test/test_project_bundle_git.py \
+            test/test_project_review.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \

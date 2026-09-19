@@ -595,6 +595,10 @@ interface ChatInputProps {
   onFileSelect?: (path: string, kind?: FileKind, token?: string) => void
   onFileOpen?: (path: string) => void
   project?: string
+  /** Display name of the Project attached to this session. When set, the
+   * Project is the session identity; its workspace repo and branch stay
+   * implementation details rather than appearing in the composer. */
+  projectBundleName?: string
   /** Checked-out branch of the active project (or short SHA when detached). */
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
@@ -937,6 +941,7 @@ function ChatInput({
   onFileSelect,
   onFileOpen,
   project,
+  projectBundleName,
   projectBranch,
   projectDetached,
   projectGitDirty,
@@ -1440,13 +1445,23 @@ function ChatInput({
   // previously discoverable is lost, and names the branch even when the label
   // is truncated or the shelf has collapsed to icon-only.
   const projectChipTitle = useMemo(() => {
+    if (projectBundleName) {
+      return i18nT('components.chatInput.project_bundle_locked', { name: projectBundleName })
+    }
     if (!project) return i18nT('components.chatInput.select_project')
     const base = i18nT('components.chatInput.project_2', { path: project })
     if (!projectBranch) return base
     return projectDetached
       ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
-  }, [project, projectBranch, projectDetached])
+  }, [project, projectBundleName, projectBranch, projectDetached])
+  // The Project-bound chip's explanation, as a bubble the chip opens on hover,
+  // on focus AND on click. The chip cannot act (the session's Project sets the
+  // workspace), and a control that cannot act must not swallow its first click
+  // in silence: the click's answer is the same sentence the tooltip carries.
+  // Hence the chip is `aria-disabled`, not `disabled` — a natively disabled
+  // button receives no focus and no click, so nothing could open the bubble.
+  const projectTip = useInstantTip()
   // Tooltip for the working-tree badge. Reuses the Git panel's catalog entry
   // so the badge adds no i18n keys; the arrow segments are glyph+number only
   // (script-neutral, plain concatenation — a template literal here reads as an
@@ -4906,6 +4921,27 @@ function ChatInput({
              collapse it, so the pill is a plain container and each segment owns
              its own click target and hover state. */
           <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted">
+          {projectBundleName ? (
+            /* Project-bound: the chip names the Project and cannot switch it.
+               Visibly inert — muted text at reduced opacity, the not-allowed
+               cursor, no hover repaint — and `aria-disabled` rather than
+               `disabled`, so it stays focusable and clickable for the ONE
+               thing it does: open the explanation. The bubble replaces the
+               native `title` (two tooltips for one sentence is noise); the
+               accessible name still carries the sentence for AT. */
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted opacity-60 px-2.5 rounded-md bg-transparent border-none cursor-not-allowed transition-colors"
+              aria-disabled="true"
+              aria-label={projectChipTitle}
+              data-testid="project-chip-bound"
+              {...projectTip.tipHandlers}
+              onClick={e => projectTip.show(e.currentTarget)}
+            >
+              <FolderOpen size={13} className="shrink-0 opacity-70" />
+              {!shelfCompact && <span className="truncate max-w-[160px]">{projectBundleName}</span>}
+            </button>
+          ) : (
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
             onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
@@ -4921,7 +4957,13 @@ function ChatInput({
                 these caps on a narrow window. */}
             {!shelfCompact && <span className="truncate max-w-[160px]">{project ? (project.split('/').filter(Boolean).pop() || project) : i18nT('components.chatInput.project')}</span>}
           </button>
-          {!shelfCompact && !!projectBranch && (
+          )}
+          {projectBundleName && (
+            <InstantTip tip={projectTip.tip} tipId={projectTip.tipId} className="max-w-[26rem] whitespace-pre-wrap break-words">
+              <div className="text-text">{projectChipTitle}</div>
+            </InstantTip>
+          )}
+          {!projectBundleName && !shelfCompact && !!projectBranch && (
             <>
               <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
               {/* Copying stays enabled while a response is running — unlike

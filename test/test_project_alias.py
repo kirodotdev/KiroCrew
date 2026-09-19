@@ -19,12 +19,12 @@ from kiro_crew.dashboard.handlers_project import (
     api_comment_add,
     api_comment_delete,
     api_comments_list,
-    api_project_create,
-    api_project_delete,
-    api_project_get,
-    api_project_update,
-    api_projects_list,
 )
+from kiro_crew.dashboard.handlers_project import api_task_project_create as api_project_create
+from kiro_crew.dashboard.handlers_project import api_task_project_delete as api_project_delete
+from kiro_crew.dashboard.handlers_project import api_task_project_get as api_project_get
+from kiro_crew.dashboard.handlers_project import api_task_project_update as api_project_update
+from kiro_crew.dashboard.handlers_project import api_task_projects_list as api_projects_list
 from kiro_crew.slack.handler import _handle_run_command
 from kiro_crew.task_models import Project
 from kiro_crew.taskrunner import TaskRunner
@@ -246,6 +246,21 @@ class TestProjectHandlers:
         req = _make_request(_make_app(runner=runner), match_info={"id": "r1"})
         resp = await api_project_delete(req)
         assert json.loads(resp.body) == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_delete_during_workflow_initialization_returns_503(self):
+        from kiro_crew.taskrunner import WorkflowInitializing
+
+        runner = MagicMock()
+        runner.delete_run = AsyncMock(side_effect=WorkflowInitializing("Workflow is initializing"))
+        req = _make_request(_make_app(runner=runner), match_info={"id": "r1"})
+        resp = await api_project_delete(req)
+        assert resp.status == 503
+        assert json.loads(resp.body) == {
+            "error": "Workflow is initializing",
+            "code": "workflow_initializing",
+        }
+        runner.delete_run.assert_awaited_once_with("r1")
 
     @pytest.mark.asyncio
     async def test_delete_not_found(self):

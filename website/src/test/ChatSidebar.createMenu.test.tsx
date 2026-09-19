@@ -63,7 +63,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn() }))
+const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn(), projectBundles: vi.fn() }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -152,6 +152,11 @@ beforeEach(() => {
     active: true, warm_set_cap: 5, sso: {},
     instances: [{ id: 'i-nobita', name: 'nobita' }, { id: 'i-gian', name: 'gian' }],
   })
+  mocks.projectBundles.mockResolvedValue({
+    projects: [{
+      id: 'project-payments', name: 'Payments Platform', health: { status: 'healthy' },
+    }],
+  })
 })
 afterEach(() => {
   mobileViewport.value = false
@@ -165,6 +170,102 @@ describe('create-button caret menu', () => {
     openCreateMenu()
     expect(await screen.findByText('New chat')).toBeTruthy()
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
+  })
+
+  it('starts a new session with a healthy Project from the create menu', async () => {
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await screen.findByText('Payments Platform'))
+
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
+    expect(mocks.createChatSlot.mock.calls.some(call => call.includes('project-payments'))).toBe(true)
+  })
+
+  it('reports a failed Project session create through the new-chat error notice', async () => {
+    // A rejected Project create must not be a silent no-op: it reports through
+    // the same ErrorNotice every other local create in this menu uses.
+    mocks.createChatSlot.mockRejectedValue(new Error('project workspace unavailable'))
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await screen.findByText('Payments Platform'))
+
+    const alert = await screen.findByTestId('new-chat-error')
+    expect(alert.textContent).toContain('project workspace unavailable')
+  })
+
+  it('lists a paused Project disabled, with its state and why, beside the healthy ones', async () => {
+    // A Project missing from the menu reads as unregistered when it is only
+    // paused. Every registered Project is listed; a non-healthy one is a
+    // disabled row that names its state, with the why as its tooltip.
+    mocks.projectBundles.mockResolvedValue({
+      projects: [
+        { id: 'project-payments', name: 'Payments Platform', health: { status: 'healthy' } },
+        { id: 'project-docs', name: 'Docs Site', health: { status: 'review_stale', stale_files: ['.kiro/agents/docs.md'] } },
+        { id: 'project-infra', name: 'Infra', health: { status: 'sources_unavailable', unavailable_sources: ['infra-1a2b'] } },
+        { id: 'project-legacy', name: 'Legacy', health: { status: 'unavailable' } },
+      ],
+    })
+    renderSidebar()
+    openCreateMenu()
+    const healthy = (await screen.findByText('Payments Platform')).closest('[role="menuitem"]')
+    expect(healthy).not.toHaveAttribute('aria-disabled')
+
+    const stale = screen.getByTestId('new-chat-project-review_stale')
+    expect(stale).toHaveAttribute('aria-disabled', 'true')
+    expect(stale).toHaveTextContent('Docs Site')
+    expect(stale).toHaveTextContent('Review needed')
+    expect(stale).toHaveAttribute('title', expect.stringMatching(/waiting for your review/))
+    expect(stale).toHaveAttribute('aria-label', expect.stringMatching(/^Docs Site — Review needed\. .*waiting for your review/))
+
+    const sources = screen.getByTestId('new-chat-project-sources_unavailable')
+    expect(sources).toHaveAttribute('aria-disabled', 'true')
+    expect(sources).toHaveTextContent('Source unavailable')
+    expect(sources).toHaveAttribute('title', 'A declared source could not be cloned, so new sessions are paused. Fix the source in project.yaml, then pull updates.')
+
+    const gone = screen.getByTestId('new-chat-project-unavailable')
+    expect(gone).toHaveAttribute('aria-disabled', 'true')
+    expect(gone).toHaveTextContent('Unavailable')
+    expect(gone).toHaveAttribute('title', expect.stringMatching(/Project files are unavailable/))
+
+    expect(screen.getByRole('menuitem', { name: 'Manage projects' })).toBeTruthy()
+
+    // A disabled row creates nothing; the healthy one still does (and closes
+    // the menu, which is why Manage projects is read before it).
+    fireEvent.click(stale)
+    fireEvent.click(sources)
+    fireEvent.click(gone)
+    expect(mocks.createChatSlot).not.toHaveBeenCalled()
+    fireEvent.click(healthy!)
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
+    expect(mocks.createChatSlot.mock.calls[0]).toContain('project-payments')
+  })
+
+  it('keeps the Projects section, with Manage projects, when no Project is healthy', async () => {
+    // The section is gated on ANY Project existing, not on a startable one:
+    // the way to un-pause a Project is the Manage entry this section carries.
+    mocks.projectBundles.mockResolvedValue({
+      projects: [{ id: 'project-docs', name: 'Docs Site', health: { status: 'review_stale', stale_files: [] } }],
+    })
+    renderSidebar()
+    openCreateMenu()
+    const stale = await screen.findByTestId('new-chat-project-review_stale')
+    expect(stale).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('Projects')).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Manage projects' }))
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/project-bundles'))
+  })
+
+  it('shows a failed Project list read inside the create menu instead of dropping the section', async () => {
+    mocks.projectBundles.mockRejectedValue(new Error('registry unreadable'))
+    renderSidebar()
+    openCreateMenu()
+
+    const notice = await screen.findByTestId('new-chat-projects-error')
+    expect(notice.textContent).toContain('Projects could not be loaded')
+    // The sibling hand-off row is what keyboard users reach (roving focus skips
+    // a button nested in the passive notice).
+    expect(screen.getByRole('menuitem', { name: /ask/i })).toBeTruthy()
+    expect(screen.queryByText('Payments Platform')).toBeNull()
   })
 
   it('explains the engineered entries, at the point of choice', async () => {
@@ -332,6 +433,8 @@ describe('create-button caret menu', () => {
         // is the MINT path ("New chat on crew"), which asks the peer for a brand
         // new session. Naming a key here would turn it into an adopt of somebody
         // else's existing session — the two paths differ only by this argument.
+        undefined,
+        // `project_id`: this entry binds no Project.
         undefined,
       ),
     )

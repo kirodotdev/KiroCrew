@@ -62,6 +62,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Portable Project registry leaf (``project_registry.py``). Defined here, in the
+# fence authority, and imported by the registry so the leaf name has one source
+# and cannot drift out from under this gate. It is a crew-home leaf like
+# ``memory_stores`` and gets the same treatment: on this read/write gate AND on
+# the OS-level sandbox mask (``sandbox._CREW_HIDDEN_LEAVES``).
+PROJECT_REGISTRY_DIR_NAME = "projects-registry"
+
 
 # ── Sensitive Paths ──
 # Directories and files that must never be read by the agent.
@@ -771,6 +778,15 @@ _CREW_SECRET_LEAVES: list[str] = [
     # gate -- the established keystone-reader pattern -- so the memory subsystem is
     # unaffected.
     MEMORY_STORES_DIR_NAME,
+    # Portable Project bundles: the install-local registry (pinned Git remotes
+    # and branches, the set of registrations a session resolves through) and its
+    # lock. Trust-bearing the same way ``memory_stores`` is -- a privileged
+    # reader trusts what it reads back -- so it is HIDDEN here and on the sandbox
+    # mask, never left sandbox-visible under ``trust/``. Materialized checkouts
+    # stay under the visible ``projects/`` leaf; they are where the agent works
+    # and are never a source of authority. The registry reader opens this leaf
+    # directly (keystone-reader pattern), not through this gate.
+    PROJECT_REGISTRY_DIR_NAME,
 ]
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES

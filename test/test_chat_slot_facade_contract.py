@@ -31,6 +31,10 @@ _TO_DICT_KEYS = (
     # "runs locally" from "the field is missing on an older gateway".
     "executor",
     "instance_id",
+    # The Project bundle this session is attached to, "" when unattached.
+    # Present on EVERY slot for the same reason as the two above: the composer
+    # chip must tell "no Project" from "an older gateway that has no Projects".
+    "project_id",
     # The row's identity, resolved server-side. `<instance_id>:<peer_key>` for a
     # remote-bound session, the slot key otherwise. The peer's own slot key is NOT
     # projected; this is what the sidebar needs from it.

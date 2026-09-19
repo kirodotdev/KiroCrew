@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot, FolderKanban } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
@@ -99,6 +99,15 @@ registerBuiltinSurface({
   // item. Route + badge + tab-title attention count stay wired via the
   // selectors above; only the left-rail entry is suppressed.
   hiddenFromNav: true,
+})
+
+registerBuiltinSurface({
+  navId: 'project-bundles',
+  route: '/project-bundles',
+  label: surfaceMachineValue('Projects'),
+  labelKey: 'nav.projects',
+  icon: <FolderKanban size={16} />,
+  group: surfaceMachineValue('Main'),
 })
 
 registerBuiltinSurface({

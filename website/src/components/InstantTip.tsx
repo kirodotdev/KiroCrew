@@ -101,7 +101,10 @@ export function useInstantTip() {
     onBlur: () => hide(),
   }
 
-  return { tip, tipHandlers, tipId }
+  // `show` is the transition the focus handler runs, for an anchor that must
+  // open the bubble on a gesture the handlers do not cover — a click on a
+  // control that cannot act, where the bubble IS the response to the click.
+  return { tip, tipHandlers, tipId, show: showFor }
 }
 
 /** The bubble. Shared chrome here; the caller passes only content and a

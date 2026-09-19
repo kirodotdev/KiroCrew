@@ -272,6 +272,7 @@ class SlotProjection:
             # continuous across the adopt instead of splitting in two.
             "executor": slot.executor,
             "instance_id": slot.instance_id,
+            "project_id": slot.project_id,
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
             "messages": len(slot.messages),

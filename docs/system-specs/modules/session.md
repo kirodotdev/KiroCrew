@@ -1643,6 +1643,353 @@ the filename stem (`dashboard_chat-1-xxx`), producing session key
 back to the canonical form (`dashboard:chat-1-xxx`) when the direct lookup
 fails.
 
+**Portable Project attachment (thin).** A dashboard slot may carry a
+first-class `project_id` (`_ChatSlot.project_id`) alongside its legacy
+`slot.project` directory. The id is an install-local UUID4 assigned by
+`ProjectRegistry.add()`, not a field in `project.yaml`. The complete manifest
+schema accepts only `apiVersion`, `kind`, `name`, `description` and `sources`;
+`id`, `mcp` and `memory` are refused as unknown fields, with the offending key
+named in the validation error. User identity keys (`acl`, `members`,
+`membership`, `memberships`, `organization`, `organizations`, `org`, `owner`,
+`owners`, `user`, `users`) use that same unknown-field rejection.
+A source declares `type: repo`, `url`, optional
+`default_branch` and `role` (`primary` or `reference`).
+
+Re-adding a local bundle at the same realpath returns the existing registration;
+a managed Git bundle is deduplicated by its normalized remote and pinned branch.
+Identical manifest contents at different locations receive distinct ids, as do
+registrations on different installations. The registry allocates identity under
+its writer lock before publishing a staged clone to
+`projects/managed/<project_id>/bundle`; re-add preserves the existing checkout
+and review record. Sync uses the pinned coordinates and refreshes display
+metadata without changing that id or accepting a new review digest. Attachment,
+source checkout paths, the brief and API payload all use the registration id.
+Project list/detail payloads omit `mcp` and `memory`, including unavailable rows.
+Each source row carries a `status` of `healthy`, `pending` (declared, not cloned
+because the manifest naming it is unaccepted) or `unavailable`.
+
+The id names a Project registered in the fenced
+per-install registry (`project_registry.py`, stored under the crew-home
+`projects-registry/` leaf, on both the agent file-tool gate and the sandbox
+mask). Before a Linux namespace spawn, the registry leaf is precreated empty
+at owner-only permissions so its mask also holds before the first registration.
+Git transport and credential helpers resolve directly through
+`platform_compat.trusted_system_bin`, retaining fixed-system-directory lookup.
+The slot's project directory is derived from that Project's primary
+`repo` source (or the bundle itself when the manifest declares no sources) and
+stays the compatibility field file/workspace consumers read. `project_id` is
+slot-owned metadata: it is persisted in the session's meta line
+(`history.SLOT_OWNED_META_KEYS`), rehydrated with a fail-closed canonical-UUID
+check (`chat_persistence._canonical_project_id`), and both `project` and
+`project_id` are written clearable so a detach is not masked by the metadata
+merge's inability to delete a key. It is projected to the frontend on the slot
+snapshot (`slot_projection.py`) and indexed for the per-Project session list
+(`history_search.py`).
+
+The first real user turn injects a bounded, credential- and
+exfiltration-URL-redacted **Project brief** (`project_sessions.py`,
+`PROJECT_BRIEF_MAX_CHARS`) as background-reference context; it is not repeated
+on ordinary later turns, and is re-resolved at a reinjection boundary. The
+brief is registered as a distinct model-egress sink in the Security Posture
+inventory, and bundle-authored text is screened for injection and neutralized
+for `[PROJECT BRIEF]` boundary markers (`context.py`) before Crew adds the
+trusted wrapper, so a Project description cannot forge that prompt boundary.
+
+Attachment (`resolve_project_attachment`) is deliberately **read-only**: it
+looks up only an existing derived checkout and never clones or fetches, so an
+agent edit to `project.yaml` cannot turn a restored session into a fresh
+outbound request. Git coordinates come exclusively from the registration pinned
+at add time (`project_git.py`), never from a checkout's own `.git/config`; a
+source whose provenance record no longer matches the declaration is unavailable
+rather than silently served. A session on a Project that has been removed fails
+its next turn loudly via `project_not_found` (`ProjectSessionError`). The thin
+Project installs nothing into global state, so there is no activation record,
+capabilities layer, or rollback — memory keyed to the Project and MCP-by-name
+resolution land in later phases.
+
+**When checkouts are materialized.** A Project is a Git repository the gateway
+materializes and keeps in sync, so a manifest's `sources: [{type: repo, ...}]`
+entries are cloned rather than merely validated — but only once the owner has
+accepted the manifest that names them. A source `url` is a *definition the
+manifest carries*, and cloning it is an outbound request to a host that manifest
+chose, so it waits for the same acceptance every other executable surface waits
+for. Materialization therefore happens at exactly two owner-initiated moments:
+**review acceptance** (`GitProjectStore.materialize_registered_sources`, from
+`POST /api/project-bundles/{id}/review` once the previewed digest matched) and
+**sync** (`GitProjectStore.sync_sources`, over the sources the accepted manifest
+declares). **Add clones the bundle and nothing else**, so no declared URL is ever
+fetched before the manifest naming it is accepted; there is deliberately no list
+of hosts to refuse, because an unaccepted definition is not fetched at all.
+Session attachment NEVER materializes either — that is what keeps an agent edit
+to `project.yaml` from turning a restored session into a fresh outbound request.
+
+**Reviewing a Project with sources is two stages.** Consent is keyed on the
+accepted hash of `project.yaml`, the file that carries the whole source set.
+Stage one accepts the manifest: an add that declares sources registers with no
+review record, reports `project.yaml` as added and review-stale, and each declared
+source carries `status: "pending"` in the payload (existing values `healthy` and
+`unavailable` are unchanged, and a pending source is never also reported in
+`unavailable_sources` — it is not broken, just unaccepted). Accepting it clones
+those sources. Stage two accepts the *clone*: the primary checkout's `.kiro/` now
+enters the digest, so a Project whose source tree carries any reviewed surface
+comes straight back review-stale on that tree until the owner accepts it too.
+Session create and the per-turn re-resolve refuse a Project with a pending source
+with the existing `project_review_stale`, before resolving any checkout — a
+pending source has no tree, and reporting a missing workspace would name the wrong
+problem. A manifest edited after acceptance (a source added, repointed or removed)
+puts its sources back to pending, which is exactly the edit that would aim a fetch
+somewhere new.
+
+Project Git operations require an enforcing Kiro Crew sandbox backend (Linux user namespaces or macOS Seatbelt); add and sync return HTTP 503 with `project_sandbox_unavailable` and the host probe's reason when it is unavailable, without an unsandboxed fallback.
+
+Coordinates come from the manifest (`url`, `default_branch`), never from a
+checkout's own `.git/config`. On add a source is cloned, or reused when its
+provenance record already matches the declaration. On sync a matching checkout is
+**fetched from the pinned remote and branch and fast-forwarded** (a reuse without
+the fetch would leave a pushed `mcp.json` invisible to both the session and the
+review digest); a checkout whose provenance no longer matches the declaration
+re-clones, and the previous tree survives until the replacement is recorded.
+
+The **primary checkout** is the declared `role: primary` source's tree when the
+manifest names one, and the bundle clone itself otherwise. It is both the slot's
+project directory and the root the review digest reads `.kiro/` from, so the tree
+a session runs in and the tree the owner reviewed can never be different ones.
+`reference` sources are materialized beside it and are **never** a session's
+working directory, which is the invariant that lets the digest stop at the
+primary checkout: kiro-cli never reads a reference tree's `.kiro/`. It is tested
+rather than assumed (`test_project_source_materialization.py`).
+
+A source that cannot be materialized does not fail the acceptance: the Project
+stays registered and its health reports `sources_unavailable` with
+`unavailable_sources` naming the failing source ids, so the owner can correct the
+URL and review it again (the review path retries an unavailable source before it
+previews). A missing
+*secondary* source leaves the session startable (the brief lists it as
+unavailable); a missing *primary* fails session start with the existing
+`project_workspace_unavailable`.
+
+A failed materialization after stage-one acceptance reports
+`sources_unavailable`, not `review_stale` merely because no primary tree exists.
+A successfully materialized primary with unaccepted `.kiro/` surfaces still
+requires stage two; unavailable secondary sources remain named alongside it.
+
+Sync returns the Project payload with `unavailable_sources: [<source id>...]`
+when any accepted source cannot be fetched, including a source whose cached
+checkout remains usable. In that response health has `status: sources_unavailable`,
+`code: project_sources_unavailable` and the unavailable ids; `stale_files` is also
+retained when the pull changes reviewed surfaces. Session review gates remain
+unchanged. A pull with no fetch failures omits the top-level `unavailable_sources`.
+Mixed divergence/fetch failures keep those ids beside `advanced` and `diverged`
+in the 409 response. Sandbox unavailability remains a 503.
+
+Sync, review preview/acceptance and chat creation map a `ProjectManifestError`
+to HTTP 409 `{error: "project_manifest_invalid", code: "project_manifest_invalid",
+project_id, detail: <parser message>}`. Parser diagnostics are redacted for display.
+An invalid fetched manifest is refused before merging; an invalid on-disk manifest
+is never translated into a generic server error or silently accepted.
+
+**Who owns the checkout.** The primary checkout is the session's working tree and
+is agent-writable: an agent edits, builds and commits in it exactly as it would in
+any project directory. Two sessions on one Project share that one tree — there is
+no per-session copy, and per-session worktrees are out of scope — so a Project is
+a shared working directory, not an isolation boundary.
+
+Sync therefore **fast-forwards only**, and each checkout independently. It fetches
+the pinned remote and branch and runs `merge --ff-only FETCH_HEAD` against the
+bundle clone and every accepted source; a tree that cannot fast-forward is
+recorded and the others still advance, because N separate Git repositories cannot
+be published as one and nothing can un-advance a checkout that already moved. When
+any tree refused, the answer is `409` with `error` and `code`
+`project_checkout_diverged`, `project_id`, `advanced` (the checkouts that did
+fast-forward and stay fast-forwarded, `bundle` or a source id) and `diverged` (one
+`{checkout, detail}` per refusal, `detail` being `local-commits`, `dirty-tree` or
+`unrelated-history`). There are no top-level `checkout` or `detail` keys. Sync
+never resets, stashes, checks out or cleans anything, so work the owner has not
+pushed is never discarded: they resolve it in the checkout — push, rebase, commit
+or discard by hand — and sync again. A dirty tree is reported first when more than
+one state holds, because it is what must be settled before either other remedy
+applies, and a failure the classifier cannot attribute keeps the generic
+`project_sync_failed`. A lagging *reference* source does not touch the primary
+checkout's digest; an advanced bundle or primary marks the Project review-stale as
+it does today.
+
+Removal is **two operations**, and `DELETE /api/project-bundles/{id}` says which
+of them happened. Forgetting the record (`registry.unregister`) is instant and is
+what a session resolves through; deleting the on-disk roots Crew owns —
+`projects/state/<id>/` and `projects/managed/<id>/`, both inside the Project's own
+directory — is slower and can partially fail. A local bundle registered by path is
+never deleted: the owner chose that directory and it is theirs, so removal
+unregisters it and leaves the tree alone.
+
+**The synced checkout is a second channel.** The credential-free-bundle
+guarantee is a property of Crew's own resolution path, not of the checkout.
+kiro-cli reads discovery surfaces out of the session cwd's own `.kiro/`
+directly — `.kiro/settings/mcp.json` carries full server definitions, command
+lines included, and `.kiro/agents/` may carry `mcpServers` — and `sync`
+fast-forwards a linked repository with no review step, so a hostile commit could
+otherwise land an executable definition the next session start runs. The whole of
+`.kiro/` is therefore part of the reviewed bundle: `project_review.py` digests it
+alongside `project.yaml`, reading every file through the hardened link-refusing,
+byte-bounded reader, and the digest plus its per-file hashes are recorded in the
+fenced registry (`RegisteredProject.reviewed_digest` / `reviewed_files`) after the
+owner previews and accepts the current digest. Add records a baseline automatically
+only when the manifest declares no sources AND no non-absent discovery surface
+exists beyond `project.yaml`. An add with discovery files, or with any declared
+source, registers without a review record, reports those files (and
+`project.yaml` itself when sources are declared) as added and review-stale, and
+refuses session start until explicit acceptance.
+
+The scope is deliberately **not** an allowlist of the files kiro-cli reads today.
+kiro-cli owns its discovery surfaces and can add one — hooks, a skill's
+scripts — without Crew noticing, and an enumerated digest would let that new
+surface through by default; default-stale over `.kiro/` fails the other way, so a
+file Crew does not know about moves the digest and the owner reviews it. The
+carve-out is exactly `REVIEW_TEXT_ONLY_RELDIRS` — `.kiro/steering/` — pinned by a
+guard test so widening it is a visible diff. `.kiro/skills` is under the digest
+like every other non-steering `.kiro/` path (a skill can carry scripts) and
+additionally keeps its own per-directory consent grant; `.kiro/steering` and the
+checkout's documents outside `.kiro/` reach a session under the same posture as a
+directory the user opened by hand.
+
+The walk is bounded the way the rest of the reader is: `os.walk` with
+`followlinks=False` so a symlinked directory is never descended into,
+`REVIEW_FILE_LIMIT` files hashed with the total recorded as an `overflow:` marker
+past that. Overflow is permanently unreviewable, including content edits beyond
+the hashed prefix that leave the total unchanged. Absent files hash as *absent*,
+so deleting a reviewed definition
+is a change the owner is shown. A surface the reader cannot read as a regular
+in-tree file — a link to a target outside the checkout, an oversized file — or
+a discovery surface it cannot DISPLAY whole — a body the credential and
+exfiltration-URL redactors alter — is
+still RECORDED (skipping it would make it an invisible surface) and is never an
+accepted baseline: `unreviewable_files` keeps it stale on every check, because
+kiro-cli would follow the link and load a target the digest cannot see, and
+because a hash the owner cannot tie to content they read is not a baseline. A checkout
+with no `.kiro/`, or one holding only steering, has nothing to gate.
+
+`sync` refreshes the clone's registry metadata but never re-records the review, so the digest is
+recomputed against the record the owner set. When it moved, the Project's health
+becomes `{status: "review_stale", code: "project_review_stale", stale_files:
+[...]}` — `stale_files` naming the checkout-relative paths that differ, and
+present on a `sources_unavailable` pull response as well when fetching fails.
+`resolve_project_attachment` then refuses with
+`ProjectSessionError(code="project_review_stale")`, which is one check rather
+than one per caller: session creation answers `409` and the per-turn re-resolve
+fails the turn loudly, exactly as a removed Project does.
+
+**Digest-bound review.** Owner-only `GET /api/project-bundles/{id}/review`
+returns `{digest, files}`. Files are exactly the stale set shared with attachment
+and health — which includes `project.yaml` itself when the manifest declares
+sources, because accepting it is what authorizes cloning the hosts it names: each row carries `path`, `status` (`added`, `changed`, `removed`, or
+`unreadable`), with full UTF-8 `content` only for added/changed entries and
+`reason` only for unreadable entries; removed entries carry only path and status.
+The preview's content and hash come from the same hardened read, not two
+independently read file versions, with one shared 256 KiB file cap.
+What is accepted is exactly what was shown, so a discovery surface the display
+redactors would alter is recorded as `unreadable` with reason `redacted` instead of
+being rendered partially: the owner can never accept bytes that were redacted out of
+their view, and replacing the credential with a vault or environment reference is
+what clears it. That gate covers every reviewed path except `project.yaml`, whose
+five keys hold no executable content and whose free text the Project brief redacts
+rather than refuses. Redaction still applies to every string the payload carries,
+including paths.
+Unreadable reasons are `link-outside-root`, `too-large`, `binary`, `redacted`, `error`, or `overflow`.
+
+`POST /api/project-bundles/{id}/review` requires `{digest}`. Missing or invalid
+input is `400 project_invalid_request`. The handler retries materialization of
+unavailable sources, recomputes a preview and compares its digest to the one
+shown. A mismatch answers `409 project_review_moved` with a fresh `preview`,
+without recording acceptance or cloning unaccepted sources. Retrying an already
+accepted source may materialize its primary tree before comparison; any newly
+visible discovery surfaces then require a fresh preview. This makes a failed
+source retryable without re-adding the Project. A matching, readable snapshot is
+SEL-audited before its digest and per-file hashes are recorded, and the sources the
+accepted manifest declares are materialized immediately afterwards (stage one
+above); an unreachable URL there is reported through health rather than failing the
+acceptance, while a host with no enforcing sandbox answers
+`503 project_sandbox_unavailable`. Matching
+unreadable or overflowing trees return `409 project_review_unreviewable` without
+advancing the review record; shrinking under the cap or replacing unreadable
+paths is required before acceptance can clear them. No review record plus no
+present discovery surfaces is healthy; no record plus present discovery
+surfaces is review-stale with those paths shown as added.
+
+`DELETE /api/project-bundles/{id}` resolves the id first, so an unknown one is
+`404 project_not_found` with no governance record of a removal that had nothing to
+remove. The critical `log_governance_decision` is then written BEFORE anything is
+unregistered: the record is the authority for an irreversible operator action, so
+an audit that cannot be written costs the removal instead —
+`409 project_remove_failed` with `detail: "audit-unwritable"`, and nothing is
+removed. The rest of the matrix follows removal's two operations, and each row is
+pinned by a test:
+
+- audit unwritable → `409 project_remove_failed` `detail: "audit-unwritable"`; the
+  registration is intact and NOTHING is removed, so the owner retries once SEL is
+  writable.
+- the unregister write itself fails → `409 project_remove_failed` carrying that
+  error; the registration is unchanged, because no file has been touched yet.
+- the registration is gone but on-disk cleanup did not finish →
+  `200 {ok: true, id, cleanup_pending: [...]}`, listing what remains as a path
+  relative to `projects/`. The registration IS gone: that is the safe end state
+  and the leftover trees are regenerable, so this is success with a warning. A
+  completed removal is never reported as failed.
+- everything removed → `200 {ok: true, id}`.
+
+**Attaching at creation.** `POST /api/chat/slots` accepts an optional
+`project_id` (a non-string is `400 project_invalid_request`). The attachment is
+**owner-only** and audited before anything is resolved: a non-owner caller gets
+`403 owner_only` with a denied SEL record, and a SEL append that itself fails
+returns `503 project_audit_unavailable` *without* resolving the Project, so no
+attachment ever happens unaudited. Resolution then runs off the loop against
+the shared registry; an unregistered Project is `404 project_not_found` and any
+other attachment failure is `409` carrying the `ProjectSessionError` code
+(`project_bundle_unavailable`, `project_workspace_unavailable`), with the
+message redacted before display. Because the whole check precedes slot
+creation, a refused attachment leaves no slot behind.
+
+A Project may not be swapped under a conversation: a slot with messages whose
+`project_id` differs is refused `409 project_rebind_requires_new_session`. That
+check runs twice — once before resolution and again at the mutation boundary —
+so a first message landing concurrently cannot make the stale decision
+destructive. An empty slot that already owns an eagerly spawned session has it
+torn down (`skip_if_busy=True`) before the binding changes, and the same 409 is
+returned if a turn wins that race. Only then are `project_id`, the derived
+project directory and the brief installed, ahead of the slots broadcast, so the
+dashboard never renders a half-attached session. The create path also forces
+the metadata write when a Project was attached, so the binding survives a
+restart.
+
+**Detaching.** Choosing a directory manually (`POST
+/api/chat/slots/{slot}/project`) or switching workspace
+(`POST /api/chat/slots/{slot}/workspace`) **detaches** the Project: a manually
+selected tree is not evidence of a bundle's identity, and a session claiming one
+Project while executing in an unrelated tree is the state the clearing prevents.
+Both handlers clear `project_id` and the brief under the slot's own
+`_CommitToken`, and their 409 unwind paths restore the prior identity only while
+that commit still stands, so an attachment that landed during the reset await is
+never overwritten by an older detach. The project handler marks the slot
+`_dirty` whenever it changed the directory or dropped a Project identity: the
+periodic flush writes a slot's metadata line only while that flag is set, so
+without it a crash before the next message would restore a session claiming a
+Project it had left.
+
+**Re-resolving every turn.** `chat_runner._refresh_project_attachment` runs on
+every turn of a Project-attached slot, before the turn captures its binding —
+resolving after the capture would read as a concurrent binding change and fail
+the turn, and resolving later would let session creation launch in the stale
+persisted directory. Re-resolution is per turn, not per slot, because Project
+storage moves underneath a live session: a sync that repoints a source makes the
+old checkout fail provenance, and a removal deletes the derived tree. A
+workspace that differs from the slot's currently bound directory arms the
+existing deferred reset (`_pending_reset_history_key`), so the provider
+cold-starts in the new directory instead of keeping the old cwd for the rest of
+the session; the first resolution of a restored slot binds without one. A
+removed Project raises `ProjectSessionError`, which `_run_chat` handles as a
+terminal, redacted turn error that deliberately does not count against the
+native-session retry streak — attachment is pre-session setup, not a backend
+conversation failure. The refreshed brief is what reaches `ContextBuilder` as
+`project_brief`.
+
 **Slot-key filename normalization:** `get_or_create_slot()` folds every
 caller-provided slot name to the `_safe_key()` filename charset
 (`[A-Za-z0-9_\-.]`, via `_normalize_slot_key()` — `dashboard:`/`dashboard_`

@@ -1060,7 +1060,7 @@ export interface ChatSlot {
   linked_session_key?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; project_id?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a
@@ -1469,7 +1469,147 @@ export interface TaskRunnerStatus {
   default_workspace_dir?: string
 }
 
+export type ProjectBundleOrigin = 'local' | 'existing_git' | 'managed_git'
 
+/** A declared source's checkout state. `pending` is declared but not yet
+ *  cloned: a source enters the checkout only once the owner accepts the review
+ *  that names it, so a freshly added Project with declared sources shows every
+ *  one of them pending under its review-stale banner. `unavailable` has no
+ *  usable checkout (bad URL, unreachable remote). Read defensively: a state
+ *  this client does not know renders as a plain row. */
+export type ProjectBundleSourceStatus = 'healthy' | 'pending' | 'unavailable'
+
+export interface ProjectBundleSource {
+  id: string
+  type: string
+  url?: string
+  default_branch?: string
+  role?: string
+  status?: ProjectBundleSourceStatus | string
+  [key: string]: unknown
+}
+
+/** The `409 project_checkout_diverged` body a sync refusal carries. Sync
+ *  fast-forwards the bundle, then EACH source independently, and never unwinds
+ *  what did move: `advanced` lists every checkout that fast-forwarded (`bundle`
+ *  or a source id), `diverged` every checkout that could not, each with the
+ *  state that blocked it. Nothing is reset, stashed or discarded. */
+export interface ProjectCheckoutDivergedBody {
+  error: string
+  code: 'project_checkout_diverged'
+  project_id: string
+  advanced: string[]
+  diverged: {
+    checkout: string
+    detail: 'local-commits' | 'dirty-tree' | 'unrelated-history' | string
+  }[]
+}
+
+/** The `409 project_manifest_invalid` body: the checkout's own `project.yaml`
+ *  does not parse, so the request that re-reads it (a pull, a review, a
+ *  session start) refuses. `detail` is the parser's message, verbatim; the
+ *  owner fixes the file in the checkout and pulls again. */
+export interface ProjectManifestInvalidBody {
+  error: string
+  code: 'project_manifest_invalid'
+  project_id: string
+  detail: string
+}
+
+/** `POST /api/project-bundles/{id}/sync` on success: the Project payload as
+ *  the pull left it, plus `unavailable_sources` — the declared source ids the
+ *  pull could not fetch — whenever that list is non-empty. A partial pull is
+ *  still a 200 (what could fast-forward did), and the payload's health is
+ *  `sources_unavailable` in the same response; the list is what lets the
+ *  outcome say so instead of reading as a plain success. */
+export interface ProjectBundleSyncResponse extends ProjectBundle {
+  unavailable_sources?: string[]
+}
+
+/** `DELETE /api/project-bundles/{id}`: the registration is gone in every 200.
+ *  `cleanup_pending` lists the on-disk roots (relative paths under `projects/`)
+ *  the server could not delete afterwards; absent or empty when everything was
+ *  removed. A path-registered local bundle is never listed: it is never touched. */
+export interface ProjectBundleRemoveResponse {
+  ok: true
+  id: string
+  cleanup_pending?: string[]
+}
+
+export interface ProjectBundle {
+  id: string
+  name: string
+  description: string
+  /** Source id whose checkout supplies the working directory ('self' when the
+   *  bundle's own repo is the workspace). */
+  workspace_source: string
+  sources: ProjectBundleSource[]
+  registrations: {
+    origin: ProjectBundleOrigin
+    path: string
+    syncable: boolean
+  }[]
+  health: {
+    status: 'healthy' | 'unavailable' | 'review_stale' | 'sources_unavailable'
+    code: string
+    /** Present only in the `review_stale` state: synced files that can run code
+     *  and await owner review — `project.yaml` plus ANY path under the primary
+     *  checkout's `.kiro/` except `.kiro/steering/`. Relative paths within the
+     *  checkout, at any depth; two synthetic entries can also appear (`.kiro`
+     *  with an overflow marker, or a symlink / unreadable file). Rendered as
+     *  received, never filtered to a known list. */
+    stale_files?: string[]
+    /** Synthesized ids of declared repo sources that currently have no usable
+     *  checkout (bad URL or unreachable remote). Present whenever non-empty, so
+     *  it can accompany `review_stale` as well as `sources_unavailable` — read
+     *  it defensively on every state. */
+    unavailable_sources?: string[]
+  }
+  sessions?: {
+    key: string
+    title: string
+    messages: number
+    running: boolean
+    live: boolean
+  }[]
+}
+
+export interface ProjectBundlesResponse {
+  projects: ProjectBundle[]
+}
+
+export type ProjectReviewFileStatus = 'added' | 'changed' | 'removed' | 'unreadable'
+
+/** Why an `unreadable` entry has no content. These entries stay stale after
+ *  any review — the owner replaces them with regular in-tree files first, or
+ *  for `redacted` (the credential redactor changed what would be displayed,
+ *  so the dashboard cannot show the whole file) reviews the file outside the
+ *  dashboard. */
+export type ProjectReviewUnreadableReason = 'link-outside-root' | 'too-large' | 'binary' | 'error' | 'overflow' | 'redacted'
+
+/** One entry of `GET /api/project-bundles/{id}/review`: exactly what
+ *  `health.stale_files` would name, with the bytes the owner is accepting.
+ *  The owner sees the WHOLE content of every file the accept digest covers,
+ *  or the entry is `unreadable` and acceptance is withheld — there is no
+ *  partial display. */
+export interface ProjectReviewFile {
+  /** Checkout-relative path (`project.yaml`, `.kiro/...`). */
+  path: string
+  status: ProjectReviewFileStatus
+  /** The full current UTF-8 text for `added` / `changed`; absent or `null`
+   *  for `removed` and `unreadable`. */
+  content?: string | null
+  /** Set for `unreadable` entries. Read defensively: a reason this client
+   *  does not know is still shown, as itself. */
+  reason?: ProjectReviewUnreadableReason | string
+}
+
+/** The digest-bound preview: accepting posts back exactly this `digest`, so the
+ *  owner accepts the bytes they were shown and nothing that landed since. */
+export interface ProjectReviewPreview {
+  digest: string
+  files: ProjectReviewFile[]
+}
 
 export interface ArtifactPublication {
   /** Publishing-provider artifact UUID — stable across versions. */

@@ -779,6 +779,17 @@ _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
 _ALLOWED = {
     "config/paths.py",
     "security/paths.py",
+    # A fourth case, and again a different kind: the literal here does not name
+    # the owner's global agents dir at all. ``project_review.py`` digests a
+    # Project CHECKOUT's own ``.kiro/agents/`` -- a directory inside the cloned
+    # repository, which kiro-cli reads from the session cwd -- so the string is a
+    # repository-relative path joined against a checkout root that is passed in.
+    # It never reads or writes the machine-wide directory, and routing it through
+    # ``kiro_agents_dir()`` would be wrong rather than merely unnecessary: that
+    # resolver returns the owner's home-rooted path, which is precisely the tree
+    # this module must NOT look at. ``test_project_review.py`` pins that the
+    # constants stay relative and that the module never resolves the global dir.
+    "project_review.py",
     # A third case, and a different kind. The AWS Control crew container runs as its
     # own process inside a Linux image where ``kiro_crew`` is not importable, so
     # ``supervisor/bundle.py`` re-implements this resolver rather than calling it.

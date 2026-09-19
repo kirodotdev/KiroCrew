@@ -417,6 +417,17 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # additionally mask Global V1 through the trusted private_memory spawn flag;
     # no environment variable can opt out of that member-only boundary.
     "memory_stores",
+    # Portable Project registry (``project_registry.py``, leaf
+    # ``PROJECT_REGISTRY_DIR_NAME``): the install-local registry of pinned Git
+    # remotes/branches and registrations, plus its lock. HIDDEN rather than
+    # read-only for the same reason ``memory_stores`` is -- the value of the
+    # fence is that a spawned shell inside a Project session cannot READ the
+    # authority its session was resolved from, so a read-only tree would
+    # preserve exactly that exposure. Nothing inside the sandbox opens it: the
+    # registry reader runs in the gateway. Materialized checkouts live under the
+    # separate, visible ``projects/`` leaf -- the agent works in them and they
+    # are never a source of authority.
+    "projects-registry",
     # Auth stores and signing keys owned by the gateway web server alone.
     "token_signing.key",
     "refresh_chains.json",
@@ -1060,6 +1071,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "file-delivery-consent-pending",
     "appearance-library",
     "quarantined-clones",
+    "projects-registry",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the
@@ -9383,6 +9395,17 @@ def detect_backend(config_mode: str = "auto") -> str:
         _backend = "none"
     logger.info("Sandbox backend: %s (config_mode=%s)", _backend, config_mode)
     return _backend
+
+
+def enforcing_backend_available() -> bool:
+    """Whether the host can enforce a non-off sandbox through the spawn chokepoint.
+
+    Share ``wrap_argv``'s backend selection and probe cache: Linux requires usable
+    user/mount namespaces, macOS requires a working Seatbelt probe, and hosts
+    without either backend (including Windows) return False. Permission to run
+    unconfined or delegate to a child CLI does not establish an enforcing backend.
+    """
+    return detect_backend() in {"namespace", "sandbox-exec"}
 
 
 class SandboxUnavailableError(RuntimeError):

@@ -5,10 +5,9 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 
-// Pins the project-chip branch contract: the active project button
-// shows "<folder> · <branch>" so the session's git context is visible without
-// opening a picker, and degrades to the folder name alone when there is no
-// branch to show (not a repo, git unavailable, path gone).
+// Pins both project-chip identities: a Project-attached session shows its
+// Project name, while a directory-only session shows "<folder> · <branch>" and
+// degrades to the folder name alone when there is no branch to show.
 
 const defaultProps = {
   value: '',
@@ -27,6 +26,48 @@ const chip = () => screen.getByRole('button', { name: /Project: |Select project/
 const branchBtn = () => screen.getByRole('button', { name: /Cop(y|ied) (branch name|commit) / })
 
 describe('ChatInput project chip branch label', () => {
+  it('shows an attached Project name instead of its workspace repository', () => {
+    renderWithProviders(
+      <ChatInput
+        {...defaultProps}
+        project="/home/u/projects/launchpad/sources/service"
+        projectBranch="main"
+        projectBundleName="Launchpad Workspace"
+      />,
+    )
+    // The accessible name explains the inert control, not just names it:
+    // keyboard and AT users get the same reason the tooltip carries.
+    const explanation = "Project: Launchpad Workspace. This session works inside this Project's files and can't switch."
+    const btn = screen.getByRole('button', { name: explanation })
+    expect(btn).toHaveTextContent('Launchpad Workspace')
+    expect(btn).not.toHaveTextContent('service')
+    // Visibly inert (muted, faded, not-allowed cursor) and `aria-disabled`
+    // rather than natively disabled: a disabled button takes no focus and no
+    // click, and the click is how the explanation is reached without a hover.
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    expect(btn).not.toBeDisabled()
+    expect(btn.className).toMatch(/\btext-muted\b/)
+    expect(btn.className).toMatch(/\bopacity-60\b/)
+    expect(btn.className).toMatch(/\bcursor-not-allowed\b/)
+    expect(btn.className).not.toMatch(/hover:(scale|-?translate)/)
+    // The bubble replaces the native title: one tooltip for one sentence.
+    expect(btn).not.toHaveAttribute('title')
+    expect(screen.queryByRole('button', { name: /Copy branch name/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    // The first click is not silent: it opens the explanation, and opens no
+    // picker. Focus opens it too; blur closes it.
+    fireEvent.click(btn)
+    expect(defaultProps.onProjectClick).not.toHaveBeenCalled()
+    const tip = screen.getByRole('tooltip')
+    expect(tip).toHaveTextContent(explanation)
+    expect(btn).toHaveAttribute('aria-describedby', tip.id)
+    fireEvent.blur(btn)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    fireEvent.focus(btn)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(explanation)
+  })
+
   it('renders the branch beside the folder name', () => {
     renderWithProviders(<ChatInput {...defaultProps} projectBranch="feat/example" />)
     expect(chip()).toHaveTextContent('KiroCrew')

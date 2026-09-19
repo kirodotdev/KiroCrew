@@ -353,6 +353,7 @@ to Settings > Developer (`pages/settings/FeaturePreviewsSection.tsx`); the old
 
 | Feature | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
+| Projects | Portable Git workspaces: add, sync, inspect sessions and preview/accept discovery-file changes before session start | `/project-bundles` — rail **Projects** | `pages/ProjectBundlesPage.tsx` | `handlers_project.py`, `chat_handlers.py`, `src/kiro_crew/project_review.py` | `GET /api/project-bundles`, `POST /api/project-bundles/add`, `POST /api/project-bundles/{id}/sync`, `GET,POST /api/project-bundles/{id}/review` |
 | Logs | Full-page log viewer | `/logs` | `pages/LogsPage.tsx` | `handlers/updates.py` | `GET /api/logs`, `GET /api/stream` |
 | Hooks | Full-page hook manager | `/hooks` | `pages/HooksPage.tsx` | `handlers/hooks.py` | `GET,POST /api/hooks`, `GET /api/kiro-hooks` |
 | Webhooks | Inbound webhook tokens, contexts, run history | `/webhooks` (preview-gated) | `pages/WebhooksPage.tsx` | `handlers/hooks.py` | `GET /api/webhooks`, `POST /api/webhooks/tokens`, `POST /api/hooks/agent` |

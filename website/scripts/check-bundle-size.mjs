@@ -124,7 +124,30 @@ export const CHUNK_BUDGETS = {
   // was set at 3.7% over its own measurement, below the 5% convention, and
   // ordinary catalog growth since then used that margin up. Back to the 5%
   // convention over the measured size.
-  t: 861 * KB, // measured 820.3 KB on the capability-inheritance build rebased onto f382f0a70 (~5% headroom)
+  // The Projects (thin Project) surface adds ~48 English UI strings and no
+  // runtime dependency, which fits inside the headroom above.
+  // Re-measured 2026-09-19: main @ a170442fad ALONE builds the chunk at
+  // 877,138 B (856.6 KB) against the 861 KB ceiling -- 4.4 KB, or 0.5%,
+  // of headroom, so the ceiling has drifted under 1% on accumulated English
+  // copy and now fails on the next surface's ordinary strings rather than on
+  // the new library it exists to catch. Same recurrence as every note above.
+  // A split cannot answer it, and that is measured rather than assumed: the
+  // sourcemapped analyze build lists this chunk's 12 modules as i18next,
+  // four react-i18next modules, `en.json`, `en.manual.json`, `enCatalog.ts`,
+  // `languages.ts`, `detect.ts`, `index.ts`, `t.ts` -- no page or component
+  // code is in it, so no lazy `import()` boundary on a page or dialog can move
+  // a byte out, exactly as the `all` entry above records for the other
+  // catalogs. `t()` is synchronous by design (see src/i18n/index.ts), which is
+  // what keeps English eager; the lazy-loading seam for catalogs is
+  // i18next-http-backend, documented there, not a `codeSplitting` group. A
+  // group that merely split `en.json` from `en.manual.json` would leave both
+  // eager and ship the same bytes, so it would only hide the number from this
+  // gate.
+  // Attribution for this branch is measured too: it adds 91 English keys, all
+  // Projects copy, +7,540 B to `en.manual.json` (`en.json` shrinks 21 B), and
+  // the analyze build emits the chunk at 883,912 B (863.2 KB) with the same 12
+  // modules. Back to the 5% convention over that measurement.
+  t: 906 * KB, // measured 863.2 KB on the thin-Project build over main @ a170442fad (~5% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

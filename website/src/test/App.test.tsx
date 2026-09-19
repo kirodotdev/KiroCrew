@@ -52,6 +52,7 @@ function topbarTracks(): { sides: string[]; search: string } {
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => <div data-testid="system-page">SystemPage</div> }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => <div data-testid="projects-page">ProjectsPage</div> }))
+vi.mock('../pages/ProjectBundlesPage', () => ({ default: () => <div data-testid="project-bundles-page">Projects</div> }))
 vi.mock('../pages/LogsPage', () => ({ default: () => <div data-testid="logs-page">LogsPage</div> }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => <div data-testid="mc-agents-page">MCAgentsPage</div> }))
 vi.mock('../pages/CapabilitiesPage', () => ({ default: () => <div data-testid="capabilities-page">CapabilitiesPage</div> }))
@@ -427,6 +428,20 @@ describe('App routing', () => {
   it('renders projects page at /projects', async () => {
     renderWithProviders(<App />, { route: '/projects' })
     expect(await screen.findByTestId('projects-page')).toBeInTheDocument()
+  })
+
+  // The thin Project bundles page is a rail sibling of Sessions. It is a core
+  // page, not an app, so it is routed in App.tsx like /members rather than
+  // through the builtin app registry (whose entries must name an app.json).
+  it('renders the Projects page at /project-bundles', async () => {
+    renderWithProviders(<App />, { route: '/project-bundles' })
+    expect(await screen.findByTestId('project-bundles-page')).toBeInTheDocument()
+  })
+
+  it('exposes Projects as a top-level navigation item', () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).getByRole('button', { name: 'Projects' })).toBeInTheDocument()
   })
 
   it('redirects /tasks to /projects', async () => {

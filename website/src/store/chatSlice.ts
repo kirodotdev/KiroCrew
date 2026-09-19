@@ -3207,7 +3207,7 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; instanceId?: string; adoptRemoteSlot?: string } | string | undefined,
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; project_id?: string | null; activate?: boolean; instanceId?: string; adoptRemoteSlot?: string } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -3225,6 +3225,11 @@ export const createSlot = createAsyncThunk<
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const explicitHex = typeof opts === 'string' ? undefined : opts?.color_hex
     const project = typeof opts === 'string' ? undefined : opts?.project
+    // Bind the new session to a Project at birth, same reasoning as `instanceId`:
+    // the backend resolves the Project's workspace when it opens the slot, so a
+    // later patch would leave a session in the sidebar that looks ready but is
+    // bound to the wrong directory.
+    const projectId = typeof opts === 'string' ? undefined : opts?.project_id
     // Bind the new session to a connected crew for EXECUTION. Sent at birth, not
     // patched on afterwards: the backend has to open the peer's slot before it
     // creates the local one, so a failure leaves nothing behind — patching later
@@ -3256,7 +3261,7 @@ export const createSlot = createAsyncThunk<
     // and resolving a local default here would only race it.
     const memory_mode = requestedMemoryMode
       || (adoptRemoteSlot ? undefined : await configuredDefaultMemoryMode())
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, adoptRemoteSlot)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, adoptRemoteSlot, projectId || undefined)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -3304,8 +3309,11 @@ export const createSlot = createAsyncThunk<
     // lose its project — re-apply it via the dedicated endpoint. (We do NOT
     // re-issue setSlotAgent here: that endpoint resets the project back to the
     // workspace default, which would clobber this carry. Agent rides the
-    // create payload instead.)
-    if (project) {
+    // create payload instead.) A slot created WITH a Project binding skips this:
+    // the backend already resolved its workspace from the Project, and the
+    // project endpoint is the detaching path — re-applying the directory would
+    // strip the very identity the create just established.
+    if (project && !projectId) {
       slot.project = project
       // Await the scope on BOTH paths before publishing the slot. Publishing
       // (dashboardSlice's createSlot.fulfilled matcher) makes the slot

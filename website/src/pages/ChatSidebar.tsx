@@ -1,7 +1,7 @@
 import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, FolderKanban, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -38,6 +38,7 @@ import { highlightText } from '../utils/highlightText'
 import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
+import { projectHealthBadge, projectHealthWhy } from '../utils/projectHealth'
 import { sessionRefBlockReason, type SessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
@@ -6434,6 +6435,37 @@ function ChatSidebar({
     onError: onNewChatError,
   })
 
+  const projectBundlesQuery = useQuery({
+    queryKey: ['project-bundles'],
+    queryFn: () => typeof api.projectBundles === 'function'
+      ? api.projectBundles()
+      : Promise.resolve({ projects: [] }),
+  })
+  // EVERY registered Project is listed, healthy or not: a Project that is
+  // missing from the menu reads as unregistered, when it is only paused. A
+  // non-healthy row is disabled and says which state it is in, with the why
+  // (and what to do) as its tooltip, so the owner leaves the menu knowing
+  // where to go rather than wondering where the Project went.
+  const projectBundles = projectBundlesQuery.data?.projects ?? []
+  // A failed Project list read must not silently drop the Projects section
+  // from the create menu; it renders as the in-menu notice below.
+  const projectBundlesError = projectBundlesQuery.isError
+    ? i18nT('pages.projectBundlesPage.failed_to_load_projects')
+    : ''
+  const projectBundlesErrorId = useId()
+  const createProjectChatMutation = useMutation({
+    mutationFn: (projectId: string) => {
+      setNewChatError('')
+      return dispatch(createSlot({
+        agent: defaultAgent || undefined,
+        mode: mode || '',
+        project_id: projectId,
+      })).unwrap()
+    },
+    onSuccess: focusComposer,
+    onError: onNewChatError,
+  })
+
   // Session colors
   const { paletteColors, boost, boostFor, colorMode } = useSessionPalette()
 
@@ -7609,6 +7641,69 @@ function ChatSidebar({
                 <DropdownMenuItem disabled={creatingSlot} onClick={() => { createPlainChatMutation.mutate() }}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
+                {projectBundlesError && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>{i18nT('pages.projectBundlesPage.projects')}</DropdownMenuLabel>
+                    {/* Inside Radix menu content the notice stays passive and the
+                     *  hand-off is the sibling menu item (roving focus skips a
+                     *  nested button) — the same shape as the remote-crew row. */}
+                    <div className="px-2 py-1.5">
+                      <ErrorNotice
+                        id={projectBundlesErrorId}
+                        message={projectBundlesError}
+                        variant="inline"
+                        testId="new-chat-projects-error"
+                      />
+                    </div>
+                    <ErrorNoticeMenuItem
+                      Item={DropdownMenuItem}
+                      message={projectBundlesError}
+                      describedBy={projectBundlesErrorId}
+                    />
+                  </>
+                )}
+                {projectBundles.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>{i18nT('pages.projectBundlesPage.projects')}</DropdownMenuLabel>
+                    {projectBundles.map(project => {
+                      const healthy = project.health.status === 'healthy'
+                      const why = projectHealthWhy(project.health.status)
+                      const badge = projectHealthBadge(project.health.status)
+                      const status = badge.label
+                      const location = project.registrations?.at(-1)?.path ?? project.id
+                      return (
+                        <DropdownMenuItem
+                          // A paused Project's accessible name carries its state
+                          // AND the reason: the tooltip below is pointer-only.
+                          aria-label={healthy ? `${project.name} — ${location}` : `${project.name} — ${status}. ${why}`}
+                          // Radix turns pointer events off on a disabled item,
+                          // which would also swallow the tooltip that explains
+                          // the disabling; turned back on for exactly these rows.
+                          className={healthy ? 'items-start' : 'items-start data-[disabled]:pointer-events-auto data-[disabled]:cursor-not-allowed'}
+                          data-testid={`new-chat-project-${project.health.status}`}
+                          disabled={!healthy || creatingSlot || createProjectChatMutation.isPending}
+                          key={project.id}
+                          onClick={healthy ? () => createProjectChatMutation.mutate(project.id) : undefined}
+                          title={why ?? undefined}
+                        >
+                          <FolderKanban size={14} className="text-muted" />
+                          <span className="flex min-w-0 flex-col gap-px">
+                            <span className="truncate">{project.name}</span>
+                            {healthy
+                              ? <span className="truncate font-mono text-[11px] text-muted">{location}</span>
+                              : <span className={`truncate text-[11px] ${badge.variant === 'warn' ? 'text-warn' : 'text-danger'}`}>{status}</span>}
+                          </span>
+                        </DropdownMenuItem>
+                      )
+                    })}
+                    <DropdownMenuItem onClick={() => navigate('/project-bundles')}>
+                      <Settings size={14} className="text-muted" />
+                      {i18nT('pages.projectBundlesPage.manage_projects')}
+                    </DropdownMenuItem>
+                  </>
+                )}
                 {/* The two engineered modes carry a one-line description, because the
                  *  moment a user cannot tell them apart is the moment this menu opens
                  *  — and until now the only explanation lived in a native title= on
