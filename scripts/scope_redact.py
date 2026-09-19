@@ -238,6 +238,18 @@ def redact_json_text(text: str) -> tuple[str, bool]:
 #: all.
 _CLASSIFIED_ROW_FIELDS = ("kind", "command_or_flow", "platform")
 
+#: Every row field ``deny_diff._row`` reads, classified or not. Held here so the
+#: split above can be PINNED against that loader instead of agreeing with it by
+#: hand: ``test/test_scope_redact_classified_pin.py`` walks the loader's source and
+#: reddens when it reads a field neither tuple names. ``reason`` is read but only
+#: carried into ``Row`` for rendering, so no verdict depends on it.
+#:
+#: Why a pin and not a fail-closed branch: an unrecognized field carrying a live
+#: secret MUST still be scrubbed from a world-readable artifact, and refusing the
+#: run over it is the bug this change fixes. So drift cannot be caught at runtime
+#: here -- it is caught in CI, before a fourth classified field ever ships.
+_DENY_DIFF_ROW_FIELDS = ("kind", "command_or_flow", "platform", "reason")
+
 
 def _would_change(value: Any) -> bool:
     """Whether the redaction above would change anything in *value*.
