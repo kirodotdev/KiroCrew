@@ -80,9 +80,12 @@ _CONFIG_STALE_AFTER = "stale_after_secs"
 _CONFIG_NEEDS_HUMAN_STALE_AFTER = "needs_human_stale_after_secs"
 
 # Query inference is optional dispatch enrichment, so it gets the same short
-# budget as a fresh prompt build rather than the embedder's general 30-second
-# interactive default. A cold model returns None immediately and loads in the
-# background; a busy ready model may wait only inside this shared deadline.
+# admission budget as a fresh prompt build rather than the embedder's general
+# 30-second interactive default. The prompt-build context manager is private to
+# that lifecycle, so dispatch carries the same contract locally. A cold model
+# returns None immediately and loads in the background; queued work may wait
+# only inside this deadline, while native inference already running cannot be
+# interrupted and may finish after it.
 _SIMILAR_QUERY_TIMEOUT_SECS = 5.0
 
 #: Total characters of provider evidence rendered into one investigation brief.
