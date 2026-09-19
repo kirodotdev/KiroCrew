@@ -80,6 +80,13 @@ _READ_ONLY_PIPE_RE = re.compile(
     r"^\s*(grep|egrep|fgrep|head|tail|wc|sort|uniq|cut|less|more|cat)\b"
 )
 
+# Top-level command-separator split (&&/||/;/newline), shared by `_classify_bash`
+# and `command_invokes_program`. A single compiled constant, not two independent
+# literals, so the "SAME separators" invariant `command_invokes_program`'s
+# docstring claims holds by construction — editing one call site to add a
+# separator can never silently leave the other behind.
+_SEGMENT_SEPARATOR_RE = re.compile(r"\s*(?:&&|\|\||;|\n)\s*")
+
 # Reject redirections and command substitutions, conservatively.
 #
 # `<` is matched only as `<(` here, NOT bare. Bare `<` and word-initial `#` are
@@ -1385,7 +1392,7 @@ def _classify_bash(cmd: str) -> str:
     scrubbed = _DEVNULL_REDIR_RE.sub(" ", cmd)
     if _UNSAFE_SHELL_RE.search(scrubbed):
         return "unsafe shell pattern (redirect, command/process substitution, or backgrounding)"
-    parts = re.split(r"\s*(?:&&|\|\||;|\n)\s*", cmd.strip())
+    parts = _SEGMENT_SEPARATOR_RE.split(cmd.strip())
     for part in parts:
         if not part.strip():
             continue
@@ -1455,3 +1462,43 @@ def unsafe_bash_reason(cmd: str) -> str:
     safety grounds).
     """
     return _classify_bash(cmd)
+
+
+def command_invokes_program(cmd: str, program: str) -> bool:
+    """True if any segment of ``cmd`` invokes ``program`` as its leading verb.
+
+    Splits on the SAME separators ``_classify_bash`` uses
+    (``_SEGMENT_SEPARATOR_RE`` — one shared compiled constant, not a second
+    literal, so the two can never desync) for top-level segments, then ``|``
+    for pipe targets, and compares each segment's leading word
+    case-insensitively — the same two axes ``_classify_bash`` itself is
+    lenient on. A caller checking only the
+    whole string's first token (no segment split, or a case-sensitive
+    compare) is trivially bypassed by ``pwd; PROGRAM ...`` or
+    ``pwd | PROGRAM ...``, since ``_classify_bash`` still classifies the
+    later segment on its own merits and can approve it as read-only even
+    though the caller's naive check missed it entirely — exactly the
+    "checked the string, not what the classifier will actually run" gap a
+    caller adds a program-specific exclusion on TOP of ``is_read_only_bash``
+    to close (e.g. heartbeat excluding ``git`` regardless of read-only
+    classification, because git reads repo-local ``.git/config`` on
+    invocation and the classifier cannot see that channel). Does not itself
+    judge safety — pair with ``is_read_only_bash``/``unsafe_bash_reason``.
+
+    Deliberately permissive on ``cmd``: an empty or malformed command (no
+    parseable segments) returns False rather than raising, so a caller that
+    already handles "command missing" via ``is_read_only_bash`` denying it
+    does not need a second failure mode here.
+    """
+    program_lower = program.lower()
+    for part in _SEGMENT_SEPARATOR_RE.split(cmd.strip()):
+        if not part.strip():
+            continue
+        for pipe_part in part.split("|"):
+            pipe_part = pipe_part.strip()
+            if not pipe_part:
+                continue
+            leading = pipe_part.split(maxsplit=1)[0] if pipe_part.split() else ""
+            if leading.lower() == program_lower:
+                return True
+    return False

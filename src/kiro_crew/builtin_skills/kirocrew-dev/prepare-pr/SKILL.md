@@ -797,9 +797,13 @@ first; preserve any existing automation and the user's stop. Neither driver
 grants publication permission.
 
 **Never hand the fix-and-push loop to a cron job or a HEARTBEAT.md task.** Neither
-can push a revision, and both report success while doing nothing (why:
-`references/rationale.md`). `monitor_watch` and the compatibility `pr_watch` cron
-see provider facts only, never reviewer posts, so this loop stays on `monitor_start`.
+can push a revision, and both report success doing nothing: a cron has no owning
+slot, so its calls hit a deny-by-default approval path and time out; heartbeat's
+read-only shell excludes every git subcommand, so it cannot read the repo, let
+alone push (why: `references/rationale.md`).
+
+`monitor_watch` and `pr_watch` see provider facts only, never reviewer posts, so
+this loop stays on `monitor_start`. Do not register `pr_watch` for new work.
 
 Cron *is* correct for post-merge cleanup, as a `script` cron at roughly a 5-minute
 interval — an hourly one loses the merge-to-teardown race.
