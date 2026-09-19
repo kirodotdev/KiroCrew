@@ -2089,6 +2089,16 @@ class RunEventCoordinator(ManagerComponent):
         # Cap disk file and trim memory — gateway decides how much to show based on mode.
         if info.result_path:
             cap_result_file(Path(info.result_path))
+        # The stream reached its complete event, so result.txt now holds the
+        # whole answer. Nothing else on disk says so: write_result_chunk appends
+        # per streamed chunk, so the file is non-empty from the first token and a
+        # reader after a restart cannot tell a finished answer from an opening
+        # sentence. Recorded here because this is the only point that knows.
+        # Written after cap_result_file so the flag describes the file as it will
+        # be read. A restart landing between the complete event and this write
+        # leaves a finished result unflagged — it under-claims, which is the safe
+        # direction for a signal whose whole purpose is not to overstate.
+        await self._manager._write_state_off_loop(info, "result complete", result_complete=True)
         # Flag whether the completion-event copy will drop content, so the gateway
         # emits a summary + result_path pointer (read on demand) instead of a lossy
         # blob. The full transcript stays in result.txt for the TTL grace window.

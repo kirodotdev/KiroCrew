@@ -151,10 +151,16 @@ never from its error wording):
 The result-path lines are present only when a result file exists. **The result is
 on disk**, so use the `read` tool to retrieve it rather than re-running the work.
 
-Two adjacent variants exist for a gateway restart, same prefix:
+Three adjacent variants exist for a gateway restart, same prefix:
 
 - `⚠️ orphaned by gateway restart` plus `Result saved at: <path>` and
-  `Use the read tool to retrieve it.`
+  `Use the read tool to retrieve it.` — only when the run recorded
+  `result_complete`, i.e. its stream reached the complete event.
+- `⚠️ cut off mid-turn by gateway restart` plus `Partial output saved at: <path>`
+  and a line saying the text stops wherever the restart landed. `result.txt` is
+  appended per streamed chunk, so a run killed mid-turn leaves a non-empty file
+  holding an opening sentence; this variant exists so the parent is not sent to
+  read a fragment as though it were the answer.
 - `❌ lost to gateway restart` plus `No result was captured before the restart.`
 
 All three are redacted before any delivery path. When the parent has no open

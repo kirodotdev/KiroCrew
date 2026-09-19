@@ -1243,7 +1243,7 @@ Folder-per-agent persistence at `~/.kiro/crew/subagents/{id}/`:
 ```
 ~/.kiro/crew/subagents/{id}/
   state.json      # {task, parent_session_key, started, pid}
-  result.txt      # full result text (written on completion)
+  result.txt      # result text (APPENDED per streamed chunk, not on completion)
   tombstone.json  # {error, elapsed, timestamp} (written on failure/orphan)
 ```
 
@@ -1254,6 +1254,14 @@ On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
 1. **PID alive** → kill process group, deliver result if available, tombstone if not
 2. **PID dead + result.txt exists** → deliver result to parent session
 3. **PID dead + no result** → write tombstone with "orphaned" error
+
+A surviving `result.txt` is not by itself a result. It is appended per streamed
+chunk, so it is non-empty from the agent's first token and a size check cannot
+tell a finished answer from an opening sentence. The run records
+`result_complete` in `state.json` when its stream reaches the complete event;
+reconciliation classifies the file on that flag alone — `result_available` with
+it, `partial_result` without — and the `partial_result` notice tells the parent
+the text is an unfinished fragment rather than pointing it at a result to read.
 
 **Orphan delivery is wired** (not a stub): the gateway registers `on_orphan_notify` (session injection — rides the parent slot's batched pending-failures drain) and `on_orphan_dm` (fallback). The DM fallback collects every undelivered orphan across the reconciliation scan and sends ONE digest message (`"N subagent(s)…"`) — never N pings; a lone orphan keeps the plain per-agent message.
 

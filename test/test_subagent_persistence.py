@@ -1484,7 +1484,7 @@ class TestOrphanReconciliation:
     """Verify _reconcile_orphans handles all three branches."""
 
     @pytest.mark.asyncio
-    async def test_dead_pid_with_result_tombstoned_as_delivered(self, agent_root):
+    async def test_dead_pid_with_complete_result_tombstoned_as_delivered(self, agent_root):
         from unittest.mock import MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
@@ -1493,12 +1493,12 @@ class TestOrphanReconciliation:
         sessions = MagicMock()
         manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
 
-        # Simulate orphan from prior run: dead PID, has result
+        # Simulate orphan from prior run: dead PID, has a result its run
+        # finished writing (result_complete recorded at the complete event).
         create_agent_folder("orphan1", task="old task", parent_session="dashboard:default")
         write_result_chunk("orphan1", "some result")
         from kiro_crew.subagent_persistence import update_state
-
-        update_state("orphan1", pid=99999)  # dead PID
+        update_state("orphan1", pid=99999, result_complete=True)  # dead PID
 
         with patch.object(manager, "_is_pid_alive", return_value=False):
             await manager._reconcile_orphans()
@@ -1506,6 +1506,61 @@ class TestOrphanReconciliation:
         ts = json.loads((agent_root / "orphan1" / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "gateway_restart"
         assert ts["recovery_action"] == "result_available"
+
+    @pytest.mark.asyncio
+    async def test_dead_pid_with_partial_result_is_not_offered_as_a_result(self, agent_root):
+        """Streamed bytes without a complete event are a fragment, not an answer.
+
+        ``write_result_chunk`` appends per streamed chunk, so result.txt is
+        non-empty from the agent's first token. A restart landing mid-turn
+        therefore leaves a file that looks exactly like a finished result to
+        anyone measuring its size — which is what the parent is told to go read.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.subagent import SubagentManager
+        from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
+
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+
+        create_agent_folder("orphan1p", task="old task", parent_session="dashboard:default")
+        # An opening sentence, nothing more — no complete event ever arrived.
+        write_result_chunk("orphan1p", "I'll start by opening a scratch worktree")
+        from kiro_crew.subagent_persistence import update_state
+        update_state("orphan1p", pid=99999)
+
+        with patch.object(manager, "_is_pid_alive", return_value=False):
+            await manager._reconcile_orphans()
+
+        ts = json.loads((agent_root / "orphan1p" / "tombstone.json").read_text(encoding="utf-8"))
+        assert ts["cause"] == "gateway_restart"
+        assert ts["recovery_action"] == "partial_result"
+
+    @pytest.mark.asyncio
+    async def test_partial_orphan_notice_does_not_promise_a_result(self, agent_root):
+        """The notice is the only thing standing between a fragment and a parent."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from kiro_crew.subagent import SubagentManager
+        from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
+
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        create_agent_folder("orphan1n", task="old task", parent_session="dashboard:default")
+        write_result_chunk("orphan1n", "I'll start by opening a scratch worktree")
+        state = {"id": "orphan1n", "task": "old task", "parent_session": ""}
+
+        with patch.object(
+            manager, "_try_inject_orphan_notification", AsyncMock(return_value=False)
+        ):
+            partial = await manager._notify_orphan("orphan1n", state, "partial_result", True)
+            whole = await manager._notify_orphan("orphan1n", state, "result_available", True)
+
+        assert partial is not None and whole is not None
+        assert "Partial output saved at" in partial
+        assert "unfinished fragment" in partial
+        # The complete-result wording must not leak onto the partial notice.
+        assert "Use the read tool to retrieve it." not in partial
+        assert "Use the read tool to retrieve it." in whole
 
     @pytest.mark.asyncio
     async def test_dead_pid_no_result_tombstoned_as_notified(self, agent_root):
@@ -1657,7 +1712,8 @@ class TestOrphanNotification:
 
         create_agent_folder("notif1", task="important task", parent_session="dashboard:default")
         write_result_chunk("notif1", "the answer is 42")
-        update_state("notif1", pid=99999)
+        # The run finished writing before the restart, so it recorded completion.
+        update_state("notif1", pid=99999, result_complete=True)
 
         with (
             patch.object(manager, "_is_pid_alive", return_value=False),
