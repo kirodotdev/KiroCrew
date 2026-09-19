@@ -77,9 +77,19 @@ SCHEMA_VERSION = 1
 
 KIND_CREW = "crew"
 KIND_SESSION = "session"
+KIND_MEMBER = "member"
 
-#: The two units that own a crew log. A kind is also the ``unit`` a ref names.
-KINDS: frozenset[str] = frozenset({KIND_CREW, KIND_SESSION})
+#: The units that own a crew log. A kind is also the ``unit`` a ref names.
+#:
+#: A member's log is a third kind rather than a second mechanism beside this
+#: one. It is the same sort of artifact serving the same purpose -- an
+#: append-only record a reader trusts -- so it belongs under the same root and
+#: inherits the same sandbox fence by construction. A parallel store outside
+#: ``crew-log`` would need its own fence entry, and the next log added would
+#: miss it the same way: an audit record an agent can rewrite is not an audit
+#: record, and that property has to hold by where the file lives rather than by
+#: someone remembering to list it.
+KINDS: frozenset[str] = frozenset({KIND_CREW, KIND_SESSION, KIND_MEMBER})
 
 #: Serialized-line ceiling. A line past this is refused, not clipped.
 MAX_ENTRY_BYTES = 64 * 1024
@@ -95,6 +105,14 @@ TYPE_OWNERSHIP: dict[str, frozenset[str]] = {
     KIND_CREW: frozenset(
         {"member", "activity", "slot", "patrol", "message", "crew", "item", "memory"}
     ),
+    # One member's own history. The four domains are the crew kind's member-facing
+    # ones, narrowed to what describes a single member: its roster fields and
+    # binding, the records of it participating, the slots it drives and the patrol
+    # on its DM slot. The crew kind keeps owning them too, because ownership
+    # answers "does this KIND have such events" and a crew has member events in
+    # the same sense it has messages -- what differs is the unit the file belongs
+    # to, which is the kind's job to say.
+    KIND_MEMBER: frozenset({"member", "activity", "slot", "patrol"}),
     KIND_SESSION: frozenset(
         {
             "session",
@@ -148,6 +166,10 @@ APP_SOURCE_PREFIX = "app:"
 KIND_FIXED_SOURCES: dict[str, frozenset[str]] = {
     KIND_CREW: frozenset({"gateway", "dashboard", "patrol"}),
     KIND_SESSION: frozenset({"gateway", "acp"}),
+    # A member's log takes the same three writers a crew's does, for the same
+    # reason: these facts are observed BY the gateway, the dashboard and the
+    # patrol loop about the member, never written by the member itself.
+    KIND_MEMBER: frozenset({"gateway", "dashboard", "patrol"}),
 }
 
 #: The guest emitter prefixes each kind accepts. A guest names an instance, so
@@ -156,6 +178,12 @@ KIND_FIXED_SOURCES: dict[str, frozenset[str]] = {
 KIND_SOURCE_PREFIXES: dict[str, tuple[str, ...]] = {
     KIND_CREW: (CREW_SOURCE_PREFIX, APP_SOURCE_PREFIX),
     KIND_SESSION: (),
+    # A member's log takes app guests and NOT crew guests. An installed app is
+    # the whole point of the contribution protocol, so it must be able to append
+    # its own facts about a member. A sibling crew has no business in one
+    # member's history, and accepting ``crew:<name>`` here would let one write an
+    # entry a reader attributes to this member's own record.
+    KIND_MEMBER: (APP_SOURCE_PREFIX,),
 }
 
 #: Every fixed emitter name the format knows, for a caller that wants the
@@ -312,16 +340,24 @@ def check_ownership(kind: str, entry_type: str, src: str) -> None:
     then reason about an emitter this crew log already takes. A guest TYPE
     (``app:<name>/<action>``) is judged by its namespace alone and never against
     the ownership registry, which is why the registry needs no app entries.
+
+    Whether a kind takes guest types at all is read off
+    :data:`KIND_SOURCE_PREFIXES` rather than compared against one named kind: a
+    kind accepts a guest's TYPE exactly when it accepts that guest's ``src``, so
+    the two answers cannot drift apart. A session's log still refuses them,
+    because it declares no guest prefix -- one session's own turn history is
+    written by nobody else.
     """
     require_kind(kind)
     domain, _action = split_type(entry_type)
     require_src(src, kind=kind)
 
     if is_guest_type_domain(domain):
-        if kind != KIND_CREW:
+        if GUEST_TYPE_PREFIX not in KIND_SOURCE_PREFIXES[kind]:
             raise CrewLogError(
                 f"a {kind} crew log does not accept the guest type {entry_type!r}; "
-                f"the {GUEST_TYPE_PREFIX} namespace is crew-log only",
+                f"the {GUEST_TYPE_PREFIX} namespace needs a kind that takes "
+                f"{GUEST_TYPE_PREFIX} emitters",
                 code=CODE_NAMESPACE_VIOLATION,
                 field="type",
             )
@@ -623,6 +659,49 @@ class CrewHeader:
 
 
 @dataclass(frozen=True)
+class MemberHeader:
+    """Line 1 of a member's log: which member this file belongs to, and since when.
+
+    The agent, workspace, memory store and model are NOT here. Those live in the
+    agents config, which owns them and can change them, and the roster fields a
+    reader folds arrive as ``member/config`` entries precisely so a change is a
+    new fact rather than a rewrite of line 1.
+
+    ``name`` is the one exception, and it is optional for the reason the session
+    kind's ``task`` and ``cwd`` are optional: a reader that opens this file cold
+    needs a display name before it has folded anything, and the slug is a lossy
+    fold of the name (``members.slug_for_name``) so it cannot be recovered from
+    ``id``. A later rename is still appended as a ``member/config`` fact, which a
+    fold applies over this value -- so line 1 is the cold-start answer, not the
+    authority.
+
+    A separate class rather than :class:`CrewHeader` reused, because that one
+    writes ``"type": "crew"``, and a member's log claiming to be a crew's would be
+    exactly the permanent lie on line 1 that its own docstring warns against.
+    """
+
+    id: str
+    created_at: int
+    version: int = SCHEMA_VERSION
+    name: str | None = None
+
+    kind: str = KIND_MEMBER
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "type": KIND_MEMBER,
+            "version": self.version,
+            "id": self.id,
+            "createdAt": self.created_at,
+        }
+        # Omitted rather than written null when absent: an absent optional field
+        # and one explicitly set to null must not read differently to a consumer.
+        if self.name is not None:
+            out["name"] = self.name
+        return out
+
+
+@dataclass(frozen=True)
 class SessionHeader:
     """Line 1 of a session's log."""
 
@@ -657,19 +736,23 @@ class SessionHeader:
         }
 
 
-Header = CrewHeader | SessionHeader
+Header = CrewHeader | MemberHeader | SessionHeader
 
 _REQUIRED_HEADER_FIELDS: dict[str, tuple[str, ...]] = {
     KIND_CREW: (),
     KIND_SESSION: ("owner", "agent"),
+    # None: the slug in ``id`` is the whole identity, and every roster field a
+    # reader wants arrives as a ``member/config`` entry it can fold.
+    KIND_MEMBER: (),
 }
 
 _OPTIONAL_HEADER_FIELDS: dict[str, tuple[str, ...]] = {
     KIND_CREW: (),
     KIND_SESSION: ("task", "pack", "slot", "thread", "cwd", "remote"),
+    KIND_MEMBER: ("name",),
 }
 
-_STR_HEADER_FIELDS = frozenset({"owner", "agent", "task", "pack", "slot", "cwd"})
+_STR_HEADER_FIELDS = frozenset({"owner", "agent", "task", "pack", "slot", "cwd", "name"})
 
 
 def build_header(kind: str, unit_id: str, created_at: int, fields: dict[str, Any]) -> Header:
@@ -707,6 +790,16 @@ def build_header(kind: str, unit_id: str, created_at: int, fields: dict[str, Any
             )
     if kind == KIND_CREW:
         return CrewHeader(id=unit_id, created_at=created_at)
+    if kind == KIND_MEMBER:
+        # A distinct variable: the loops above bind ``name`` to a FIELD NAME, and
+        # reusing it for a field's value makes one identifier mean two things in
+        # one function -- which is also what the type checker objects to.
+        display_name = fields.get("name")
+        return MemberHeader(
+            id=unit_id,
+            created_at=created_at,
+            name=display_name if isinstance(display_name, str) else None,
+        )
     remote = fields.get("remote")
     if remote is not None and not isinstance(remote, dict):
         raise CrewLogError(
@@ -781,6 +874,17 @@ def parse_header(raw: Any, *, kind: str, unit_id: str) -> Header:
         )
     if kind == KIND_CREW:
         return CrewHeader(id=unit_id, created_at=created_at, version=version)
+    if kind == KIND_MEMBER:
+        raw_name = raw.get("name")
+        # A non-string ``name`` is dropped rather than refused: an unknown or
+        # malformed OPTIONAL field must not make an otherwise readable log
+        # unopenable, which is the same rule the envelope applies to unknown keys.
+        return MemberHeader(
+            id=unit_id,
+            created_at=created_at,
+            version=version,
+            name=raw_name if isinstance(raw_name, str) else None,
+        )
     agent = raw.get("agent")
     owner = raw.get("owner")
     if not isinstance(agent, str) or not isinstance(owner, str):

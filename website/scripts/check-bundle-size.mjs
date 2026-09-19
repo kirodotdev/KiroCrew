@@ -204,7 +204,23 @@ export const CHUNK_BUDGETS = {
   // restored to the ~5% margin the lines above prescribe, because that is a
   // re-measure of main's growth rather than a cost this surface incurs; at 647 B
   // the next app-core addition trips this entry again.
-  App: 3538 * KB, // measured 3,622,265 B on this branch merged onto 20261b7633
+  // Re-measured 2026-09-21 after rebasing onto main @ 17c96c7ab0, which had itself
+  // re-baselined this entry to 3538 KB for the compaction shadow-scoring surface
+  // (that measurement and its reasoning are the paragraph above; both notes are kept
+  // because the two surfaces are independent and the ceiling has to cover both).
+  // Attribution measured, not assumed: main's tip alone builds this chunk at
+  // 3,622,265 B per the note above, and this branch on top of it builds 3,624,314 B
+  // (3539.4 KB). So main's 3538 KB (3,622,912 B) is 1,402 B SHORT of the merge ref of
+  // this PR, which is why the entry moves again rather than being left alone.
+  // This branch's own cost is the difference, 2,049 B -- and that is the SAME 2,049 B
+  // measured against the previous base (main @ feed35446c at 3,616,146 B, this branch
+  // at 3,618,195 B), so the attribution is confirmed by two independent bases rather
+  // than by one build. It is not a library or a lazy-loadable surface: the member
+  // projection store, its hook and the roster/drawer wiring are first-party app-core
+  // code with no lazy boundary available, the same shape the notes above document.
+  // Back to the ~5% convention over the measurement that includes this branch,
+  // matching the `all` and `t` entries.
+  App: 3711 * KB, // measured 3,624,314 B (3539.4 KB) on this branch's merge result 2026-09-21 (4.85% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.

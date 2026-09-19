@@ -15527,6 +15527,7 @@
       "patrol_stopped_cycle_cap": "ওয়েক সীমায় পৌঁছেছে।",
       "patrol_stopped_runtime_budget": "সময় বাজেটে পৌঁছেছে।",
       "patrol_stopped_approval_stalled": "এই কথোপকথনে টুল অনুমোদনের অপেক্ষায় থেমে গেছে।",
+      "patrol_stopped_interrupted": "পুনরায় চালুর কারণে বাধাপ্রাপ্ত।",
       "patrol_last_wake_ago": "সর্বশেষ ওয়েক {{when}}",
       "patrol_none": "কোনো পেট্রোল নির্ধারিত নেই।",
       "patrol_error": "এই সদস্যের পেট্রোল অবস্থা লোড করা যায়নি।",

@@ -201,12 +201,18 @@ def test_protected_ceiling_formula_matches_the_code(doc_text: str) -> None:
     ), "the ceiling must be stated over the base, not over its byte value"
 
 
-def test_member_caps_and_activity_rotation(doc_text: str) -> None:
-    """Both member caps and the rotation size are named, not restated."""
+def test_member_caps_and_activity_growth(doc_text: str) -> None:
+    """The member caps are named, and the activity log's growth bound is STATED.
+
+    The activity log is backed by the event log, which does not rotate, so a doc
+    naming a rotation constant would describe a mechanism this code does not have.
+    What a reader needs is the bound that IS offered: per append, not over a lifetime.
+    """
     assert MEMBER_BRIEFING_MAX_CHARS == MEMBER_RULES_MAX_CHARS
     assert "`MEMBER_BRIEFING_MAX_CHARS`" in doc_text
     assert "`MEMBER_RULES_MAX_CHARS`" in doc_text
-    assert "`_ACTIVITY_LOG_MAX_BYTES`" in doc_text
+    assert "NO rotation" in doc_text, "the absence of rotation has to be stated, not implied"
+    assert "accumulates over a member's lifetime" in doc_text
     assert f"{MEMBER_BRIEFING_MAX_CHARS:,}" not in doc_text
 
 

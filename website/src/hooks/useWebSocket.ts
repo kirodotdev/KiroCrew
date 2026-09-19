@@ -26,6 +26,8 @@ import { api } from '../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { observedPaneSlots } from '../api/slotMessagesQuery'
+import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
+import { memberProjectionStore } from '../state/memberProjectionStore'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
@@ -1753,6 +1755,40 @@ export function useWebSocket() {
           case 'slot_agent_switch': {
             // /agent command — refresh slot metadata to pick up new agent label
             dispatch(fetchSlots())
+            break
+          }
+          case 'member_projection': {
+            // One member's projected value moved. The server wraps every
+            // broadcast as { type, data }, so the fields ride under `data`.
+            // Apply only a well-formed frame: the store's higher-seq-wins drops
+            // a stale or replayed seq, but a missing slug/key/seq is a malformed
+            // frame that must not touch the store at all.
+            const pf = (data ?? {}) as { slug?: unknown; key?: unknown; seq?: unknown; value?: unknown }
+            if (typeof pf.slug === 'string' && pf.slug && typeof pf.key === 'string' && pf.key && typeof pf.seq === 'number') {
+              memberProjectionStore.apply(pf.slug, pf.key, pf.value, pf.seq)
+            }
+            break
+          }
+          case 'members_subscribed': {
+            // Sent once per connection before any member_projection frame: the
+            // server's authoritative lastSeq per slug. Truncate held rows that
+            // ran ahead of it (a torn tail rolled back after a restart).
+            const seqs = ((data ?? {}) as { lastSeqs?: unknown }).lastSeqs
+            if (seqs && typeof seqs === 'object') {
+              const dropped = memberProjectionStore.truncateAll(
+                seqs as { [slug: string]: number },
+              )
+              if (dropped) {
+                // A drop is correct but incomplete: the row above the server's seq
+                // recorded something that did not happen, and removing it leaves the
+                // card with no value where the truth is whatever the server holds at
+                // its own seq. The store is a cache and cannot produce that, so the
+                // roster is refetched -- its rows carry each slug's baseline, and
+                // seeding is higher-seq-wins, so this restores the authoritative
+                // value without overwriting anything newer that arrives meanwhile.
+                queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+              }
+            }
             break
           }
           case 'chat_message':

@@ -1438,6 +1438,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "across the record's byte ceiling, and is not left on disk for the next "
         "reader that forgets to scrub.",
     ),
+    (
+        "Member event-log projection broadcast",
+        "eventlog/service.py",
+        "Folded member projection views pushed to the browser over the "
+        "member-projection WS on every change. A projection carries "
+        "agent-authored free-text (an activity record's `project`, message "
+        "previews) that would otherwise cross to the dashboard verbatim, the "
+        "same class the sibling `/activity` HTTP read redacts. "
+        "`_redact_projection_value` runs the shared exfiltration-URL then "
+        "credential chain over the view before broadcast; it is applied at the "
+        "network boundary rather than the fold so the stored projection keeps "
+        "its raw value for server-side folds while nothing leaves unredacted.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

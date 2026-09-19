@@ -15526,6 +15526,7 @@
       "patrol_stopped_cycle_cap": "Aufwecklimit erreicht.",
       "patrol_stopped_runtime_budget": "Zeitbudget erreicht.",
       "patrol_stopped_approval_stalled": "Gestoppt, weil eine Tool-Freigabe in dieser Unterhaltung ausstand.",
+      "patrol_stopped_interrupted": "Durch einen Neustart unterbrochen.",
       "patrol_last_wake_ago": "Letztes Aufwecken {{when}}",
       "patrol_none": "Keine Patrouille geplant.",
       "patrol_error": "Patrouillenstatus dieses Mitglieds konnte nicht geladen werden.",

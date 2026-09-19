@@ -65,6 +65,7 @@ const MEMBERS = [
   member('ledger', { last_active_ts: NOW - 900, last_message: 'Work ledger reconciled, no drift.' }),
   member('scout', { last_active_ts: NOW - 4 * 3600, last_message: 'Queue scan finished, nothing new.' }),
   member('scribe', { last_active_ts: NOW - 26 * 3600, last_message: 'Release notes drafted.' }),
+  member('signal', { last_active_ts: NOW - 30, last_message: 'Interrupted by a restart mid-patrol.' }),
   member('fixer', { last_active_ts: NOW - 2 * 86400, last_message: 'Two PRs opened for the queue.' }),
 ]
 const loopRecord = (slug, extra) => ({
@@ -95,7 +96,11 @@ const SCRIBE = loopRecord('scribe', {
   message: 'Draft release notes for every merged PR.', active: false,
   idle_secs: 3600, cycle_count: 7, last_fire_ts: NOW - 26 * 3600, next_due_ts: 0, stopped_reason: 'approval_stalled',
 })
-const BASELINE = [RADAR, LEDGER, SCOUT, SCRIBE]
+const SIGNAL = loopRecord('signal', {
+  message: 'Watch the release train and wake on a red build.', active: false,
+  idle_secs: 30, cycle_count: 2, last_fire_ts: NOW - 120, next_due_ts: 0, stopped_reason: 'interrupted',
+})
+const BASELINE = [RADAR, LEDGER, SCOUT, SCRIBE, SIGNAL]
 
 // Mutable registry: the recordings flip it between frames; `mode` lets the
 // two evidence frames make the read hang or fail.
@@ -178,7 +183,14 @@ async function openMembers(theme, { record = false } = {}) {
     if (!wsServer) throw new Error('the page never opened /api/ws')
     wsServer.send(JSON.stringify({ type: 'autonudge_state', data: { event, slot: loop.slot_key, loop } }))
   }
-  return { page, context, pushLoop }
+  /** Push one `member_projection` frame (gateway envelope) — a contributor's
+   *  published view plus its render schema, exactly as the eventlog WS route
+   *  emits it. Used to drive a projection frame client-side. */
+  const pushProjection = async (slug, key, value, seq, schema) => {
+    if (!wsServer) throw new Error('the page never opened /api/ws')
+    wsServer.send(JSON.stringify({ type: 'member_projection', data: { slug, key, value, seq, schema } }))
+  }
+  return { page, context, pushLoop, pushProjection }
 }
 
 /** Exactly the badges the registry implies: one accent badge per ACTIVE loop
@@ -198,9 +210,15 @@ async function expectBadges(page, want) {
 
 async function openDrawerFor(page, name, expectedState) {
   await page.getByText(name, { exact: true }).first().click()
-  const drawer = page.locator('[data-testid="member-drawer"]')
-  if (!(await drawer.isVisible().catch(() => false))) {
-    await page.locator('[data-testid="member-drawer-toggle"]').click()
+  const drawer = page.locator('[data-testid="member-side-panel"]')
+  // The drawer animates in, so an instantaneous isVisible() right after the
+  // click reads "closed" while it is opening. Waiting a moment first is what
+  // separates a genuinely collapsed panel from one mid-transition: the toggle
+  // renders only while the panel is CLOSED, so on a panel that was already
+  // opening the fallback waits 30s for a control that never appears and the
+  // run dies before any frame is written.
+  if (!(await drawer.waitFor({ state: 'visible', timeout: 2000 }).then(() => true).catch(() => false))) {
+    await page.locator('[data-testid="member-panel-toggle"]').click()
   }
   await drawer.waitFor({ state: 'visible', timeout: 15000 })
   await expectState(page, expectedState)
@@ -221,8 +239,49 @@ async function expectState(page, expectedState) {
   }
 }
 
+// A stopped frame is this PR's evidence that the state is LEGIBLE and not a dead
+// end, so the frame may only be written while the drawer's scheduling control is on
+// screen. It is the Wake-sources control, not one inside the stopped block: a block
+// control was tried and removed, because the drawer already carried this one and
+// because what it created was a schedule, which writes nothing to the wake
+// projection this block renders from -- so its own remedy could not clear the notice
+// above it. isVisible is the property under test: the drawer can scroll, so
+// present-in-the-DOM is not the same as shown to a reader.
+async function expectScheduleControlOnScreen(page) {
+  const control = page.locator('[data-testid="member-wake-create"]')
+  await control.waitFor({ state: 'visible', timeout: 15000 })
+  const label = ((await control.textContent()) || '').trim()
+  if (!label || /\{\{|^pages\./.test(label)) {
+    throw new Error(`schedule control reads "${label}" — empty or an unresolved i18n token`)
+  }
+  return label
+}
+
+// The other half of the same evidence: the patrol verdict is a static status
+// word, and rendering it in the accent colour that marks this drawer's LINKS
+// invited a click it cannot answer. The colour a reader sees is the property, so
+// this compares the computed colour against the resolved accent rather than
+// against a class name, which would keep passing if the palette moved.
+async function expectVerdictNotAccent(page) {
+  const read = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="member-patrol-status"]')
+    if (!el) return null
+    const probe = document.createElement('span')
+    probe.className = 'text-accent'
+    el.parentElement.appendChild(probe)
+    const accent = getComputedStyle(probe).color
+    probe.remove()
+    return { verdict: getComputedStyle(el).color, accent, text: el.textContent.trim() }
+  })
+  if (!read) throw new Error('patrol status element absent — frame would show no verdict')
+  if (read.verdict === read.accent) {
+    throw new Error(`patrol verdict "${read.text}" renders in the accent colour ${read.accent} — reads as a link`)
+  }
+  return read
+}
+
 // ── Still frames ─────────────────────────────────────────────────────────────
-const { page: dark, context: darkCtx } = await openMembers('dark')
+const { page: dark, context: darkCtx, pushProjection: darkPushProjection } = await openMembers('dark')
 await openDrawerFor(dark, 'radar', 'active')
 await dark.locator('[data-testid="member-wake-patrol"]').waitFor({ timeout: 15000 })
 await dark.screenshot({ path: `${OUT}/01-active-dark.png` })
@@ -241,16 +300,42 @@ await dark.screenshot({ path: `${OUT}/03-unlimited-dark.png` })
 console.log(`03-unlimited-dark: ledger cycles read "${cycles}"`)
 
 await openDrawerFor(dark, 'scout', 'stopped')
+const scoutSched = await expectScheduleControlOnScreen(dark)
 await dark.screenshot({ path: `${OUT}/04-stopped-dark.png` })
-console.log('04-stopped-dark: scout stopped at its cycle cap — reason in the drawer, no badge on the avatar')
+console.log(`04-stopped-dark: scout stopped at its cycle cap — reason in the drawer, no badge on the avatar, schedule control reads "${scoutSched}"`)
 
 await openDrawerFor(dark, 'scribe', 'stopped')
+await expectScheduleControlOnScreen(dark)
 await dark.screenshot({ path: `${OUT}/05-stalled-dark.png` })
 console.log('05-stalled-dark: scribe stopped, approval went unanswered')
+
+await openDrawerFor(dark, 'signal', 'stopped')
+const signalSched = await expectScheduleControlOnScreen(dark)
+await dark.screenshot({ path: `${OUT}/05b-interrupted-dark.png` })
+console.log(`05b-interrupted-dark: signal stopped, interrupted by a restart — reads "Interrupted by a restart.", not a raw token, with the schedule control reading "${signalSched}"`)
 
 await openDrawerFor(dark, 'fixer', 'none')
 await dark.screenshot({ path: `${OUT}/06-none-dark.png` })
 console.log('06-none-dark: fixer has no patrol scheduled')
+
+// ── Projection-armed patrol ("Patrolling") ───────────────────────────────────
+// A wake projection can report a patrol as armed before any loop record lands
+// (patrol: 'armed', no autonudge loop). The drawer renders the "Patrolling"
+// verdict in body colour and lists the patrol as a wake source without an
+// "Every N" interval it does not yet have — rather than a lit icon over
+// "No patrol scheduled." The verdict wears body colour because accent marks
+// LINKS in this drawer, and the frame asserts that rather than trusting it.
+await darkPushProjection(
+  'fixer',
+  'wake',
+  { patrol: 'armed', slot_key: 'fixer#dm', since: NOW - 20 },
+  1,
+)
+await dark.locator('[data-testid="member-wake-patrol"]').waitFor({ timeout: 15000 })
+const armedVerdict = await expectVerdictNotAccent(dark)
+await dark.screenshot({ path: `${OUT}/06b-armed-dark.png` })
+console.log(`06b-armed-dark: projection-armed patrol reads "${armedVerdict.text}" in ${armedVerdict.verdict}, not the accent ${armedVerdict.accent}, listed as a wake source with no interval`)
+
 await darkCtx.close()
 
 // 09/10: the two non-verdict states of the block — read in flight, read failed.
@@ -258,7 +343,7 @@ await darkCtx.close()
   registry.mode = 'hang'
   const { page, context } = await openMembers('dark')
   await page.getByText('fixer', { exact: true }).first().click()
-  await page.locator('[data-testid="member-drawer"]').waitFor({ state: 'visible', timeout: 15000 })
+  await page.locator('[data-testid="member-side-panel"]').waitFor({ state: 'visible', timeout: 15000 })
   await page.locator('[data-testid="member-patrol-loading"]').waitFor({ state: 'visible', timeout: 15000 })
   // DetailPanel's width spring is still running when the skeleton first
   // shows; let it settle so the frame is the resting layout, not mid-tween.
@@ -269,7 +354,7 @@ await darkCtx.close()
   registry.mode = 'fail'
   const { page: p2, context: c2 } = await openMembers('dark')
   await p2.getByText('fixer', { exact: true }).first().click()
-  await p2.locator('[data-testid="member-drawer"]').waitFor({ state: 'visible', timeout: 15000 })
+  await p2.locator('[data-testid="member-side-panel"]').waitFor({ state: 'visible', timeout: 15000 })
   await p2.locator('[data-testid="member-patrol-error"]').waitFor({ state: 'visible', timeout: 30000 })
   await p2.locator('[data-testid="member-roster-patrol-error"]').waitFor({ state: 'visible', timeout: 15000 })
   await p2.waitForTimeout(600)

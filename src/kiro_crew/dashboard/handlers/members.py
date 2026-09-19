@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 
 from aiohttp import web
 
@@ -42,6 +43,12 @@ logger = logging.getLogger(__name__)
 #: scan alike; the log itself rotates at ~256KiB so this is a display cap,
 #: not a durability boundary.
 _ACTIVITY_LIMIT = 50
+# How many log envelopes one backwards page reads. Larger than the display limit
+# because the log is shared: config, binding, rules, message, slot and patrol
+# events all sit between one member's activity records, so a page the size of the
+# display cap would usually need several round trips to fill it. This bounds the
+# allocation per page, which is the point -- it is not a cap on the answer.
+_ACTIVITY_PAGE = 500
 
 
 def _parse_activity_ts(raw: str) -> float:
@@ -326,6 +333,102 @@ async def api_members(request: web.Request) -> web.Response:
         # stays byte-for-byte what it is without it.
         if stopped:
             row["last_message_stopped"] = True
+
+    # Per-member event-log projections + lazy config reconcile. Off-loop
+    # because ensure/append/snapshot are synchronous file IO (one fsync per
+    # append). Best-effort: a logging fault never breaks the roster, so a
+    # member whose log cannot be reconciled falls back to an empty projection
+    # rather than failing the endpoint. The config-derived row fields are
+    # sourced from the reconciled roster view — after reconcile they equal the
+    # live config, so a hand-edited config is corrected in the log AND the row
+    # stays byte-identical to what it would have carried straight from cfg.
+    agent_cfgs = {row["name"]: cfg.agents.get(row["name"]) for row in rows}
+
+    def _project_rows() -> dict[str, dict]:
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.service import get_service
+
+        svc = get_service()
+        out: dict[str, dict] = {}
+        # This map is keyed by SLUG while the roster is keyed by row, and a slug is
+        # a lossy fold, so two rows can land on one key. Whichever row is projected
+        # last would win it: in one order the log's own member loses its state to a
+        # stranger's blank, and in the other the stranger's row renders the owner's
+        # roster, activity, wake and driving state as its own. Counting the rows per
+        # slug FIRST makes the answer independent of iteration order -- a collided
+        # slug is blank for everyone, which is the same visibly-empty row the
+        # header-name guard below already serves, and never somebody else's data.
+        slug_rows = Counter(row["slug"] for row in rows)
+        for row in rows:
+            slug = row["slug"]
+            try:
+                if slug_rows[slug] > 1:
+                    logger.warning(
+                        "member slug %r is shared by %d members, so none of them "
+                        "gets a projection; rename one member so their slugs differ",
+                        slug,
+                        slug_rows[slug],
+                    )
+                    out[slug] = {"asOfSeq": -1, "values": {}}
+                    continue
+                # Hand over the config this read already loaded: ensure resolves a
+                # placeholder header name, and `name == slug` is true for any member
+                # whose name IS its own fold, so without this the roster would load
+                # the config once per row off the loop.
+                svc.ensure(slug, row["name"], cfg)
+                # A slug is LOSSY, and colliding names are supported: `Review_Agent`
+                # and `review-agent` both fold to `review-agent`, and each activity
+                # entry keeps the exact name so attribution survives. What does NOT
+                # survive is a whole-member PROJECTION: one log holds one member's
+                # folded roster, activity, wake and driving state, so serving it on a
+                # second member's row renders the first member's work as the second's.
+                # The header names the member the log belongs to, so a row that is
+                # not that member is served an empty projection instead of a wrong
+                # one. Logged at warning level because a blank row needs its reason.
+                # A header holding the SLUG is exempt: `ensure` writes the header only
+                # while the log is fresh, so a writer with no name in hand (the
+                # message path passes None) locks the slug in as the name for good.
+                # That placeholder names nobody, and a slug is a lossy fold, so it
+                # differs from almost every real name -- reading it as a second member
+                # would blank a member's own state over a value that never was a name.
+                logged = svc.logged_name(slug)
+                if logged is not None and logged != row["name"] and logged != slug:
+                    logger.warning(
+                        "member slug %r logs %r, so %r gets no projection; "
+                        "rename one member so their slugs differ",
+                        slug,
+                        logged,
+                        row["name"],
+                    )
+                    out[slug] = {"asOfSeq": -1, "values": {}}
+                    continue
+                snap = svc.snapshot(slug)
+                values = snap.get("values", {}) if isinstance(snap, dict) else {}
+                agent_cfg = agent_cfgs.get(row["name"])
+                if agent_cfg is not None:
+                    eventlog_hooks.reconcile_member_config(
+                        slug, row["name"], agent_cfg, values.get("roster", {})
+                    )
+                    # Re-snapshot only when the reconcile appended (the roster
+                    # config fields would otherwise be stale for this response).
+                    snap = svc.snapshot(slug)
+                out[slug] = snap if isinstance(snap, dict) else {"asOfSeq": -1, "values": {}}
+            except Exception:
+                logger.debug("member projections failed for %r", slug, exc_info=True)
+                out[slug] = {"asOfSeq": -1, "values": {}}
+        return out
+
+    projections = await asyncio.to_thread(_project_rows)
+    # Same network-boundary redaction as the /history read and the projection
+    # WS push: a projection block carries agent-authored free-text (an activity
+    # record's `project`, message previews) and `svc.snapshot()` returns it raw,
+    # so the credential + exfiltration-URL chain has to run before it crosses to
+    # the browser or the roster list leaks what the sibling reads scrub.
+    from kiro_crew.eventlog.service import _redact_projection_value
+
+    for row in rows:
+        block = projections.get(row["slug"], {"asOfSeq": -1, "values": {}})
+        row["projections"] = _redact_projection_value(block)
 
     return web.json_response({"members": rows})
 
@@ -712,6 +815,19 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 },
                 status=500,
             )
+        # Record the binding in the member's append-only log. The trust-file
+        # write above is the security fence and stays authoritative; this is
+        # the durable projection input for the roster's slot_key. Best-effort
+        # and off-loop (ensure/append are synchronous file IO); a logging fault
+        # never fails a binding the fence already persisted.
+
+        def _emit_binding() -> None:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import MEMBER_BINDING
+
+            eventlog_hooks.emit(slug, member_name, MEMBER_BINDING, {"slot_key": slot.key})
+
+        await asyncio.to_thread(_emit_binding)
 
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
 
@@ -754,7 +870,70 @@ async def api_member_activity(request: web.Request) -> web.Response:
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
 
-    entries = await asyncio.to_thread(members_mod.read_activity, slug)
+    # Source the records from the member's append-only log: ACTIVITY_RECORD
+    # events for THIS exact member, unwrapped to the record dict each carries.
+    #
+    # The member filter and the timestamp parse run INSIDE this read, before any
+    # cap, because a log's newest N envelopes are not N of one member's activity
+    # records. The same log also carries config, binding, rules, message, slot and
+    # patrol events, and a colliding slug's log carries another exact name's
+    # records as well -- so capping the envelope read first and filtering second
+    # drops activity that is well inside the window the drawer promises.
+    #
+    # But the read is PAGED rather than asked for the whole log. `history` with
+    # `limit=None` materialises every event in the lifetime file into a list and
+    # reverses it, which is bounded only while the log still fits the retained tail
+    # (`MAX_RETAINED_EVENTS`); past that the allocation is the file's whole length,
+    # on a request path, for a response that shows `_ACTIVITY_LIMIT` rows. The log
+    # has no rotation, so outgrowing the tail is ordinary ageing rather than an
+    # extreme input. Paging keeps the filter where it has to be AND keeps the
+    # allocation bounded: walk backwards a page at a time and stop as soon as one
+    # more than the display cap has matched, which is all `capped` needs to know.
+    def _read_activity_records() -> list[tuple[float, int, dict]]:
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import ACTIVITY_RECORD
+
+        svc = get_service()
+        out: list[tuple[float, int, dict]] = []
+        before: int | None = None
+        while True:
+            page = svc.history(slug, before=before, limit=_ACTIVITY_PAGE)
+            if not page:
+                break
+            for event in page:
+                if event.get("type") != ACTIVITY_RECORD:
+                    continue
+                record = event.get("data")
+                if not isinstance(record, dict):
+                    continue
+                if record.get("member") != member:
+                    # A colliding slug's log holds records for another exact name;
+                    # they belong to that member's drawer, not this one's.
+                    continue
+                ts = _parse_activity_ts(record.get("ts", ""))
+                if ts <= 0:
+                    # A record without a readable timestamp cannot be placed on a
+                    # timeline; skip it rather than sorting garbage to the top.
+                    continue
+                # ``seq`` is the log's own append order, which is what the former
+                # read index stood in for -- and it stays the same number whatever
+                # slice this read returns, so same-second ties break identically.
+                out.append((ts, int(event.get("seq", 0)), record))
+            if len(out) > _ACTIVITY_LIMIT:
+                # One past the display cap is enough: the sort below can only trim
+                # the oldest tail, and `capped` is a boolean, not a total.
+                break
+            if len(page) < _ACTIVITY_PAGE:
+                break  # the log is exhausted
+            oldest = page[-1].get("seq")  # pages come newest-first
+            if not isinstance(oldest, int) or (before is not None and oldest >= before):
+                # No usable cursor, or one that did not move: stop rather than
+                # re-read the same page for ever.
+                break
+            before = oldest
+        return out
+
+    entries = await asyncio.to_thread(_read_activity_records)
 
     def _sanitize(text: str) -> str:
         # Same redaction chain the roster's message preview uses: a project
@@ -768,20 +947,11 @@ async def api_member_activity(request: web.Request) -> web.Response:
         return text
 
     rows: list[tuple[float, int, dict]] = []
-    for idx, entry in enumerate(entries):
-        if entry.get("member") != member:
-            # A colliding slug's log holds records for another exact name;
-            # they belong to that member's drawer, not this one's.
-            continue
-        ts = _parse_activity_ts(entry.get("ts", ""))
-        if ts <= 0:
-            # A record without a readable timestamp cannot be placed on a
-            # timeline; skip it rather than sorting garbage to the top.
-            continue
+    for ts, seq, entry in entries:
         rows.append(
             (
                 ts,
-                idx,
+                seq,
                 {
                     "ts": ts,
                     "via": entry.get("via", "") or "chat",
@@ -1000,6 +1170,18 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "could not persist rules", "code": "rules_write_failed"}, status=500
         )
+
+    # Record the rules change in the member's append-only log. The trust-file
+    # write above is the security fence and stays authoritative; this is the
+    # durable event so the log reflects the current rules text. Best-effort and
+    # off-loop; a logging fault never fails a save the fence already persisted.
+    def _emit_rules() -> None:
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import MEMBER_RULES
+
+        eventlog_hooks.emit(slug, member, MEMBER_RULES, {"text": rules})
+
+    await asyncio.to_thread(_emit_rules)
 
     # Same audit posture as the GET: a successful boundary WRITE is the event
     # an owner most needs a trace of — it is the moment the member's safety

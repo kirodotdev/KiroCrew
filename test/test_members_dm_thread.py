@@ -1602,6 +1602,94 @@ class TestMemberActivityRoute:
         assert set(data["entries"][0]) == {"ts", "via", "project"}
 
     @pytest.mark.asyncio
+    async def test_the_read_never_asks_the_log_for_every_event(self, tmp_path):
+        """The allocation happens INSIDE `history`, so the caller must bound the ask.
+
+        With `limit=None` and a log past `MAX_RETAINED_EVENTS`, `history` builds every
+        event in the lifetime file into a list and reverses it before the caller sees
+        anything -- so no amount of care in this handler bounds it. The member log has
+        no rotation, so outgrowing the retained tail is ordinary ageing, and the
+        response it feeds shows `_ACTIVITY_LIMIT` rows.
+
+        The test above (1001 buried envelopes) proves paging still FINDS the records.
+        This one pins the reason paging exists: every ask carries a limit.
+        """
+        state = _make_state(tmp_path)
+        from unittest import mock
+
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types as _types
+        from kiro_crew.members import record_activity, slug_for_name
+
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", project="/repo", via="chat")
+        svc = svc_mod.get_service()
+        slug = slug_for_name(CREW)
+        for i in range(1001):
+            svc.append(slug, _types.MEMBER_MESSAGE, {"text": f"m{i}"})
+
+        asks: list[object] = []
+        real_history = type(svc).history
+
+        def _recording_history(self, slug_in, *, before=None, limit=None):
+            asks.append(limit)
+            return real_history(self, slug_in, before=before, limit=limit)
+
+        with _patched_config([CREW]):
+            with mock.patch.object(type(svc), "history", _recording_history):
+                async with TestClient(TestServer(_make_members_app(state))) as client:
+                    resp = await client.get(
+                        "/api/members/code-reviewer/activity", params={"member": CREW}
+                    )
+                    assert resp.status == 200
+                    data = await resp.json()
+
+        assert asks, "the endpoint did not read the log at all"
+        assert None not in asks, (
+            "the activity read asked for the whole log (limit=None); `history` then "
+            f"materialises the entire lifetime file before returning. asks={asks}"
+        )
+        assert all(
+            isinstance(a, int) and 0 < a <= 1000 for a in asks
+        ), f"an ask was not a small bounded page: {asks}"
+        # Still correct: the buried record is found despite the bounded asks.
+        assert len(asks) > 1, "1001 envelopes should have needed more than one page"
+        assert [e["project"] for e in data["entries"]] == ["/repo"]
+
+    @pytest.mark.asyncio
+    async def test_activity_survives_more_than_a_thousand_later_events(self, tmp_path):
+        """The cap applies to this member's ACTIVITY, not to a slice of the log.
+
+        One log carries config, binding, rules, message, slot and patrol events
+        beside activity records, and a colliding slug's log carries another exact
+        name's records too. Reading a fixed slice of the newest envelopes and
+        filtering afterwards therefore drops activity the drawer promises to show:
+        a member with a busy message history loses their whole timeline even though
+        the records are still in the log. The filter runs before any cap.
+        """
+        state = _make_state(tmp_path)
+        from kiro_crew.eventlog import types as _types
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.members import record_activity, slug_for_name
+
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", project="/repo", via="chat")
+        # Bury it behind more envelopes than the former read window held.
+        svc = get_service()
+        slug = slug_for_name(CREW)
+        for i in range(1001):
+            svc.append(slug, _types.MEMBER_MESSAGE, {"text": f"m{i}"})
+
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get(
+                    "/api/members/code-reviewer/activity", params={"member": CREW}
+                )
+                assert resp.status == 200
+                data = await resp.json()
+        assert len(data["entries"]) == 1, f"activity was cut off by the envelope read: {data}"
+        assert data["entries"][0]["project"] == "/repo"
+        assert data["capped"] is False
+
+    @pytest.mark.asyncio
     async def test_colliding_slugs_do_not_mix_histories(self, tmp_path):
         """Two names sharing a slug share a log file, never a timeline.
 
@@ -1669,6 +1757,9 @@ class TestMemberActivityRoute:
 
         assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
         path = member_dir("code-reviewer") / ACTIVITY_FILE_NAME
+        # Only the LEGACY file lives in the member directory now -- the log moved
+        # under the fenced crew-log tree -- so nothing has created it yet.
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(f'\n{{"ts": "not-a-date", "member": "{CREW}", "via": "chat"}}\n')
             fh.write(f'\n{{"ts": 1735689600, "member": "{CREW}", "via": "chat"}}\n')

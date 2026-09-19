@@ -4,6 +4,7 @@ import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { ApiError } from '../../api/apiError'
+import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
 import { memberThreadQueryKey } from '../../api/membersQuery'
 import { getViewedThreadSlot, _resetViewedThreadForTests } from '../../lib/viewedThread'
@@ -135,7 +136,7 @@ function setWindowWidth(px: number) {
 }
 
 function row(overrides: Record<string, unknown> = {}) {
-  return {
+  const base = {
     name: 'oncall',
     slug: 'oncall',
     bound: false,
@@ -147,6 +148,34 @@ function row(overrides: Record<string, unknown> = {}) {
     model: '',
     ...overrides,
   }
+  // Every roster row now carries a baseline projections block (the backend
+  // contract). The `roster` face mirrors the row's own config fields so the
+  // page reads identical values whether from the row or the seeded store; a
+  // case that wants a divergence overrides `projections` explicitly.
+  const projections = {
+    asOfSeq: 1,
+    values: {
+      roster: {
+        name: base.name,
+        slug: base.slug,
+        kiro_agent: base.kiro_agent,
+        workspace: base.workspace,
+        memory_store: base.memory_store,
+        model: base.model,
+        slot_key: base.slot_key,
+        last_active_ts: (base as { last_active_ts?: number }).last_active_ts,
+        last_message: (base as { last_message?: string }).last_message,
+        starred: (base as { starred?: boolean }).starred,
+      },
+      // `activity` is deliberately omitted from the default fixture: the
+      // activity-focused cases feed entries through api.memberActivity, and a
+      // member with no activity projection must fall back to that query. Cases
+      // that want a pushed activity projection seed it via memberProjectionStore.
+      wake: { patrol: 'none' as const },
+      driving: { open: [] },
+    },
+  }
+  return { ...base, projections, ...overrides }
 }
 
 /** Echoes the requested slug back as the thread's member — the happy path for
@@ -252,6 +281,9 @@ beforeEach(() => {
   vi.mocked(api.autonudgeList).mockImplementation(() => Promise.resolve({ enabled: true, loops: [] }))
   // The remembered member must not leak between cases.
   localStorage.clear()
+  // The projection store is a module-level singleton fed by the roster seed;
+  // clear it so one case's seeded values do not survive into the next.
+  memberProjectionStore.clear()
   // The side panel's tab strip is a module-level, persisted store; a tab
   // opened in one case would otherwise be on the strip in the next.
   __resetPanelTabs()
@@ -616,6 +648,72 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(within(drawer).getAllByRole('button', { name: 'Edit in crew manager' })).toHaveLength(1)
     fireEvent.click(within(drawer).getByRole('button', { name: 'Edit in crew manager' }))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
+  })
+
+  it('re-renders the model from a member_projection frame without a roster refetch', async () => {
+    // The drawer's model reads the pushed `roster` projection. Applying a
+    // higher-seq frame (what the useWebSocket member_projection case does) must
+    // update the cell in place — no second GET /api/members.
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const summary = await screen.findByTestId('member-crew-summary')
+    expect(summary).toHaveTextContent('claude-opus-5')
+    const callsBefore = (api.members as ReturnType<typeof vi.fn>).mock.calls.length
+    act(() => {
+      memberProjectionStore.apply(
+        'oncall',
+        'roster',
+        { name: 'oncall', slug: 'oncall', kiro_agent: 'kirocrew', model: 'claude-sonnet-9' },
+        5,
+      )
+    })
+    await waitFor(() => expect(summary).toHaveTextContent('claude-sonnet-9'))
+    expect(summary).not.toHaveTextContent('claude-opus-5')
+    expect((api.members as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+  })
+
+  it('a starred:true frame flips the Starred filter count and membership at page level without a roster refetch', async () => {
+    // The page-level Starred count and filter read the MERGED list (rows +
+    // pushed roster projection), so a `member_projection` frame that stars a
+    // member must move the menu count and the filtered membership WITHOUT a
+    // second GET /api/members — otherwise the row shows starred while the
+    // count reads 0 (the bug this fixes).
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research' }),
+    ])
+    // The Starred filter lives inside the filter menu; open it to read the
+    // count — Enter on the trigger, as the sidebar's own filter tests do.
+    fireEvent.keyDown(await screen.findByTestId('member-filter-menu'), { key: 'Enter' })
+    const starItem = await screen.findByTestId('member-filter-starred')
+    // No stars yet: the count reads 0.
+    expect(starItem).toHaveTextContent('0')
+    const callsBefore = (api.members as ReturnType<typeof vi.fn>).mock.calls.length
+
+    act(() => {
+      // seq > the baseline seed's asOfSeq (1) so higher-seq-wins applies it.
+      memberProjectionStore.apply(
+        'research',
+        'roster',
+        { name: 'research', slug: 'research', starred: true },
+        5,
+      )
+    })
+
+    await waitFor(() => expect(screen.getByTestId('member-filter-starred')).toHaveTextContent('1'))
+    // No roster refetch drove the change.
+    expect((api.members as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+
+    // Enabling the filter shows exactly that member.
+    fireEvent.click(screen.getByTestId('member-filter-starred'))
+    await waitFor(() => {
+      const names = Array.from(document.querySelectorAll('[data-testid^="member-star-"]')).map((el) =>
+        el.getAttribute('data-testid')!.replace('member-star-', ''),
+      )
+      expect(names).toEqual(['research'])
+    })
+    // The member roster was fetched exactly once across the whole case.
+    expect(api.members).toHaveBeenCalledTimes(1)
   })
 
   it('shows member memory V2 when owner metadata matches the member', async () => {
@@ -1735,6 +1833,36 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await waitFor(() => expect(stats).toHaveTextContent('2+'))
   })
 
+  it('a saturated projection ring renders counters as floors (N+), even with no query capped flag', async () => {
+    // The pushed activity projection is a newest-first ring bounded at
+    // ACTIVITY_RING (50). When it is full, older in-window events fell off, so
+    // the tile must read "50+" not an exact "50" — even though the query path's
+    // `capped` flag is false (the count comes from the projection, not the
+    // query). Regression for the UX finding on the projection-served path.
+    const now = Date.now() / 1000
+    vi.mocked(api.memberActivity).mockResolvedValue({
+      slug: 'oncall',
+      member: 'oncall',
+      capped: false,
+      entries: [],
+    })
+    // 50 records, all within today — a full ring.
+    const recent = Array.from({ length: 50 }, (_, i) => ({
+      ts: now - i,
+      via: 'chat',
+      project: '',
+    }))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-stats')
+    act(() => {
+      memberProjectionStore.apply('oncall', 'activity', { recent, today: 50, week: 50 }, 5)
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('member-stats')).toHaveTextContent('50+'),
+    )
+  })
+
   it('a failed activity fetch renders the error state, never the affirmative empty state', async () => {
     vi.mocked(api.memberActivity).mockRejectedValue(new Error('boom'))
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
@@ -1753,6 +1881,53 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     // the avatar dot, so a textual status label must not come back.
     expect(screen.getByText('Six new issues triaged.')).toBeTruthy()
     expect(screen.queryByText(/^(idle|working)$/i)).toBeNull()
+  })
+
+  it('a projection left behind by a refused append does not outrank the transcript preview', async () => {
+    // Every other field the projected view merges is CONFIG-derived, so the event
+    // log is where it is written and the projection is the record. A message
+    // preview is not: the row carries it from the conversation transcript, which
+    // is the store the message was persisted through, and the member/message
+    // event is a second copy appended afterwards on a best-effort hook. When that
+    // append is refused the projection keeps the PREVIOUS message, so giving it
+    // precedence renders a stale preview over the fresh value sitting beside it in
+    // the same payload -- with nothing on the card saying which one it is.
+    const stale = {
+      asOfSeq: 1,
+      values: {
+        roster: {
+          name: 'oncall',
+          slug: 'oncall',
+          last_message: 'a message from before the refused append',
+        },
+        wake: { patrol: 'none' as const },
+        driving: { open: [] },
+      },
+    }
+    // The second member is the CONTROL: its row carries no transcript preview at
+    // all, and its projection does. Without it, dropping the projection entirely
+    // would satisfy the assertions below while a pushed frame stopped rendering.
+    const fillIn = {
+      asOfSeq: 1,
+      values: {
+        roster: {
+          name: 'quiet',
+          slug: 'quiet',
+          last_message: 'only the projection has this one',
+        },
+        wake: { patrol: 'none' as const },
+        driving: { open: [] },
+      },
+    }
+    await renderPage([
+      row({ last_message: 'the message the transcript actually holds', projections: stale }),
+      row({ name: 'quiet', slug: 'quiet', last_message: '', projections: fillIn }),
+    ])
+    await rosterRow('oncall')
+
+    expect(screen.getByText('the message the transcript actually holds')).toBeTruthy()
+    expect(screen.queryByText('a message from before the refused append')).toBeNull()
+    expect(screen.getByText('only the projection has this one')).toBeTruthy()
   })
 
   it('a just-stopped thread shows a Stopped chip; a later real message takes it down', async () => {
@@ -2268,6 +2443,25 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/no patrol scheduled/i)
   })
 
+  it('a stop the loop registry has already forgotten still renders from the wake projection', async () => {
+    // The restart case: the gateway died mid-patrol, the registry came back
+    // empty, and the loader synthesised the stop into the member log. The
+    // registry alone would read "nothing scheduled"; the pushed `wake` value
+    // is the only record that the patrol existed and how it ended.
+    await openDrawerWith({ loops: [] })
+    act(() => {
+      memberProjectionStore.apply(
+        'oncall',
+        'wake',
+        { patrol: 'stopped', slot_key: 'member-oncall', stopped_reason: 'interrupted', since: Date.now() },
+        99,
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'stopped'))
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/patrol stopped/i)
+    expect(screen.getByTestId('member-patrol-reason')).toHaveTextContent(/interrupted/i)
+  })
+
   it('a stopped loop keeps its reason visible instead of collapsing into "no patrol scheduled"', async () => {
     // This is the failure the block exists for: a loop that hit its cycle
     // cap stops silently, and a page that reads that as "nothing scheduled"
@@ -2279,6 +2473,45 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(screen.queryByText(/no patrol scheduled/i)).toBeNull()
   })
 
+  it('a stopped patrol carries no control of its own, because the drawer already has one', async () => {
+    // This asserted the opposite until two reviewers measured the premise it rested
+    // on. "The drawer states the failure and offers nothing to act on" is false: the
+    // same drawer carries the Wake-sources control, and an empty-state link when no
+    // source is set, both calling the handler a block-level control would have
+    // called. A third door put two near-identically-labelled controls about a
+    // hundred pixels apart. Worse, its promise could not close -- this block renders
+    // from the durable wake projection's patrol field and the handler creates a
+    // SCHEDULE, which writes nothing there, so the notice and the button both
+    // survived the user completing the offered fix.
+    await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'cycle_cap' })] })
+    expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'stopped')
+    expect(screen.queryByTestId('member-patrol-rearm')).toBeNull()
+    // NOT a dead end, which is the property that mattered: the way to schedule is
+    // present in the drawer, and this is the control that always served it.
+    const header = screen.getByTestId('member-wake-create')
+    expect(header).toBeInTheDocument()
+    expect(header.textContent?.trim()).toBeTruthy()
+  })
+
+  it("the wake row states its stopped state in the NAME and does not repeat the reason", async () => {
+    // The state goes inline in the name the way the sibling job rows do it, because
+    // a bare state word alone in a trailing slot read as a control: the blind reader
+    // could not tell a label from a button and so would not touch it. That inline
+    // word is also what ties the drawer's two "Auto patrol" mentions where a cold or
+    // touch reader can see it, which a `title` tooltip never did.
+    //
+    // The reason does NOT ride here. It renders in the Auto patrol block a few rows
+    // above, so a copy in this row printed one sentence twice in a single drawer,
+    // which reads as the patrol being listed twice.
+    await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'cycle_cap' })] })
+    const row = screen.getByTestId('member-wake-patrol')
+    expect(row).toHaveTextContent(/auto patrol \(stopped\)/i)
+    expect(row).not.toHaveTextContent(/wake limit/i)
+    // Not on a tooltip either: that is the failure mode the inline word replaced, so
+    // a regression back to it has to be loud rather than merely unasserted.
+    expect(row.querySelector('[title]')).toBeNull()
+  })
+
   it('an active patrol is listed under Wake sources, so the card cannot say "nothing wakes this member" above a live one', async () => {
     await openDrawerWith({ loops: [loop()] })
     await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
@@ -2287,8 +2520,32 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
   })
 
-  it('without a live patrol the Wake sources empty line still renders', async () => {
+  it('a stopped patrol lists as a muted wake source instead of reading "nothing wakes this member"', async () => {
+    // This test asserted the opposite rule until UX read the shipped panel: a
+    // durably-stopped patrol is the state this surface exists to preserve
+    // across a restart, and routing it to the empty branch put "Patrol
+    // stopped. Interrupted by a restart." directly above "Nothing wakes this
+    // member automatically." A stopped patrol still IS a wake source, just not
+    // an armed one, so it lists muted the way a disabled job does.
     await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'manual' })] })
+    await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
+    const patrolRow = screen.getByTestId('member-wake-patrol')
+    expect(patrolRow).toHaveAttribute('data-patrol-state', 'stopped')
+    expect(patrolRow).toHaveTextContent(/auto patrol/i)
+    // The state rides in the NAME; the reason stays in the Auto patrol block.
+    expect(patrolRow).toHaveTextContent(/auto patrol \(stopped\)/i)
+    expect(patrolRow).not.toHaveTextContent(/paused by hand/i)
+    // Still not the sentence the Auto patrol block shows: one drawer saying
+    // "Patrol stopped." twice gave a reader no way to tell whether the two lines
+    // were the same thing or two different ones.
+    expect(patrolRow).not.toHaveTextContent(/patrol stopped/i)
+    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+  })
+
+  it('with no patrol at all the Wake sources empty line still renders', async () => {
+    // The empty copy is still the honest answer when nothing wakes the member:
+    // the fix above narrows WHEN it fires, it does not remove it.
+    await openDrawerWith({ loops: [] })
     await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
     expect(screen.queryByTestId('member-wake-patrol')).toBeNull()
     expect(screen.getByText(/nothing wakes this member/i)).toBeInTheDocument()
@@ -3034,5 +3291,63 @@ describe('MembersPage default member, memory and URL', () => {
       // against when the panel already spans the window (the chat page's rule).
       expect(overlay.querySelector('[role="separator"][aria-orientation="vertical"]')).toBeNull()
     })
+  })
+})
+
+
+describe('MembersPage colliding slugs (live projection)', () => {
+  it('withholds a live projection from every row sharing its slug', async () => {
+    // A `member_projection` frame is keyed by slug ALONE, so when two configured
+    // names fold to one slug nothing in the frame says which member it describes.
+    // Applying it to both rows renders one member's roster state on the other's
+    // row. The backend's roster read already withholds a projection for a
+    // colliding row; the live path reaches the store directly, so it needs the
+    // same rule or the two surfaces disagree about the same pair.
+    //
+    // Observed at page level through the Starred filter count, which reads the
+    // MERGED list: a starred:true frame on the shared slug must move nothing.
+    await renderPage([
+      row({ name: 'Code_Reviewer', slug: 'code-reviewer' }),
+      row({ name: 'code-reviewer', slug: 'code-reviewer' }),
+    ])
+    fireEvent.keyDown(await screen.findByTestId('member-filter-menu'), { key: 'Enter' })
+    const starItem = await screen.findByTestId('member-filter-starred')
+    expect(starItem).toHaveTextContent('0')
+
+    act(() => {
+      memberProjectionStore.apply(
+        'code-reviewer',
+        'roster',
+        { name: 'code-reviewer', slug: 'code-reviewer', starred: true },
+        5,
+      )
+    })
+
+    // Still 0: neither row took the frame. Without the suppression BOTH rows
+    // take it, so the count reads 2 -- one member's state on two identities.
+    await waitFor(() => expect(starItem).toHaveTextContent('0'))
+  })
+
+  it('still applies a live projection when the slug is unique', async () => {
+    // The complement, so the guard is a condition rather than a blanket refusal:
+    // an ordinary roster keeps taking its frames.
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall' }),
+      row({ name: 'research', slug: 'research' }),
+    ])
+    fireEvent.keyDown(await screen.findByTestId('member-filter-menu'), { key: 'Enter' })
+    const starItem = await screen.findByTestId('member-filter-starred')
+    expect(starItem).toHaveTextContent('0')
+
+    act(() => {
+      memberProjectionStore.apply(
+        'research',
+        'roster',
+        { name: 'research', slug: 'research', starred: true },
+        5,
+      )
+    })
+
+    await waitFor(() => expect(starItem).toHaveTextContent('1'))
   })
 })
