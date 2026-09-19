@@ -94,6 +94,28 @@ def channel_namespace_of(key: str) -> str:
     return ""
 
 
+#: Human-facing label per channel namespace, used only when a session has no
+#: title of its own yet (first turn still in flight).
+CHANNEL_LABELS: dict[str, str] = {
+    "slack": "Slack",
+    "discord": "Discord",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "webex": "Webex",
+    "wecom": "WeCom",
+    "teams": "Teams",
+    "weixin": "Weixin",
+    "imessage": "iMessage",
+    "feishu": "Feishu",
+    "unified": "Direct message",
+}
+
+
+def channel_label(session_key: str) -> str:
+    """Human-facing label for the channel *session_key* came from."""
+    return CHANNEL_LABELS.get(channel_namespace_of(session_key), "Channel")
+
+
 #: Non-channel session-key prefixes that still deserve their own telemetry label.
 #: Kept in sync with the prefixes ``SessionManager`` mints; anything absent here
 #: folds into ``"other"`` so an unrecognised key can never mint a metric series.

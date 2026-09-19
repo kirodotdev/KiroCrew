@@ -54,6 +54,7 @@ from kiro_crew.dashboard.remote_relay import (
     ensure_version_parity,
     redact_peer_text,
 )
+from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.validation import sanitize_string
 
 if TYPE_CHECKING:
@@ -284,13 +285,23 @@ def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     unrecognised ``memory_mode`` is dropped rather than coerced — the create
     handler validates the mode it is given, and inventing one here would smuggle
     a value past that validation.
+
+    The peer serialises DISPLAY titles (``slot.display_title``), so an unnamed
+    session arrives as the literal :data:`NEW_SESSION_TITLE` placeholder rather
+    than as ``""``. That placeholder is the wire form of "no name yet", not a name
+    the user gave, so it is treated as untitled here: ``title`` is omitted and the
+    adopt handler pins the authoritative empty value. Copying it through would
+    persist the placeholder text as a user rename. The comparison is on the raw
+    row string, before the sink, because the sink may rewrite the ellipsis.
     """
     out: dict[str, str] = {}
     agent = row.get("agent")
     if isinstance(agent, str) and agent:
         out["agent"] = redact_peer_text(sanitize_string(agent))[:128]
     title = row.get("title")
-    if isinstance(title, str) and title:
+    # Wire vocabulary: the literal is frozen within a release series -- see the
+    # contract comment on ``NEW_SESSION_TITLE`` in ``state.py``.
+    if isinstance(title, str) and title and title != NEW_SESSION_TITLE:
         out["title"] = redact_peer_text(sanitize_string(title))[:200]
     mode = row.get("memory_mode")
     if isinstance(mode, str) and mode in ("persistent", "incognito", "temporary"):
