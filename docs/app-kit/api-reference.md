@@ -98,6 +98,24 @@ permission denials into refresh attempts or automatically replay writes.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
+## Embedded Chat
+
+`ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
+existing session. The required `slotKey` selects the session. Existing props such
+as `agent`, `placeholder`, `frameless`, `startAtBottom`, `onSend`, and
+`aboveComposer` keep their current contracts.
+
+```tsx
+import { ChatEmbed } from '@kirocrew/app-sdk'
+
+<ChatEmbed slotKey="coder-abc123" />
+```
+
+The composer accepts multiple lines. `Enter` sends the draft, `Shift+Enter`
+inserts a line break, and an Enter used to commit an input method editor (IME)
+candidate does not send. The box grows with the draft up to 240 pixels, then
+keeps its height and scrolls vertically.
+
 ## Native Chat Panel
 
 `ChatPanel` mounts Kiro Crew's native chat experience for an existing session. The required
