@@ -32,6 +32,37 @@ code itself.
 - **SEL audit** — every module load is recorded in the Security Event Log with its
   trust class (`builtin` / `third_party`), so app-code execution is auditable.
 - **Execution admission defaults to deny** — `agent.apps_allow_third_party` defaults to `false`. A non-builtin app needs either an explicit per-app `agent.apps_trusted` grant (with its repository binding, where applicable) or the broad `apps_allow_third_party=true` grant. `app_execution_denied` is consulted before in-process module loading, backend spawning, enable-time side effects, and manifest shell lifecycle commands; allowed and denied decisions are SEL-audited. Builtin status is accepted only when the registered app name and resolved path prove shipped provenance.
+- **Turning admission off REVOKES, it does not merely stop admitting** — code the
+  flag was admitting is stopped, so the setting is never a label that changes
+  nothing until the next restart. Three paths enforce it, and they exist because
+  the setting has three writers:
+  - `PUT /api/security/trusted-apps/allow-all` sweeps on the falling edge before
+    persisting `false`, so each app's `on_shutdown` hook can still load, then
+    sweeps a second time after the write to catch an app enabled during the
+    window. It reports what it could not stop rather than claiming success, and
+    `agent.apps_allow_third_party` is excluded from the generic settings PATCH so
+    no caller reaches the setting without that sequencing.
+  - `start_enabled_app_backends` revokes at boot: an app the ceiling no longer
+    admits has its agents, skills, and MCP entries deregistered and its backend
+    is not spawned. A policy tightened while the gateway was down therefore does
+    not survive the restart.
+  - the per-backend liveness watch re-reads the ceiling each sweep and stops a
+    backend that is no longer admitted. This is what closes the CLI and the
+    hand-edited `config.json`: both reach the setting without passing the
+    endpoint, and before this a backend they un-trusted kept serving until the
+    next boot. Bound is one `_HEALTH_WATCH_INTERVAL`.
+
+  Scope is the executing surface. An app with its own `agent.apps_trusted` grant
+  keeps running while that grant stands — the blanket flag does not govern it — and
+  non-executable resources (agents, skills, MCP declarations, cron definitions)
+  are outside the ceiling. Anything that tries to RUN app code meets
+  `app_execution_denied` and fails closed on its own.
+  The liveness watch is level-triggered on the ceiling rather than edge-triggered
+  on one setting, so REMOVING an app's own grant from `config.json` also stops its
+  backend within one interval. That follows from the same rule and is intended: an
+  app the gateway would refuse to load is an app it should not keep running.
+  Turning the blanket flag off, on its own, never touches an app that still holds
+  its own grant.
 
 ### App-token scope confinement (CWE-269)
 
