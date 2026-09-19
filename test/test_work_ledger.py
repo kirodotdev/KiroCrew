@@ -496,6 +496,20 @@ def _ledger_conductor_accept_eval() -> Path:
     return script
 
 
+def _claimed_pr_reaches_a_bar(batch: dict, claimed: int) -> bool:
+    """Whether *claimed* appears anywhere in any entry's ``accept`` bar.
+
+    Scoped at the bar, NOT at the whole serialized batch. ``accept_batch`` composes an
+    entry from three fields — ``item_id``, ``acceptance`` and ``status`` — and only
+    ``acceptance`` is one a worker's report can contaminate, so the bar is the only
+    place a leaked claim can land. ``item_id`` is ``it_`` plus eight HEX characters,
+    whose digits spell any decimal sentinel a test plants about one id in 739, so a
+    whole-document substring check answers yes on an ordinary id. Scoping it also names
+    WHICH field leaked when one really does.
+    """
+    return any(str(claimed) in json.dumps(entry["accept"]) for entry in batch["items"])
+
+
 def test_accept_batch_is_built_from_acceptance_and_never_from_a_claimed_pr():
     """The bar in the batch is the stored one, whatever number the worker claims."""
     bar = {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}
@@ -503,7 +517,44 @@ def test_accept_batch_is_built_from_acceptance_and_never_from_a_claimed_pr():
     wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", pr=999)
     batch = wl.accept_batch(wl.list_work_items(CONDUCTOR))
     assert batch == {"items": [{"id": item_id, "accept": bar, "status": "done"}]}
-    assert "999" not in json.dumps(batch)
+    assert not _claimed_pr_reaches_a_bar(batch, 999)
+
+
+def test_a_minted_id_that_spells_the_claimed_pr_is_not_a_leak():
+    """``it_3bcc999e`` is an ordinary id, and the check above must not read it as a leak.
+
+    ``mint_item_id`` returns ``it_`` + ``secrets.token_hex(4)``, whose alphabet includes
+    ``9``, so about one minted id in 739 carries ``999`` — the same digits the test above
+    plants as a worker's claim. Forcing such an id checks the distinction on every run
+    rather than leaving it to the mint.
+
+    Both halves are asserted on purpose. The first pins that the whole serialized
+    document does carry the digits, so a check scoped there cannot tell an id from a
+    leak; the second pins that the bar-scoped check answers no. Widening
+    :func:`_claimed_pr_reaches_a_bar` to the whole document turns the second assertion
+    red here rather than once in 739 runs somewhere else.
+    """
+    token = "3bcc999e"
+    assert set(token) <= set("0123456789abcdef"), "the forced token is token_hex-legal"
+
+    # One forced id, then the real minter: the create path re-mints on a collision, so
+    # a constant would spin if this id were ever already on disk.
+    forced = [f"it_{token}"]
+    real_mint = wl.mint_item_id
+    bar = {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}
+    with mock.patch.object(
+        wl, "mint_item_id", side_effect=lambda: forced.pop() if forced else real_mint()
+    ):
+        item_id = _new_item(acceptance=dict(bar))
+    assert item_id == f"it_{token}"
+    assert wl._ITEM_ID_RE.match(item_id), "the forced id is a legal minted id"
+
+    wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", pr=999)
+    batch = wl.accept_batch(wl.list_work_items(CONDUCTOR))
+
+    assert "999" in json.dumps(batch), "the id puts the digits in the document"
+    assert not _claimed_pr_reaches_a_bar(batch, 999)
+    assert batch["items"][0]["accept"] == bar
 
 
 def test_accept_batch_leaves_out_an_item_whose_bar_is_not_concrete_yet():
