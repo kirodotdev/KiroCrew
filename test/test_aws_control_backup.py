@@ -1732,6 +1732,17 @@ class TestALostRunWriteDoesNotReUploadForever:
         }
 
 
+@pytest.mark.parametrize("basename", ["backup.tar.gz", "备份.tar.gz", "x" * 255])
+def test_staging_name_preserves_digest_and_byte_budget(basename):
+    key = "snapshots/install/" + basename
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    prefix = digest + "-"
+    budget = backup.STAGING_NAME_MAX_BYTES - len(prefix)
+    expected = prefix + basename.encode("utf-8")[:budget].decode("utf-8", "ignore")
+    assert backup._staging_name(key) == expected
+    assert len(expected.encode("utf-8")) <= backup.STAGING_NAME_MAX_BYTES
+
+
 class TestCostsCacheBranches:
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path, monkeypatch):

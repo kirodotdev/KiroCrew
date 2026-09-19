@@ -1779,7 +1779,7 @@ def _staging_name(key: str) -> str:
     file rather than accumulating copies, and the basename is kept on the end so the
     file is still recognisable to whoever is looking at the directory.
     """
-    prefix = f"{hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]}-"
+    prefix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] + "-"
     # Bounded in BYTES rather than characters, because that is the unit the limit is
     # in: the route's own validator caps a key segment at 255 characters, so a
     # basename plus this prefix overruns it, and counting bytes stays correct if the
