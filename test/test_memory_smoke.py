@@ -294,35 +294,40 @@ class TestMemoryInjectionAllAgents:
 
 
 class TestEpisodicInjectionAllAgents:
-    def test_custom_agent_gets_episodic_on_new_session(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ws"
-        store = MemoryStore(workspace=ws)
+    """Episodic memory is never pasted into the first turn; recall returns it."""
+
+    @staticmethod
+    def _seeded(tmp_path: Path) -> tuple[MemoryStore, VectorMemoryStore]:
+        store = MemoryStore(workspace=tmp_path / "ws")
         vs = VectorMemoryStore(db_path=tmp_path / "mem.db")
         vs.init()
         vs.write_episodic("User decided to use PostgreSQL for the database layer")
         store._vector_store = vs
+        return store, vs
+
+    def test_custom_agent_defers_episodic_to_recall_on_new_session(self, tmp_path: Path) -> None:
+        store, vs = self._seeded(tmp_path)
         builder = _builder(tmp_path, memory=store)
         msg, _ = builder.build_message(
             "what database should I use?",
             is_new_session=True,
             agent="my-custom-agent",
         )
-        assert "PostgreSQL" in msg
+        assert "PostgreSQL" not in msg
+        assert "memory_recall" in msg
+        assert "PostgreSQL" in vs.recall("what database should I use?")["episodic_context"]
 
-    def test_kirocrew_agent_gets_episodic_on_new_session(self, tmp_path: Path) -> None:
-        ws = tmp_path / "ws"
-        store = MemoryStore(workspace=ws)
-        vs = VectorMemoryStore(db_path=tmp_path / "mem.db")
-        vs.init()
-        vs.write_episodic("User decided to use PostgreSQL for the database layer")
-        store._vector_store = vs
+    def test_kirocrew_agent_defers_episodic_to_recall_on_new_session(self, tmp_path: Path) -> None:
+        store, vs = self._seeded(tmp_path)
         builder = _builder(tmp_path, memory=store)
         msg, _ = builder.build_message(
             "what database should I use?",
             is_new_session=True,
             agent="kirocrew",
         )
-        assert "PostgreSQL" in msg
+        assert "PostgreSQL" not in msg
+        assert "memory_recall" in msg
+        assert "PostgreSQL" in vs.recall("what database should I use?")["episodic_context"]
 
     def test_episodic_skipped_on_followup(self, tmp_path: Path) -> None:
         """Episodic memory not injected on follow-up messages (trust ACP)."""

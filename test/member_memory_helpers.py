@@ -120,10 +120,13 @@ def env(tmp_path, monkeypatch):
         get_metadata=lambda key: metadata.get(key, {}),
         get_metadata_status=lambda key: (metadata.get(key, {}), True),
     )
+    global_memory = MemoryStore(workspace=tmp_path / "global-workspace")
+    global_memory.init()
+    global_memory.vector_store = tiers[""]
     state = SimpleNamespace(
         owner_id="owner",
         context_builder=SimpleNamespace(
-            memory=SimpleNamespace(vector_store=tiers[""]),
+            memory=global_memory,
             conversation_log=conversation_log,
         ),
         conversation_log=conversation_log,

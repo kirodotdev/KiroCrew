@@ -26,6 +26,8 @@ from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, prov
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
 from kiro_crew.skills import skills_dir as _skills_dir
 
+from .prompts import api_skills
+
 logger = logging.getLogger(__name__)
 
 # Slug validation for skill installation (filesystem safety).
@@ -80,9 +82,7 @@ def _redact_external(text: str) -> str:
         return text
     scrubbed, _ = redact_credentials(text)
     scrubbed, _ = redact_exfiltration_urls(scrubbed)
-    return _URL_SECRET_PARAM_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", scrubbed
-    )
+    return _URL_SECRET_PARAM_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", scrubbed)
 
 
 def _build_registry() -> ProviderRegistry:
@@ -214,6 +214,10 @@ async def api_skills_discover(request: web.Request) -> web.Response:
       "providers": ["skillsh"]
     }
     """
+    if request.query.get("scope") == "installed":
+        # The existing agent-facing READ route also serves local discovery.
+        # It reuses the catalog's session/trust gates; no auth path is widened.
+        return await api_skills(request)
     query = request.query.get("q", "").strip()
     provider_filter = request.query.get("provider", "").strip() or None
     try:
@@ -261,26 +265,28 @@ async def api_skills_discover(request: web.Request) -> web.Response:
         # before surfacing. Benign ids (owner/repo/slug) pass unchanged;
         # an id that trips the credential/exfiltration scanners would only
         # break install for that (malicious) entry, which is acceptable.
-        items.append({
-            "id": _redact_external(r.id),
-            "name": _redact_external(r.name),
-            "description": _redact_external(r.description),
-            "provider": provider_id,
-            "display_provider": _display_name(registry, provider_id),
-            "repo_url": _redact_external(r.repo_url),
-            "author": _redact_external(r.author),
-            "installed": installed,
-            # Defense-in-depth: providers should hand back a list[str] (see
-            # SkillsShProvider.search), but a non-list/None or non-string tag
-            # from any provider must not TypeError here and 500 the whole
-            # search response for every provider.
-            "tags": [
-                _redact_external(t)
-                for t in (r.tags if isinstance(r.tags, list) else [])
-                if isinstance(t, str)
-            ],
-            "installs": r.installs,
-        })
+        items.append(
+            {
+                "id": _redact_external(r.id),
+                "name": _redact_external(r.name),
+                "description": _redact_external(r.description),
+                "provider": provider_id,
+                "display_provider": _display_name(registry, provider_id),
+                "repo_url": _redact_external(r.repo_url),
+                "author": _redact_external(r.author),
+                "installed": installed,
+                # Defense-in-depth: providers should hand back a list[str] (see
+                # SkillsShProvider.search), but a non-list/None or non-string tag
+                # from any provider must not TypeError here and 500 the whole
+                # search response for every provider.
+                "tags": [
+                    _redact_external(t)
+                    for t in (r.tags if isinstance(r.tags, list) else [])
+                    if isinstance(t, str)
+                ],
+                "installs": r.installs,
+            }
+        )
 
     active_providers = registry.available_provider_names
 
@@ -346,14 +352,10 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     # Shape validation: valid JSON like `[]` has no .get(), and a non-string
     # field ({"provider": 1}) has no .strip() — either would 500. 400 instead.
     if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "Request body must be a JSON object"}, status=400
-        )
+        return web.json_response({"error": "Request body must be a JSON object"}, status=400)
     for _field in ("provider", "skill_id", "name"):
         if not isinstance(body.get(_field, ""), str) and body.get(_field) is not None:
-            return web.json_response(
-                {"error": f"'{_field}' must be a string"}, status=400
-            )
+            return web.json_response({"error": f"'{_field}' must be a string"}, status=400)
 
     provider_name = (body.get("provider") or "").strip()
     skill_id = (body.get("skill_id") or "").strip()
@@ -363,9 +365,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     # explicitly false-like value into consent to delete local edits.
     overwrite_raw = body.get("overwrite", False)
     if not isinstance(overwrite_raw, bool):
-        return web.json_response(
-            {"error": "'overwrite' must be a boolean"}, status=400
-        )
+        return web.json_response({"error": "'overwrite' must be a boolean"}, status=400)
     overwrite = overwrite_raw
 
     if not provider_name or not skill_id:
@@ -382,11 +382,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
 
     # Determine the local slug for the installed skill. An explicit user-supplied
     # name still wins: the provider names the DEFAULT key, not the user's choice.
-    slug = (
-        _slugify(custom_name)
-        if custom_name
-        else _install_slug(provider, skill_id, skill_id)
-    )
+    slug = _slugify(custom_name) if custom_name else _install_slug(provider, skill_id, skill_id)
     if not slug or not _SAFE_SLUG_RE.match(slug):
         return web.json_response(
             {"error": f"Cannot derive safe slug from '{skill_id}'"}, status=400
@@ -435,13 +431,9 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     content: str | None = None
     try:
         if hasattr(provider, "fetch_skill_bundle"):
-            bundle = await asyncio.wait_for(
-                provider.fetch_skill_bundle(skill_id), timeout=15.0
-            )
+            bundle = await asyncio.wait_for(provider.fetch_skill_bundle(skill_id), timeout=15.0)
         if bundle is None:
-            content = await asyncio.wait_for(
-                provider.fetch_skill_content(skill_id), timeout=15.0
-            )
+            content = await asyncio.wait_for(provider.fetch_skill_content(skill_id), timeout=15.0)
     except asyncio.TimeoutError:
         logger.warning("Timeout fetching skill %r from %s", _safe_skill_id, provider_name)
         _sel().log_tool_invocation(
@@ -456,7 +448,9 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     except Exception as exc:
         scrubbed, _ = redact_credentials(str(exc))
         scrubbed, _ = redact_exfiltration_urls(scrubbed)
-        logger.warning("Failed to fetch skill %r from %s: %r", _safe_skill_id, provider_name, scrubbed)
+        logger.warning(
+            "Failed to fetch skill %r from %s: %r", _safe_skill_id, provider_name, scrubbed
+        )
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),
             tool_name="install_skill_from_provider",
@@ -481,9 +475,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 {"error": "Skill bundle exceeds size limit (5 MiB)"}, status=413
             )
     elif content and len(content.encode("utf-8")) > max_bundle_size:
-        return web.json_response(
-            {"error": "Skill content exceeds size limit"}, status=413
-        )
+        return web.json_response({"error": "Skill content exceeds size limit"}, status=413)
 
     # Write to local skills directory.
     file_count = 0
@@ -506,9 +498,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             try:
                 candidate.relative_to(skills_root)
             except ValueError:
-                logger.warning(
-                    "Refusing bundle install outside skills root: %s", skill_dir
-                )
+                logger.warning("Refusing bundle install outside skills root: %s", skill_dir)
                 return 0
             # Link defense: if the skill dir itself is a link, every containment
             # check below resolves against the link TARGET, so a pre-planted one
@@ -542,9 +532,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             try:
                 resolved_root.relative_to(skills_root)
             except ValueError:
-                logger.warning(
-                    "Refusing bundle write outside skills root: %s", skill_dir
-                )
+                logger.warning("Refusing bundle write outside skills root: %s", skill_dir)
                 return 0
             written = 0
             for rel_path, file_content in bundle:
@@ -576,9 +564,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 # newline="" on read and write keeps the copy byte-faithful.
                 with (skill_dir / "AGENTS.md").open("r", encoding="utf-8", newline="") as src:
                     agents_content = src.read()
-                (skill_dir / "SKILL.md").write_text(
-                    agents_content, encoding="utf-8", newline=""
-                )
+                (skill_dir / "SKILL.md").write_text(agents_content, encoding="utf-8", newline="")
             return written
 
         file_count = await asyncio.to_thread(_write_bundle)
@@ -593,9 +579,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     else:
         created = await asyncio.to_thread(skills.create_skill, key, content)
         if not created:
-            return web.json_response(
-                {"error": f"Failed to create skill at '{key}'"}, status=500
-            )
+            return web.json_response({"error": f"Failed to create skill at '{key}'"}, status=500)
         kind = "created"
         file_count = 1
 
@@ -608,14 +592,16 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         resources=f"key={key}",
         metadata={"kind": kind, "skill_id": skill_id},
     )
-    return web.json_response({
-        "ok": True,
-        "key": key,
-        "slug": slug,
-        "provider": provider_name,
-        "kind": kind,
-        "file_count": file_count,
-    })
+    return web.json_response(
+        {
+            "ok": True,
+            "key": key,
+            "slug": slug,
+            "provider": provider_name,
+            "kind": kind,
+            "file_count": file_count,
+        }
+    )
 
 
 def _slugify(raw: str) -> str:
@@ -704,9 +690,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     skill_id = request.query.get("id", "").strip()
 
     if not provider_name or not skill_id:
-        return web.json_response(
-            {"error": "Both 'provider' and 'id' are required"}, status=400
-        )
+        return web.json_response({"error": "Both 'provider' and 'id' are required"}, status=400)
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
@@ -723,9 +707,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     files: list[str] = []
     try:
         if hasattr(provider, "fetch_skill_bundle"):
-            bundle = await asyncio.wait_for(
-                provider.fetch_skill_bundle(skill_id), timeout=10.0
-            )
+            bundle = await asyncio.wait_for(provider.fetch_skill_bundle(skill_id), timeout=10.0)
             if bundle:
                 files = [p for p, _ in bundle]
                 skill_md = next((c for p, c in bundle if p == "SKILL.md"), None)
@@ -734,13 +716,11 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
                 # otherwise the preview would parse a different file (e.g. a
                 # first-listed README.md) than the installed skill.
                 agents_md = next((c for p, c in bundle if p == "AGENTS.md"), None)
-                content = skill_md or agents_md or next(
-                    (c for p, c in bundle if p.endswith(".md")), None
+                content = (
+                    skill_md or agents_md or next((c for p, c in bundle if p.endswith(".md")), None)
                 )
         if content is None:
-            content = await asyncio.wait_for(
-                provider.fetch_skill_content(skill_id), timeout=10.0
-            )
+            content = await asyncio.wait_for(provider.fetch_skill_content(skill_id), timeout=10.0)
     except (asyncio.TimeoutError, Exception):
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),
@@ -788,12 +768,14 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     # the REDACTED text, because capping first can cut a credential at the
     # boundary into fragments no redaction regex matches.
     safe_content = await asyncio.to_thread(_redact_external, content)
-    return web.json_response({
-        "description": _redact_external(meta.get("description", "")),
-        "name": _redact_external(meta.get("name", "")),
-        "license": _redact_external(meta.get("license", "")),
-        "author": _redact_external(meta.get("author", "")),
-        "content": safe_content[:max_preview],
-        "files": [_redact_external(f) for f in files[:200]],
-        "file_count": len(files),
-    })
+    return web.json_response(
+        {
+            "description": _redact_external(meta.get("description", "")),
+            "name": _redact_external(meta.get("name", "")),
+            "license": _redact_external(meta.get("license", "")),
+            "author": _redact_external(meta.get("author", "")),
+            "content": safe_content[:max_preview],
+            "files": [_redact_external(f) for f in files[:200]],
+            "file_count": len(files),
+        }
+    )

@@ -40,6 +40,7 @@ from kiro_crew.skill_trust import (
     list_trusted_projects,
     revoke_project_trust,
 )
+from kiro_crew.skills import PROJECT_SKILL_BODY_CAP
 
 from ._shared import (
     _capability_manager,
@@ -2214,6 +2215,39 @@ async def api_skills(request: web.Request) -> web.Response:
     # Strict: must match what SkillsLoader will resolve for THIS chat, or the
     # catalog advertises a skill whose $token expands to nothing.
     project_dir: Path | None = requesting_slot_project(state, session_key)
+    if "q" in request.query:
+        query = request.query.get("q", "").strip()
+        if not query or len(query) > 2000:
+            return web.json_response(
+                {"error": "Use 1–2000 characters of short keywords.", "code": "invalid_query"},
+                status=400,
+            )
+        try:
+            limit = max(1, min(50, int(request.query.get("limit", "20"))))
+        except ValueError:
+            return web.json_response(
+                {"error": "Invalid search limit.", "code": "invalid_limit"}, status=400
+            )
+
+        def search():
+            matches = skills.search_skills(query, limit=limit, project_dir=project_dir)
+            result = []
+            remaining = PROJECT_SKILL_BODY_CAP
+            for row in matches:
+                item = {k: row[k] for k in ("key", "name", "description")}
+                if row.get("confine_root"):
+                    body = skills.load_skill(row["key"], project_dir, max_bytes=remaining)
+                    item["content"] = (
+                        body
+                        or "Body unavailable or over budget; retry skill_search with this exact skill key."
+                    )
+                    remaining = max(0, remaining - len((body or "").encode("utf-8")))
+                else:
+                    item["path"] = row["path"]
+                result.append(item)
+            return result
+
+        return web.json_response({"matches": await asyncio.to_thread(search)})
     result = await _assemble_skills_catalog(skills, project_dir)
     agent = request.query.get("agent") or None
     if agent:

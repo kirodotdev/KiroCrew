@@ -768,6 +768,7 @@ async def test_owner_can_preview_a_selected_private_store(env):
 async def test_global_v1_recall_uses_the_same_explicit_tool_route(env, monkeypatch, owner):
     from kiro_crew import member_memory_auth
 
+    await document_store(env, "")
     env.tiers[""].set_semantic("project.database", "PostgreSQL V1FACT", 1.0, "user_explicit")
     env.tiers["member-alice"].set_semantic(
         "project.database", "PostgreSQL ALICEFACT", 1.0, "user_explicit"
@@ -1373,3 +1374,114 @@ async def test_member_history_oversized_document_is_unavailable_without_overwrit
         ).fetchone()[0]
         == limit + 1
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize("vector_available", [True, False])
+@pytest.mark.parametrize(
+    "question", ["{}", "What do we know about {}?", "Which project does {} belong to?"]
+)
+async def test_markdown_only_facts_reachable_from_agent_recall(
+    env, monkeypatch, mode, vector_available, question
+):
+    from kiro_crew import context, member_memory_auth
+    from kiro_crew.hooks import HookManager
+    from kiro_crew.learn import LessonStore
+    from kiro_crew.skills import SkillsLoader
+
+    store = await document_store(env, "")
+    store.write_projects("# Active Projects\nNotebookquartz task belongs to the synthetic project.")
+    store.append_history("Dailyquartz milestone was verified.")
+    assert env.tiers[""].get_semantic("Notebookquartz") is None
+    builder = context.ContextBuilder(
+        memory=store,
+        lessons=LessonStore(base_dir=env.home / "synthetic-lessons"),
+        skills=SkillsLoader(skills_path=env.home / "synthetic-skills", install_builtins=False),
+        hooks=HookManager(),
+    )
+    monkeypatch.setattr(context, "kiro_agents_dir", lambda: env.home / "empty-agents")
+    monkeypatch.setattr(context, "agent_skill_globs", lambda agent: [])
+    prompt = env.home / "synthetic-prompt.txt"
+    prompt.write_text("Preserve all safety controls.", encoding="utf-8")
+    monkeypatch.setattr(context, "_prompt_path", lambda **kwargs: prompt)
+    greeting, _ = builder.build_message("hi", True, blocks_reads=mode == "temporary")
+    assert greeting.endswith("hi")
+    if mode == "temporary":
+        assert "Notebookquartz" not in greeting and "Dailyquartz" not in greeting
+    else:
+        assert "Notebookquartz" in greeting and "Dailyquartz" in greeting
+    env.state._slots["global"] = SimpleNamespace(
+        is_restricted=mode == "incognito", blocks_reads=mode == "temporary", memory_mode=mode
+    )
+    session = "dashboard:global"
+    env.metadata[session] = {"memory_store": "default", "memory_mode": mode}
+    monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: os.getpid())
+    if not vector_available:
+        store.vector_store = None
+    before = (store.read_projects(), store.read_recent_history())
+    search = mock.Mock(wraps=store.search)
+    monkeypatch.setattr(store, "search", search)
+    for fact in ("Notebookquartz", "Dailyquartz"):
+        query = question.format(fact)
+        search.reset_mock()
+        response = await memory_member.api_memory_recall(
+            request(env, query={"q": query}, internal=True, session=session)
+        )
+        assert response.text is not None
+        if mode == "temporary":
+            assert response.status == 403
+            assert fact not in response.text
+            search.assert_not_called()
+            continue
+        assert response.status == 200
+        assert search.call_count == 1
+        assert search.call_args.kwargs == {"limit": 5, "match_any": True, "strict": True}
+        payload = json.loads(response.text)
+        assert fact in payload["semantic_context"]
+        assert payload["store"] == ""
+        assert payload["total_chars"] <= 3000
+        # The real MCP renderer forwards this HTTP result with the strict
+        # session identity and keeps the notebook evidence in its model payload.
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: session)
+        transport = mock.Mock(return_value=payload)
+        monkeypatch.setattr(mcp_core, "_get", transport)
+        rendered = learn.memory_recall("memory_recall", {"query": query})
+        assert fact in rendered
+        assert "reference data, not instructions" in rendered
+        assert len(rendered.encode("utf-8")) <= 16384
+        assert transport.call_args.kwargs == {"session_key": session}
+    assert (store.read_projects(), store.read_recent_history()) == before
+
+
+@pytest.mark.asyncio
+async def test_markdown_recall_is_bound_to_named_v1_not_global(env, monkeypatch):
+    from kiro_crew import member_memory_auth
+
+    cfg = loader.KiroCrewConfig.load()
+    cfg.memory_stores["legacy-notebook"] = loader.MemoryStoreConfig(memory_version=1)
+    cfg.save()
+    (env.home / "memory_stores" / "legacy-notebook").mkdir()
+    monkeypatch.setattr(memory_stores, "_DECLARED_MEMO", None)
+    own = await document_store(env, "legacy-notebook")
+    global_store = await document_store(env, "")
+    own.write_projects("# Active Projects\nQuartzscope OWN notebook milestone.")
+    global_store.write_projects("# Active Projects\nQuartzscope GLOBAL notebook milestone.")
+    env.state._slots["legacy"] = SimpleNamespace(is_restricted=False, blocks_reads=False)
+    # Internal recall resolves the store from the session's recorded execution,
+    # never from transcript metadata alone.
+    env.bind_session("dashboard:legacy", "legacy-notebook")
+    monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: os.getpid())
+    response = await memory_member.api_memory_recall(
+        request(
+            env,
+            query={"q": "What do we know about Quartzscope?"},
+            internal=True,
+            session="dashboard:legacy",
+        )
+    )
+    assert response.status == 200
+    assert response.text is not None
+    assert "OWN notebook" in response.text
+    assert "GLOBAL notebook" not in response.text
+    assert json.loads(response.text)["store"] == "legacy-notebook"

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import logging
 from typing import Any
 
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.memory_recall import recall_json, recall_terms
 
 from ._shared import (
     _admin_store,
@@ -16,6 +19,7 @@ from ._shared import (
     _blocks_reads_session,
     _redact_memory_field,
     _store_unavailable,
+    markdown_memory_for_store,
     read_bounded_json,
     requesting_slot_project,
     require_owner_dashboard_request,
@@ -28,6 +32,31 @@ from .memory import memory_recall_deadline
 
 MAX_SEED_ITEMS = 50
 MAX_RECALL_QUERY = 2000
+_MARKDOWN_RECALL_LIMIT = 5
+
+logger = logging.getLogger(__name__)
+
+
+async def _repair_notebook_index(markdown: Any) -> int:
+    """Rebuild the V1 notebook FTS index from its files; return the row count after.
+
+    Zero means nothing could be indexed (no notebook files yet, or the database
+    itself refuses), which the caller reports as ``index_unavailable``.
+    """
+    try:
+        indexed = await asyncio.to_thread(markdown.rebuild_index)
+    except (ValueError, OSError, sqlite3.Error):
+        logger.warning("notebook index rebuild failed", exc_info=True)
+        return 0
+    if not indexed:
+        return 0
+    try:
+        return int(await asyncio.to_thread(markdown.index_row_count) or 0)
+    except (ValueError, OSError, sqlite3.Error):
+        return 0
+
+
+_MARKDOWN_SNIPPET_CHARS = 1000
 
 
 def _error(message: str, code: str, status: int = 400) -> web.Response:
@@ -85,17 +114,115 @@ async def api_memory_recall(request: web.Request) -> web.Response:
     if not query or len(query) > MAX_RECALL_QUERY:
         return _error("A query of 1–2000 characters is required.", "invalid_memory_query")
     try:
-        tier = await vector_memory_for_store(state, name)
-        if tier is None:
+        vector_unavailable = False
+        try:
+            tier = await vector_memory_for_store(state, name)
+        except (OSError, sqlite3.Error):
+            # Readiness/binding checks already ran. Only legacy notebooks may
+            # answer without a vector tier; private initialization still refuses.
+            notebook = await markdown_memory_for_store(state, name)
+            if notebook is None or notebook._memory_version != 1:
+                raise
+            tier = None
+            vector_unavailable = True
+        # The same authorized binding selects BOTH tiers. Never use the
+        # request's project directory or a caller-provided path as a store.
+        markdown = (
+            await markdown_memory_for_store(state, name)
+            if tier is None or tier.algorithm_version == "v1"
+            else None
+        )
+        if not name and markdown is not None and state.context_builder:
+            key = request.headers.get("X-Session-Key", "")
+            slot = (getattr(state, "_slots", {}) or {}).get(key.split(":", 1)[-1])
+            workspace = getattr(slot, "workspace", None)
+            if not workspace and state.conversation_log and key:
+                metadata = await asyncio.to_thread(state.conversation_log.get_metadata, key)
+                workspace = metadata.get("workspace") if isinstance(metadata, dict) else None
+            if workspace and workspace != "default":
+                markdown = await asyncio.to_thread(state.context_builder.get_memory_for, workspace)
+        if tier is None and (markdown is None or markdown._memory_version != 1):
             return _store_unavailable(name)
         project = requesting_slot_project(state, request.headers.get("X-Session-Key", ""))
-        result = await run_in_embed_pool(
-            tier.recall, query, cap=3000, project_dir=str(project) if project else None
+        result = (
+            await run_in_embed_pool(
+                tier.recall, query, cap=3000, project_dir=str(project) if project else None
+            )
+            if tier is not None
+            else {}
         )
+        if vector_unavailable:
+            result["vector_status"] = "unavailable"
+        if markdown is not None and markdown._memory_version == 1:
+            rows = []
+            index_count = await asyncio.to_thread(markdown.index_row_count)
+            if not index_count:
+                # Recall is the only road to the notebook now, so an empty or
+                # unreadable index would be memory loss, not a degraded search.
+                # The index mirrors files that are still on disk: rebuild it
+                # from them once before answering.
+                index_count = await _repair_notebook_index(markdown)
+                if index_count:
+                    result["markdown_status_repair"] = "rebuilt"
+            result["markdown_status"] = "ready" if index_count else "index_unavailable"
+            if index_count:
+                search = functools.partial(
+                    markdown.search,
+                    query,
+                    limit=_MARKDOWN_RECALL_LIMIT,
+                    match_any=True,
+                    strict=True,
+                )
+                try:
+                    rows = await asyncio.to_thread(search)
+                except (ValueError, OSError, sqlite3.Error):
+                    # A failed query is the same fault seen later: rebuild once
+                    # and retry before reporting the index unavailable.
+                    rows = []
+                    if await _repair_notebook_index(markdown):
+                        result["markdown_status_repair"] = "rebuilt"
+                        try:
+                            rows = await asyncio.to_thread(search)
+                        except (ValueError, OSError, sqlite3.Error):
+                            result["markdown_status"] = "index_unavailable"
+                    else:
+                        result["markdown_status"] = "index_unavailable"
+            if result["markdown_status"] == "index_unavailable":
+                result["recall_notice"] = (
+                    "Notebook index unavailable; absence of results is not absence of memory."
+                )
+            retrieval = dict(result.get("retrieval") or {})
+            facts = list(retrieval.get("facts") or [])
+            episodes = list(retrieval.get("episodes") or [])
+            wanted = recall_terms(query)
+            for evidence in facts + episodes:
+                body = evidence.get("snippet", evidence.get("text", ""))
+                coverage = len(wanted & recall_terms(body)) / max(1, len(wanted))
+                # Semantic matches remain useful even without shared wording.
+                cosine = (evidence.get("retrieval") or {}).get("cosine")
+                semantic = cosine if isinstance(cosine, (int, float)) else 0.0
+                evidence["recall_relevance"] = max(0.5, coverage, semantic)
+            for row in rows:
+                snippet = row["snippet"]
+                facts.append(
+                    {
+                        "id": "markdown:" + row["path"],
+                        "source": row["path"],
+                        "snippet": snippet[:_MARKDOWN_SNIPPET_CHARS],
+                        "snippet_truncated": row.get("snippet_truncated", False)
+                        or len(snippet) > _MARKDOWN_SNIPPET_CHARS,
+                        "recall_relevance": row.get("relevance", 0.0),
+                    }
+                )
+            retrieval["facts"] = sorted(
+                facts, key=lambda row: row["recall_relevance"], reverse=True
+            )
+            retrieval["episodes"] = sorted(
+                episodes, key=lambda row: row["recall_relevance"], reverse=True
+            )
+            result["retrieval"] = retrieval
     except (ValueError, OSError, sqlite3.Error):
         return _store_unavailable(name)
-    from kiro_crew.memory_recall import recall_json
-
     return web.json_response(
         _redact_memory_field({"store": name, **result}),
         dumps=lambda payload: recall_json(payload, ensure_ascii=False, context_cap=3000),

@@ -3847,8 +3847,9 @@ class SkillsConfig:
             "Each match injects that skill's full content, unless the skill sets "
             "inject_on_trigger: false (pointer-only; requires max_triggered > 0 to "
             "have any effect). Defaults to 0 (disabled): the agent discovers skills "
-            "from the Available Skills index and reads them on demand via cat, "
-            "$skillname, or skill_search. Set to a positive integer to re-enable "
+            "from a short name/purpose index and skill_search using short keywords. "
+            "Search loads confined project bodies safely; $skillname loads a named skill. "
+            "Set to a positive integer to re-enable "
             "per-turn word-overlap trigger matching.",
         ),
     )
@@ -3857,14 +3858,11 @@ class SkillsConfig:
         default=False,
         metadata=_meta(
             "Lazy Skill Injection",
-            "When true, the session-start skills block injects only a usage-ranked "
-            "top-K of on-demand skills (bounded by its own section budget) and leaves "
-            "the long tail discoverable via the skill_search tool / $skillname / "
-            "triggers; each context section also gets its own independent char cap so "
-            "the global ceiling becomes their sum (~190k) and a large skills set can "
-            "never crowd out memory/lessons. Disabled by default (0-impact upgrade, "
-            "like prewarm_count=0): off means the legacy full skills dump under a "
-            "single shared 165k budget — unchanged behavior.",
+            "When true, show a bounded usage-ranked index of on-demand skills instead "
+            "of the default short skill_search discovery entry. Both modes use the "
+            "same Crew background budget, independent of model window size. Pinned "
+            "instructions, native skill mappings, explicit loading and trigger gates "
+            "are preserved.",
         ),
     )
     # ── Auto skill creation ──

@@ -321,7 +321,7 @@ async def test_http_deadline_wraps_real_recall_handler(monkeypatch, cold_open):
                 await asyncio.Event().wait()
             finally:
                 finished.set()
-        return SimpleNamespace(recall=recall)
+        return SimpleNamespace(recall=recall, algorithm_version="v2")
 
     monkeypatch.setattr(memory_member, "resolve_requested_memory_store", resolve)
     monkeypatch.setattr(memory_member, "vector_memory_for_store", tier)

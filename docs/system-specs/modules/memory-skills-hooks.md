@@ -7,8 +7,8 @@ to one stable `store_id` and one managed SQLite database. Facts, learned rules,
 episodes, learned history, source spans, revisions, full-text search, embeddings
 and vector validity belong to that database. Manual persona, rules, briefing,
 preference/project anchors and project guides remain owner-managed documents.
-Global V1 and legacy named V1 retain their existing files, algorithms, eager
-session recall and retention policy.
+Global V1 and legacy named V1 retain their existing files, algorithms and
+retention policy; startup admission is bounded as described below.
 
 The frozen `ExecutionContext(member_id, store, selection_kind, template_id,
 memory_mode, app)` in the owning session, run or scheduled-job record is the
@@ -29,6 +29,11 @@ state. There is no separate memory binding registry, session/run grant, PID proo
 HMAC proof, hidden filesystem view or private-memory platform refusal. Ordinary
 transport authentication, owner/app authorization, credentials, SEL integrity,
 mandatory enterprise policy and host sandbox controls still apply.
+
+Startup admission keeps stable preferences and applicable rules in the first
+turn while earlier activity (daily history, project notebooks, old-task facts and
+episodes) is retrieved explicitly through `memory_recall`, as specified below.
+This applies to Global V1 and named V1 without converting them into member stores.
 
 Built-in named-store writes run gateway-side. The ordinary Linux/macOS sandbox
 therefore exposes `memory_stores/` read-only, while allowing cross-member reads.
@@ -116,17 +121,19 @@ V2 has no automatic history retention limit.
 
 ### The six memory layers
 
-V1 has six distinct storage layers, each with its own store and write path. V2 unifies learned layers in SQLite. A fresh V1
-session reads preferences, projects, decayed daily history, semantic memory and
-query-ranked episodic memory and lessons. Warm V1 follow-ups retain native
-conversation history without repeating this injection. V2 session context
-reads essential anchors and query-free scoped lessons; its semantic and
-episodic fragments require an explicit `memory_recall` operation. The
-nesting below is source-of-truth ordering (a later layer can override an earlier
-one), not a storage hierarchy:
+V1 has six distinct storage layers, each with its own store and write path. V2
+unifies learned layers in SQLite. Fresh V1 context includes complete stable
+preferences, a short activity index and applicable lessons; daily history,
+project notebooks and old-task facts/episodes stay behind explicit
+`memory_recall`. Warm follow-ups retain native conversation history without
+repeating startup injection. V2 session context reads essential anchors and
+query-free scoped lessons; its semantic and episodic fragments require an
+explicit `memory_recall` operation. The nesting below is source-of-truth
+ordering (a later layer can override an earlier one), not a storage hierarchy
+and not everything sent on each turn:
 
 ```
-Context window (reference budget 165,000 chars, ~55k tokens)
+Memory storage layers (not a model-input or token budget)
 
   Preferences            Projects            Recent history
   (preferences.md)       (projects.md)       (history/{date}.md)
@@ -823,7 +830,7 @@ SQLite table `semantic_memory` — structured key-value store with:
 - **Write-time embedding**: `_write_semantic()` embeds `"<key> <value_json>"` after the upsert (outside `_db_lock`, at `PRIORITY_BULK` — nothing blocks on it and the tail is reached from consolidation/import loops; same space-generation contract as `write_lesson`) and persists the struct-packed, un-normalized vector into the row's `embedding` column. The upsert's conflict clause keeps the stored vector when the value is unchanged (a re-affirmation — the tail then skips the redundant embed) and clears it when the value changed, so a row never ranks by a vector for text it no longer holds. `lesson.*` keys are excluded (`write_lesson` owns their vector — raw rule text). `set_semantic_if_absent()` (bulk import) defers embedding to the backfill sweep, like `write_episodic(defer_embedding=True)`. Rows missed while the model was absent — plus rows cleared by `reconcile_embedding_space()` — are repaired by `_backfill_semantic_kv_embeddings()` inside `backfill_missing_embeddings()`.
 - **Audit trail**: `memory_events` table logs every create/update/delete with old+new values, bounded at `_MAX_EVENTS = 10_000`. The dashboard events API recursively redacts credentials and unsafe URLs on response for Global V1, named V1 and private V2. Stored events and their identities remain unchanged.
 
-Retrieval formats `key: value` pairs in a `[Semantic Memory]` block and excludes `lesson.*` keys. With a query it uses `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score; `_stored_similarity_scorer` embeds the query once and reads stored vectors. When the query vector is available, a row without a vector contributes zero on that term; without embeddings, retrieval uses keyword scoring. Explicit identity terms supplement keys and values. V1 `build_session_context()` calls this query path with the current message. V2 leaves fragment retrieval to `memory_recall`, which has its own total response cap.
+Retrieval formats `key: value` pairs in a `[Semantic Memory]` block and excludes `lesson.*` keys. With a query it uses `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score; `_stored_similarity_scorer` embeds the query once and reads stored vectors. When the query vector is available, a row without a vector contributes zero on that term; without embeddings, retrieval uses keyword scoring. Explicit identity terms supplement keys and values. V1 startup reads only eligible `pref.*` rows through `get_preferences_context`, with the DATA-only wrapper and no query embedding. Other semantic facts are retrieved explicitly through `memory_recall` or the activity-enabled Python reader. V2 also leaves fragment retrieval to `memory_recall`, which has its own total response cap.
 
 The keyword half's ROW side — the regex scan, set build, and Snowball expansion over a row's key and value — depends only on that row's own text, so it is memoized by `_row_stem_tokens`, bounded at `_ROW_STEM_CACHE_SIZE` entries. The memo is keyed on the TEXT rather than on a row key or rowid: an updated value hashes to a different entry, so no write path has an invalidation step to forget and a stale token set can never be served for text the row no longer holds. Only the row side goes through it — query text has one distinct value per user message, so memoizing it would evict the bounded row population the memo exists to keep. This is a separate memo from the per-word `_stem_one` cache (`_STEM_CACHE_SIZE`), which the row memo populates on a miss.
 
@@ -842,7 +849,7 @@ SQLite table `episodic_memories` — conversation fragments with optional embedd
 - **Scoring-set invalidation**: the validity token is `(in-process generation, PRAGMA data_version)`. `_invalidate_episodic_scoring()` bumps the generation and is called by **every** writer that changes which rows are scored or what they score as — `write_episodic`, `delete_episodic`, `_delete_episodic_row`, `_enforce_episodic_cap`, `_retire_stale_episodic`, `reconcile_embedding_space`, and `backfill_missing_embeddings`. Two of those are traps a naive append-only cache falls into: the backfill rebuilds the FAISS index only `if _HAS_FAISS`, which is False on exactly the install this rung serves, and a body lookup can never repair it (it drops ids that vanished but cannot surface ids that appeared, so recall degrades with no error); and `PRAGMA data_version` is the only in-band signal that a SECOND PROCESS committed to the same file, and both the scoring cache and FAISS search check it. Persisted FAISS loading additionally verifies database and index-file digests. `_touch_last_accessed` is deliberately NOT a writer here — `last_accessed_at` is never scored and is re-read per search with the bodies. A ratchet test (`test_every_episodic_writer_invalidates_the_scoring_set`) fails on a new `episodic_memories` writer that skips the hook. The set is bounded by `_EPISODIC_SCORING_MAX_BYTES` (64 MiB, ~10 MiB for 2,600 rows at dim 1024) and is disabled outright on an sqlite with no `data_version` pragma; either way the rung falls back to reading the population per call.
 - **V1 cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries, overridden by `memory.episodic_max_count`. For V1, `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap. The gateway passes the configured value as `episodic_max` when it builds the store, and `reconfigure` re-pushes it, so raising the cap stops evicting on the next write and lowering it trims on the next one — the key was parsed and dropped before, which silently pinned every install to the built-in 10,000. V2 bypasses capacity eviction and retains the stored episodes.
 
-Episodic context retains `_DEFAULT_EPISODIC_LIMIT` = 8 results. Fresh V1 sessions query episodic memory with the current message and inject at most `min(_EPISODIC_INJECT_CAP, caps.episodic)`, where `_EPISODIC_INJECT_CAP` = 3,000; warm follow-ups do not repeat that injection. V2 session construction never automatically queries or injects episodic fragments. Its `memory_recall` response includes only rows fitting the tool's total cap, including wrappers.
+Episodic context retains `_DEFAULT_EPISODIC_LIMIT` = 8 results for explicit readers. Neither fresh nor warm V1/V2 session construction automatically queries episodic fragments. Agent retrieval uses `memory_recall`, whose response includes only rows fitting the tool's total cap, including wrappers. Explicit Python callers may still request episodic context through `MemoryStore.get_context(include_activity=True, query=...)`.
 
 ### Read-volume counters (`_ReadCounters`, `read_counters()`)
 
@@ -1060,17 +1067,14 @@ the complete selection before writing, copies without overwriting target
 identities, and reports imported/skipped outcomes with reasons and provenance.
 No row is selected automatically. This is selective copying, not V1 migration.
 
-V1 retains its existing fresh-session context: bounded preferences/projects,
-decayed daily history, semantic and query-ranked episodic memory, plus
-query-ranked project-scoped lessons. Warm follow-ups do not repeat that recall.
-One five-second prompt-build deadline covers V1 semantic, episodic and lesson
-query embeddings in the shared model queue. Expiry removes queued work; each
-retrieval path falls back to its existing lexical score and stable ordering, so
-saved context is still injected. A native inference already claimed by the
-single model worker is not interruptible and may finish before the build
-returns. Sharing one budget bounds queue amplification from concurrent
-first-turn builds; the whole synchronous `ContextBuilder.build_message` call
-remains off the event loop in the bounded `mc-embed` pool.
+V1 fresh-session context keeps complete preferences and eligible project-scoped
+lessons. Project notebooks, decayed daily history and other semantic/episodic
+facts are on demand through the store-bound `memory_recall` route; startup does
+not invoke the three query-embedding paths. Warm follow-ups do not repeat startup
+memory injection. The prompt-build embedding deadline remains a compatibility
+guard for other contributors, not evidence that default memory performs inference.
+The synchronous `ContextBuilder.build_message` call remains off the event loop
+in the bounded `mc-embed` pool.
 V2 context includes essential preference/project anchors and query-free,
 project-scoped lessons. V2 prompt construction performs no embedding search or
 episodic/semantic retrieval. Its runtime tells the agent to call `memory_recall`
@@ -1078,10 +1082,9 @@ for a changed topic or prior decision and to
 use `learn_add` for corrections. The agent prompts (`config/prompt.md`,
 `config/prompt-orchestrator.md`) give both versions the same order for a question
 about the past: the injected block and lessons, then `memory_recall`, then
-`search_chat_history` for verbatim transcript text. That order is what keeps a V2
-member — whose injected block carries no facts or episodes — from falling through
-to a transcript keyword search, and tells a V1 session that the block was ranked
-once against its first message. Retrieval is reference material and does not
+`search_chat_history` for verbatim transcript text. Both versions retrieve facts
+and episodes explicitly instead of relying on activity ranked against a first
+message. Retrieval is reference material and does not
 override the current user's instruction. Forgetting removes a row from future
 long-term recall; it does not erase text already in an active conversation.
 Backup and staged restoration cover the entire member memory bundle, as
@@ -2687,7 +2690,7 @@ remain durable.
 
 **V1 migration**: `migrate_from_markdown()` reads `lessons.jsonl` and writes each entry as `lesson.*` semantic key with `source=migration, confidence=0.9`. User-explicit lessons (confidence 1.0) can't be overwritten by migration. V2 refuses this importer.
 
-Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block. V1 session context retains query-ranked, project-scoped lessons; V2 selects bounded, project-scoped lessons without a query embedding. Explicit lesson readers can use hybrid relevance and fill the caller's character budget, reporting shown and omitted counts; the JSONL path caps at `_MAX_LESSONS_IN_CONTEXT = 50`. The JSONL store retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that. The listing surface is bounded too — `GET /api/lessons` returns one `limit`/`offset` window and carries `total` and `truncated` so `learn_list` can say `Showing N of M`; `VectorMemoryStore.get_lessons(limit, offset)` honours the offset only on the bounded read, and the unbounded read the scorers use ignores it. Contract: [learn-cron-dashboard](learn-cron-dashboard.md).
+Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block. V1 background context retains every eligible, project-scoped lesson without query ranking or ordinary-budget truncation while the complete protected context remains below its model-safe ceiling; V2 keeps its essential-delivery and scope gates. The ceiling is `max(3 * 33,000, floor(model_window_tokens * 4.0 * 0.125))` characters. Crossing it trims only complete lesson entries, preserving preferences and safety rules; a preferences file that alone exceeds the ceiling is the one exception, kept from its head with an in-prompt notice naming the omitted character count and the file to read. Vector lessons keep the lexical relevance order already computed for the request; JSONL fallback has no relevance score and keeps newest entries first. The prompt reports the exact omitted lesson count and points to `memory_recall`. Content below the ceiling is byte-identical. Explicit lesson readers can use hybrid relevance and fill the caller's character budget, reporting shown and omitted counts. The JSONL store retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that. The listing surface is bounded too — `GET /api/lessons` returns one `limit`/`offset` window and carries `total` and `truncated` so `learn_list` can say `Showing N of M`; `VectorMemoryStore.get_lessons(limit, offset)` honours the offset only on the bounded read, and the unbounded read the scorers use ignores it. Contract: [learn-cron-dashboard](learn-cron-dashboard.md).
 
 Vector scoring builds one scorer per query (`_stored_similarity_scorer`) so the query vector and its norm are derived once instead of once per lesson — the same hoisting `_sqlite_vector_search` does for episodic rows. There is a numpy path and a stdlib fallback, because numpy is guarded by `_HAS_NUMPY`; both produce the same ranking. Stored lesson vectors are un-normalized (unlike episodic vectors, which are L2-normalized for FAISS inner-product scoring), so both norms are divided out per row rather than assuming unit length. A row whose vector has a different dimensionality than the query — a row written under a previous embedding model — is incomparable and scores 0.0, matching `_sqlite_vector_search` and `HybridRetriever._cosine_similarity`, rather than being truncated against the query's leading elements.
 
@@ -2751,7 +2754,8 @@ writes, corrections, lesson deletion and consolidation.
 V2 `MemoryStore` delegates history and search to its attached vector store;
 preferences/projects remain manual documents. Consolidation, record edits and
 learned-rule operations address the exact prepared SQLite service. V1 retains
-workspace Markdown, JSONL fallback, separate FTS and its original eager recall.
+workspace Markdown, JSONL fallback and separate FTS; its startup context is the
+bounded admission described above, with earlier activity behind `memory_recall`.
 
 ## Skills (`skills.py`)
 
@@ -2919,6 +2923,14 @@ malformed UTF-8 so one project skill cannot abort context assembly. Unconfined m
 reads remain strict because they also serve writers that must never overwrite metadata
 they could not decode.
 
+Confined metadata is byte-limited by `PROJECT_SKILL_BODY_CAP` before decoding or
+frontmatter caching. An oversized trusted row stays in `list_skills` under its
+path-derived key with empty metadata and `size_bytes` set to one byte above the cap;
+that sentinel keeps search and context body paths from calling `load_skill`. The
+trust-preview catalog omits the row, and direct project `load_skill` applies the same
+cap. Oversize and outside-root refusals have distinct log messages. No confined path
+stat is added.
+
 No confined project path is rendered into agent-facing context. Both the legacy and
 budgeted initial skills blocks inject admitted project skills as bodies through
 `load_skill(..., project_dir)` and reserve path summaries for unconfined skills. The
@@ -3065,9 +3077,15 @@ or authentication refusal never falls back to the costly legacy loop.
 
 Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can `cd` and run them.
 
-**Lazy-load (`skills.lazy_load`, default false — loader `SkillsConfig`):** controls how `get_context(budget)` (`skills.py`) injects the on-demand set.
-- **OFF** (`get_context(budget=None)`): the legacy global-skill dump — every unconfined on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`; confined project bodies retain their independent skills-section cap.
-- **ON** (`get_context(budget)`): `always: true` pinned skills are injected in full, plus a usage-ranked **top-K** of on-demand skills filled up to `budget`. Ranking is by `_rank_key` (`skills.py`) — `(usage_hits, effective_recency)` from the `SkillUsageLedger`, with a recency boost so freshly-added skills escape cold start. The long tail is left discoverable via the `skill_search` tool, the `$skillname` inline token, `cat`, and the per-message trigger auto-loader.
+**Discovery (`skills.lazy_load`, default false):** startup and post-compaction
+assembly always use a bounded skills entry. OFF selects a short `skill_search`
+pointer for ordinary unmapped skills; ON selects the existing usage-ranked
+index within the same section allowance. Neither increases the shared background
+budget. Direct `get_context(budget=None)` remains available to explicit catalog
+readers, but is no longer the startup default. Pinned full instructions, confined
+project-body reads, native mapping gates, explicit `$skill` loads, trigger settings
+and byte-identical deduplication are preserved. No final slicing may cut pinned
+instructions or the discovery footer.
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
@@ -4163,32 +4181,69 @@ Assembles all sources into prompts:
 - Thread history is injected only at session start (via `build_session_context`). Within the same ACP session, kiro-cli manages conversation history natively — duplicate injection wastes context window and accelerates compaction.
 - `_CRITICAL_RULES` injected by DEFAULT for every agent (built-in `kirocrew` and custom alike) — it is the dashboard/Slack assistant's own output contract (runtime-conditional diff blocks — tool-made edits render as structured diff cards on the dashboard, so ```diff blocks are required only for non-tool edits or non-dashboard runtimes — `[OPTIONS:]` footer, absolute-path rule with a URL exclusion — a backticked URL renders as a click-to-copy chip rather than a link, so URLs must use markdown link syntax instead), so diff rendering and OPTIONS buttons work universally. A **custom** agent can OPT OUT by setting `includeCrewContext: false` in its materialized `~/.kiro/agents/<...>.json`: a custom app agent ships its own system prompt and output contract, so injecting this on top both conflicts with it and, on a safety-tuned model, reads as an identity override the model refuses as prompt injection. The flag is read through the same sensitive-path-gated scan as the agent prompt (matched by declared `name` or filename stem) and memoized by agent name; an absent/non-boolean flag, an unreadable/missing spec, and the built-in `kirocrew` agent all default to injecting (only an explicit boolean `false` on a custom agent suppresses it). The same opt-out also suppresses the dashboard tool nudges (`ask_question` / `suggest_followup`) that `build_message` adds on dashboard sessions, but NOT the provider-agnostic `[OPTIONS:]` reminder. The `[OPTIONS:]`/diff tags still RENDER for any agent that emits them (the dashboard parses them regardless); the gate only stops the host from MANDATING them where an agent has declared it does not want them.
 - Switchable context groups (see below) let a spawning parent drop whole sections for one sub-agent.
-- Cap: `_CONTEXT_BUDGET_BASE` = 165,000 chars (~55k tokens). Which ceiling applies depends on `skills.lazy_load`: OFF (the default) uses `caps.base` as one flat shared pool; ON uses `caps.max_context`, the SUM of the independent per-section caps (190,575 chars at the reference window), so skills/steering can never eat into memory/lessons space. Note the per-section caps are computed and passed to every section either way; `lazy_load` changes the *global* ceiling and the skills block's shape (full dump vs usage-ranked top-K), not whether sections have caps.
+- Cap: `_CONTEXT_BUDGET_BASE` is a fixed 33,000-character Crew background admission allowance, reused from the former smallest-window tier. Model window size and `skills.lazy_load` cannot enlarge it. Admission reserves complete explicit preferences, rules, pinned instructions, date/runtime identity and steering, then admits optional source blocks whole. A separate model-safe ceiling bounds the protected lesson contribution at `max(3 * _CONTEXT_BUDGET_BASE, floor(model_window_tokens * 4.0 * 0.125))` characters for the complete protected set. Below it, protected bytes are unchanged. Above it, complete lessons are omitted in relevance order for vectors or newest-first for JSONL; preferences and safety rules remain whole, the prompt reports the omitted count, and a warning is emitted. Preferences are never trimmed to make room for anything else, but they cannot cross the ceiling themselves: an agent-grown preferences file larger than the ceiling is kept from its head, and the prompt carries a `[Context budget: omitted N chars of preferences ...]` notice naming the file to read, so the overflow is visible in-prompt rather than only in a log line. The 33,000-character allowance remains independent and is not falsely reported as a full-input ceiling. Agent contract, outer replay, following-interaction blocks and the current request are measured separately. The request is never budget-truncated.
 
-#### Per-section caps (reference window)
+Startup V1 context retains complete preference documents and eligible `pref.*`
+records. A required activity index (at most 1,800 characters) lists project
+headings/first entries and the last three days' headings or first lines. Each
+source has a share, so project overflow cannot hide recent task names. The
+existing bounded `Recent Session Context` source snippets remain injected:
+those snippets need not exist in vector memory. Index and recalled content are
+reference data, not instructions. Larger notebook bodies and non-preference
+facts/episodes require explicit `memory_recall`.
 
-Every value below is `int(165_000 × fraction)`, so the fraction is the source of
-truth and the char count is derived. `_resolve_caps(window)` rescales all of them
-(see the next subsection); the numbers here apply at the 1M reference window.
+Recall uses the authenticated session's bound store and workspace, never a
+request-supplied path or another active slot. The V1 notebook query reuses
+`memory_v2.terms` for CJK pairs and identifiers, strips question filler, and
+prefers lines matching at least half the remaining topic terms; when no line
+reaches that bar it admits lines sharing at least two distinct terms (one when
+the query has a single term), ranked by matches, so an older notebook line that
+the old first turn showed unconditionally stays reachable from a natural
+question. A single shared word never admits a line on a multi-term query.
+English terms use quoted
+FTS matches; Chinese pairs match original index content without rebuilding it.
+At most five snippets are selected, each at most 1,000 characters. Ordinary
+`MemoryStore.search` retains literal AND semantics; explicit `match_any=True`
+uses topic coverage. Because recall is now the only road to the notebook, an empty or unreadable
+index is treated as a fault to repair, not a degraded search: the recall handler
+rebuilds the V1 FTS index once from the files it mirrors (preferences, projects,
+history) and retries the query, reporting `markdown_status_repair: rebuilt`. Only
+when the rebuild yields no rows or the query still fails does it report
+`index_unavailable`, never a claim that no memory exists. V2 does not use the
+Markdown fallback. Both recall paths preserve truncated, cited evidence when
+a record exceeds its share. Repeated lessons do not reserve recall capacity.
+Merged V1 facts and episodes share query-coverage ranking, retaining a floor
+for already-admitted semantic evidence; lower-ranked tails are omitted first.
+The complete response remains bounded to 3,000 context characters and 16,384
+transport bytes. This is lexical recovery, not translation or a guarantee that
+the model will call the tool. Notebook/history writes maintain the index;
+out-of-band edits still need the existing rebuild. No store binding, privacy
+mode, or private essential-delivery gate changes.
 
-| Section | Constant | Fraction | Chars | Overflow behavior |
-|---------|----------|----------|-------|-------------------|
-| Thread history, LLM-compressed | `_COMPRESSED_HISTORY_CAP` | 27% | 44,550 | head/tail verbatim around a compressed middle |
-| Lessons | `_LESSONS_CAP` | 22.6% | 37,290 | injects a `[CRITICAL ERROR — LESSONS FILE TOO LARGE]` block instructing the model to tell the user and offer `learn_remove`, logs at ERROR, then appends the truncated lessons with `…[lessons truncated]`. Shown lessons stay in effect; only over-cap content is dropped. |
-| Thread history, truncation fallback | `_HISTORY_BUDGET_CHARS` | 21% | 34,650 | raw truncation when compression is unavailable |
-| Daily history (V1 session context) | `_MEMORY_HISTORY_CAP` | 16% | 26,400 | truncated; V2 prompt construction does not read daily history |
-| Skills | `_SKILLS_CAP` | 15% | 24,750 | top-K under `lazy_load`; tail behind `skill_search` |
-| Steering | `_STEERING_CAP` | 10% | 16,500 | truncated with a marker |
-| Semantic memory (V1 session context) | `_SEMANTIC_MEMORY_CAP` | 7.7% | 12,705 | bounded query-ranked context; V2 recall uses its own total response cap |
-| Episodic memory (V1 session context) | `_EPISODIC_MEMORY_CAP` | 7.7% | 12,705 | capped further at 3,000 chars; V2 recall uses its own total response cap |
-| Projects | `_MEMORY_PROJECTS_CAP` | 3.9% | 6,435 | truncated |
-| Preferences | `_MEMORY_PREFS_CAP` | 2.6% | 4,290 | truncated |
-| Preamble headroom | `_PREAMBLE_HEADROOM` | 3% | 4,950 | fixed rules/identity/workspace/docs/date |
-| Global ceiling (lazy_load ON) | `_MAX_CONTEXT_CHARS` | Σ above | 190,575 | newline-boundary truncation, last resort only |
+Startup lessons retain every eligible, in-scope rule completely while protected context is below the model-safe ceiling, without a background embedding call. Neither vector `source=consolidation`/`promotion` nor the tool/knowledge category proves optionality: consolidation extracts explicit always/never user corrections through the same path. JSONL likewise has no reliable explicit/inferred provenance. When the ceiling forces omission, only complete lesson entries are removed and the prompt directs explicit recovery through `memory_recall`; wording, lexical mismatch and PR numbers never justify dropping a rule below that ceiling.
 
-`_PER_MESSAGE_CAP` = 8,000 is a within-history bound (truncate one oversized
-message on the fallback path), not an additive section, so it is excluded from
-the sum.
+Explicit recall deduplicates only identical selected evidence with the same stable record ID, independently within facts and episodes. Different IDs, revisions or provenance remain separate. The projection does not mutate input or storage.
+
+#### Per-section admission
+
+Section constants bound optional activity and discovery; they do not add to
+the 33,000-character discretionary allowance. Complete preferences, applicable
+lessons, steering, memory navigation, and skill discovery are protected. Omission
+notices are outside that allowance and name omitted sources. Thread continuity
+has an independent window-scaled allowance: 6,930/34,650 characters at 200K/1M,
+with per-message caps of 1,600/8,000 and compression thresholds of 8,910/44,550.
+Long history blocks keep framing and the newest tail rather than disappearing.
+
+Confined project bodies, pinned or not, retain a separate 24,750-character
+allowance and descriptor-pinned byte-limited reads. First-turn and post-compaction
+skill injection both split protected bodies from discovery. The default discovery
+entry lists up to eight usage-ranked names and short purposes and requests short
+keywords. Scoped search filters `repo_scope` and byte-identical duplicates just as
+the catalog does, and returns confined project bodies through the same reader,
+never an unconfined live path. UI language, date/runtime identity, withholding, member mode and stop notes
+remain mandatory. Protected lesson overflow is counted and reported; other protected
+content remains whole. Outer replay retains its separate allowance. Counts are
+characters/UTF-8 bytes, not model token or cost estimates.
 
 Beyond Kiro Crew's own assembly, kiro-cli manages its own context window:
 `_kiro.dev/compaction/status` notifications signal that it summarized older turns,
@@ -4203,15 +4258,21 @@ The next dashboard turn consumes that one-shot flag to restore the skills
 context. Failed deferred compaction does not arm it. This completion hook does
 not add skills reinjection to messaging surfaces or the task runner.
 
-#### Dynamic budget scaling (per active model context window)
+#### Model-window metadata
 
-The `_CONTEXT_BUDGET_BASE` (165k) and its derived per-section caps above are the **1M-reference** values — the base was hand-tuned for a 1M-token window, so each section has a fixed *share of that window*. When a session runs on a **smaller-window** model (e.g. Opus 4.8 200K), injecting the same absolute char counts would consume ~5× the proportional share and accelerate compaction. `build_session_context()` / `build_message()` / `compress_thread_history()` / `build_session_replay()` therefore take an optional `model_window` (tokens); `_resolve_caps(window)` re-derives every cap against a base scaled linearly to that window (`base = _CONTEXT_BUDGET_BASE × window / _REFERENCE_WINDOW_TOKENS`, `_REFERENCE_WINDOW_TOKENS`=1,000,000). This keeps each section's **share of the window invariant across models** — a section that is 20% of a 1M window stays 20% of a 200K window (i.e. one-fifth the chars). Results are `functools.lru_cache`d per distinct window; `_ResolvedCaps.max_context` is a computed property, and the module constant `_MAX_CONTEXT_CHARS` is *derived* from `_resolve_caps(_REFERENCE_WINDOW_TOKENS)` so the section-sum lives in one place.
+`_resolve_caps(model_window)` returns fixed Crew activity/discovery limits and
+independent, window-scaled thread history/message/compression limits.
+`resolve_model_window` and `window_for_provider_client` resolve provider metadata
+for those thread limits and replay; these values do not grant more old-activity
+capacity. The native model input, provider-owned resources and external MCP
+serialization are outside this boundary and remain UNKNOWN, not estimated from
+the Crew string.
 
-- **Every char cap scales:** lessons, skills, steering, static anchors, compressed-history, fallback history and `caps.per_message` scale together. The per-message cap is additionally clamped to the available history budget. Legacy history/semantic/episodic cap fields remain available to explicit readers; they do not cause memory search during message construction. The dashboard's `build_session_replay` budget scales by the same factor.
-- **Reference identity:** at the reference window the scale factor is exactly 1.0, so resolved caps are byte-for-byte the module constants — the caps are derived *from* those constants (single source of the fractions), not a re-listing.
-- **Fail-safe fallbacks (`resolve_model_window(model)`):** delegates to the central `model_registry.model_window(model)` authority (kiro-list cache > registry > supplementary id map > `[1m]` heuristic > `None`). `""`/`None`/`"auto"` and any genuinely-unknown id resolve to `None` ⇒ the 1M reference — so ONLY a model with a confidently-known smaller window scales the budget down; an unknown/auto window never silently shrinks the default deployment (`provider=acp` + `model="auto"` runs a 1M model). The central authority returns `None` (not a silent 200K) for unknown ids, so this fail-safe is now the authority's own contract rather than a special case here. **A context window is a property of the model, not the serving provider** — so `resolve_model_window` takes NO provider arg and `model_window` is provider-independent.
-- **Floor:** `_MIN_CONTEXT_BUDGET_BASE` (20% of base ≈ the 200K tier) clamps a pathologically small/misreported window so caps can't collapse to ~0. Known limitation: below 200K every window collapses to this same floored base (forward-compat only — the registry's smallest real window is 200K), and the **fixed preamble** (`_CRITICAL_RULES` + identity/workspace/date, ~3k chars) does NOT scale, so on a small window it consumes a larger *fixed* fraction than the linear model implies. Linear scaling is intentional per the design (window-share parity); a reserve-fixed-overhead curve is a possible future refinement.
-- **Callers:** dashboard (`chat_runner`), Slack (`handler`), and subagents (`subagent`) all resolve the window from the live session client via `window_for_provider_client(client)` — which prefers the provider's public `context_window_tokens()` accessor (0 until a turn completes; at `is_new` it falls through) and otherwise derives from the resolved model id via `resolve_model_window`. Background/cron paths that don't resolve a model pass `None` (reference). See `context.py` `_resolve_caps` / `resolve_model_window` / `window_for_provider_client` and the central `model_registry.model_window()` / `has_known_window()`.
+The full agent contract is still injected through the existing path. Native
+prompt/resource configuration alone is not proof that the native provider received
+the same effective substituted content. Until that equivalence can be established,
+no duplicate contract is removed. Tool Search thresholds and README loading are
+unchanged; neither has controlled evidence supporting a change here.
 
 ### Switchable context groups (sub-agents)
 
@@ -4219,14 +4280,18 @@ A spawning parent decides which of three groups its sub-agent inherits, via `inc
 
 | Group | Sections | Switchable |
 |---|---|---|
-| conduct | `_CRITICAL_RULES`, `[CURRENT DATE]`, agent identity + `[RUNTIME]`, UI language, `[WORKSPACE IDENTITY]`, skills index | no |
-| `memory` | static preferences/projects, memory tool guidance, `## Recent Session Context` | yes |
+| conduct | `_CRITICAL_RULES`, date, agent/runtime, UI language, workspace identity, bounded skill discovery | no |
+| `memory` | complete preferences, activity index, memory tool guidance, `Recent Session Context` source snippets; V2 essential anchors | yes |
 | `lessons` | `[Learned corrections]` (global + workspace), `[USER PROFILE]` | yes |
 | `project` | `[DOCUMENTATION]` pointer, steering resources (CC backend only), `[PROJECT]` directory line | yes |
 
 The steering row carries a backend caveat: the steering block is injected only on the Claude Code backend (`is_cc`), because on the ACP/kiro backend `kiro-cli --agent` loads the agent's own `resources` natively. `include_project=false` therefore suppresses steering on CC only — an ACP sub-agent still receives it, and nothing in Kiro Crew can prevent that from this call site.
 
-conduct is not switchable because every member is an output contract or a capability pointer: a sub-agent without the skills index cannot discover what it can do, and one without `_CRITICAL_RULES` cannot format what it reports back.
+conduct is not switchable because it supplies the output contract and capability
+entry points. Default skill discovery is a small name/purpose list plus
+`skill_search`, not the full installed directory. V1 project notebook bodies are
+not a conduct block: their navigation belongs to `memory` and their bodies are
+recalled on demand.
 
 Omitting a group **skips its sections** rather than capping them to zero — `MemoryStore.get_context()`'s `_cap(text, 0)` returns a `…[truncated]` marker, not an empty string, so a zero cap emits headers with no content behind them.
 
@@ -4236,19 +4301,22 @@ The flags resolve once at spawn and live on `SubagentInfo`. Every path that re-m
 
 ### Session Resume (`resumed=True`)
 
-When a session is restored via ACP `session/load`, `build_session_context()` and
-`build_message()` accept `resumed=True`. This skips ONLY the `[THREAD CONVERSATION
-HISTORY]` block — kiro-cli already has full native history. All other context blocks
-are still injected:
+`build_message(resumed=True)` uses slim resume after native `session/load`.
+It does not reinject the original full memory, lessons, skills or agent prompt.
+A direct `build_session_context(resumed=True)` call only skips thread history;
+it is not the public turn's slim-resume path.
 
-| Block | Skip on resume? | Why |
-|-------|-----------------|-----|
-| `[THREAD CONVERSATION HISTORY]` | ✅ Skip | kiro-cli has full native history |
-| Memory + skills + lessons | ❌ Keep | KiroCrew-specific, not in kiro-cli |
-| `[Other chat tabs]` (cross-tab) | ❌ Keep | Reads OTHER sessions' JSONL |
-| `[Recent Session Context]` (provenance) | ❌ Keep | Cross-thread entries |
-| Agent system prompt | ❌ Keep | kiro-cli ACP doesn't load agent prompts |
-| `_CRITICAL_RULES` | ❌ Keep | Diff rendering, OPTIONS buttons |
+| Block | Slim resume |
+|---|---|
+| Thread history | Native provider history retained; no duplicate block |
+| Memory, lessons, skills, agent prompt | No full reinjection |
+| Date, runtime, UI language | Refreshed minimal header |
+| Member essentials/rules | Existing lifecycle delivery retained |
+| Critical rules | Existing restored context; no full duplicate |
+| Cross-tab history | Not injected |
+
+Post-compaction reinjection separately refreshes bounded skill discovery,
+protected skill bodies, memory navigation, reply preferences and member identity.
 
 The owner copy dialog names its destination member. Recovery distinguishes
 **Restore experience** from whole-store **Restore backup**. A dirty store switch

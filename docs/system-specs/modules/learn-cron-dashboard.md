@@ -59,7 +59,7 @@ delete private rules. Distinct rules remain available for explicit owner review;
 same-identity conflict proposals and evidence-backed owner correction/undo are
 unchanged.
 
-Detects user corrections (e.g. "use X instead of Y", "remember that X", "never use X") and stores them in `~/.kiro/crew/lessons.jsonl`. Categories: `tool`, `preference`, `knowledge`. Injected into LLM context as `[Learned corrections:]` block (max 50). Detection runs after each ACP response.
+Detects user corrections (e.g. "use X instead of Y", "remember that X", "never use X") and stores them in `~/.kiro/crew/lessons.jsonl`. Categories: `tool`, `preference`, `knowledge`. Injected into LLM context as a `[Learned corrections]` block with complete applicable rules; startup does not trim uncertain rules by recency. Detection runs after each ACP response.
 
 **The JSONL file is per-target, so the three `/api/lessons` routes carry a store dimension.** `~/.kiro/crew/lessons.jsonl` is the DEFAULT store's file; a caller bound to a named memory store reads and writes `memory_stores/<name>/lessons.jsonl` instead, and `_lesson_jsonl_store` picks between them by the caller's BINDING, never by which file holds rows. `LessonStore.path` is the resolver — construct the store and read it, never compose `<dir>/lessons.jsonl`, or the two fall onto different files while both look correct. Full rule, including why keying on population is a data leak: [memory-skills-hooks](memory-skills-hooks.md#two-namespaces-two-arguments). Because a silo-bound crew's corrections land in that file exactly when the silo has no `memory.db`, this tier is the one a vector-only injection audit is blind to; `security.scan_memory` scans every store's lessons file for that reason — see [security](security.md).
 
@@ -1195,7 +1195,7 @@ back its endpoint-owned value before a later flush may resume.
 
 Cross-tab context: **removed** (budget redistributed to other caps). Previously injected recent messages from other dashboard tabs; this block was eliminated and its 6,000-char budget absorbed into the raised memory/lessons caps above.
 
-**Context budget** (`context.py`): total cap 165,000 chars (~55k tokens). Priority order: critical rules → memory (preferences 4,250, projects 6,400, history 26,600) → skills (on-demand, few always-on) → lessons (37,250) → conversation history (8k budget, 8,000 chars/message cap, most-recent-first fill) → provenance. Individual messages exceeding 8,000 chars are truncated with `…[truncated]`. If total exceeds 165,000, hard-truncated at nearest newline.
+**Context budget** (`context.py`): ordinary startup uses the fixed Crew background admission defined in [memory-skills-hooks](memory-skills-hooks.md#context-builder-contextpy). It retains complete explicit preferences and applicable rules rather than slicing the joined prompt. Rules of uncertain provenance remain intact; old activity is retrieved on demand through the same store-bound recall route, including bounded V1 notebook/history snippets. Outer replay, the safety contract, following-interaction guidance and the current request are measured separately from optional background. Neither a larger model window nor `skills.lazy_load` adds background capacity.
 
 **Per-turn timeout** (`constants.py:CHAT_TURN_TIMEOUT`): every `_run_chat` invocation is wrapped with `asyncio.wait_for(timeout=CHAT_TURN_TIMEOUT)` regardless of dispatch site. This applies uniformly to: primary user-typed turn (`chat_handlers.py`), queue-drain (`chat_runner.py` finally block), cron injection (`handlers/messaging.py`), Slack/dashboard nudge (`slack/gateway.py` autonudge path), subagent injection (`slack/gateway.py` two paths), and the post-fan-out synthesis turn (`chat_runner.py` drain/idle branch — fires one consolidated synthesis after the last sub-agent of a fan-out completes). The structured dashboard-monitor path runs `_run_chat` inside an authorization coroutine passed to `spawn_guarded_turn`; authorization is rechecked after the background permit and the helper still owns the same ceiling. The cap (14400s, 4 hours) is sized to match the inner ACP `_DEFAULT_PROMPT_TIMEOUT` so the dashboard layer does not bound below the transport; four hours is the longest single turn the shipped budgets can legitimately produce (the task runner's 90-minute test command plus a fix and a re-run, or a blocking subagent wave at its 2h wait cap), and anything longer belongs to the loop mechanisms, which end the turn between cycles. The `_STALE_TURN_TIMEOUT` (90s, in `acp/client.py`) is the real wedged-session guard — it fires when streaming has gone silent. `CHAT_TURN_TIMEOUT` is the upper safety ceiling for genuinely runaway work, not a "this turn took too long" guard.
 
@@ -3708,3 +3708,13 @@ marker (`CONN_RECOVERY_PREFIX`, `BUSY_RECOVERY_PREFIX`), is folded by the fronte
 ### Custom Domain
 
 `kirocrew setup` uses `kirocrew.localhost` (RFC 6761 reserved, resolves to loopback natively) for `http://kirocrew.localhost:5476` (macOS/Linux via `sudo tee -a /etc/hosts`). Gateway startup also prints the hostname URL for remote desktop access.
+
+### On-demand notebook recall
+
+The agent-facing recall route uses the authenticated session's recorded workspace
+for Global V1 notebooks; named stores still take precedence. It never selects a
+workspace from caller-supplied paths or another active slot. Empty/unreadable
+notebook indexes and query failures return `markdown_status: index_unavailable`
+and a notice that missing results do not prove missing memory. Private V2 never
+falls back to Markdown/Global. Lessons remain complete at startup, including
+consolidated corrections; explicit recall spends its budget on facts and episodes.

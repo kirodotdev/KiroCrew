@@ -263,6 +263,7 @@ class TestLessonsSingleQuery:
         fake_memory = MagicMock()
         fake_memory.vector_store = vector_store
         fake_memory.get_context.return_value = ""
+        fake_memory.activity_index.return_value = ""
 
         builder = self._builder(tmp_path)
         with patch.object(ContextBuilder, "get_memory_for", return_value=fake_memory):
@@ -293,6 +294,7 @@ class TestLessonsSingleQuery:
         no_vs = MagicMock()
         no_vs.vector_store = None
         no_vs.get_context.return_value = ""
+        no_vs.activity_index.return_value = ""
         builder = self._builder(tmp_path)
         builder.lessons = lessons
         with patch.object(ContextBuilder, "get_memory_for", return_value=no_vs):
@@ -307,6 +309,7 @@ class TestLessonsSingleQuery:
         with_vs = MagicMock()
         with_vs.vector_store = vector_store
         with_vs.get_context.return_value = ""
+        with_vs.activity_index.return_value = ""
         builder2 = self._builder(tmp_path)
         builder2.lessons = lessons
         with patch.object(ContextBuilder, "get_memory_for", return_value=with_vs):

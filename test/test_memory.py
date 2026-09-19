@@ -292,3 +292,58 @@ class TestActiveProjectsHeader:
         assert plain.count("# Active Projects") == 1
         assert "# Active Projects\n\n_Updated: " in plain
         assert plain.endswith("notes from the plain write\n")
+
+
+class TestRecallSearchFallback:
+    def test_default_search_still_requires_every_literal_term(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects("# Active Projects\nNotebookquartz migration")
+        question = "What do we know about Notebookquartz?"
+        assert store.search(question) == []
+        rows = store.search(question, match_any=True)
+        assert len(rows) == 1
+        assert "Notebookquartz" in rows[0]["snippet"]
+
+    def test_or_fallback_quotes_operators_and_preserves_limit(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects("# Active Projects\nNotebookquartz project")
+        store.write_preferences("Notebookquartz preference")
+        store.append_history("Notebookquartz milestone")
+        assert len(store.search("Notebookquartz", limit=1, match_any=True)) == 1
+        # These are words, not executable FTS operators or a wildcard query.
+        assert store.search('" OR NOT NEAR *', match_any=True) == []
+        assert store.search("   ", match_any=True) == []
+        assert store.search("nonexistentquartz", match_any=True) == []
+
+    def test_question_fallback_does_not_match_indexed_paths(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path / "pathonlyquartz")
+        store.write_projects("# Active Projects\nActual notebook content")
+        assert store.search("pathonlyquartz")
+        assert store.search("pathonlyquartz", match_any=True) == []
+
+    def test_natural_question_reaches_an_old_decision_sharing_two_terms(self, tmp_path):
+        """The old first turn showed an older day's first line unconditionally.
+
+        A natural question about it carries far more task terms than that one
+        line shares, so majority coverage alone loses it. Two shared terms admit
+        the line; a document sharing a single word still does not.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects("# Active Projects\nQuartzscope dashboard colors")
+        old_day = store._history_dir / "2026-01-05.md"
+        store._history_dir.mkdir(parents=True, exist_ok=True)
+        old_day.write_text(
+            "# 2026-01-05\nChose Terraform over CDK for the Quartzscope infra "
+            "after the cost review (OLDCHOICE)\n",
+            encoding="utf-8",
+        )
+        store.rebuild_index()
+        question = "Why did we pick Terraform for Quartzscope? Infrastructure decision rationale"
+        rows = store.search(question, match_any=True)
+        assert [row["path"] for row in rows] == [str(old_day)]
+        assert "OLDCHOICE" in rows[0]["snippet"]
+        assert 0 < rows[0]["relevance"] <= 0.5
+        # Majority matches still win outright when one exists.
+        store.append_history("Terraform Quartzscope infrastructure decision rationale recorded")
+        rows = store.search(question, match_any=True)
+        assert len(rows) == 1 and "rationale recorded" in rows[0]["snippet"]
