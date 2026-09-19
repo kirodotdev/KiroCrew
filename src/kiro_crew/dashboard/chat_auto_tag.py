@@ -24,6 +24,7 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import (
     _NAME_MAX,
     _bump_slot_tags_revision,
+    _is_status_tag,
     create_tag_definition,
     persist_tags_snapshot_unlocked,
     tags_write_lock,
@@ -102,7 +103,7 @@ async def _auto_tag_inner(state: Any, slot: Any) -> None:
 
         if existing:
             # NEVER apply status/workflow tags
-            if existing.get("status"):
+            if _is_status_tag(existing):
                 return
             tag_id = existing["id"]
         else:

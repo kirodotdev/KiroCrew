@@ -339,7 +339,15 @@ async def api_hook_test(request: web.Request) -> web.Response:
             "cwd": os.getcwd(),
             "assistant_text": context,
         }
-    result = await run_script_hook(hook, context, hook_event)
+    # An ABSENT session key infers the attended slack surface, so the dashboard profile's
+    # own script_hooks denial went unconsulted and the command ran on the policy ceiling.
+    hook_event = hook_event or {"hook_event_name": hook.event, "cwd": os.getcwd()}
+    hook_event["parent_session_key"] = "dashboard:hook_test"
+    # Without the VERIFIED app claim this endpoint resolves script_hooks from policy
+    # alone, so an app whose own profile denies it could still run the hook's command.
+    result = await run_script_hook(hook, context, hook_event, app=str(request.get("app") or ""))
+    # Readers are served the snapshot, so a Test run's status/count vanish unless published.
+    await asyncio.to_thread(store.record_run_bookkeeping)
     _sel().log_tool_invocation(
         session_key="dashboard:hook_test",
         agent="kirocrew",
