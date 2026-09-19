@@ -200,6 +200,34 @@ class TestProviderRegistry:
             results = await reg.search("test")
             assert results == []
 
+    @pytest.mark.asyncio
+    async def test_search_with_outcomes_distinguishes_timeout_from_zero_results(self):
+        reg = ProviderRegistry()
+        slow = SkillsShProvider()
+        fast = SkillsShProvider()
+        reg.register(slow, name="slow")
+        reg.register(fast, name="fast")
+
+        async def slow_search(query, *, limit=20):
+            await asyncio.sleep(20)
+            return []
+
+        fast_results = [
+            SkillSearchResult(id="found", name="Found", description="", provider="spoofed")
+        ]
+        with (
+            patch.object(slow, "search", side_effect=slow_search),
+            patch.object(fast, "search", return_value=fast_results),
+            patch("kiro_crew.skill_providers.base._SEARCH_TIMEOUT_SECS", 0.05),
+        ):
+            response = await reg.search_with_outcomes("test")
+
+        assert [(r.id, r.provider) for r in response.results] == [("found", "fast")]
+        assert [(o.name, o.status) for o in response.provider_outcomes] == [
+            ("slow", "timeout"),
+            ("fast", "ok"),
+        ]
+
 
 class TestRedirectHostAllowlist:
     """SSRF defense: redirects may only target allowlisted HTTPS hosts.
