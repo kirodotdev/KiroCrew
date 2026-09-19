@@ -335,7 +335,9 @@ class TestCleanupLoopRereadsPolicy:
     def test_adopt_reads_timeout_and_rss_from_the_current_config(self) -> None:
         mgr, _ = _make_manager(timeout_secs=3600, rss_max_mb=0)
         cleanup = mgr._cleanup_boundary()
-        assert cleanup._adopt_idle_policy() == 600.0
+        # timeout // 6 would be 600, but the tick also drives the housekeeping
+        # sweeps and is capped at MAX_TICK_INTERVAL_SECS.
+        assert cleanup._adopt_idle_policy() == 300.0
         assert cleanup.state.idle_sweep_enabled is True
         assert cleanup.state.idle_timeout == 3600
         assert cleanup.state.rss_max_mb == 0
@@ -345,6 +347,42 @@ class TestCleanupLoopRereadsPolicy:
         assert cleanup.state.idle_timeout == 600
         assert cleanup.state.rss_max_mb == 2048
         assert mgr._rss_max_mb == 2048
+
+    def test_a_long_session_timeout_does_not_slow_the_housekeeping_sweeps(self) -> None:
+        """The tick is capped, so long-lived sessions keep the ~5 min cadence.
+
+        One tick drives the idle-expiry hook AND ``_run_cleanup_ticks``'s
+        housekeeping: orphaned session roots, tracked PIDs, untracked MCP
+        servers, sandbox artifacts. Deriving it from ``timeout_secs`` alone puts
+        those sweeps 4 hours apart at ``timeout_secs=86400`` -- while DISABLING
+        idle expiry yields 300 s, so asking for long sessions would buy worse
+        orphan cleanup than switching the sweep off. The floor case is the
+        invariant: the interval must never exceed what ``timeout_secs=0`` gives.
+        """
+        mgr, _ = _make_manager(timeout_secs=0)
+        cleanup = mgr._cleanup_boundary()
+        disabled_interval = cleanup._adopt_idle_policy()
+        assert disabled_interval == SessionCleanup.MAX_TICK_INTERVAL_SECS
+
+        for timeout in (1801, 3600, 86400, 7 * 24 * 3600):
+            mgr._cfg = _make_cfg(timeout_secs=timeout)
+            interval = cleanup._adopt_idle_policy()
+            assert interval <= disabled_interval, (
+                f"timeout_secs={timeout} produced a {interval}s tick, slower than the "
+                f"{disabled_interval}s an operator gets by turning idle expiry OFF"
+            )
+            # The timeout itself is untouched -- only the question's cadence.
+            assert cleanup.state.idle_timeout == timeout
+            assert cleanup.state.idle_sweep_enabled is True
+
+    def test_a_short_timeout_still_ticks_faster_than_the_cap(self) -> None:
+        """The cap is a ceiling, not a floor: sub-cap intervals are unchanged."""
+        mgr, _ = _make_manager(timeout_secs=600)
+        cleanup = mgr._cleanup_boundary()
+        assert cleanup._adopt_idle_policy() == 100.0
+
+        mgr._cfg = _make_cfg(timeout_secs=1800)
+        assert cleanup._adopt_idle_policy() == 300.0
 
     def test_adopt_keeps_the_loader_clamps(self) -> None:
         mgr, _ = _make_manager(timeout_secs=30)
