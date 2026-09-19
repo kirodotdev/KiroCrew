@@ -869,6 +869,56 @@ jobs:
             echo "::error::the base-owned outbound redactor is unavailable, so the validator output cannot be scrubbed before it is published. Refusing to publish it raw."
             exit 1
           fi
+          # PRUNE THE UNCLASSIFIED FIELD, NEVER THE ROW. Same rule, same program and
+          # same reasons as the same-repo lane's `Probe the candidate set for credential
+          # shapes`: `deny_diff` reads a row's `kind`, `platform` and `command_or_flow`
+          # verbatim at both refs, so a shape there refuses the run below -- it can be
+          # neither rewritten nor dropped, and on a FORK the rows are authored from an
+          # untrusted diff, so dropping a row would be a coverage hole its author could
+          # steer. A shape in `reason`, prose the classifier never reads, removes that
+          # field alone and every row is still classified.
+          #
+          # FEATURE-DETECTED, because `$REDACTOR` is staged from the BASE blob and can
+          # predate the flag; handing it an unknown argument is an argparse exit 2 that
+          # says nothing about credentials. Absent the flag this call is skipped
+          # entirely and the post-`validate` probe below gives the base's own answer,
+          # which is to refuse the run. A grep of the staged FILE rather than a `--help`
+          # run: the probe must not be a redactor invocation with no `--mode`, since
+          # every call in this lane declares the file shape it is scrubbing.
+          #
+          # Before `validate`, so the count it reports and the corpus it writes are both
+          # over the pruned rows. The probe AFTER `validate` is unchanged and is the
+          # backstop: a shape this call did not remove still refuses the run there.
+          if grep -q -- "--drop-changed-fields" "$REDACTOR"; then
+            prune=0
+            python3 "$REDACTOR" --mode json --drop-changed-fields --fail-if-changed candidates.json || prune=$?
+            case "$prune" in
+              0)
+                ;;
+              10)
+                echo "::warning::a candidate row carried a credential shape (an access-key id, an ARN, an account id or a credential-bearing assignment) in prose the classifier does not read, and that FIELD was removed. Every row is still adjudicated, on the bytes the reviewer wrote; only the removed field's explanation is absent from this run's report."
+                ;;
+              11)
+                echo "rc=corpus-credential" >> "$GITHUB_OUTPUT"
+                echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads. The corpus travels to the adjudication legs as a public artifact and must stay byte-faithful for the classifier, so that field can be neither published nor rewritten -- and dropping the row would silently remove the boundary it probes. Re-run so the reviewer proposes the operation without the embedded credential."
+                exit 1
+                ;;
+              *)
+                # NOT a refusal, and that is the point. The prune reads exactly one
+                # document shape, and its exit 1 covers the file it cannot place a
+                # credential shape in -- including a shape in a TOP-LEVEL field beside
+                # `golden_paths`, which `validate` below discards outright when it
+                # normalizes to `{"golden_paths": kept}`. At the base ref that file
+                # reached `validate` untouched and the run proceeded, so refusing here
+                # would red a case base passed. Hand it on instead: `validate` rejects a
+                # file it cannot trust, and the probe it runs on the NORMALIZED corpus
+                # refuses any shape that survives into the rows the legs classify.
+                echo "::warning::the candidate set could not be pruned by field (it is not the shape this flag reads, or a credential shape sits outside the rows). Left to validate, which normalizes to golden_paths alone, and to the probe on the normalized corpus -- neither of which this step may pre-empt."
+                ;;
+            esac
+          else
+            echo "::warning::the base-owned redactor at this base commit predates --drop-changed-fields, so a credential shape cannot be attributed to a field. The probe after validate gives the base's own answer, which is to refuse the run."
+          fi
           rc=0
           python3 "$HARNESS/scope_candidates.py" validate \
             --candidates candidates.json \
