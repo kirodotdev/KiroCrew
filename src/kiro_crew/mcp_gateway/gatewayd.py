@@ -1133,18 +1133,40 @@ async def _owner_liveness_sweeper(
     recycled by the kernel, so ``pid_exists`` alone would let a daemon keep
     running for whatever unrelated process later took its owner's number.
 
-    Fail-safe rules mirror :func:`_socket_liveness_sweeper`: an unreadable
-    start time at arm time disables the check (nothing to compare against,
-    and refusing to serve would be worse than serving one generation too
-    long); a probe that cannot read the start time is inconclusive and
-    neither counts nor resets; :data:`_OWNER_LIVENESS_MISSES` consecutive
-    conclusive misses set ``stop_event``, which is the graceful drain path.
+    Fail-safe rules mirror :func:`_socket_liveness_sweeper`: a start time that
+    is unreadable *while the owner still exists* disables the check (nothing to
+    compare against, and refusing to serve would be worse than serving one
+    generation too long); an owner that is conclusively **gone** at arm time
+    takes the graceful drain path immediately, because "unreadable" then means
+    gone rather than unknown; a probe that cannot read the start time is
+    inconclusive and neither counts nor resets;
+    :data:`_OWNER_LIVENESS_MISSES` consecutive conclusive misses set
+    ``stop_event``, which is the graceful drain path.
     """
     baseline = await asyncio.to_thread(_process_start_time, owner_pid)
     if baseline is None:
+        # No baseline has two causes that need OPPOSITE answers, and treating
+        # them alike is what let a daemon outlive its owner. The listening
+        # socket is bound and advertised before this task first runs, so on a
+        # contended host the owner can die inside the gap between the bind and
+        # this read. Disabling the check there retired the only mechanism that
+        # would ever have ended this daemon, so it served an owner that no
+        # longer existed until something killed it from outside.
+        # ``pid_exists`` separates the two: it reports False only on
+        # ProcessLookupError, and True when the process exists but cannot be
+        # signalled -- so False here is a conclusion, not a read failure.
+        if not await asyncio.to_thread(_pid_exists, owner_pid):
+            logger.warning(
+                "gatewayd: owning gateway pid %d was already gone when the "
+                "owner-liveness check armed; this daemon serves no live gateway "
+                "-- initiating graceful self-shutdown",
+                owner_pid,
+            )
+            stop_event.set()
+            return
         logger.warning(
-            "gatewayd: owner pid %d has no readable start time; the owner-liveness "
-            "check is disabled for this daemon",
+            "gatewayd: owner pid %d is alive but has no readable start time; the "
+            "owner-liveness check is disabled for this daemon",
             owner_pid,
         )
         return

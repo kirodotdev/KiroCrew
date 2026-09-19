@@ -1283,7 +1283,10 @@ export default function ChatPane({
                 bannerH={pinnedState.bannerH}
                 expanded={pin.pinExpanded}
                 onToggleExpanded={() => setPinExpanded(p => !p)}
-                onJump={() => pin.jumpToPinnedPromptInPlace(pinnedState.idx)}
+                onJump={() => pin.jumpToPinnedPromptInPlace(pinnedState.idx, {
+                  mountIndex: (index, opts) => listRef.current?.mountIndex(index, opts) ?? false,
+                  estimateRowTop: (index) => listRef.current?.estimateRowTop(index) ?? null,
+                })}
                 cardRef={pin.pinCardRef}
                 onCollapsedHeight={pin.onPinCollapsedHeight}
               />

@@ -4595,12 +4595,14 @@ describe('DrivePage sections: keyboard paths and honest copy', () => {
     // Pointer open: the button is NOT focused first, exactly as Safari leaves it.
     fireEvent.pointerDown(trigger, { pointerType: 'mouse', button: 0, ctrlKey: false })
     fireEvent.click(await screen.findByTestId('drive-share'))
-    await screen.findByTestId('share-dialog')
+    const dialog = await screen.findByTestId('share-dialog')
+    // Mounting the dialog precedes useDialogFocusTrap's passive effects:
+    // wait for focus entry before sending Escape to its keydown listener.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
 
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
-    // Focus returns in a passive effect one tick after the dialog unmounts, so
-    // a synchronous read races it under shard load; wait for it to settle.
+    // The opener owns focus restoration, not the previously focused button.
     await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 

@@ -165,6 +165,69 @@ def test_an_agentless_call_site_still_produces_a_valid_header():
     assert _entries()[0]["agent"] == "kirocrew"
 
 
+# --- lineage: who made this session ----------------------------------------
+
+
+def _opened_data() -> dict:
+    opened = [e for e in _body() if e["type"] == "session/opened"]
+    assert len(opened) == 1
+    return opened[0]["data"]
+
+
+def test_a_created_session_records_its_creator_on_the_opened_entry():
+    # Both halves of the edge, from the one side that holds both: the creator's
+    # key and ACP session id captured on the slot when session_create minted the
+    # child. The sid is absent when the creator had no live handle at mint.
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew-worker",
+        slot="chat-42",
+        parent_slot="chat-7",
+        parent_sid="acp-sess-creator",
+    )
+    assert _opened_data()["parent"] == {"slot": "chat-7", "sid": "acp-sess-creator"}
+
+
+def test_a_creator_whose_handle_is_gone_is_recorded_by_slot_alone():
+    # An empty sid is not written as "": a reader would take an empty string for
+    # a creator with an empty name, where an absent key says the handle was down.
+    emit.on_session_opened(SESSION, agent="kirocrew-worker", slot="chat-42", parent_slot="chat-7")
+    assert _opened_data()["parent"] == {"slot": "chat-7"}
+
+
+def test_a_session_nobody_created_carries_no_parent_at_all():
+    # A person's own tab and a fork have no creator. The key is absent rather
+    # than null or empty, so a fold can tell "no creator" from "creator unknown".
+    _open_session()
+    assert "parent" not in _opened_data()
+
+
+def test_a_sid_without_a_slot_names_no_creator():
+    # The slot is the tree key; a sid alone is a citation with nowhere to hang.
+    emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-42", parent_sid="acp-sess-creator")
+    assert "parent" not in _opened_data()
+
+
+def test_the_creator_is_written_again_on_a_re_attach():
+    # A resume re-announces the header facts, and the creator is one of them: the
+    # slot's attribution outlives the ACP session, so a gateway taking the child
+    # over records who made it in the entry that says it re-attached. The emitter
+    # writes whatever the caller froze on the slot; it never looks the sid up.
+    emit.on_session_opened(SESSION, agent="kirocrew-worker", slot="chat-42", parent_slot="chat-7")
+    emit.reset_caches()
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew-worker",
+        slot="chat-42",
+        resumed=True,
+        parent_slot="chat-7",
+        parent_sid="acp-sess-creator",
+    )
+    opened = [e for e in _body() if e["type"] == "session/opened"]
+    assert [e["data"]["resumed"] for e in opened] == [False, True]
+    assert opened[-1]["data"]["parent"] == {"slot": "chat-7", "sid": "acp-sess-creator"}
+
+
 def test_reopening_appends_instead_of_truncating():
     _open_session()
     first = len(_entries())
@@ -2744,6 +2807,35 @@ def test_shutdown_writes_spent_retry_loss_without_a_later_append():
 
 
 def test_shutdown_reports_owed_loss_when_its_marker_cannot_land(monkeypatch, caplog):
+    """A shutdown whose retry budget is spent folds the debt forward and names it.
+
+    The split asserted below -- nothing buffered, one marker owed -- is the state a
+    SPENT budget leaves. Reaching it on the real budget of six takes six PACED
+    attempts inside *timeout*: `_drain_inline_until` sleeps a slice of what is left
+    between passes, so how many attempts a window buys is a property of the host
+    rather than of the emitter. A Linux runner fits six. The macOS runner fits fewer,
+    and there the same assertion reads a DIFFERENT lifecycle point -- the marker job
+    still retained, its debt riding inside that job -- which is how one assertion
+    reddens a shard for changes that never touch this code. Pinning the budget to one
+    attempt settles which point is reached: the first failed append spends it on any
+    host.
+
+    Two other repairs are weaker. A longer timeout buys margin on a fast host and
+    loses it again on a slow one, leaving the assertion resting on the same
+    stopwatch. Asserting that the append is reported as EITHER buffered or owed holds
+    in both states, and one of those states prints `0 loss marker(s) owed` while a
+    marker is genuinely owed, so the weaker form agrees with a wrong number instead
+    of describing a state.
+
+    That count belongs to the code that reads it rather than to this test: the debt
+    travels inside the retained job, so a count taken from `_pending_loss` alone
+    reads zero while a marker waits. What is pinned here is the spent budget, which
+    is the state this test names.
+
+    Mutation guard: removing the pin makes the assertion host-dependent again. It
+    still passes on a host that fits six paced attempts, which is why the failure
+    surfaces only on the slower runner.
+    """
     _open_session()
     assert emit.flush()
     _leave_spent_retry_loss_owed()
@@ -2752,15 +2844,61 @@ def test_shutdown_reports_owed_loss_when_its_marker_cannot_land(monkeypatch, cap
         raise OSError("filesystem still unavailable")
 
     monkeypatch.setattr(lg.Ledger, "append", _fail_marker)
+    # Patched AFTER the helper above, which spends a whole budget of its own.
+    monkeypatch.setattr(emit, "_MAX_WRITE_ATTEMPTS", 1)
     with caplog.at_level(logging.WARNING, logger=emit.logger.name):
         drained = emit.drain_for_shutdown(timeout=0.5)
 
     assert drained is False, "shutdown reported success with 1 loss marker still owed"
-    assert "0 append(s) buffered, 1 loss marker(s) owed" in caplog.text
+    assert "0 append(s) buffered, 1 loss marker(s) owed" in caplog.text, (
+        "the warning did not describe a spent budget, so the drain stopped at a "
+        f"different lifecycle point: {caplog.text}"
+    )
     with emit._lock:
         loss = emit._pending_loss.get(SESSION)
         assert loss is not None, "the failed marker's debt disappeared"
         assert loss.dropped_count == 1, "the original counted loss was not folded forward"
+
+
+def test_shutdown_names_a_marker_still_waiting_to_be_retried(monkeypatch, caplog):
+    """A marker held for retry is owed, and the warning has to say so.
+
+    The other lifecycle point. A budget that is not spent leaves the marker JOB at
+    the front of its session's bucket, and the debt rides inside that job: the map
+    the count reads is empty while a marker is very much owed. The warning is the
+    only record of how short the log's tail is at exit, so a zero there tells an
+    operator nothing is missing when something is.
+
+    This is the state a bounded shutdown reaches whenever the retry budget outlasts
+    the window, which is a property of the host. Constructed here instead of raced
+    for: a budget of 10,000 attempts cannot be spent, so the marker is retained
+    however many passes the window buys.
+
+    Mutation guard: counting only ``_pending_loss`` reports ``0 loss marker(s)
+    owed`` and reddens the assertion below.
+    """
+    _open_session()
+    assert emit.flush()
+    _leave_spent_retry_loss_owed()
+
+    def _fail_marker(self, *args, **kwargs):
+        raise OSError("filesystem still unavailable")
+
+    monkeypatch.setattr(lg.Ledger, "append", _fail_marker)
+    monkeypatch.setattr(emit, "_MAX_WRITE_ATTEMPTS", 10_000)
+    # Both windows bounded to a hair: the point is which state the warning
+    # describes, not how long the drain spins before describing it.
+    monkeypatch.setattr(emit, "_SECOND_CHANCE_DRAIN_SECONDS", 0.01)
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        drained = emit.drain_for_shutdown(timeout=0.01)
+
+    assert drained is False, "shutdown reported success with a marker still retained"
+    with emit._lock:
+        assert emit._pending_loss == {}, "the debt is meant to be riding in the retained job"
+        jobs = emit._pending.get(SESSION) or []
+        assert jobs and jobs[0].loss is not None, "the marker job was not retained"
+        assert jobs[0].loss.dropped_count == 1, "the retained marker lost its count"
+    assert "1 loss marker(s) owed" in caplog.text
 
 
 def test_a_close_under_a_live_turn_leaves_that_turn_its_open_calls():

@@ -15,6 +15,7 @@ format on top.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -22,7 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import _redact_for_display, _redact_meta
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
+from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -670,7 +671,108 @@ def queue_for_next_turn(
             "queue_id": qid,
         },
     )
+    # Accepted, and possibly not persisted: the write ceilings refuse an entry
+    # past the count cap or the byte budget and the send is still accepted, so
+    # that case is reported at WARNING rather than left silent. It is not a field
+    # on this frame: a caller-visible flag was carried here and read by nothing.
+    warn_if_not_durable(slot._queue, qid, slot.key)
+    start_queue_persist(state, slot)
     return qid
+
+
+def start_queue_persist(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Begin the durable write for a just-queued prompt, off the event loop.
+
+    Called from both places a prompt is accepted onto a slot queue: the busy-slot
+    path in this module, and the sub-agent hold branch in ``chat_handlers``. Both
+    answer the sender a receipt saying whether the entry is durable, so both must
+    start the write that makes it so; a receipt from one path and a write from
+    only the other is the asymmetry this seam exists to prevent.
+
+    The prompt's transcript row is written by the DRAIN, so between this accept
+    and that drain the queue is the ONLY record of the user's words. Waiting for
+    the periodic flush would leave that window as wide as the flush interval, and
+    a gateway restart inside it is exactly how the prompt disappears.
+
+    Started, not awaited. This function's caller answers the send synchronously,
+    and the acknowledgment keeps the repository's existing meaning — accepted in
+    memory, durable on a flush (``_save_slot_to_history``: "an edit is
+    acknowledged when it lands in memory and persists on a later flush") — so
+    the residual window is now one save's duration rather than one interval's.
+    Making it a precondition instead would mean refusing a queued send on a slow
+    or failing disk, which takes the user's words away at the one moment they
+    cannot be re-read from the transcript.
+
+    Self-limiting: the save is skipped unless the slot is dirty or its queue
+    drifted from disk, so a burst of queued sends does not become a burst of
+    transcript rewrites, and anything this pass skips stays owed to the periodic
+    flush.
+
+    Single-flight per slot. Two writers would each snapshot the queue
+    independently, and the transcript's file lock orders their COMMITS, not their
+    reads: the writer that snapshotted ``[q1]`` can acquire the lock after the one
+    that snapshotted ``[q1, q2]`` and put the older value back. The drift check
+    still leaves ``q2`` owed to the periodic flush, so nothing is lost forever —
+    but a restart inside that interval loses an acknowledged prompt, which is the
+    whole window this function exists to close. So one writer STARTED HERE runs
+    per slot at a time and a send arriving mid-write records the debt for it to
+    settle.
+
+    Its scope is exactly that, and no wider: the periodic ``_flush_dirty_slots``
+    pass and ``chat_summary``'s own ``flush_slot_now`` are separate writers that
+    this flag does not gate, so an immediate write can still interleave with one
+    of those. What that interleaving cannot do is put an older queue value back on
+    disk: inside ``_locked(history_key)`` the save compares the slot's
+    committed-queue witness against the value it held when it read the queue and
+    refuses when another writer has committed in between
+    (``_queue_snapshot_is_stale``). A refused pass leaves the queue owed by the
+    drift check, so losing that race costs one flush interval of lag rather than
+    an acknowledged prompt.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop here (a synchronous test or tool call): the periodic flush
+        # owns the write, exactly as before.
+        return
+    if slot._queue_persist_inflight:
+        # Owed, not dropped: the in-flight writer runs one more pass on the way
+        # out if the queue still differs from what it wrote. Both this function
+        # and the done callback run on the event loop, so these two fields need
+        # no lock — the executor thread never touches them.
+        slot._queue_persist_owed = True
+        return
+    slot._queue_persist_inflight = True
+    # NEVER on the loop: this writes the transcript file.
+    future = loop.run_in_executor(None, state.flush_slot_now, slot)
+    future.add_done_callback(lambda done: _finish_queue_persist(state, slot, done))
+
+
+def _finish_queue_persist(
+    state: "DashboardState", slot: "_ChatSlot", future: "asyncio.Future[Any]"
+) -> None:
+    """Release the single-flight and settle a prompt that arrived mid-write.
+
+    The follow-up is conditional on ``queue_persist_pending``, so a send whose
+    entry the finished pass already carried costs nothing. Clearing the debt
+    BEFORE the follow-up is what bounds the chain: each pass settles everything
+    accumulated during it, and a pass with nothing owed starts nothing.
+    """
+    slot._queue_persist_inflight = False
+    _log_queue_persist_failure(future)
+    owed = slot._queue_persist_owed
+    slot._queue_persist_owed = False
+    if owed and slot.queue_persist_pending:
+        start_queue_persist(state, slot)
+
+
+def _log_queue_persist_failure(future: "asyncio.Future[Any]") -> None:
+    """Report a failed background queue write; the flush still owes it."""
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        logger.warning("Queued-prompt persist failed; the flush still owes it", exc_info=exc)
 
 
 def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:

@@ -32,3 +32,9 @@ _SELF_PROGRAM_SPELLINGS = ("kirocrew", "kiro-crew", "kiro.crew")
 # substitution that resolves the name), and both verbs are matched on TOKENS via
 # ``_program_basename`` so a path-qualified or expansion-produced spelling counts.
 _KILL_BY_NAME_PROGRAMS = frozenset({"pkill", "killall"})
+# ``kirocrew file-delivery``'s dispatchable verbs -- the whole of that subcommand's
+# argparse ``choices``, which a test in the denied-command suite derives from the
+# parser so the two cannot drift. The floor keys on the VERB rather than on the
+# subcommand word because ``action`` is required, so the bare and ``--help`` forms
+# dispatch nothing and refusing them would refuse a read-only golden path.
+_SELF_FILE_DELIVERY_VERBS = frozenset({"approve"})

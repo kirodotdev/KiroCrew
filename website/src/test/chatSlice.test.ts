@@ -1568,9 +1568,13 @@ describe('subagent reducers', () => {
     expect(state.subagents['a1'].streaming).toBe('hello world')
   })
 
-  it('sseSubagentBatchChunks ignores unknown agent', () => {
+  it('sseSubagentBatchChunks recovers an unknown agent rather than dropping its text', () => {
+    // A chunk frame is part of the only evidence the panel gets between one
+    // spawn frame and one done frame, so it mints the entry it needs instead of
+    // discarding the text. The minted start time is flagged as assumed.
     const state = reducer(withSlot, sseSubagentBatchChunks({ chunks: [{ slot: 'slot-1', id: 'unknown', text: 'data' }] }))
-    expect(state.subagents['unknown']).toBeUndefined()
+    expect(state.subagents['unknown'].streaming).toBe('data')
+    expect(state.subagents['unknown'].startedAtAssumed).toBe(true)
   })
 
   it('sseSubagentTool updates lastTool and status', () => {

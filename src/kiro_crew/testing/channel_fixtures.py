@@ -21,6 +21,12 @@ This module makes the claim explicit and testable:
 * :func:`unverified` enumerates every ``assumed`` fixture, so the gap is a
   visible inventory rather than an unknown.
 
+Fixture paths are resolved with symlink containment and replaced atomically.
+That containment guards test-authored strings inside a single-user trust
+boundary, so treat it as local belt-and-braces rather than a standard every
+test utility must meet; attacker-grade path handling is owed on the governance
+and keystone paths.
+
 The fixtures ROOT is always supplied by the caller: this module ships in the
 runtime wheel, where no ``test/`` tree exists, so a default derived from
 ``__file__`` would point at an unpackaged path for every installed consumer.

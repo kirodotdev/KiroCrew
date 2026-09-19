@@ -354,6 +354,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_is_push_to_protected_branch",
     "_is_safe_presigned",
     "_is_self_cloud_destructive",
+    "_is_self_file_delivery",
     "_is_self_gateway_restart",
     "_is_self_kill",
     "_is_self_module_flag",

@@ -137,5 +137,15 @@ class FeishuRenderer(Renderer):
         ``messaging.dispatch`` from the driver's own accumulated text, so the two
         are not guaranteed to agree — a difference that only shows up in what the
         transcript records, never in what the user is shown.
+
+        The body is scrubbed render-aware here, at the send boundary, the same as
+        every channel that renders markdown itself does at its own send. Feishu
+        renders the body as markdown, and the channel-neutral stream pass upstream
+        is a literal byte scan, so a credential split by emphasis
+        (``AKIA**REST**``) or a link survives it and is reassembled on screen. The
+        numbered ``[OPTIONS:]`` choices are already display-safe (``apply_options_cap``
+        redacts them); ``redact_for_target`` is idempotent, so covering them again
+        with the body costs nothing.
         """
-        return render_options_as_text("".join(self._buf).strip(), self.capabilities)
+        rendered = render_options_as_text("".join(self._buf).strip(), self.capabilities)
+        return self.redact_for_target(rendered)

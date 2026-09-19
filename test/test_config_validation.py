@@ -169,6 +169,20 @@ class TestSchemaIntrospectionHelpers:
                 node = props[part]
 
 
+class TestHoldsNothing:
+    """The deprecation notice's 'nothing to migrate' predicate."""
+
+    @pytest.mark.parametrize("value", [None, "", {}, []])
+    def test_empty_containers_and_null_hold_nothing(self, value: object) -> None:
+        assert validation._holds_nothing(value) is True
+
+    @pytest.mark.parametrize("value", [False, 0, 0.0, "x", {"k": 1}, [0], True, 7])
+    def test_chosen_values_hold_something(self, value: object) -> None:
+        # ``False``/``0`` are settings an operator picked, not absence -- a
+        # deprecated flag set to False still gets its deprecation notice.
+        assert validation._holds_nothing(value) is False
+
+
 class TestValidateConfigData:
     """``validate_config_data`` strips invalid values and warns on the loader logger."""
 

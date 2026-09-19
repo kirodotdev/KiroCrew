@@ -3968,7 +3968,7 @@ class TestDoctorStaleProjectDir:
                 _doctor()
         out = capsys.readouterr().out
         assert "stale" in out
-        assert "project dir: ⚠️  not set" not in out  # should NOT show fallback message
+        assert "source dir:  ⚠️  not set" not in out  # should NOT show fallback message
 
 
 class TestDoctorMcpTools:

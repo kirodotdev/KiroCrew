@@ -228,6 +228,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     MemoryConfig,
     MemoryStoreConfig,
     MessagingConfig,
+    MonitoringConfig,
     OrchestratorConfig,
     PublishConfig,
     ResolvedBindings,
@@ -1519,18 +1520,23 @@ def update_config_locked(
     a stale snapshot saved after a locked update overwrites it with older
     values.  The lock fixes interleaving, not staleness.
 
-    A SECOND family of writers still bypasses this lock, and the ratchet does
-    NOT reach it: writers that reach ``config_path()`` through
-    ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s per-channel
-    savers, ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable). The ratchet
-    matches calls to :func:`write_config_atomically`, and these make none.
+    A SECOND family of writers still bypasses this lock: writers that reach
+    ``config_path()`` through ``kiro_crew.agent._atomic_json_write``
+    (``messaging.py``'s per-channel savers, ``core.py``'s STT PUT, ``mcp.py``'s
+    gateway-enable). ``TestEveryConfigWriterIsLocked`` does not reach them --
+    it matches calls to :func:`write_config_atomically`, and these make none --
+    so they have their own ratchet,
+    ``TestTheAtomicJsonWriteConfigFamilyIsRatcheted`` in the same file, which
+    pins that family to a baseline that may only SHRINK.
 
     That family relies on the in-process asyncio ``_get_config_lock()`` only,
     which serializes same-loop callers and nothing else, so it can still
-    interleave with a holder of this lock.  Converting it is follow-up work; do
-    not read the ratchet's green as covering it, and note that an ALIASED
-    import of :func:`write_config_atomically` would evade it for the same
-    matching reason.
+    interleave with a holder of this lock.  Converting the remaining members is
+    follow-up work (``api_feishu_config_save`` and ``api_imessage_config_save``
+    are already through here and are the shape to copy); do not read either
+    ratchet's green as meaning the family is converted, only that it cannot
+    grow, and note that an ALIASED import of :func:`write_config_atomically`
+    would evade the sibling ratchet for the same matching reason.
 
     Contract:
 
@@ -3702,6 +3708,15 @@ class KiroCrewConfig:
         default_factory=HeartbeatConfig,
         metadata=_meta("Heartbeat", "Heartbeat background task queue delivery defaults."),
     )
+    monitoring: MonitoringConfig = field(
+        default_factory=MonitoringConfig,
+        metadata=_meta(
+            "Monitoring",
+            "How a session's choice between the two monitoring paths is framed. "
+            "Neither path is gated by this section; both are armable with it at "
+            "its default.",
+        ),
+    )
     watchdog: WatchdogConfig = field(
         default_factory=WatchdogConfig,
         metadata=_meta("Watchdog", "ACP per-session watchdog / liveness-oracle windows."),
@@ -4341,6 +4356,19 @@ class KiroCrewConfig:
         )
         if heartbeat_default_deliver not in ("slack", "dashboard"):
             heartbeat_default_deliver = "slack"
+        # A stored document written before this key existed has no "monitoring"
+        # object at all, and that is the case that must keep working: the miss
+        # resolves to the dataclass default, which is the off position. So an
+        # already-installed gateway needs nothing written to be correct here --
+        # only a gateway that wants the key ON writes it, and Settings does
+        # that. (The hazard this avoids belongs to a SHIPPED DEFAULT that
+        # CHANGES: config.json materializes every key, so the stored value
+        # outranks the new default forever. Adding a key has no stored value to
+        # outrank it.)
+        monitoring_data = _coerced_section(data, "monitoring", _degraded)
+        monitoring_prefer_structured_arming = _safe_bool(
+            monitoring_data.get("prefer_structured_arming"), False
+        )
         tunnel_data = _coerced_section(data, "tunnel", _degraded)
         skills_data = _coerced_section(data, "skills", _degraded)
         session_summary_data = _coerced_section(data, "session_summary", _degraded)
@@ -4578,6 +4606,9 @@ class KiroCrewConfig:
                 connect_timeout_raw, instances_data, mint_timeout_raw
             ),
             heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
+            monitoring=MonitoringConfig(
+                prefer_structured_arming=monitoring_prefer_structured_arming
+            ),
             skills=_build_skills_config(skills_data),
             session_summary=_build_session_summary_config(session_summary_data),
             slack_channels={
@@ -4828,6 +4859,7 @@ class KiroCrewConfig:
             "cron_history": asdict(self.cron_history),
             "knowledge": asdict(self.knowledge),
             "heartbeat": asdict(self.heartbeat),
+            "monitoring": asdict(self.monitoring),
             "skills": asdict(self.skills),
             "session_summary": asdict(self.session_summary),
             "telemetry": asdict(self.telemetry),
@@ -4854,6 +4886,15 @@ class KiroCrewConfig:
         if isinstance(_gw_section, dict):
             _gw_section["stub_servers"] = list(self.mcp_gateway.stub_roster)
             _gw_section.pop("_stub_roster", None)
+        # ``telegram.accounts`` is deprecated and inert. It is kept on disk ONLY
+        # so an operator's named-account tokens survive the next save(); an
+        # empty map protects nothing, and writing it back materializes a
+        # deprecated key into every config Kiro Crew has ever saved -- which
+        # validation then announces as a deprecation on every launch, to an
+        # operator who never wrote it. Emit the map only when it holds accounts.
+        _tg_section = d.get("telegram")
+        if isinstance(_tg_section, dict) and not _tg_section.get("accounts"):
+            _tg_section.pop("accounts", None)
         # Re-emit unknown/edition-contributed top-level sections captured at
         # load() so save()/PATCH does not silently drop them. A known section
         # never appears here (only keys absent from d are restored), so this can

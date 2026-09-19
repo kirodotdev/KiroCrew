@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import aiohttp
@@ -2683,6 +2684,13 @@ async def _handle_session_resume(
     if not session_key:
         return
 
+    # Clicking Resume is the user asking for this conversation back, so retract
+    # any End they had recorded on it. Done here, before the destination
+    # choice, so the row returns whichever way they continue -- and so it
+    # returns at all: an active session outranks the flag only while its
+    # process lives, and the flag would hide the row again once it exits.
+    await _clear_session_dismissed(session_key)
+
     # Check if session already has a linked thread/channel
     existing_thread, existing_channel = _orch.sessions.get_slack_link(session_key)
 
@@ -2959,6 +2967,68 @@ async def _handle_resume_choice(
                 pass
 
 
+async def _record_session_dismissed(session_key: str) -> None:
+    """Stamp ``closed``/``closed_at`` on *session_key*'s transcript.
+
+    The durable half of the End button. ``closed`` is the record that the user
+    put this conversation away, read back by
+    ``messaging.sessions_view._row_is_ended`` to keep the row out of the
+    sessions list, and it is the same field a dashboard tab close writes --
+    one dismissal per transcript, because a tab and its channel conversation
+    share the file.
+
+    ``closed_at`` is stamped HERE rather than before the teardown above, so
+    that consolidation and skill extraction -- which run on the way out and
+    can write the file after this handler returns -- cannot look like the user
+    coming back. Nothing reads it for the sessions list today; it is written
+    because the dashboard's own reader compares against it, and a flag with no
+    instant would make every close there permanent.
+
+    Guarded on the metadata already existing: a missing first line means the
+    key names no transcript (a stale button, an unresolvable id), and the
+    unguarded writer would CREATE one, inventing a session out of a click.
+    Best-effort, but logged at warning -- a dismissal that silently fails to
+    land is exactly the "End does nothing" report this fixes.
+    """
+    if not (session_key and _orch and _orch.conv_log):
+        return
+    conv_log = _orch.conv_log
+    fields = {"closed": True, "closed_at": time.time()}
+    try:
+        recorded = await asyncio.to_thread(
+            conv_log.update_metadata_if, session_key, fields, lambda meta: bool(meta)
+        )
+    except Exception:
+        logger.warning("session end: dismissal not recorded for %s", session_key, exc_info=True)
+        return
+    if not recorded:
+        logger.warning(
+            "session end: no transcript metadata to dismiss for %s",
+            session_key,
+        )
+
+
+async def _clear_session_dismissed(session_key: str) -> None:
+    """Drop a ``closed`` record because the user is resuming the conversation.
+
+    Without this the row would only reappear while a process happens to be
+    live for the key (``_row_is_ended`` lets an active session outrank the
+    flag) and would vanish again the moment that process exits -- so a
+    conversation the user deliberately came back to would keep dropping out of
+    their own list. Unconditional: the click is the intent, unlike the
+    dashboard's resume route, which clears only a close it can prove predates
+    its own boundary because there the flag may belong to a different tab.
+    """
+    if not (session_key and _orch and _orch.conv_log):
+        return
+    try:
+        await asyncio.to_thread(_orch.conv_log.clear_closed, session_key)
+    except Exception:
+        logger.warning(
+            "session resume: dismissal not cleared for %s", session_key, exc_info=True
+        )
+
+
 async def _handle_session_end(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
@@ -3005,6 +3075,15 @@ async def _handle_session_end(
             await _orch.sessions.remove(key_to_remove)
         except Exception:
             logger.debug("session end remove failed for %s", key_to_remove, exc_info=True)
+
+    # Record the dismissal on the transcript, which is the half that makes the
+    # button do what it says. The removal above only kills a live process; the
+    # transcript stays on disk and the sessions list is built from the
+    # directory, so without this record the row is back on the next `sessions`
+    # call. It runs for a row with NO live session too -- that is the case the
+    # user hits most, because a cluttered list is mostly idle rows, and for
+    # those the block above resolves no key and does nothing at all.
+    await _record_session_dismissed(key_to_remove or session_id)
 
     response_url = payload.get("response_url", "")
     label = f"🛑 Session `{session_id[:12]}…` ended."

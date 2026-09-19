@@ -94,6 +94,7 @@ function appImportMapPlugin(): Plugin {
             'react/jsx-runtime': '/vendor/react-jsx-runtime.mjs',
             '@kirocrew/app-sdk': '/vendor/kirocrew-app-sdk.mjs',
             '@kirocrew/app-sdk/ui': '/vendor/kirocrew-ui.mjs',
+            '@tanstack/react-query': '/vendor/tanstack-react-query.mjs',
             'lucide-react': '/vendor/lucide-react.mjs',
           },
         }

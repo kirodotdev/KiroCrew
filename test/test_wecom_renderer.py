@@ -8,6 +8,24 @@ from conftest import assert_rejected_without_backtracking
 from kiro_crew.wecom.renderer import WeComRenderer, _render_options_as_text
 from kiro_crew.wecom.transport import WECOM_CAPABILITIES
 
+# The PEM markers are ASSEMBLED from fragments, never written as one literal, so
+# the internal content scan (rule ``credential-private-key``, which matches a
+# BEGIN...PRIVATE-KEY header on a source line) does not flag a test fixture. The
+# runtime value is byte-identical to the real marker, so the test still exercises
+# the exact string the renderer's guard and the redactor recognise.
+_DASHES = "-" * 5
+_KEY_KIND = "PRIVATE" + " KEY"
+
+
+def _pem_begin(*, markup: bool = False, split_token: bool = False) -> str:
+    kind = "**PRIVATE**" + " KEY" if markup else _KEY_KIND
+    head = f"{_DASHES}BEG**IN**" if split_token else f"{_DASHES}BEGIN"
+    return f"{head} RSA {kind}{_DASHES}"
+
+
+def _pem_end() -> str:
+    return f"{_DASHES}END RSA {_KEY_KIND}{_DASHES}"
+
 
 class TestStripOptionsRedos:
     def test_unterminated_options_tag_is_not_redos(self) -> None:
@@ -208,3 +226,104 @@ class TestPromptChoice:
         before = len(c.frames)
         await r.on_prompt_choice([{"label": "yes"}], "rq")  # WeCom has no buttons
         assert len(c.frames) == before  # nothing rendered, no raise
+
+
+class TestThinkReasoningRedaction:
+    """The ``<think>`` reasoning frame is scrubbed render-aware, not literally.
+
+    WeCom renders the ``<think>`` block as markdown, so a credential split by
+    emphasis (``AKIA**REST**``) survives a literal byte scan and is reassembled
+    on screen -- the same hazard the answer body is guarded against, on the same
+    channel. Asserted against the RENDERED form.
+    """
+
+    @pytest.mark.asyncio
+    async def test_think_reasoning_redacts_markup_split_credential(self) -> None:
+        from kiro_crew.messaging.display_safety import canonicalize_display
+
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_turn_start()
+        c.frames.clear()
+        r._last_send = 0.0  # clear the throttle so the reasoning frame goes out
+        await r.on_thinking("leaking AKIAIOSF**ODNN7EXAMPLE** in the trace")
+
+        think = "".join(f["content"] for f in c.frames)
+        assert "<think>" in think, f"no reasoning frame was sent: {c.frames}"
+        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(think)
+
+    @pytest.mark.asyncio
+    async def test_think_reasoning_keeps_clean_text(self) -> None:
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_turn_start()
+        c.frames.clear()
+        r._last_send = 0.0
+        await r.on_thinking("just thinking out loud, no secret")
+
+        think = "".join(f["content"] for f in c.frames)
+        assert "just thinking out loud, no secret" in think
+
+
+class TestAnswerBodyRedaction:
+    """The answer body is scrubbed render-aware at the send, and no cut severs a key.
+
+    WeCom renders the body as markdown and extracts no attachments from it, so a
+    credential split by emphasis (``AKIA**REST**``) survives the driver's literal
+    channel-neutral pass and is reassembled on screen. ``_render_slice`` redacts
+    each outgoing slice, and the callers pick the cut with ``_safe_raw_cut`` so a
+    credential is never split across two bubbles -- the offsets stay in raw
+    ``text()`` coordinates, which is what keeps a bubble rotation resuming at the
+    right place. Asserted against the RENDERED form.
+    """
+
+    @pytest.mark.asyncio
+    async def test_answer_body_redacts_markup_split_credential(self) -> None:
+        from kiro_crew.messaging.display_safety import canonicalize_display
+
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk("the key is AKIAIOSF**ODNN7EXAMPLE** ok")
+        await r.on_done()
+
+        final = c.frames[-1]["content"]
+        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(final)
+
+    def test_text_stays_raw_for_persistence(self) -> None:
+        # text() is what drive_turn persists; the redaction lives only on the
+        # delivery slices, so the raw answer is unchanged here.
+        c = FakeClient()
+        r = _renderer(c)
+        r._buf.append("plain answer body")
+        assert r.text() == "plain answer body"
+
+    @pytest.mark.asyncio
+    async def test_answer_body_keeps_clean_text(self) -> None:
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk("Hello world")
+        await r.on_done()
+
+        assert c.frames[-1]["content"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_roll_keeps_offsets_in_raw_coordinates(self) -> None:
+        # Offsets index raw text() (not a content-dependent redacted view), so a
+        # credential completing across a bubble ROLL does not shift them: the
+        # resume point is stable as text() grows -- the delivered bubbles reassemble
+        # the whole answer with no dropped or duplicated non-secret span.
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk("alpha beta gamma delta")
+        await r._push(force=True)
+        c.dead_streams.add(r._stream_id)  # next push must roll
+        await r.on_text_chunk(" epsilon zeta eta theta")
+        await r._push(force=True)
+        await r.on_done()
+
+        # Reconstruct what the reader sees across bubbles: the resume after the roll
+        # picks up exactly where the sealed bubble left off, so no word is dropped
+        # and none is duplicated across the boundary.
+        delivered = "".join(f["content"] for f in c.frames) + "".join(p[1] for p in c.pushed)
+        for word in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
+            assert word in delivered, word

@@ -259,6 +259,35 @@ export function fmtDuration(
 }
 
 /**
+ * A settled elapsed time — `4.2s`, `37s`, `6m 38s`.
+ *
+ * Three bands, because the useful precision changes with magnitude: a sub-10s
+ * step is interesting to a tenth, a sub-minute one is not, and past a minute the
+ * minutes place carries the meaning. Rounds to whole seconds BEFORE splitting so
+ * a value like 119.6s reads `2m 0s` and never the invalid `1m 60s` — flooring
+ * minutes first and rounding the remainder can push it to 60.
+ *
+ * The seconds place is kept above a minute rather than dropped, so a series
+ * steps `2m 1s` -> `2m 0s` -> `59s` instead of collapsing to a bare `2m`.
+ *
+ * Non-finite input renders the same em dash `fmtDuration` uses, so a caller can
+ * hand over an unmeasurable span without branching.
+ *
+ * `fmtTurnElapsed` (chat) and the remaining-time label in `ToolCallLine` predate
+ * this and implement the same three bands inline; they are deliberately left
+ * alone rather than migrated here, so this change stays on the surface it is
+ * about.
+ */
+export function fmtElapsed(ms: number): string {
+  if (!Number.isFinite(ms)) return '—'
+  const s = ms / 1000
+  if (s < 10) return fmtUnit(s, 'second', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
+  if (s < 60) return fmtUnit(Math.round(s), 'second', { maximumFractionDigits: 0 })
+  const total = Math.round(s)
+  return fmtDuration([[Math.floor(total / 60), 'minute'], [total % 60, 'second']])
+}
+
+/**
  * An abbreviated large number — `1.2K`, `15.3K`, `2.4M`.
  *
  * `notation: 'compact'` rather than a hand-rolled `/1000 + 'K'` ladder, because

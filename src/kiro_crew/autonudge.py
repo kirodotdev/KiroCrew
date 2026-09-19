@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import tempfile
 import time
 import uuid
@@ -62,7 +63,6 @@ from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
     MONITOR_STOP_APPROVAL_STALL,
     MONITOR_STOP_COMPLETION_UNAVAILABLE,
-    MONITOR_STOP_INVALID_RECORD,
     MONITOR_STOP_SESSION_CLOSE,
     MONITOR_STOP_SESSION_UNAVAILABLE,
     MONITOR_STOP_UNSUPPORTED_VERSION,
@@ -81,8 +81,10 @@ from kiro_crew.monitoring.models import (
     monitor_state_from_dict,
     monitor_state_to_dict,
     quarantine_monitor_state,
+    retained_outcome_blocks_rearm,
 )
 from kiro_crew.monitoring.registry import REVIEW_READY, kind_supports_objective
+from kiro_crew.platform import redact_via_context
 from kiro_crew.probes import targets
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 
@@ -162,12 +164,53 @@ AUTONUDGE_STOP_REASON = "autonudge_stop"
 # authorization the loop cannot grant itself.
 APPROVAL_STALL_REASON = "approval_stalled"
 
+# Persisted reason for a loop stopped because its LAST delivered cycle ended on
+# a STRUCTURAL terminal error -- the backend rejected the prompt's shape as
+# malformed, deterministically, so re-firing the identical context every
+# interval can only reproduce the rejection. System-imposed like a spent bound:
+# the remedy is a NEW context (a human /clear then a fresh message, which the
+# genuine-turn reset in chat_runner already clears the slot's verdict for), so a
+# later directive re-arm may displace it -- it is a member of
+# ``_REPLACEABLE_LOOP_STOP_REASONS`` (via ``_TERMINAL_BOUND_REASONS`` below) for
+# exactly that reason.
+STRUCTURAL_TERMINAL_REASON = "structural_terminal"
+
+
+def new_goal_token() -> str:
+    """A fresh opaque identity for a goal write.
+
+    Random rather than content-derived so the value can be served next to the goal's
+    own redaction without becoming a brute-force oracle against the masked span. Its
+    only consumer compares it for equality against a value from a prior GET.
+    """
+    return secrets.token_hex(16)
+
+
+class AutoNudgeStaleBaseline(RuntimeError):
+    """Raised when an update's confirmed baseline does not match the stored goal.
+
+    Compared INSIDE ``_update_unserialized``'s lock, because any check outside it is the
+    TOCTOU this exists to close: a second client committing between a caller's read and
+    its write would otherwise have its goal silently overwritten last-write-wins. The
+    HTTP layer answers this with 409 so the loss becomes a refusal the user can see.
+    """
+
 
 class NudgeAdmissionRefused(RuntimeError):
     """The session authorized for an arm disappeared before its commit point."""
 
 
-_TERMINAL_BOUND_REASONS = frozenset({"cycle_cap", "runtime_budget", APPROVAL_STALL_REASON})
+# System-imposed terminal bounds. Membership here gives a reason TWO properties:
+# (1) ``update`` refuses to overwrite an ALREADY-inactive loop with one of these
+# (the no-op branch in ``_update_locked``), so a stop these mark cannot clobber a
+# manual pause the user landed first -- e.g. a structural stop firing on an
+# in-flight cycle right after the user paused must NOT replace that pause and
+# make it directive-revivable; and (2) they are re-armable (folded into
+# ``_REPLACEABLE_LOOP_STOP_REASONS`` below). ``structural_terminal`` needs both,
+# for the same reason ``cycle_cap``/``runtime_budget`` do.
+_TERMINAL_BOUND_REASONS = frozenset(
+    {"cycle_cap", "runtime_budget", APPROVAL_STALL_REASON, STRUCTURAL_TERMINAL_REASON}
+)
 
 # Persisted reason for a loop ``_load`` deactivated because its kill-switch path
 # became sensitive (``repair_sentinel_path`` dropped it). System-imposed: the
@@ -209,22 +252,11 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
     """
     state = loop.monitor
     if state is not None and state.outcome is not None:
-        if str(state.stopped_reason or "") == MONITOR_STOP_INVALID_RECORD:
-            # A quarantined malformed record is an inspection artifact of a
-            # store defect, not a system-imposed stop: _load() synthesized its
-            # BLOCKED outcome precisely to retain the raw payload for a human.
-            # The ruling's fail-closed principle covers it — evidence, never
-            # replaceable.
-            return False
-        return state.outcome in (
-            MonitorOutcome.BUDGET,
-            MonitorOutcome.SUCCESS,
-            MonitorOutcome.BLOCKED,
-            # System-imposed too: a vanished or undeliverable subject
-            # (dispatch failure, shadow NOT_FOUND). No consumer authored it,
-            # so refusing re-creates the deadlock this predicate exists to end.
-            MonitorOutcome.TARGET_UNAVAILABLE,
-        )
+        # Delegated to the shared predicate in ``monitoring.models`` so the MCP
+        # preflight, which reads the same record over the session-monitor
+        # endpoint, cannot answer differently from this enforcement point. The
+        # quarantined-record and fail-closed rules live there.
+        return not retained_outcome_blocks_rearm(state.outcome, state.stopped_reason)
     return (loop.stopped_reason or "") in _REPLACEABLE_LOOP_STOP_REASONS
 
 
@@ -346,6 +378,23 @@ def structured_monitor_binding_key_for(session_key: str) -> str | None:
 def enabled() -> bool:
     """Feature flag — on by default. Set ``KIROCREW_AUTONUDGE=0`` to disable."""
     return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
+
+
+def scrub_loop_text(value: Any) -> Any:
+    """Credential-scrub one serialized ``NudgeLoop`` field value.
+
+    ``None`` passes through untouched, because ``str(None)`` would turn an absent value
+    into a message that reads like content. Everything else is scrubbed through
+    ``platform.redact_via_context``, coerced with ``str()`` first when not already a
+    string -- coerced rather than blanked so the operator can still see the bad row.
+    """
+    if value is None:
+        return value
+    if isinstance(value, str):
+        if not value:
+            return value
+        return redact_via_context(value)
+    return redact_via_context(str(value))
 
 
 def repair_sentinel_path(raw: str) -> str:
@@ -538,6 +587,10 @@ class NudgeLoop:
     last_fire_ts: float = 0.0
     created_ts: float = 0.0
     stop_sentinel_path: str = ""  # optional absolute path; if present loop halts
+    # Opaque per-write identity of ``message``, for stale-baseline (409) detection.
+    # RANDOM: a digest served beside its own redaction is an oracle for the masked span.
+    # NOT PERSISTED -- re-minted on every load, so a pre-restart value cannot authorise.
+    goal_token: str = ""
     # Wall-clock budget in seconds, measured from ``created_ts`` (0 = unlimited).
     # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
     # idle gap is long can run for days within its cycle budget. Anchoring on
@@ -649,6 +702,17 @@ class NudgeLoop:
     # written before the field existed decodes to False -- every such loop
     # was armed under the old rule, which admitted no self-arm.
     self_armed: bool = False
+    # Monotonic per-loop CONFIG generation. Advanced by ``_update_unserialized``
+    # ONLY on a real configuration change (a changed ``message``) or a revival
+    # (inactive -> active), never by internal timer/cycle bookkeeping. Captured
+    # at fire time and compared atomically (under the service ``_lock``) before a
+    # structural-terminal stop is applied, so a stale completion of an OLD
+    # instruction cannot deactivate a loop whose instruction was re-committed
+    # since (the A->B->A race that value-identity on ``message`` alone cannot
+    # tell apart). Reuses the module's generation/fence pattern rather than a new
+    # concurrency framework. Absent in a store written before this field ->
+    # decodes to 0, and a first fire simply captures 0.
+    config_generation: int = 0
 
 
 def is_structured_monitor_loop(loop: NudgeLoop) -> bool:
@@ -946,7 +1010,28 @@ class AutoNudgeService:
                         loop_values["self_armed"],
                     )
                     loop_values["self_armed"] = False
+                # ``config_generation`` is agent-writable persisted data and is
+                # used in arithmetic (``+= 1``) and an equality fence. A stored
+                # ``null``, string or negative would raise mid-mutation (a partial
+                # update + HTTP 500) or corrupt the fence, so normalise it at the
+                # boundary to a non-negative int, exactly like ``gate`` above.
+                # Absent -> the dataclass default 0. An unreadable value resets to
+                # 0, which only makes a captured pre-existing verdict's generation
+                # not match (a missed stop, the safe direction), never a wrong stop.
+                if "config_generation" in loop_values:
+                    _cg = loop_values["config_generation"]
+                    if not isinstance(_cg, int) or isinstance(_cg, bool) or _cg < 0:
+                        logger.warning(
+                            "AutoNudge: loop %s stored a non-int/negative "
+                            "config_generation (%r); resetting to 0",
+                            raw.get("id"),
+                            _cg,
+                        )
+                        loop_values["config_generation"] = 0
                 loop = NudgeLoop(**loop_values)
+                # Rotated on EVERY load: a human may have hand-edited the goal while we
+                # were down, so a pre-restart token must not authorise overwriting it.
+                loop.goal_token = new_goal_token()
                 if "monitor" in raw:
                     monitor_raw = raw["monitor"]
                     monitor_quarantined = False
@@ -1298,6 +1383,9 @@ class AutoNudgeService:
     @staticmethod
     def _serialize_loop(loop: NudgeLoop) -> dict[str, Any]:
         payload = asdict(loop)
+        # In-memory only: the load path re-mints it unconditionally, so a persisted
+        # value could never be honoured and writing one would dirty a clean store.
+        payload.pop("goal_token", None)
         if loop.monitor is None:
             # Preserve the legacy wire shape instead of eagerly migrating every
             # record the next time an unrelated loop is saved.
@@ -1676,6 +1764,7 @@ class AutoNudgeService:
                     idle_secs=cadence,
                     created_ts=created,
                     next_due_ts=due,
+                    goal_token=new_goal_token(),
                     monitor=monitor,
                     self_armed=self_armed,
                 )
@@ -1941,6 +2030,7 @@ class AutoNudgeService:
                 idle_secs=idle_secs,
                 max_cycles=max(0, int(max_cycles)),
                 created_ts=now,
+                goal_token=new_goal_token(),
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max(0, int(max_runtime_secs)),
                 # Anchor the first deadline at arm time (set BEFORE the
@@ -2039,6 +2129,8 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        expected_generation: int | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -2055,14 +2147,22 @@ class AutoNudgeService:
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
                 banner=banner,
+                expected_generation=expected_generation,
+                expect_fingerprint=expect_fingerprint,
             )
         )
         self._inflight_adds.add(inner)
 
         def _finish(t: "asyncio.Task[NudgeLoop | None]") -> None:
             self._inflight_adds.discard(t)
-            if not t.cancelled() and t.exception() is not None:
-                logger.warning("AutoNudge: detached update() failed", exc_info=t.exception())
+            if t.cancelled():
+                return
+            exc = t.exception()
+            # A stale baseline is the 409 this update's caller already surfaces, so it is
+            # an answer rather than a fault; every other exception keeps its warning.
+            if exc is None or isinstance(exc, AutoNudgeStaleBaseline):
+                return
+            logger.warning("AutoNudge: detached update() failed", exc_info=exc)
 
         inner.add_done_callback(_finish)
         return await asyncio.shield(inner)
@@ -2130,6 +2230,8 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        expected_generation: int | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         lock = await self._acquire_mutation_lock(loop_id)
         if lock is None:
@@ -2144,6 +2246,8 @@ class AutoNudgeService:
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
                 banner=banner,
+                expected_generation=expected_generation,
+                expect_fingerprint=expect_fingerprint,
             )
         finally:
             lock.release()
@@ -2159,16 +2263,41 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        expected_generation: int | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
             if not loop:
                 return None
+            # ATOMIC generation fence (inside _lock, before any mutation): a
+            # caller applying a structural-terminal stop passes the generation it
+            # captured at fire time. If the loop's config generation has moved
+            # since (a changed instruction, or a revival), the completion is
+            # STALE -- it belongs to an older configuration -- so refuse the stop
+            # without touching the loop. Checked here, not by an external
+            # read-then-update, so there is no TOCTOU window between the compare
+            # and the write.
+            if expected_generation is not None and loop.config_generation != expected_generation:
+                logger.info(
+                    "AutoNudge: loop %s structural stop refused — captured gen %s "
+                    "!= current gen %s (config changed under the fired turn)",
+                    loop.id,
+                    expected_generation,
+                    loop.config_generation,
+                )
+                return loop
             if is_structured_monitor_loop(loop):
                 # Generic update owns only legacy prompt loops. Reject before
                 # touching even one shared scheduling field so a non-HTTP
                 # caller cannot bypass structured policy.
                 return loop
+            # Under the lock, so no write can land between this and the mutation. The
+            # fingerprint is authoritative: a projection baseline cannot distinguish goals.
+            if expect_fingerprint is not None and (
+                not expect_fingerprint or loop.goal_token != expect_fingerprint
+            ):
+                raise AutoNudgeStaleBaseline(loop_id)
             # Keep typed nested values intact. ``asdict`` recursively converts
             # MonitorState to a plain dict, which is not a valid rollback value.
             previous = {item.name: getattr(loop, item.name) for item in fields(loop)}
@@ -2180,7 +2309,16 @@ class AutoNudgeService:
             if message is not None:
                 retarget = message != loop.message
                 loop.message = message
+                # A new goal is a new identity, so a baseline served for the old text
+                # cannot authorise a write.
+                loop.goal_token = new_goal_token()
                 if retarget:
+                    # A changed instruction is a new config generation, so a
+                    # structural-terminal verdict recorded for the OLD
+                    # instruction does not apply to it. Advanced here (not on a
+                    # no-op same-message save) so an unrelated settings save does
+                    # not spend a generation.
+                    loop.config_generation += 1
                     # The instruction IS the target, so a changed instruction can
                     # change the subject. Re-infer, or the loop keeps polling the
                     # pull request it was armed on: the new subject is never
@@ -2358,6 +2496,12 @@ class AutoNudgeService:
                     else:
                         loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
             revived = loop.active and not was_active
+            if revived:
+                # A revival re-arms the loop for a fresh run: a structural verdict
+                # recorded before it was stopped must not carry over (the user or
+                # a directive chose to run it again). Advancing the generation
+                # invalidates any in-flight stale completion keyed to the old one.
+                loop.config_generation += 1
             # Deadline bookkeeping (BEFORE the snapshot below so it persists):
             # an interval change restarts an EXISTING countdown at the new
             # interval — the old deadline encodes the old cadence and honouring
@@ -2715,11 +2859,12 @@ class AutoNudgeService:
     def get_by_id(self, loop_id: str) -> NudgeLoop | None:
         """The loop with this id, or ``None``.
 
-        Public because the update authorizer holds only an opaque ``loop_id`` and
-        must resolve it to a slot key to decide whether a banner is supported
-        there. An accessor rather than reaching into ``_loops`` from another
-        module, matching ``get_by_slot``/``list_all``. Returns the LIVE object,
-        not a copy; callers here only read from it.
+        Public because ``autonudge_authz`` needs it twice: to resolve an opaque
+        ``loop_id`` to a slot key when deciding whether a banner is supported there,
+        and to read the CURRENT message when deciding whether a submitted one is
+        merely the scrubbed projection it served. An accessor rather than reaching
+        into ``_loops`` from another module, matching ``get_by_slot``/``list_all``.
+        Returns the LIVE object, not a copy; callers here only read from it.
         """
         return self._loops.get(loop_id)
 

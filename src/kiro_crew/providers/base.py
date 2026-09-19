@@ -35,6 +35,7 @@ from kiro_crew.essential_delivery import EssentialDelivery
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Type-only: this module's runtime imports are deliberately just acp.types
     # and constants, and recovery.ladder pulls in mcp_gateway + metrics.
+    from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
     from kiro_crew.recovery.ladder import InfraError
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
@@ -429,6 +430,21 @@ class LLMProvider(ABC):
         """True when the provider can host multiplexed sub-agent sessions on one
         process. Default False — session sharing is opt-in, never inherited."""
         return False
+
+    @property
+    def tool_search_settings(self) -> "ToolSearchSettings | None":
+        """The operator's MCP Tool Search choice this provider spawned with, or
+        ``None`` when it carries none.
+
+        Read by whoever builds a runtime on this provider's behalf (a companion
+        runtime for a sub-agent) so that runtime is handed the SAME setting the
+        parent's handshake sent, rather than being left to the host's default.
+        Declared here with a safe default rather than probed off the instance
+        (harness-parity H14): a provider that never threaded the setting answers
+        ``None`` and the runtime it seeds stays exactly as before. The ACP
+        provider answers with its resolved ``ToolSearchSettings``.
+        """
+        return None
 
     @property
     def manual_compact_unsupported_backend(self) -> str | None:

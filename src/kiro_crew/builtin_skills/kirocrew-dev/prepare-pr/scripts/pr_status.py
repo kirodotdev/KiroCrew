@@ -71,20 +71,23 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
         return None
 
 
-def _load_review_contract():
-    """Load the sibling contract without cwd, sys.path, or bytecode side effects."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_review_contract.py")
-    name = "_prepare_pr_review_contract"
+def _load_sibling(filename, name):
+    """Load a sibling script without cwd, sys.path, or bytecode side effects."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
     loader = _NoBytecodeSourceLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:  # pragma: no cover - defensive
-        raise RuntimeError("cannot import prepare-pr review contract: " + path)
+        raise RuntimeError("cannot import prepare-pr sibling script: " + path)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
 
 
-_review_contract = _load_review_contract()
+_review_contract = _load_sibling("_review_contract.py", "_prepare_pr_review_contract")
+# Imported, never shelled out to: a subprocess would give this script a second
+# way to fail (PATH, interpreter, quoting) for information it already has the
+# code for, and the exit-code contract belongs to green_age.py's own CLI.
+_green_age = _load_sibling("green_age.py", "_prepare_pr_green_age")
 REVIEWED_STAMP_RE = _review_contract.REVIEWED_STAMP_RE
 BLOCK_MERGE_RE = _review_contract.BLOCK_MERGE_RE
 DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
@@ -1159,6 +1162,34 @@ def head_run_exists(repo, head_sha):
     return False
 
 
+def probe_green_age(base, head_sha, pr):
+    """One line on whether this head's green still describes today's base.
+
+    INFORMATION, NEVER A GATE. The verdict is not passed to :func:`decide`, no
+    exit code depends on it, and any failure inside ``green_age`` degrades to an
+    "unavailable" line. A merger who is about to merge a ten-hour-old green needs
+    to know the base moved underneath it; a poll cycle that could not measure
+    that must not therefore call a red PR green, or a green one red.
+
+    The base defaults to ``main`` when the host did not report one, because the
+    line is advisory and a wrong default costs a wrong line, not a wrong verdict.
+    """
+    try:
+        return _green_age.summarize(
+            base=base or "main",
+            head=head_sha or "HEAD",
+            pr=str(pr or ""),
+            runner=run,
+        )
+    except Exception as exc:  # noqa: BLE001 - an advisory line may never raise
+        return {"ok": False, "reason": "probe failed ({})".format(type(exc).__name__)}
+
+
+def green_age_line(summary):
+    """The printed form of :func:`probe_green_age`, indented like its siblings."""
+    return "  " + _green_age.format_line(summary)
+
+
 def build_report(
     *,
     number,
@@ -1171,6 +1202,7 @@ def build_report(
     marker_eval,
     code,
     status,
+    green_age=None,
 ):
     """Build the --json report.
 
@@ -1222,6 +1254,11 @@ def build_report(
             "bot_comments_readable": bool(marker_eval.get("ok")),
             "elided_stamp_reviewers": sorted(marker_eval.get("elided") or []),
             "findings": dict(marker_eval.get("findings") or {}),
+            # Advisory, and deliberately OUTSIDE progress_key: the base moving is
+            # not this PR making progress, and on a repo that merges every couple
+            # of minutes a commit count in the key would reset the stall streak
+            # forever. The babysit trigger reads this field; the tripwire does not.
+            "green_age": dict(green_age or {"ok": False, "reason": "not measured"}),
             "stale_reviewers": sorted(marker_eval.get("stale") or []),
             "unresolved_threads": n_unresolved,
         },
@@ -1554,7 +1591,7 @@ def main(argv):
 
     fields = (
         "number,title,state,isDraft,mergeable,mergeStateStatus,"
-        "reviewDecision,url,headRefName,headRefOid,"
+        "reviewDecision,url,headRefName,headRefOid,baseRefName,"
         "body,closingIssuesReferences"
     )
     rc, out, _ = run(["gh", "pr", "view", pr, "--json", fields])
@@ -1794,6 +1831,11 @@ def main(argv):
         else:
             run_shown = "? (could not confirm)"
         print("  pull_request run for current head: " + run_shown)
+    # Whether that run's verdict still describes today's base. Printed beside the
+    # rollup because it qualifies the rollup: a green measured on a base that has
+    # since moved in this PR's own files is a green about a tree nobody has.
+    green_age = probe_green_age(d.get("baseRefName") or "", head_sha, d.get("number"))
+    print(green_age_line(green_age))
     print("=" * 54)
 
     code, status = decide(
@@ -1831,6 +1873,7 @@ def main(argv):
                     marker_eval=marker_eval,
                     code=code,
                     status=status,
+                    green_age=green_age,
                 ),
                 sort_keys=True,
                 separators=(",", ":"),

@@ -803,3 +803,119 @@ class TestAnInterruptDuringThePostTokenBackoff:
         # that makes the interrupted cases above mean something.
         assert run.slot._posttoken_retry_used is True
         assert _give_up_rows(run.slot) == []
+
+
+class TestStructuralTerminalSlotFlag:
+    """A malformed-request terminal turn must LEAVE a mark on the slot, and a
+    genuine new turn must CLEAR it.
+
+    The auto-nudge fire path reads ``slot._last_turn_structural_terminal`` to
+    stop a self-prompting loop that would otherwise re-fire an identical context
+    the backend rejected for its shape. The two ends of that contract live in
+    chat_runner: the terminal-error branch SETS it from the exception's
+    ``structural_terminal`` verdict, and genuine-turn-start CLEARS it so a human
+    /clear-then-message re-arms the loop. Exercised end to end through
+    ``_run_chat`` on the real slot/state fixtures.
+    """
+
+    def _malformed_state(self, tmp_path):
+        state, client = _l1_state(tmp_path)
+        # Straight to the terminal branch: no L1 infra verdict in play.
+        client.last_infra_error = None
+
+        # Build the exception with the structural tag set, exactly as
+        # _raise_acp_error would for an "Improperly formed request" frame.
+        def _raise_malformed(_message, *_a, **_kw):
+            err = AcpError("The request was rejected as malformed.", transient=False)
+            err.structural_terminal = True
+            raise err
+
+        client.stream = MagicMock(side_effect=_raise_malformed)
+        return state, client
+
+    @pytest.mark.asyncio
+    async def test_malformed_terminal_turn_sets_the_flag(self, tmp_path):
+        state, _client = self._malformed_state(tmp_path)
+        slot = _RecordingSlot("chat-1-malformed")
+        assert slot._last_turn_structural_terminal is False
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            # A self-driven nudge fire is the only producer that may set the
+            # flag (the fire path passes _directive_self_wake=True); the loop id
+            # is recorded so the verdict is scoped to that loop.
+            await _run_chat(
+                state,
+                slot,
+                "please do the thing",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-42",
+                _directive_loop_gen=7,
+            )
+            if slot.task:
+                await slot.task
+        assert (
+            slot._last_turn_structural_terminal is True
+        ), "a malformed self-wake turn left no signal for the nudge loop to read"
+        assert (
+            slot._last_turn_structural_terminal_loop_id == "loop-42"
+        ), "the verdict was not scoped to the firing loop"
+        assert (
+            slot._last_turn_structural_terminal_loop_gen == 7
+        ), "the verdict was not scoped to the firing loop's config generation"
+
+    @pytest.mark.asyncio
+    async def test_a_human_malformed_turn_does_not_set_the_flag(self, tmp_path):
+        """A HUMAN turn that happens to be malformed must NOT arm the guard.
+
+        The flag stops the slot's nudge loop, so it must reflect the LOOP's OWN
+        cycle. A human message on a slot that also carries an active loop is not
+        the loop firing; setting the flag there would stop a loop the human
+        never drove. Only a self-wake turn (_directive_self_wake, the default is
+        False for a human send) may set it.
+        """
+        state, _client = self._malformed_state(tmp_path)
+        slot = _RecordingSlot("chat-1-human-malformed")
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "a human message that trips the parser")
+            if slot.task:
+                await slot.task
+        assert (
+            slot._last_turn_structural_terminal is False
+        ), "a human malformed turn armed the nudge-loop stop guard"
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_new_turn_clears_the_flag(self, tmp_path):
+        """A fresh, non-synthetic turn is exactly the event that should re-arm
+        the loop, so it must clear a stale structural verdict even before the
+        turn's own outcome is known."""
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+
+        def _clean_stream(_message, *_a, **_kw):
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_clean_stream)
+        slot = _RecordingSlot("chat-1-clears")
+        # A prior malformed turn left the flag set.
+        slot._last_turn_structural_terminal = True
+        slot._last_turn_structural_terminal_loop_id = "loop-stale"
+        slot._last_turn_structural_terminal_loop_gen = 5
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(state, slot, "a fresh human message")
+            if slot.task:
+                await slot.task
+        assert (
+            slot._last_turn_structural_terminal is False
+        ), "a genuine new turn did not clear the stale structural verdict"
+        assert (
+            slot._last_turn_structural_terminal_loop_id == ""
+        ), "a genuine new turn did not clear the scoped loop id"
+        assert (
+            slot._last_turn_structural_terminal_loop_gen == 0
+        ), "a genuine new turn did not clear the scoped loop generation"

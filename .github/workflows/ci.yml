@@ -53,7 +53,7 @@ jobs:
   # flags false and runs the full matrix (fails safe).
   changes:
     name: Detect changed surface
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 5
     # dorny/paths-filter runs with `token: ''` (below), so it detects changes
     # with local git instead of the REST API and needs no pull-requests:read.
@@ -311,7 +311,7 @@ jobs:
   # run anyway and the log would claim it was cleared to.
   await-fast-gate:
     name: Await Fast Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 15
     permissions:
       # actions:read is what lets this read another workflow's runs. Job-level
@@ -422,6 +422,17 @@ jobs:
     # positive "python changed" allowlist) so that anything the selector could
     # not classify as frontend -- docs, a new root file, meta -- still runs it.
     if: needs.changes.outputs.only_frontend != 'true'
+    # NOT routed to the CodeBuild fleet: `black --check` over the whole tree
+    # needs more memory than the fleet's default BUILD_GENERAL1_MEDIUM
+    # (4 vCPU / 7 GB) provides, OOM-killing the job (exit 137). The fleet's
+    # `_large` tier (8 vCPU / 16 GB, per `aws codebuild batch-get-builds`)
+    # also fails this job, reproducibly, with "the self-hosted runner lost
+    # communication with the server" -- the signature GitHub documents for a
+    # runner starved of CPU/memory or one whose process gets killed, though
+    # no CodeBuild-side log has yet pinned the exact cause on that tier.
+    # Stays on `ubuntu-latest` (16 GB) until someone can reproduce the
+    # `_large`-tier failure live against the fleet with logs captured before
+    # they rotate out of CloudWatch.
     runs-on: ubuntu-latest
     # The job's floor on today's hosted runners is ~14-15 min (black --check
     # over the whole tree alone takes 7-8 min, flake8 ~2 min, mypy cold ~3 min),
@@ -463,6 +474,24 @@ jobs:
         # across runs. --system targets the setup-python interpreter (no venv);
         # --group pulls [dependency-groups].dev from pyproject.
         run: uv pip install --system -e ".[voice]" --group dev
+
+      # Python vulnerability visibility. The repository had none: the step this
+      # replaces ran an unpinned `pip install pip-audit`, and pip-audit is now
+      # pinned in the dev group installed immediately above, so the audit needs no
+      # install of its own and two runs a week apart audit with the same tool.
+      #
+      # continue-on-error: this REPORTS on day one. Widening dependency auditing
+      # and making it block in the same change is how a gate ends up switched off
+      # by whoever it first stopped, and pip-audit reaches the network, so a
+      # registry blip would otherwise fail unrelated PRs. What makes this
+      # different from the advisory step it replaces is the baseline: the script
+      # compares the count against python-audit-baseline.json and says so when it
+      # rises, which turns a standing wall of known advisories into a number that
+      # only moves when someone moves it. Dropping continue-on-error is the
+      # follow-up once a count is recorded and has held steady.
+      - name: Python dependency audit (pinned, report-only)
+        continue-on-error: true
+        run: python3 scripts/check_python_audit.py
 
       # black IS enforced, behind a shrinking baseline. A bare `black --check`
       # cannot be turned on here: 1,420 files under src/ and test/ are not
@@ -550,44 +579,35 @@ jobs:
   backend-test:
     name: Backend Tests
     needs: [changes, await-fast-gate]
-    # NOT on the CodeBuild-hosted runner (yet). The pilot's first run routed
-    # these shards there and every shard failed 37-42 tests: the CodeBuild runner
-    # executes the job as root, and this suite asserts permission semantics
-    # (read-only refusals, root-owned checks, PermissionError) that root does not
-    # have; the standard:7.0 image also lacks the hosted toolchain (jq 1.7). They
-    # move once a non-root custom image exists -- see docs/ci/ci-and-reviews.md,
-    # "CodeBuild-hosted runner (pilot)".
-    runs-on: ubuntu-latest
-    # Per-shard time is NOT balanced: with no committed .test_durations file
-    # pytest-split falls back to an even-by-count split, so the slowest shard
-    # can ride the cap. A cap that a green shard can hit kills the job at the
-    # coverage step with every test passed, and Coverage Gate then reds on the
-    # missing artifact. At SHARD_COUNT=4 the worst shard reached 50.2 min against
-    # this 50-min cap (#11526). The fix is more shards (see the matrix comment),
-    # not a higher cap -- the ~33-min fixed collection+coverage cost per shard
-    # does not divide, so raising the wall alone would only defer the same hit.
-    # The cap stays 50 to keep real per-test hangs bounded (pytest-timeout still
-    # bounds individual tests regardless of this number).
-    timeout-minutes: 50
+    # CodeBuild-hosted runner, CANARY: shard 1 only; shards 2-8 stay hosted and
+    # exercise the passthrough. The pilot's first attempt routed every shard and
+    # each failed 37-42 tests, because the CodeBuild runner executes the job as
+    # root and this suite asserts permission semantics root does not have
+    # (read-only refusals, root-owned checks, PermissionError; the code refuses
+    # to run providers as root at all), and because standard:7.0 lacks parts of
+    # the hosted toolchain (jq 1.7, lsof, a libpython that resolves without
+    # LD_LIBRARY_PATH). The `run-as-runner` action below closes all of that
+    # INSIDE the job -- no custom image needed -- and the boundary is asserted by
+    # the step below rather than inferred. Green on four consecutive runs across
+    # both matrix shapes this file has had, with coverage written and uploaded by
+    # the unprivileged process each time; per-run counts and identity evidence
+    # are in docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)" --
+    # not repeated here, because a per-shard count is a property of the shard
+    # count and goes stale every time the matrix is resized. The remaining
+    # shards move only after the canary holds.
+    runs-on: ${{ matrix.group == 1 && needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    # Keep the existing wall-clock budget; individual tests still time out at
+    # 120 seconds. File sharding reduces repeated collection, not test coverage.
+    timeout-minutes: 60
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
       fail-fast: false
       matrix:
         python-version: ["3.12"]
-        # Shards split by pytest-split. With no committed .test_durations file
-        # (a durations file was declined in #8506 over its rewrite-every-refresh
-        # cost) the split falls back to even-by-COUNT, so per-shard time is not
-        # balanced and the slowest shard rides the cap. 8 groups x 1 Python = 8
-        # parallel jobs, each on its own runner (-n auto across cores). Raised
-        # from 4 to 8 in #11526: at 4 the worst shard hit 50.2 min against the
-        # 50-min cap (killed at 99% all-passing, zero failures) while 3 of 4 ran
-        # within 7 min of the wall; the ~33-min fixed collection+coverage cost
-        # does not divide, so more shards -- not a higher cap -- is what buys
-        # headroom. This mirrors the Windows job, which went to 8 for the same
-        # count-split reason. To add shards, extend this list AND bump
-        # SHARD_COUNT to match -- mind the ~20 concurrent-job ceiling for public
-        # repos.
+        # Eight runners reduce per-shard work at the cost of more runner slots.
+        # Whole files are assigned before import; -n auto parallelizes within
+        # each shard. To change the count, update this list and SHARD_COUNT.
         group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       SHARD_COUNT: 8
@@ -613,6 +633,46 @@ jobs:
 
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # Same user model on every runner: on a root runner (CodeBuild) create the
+      # unprivileged `runner` user, hand it the workspace and the job temp, and
+      # close the image gaps; everywhere install /usr/local/bin/ci-shell, which
+      # the steps below declare as their shell. On ubuntu-latest it is a bash
+      # passthrough and this action changes nothing else. Must come AFTER the
+      # setup-* actions (they install as root, harmlessly) and BEFORE anything
+      # whose result depends on not being root.
+      - uses: ./.github/actions/run-as-runner
+
+      - name: Assert the non-root boundary (CodeBuild only)
+        if: runner.environment == 'self-hosted'
+        shell: /usr/local/bin/ci-shell {0}
+        # ASSERTS, not prints: a boundary that silently stopped working would
+        # otherwise show up as 37-42 permission failures further down, which is
+        # the failure this whole action exists to prevent. Evidence is recorded
+        # for the specific facts a regression would move -- never the whole
+        # environment, which would put every GITHUB_*/RUNNER_* value in a log.
+        run: |
+          test "$(id -u)" -ne 0
+          test "$HOME" = /home/runner
+          test -w "$GITHUB_WORKSPACE"
+          test -w "$RUNNER_TEMP"
+          # ...but the job temp is root-owned and STICKY, and the runner's
+          # file-command directory inside it is not writable. Both matter: an
+          # unprivileged step that can write $GITHUB_ENV -- or rename the
+          # directory holding it, which the PARENT's permissions govern -- injects
+          # environment variables into the next root-owned step.
+          test "$(stat -c %U "$RUNNER_TEMP")" = root
+          test -k "$RUNNER_TEMP"
+          test ! -w "$(dirname "$GITHUB_ENV")"
+          command -v lsof >/dev/null
+          python -c 'import os, sys; assert os.geteuid() != 0, "still root"; print("euid", os.geteuid(), "python", sys.version.split()[0])'
+          echo "identity: $(id)"
+          echo "HOME=$HOME USER=$USER LOGNAME=$LOGNAME"
+          echo "owners: workspace=$(stat -c %U:%G "$GITHUB_WORKSPACE") temp=$(stat -c %U:%G "$RUNNER_TEMP")"
+          echo "tools: jq $(jq --version) lsof $(lsof -v 2>&1 | head -2 | tail -1) git $(git --version)"
+          echo "ancestry: $(ps -o user=,comm= -p $PPID) <- $(ps -o user=,comm= -p "$(ps -o ppid= -p $PPID | tr -d ' ')")"
+          echo "libpython resolves without LD_LIBRARY_PATH: $(env -u LD_LIBRARY_PATH python -c 'pass' >/dev/null 2>&1 && echo yes || echo no)"
+          echo "unshare NEWNS (namespace sandbox): $(unshare --mount --map-root-user true 2>&1 && echo available || echo unavailable)"
 
       - name: Select test scope
         id: scope
@@ -657,23 +717,31 @@ jobs:
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
-        # pytest-split slices the suite into SHARD_COUNT balanced groups. With a
-        # committed .test_durations file the split is balanced by *recorded time*,
-        # and brand-new tests are auto-assigned the average duration (distributed
-        # with no manual work); without that file it falls back to an even split
-        # by test count. -n auto still parallelizes within each shard across the
-        # runner's cores -- sharding scales across runners, -n auto across cores.
+        # scripts.ci_file_shards assigns each file to one shard before pytest
+        # imports it. Discovery and platform ignores remain pytest's own; files
+        # are never promoted to explicit arguments just to partition the suite.
+        # Hash assignment is stable, not duration-balanced. Every file's tests
+        # and parameters stay together; xdist still uses loadgroup within a job.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
         # shard emits a partial data file merged later by the coverage-combine
-        # job.
+        # job. Keep the package-name boundary: a whole source-directory selector
+        # also measures vendored and standalone scripts outside that boundary.
+        # The two explicit directories contain already-measured source whose
+        # synthetic/app-local module names otherwise make tracing import-order dependent.
         env:
           REDUCED: ${{ steps.scope.outputs.reduced }}
           LEAF: ${{ steps.scope.outputs.leaf }}
           LEAF_REPEAT: "3"
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        # ci-shell: the unprivileged `runner` user on a root runner, plain bash
+        # on ubuntu-latest (see the run-as-runner step). This is the step whose
+        # correctness depends on not being root -- the suite asserts read-only
+        # refusals and PermissionError semantics, and the code refuses to run
+        # providers as root.
+        shell: /usr/local/bin/ci-shell {0}
         run: |
           # Take the `python` problem matcher registered by actions/setup-python
           # out of scope before pytest writes a line. Its pattern is a traceback
@@ -735,15 +803,17 @@ jobs:
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            pytest -q -n auto --timeout=120 \
-              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+              --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
               "${TARGETS[@]}"
             exit 0
           fi
-          pytest -q -n auto --timeout=120 \
-            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
-            --cov=kiro_crew --cov=sage_lib
+          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --cov=kiro_crew --cov=sage_lib \
+            --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
         # Nothing is deselected. The eleven files that used to be -- the two sandbox
         # suites, the two ops git/gh suites, and the seven auto_improvement suites --
         # each carry `skipif(not userns_available())` on the tests that need a namespace
@@ -755,6 +825,10 @@ jobs:
         # Fold any xdist parallel data files into a single .coverage (no-op if
         # pytest-cov already combined this shard), then name it per-shard so the
         # combine job can merge all shards with `coverage combine`.
+        # ci-shell: the data files were written by the unprivileged user, so the
+        # combine and rename run as that same user rather than leaving a
+        # root-owned .coverage.<n> the upload step would then have to read.
+        shell: /usr/local/bin/ci-shell {0}
         run: |
           coverage combine 2>/dev/null || true
           test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
@@ -778,28 +852,16 @@ jobs:
   # Windows wheel), trace-free (--no-cov: the coverage-combine job merges
   # ubuntu shards only).
   #
-  # SHARD COUNT (8, not 4 like POSIX): pytest-split finds no .test_durations
-  # in CI (it is generated by test-durations.yml but not committed -- declined
-  # on POSIX grounds in #8506), so it splits by test COUNT on every platform.
-  # A count split assumes every test costs the same, and across platforms it
-  # assumes both platforms cost the same per test. They do not: measured on one
-  # commit (PR #10804), Windows ran ~101.8 ms/test against the POSIX ~56.9 ms,
-  # about 2x. So the 4 shards this job inherited from POSIX put its worst shard
-  # at ~39-40 min against the 40-min cap -- shard 3 alone ran 2355 s of pytest
-  # (23,139 tests) while its siblings ran 1307/1411/1416 s, and on one head it
-  # crossed the wall and was cancelled at 40:00. A platform ~2x slower per test
-  # needs ~2x the shards to fit the same wall; 8 puts the worst count-split
-  # shard at ~26 min of pytest + ~1.4 min setup, ~19 min under the cap. This
-  # does NOT make the slow tests faster and the suite keeps growing -- the real
-  # long-term fix is a Windows-recorded durations file once the 11.7 MB
-  # rewrite-every-refresh cost that #8506 was declined over is solved. See
-  # #10523.
+  # Whole-file shards, assigned before import using the same plugin as POSIX.
+  # Eight runners share the work; the per-job timeout remains unchanged.
+  # File hashing avoids full-suite item collection in every worker, but does not
+  # claim equal durations across files or platforms.
   backend-test-windows:
     name: Backend Tests (Windows)
     needs: [await-fast-gate]
     runs-on: windows-latest
-    # Windows shards omit coverage and retain their 40-minute job budget.
-    timeout-minutes: 40
+    # Retain the existing Windows budget and coverage-free run.
+    timeout-minutes: 60
     strategy:
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
@@ -878,10 +940,10 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -p scripts.ci_pytest_progress \
+          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
             -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
-            --splits "$SHARD_COUNT" --group ${{ matrix.group }}
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
         # namespace sandbox at all, so `userns_available()` is False and every
         # sandbox-dependent test skips. Residual POSIX assumptions in
@@ -1449,8 +1511,8 @@ jobs:
 
   backend-test-crew-container:
     name: Backend Tests (crew container)
-    needs: [await-fast-gate]
-    runs-on: ubuntu-latest
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1868,7 +1930,7 @@ jobs:
     # input byte-identical. only_backend is the catch-all side of the same
     # decision, so an unclassifiable path still runs this.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # persist-credentials retained: frontend-lint/Check for new hardcoded UI strings runs `git fetch origin`
@@ -2045,7 +2107,7 @@ jobs:
     needs: [changes, await-fast-gate]
     # Reads website/package.json + website/package-lock.json and nothing else.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2136,8 +2198,8 @@ jobs:
   # packaging/installer-assets/* references it pins.
   electron-test:
     name: Electron Shell Tests
-    needs: [await-fast-gate]
-    runs-on: ubuntu-latest
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

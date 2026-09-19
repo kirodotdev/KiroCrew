@@ -823,3 +823,49 @@ def test_glob_keeps_memory_named_directory_in_an_ordinary_project(env):
     )
     documents = documents_for_member("writer-template", str(env.project))
     assert "LEGITIMATE_PROJECT_GUIDE" in [body for _, body in documents]
+
+
+def test_document_cap_ignores_on_demand_resource_schemes(env):
+    """Only file:// declarations become documents, so only they spend the budget.
+
+    An agent that declares many skills is the common shape: the skills stay on
+    demand and are never read here, so a template with one guide and seventy
+    skills loads exactly one document and must not be refused as oversized.
+    """
+    from kiro_crew.member_essential_context import (
+        documents_for_member,
+        projected_resource_documents,
+    )
+
+    skills = [f"skill://tooling/skill-{index}/SKILL.md" for index in range(70)]
+    resources = ["file://declared-guide.md", *skills]
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": resources}),
+        encoding="utf-8",
+    )
+    documents = documents_for_member("writer-template", str(env.project))
+    assert "Declared guide: examples must be reproducible." in [body for _, body in documents]
+
+    projected = projected_resource_documents(
+        {"id": "writer-template", "resources": resources}, str(env.project)
+    )
+    assert list(projected.values()) == ["Declared guide: examples must be reproducible."]
+
+
+def test_document_cap_still_bounds_declared_file_resources(env):
+    from kiro_crew.member_essential_context import (
+        documents_for_member,
+        projected_resource_documents,
+    )
+
+    resources = [f"file://guide-{index}.md" for index in range(65)]
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": resources}),
+        encoding="utf-8",
+    )
+    with pytest.raises(MemberEssentialContextError, match="too many resources"):
+        documents_for_member("writer-template", str(env.project))
+    with pytest.raises(MemberEssentialContextError, match="exceeds the document limit"):
+        projected_resource_documents(
+            {"id": "writer-template", "resources": resources}, str(env.project)
+        )

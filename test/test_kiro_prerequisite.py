@@ -3176,6 +3176,15 @@ class TestKiroPrerequisiteWorkflow:
                 ["install"],
                 env={},
                 timeout_secs=1,
+                # Drive the BODY on this test's own loop. What is under test here
+                # is the descendant tracker's step-by-step behaviour, and the
+                # test observes it through ``child_observed`` -- an
+                # ``asyncio.Event`` bound to this loop, which the fake
+                # ``descendants`` coroutine sets. Letting the Windows hop run
+                # would put that fake on the private loop, where setting a
+                # foreign loop's Event never wakes this one. The hop itself is
+                # covered by test_kiro_probe_spawn_off_loop.py.
+                _on_private_loop=True,
             )
         )
         await asyncio.wait_for(child_observed.wait(), timeout=1)

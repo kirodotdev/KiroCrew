@@ -25,6 +25,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
@@ -46,9 +47,12 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
+    ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
+    ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
     acp_runtime_backends,
     effort_config_option_id,
     model_registry_namespace,
+    overlay_project_scope,
     selectable_backends,
 )
 
@@ -172,21 +176,32 @@ TODO_TEXT_MAX = 500
 
 # Capabilities we advertise during `initialize`.
 #
-# `elicitation` is a deliberate forward-bet: kiro-cli 2.14.0 compiles the
-# `elicitation/create` schema (form + url modes) and gates it on this
-# capability, but does NOT yet route an MCP server's `elicitation/create` out
-# over ACP — a stub MCP server issuing one gets back
-# `-32601 method not found`. Declaring support costs nothing today and means
-# the agent can start using the richer prompt the moment kiro-cli ships the
-# bridge.
+# Nothing is advertised that has no inbound handler. Kiro Crew serves exactly one
+# server-initiated request, `session/request_permission`; everything else reaches
+# `_reject_unknown_server_request` and comes back `-32601 method not found`.
 #
-# `fs` and `terminal` stay false: KiroCrew does not serve the agent's file or
-# terminal requests over ACP — the agent uses its own tools for that, and
-# advertising them would invite requests we have no handler for.
+# `elicitation` was declared here as a forward-bet on kiro-cli routing an MCP
+# server's `elicitation/create` out over ACP. It is withdrawn because the bet is
+# not free, which is what the bet assumed. A client that sees the capability
+# routes its human-in-the-loop prompts through `elicitation/create` INSTEAD of
+# falling back to `session/request_permission` -- codex-acp gates exactly that
+# way on `clientCapabilities.elicitation.form` -- so declaring a capability we do
+# not serve does not sit inert waiting for a handler. It replaces a path that
+# works with one that returns an error, and the client reads that error as a
+# cancellation of the tool call the human was approving.
+#
+# So the declaration goes back to honest, and every affected client returns to the
+# fallback that already works. Re-add the key in the same change that registers a
+# handler for it, never before: `test_acp_client_capabilities.py` fails if the two
+# drift apart again.
+#
+# `fs` and `terminal` stay false for the same reason, and always have: Kiro Crew
+# does not serve the agent's file or terminal requests over ACP -- the agent uses
+# its own tools for that, and advertising them would invite requests we have no
+# handler for.
 ACP_CLIENT_CAPABILITIES: dict = {
     "fs": {"readTextFile": False, "writeTextFile": False},
     "terminal": False,
-    "elicitation": {"form": {}, "url": {}},
 }
 
 # ── ACP Backend Identifiers ──

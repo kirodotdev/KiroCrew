@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
 
 # ── Harness ──
@@ -177,10 +178,14 @@ def kas_readiness_wire(monkeypatch, tmp_path):
         servers = injected if injected is not None else [{"name": "kirocrew-dashboard"}]
         if resume:
             # Load gets the session injection through the existing overlay seam.
+            # ``**_kw``: the real signature takes the session's checkout as
+            # ``work_dir``, and a double that refuses it makes ``load_session``
+            # raise before it ever reaches the wire, so every assertion below
+            # fails as a handshake timeout instead of naming the double.
             monkeypatch.setattr(
                 runtime_mod,
                 "pooled_session_servers",
-                lambda *_: servers,
+                lambda *_, **_kw: servers,
             )
             start = rt.load_session("", "ready-session", **kwargs)
         else:
@@ -521,14 +526,17 @@ async def test_kas_readiness_accepts_provenance_less_wire_for_injected_servers(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+@pytest.mark.parametrize("catalog", [True, False], ids=["catalog", "no-catalog"])
 async def test_kas_default_managed_core_is_hoisted_and_ready_on_provenance_less_wire(
-    kas_readiness_wire, monkeypatch, resume
+    kas_readiness_wire, monkeypatch, resume, catalog
 ):
     """The ordinary install: ``kirocrew-core`` declared only by the agent spec,
     nothing stubbed. The runtime carries the projected declaration in the
     session-level array (``2.18.0-payload-probe.json``: that payload connects
     Crew's own server past colliding global and workspace entries on new and
     load), so the provenance-less wire reads it as injected and startup completes.
+    Exposure comes from the connected entry's own catalog when it carries one
+    (2.18.0 through 2.22.0 all do), and only otherwise from a tag frame.
     """
     from kiro_crew.acp.kas_agents import to_client_custom_agent
 
@@ -555,10 +563,13 @@ async def test_kas_default_managed_core_is_hoisted_and_ready_on_provenance_less_
         sent = wire.runtime._kas_custom_agents.call_args
         assert sent.kwargs["session_key"] == "subagent:default-worker"
         await wire.take(wire.reads)
-        wire.status("connected", origin=None, tools=[{"name": "ping", "disabled": False}])
-        await wire.take(wire.reads)
-        assert not start.done(), "exposure is still required for an injected server"
-        wire.tags("kirocrew-core", "kirocrew-dashboard")
+        if catalog:
+            wire.status("connected", origin=None, tools=[{"name": "ping", "disabled": False}])
+        else:
+            wire.status("connected", origin=None)
+            await wire.take(wire.reads)
+            assert not start.done(), "exposure is still required for an injected server"
+            wire.tags("kirocrew-core", "kirocrew-dashboard")
         handle = await asyncio.wait_for(start, 3.0)
         assert set(handle.mcp_session_report().payload()["ready"]) == {
             "kirocrew-core",
@@ -602,21 +613,20 @@ async def test_kas_readiness_accepts_pre_response_reports_for_unchanged_mode(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
 @pytest.mark.parametrize(
-    "tools,excluded,catalog_state,needs_tag",
+    "tools,excluded,catalog_state",
     [
-        (["read"], [], "enabled", False),
-        (["*"], ["@kirocrew-core"], "enabled", False),
-        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "enabled", False),
-        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "empty", False),
+        (["read"], [], "enabled"),
+        (["*"], ["@kirocrew-core"], "enabled"),
+        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "enabled"),
+        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "empty"),
         (
             ["@kirocrew-core"],
             ["@kirocrew-core/memory_recall", "@kirocrew-core/learn_add"],
             "enabled",
-            False,
         ),
-        (["@kirocrew-core/memory_recall"], [], "disabled", False),
-        (["*"], [], "disabled", False),
-        (["@kirocrew-core"], ["@kirocrew-core/learn_add"], "enabled", True),
+        (["@kirocrew-core/memory_recall"], [], "disabled"),
+        (["*"], [], "disabled"),
+        (["@kirocrew-core"], ["@kirocrew-core/learn_add"], "enabled"),
     ],
     ids=[
         "no-server-grant",
@@ -626,13 +636,17 @@ async def test_kas_readiness_accepts_pre_response_reports_for_unchanged_mode(
         "excluded-all-tools",
         "disabled-selected-tool",
         "disabled-all-tools",
-        "unapproved-recall-still-needs-exposure",
+        "unapproved-recall-exposed-by-catalog",
     ],
 )
 async def test_kas_readiness_respects_projected_tool_restrictions(
-    kas_readiness_wire, monkeypatch, resume, tools, excluded, catalog_state, needs_tag
+    kas_readiness_wire, monkeypatch, resume, tools, excluded, catalog_state
 ):
-    """A declared server with intentionally hidden tools must still connect."""
+    """A declared server with intentionally hidden tools must still connect.
+
+    The last case is the one with an exposed tool: its connected catalog is the
+    exposure evidence, so no tag frame is needed (none arrives on 2.22.0).
+    """
     from kiro_crew.acp.kas_agents import to_client_custom_agent
 
     wire = kas_readiness_wire
@@ -669,10 +683,6 @@ async def test_kas_readiness_respects_projected_tool_restrictions(
             await wire.take(wire.reads)
         assert not start.done(), "A restricted tool policy does not waive connection readiness"
         wire.status("connected", tools=catalog)
-        if needs_tag:
-            await wire.take(wire.reads)
-            assert not start.done(), "Approval policy does not remove exposure requirements"
-            wire.tags("kirocrew-core", "kirocrew-dashboard")
         handle = await asyncio.wait_for(start, 3.0)
         assert set(handle.mcp_session_report().payload()["ready"]) == {
             "kirocrew-core",
@@ -3725,6 +3735,49 @@ async def test_wait_for_compaction_cached_result_applies_post_compaction_metadat
 
 
 @pytest.mark.asyncio
+async def test_wait_for_compaction_timeout_restores_a_concurrent_frame():
+    """RECOVERY contract for a compaction that never reports terminal.
+
+    ``wait_for_compaction`` returning ``{"type": "timeout"}`` means only that
+    THIS reader did not observe a completed/failed status inside its window --
+    NOT that the provider never sent one. A live turn can be draining the same
+    session queue concurrently; the wait must therefore not SWALLOW the frames
+    it pulls while looking for the status, or the next legal turn (or the live
+    turn's own dispatch loop) is stranded -- the exact "stuck after a timed-out
+    /compact" shape. This pins that a non-compaction frame observed during a
+    wait that then times out is RESTORED to the queue, so the following reader
+    still sees it. (It does not, and cannot, prove the historical incident was
+    this race -- only that the reader does not drop a concurrent frame on the
+    timeout path.)
+    """
+    from kiro_crew.acp.types import AcpPromptStats, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.last_prompt_stats = AcpPromptStats(
+        context_pct=50.0,
+        context_used_tokens=100_000,
+        context_window_tokens=200_000,
+        context_tokens_from_usage=True,
+    )
+    # A frame belonging to a concurrent live turn, and NO compaction status
+    # behind it: the status the provider may have sent was consumed elsewhere
+    # (or never arrived within the window). The wait must time out AND hand the
+    # live-turn frame back.
+    live_frame = JsonRpcMessage(
+        method="session/update", params={"sessionId": "sA", "update": {"live": True}}
+    )
+    q["sA"].put_nowait(live_frame)
+
+    result = await handle.wait_for_compaction(timeout=0.3)
+
+    assert result == {"type": "timeout"}
+    # The concurrent frame is back on the queue for the next reader, not dropped.
+    assert q["sA"].get_nowait() is live_frame
+
+
+@pytest.mark.asyncio
 async def test_dispatch_agent_switched():
     """Agent switched notification yields EVENT_AGENT_SWITCHED."""
     from kiro_crew.acp.types import EVENT_AGENT_SWITCHED, METHOD_AGENT_SWITCHED
@@ -5203,6 +5256,55 @@ class TestAcpRuntimePidTracking:
         assert calls["session"] == []
 
 
+def _identity_tokens(elements):
+    """The per-session token carried by each of *elements*, in order.
+
+    A missing pair yields ``""`` for that element, so a caller can tell "every
+    element carries one" from "one of them stopped".
+    """
+    out = []
+    for element in elements:
+        env = element.get("env")
+        pairs = env if isinstance(env, list) else []
+        value = ""
+        for pair in pairs:
+            if isinstance(pair, dict) and pair.get("name") == STUB_SESSION_TOKEN_ENV:
+                value = str(pair.get("value") or "")
+        out.append(value)
+    return out
+
+
+def _without_identity_env(elements):
+    """*elements* with the per-session identity VALUE dropped from each.
+
+    Lets a comparison assert on the stub SET — names, commands, args, and every
+    other env pair — without asserting that two different sessions were given the
+    same session token, which they must not be.
+
+    Only the VALUE is excluded, never the pair's presence: the pair is rewritten to
+    a fixed placeholder rather than removed, so an element that stops carrying a
+    token at all still differs from one that carries a different token. Removing it
+    outright is what made the ratchet blind to a token disappearing — the
+    comparison alone cannot see presence, so :func:`_identity_tokens` is asserted
+    beside it.
+    """
+    out = []
+    for element in elements:
+        shaped = dict(element)
+        env = shaped.get("env")
+        if isinstance(env, list):
+            shaped["env"] = [
+                (
+                    {"name": STUB_SESSION_TOKEN_ENV, "value": "<per-session>"}
+                    if isinstance(pair, dict) and pair.get("name") == STUB_SESSION_TOKEN_ENV
+                    else pair
+                )
+                for pair in env
+            ]
+        out.append(shaped)
+    return out
+
+
 class TestAcpRuntimeLoadSession:
     """load_session() must mirror AcpClient._initialize_session's resume path:
     issue session/load DIRECTLY (no session/new first) under the ORIGINAL sid,
@@ -5543,9 +5645,30 @@ class TestAcpRuntimeLoadSession:
 
         # Parity with create_session for the same agent + overlay: the two
         # injection paths must never diverge.
+        #
+        # The per-session token's VALUE is the one part that legitimately differs:
+        # each session start mints its own (``_own_stub_session``) and these are two
+        # different sessions. So the value is normalised and everything else --
+        # ``command``, ``args``, every other env pair -- is compared byte-for-byte,
+        # because the parity this guards is the stub SET, and re-declaring a
+        # different one is what silently un-pools a resumed session.
+        #
+        # PRESENCE is asserted separately and is not part of the normalisation: a
+        # comparison that dropped the pair from both sides would pass just as
+        # happily if one path stopped carrying a token at all, which is the
+        # regression this file is the only guard for.
         await rt.create_session(cwd="/w", agent="kirocrew")
         new_params = next(p for m, p in sent if m == METHOD_SESSION_NEW)
-        assert load_params["mcpServers"] == new_params["mcpServers"]
+        load_tokens = _identity_tokens(load_params["mcpServers"])
+        new_tokens = _identity_tokens(new_params["mcpServers"])
+        assert all(load_tokens) and all(new_tokens), (
+            "every re-declared element must carry this session's identity token; "
+            f"load={load_tokens} new={new_tokens}"
+        )
+        assert load_tokens != new_tokens, "two different sessions must not share a token"
+        assert _without_identity_env(load_params["mcpServers"]) == _without_identity_env(
+            new_params["mcpServers"]
+        )
 
     @pytest.mark.asyncio
     async def test_load_session_resolves_stubs_off_the_event_loop(self, monkeypatch):
@@ -5562,7 +5685,9 @@ class TestAcpRuntimeLoadSession:
         loop_thread = threading.current_thread()
         seen: list[threading.Thread] = []
 
-        def _recording_pooled(overlay_dir, agent, channel_id=None):
+        def _recording_pooled(overlay_dir, agent, channel_id=None, **_kw):
+            # ``**_kw`` so the double keeps mirroring the real signature, which
+            # takes the session's checkout as ``work_dir``.
             seen.append(threading.current_thread())
             return []
 
@@ -10421,6 +10546,205 @@ async def test_pre_turn_drain_counts_an_error_response_terminal(caplog):
     assert "SECRETBOOM" not in _drain_lines[0], "error payload leaked into the drain warning"
     # No attribution: the drain cannot know which caller owned this response.
     assert "that turn's" not in _drain_lines[0], _drain_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_keeps_a_response_a_live_waiter_is_owed(caplog):
+    """A response whose req_id is STILL registered in ``_awaited_responses``
+    has a live consumer inside ``_wait_for_response``, so the drain must hand
+    it back rather than destroy it.
+
+    The abandoned TURN's own frames are owed to nobody: ``_run_turn`` refuses
+    to start while ``_turn_done`` is clear, and ``_turn_done`` is set in its
+    own ``finally``, so by the time the drain runs that turn's generator has
+    already exited. Discarding those is correct. A command/config call
+    (``send_command`` / ``compact`` / ``set_config_option``) is different: it
+    does not touch ``_turn_done``, so its ``_wait_for_response`` can be in
+    flight when the next turn starts — and for a oneshot the response IS the
+    terminal. Dropping it strands that caller until its own timeout (60s for
+    ``send_command``), which then reports failure for a call the backend
+    answered.
+
+    ``_awaited_responses`` is the discriminator that tells the two apart, and
+    the dispatch loop already routes on exactly it; the drain was the one queue
+    consumer that did not.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    # A live set_config_option waiter: registered, still inside its wait.
+    handle._awaited_responses.add(77)
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 77, "result": {"ok": True}})
+    )
+    # An ordinary leftover from the abandoned turn — owed to nobody, still dropped.
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 4, "result": {"stopReason": "cancelled"}})
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+
+    # The owed frame survived the drain and is readable by its waiter.
+    _kept = await handle._wait_for_response(77, timeout=1.0)
+    assert _kept.id == 77
+    assert _kept.result == {"ok": True}
+
+    # Only the unowed frame was counted as discarded.
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "1 leftover frame(s)" in _drain_lines[0], _drain_lines[0]
+    assert "1 of them" in _drain_lines[0], _drain_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_drops_a_response_no_waiter_is_owed(caplog):
+    """The retention is scoped to a REGISTERED waiter, not to every response.
+
+    A command call that already timed out has discarded its req_id in
+    ``_wait_for_response``'s ``finally``, so its late answer is owed to nobody
+    and must still drain — otherwise the retention leaks a stray frame into
+    every following turn. This is the mutant that would survive a bare
+    "keep all responses" rule.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    assert not handle._awaited_responses
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 77, "result": {"ok": True}})
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "1 leftover frame(s)" in _drain_lines[0], _drain_lines[0]
+    assert handle._queue.empty(), "an unowed response was retained instead of drained"
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_answers_a_permission_request_whose_id_collides():
+    """The retention must not swallow a server→client REQUEST that happens to
+    carry the same integer id as an awaited response.
+
+    The two id spaces are independent: our client→server ids come from
+    ``AcpRuntime._next_id`` (starts at 1) and the backend mints its own request
+    ids, so a numeric collision is ordinary rather than exotic. A retained
+    permission request is never answered, which strands the backend's oneshot —
+    the exact hang the drain exists to prevent. ``method is None`` is what keeps
+    the retention to responses only.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+    handle.reject_tool = AsyncMock()
+
+    # Our own outstanding command call is waiting on id 3 ...
+    handle._awaited_responses.add(3)
+    # ... and the backend's stranded permission REQUEST also has id 3.
+    q["sA"].put_nowait(_permission_msg(3))
+
+    import contextlib
+
+    gen = handle.prompt("hi", timeout=0.2)
+    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+        await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await gen.aclose()
+
+    handle.reject_tool.assert_awaited_once_with(3)
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_keeps_an_owed_frame_when_cancelled_mid_drain():
+    """A cancellation part-way through the drain must not lose a response
+    already collected for a live waiter.
+
+    The permission arm re-raises ``CancelledError`` so the prompt aborts, which
+    is exactly when a retained frame is easiest to lose: everything read before
+    the cancellation point is held in a local list, and a re-injection reached
+    only on the loop's normal exit would never run. The frames go back from a
+    ``finally``, so the abort still pays the waiter what it is owed.
+
+    The queue order is the point: the owed response is read FIRST, so it is
+    already collected when the stranded permission request triggers the abort.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+    handle.reject_tool = AsyncMock(side_effect=asyncio.CancelledError())
+
+    handle._awaited_responses.add(77)
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 77, "result": {"ok": True}})
+    )
+    q["sA"].put_nowait(_permission_msg(5))
+
+    gen = handle.prompt("hi", timeout=0.2)
+    with pytest.raises(asyncio.CancelledError):
+        await gen.__anext__()
+
+    # The abort still handed the owed response back, and its waiter can read it.
+    _kept = await handle._wait_for_response(77, timeout=1.0)
+    assert _kept.id == 77
+    assert _kept.result == {"ok": True}
+    # The handle is reusable: the cancel path re-set _turn_done.
+    assert handle._turn_done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_hands_back_an_owed_frame_before_awaiting_a_reject():
+    """A retained frame is never held across an await.
+
+    ``reject_tool`` writes to the child's stdin and that write is not bounded
+    short: a backend that already delivered a command response but has stopped
+    reading its own stdin applies backpressure that blocks it. An owed waiter
+    carries a 60s deadline, so a frame parked in the retain list for the length
+    of that write can expire and the call reports "" for a response the backend
+    delivered. The await is also the yield point at which the waiting
+    ``_wait_for_response`` gets scheduled, so handing the frame back BEFORE it
+    is what actually pays the waiter.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    _seen_at_reject: list[list[int | str | None]] = []
+
+    async def _reject(_req_id):
+        # What the queue holds at the moment the slow write would begin.
+        _seen_at_reject.append([m.id for m in list(handle._queue._queue) if m is not None])
+
+    handle.reject_tool = _reject
+
+    handle._awaited_responses.add(77)
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 77, "result": {"ok": True}})
+    )
+    q["sA"].put_nowait(_permission_msg(5))
+
+    import contextlib
+
+    gen = handle.prompt("hi", timeout=0.2)
+    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+        await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await gen.aclose()
+
+    assert _seen_at_reject, "reject_tool was never reached"
+    assert 77 in _seen_at_reject[0], (
+        "the owed response was still parked in the retain list while reject_tool "
+        f"was awaited; queue held {_seen_at_reject[0]}"
+    )
+    # And it is still there afterwards for its waiter, re-injected exactly once.
+    _kept = await handle._wait_for_response(77, timeout=1.0)
+    assert _kept.result == {"ok": True}
+    assert all(
+        m is None or m.id != 77 for m in list(handle._queue._queue)
+    ), "the owed response was re-injected twice"
 
 
 @pytest.mark.asyncio

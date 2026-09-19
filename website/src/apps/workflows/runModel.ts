@@ -24,6 +24,18 @@ export interface AgentRow {
   label?: string
   last_tool?: string
   ok?: boolean
+  /**
+   * Wall-clock span between this agent's `agent_started` and `agent_finished`
+   * events, in ms. Derived from the `ts` both events already carry, so no
+   * backend change feeds it.
+   *
+   * Undefined for three distinct cases, all of which must render as "no time"
+   * rather than a zero: the agent is still running, its stream was truncated so
+   * one of the two events is missing, or either `ts` does not parse. A negative
+   * span is also dropped — the wire carries whatever clock the producer had, and
+   * a backwards duration is worse than none.
+   */
+  elapsed_ms?: number
 }
 
 export interface PhaseGroup {
@@ -35,6 +47,10 @@ export interface PhaseGroup {
 export function groupByPhase(events: WfEvent[]): PhaseGroup[] {
   const phases: PhaseGroup[] = []
   const byId = new Map<string, AgentRow>()
+  // Start instants live here rather than on AgentRow: a consumer needs the span,
+  // not the bookkeeping, and keeping it local means a truncated stream cannot
+  // surface a half-measured row.
+  const startedAt = new Map<string, number>()
   let current = ''
   const ensure = (title: string): PhaseGroup => {
     let p = phases.find(x => x.title === title)
@@ -52,6 +68,8 @@ export function groupByPhase(events: WfEvent[]): PhaseGroup[] {
       // renders, which a lint pass has no business deciding.
       const row: AgentRow = { agent_id: e.data.agent_id as string, label: e.data.label as string | undefined }
       byId.set(e.data.agent_id as string, row)
+      const started = Date.parse(e.ts)
+      if (Number.isFinite(started)) startedAt.set(e.data.agent_id as string, started)
       ensure((e.data.phase as string | undefined) ?? current).agents.push(row)
     } else if (e.type === 'agent_progress') {
       const row = byId.get(e.data.agent_id as string)
@@ -59,6 +77,11 @@ export function groupByPhase(events: WfEvent[]): PhaseGroup[] {
     } else if (e.type === 'agent_finished') {
       const row = byId.get(e.data.agent_id as string)
       if (row) row.ok = !!e.data.ok
+      const started = startedAt.get(e.data.agent_id as string)
+      const finished = Date.parse(e.ts)
+      if (row && started !== undefined && Number.isFinite(finished) && finished >= started) {
+        row.elapsed_ms = finished - started
+      }
     }
   }
   return phases

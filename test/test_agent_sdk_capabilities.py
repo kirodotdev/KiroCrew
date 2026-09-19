@@ -405,6 +405,35 @@ def test_every_capability_set_has_a_disposition_row() -> None:
     )
 
 
+def test_a_markdown_dispatching_host_must_reach_the_overlay_format_rule() -> None:
+    """``overlay_project_scope`` computes its format half from ``has_mirror`` ALONE.
+
+    A host that reads the markdown spec form from a checkout ITSELF is a second
+    way for a project ``foo.md`` to be the agent a session runs, and that set is
+    deliberately not OR-ed into the decider because its only member also reads the
+    user level alone and leaves the decider before the question arises -- an OR
+    term no caller could reach is dead surface.
+
+    This assertion is what keeps that omission honest. A host in the markdown set
+    which DOES receive a project scope would dispatch a project markdown agent
+    while the decider answered ``markdown_specs=False``, so the user-level
+    overlay's stub for that name would survive, outrank the project's own
+    declaration, and run its command and credentials under the checkout's agent.
+    """
+    markdown = sdk_backends.ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+    user_level_only = sdk_backends.ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY
+    assert markdown, "the markdown-spec set is empty; this pin no longer measures anything"
+    escaped = sorted(markdown - user_level_only)
+    assert not escaped, (
+        f"these backends read markdown agent specs from a checkout themselves but DO "
+        f"receive a project scope: {escaped}. agent_sdk/backends.overlay_project_scope "
+        f"computes markdown_specs from has_mirror alone, so such a host is told "
+        f"markdown_specs=False and keeps the user-level overlay's stub for a spec it "
+        f"actually dispatches -- the stub's command and credentials then run under the "
+        f"checkout's agent. OR this set into that decider before adding the host."
+    )
+
+
 def test_every_semantic_disposition_names_a_real_capability_field() -> None:
     """A row claiming ``SessionCapabilities.<field>`` must name a field that exists."""
     doc = sdk_backends.__doc__ or ""

@@ -167,4 +167,41 @@ describe('minimal context in the job form', () => {
     expect(screen.queryByLabelText('Minimal context')).not.toBeInTheDocument()
     expect(screen.queryByTestId('jobform-mode-advice')).not.toBeInTheDocument()
   })
+
+  /** The reserved `default` crew is NOT a member: the backend refuses
+   *  `member_id: "default"` as a V1 identity. Hosts therefore pass their crew
+   *  name unconditionally and this form applies the rule — so both halves of the
+   *  member binding must key on it. Overriding `agent` from "default" to the
+   *  provider template would break the attribution `wakesCrew` reads, and the
+   *  schedule would vanish from the very pane that created it. */
+  it('binds the default crew by name only, leaving its agent untouched', async () => {
+    vi.mocked(api.createCron).mockResolvedValue({})
+    // Cleared because the mock is shared with every case above it in this file.
+    vi.mocked(api.createCron).mockClear()
+    renderWithProviders(
+      <JobForm layout="vertical" agents={[]} onSaved={() => {}} memberId="default" providerAgent="kirocrew" />,
+    )
+    await userEvent.type(await screen.findByLabelText('Name'), 'default-crew job')
+    await userEvent.type(screen.getByLabelText('Message'), 'Sweep the queue.')
+    await userEvent.click(screen.getByRole('button', { name: /create/i }))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    const body = vi.mocked(api.createCron).mock.calls[0][0] as Record<string, unknown>
+    expect(body.member_id).toBeUndefined()
+    expect(body.agent).toBe('default')
+  })
+
+  it('binds a real member by identity and runs it on the provider template', async () => {
+    vi.mocked(api.createCron).mockResolvedValue({})
+    vi.mocked(api.createCron).mockClear()
+    renderWithProviders(
+      <JobForm layout="vertical" agents={[]} onSaved={() => {}} memberId="oncall" providerAgent="kirocrew" />,
+    )
+    await userEvent.type(await screen.findByLabelText('Name'), 'member job')
+    await userEvent.type(screen.getByLabelText('Message'), 'Sweep the queue.')
+    await userEvent.click(screen.getByRole('button', { name: /create/i }))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    const body = vi.mocked(api.createCron).mock.calls[0][0] as Record<string, unknown>
+    expect(body.member_id).toBe('oncall')
+    expect(body.agent).toBe('kirocrew')
+  })
 })

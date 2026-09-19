@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, ExternalLink, GitFork, Loader2, User, MessageSquare, RotateCw } from 'lucide-react'
+import { ArrowLeft, ExternalLink, GitFork, Loader2, User, MessageSquare, RotateCw, Eye } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -18,6 +18,7 @@ import type { ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 function readThemeVars(): Record<string, string> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return {}
   const computed = getComputedStyle(document.documentElement)
@@ -229,6 +230,12 @@ export default function RemoteArtifactDetailPage() {
   // and widget frames moved: some WebKit-based in-app browsers refuse a blob
   // load outright and can take the whole page down with it.
   const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
+  // A mint can succeed while the frame never fires `load` — a visible-but-blank
+  // frame here, since this surface has no opacity gate. `silent` overlays the
+  // same notice + retry the mint-`failed` branch uses so the blank is explained
+  // and recoverable. Same watch ArtifactBody / WidgetFrame use; keep the four
+  // in step.
+  const { silent: loadSilent, onLoaded: onFrameLoaded } = useSilentLoadWatch(blobUrl)
 
   // Anchored-comment highlights for the remote markdown body use the SAME
   // DOM-rect overlay as the local artifact page (InlineCommentOverlay), so
@@ -403,11 +410,13 @@ export default function RemoteArtifactDetailPage() {
         <div className="flex gap-4 items-start">
           <div className="flex-1 min-w-0">
             {isHtml ? (
-              <div className="rounded-xl border border-border bg-card overflow-hidden" style={{ minHeight: 480 }}>
+              <div className="relative rounded-xl border border-border bg-card overflow-hidden" style={{ minHeight: 480 }}>
                 {blobUrl ? (
+                  /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a frame-load lifecycle handler (it clears the silent-load watch), not a user interaction; the frame's own content is what a keyboard reaches, and nothing here can be triggered from one */
                   <iframe
                     ref={iframeRef}
                     src={blobUrl}
+                    onLoad={onFrameLoaded}
                     sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
                     // NO clipboard-write delegation here, deliberately. These frames host
                     // agent-generated HTML whose scripts run on load, so a delegated
@@ -437,6 +446,62 @@ export default function RemoteArtifactDetailPage() {
                     </Btn>
                   </div>
                 ) : <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.rendering')}</div>}
+                {/* Recovery overlay for a frame that is STILL mounted (blobUrl
+                    present). Two states can strand a mounted frame with no
+                    in-flow recovery, because the ternary above picks <iframe>
+                    whenever blobUrl is set and so never reaches its own `failed`
+                    branch while a (possibly spent) url survives:
+                      - loadSilent: the mint succeeded but the frame never fired
+                        `load` -- a blank box. Cause-neutral copy + Eye/"Show
+                        artifact" (a frame that did not report is not a proven
+                        failure).
+                      - failed: a re-mint (e.g. taking "Show artifact") rejected
+                        while the previous url stayed in place (see useSandboxDoc),
+                        so blobUrl is still truthy and `failed` is now true. That
+                        is a known read failure -- could_not_render + RotateCw/
+                        "Retry". Without this the overlay's old `!failed` guard hid
+                        it AND the ternary kept showing the spent iframe, leaving
+                        no notice and no recovery at all.
+                    `failed` wins when both hold: a known failed mint is the more
+                    specific diagnosis. */}
+                {blobUrl && (failed || loadSilent) && (
+                  <div className="absolute top-0 left-0 right-0 z-10 p-6 flex flex-wrap items-center gap-3 text-text bg-bg-elevated/95 border-b border-border">
+                    {failed && !pending ? (
+                      // A rejected mint is a known read failure, rendered through
+                      // ErrorNotice per the errors-use-error-notice rule. The
+                      // RotateCw + "Retry" Btn below is the recovery.
+                      // No hand-off: the comments sidebar's draft (and an open
+                      // anchored-comment popover) share this page - the hand-off
+                      // navigates to the chat and unmounts the whole page, not
+                      // just this frame, so it would discard an in-progress
+                      // comment. The three sibling ErrorNotices on this page keep
+                      // the hand-off off for the same reason.
+                      <ErrorNotice
+                        variant="inline"
+                        testId="remote-artifact-silent-mint-error"
+                        className="min-w-0"
+                        message={i18nT('components.artifactBody.could_not_render')}
+                      />
+                    ) : (
+                      // Silent load (or a re-mint in flight): a frame that did
+                      // not report, NOT a proven failure, so cause-neutral copy
+                      // in a live region and an Eye action labeled by what it
+                      // does. An ErrorNotice here would assert a failure the
+                      // surface cannot verify.
+                      <span role="status" className="min-w-0">
+                        {i18nT(pending
+                          ? 'components.artifactBody.rendering'
+                          : 'components.artifactBody.no_longer_showing')}
+                      </span>
+                    )}
+                    <Btn onClick={retry} disabled={pending} className="flex items-center gap-1">
+                      {failed ? <RotateCw className="lucide-inline" /> : <Eye className="lucide-inline" />}
+                      {i18nT(failed
+                        ? 'components.artifactBody.retry'
+                        : 'components.artifactBody.show_artifact')}
+                    </Btn>
+                  </div>
+                )}
               </div>
             ) : (
               <div ref={mdScrollerRef} className="relative rounded-xl border border-border bg-card overflow-auto p-5" style={{ minHeight: 480, height: 'calc(100vh - 240px)' }}>

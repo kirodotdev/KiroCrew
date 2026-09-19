@@ -212,6 +212,28 @@ async def test_a_recovery_path_records_the_partial_reply_it_persists(tmp_path, e
 
 
 @pytest.mark.asyncio
+async def test_a_recovery_path_persists_a_glued_option_marker_reflowed(tmp_path):
+    """The interrupted body is rendered by the same grammar as a finished one.
+
+    ``_flush_segment`` reflows a glued ``[OPTIONS: ...]`` marker before persisting;
+    a turn that dies right after gluing one goes through ``_persist_partial_reply``
+    instead, and must not be the one path that stores the marker unrepaired.
+    """
+    from kiro_crew.acp.client import AcpProcessDied
+
+    state, slot = _state_and_slot(
+        tmp_path,
+        [AcpEvent(kind=EVENT_TEXT_CHUNK, text="Pick.\n[OPTIONS: A | B]Anytime.")],
+        raises=AcpProcessDied("backend failed mid-stream"),
+    )
+
+    await _run_chat(state, slot, "do the thing")
+
+    stored = [m["content"] for m in slot.messages if m.get("role") == "assistant"]
+    assert stored == ["Pick.\n[OPTIONS: A | B]\nAnytime."]
+
+
+@pytest.mark.asyncio
 async def test_a_failed_turn_closer_follows_the_text_it_closes_over(tmp_path):
     """The closer is the turn's boundary, so partial output belongs above it.
 

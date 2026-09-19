@@ -1,4 +1,4 @@
-import { safeSetItem } from '../utils/safeStorage'
+import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
 import { newerTs } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
@@ -62,6 +62,23 @@ interface DashboardState {
    *  unrelated change it carries is not thrown away. Entries leave when the
    *  request settles. */
   staleSlotFetches: Record<string, string[]>
+  /** Monotonic counter of single-slot row writes, bumped by `patchSlotRow` —
+   *  the one path by which a reducer may change a field of an existing row.
+   *  Ordering is all this needs to express, so a counter is used rather than a
+   *  clock: two writes in the same millisecond must still be distinguishable,
+   *  and no wall clock is involved in comparing them. */
+  slotWriteSeq: number
+  /** Per key, the value of `slotWriteSeq` at that row's last single-slot write.
+   *  Compared against a `fetchSlots` request's own mark to decide whether the
+   *  reply predates what is on screen for that key. Pruned with the rest of the
+   *  per-slot state when an authoritative frame drops the key. */
+  slotWrittenAt: Record<string, number>
+  /** Per in-flight `fetchSlots` requestId, the value of `slotWriteSeq` when the
+   *  request was dispatched. The server serialized its reply after that instant,
+   *  so any key whose `slotWrittenAt` is HIGHER was written locally while the
+   *  reply travelled and the reply is older than the screen for that key.
+   *  Entries leave when the request settles. */
+  slotFetchWriteMark: Record<string, number>
   // Slot keys in the order the session sidebar actually DISPLAYS them
   // (pinned-first + the user's sort, flat-view aware). Published by
   // ChatSidebar; consumed by the chat-jump / chat-cycle keyboard shortcuts so
@@ -152,7 +169,22 @@ const persistSharedUnread = (add: Record<string, string>, remove: readonly strin
       if (v === '') continue  // presence already recorded; never demote a watermark
       stored[k] = prev === '' ? v : (newerTs(prev, v) ?? prev)
     }
-    localStorage.setItem('mc-unread-shared', JSON.stringify(stored))
+    // safeSetItem, not a raw setItem: this write runs on the websocket
+    // onmessage -> dispatch -> re-render path, so a QuotaExceededError here
+    // would escape a React ErrorBoundary and white-screen the app. The helper
+    // reclaims a disposable tier and retries, so the record survives a full
+    // quota instead of being dropped beside reclaimable cache.
+    //
+    // The return value is load-bearing, and it is the one thing a plain
+    // conversion from the old raw call loses. The raw setItem THREW on a full
+    // quota, so the surrounding catch swallowed it and the projection write
+    // below never ran. A helper that reports the same failure by returning
+    // false does not stop the function, and the projection is strictly smaller
+    // than the record (keys only, no timestamps) — so on a quota it can free
+    // space and succeed where the record just failed, leaving the two persisted
+    // records disagreeing. restoreUnreadSince trusts the record; older tabs and
+    // the hub relay read the projection. Bail out before that can happen.
+    if (!safeSetItem('mc-unread-shared', JSON.stringify(stored))) return
     // Projection write bypasses safeSet's hub relay: the shared keys omit
     // this window's manual sentinels, so relaying their count would under-
     // report the hub switcher chip. The reducers relay the window's own
@@ -182,7 +214,7 @@ const clearSharedUnreadIfCovered = (slot: string, readTs: string | undefined): s
  *  would clobber siblings' reminder sets. */
 const persistManualSentinels = (unreadSince: Record<string, string>): void => {
   const manual = Object.fromEntries(Object.entries(unreadSince).filter(([, v]) => v === MANUAL_UNREAD))
-  try { sessionStorage.setItem('mc-unread-since', JSON.stringify(manual)) } catch { /* SecurityError / quota */ }
+  safeSetSessionItem('mc-unread-since', JSON.stringify(manual))
 }
 /** Boot restore for unreadSince (exported for tests): message watermarks
  *  from the ONE shared record, joined with this window's per-tab manual
@@ -204,7 +236,7 @@ export const restoreUnreadSince = (): Record<string, string> => {
       let legacy: string[]
       try { legacy = JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[] } catch { legacy = [] }
       for (const k of legacy) record[k] = ''
-      if (legacy.length > 0) localStorage.setItem('mc-unread-shared', JSON.stringify(record))
+      if (legacy.length > 0) safeSetItem('mc-unread-shared', JSON.stringify(record))
     }
     const since: Record<string, string> = {}
     for (const [k, v] of Object.entries(record)) if (v !== '') since[k] = v
@@ -254,6 +286,9 @@ const initialState: DashboardState = {
   closingSlots: {},
   slotFetchesInFlight: [],
   staleSlotFetches: {},
+  slotWriteSeq: 0,
+  slotWrittenAt: {},
+  slotFetchWriteMark: {},
   sidebarOrder: [],
   approvalMode: 'normal',
   channelTrusted: false,
@@ -349,6 +384,13 @@ const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale
   if (!evictStale) return
   for (const key of Object.keys(state.subagentRunning ?? {})) {
     if (!liveKeys.has(key)) evictSlotSubagents(state, key)
+  }
+  // Same guard, same reason: a write stamp for a key the authoritative list has
+  // dropped protects nothing, and keeping it would let the record grow for the
+  // tab's lifetime. Pruned only when the caller vouches for the list, so an HTTP
+  // reply that merely predates a newly created slot cannot strip its protection.
+  for (const stamped of Object.keys(state.slotWrittenAt ?? {})) {
+    if (!liveKeys.has(slotKeyOfStamp(stamped))) delete state.slotWrittenAt[stamped]
   }
 }
 
@@ -500,6 +542,7 @@ const settleSlotFetch = (state: DashboardState, requestId: string | undefined): 
   if (!requestId) return
   state.slotFetchesInFlight = (state.slotFetchesInFlight ?? []).filter(id => id !== requestId)
   if (state.staleSlotFetches?.[requestId]) delete state.staleSlotFetches[requestId]
+  if (state.slotFetchWriteMark?.[requestId] !== undefined) delete state.slotFetchWriteMark[requestId]
   const closing = state.closingSlots ?? {}
   for (const key of Object.keys(closing)) {
     const hold = closing[key]
@@ -508,6 +551,94 @@ const settleSlotFetch = (state: DashboardState, requestId: string | undefined): 
     if (hold.inFlightUntil === null && hold.graceFrames === 0 && hold.awaitingFetches.length === 0) delete closing[key]
   }
 }
+/** `slotWrittenAt` is indexed through this, never by the bare slot key.
+ *
+ *  The prefix means no key — however it was minted, and whatever it normalizes
+ *  to — can reach `Object.prototype`, so the record needs no `isUnsafeKey`
+ *  guard, and a slot keyed `__proto__` or `constructor` is protected like any
+ *  other instead of being skipped. That matters because the guard's whole value
+ *  is that it has no exceptions: one unstamped write is one row where #11149
+ *  still happens, and "unless the key is unusual" is not a property anyone can
+ *  hold in their head while adding the eleventh writer. */
+const stampKey = (slotKey: string): string => `k:${slotKey}`
+/** Inverse of `stampKey`, for the two places that read the record back. */
+const slotKeyOfStamp = (stamped: string): string => stamped.slice(2)
+
+/** Record that `key`'s row was just written by a single-slot writer.
+ *
+ *  Only the ORDER of these writes against a `fetchSlots` dispatch matters, so a
+ *  counter is the whole mechanism: no clock is read, and two writes in the same
+ *  millisecond stay distinguishable. */
+const stampSlotWrite = (state: DashboardState, key: string): void => {
+  const seq = (state.slotWriteSeq ?? 0) + 1
+  state.slotWriteSeq = seq
+  if (!state.slotWrittenAt) state.slotWrittenAt = {}
+  state.slotWrittenAt[stampKey(key)] = seq
+}
+
+/** A single-slot mutation. Returning `false` means the writer's own guard
+ *  declined and the row was left alone, so no write is stamped. */
+type RowPatch = (slot: ChatSlot) => boolean | void
+
+/** THE way a reducer changes a field of an EXISTING row of `state.slots`.
+ *
+ *  This exists to make the `fetchSlots` clobber UNREPRESENTABLE rather than
+ *  merely absent. A `/api/chat/slots` reply is serialized at the server and
+ *  applied by `applySlots` as a whole-list positional replace, so a single-slot
+ *  write that lands inside that round trip is overwritten by the older server
+ *  row (issue #11149). The remedy needs a per-slot recency signal, and the only
+ *  way a signal cannot be forgotten is for it to be the cost of reaching the
+ *  row at all: a writer added later inherits the protection by construction
+ *  instead of by review. `dashboardSlice.rowWriterChokepoint.test.ts` fails the
+ *  build if a reducer reaches a row any other way without saying, on the line,
+ *  that its lookup is read-only.
+ *
+ *  Deliberately NOT applied to membership changes (`addSlotOptimistic`,
+ *  `removeSlotOptimistic`): the reply's own membership is reconciled by the
+ *  close-tombstone machinery and by `applySlots`, and those two are already
+ *  ordered against each other. This guards row CONTENT. */
+const patchSlotRow = (state: DashboardState, key: string, patch: RowPatch): void => {
+  const slot = (state.slots ?? []).find(s => s.key === key) // row-write: via patchSlotRow
+  if (!slot) return
+  if (patch(slot) === false) return
+  stampSlotWrite(state, key)
+}
+
+/** `patchSlotRow` for a writer that is not keyed by slot: a `source_status`
+ *  delta names a URL and may touch every row that links it. Same stamp, so a
+ *  URL-keyed write is protected exactly like a key-keyed one. */
+const patchSlotRowsWhere = (state: DashboardState, patch: RowPatch): void => {
+  for (const slot of state.slots ?? []) { // row-write: via patchSlotRow
+    if (patch(slot) === false) continue
+    stampSlotWrite(state, slot.key)
+  }
+}
+
+/** Keys of `incoming` that a `fetchSlots` reply must not overwrite, because a
+ *  single-slot writer touched them after the request was dispatched — and the
+ *  server therefore serialized this reply without knowing about that write.
+ *
+ *  `mark` is the request's own `slotWriteSeq` snapshot; a key stamped ABOVE it
+ *  was written while the reply travelled. The comparison is deliberately
+ *  conservative at one end: a write that landed between the dispatch and the
+ *  server's serialization is counted too, because the client cannot tell those
+ *  two instants apart without a server-minted stamp on the reply. The cost of
+ *  that is bounded and self-correcting — the withheld row is re-delivered by the
+ *  next authoritative frame (a live push, or the 5 s Worlds poll) — whereas a
+ *  clobbered local write has no re-delivery path at all, which is the asymmetry
+ *  that decides the direction to err in. */
+const localWritesOutranking = (state: DashboardState, requestId: string | undefined): Set<string> => {
+  const outranked = new Set<string>()
+  if (requestId === undefined) return outranked
+  const mark = state.slotFetchWriteMark?.[requestId]
+  if (mark === undefined) return outranked
+  const writtenAt = state.slotWrittenAt ?? {}
+  for (const stamped of Object.keys(writtenAt)) {
+    if (writtenAt[stamped] > mark) outranked.add(slotKeyOfStamp(stamped))
+  }
+  return outranked
+}
+
 const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
   let next = incomingRows
   const closing = state.closingSlots ?? {}
@@ -649,8 +780,7 @@ const dashboardSlice = createSlice({
     // reconnect snapshot can never disagree about a slot's list. A delta for an
     // unknown slot is dropped — the next sseSlots push carries it anyway.
     sseTodoUpdate(state, action: PayloadAction<{ slot: string; todo: TodoList | null }>) {
-      const slot = (state.slots ?? []).find(s => s.key === action.payload.slot)
-      if (slot) slot.todo = action.payload.todo
+      patchSlotRow(state, action.payload.slot, slot => { slot.todo = action.payload.todo })
     },
     // Live MCP session-report delta, same merge discipline as sseTodoUpdate. A
     // null payload is meaningful and must be stored: it is what the gateway
@@ -661,8 +791,7 @@ const dashboardSlice = createSlice({
       state,
       action: PayloadAction<{ slot: string; mcp_report: McpSessionReport | null }>,
     ) {
-      const slot = (state.slots ?? []).find(s => s.key === action.payload.slot)
-      if (slot) slot.mcp_report = action.payload.mcp_report
+      patchSlotRow(state, action.payload.slot, slot => { slot.mcp_report = action.payload.mcp_report })
     },
     // Bump a slot's recency timestamps on live message activity so the sidebar
     // re-ranks immediately off the finer-grained chat_message stream (vs waiting
@@ -681,22 +810,26 @@ const dashboardSlice = createSlice({
     // the caller supplies ts (falling back to now at the dispatch site).
     touchSlotActivity(state, action: PayloadAction<{ key: string; ts: string; settled?: boolean }>) {
       const { key, ts, settled } = action.payload
-      const slot = state.slots.find(s => s.key === key)
-      if (!slot) return
-      const t = Date.parse(ts)
-      if (!slot.last_ts || Date.parse(slot.last_ts) <= t) slot.last_ts = ts
-      if (settled && (!slot.last_turn_ts || Date.parse(slot.last_turn_ts) <= t)) slot.last_turn_ts = ts
+      patchSlotRow(state, key, slot => {
+        const t = Date.parse(ts)
+        let moved = false
+        if (!slot.last_ts || Date.parse(slot.last_ts) <= t) { slot.last_ts = ts; moved = true }
+        if (settled && (!slot.last_turn_ts || Date.parse(slot.last_turn_ts) <= t)) { slot.last_turn_ts = ts; moved = true }
+        // A bump both guards rejected changed nothing, so it is not a write and
+        // must not outrank a reply: stamping it would withhold a server row on
+        // the strength of a no-op.
+        return moved
+      })
     },
     setChannelTrusted(state, action: PayloadAction<boolean>) { state.channelTrusted = action.payload },
     sseSlotTitle(state, action: PayloadAction<{ key: string; title: string }>) {
-      const slot = state.slots.find(s => s.key === action.payload.key)
-      if (slot) slot.title = action.payload.title
+      patchSlotRow(state, action.payload.key, slot => { slot.title = action.payload.title })
     },
     addSlotOptimistic(state, action: PayloadAction<ChatSlot>) {
       // A resume or fork under a key that was closing supersedes the tombstone:
       // the caller has a fresh server acknowledgement that the key is live.
       if (!isUnsafeKey(action.payload.key)) delete state.closingSlots?.[action.payload.key]
-      if (!state.slots.find(s => s.key === action.payload.key)) {
+      if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
         state.slots.push(action.payload)
       }
     },
@@ -725,8 +858,7 @@ const dashboardSlice = createSlice({
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     updateSlot(state, action: PayloadAction<Partial<ChatSlot> & { key: string }>) {
-      const slot = state.slots.find(s => s.key === action.payload.key)
-      if (slot) Object.assign(slot, action.payload)
+      patchSlotRow(state, action.payload.key, slot => { Object.assign(slot, action.payload) })
     },
     // Patch the sidebar's PR/MR chips (rendered from `slot.source_links`, the
     // Redux slots payload) from a `source_status` websocket delta. Without this
@@ -741,14 +873,18 @@ const dashboardSlice = createSlice({
     ) {
       const { url } = action.payload
       if (!url) return
-      for (const slot of state.slots) {
-        if (!slot.source_links) continue
+      patchSlotRowsWhere(state, slot => {
+        if (!slot.source_links) return false
+        let touched = false
         for (const link of slot.source_links) {
           if (link.url !== url) continue
-          if (action.payload.state !== undefined) link.state = action.payload.state
-          if (action.payload.ci !== undefined) link.ci = action.payload.ci
+          if (action.payload.state !== undefined) { link.state = action.payload.state; touched = true }
+          if (action.payload.ci !== undefined) { link.ci = action.payload.ci; touched = true }
         }
-      }
+        // A row that links no matching URL was not written, so it is not stamped
+        // — otherwise one delta would outrank a reply for every slot on screen.
+        return touched
+      })
     },
     /**
      * Patch ONE channel's link row, against whatever is in the store right now.
@@ -782,26 +918,26 @@ const dashboardSlice = createSlice({
         patch: Partial<NonNullable<ChatSlot['links']>[number]>
       }>,
     ) {
-      const slot = state.slots.find(s => s.key === action.payload.key)
-      if (!slot?.links) return
-      const wantOrigin = action.payload.origin
-      const row = slot.links.find(candidate => (
-        candidate.channel === action.payload.channel
-        && (wantOrigin === undefined || (candidate.direction === 'origin') === wantOrigin)
-      ))
-      if (row) Object.assign(row, action.payload.patch)
+      patchSlotRow(state, action.payload.key, slot => {
+        if (!slot.links) return false
+        const wantOrigin = action.payload.origin
+        const row = slot.links.find(candidate => (
+          candidate.channel === action.payload.channel
+          && (wantOrigin === undefined || (candidate.direction === 'origin') === wantOrigin)
+        ))
+        if (!row) return false
+        Object.assign(row, action.payload.patch)
+      })
     },
     updateSlotFolder(state, action: PayloadAction<{ key: string; folderId: string }>) {
-      const slot = state.slots.find(s => s.key === action.payload.key)
-      if (slot) slot.folder_id = action.payload.folderId || undefined
+      patchSlotRow(state, action.payload.key, slot => { slot.folder_id = action.payload.folderId || undefined })
     },
     updateSlotPin(state, action: PayloadAction<{ key: string; pinned: boolean }>) {
-      const slot = state.slots.find(s => s.key === action.payload.key)
-      if (slot) {
+      patchSlotRow(state, action.payload.key, slot => {
         slot.pinned = action.payload.pinned
         state.slotPinGenerations ??= {}
         state.slotPinGenerations[action.payload.key] = (state.slotPinGenerations[action.payload.key] ?? 0) + 1
-      }
+      })
     },
     triggerRefresh(state) { state.refreshTrigger += 1 },
     /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
@@ -822,7 +958,7 @@ const dashboardSlice = createSlice({
       // and strand badges against valid relays.
       const effectiveTs = typeof action.payload === 'string'
         ? undefined
-        : (ts ?? state.slots.find(s => s.key === slot)?.last_ts)
+        : (ts ?? state.slots.find(s => s.key === slot)?.last_ts) // row-read: reads a watermark, writes only unread state
       if (typeof action.payload !== 'string') {
         // ONE atomic shared write: badge presence and watermark are the same
         // record entry ('' = badge with no watermark, any relayed read
@@ -863,7 +999,7 @@ const dashboardSlice = createSlice({
       // lagging window (reconnect gap) cannot prove it saw the message a
       // sibling watermarked, so the shared badge survives for siblings and
       // reboots instead of being silently erased.
-      const _readTs = state.slots?.find(sl => sl.key === action.payload)?.last_ts
+      const _readTs = state.slots?.find(sl => sl.key === action.payload)?.last_ts // row-read: reads a watermark, writes only unread state
       clearSharedUnreadIfCovered(action.payload, _readTs)
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
@@ -937,19 +1073,19 @@ const dashboardSlice = createSlice({
       state.subagentText[slot][id] = cur.length > 4096 ? cur.slice(-4096) : cur
     },
     sseSlotColor(state, action: PayloadAction<{ key: string; color_index?: number | null; color_hex?: string | null }>) {
-      const slot = state.slots.find(s => s.key === action.payload.key)
-      if (!slot) return
-      // Mirror the backend's mutual exclusion: a non-null value for either
-      // field clears the other, so optimistic updates can't leave a slot
-      // carrying both.
-      if ('color_index' in action.payload) {
-        slot.color_index = action.payload.color_index ?? null
-        if (slot.color_index !== null) slot.color_hex = null
-      }
-      if ('color_hex' in action.payload) {
-        slot.color_hex = action.payload.color_hex ?? null
-        if (slot.color_hex !== null) slot.color_index = null
-      }
+      patchSlotRow(state, action.payload.key, slot => {
+        // Mirror the backend's mutual exclusion: a non-null value for either
+        // field clears the other, so optimistic updates can't leave a slot
+        // carrying both.
+        if ('color_index' in action.payload) {
+          slot.color_index = action.payload.color_index ?? null
+          if (slot.color_index !== null) slot.color_hex = null
+        }
+        if ('color_hex' in action.payload) {
+          slot.color_hex = action.payload.color_hex ?? null
+          if (slot.color_hex !== null) slot.color_index = null
+        }
+      })
     },
     setSessionDefaultColor(state, action: PayloadAction<DefaultColorSetting>) {
       state.sessionDefaultColor = action.payload
@@ -976,6 +1112,10 @@ const dashboardSlice = createSlice({
       .addCase(fetchSlots.pending, (state, action) => {
         if (!state.slotFetchesInFlight) state.slotFetchesInFlight = []
         state.slotFetchesInFlight.push(action.meta.requestId)
+        // The reply cannot describe anything that happens from here on, so this
+        // is the instant every later single-slot write outranks it from.
+        if (!state.slotFetchWriteMark) state.slotFetchWriteMark = {}
+        state.slotFetchWriteMark[action.meta.requestId] = state.slotWriteSeq ?? 0
       })
       .addCase(fetchSlots.fulfilled, (state, action) => {
         // A reply a confirmed close waited on past its cap is known to predate
@@ -988,16 +1128,35 @@ const dashboardSlice = createSlice({
         // `meta` is optional-chained for the hand-built actions in older tests.
         const requestId = action.meta?.requestId
         const staleKeys = requestId && state.slotsLoaded ? staleKeysForSlotFetch(state, requestId) : new Set<string>()
+        // Keys a single-slot writer touched while this request was in flight.
+        // The server serialized the reply before that write existed, so for
+        // THOSE keys the reply is older than the screen and its row is dropped
+        // in favour of the live one — which is the same substitution the stale
+        // close above performs, for the same reason, one level finer.
+        //
+        // Deliberately NOT gated on `slotsLoaded`, unlike the stale-close filter
+        // above. `sseConnected` clears that flag on every reconnect while
+        // LEAVING the rows in place, and reconnect is the one caller that
+        // refetches while the WS replay backlog writes into those same rows — so
+        // gating here would switch the guard off precisely where the race is
+        // most likely. A true cold boot needs no gate: `patchSlotRow` can only
+        // stamp a row it found, an empty list has none, and the set is therefore
+        // empty and the reply applies unfiltered.
+        const outranked = localWritesOutranking(state, requestId)
         // For a stale key the reply's row is pre-pop and is NOT trusted, but the
         // key may since have been recreated (a resume on another client): keep
         // whatever row is on screen for it rather than dropping the key, so a
         // live same-key session and its unread state survive the stale reply.
-        const current = staleKeys.size ? new Map((state.slots ?? []).map(s => [s.key, s])) : undefined
+        const current = staleKeys.size || outranked.size ? new Map((state.slots ?? []).map(s => [s.key, s])) : undefined
         const rows: ChatSlot[] = current
           ? action.payload.flatMap((s: ChatSlot) => {
-            if (!staleKeys.has(s.key)) return [s]
+            if (!staleKeys.has(s.key) && !outranked.has(s.key)) return [s]
             const live = current.get(s.key)
-            return live ? [live] : []
+            if (live) return [live]
+            // No live row: a stale close's key stays dropped. An outranked key
+            // always has one (the write had to find it), so this only ever
+            // resolves the stale-close case.
+            return staleKeys.has(s.key) ? [] : [s]
           })
           : action.payload
         // A reply in flight can be older than the live frames that arrived while
@@ -1029,7 +1188,7 @@ const dashboardSlice = createSlice({
         (state, action) => {
           // A same-key recreation supersedes any tombstone (idempotent otherwise).
           if (!isUnsafeKey(action.payload.key)) delete state.closingSlots?.[action.payload.key]
-          if (!state.slots.find(s => s.key === action.payload.key)) {
+          if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
             state.slots.push(action.payload)
           }
         },

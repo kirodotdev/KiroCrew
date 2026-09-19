@@ -6,7 +6,7 @@ import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuSeparator,
 } from './ui/dropdown-menu'
 import ErrorNotice from './ErrorNotice'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
 import {
   OPAQUE_ROLE_KEYS, PREVIEW_ANNOTATE_EVENT, annotationScreenshotFile, annotationStamp, describeAnnotationTarget,
   type AnnotationItem, type PreviewAnnotateDetail,
@@ -172,13 +172,14 @@ function detachAll(prev: AnnotateMirror): AnnotateMirror {
   }
 }
 function saveAnnotateMirrors(mirrors: AnnotateMirrors): void {
-  try {
-    const kept = Object.fromEntries(Object.entries(mirrors).filter(([, m]) => m.live || m.targets.length || m.retained.length || m.editing))
-    if (Object.keys(kept).length) sessionStorage.setItem(ANNOTATE_STORE_KEY, JSON.stringify(kept))
-    else sessionStorage.removeItem(ANNOTATE_STORE_KEY)
-  } catch {
-    // Storage unavailable or full: the in-memory map still covers this tab.
-  }
+  const kept = Object.fromEntries(Object.entries(mirrors).filter(([, m]) => m.live || m.targets.length || m.retained.length || m.editing))
+  // The WRITE goes through the helper: a full quota would otherwise raise
+  // QuotaExceededError on the render path. The delete stays a plain call —
+  // removing a key frees space rather than needing it, so it is not the quota
+  // failure mode this migration is about (it keeps its own guard for a denied
+  // store). Either way the in-memory map still covers this tab.
+  if (Object.keys(kept).length) safeSetSessionItem(ANNOTATE_STORE_KEY, JSON.stringify(kept))
+  else { try { sessionStorage.removeItem(ANNOTATE_STORE_KEY) } catch { /* storage unavailable */ } }
 }
 
 type AnnotateResult = Awaited<ReturnType<NonNullable<BrowserAPI['annotate']>>>

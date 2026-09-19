@@ -191,8 +191,19 @@ def _server_source(server: dict[str, Any]) -> dict[str, Any] | None:
 class KasMcpReadiness:
     """One activation's required servers; global and other-session state cannot satisfy it.
 
-    Status and tool tags are full snapshots. Tags establish exposure, not the
-    callable spelling: ``@server/tool`` need not be the native function ID.
+    Status and tool tags are full snapshots. Exposure -- the model can actually
+    reach the connected server's tools -- is established by EITHER a non-empty
+    ``tools`` catalog on the server's own ``connected`` status entry OR an
+    ``@server/tool`` tag in the ``_kiro/tools/didChange`` snapshot. Neither is
+    the callable spelling: ``@server/tool`` need not be the native function ID.
+
+    Both are accepted because released kiro-cli versions differ on which one
+    they send. Captured 2.18.0 / 2.20.0 emit both the catalog and the tags.
+    Captured 2.22.0 (KAS 0.66.0) still lists the full catalog on the connected
+    entry but its ``didChange`` snapshot carries only ``builtin`` tags -- no MCP
+    tag ever arrives, with or without ``tool_search`` in the agent's tools. A
+    barrier that took tags as the only exposure evidence timed out every
+    session start on that release.
 
     ``injected`` names the required servers Crew put in the session-level
     ``mcpServers`` array itself (as opposed to the active agent's block). It is
@@ -207,8 +218,18 @@ class KasMcpReadiness:
     injected: frozenset[str] = frozenset()
     states: dict[str, str] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
-    advertised: set[str] = field(default_factory=set)
+    #: Exposure evidence, kept per source because each snapshot is authoritative
+    #: only for its own kind: a status snapshot replaces the catalog evidence,
+    #: a tag snapshot replaces the tag evidence, and neither may retract the
+    #: other's. Read the union through :attr:`advertised`.
+    advertised_by_catalog: set[str] = field(default_factory=set)
+    advertised_by_tag: set[str] = field(default_factory=set)
     intentionally_hidden: set[str] = field(default_factory=set)
+
+    @property
+    def advertised(self) -> set[str]:
+        """Required servers with exposure evidence from either snapshot kind."""
+        return self.advertised_by_catalog | self.advertised_by_tag
 
     def _needs_exposure(self, name: str, server: dict[str, Any]) -> bool:
         """Do not demand tags for tools the active agent deliberately hides.
@@ -256,6 +277,9 @@ class KasMcpReadiness:
             self.errors.clear()
             self.intentionally_hidden.clear()
             entries = [server for server in servers if isinstance(server, dict)]
+            # Servers whose connected entry carries its catalog: fresh exposure
+            # evidence from this very snapshot (see the class docstring).
+            catalogued: set[str] = set()
             # Whether this BACKEND speaks provenance at all is read off the whole
             # snapshot, not one entry: a backend that does (2.20.0 stamps every
             # entry, connecting included) and leaves one entry unstamped is
@@ -289,20 +313,31 @@ class KasMcpReadiness:
                 self.states[name] = state
                 if not self._needs_exposure(name, server):
                     self.intentionally_hidden.add(name)
+                catalog = server.get("tools")
+                if state == "connected" and isinstance(catalog, list) and catalog:
+                    catalogued.add(name)
                 error = server.get("errorMessage")
                 if isinstance(error, str):
                     self.errors[name] = sanitize_sink_text(error, _ERROR_CAP)
                 if state == STATE_CONNECTED_WITHOUT_PROVENANCE:
                     self.errors[name] = _PROVENANCE_LIMIT
-            # A reconnect must obtain fresh catalog evidence.
-            self.advertised.intersection_update(
-                name for name in self.required if self.states.get(name) == "connected"
-            )
+            # A reconnect must obtain fresh exposure evidence of either kind; a
+            # connected entry that carries its catalog in this snapshot IS that
+            # evidence.
+            connected = {name for name in self.required if self.states.get(name) == "connected"}
+            self.advertised_by_catalog.intersection_update(connected)
+            self.advertised_by_catalog.update(catalogued)
+            self.advertised_by_tag.intersection_update(connected)
         elif msg.is_method(METHOD_KAS_TOOLS_CHANGED):
             tags = params.get("tags")
             if not isinstance(tags, list):
                 return
-            self.advertised = {
+            # A full snapshot: it replaces the TAG evidence, so a tag that
+            # disappears while the server stays connected is retracted as
+            # before. It never touches the catalog evidence -- on a release whose
+            # snapshot lists only builtin tags (2.22.0) that would clear it on the
+            # very next frame and reopen the timeout this path was built to end.
+            self.advertised_by_tag = {
                 name
                 for name in self.required
                 if any(

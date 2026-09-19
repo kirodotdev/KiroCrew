@@ -7360,16 +7360,17 @@
         "feature_flags": [
           "mc-dev-mode"
         ],
-        "notes": "Shows the fake ACP backend in the nightly harness. READ-ONLY: do not click the backend switch — changing the binding restarts sessions and detaches the harness's fake ACP backend. The capability card is collapsed per harness; opening a card's disclosure is read-only and safe, unlike the switch."
+        "notes": "Shows the fake ACP backend in the nightly harness. The panel is a LIST of harnesses and a DETAIL for the highlighted one. Clicking a row only changes which detail is shown and is READ-ONLY and safe -- it is the intended way to read a harness. Do NOT click **Use <name>**: that is the switch, and changing the binding restarts sessions and detaches the harness's fake ACP backend. **Check again** is safe to press but it clears this gateway's cached resolution for that one harness, so prefer not to. The capability list is already open (it needs no disclosure now that one card renders at a time); only the operator notes are behind one, and opening that is read-only."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "Read-only status view is a useful harness confidence check (asserts the fake backend is what is live), and it now also carries the per-harness capability card -- available / not-available capability lines, the always-visible tool-approval and security lines, and a described row for a harness this build does not offer -- all projected from capability membership. one reader marked the record excluded because switching backends breaks the harness; that action is scoped out here rather than dropping the view, so the tier is nightly.",
+      "rationale": "Read-only status view is a useful harness confidence check (asserts the fake backend is what is live), and it now also carries the capability card for the highlighted harness -- available / not-available capability lines, the always-visible tool-approval and security lines, collapsed operator notes, and a row for a harness this build does not offer -- all projected from capability membership. Highlighting a row is not selecting it, so reading every harness's card is now a read-only walk; only the Use button switches. one reader marked the record excluded because switching backends breaks the harness; that action is scoped out here rather than dropping the view, so the tier is nightly.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/pages/developer/AgentBackendTab.tsx",
         "src/kiro_crew/agent_sdk/backend_cards.py",
-        "website/src/pages/DeveloperPage.tsx"
+        "website/src/pages/DeveloperPage.tsx",
+        "src/kiro_crew/agent_sdk/backend_install.py"
       ],
       "priority": "P2",
       "merged_from": [

@@ -608,7 +608,14 @@ class TestLivenessIsNegotiated:
         # does not exec, and a text search would read those very words as the
         # violation -- so comments are tokenized away before the check.
         assert "fallback_exec" not in _strip_comments(tail)
-        assert "_reconnect(" in tail, (
+        assert "_reconnect_while_draining(" in tail, (
             "the mid-bridge degrade path no longer attempts a reconnect, so a "
             "broker restart again strips an attached session's servers for good"
+        )
+        # Through the PAIRED entry point specifically: reconnecting with nothing
+        # reading kiro-cli's stream leaves a request issued in that window unread
+        # for the whole budget (see test_stub_reconnect_queued_calls.py).
+        assert "_reconnect(" not in _strip_comments(tail), (
+            "the reconnect must be reached through _reconnect_while_draining so "
+            "queued calls are answered rather than held"
         )

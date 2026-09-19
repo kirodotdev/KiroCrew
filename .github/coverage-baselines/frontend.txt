@@ -55,7 +55,6 @@ src/apps/personal-shopper/api.ts 5.3   # 1/19
 src/apps/pptx-maker/LibraryPanel.tsx 39.6   # 42/106
 src/apps/pptx-maker/api.ts 3.5   # 2/57
 src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
-src/apps/workflows/WorkflowRunTree.tsx 3.4   # 1/29
 src/apps/workflows/WorkflowSourcePanel.tsx 4.7   # 2/43
 src/components/AddJobSplitButton.tsx 66.7   # 2/3
 src/components/AppIcon.tsx 51.1   # 24/47

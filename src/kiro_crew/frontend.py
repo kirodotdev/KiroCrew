@@ -68,6 +68,19 @@ _SIBLING_DIR_NAME = "KiroCrewWebsite"
 # `npm ci` is a separate raw step this does not bound at all.
 _INSTALL_TIMEOUT = 300
 _BUILD_TIMEOUT = 900
+#: Allowance for the copy/swap that follows the install and build inside the same
+#: staging-lock holder. Generous relative to a tree copy so a loaded host does
+#: not turn a working holder into a refused contender.
+_STAGING_SWAP_ALLOWANCE = 120
+#: How long a contender waits for ``_staging_lock``. The holder legitimately
+#: spans an ``npm ci``, an ``npm run build`` and the copy/swap, so the wait must
+#: outlast their sum: ``platform_compat``'s default ceiling is sized for a
+#: sub-second critical section and would refuse a contender while the holder is
+#: still working rather than because it is stuck. Derived from the bounds it must
+#: cover so the two cannot drift apart.
+_STAGING_LOCK_TIMEOUT = float(
+    _INSTALL_TIMEOUT + _BUILD_TIMEOUT + _STAGING_SWAP_ALLOWANCE
+)
 #: How long to wait for a killed install tree to actually exit before restoring
 #: over it. Short by design: the group has already been SIGKILLed, so this only
 #: covers reaping, and waiting longer would delay a recovery that is already late.
@@ -320,8 +333,14 @@ def _staging_lock(static_parent: Path) -> Iterator[None]:
         # required=True: Windows msvcrt acquisition failures are otherwise
         # swallowed, and running without exclusion is the very outage this
         # lock exists to prevent.
+        # timeout: this holder runs an install and a build, far past the default
+        # ceiling, so a contender must wait for the work rather than be refused
+        # while it is still in progress.
         with platform_compat.file_lock(
-            lock_fh.fileno(), exclusive=True, required=True
+            lock_fh.fileno(),
+            exclusive=True,
+            required=True,
+            timeout=_STAGING_LOCK_TIMEOUT,
         ):
             yield
 

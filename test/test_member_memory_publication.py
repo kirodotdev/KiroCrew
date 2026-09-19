@@ -107,13 +107,32 @@ async def test_dashboard_publication_failure_retires_only_new_allocation_and_all
     assert json.loads(response.text)["memory_store"] != failed_stores[0]
 
 
+async def _wait_for_publication_worker(task, entered):
+    """Wait for the tested worker phase, surfacing an earlier response or error."""
+    ready = asyncio.create_task(entered.wait())
+    try:
+        settled, _ = await asyncio.wait(
+            {task, ready}, timeout=5.0, return_when=asyncio.FIRST_COMPLETED
+        )
+        if task in settled:
+            response = task.result()
+            raise AssertionError(
+                f"request ended before the worker handshake: {response.status} {response.text}"
+            )
+        assert ready in settled, "request did not reach the worker"
+    finally:
+        ready.cancel()
+        await asyncio.gather(ready, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["create", "opt_in"])
 @pytest.mark.parametrize("phase", ["provision", "published"])
 async def test_cancelled_dashboard_request_drains_worker_before_deciding_retirement(
     owner_gateway, monkeypatch, action, phase
 ):
-    entered = threading.Event()
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
     release = threading.Event()
     allocated = []
     original_provision = handlers.provision_member_memory
@@ -124,21 +143,21 @@ async def test_cancelled_dashboard_request_drains_worker_before_deciding_retirem
         allocated.append((store, name))
         (_named_store_dir(store) / "evidence.txt").write_bytes(b"retained allocation")
         if phase == "provision":
-            entered.set()
+            loop.call_soon_threadsafe(entered.set)
             assert release.wait(5), "test did not release allocation worker"
         return store
 
     def publish(*args, **kwargs):
         original_publish(*args, **kwargs)
         if phase == "published":
-            entered.set()
+            loop.call_soon_threadsafe(entered.set)
             assert release.wait(5), "test did not release publication worker"
 
     monkeypatch.setattr(handlers, "provision_member_memory", provision)
     monkeypatch.setattr(handlers, "persist_member_config", publish)
     task = asyncio.create_task(_dispatch(_request(monkeypatch, action), action))
     try:
-        assert await asyncio.to_thread(entered.wait, 5), "request did not reach the worker"
+        await _wait_for_publication_worker(task, entered)
         task.cancel()
     finally:
         release.set()
@@ -218,8 +237,8 @@ def test_cli_publication_failure_keeps_legacy_binding_and_retires_new_store(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["failed_write", "concurrent_member", "cleanup_refused"])
-async def test_sync_retires_unpublished_allocations_after_failed_or_skipped_publication(
+@pytest.mark.parametrize("outcome", ["failed_write", "concurrent_member"])
+async def test_sync_never_allocates_private_memory_on_failed_or_skipped_publication(
     owner_gateway, monkeypatch, outcome
 ):
     info = AgentInfo(
@@ -230,50 +249,69 @@ async def test_sync_retires_unpublished_allocations_after_failed_or_skipped_publ
         source="package",
     )
     monkeypatch.setattr(handlers, "list_agents", lambda: [info])
-    allocated = []
-    original_provision = handlers.provision_member_memory
-
-    def provision(cfg, name):
-        store = original_provision(cfg, name)
-        allocated.append(store)
-        (_named_store_dir(store) / "evidence.txt").write_bytes(b"retained allocation")
-        return store
+    provision = Mock(side_effect=AssertionError("discovery must not allocate private memory"))
+    monkeypatch.setattr(handlers, "provision_member_memory", provision)
+    before = await asyncio.to_thread(KiroCrewConfig.load)
 
     def write(*args, **kwargs):
         if outcome == "failed_write":
             raise OSError("sync publication refused")
 
         def concurrent(doc):
-            doc["agents"]["new-member"] = {"kiro_agent": "kirocrew", "memory_store": "default"}
+            doc["agents"]["new-member"] = {
+                "kiro_agent": "kirocrew",
+                "memory_store": "default",
+                "description": "concurrent owner edit",
+            }
             return doc
 
         update_config_locked(mutate=concurrent)
         return update_config_locked(*args, **kwargs)
 
-    monkeypatch.setattr(handlers, "provision_member_memory", provision)
     monkeypatch.setattr(handlers, "update_config_locked", write)
-    if outcome == "cleanup_refused":
-        cleanup = Mock(side_effect=OSError("retirement unavailable"))
-        monkeypatch.setattr(handlers, "retire_unpublished_member_memory_store", cleanup)
     request = make_mocked_request("POST", "/api/agents/sync", app=web.Application())
     response = await handlers.api_kirocrew_agents_sync(request)
     assert response.status == (200 if outcome == "concurrent_member" else 500)
-    assert len(allocated) == 1
-    if outcome == "cleanup_refused":
-        assert json.loads(response.text)["ok"] is False
-        assert cleanup.call_count == 2
-        await asyncio.to_thread(
-            require_member_memory_not_archived, allocated[0], expected_owner="new-member"
-        )
-        retained = await asyncio.to_thread(
-            (_named_store_dir(allocated[0]) / "evidence.txt").read_bytes
-        )
-        assert retained == b"retained allocation"
-        return
-    await asyncio.to_thread(_retained_and_archived, allocated[0], "new-member")
+    provision.assert_not_called()
     loaded = await asyncio.to_thread(KiroCrewConfig.load)
+    assert loaded.memory_stores == before.memory_stores
     assert await asyncio.to_thread(require_member_memory_store, loaded, "legacy") == "default"
     if outcome == "concurrent_member":
+        assert loaded.agents["new-member"].description == "concurrent owner edit"
+        assert loaded.agents["new-member"].kiro_agent == "kirocrew"
         assert (
             await asyncio.to_thread(require_member_memory_store, loaded, "new-member") == "default"
         )
+    else:
+        assert "new-member" not in loaded.agents
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["response", "exception", "handshake"])
+async def test_publication_worker_wait_observes_request_completion(outcome):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def request():
+        if outcome == "response":
+            return web.json_response({"error": "setup refused"}, status=409)
+        if outcome == "exception":
+            raise OSError("publication setup failed")
+        entered.set()
+        await release.wait()
+        return web.json_response({"ok": True})
+
+    task = asyncio.create_task(request())
+    try:
+        if outcome == "response":
+            with pytest.raises(AssertionError, match="409.*setup refused"):
+                await _wait_for_publication_worker(task, entered)
+        elif outcome == "exception":
+            with pytest.raises(OSError, match="publication setup failed"):
+                await _wait_for_publication_worker(task, entered)
+        else:
+            await _wait_for_publication_worker(task, entered)
+            assert not task.done()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)

@@ -418,6 +418,10 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
         "test_platform_compat_coverage",
         "test_config_rmw_preserves_settings",
         "test_spawn_audit",
+        # These tests validate the descriptor after publication: replacing the
+        # lockdown with a no-op would test the runner's default ACL instead.
+        "test_member_binding_reclaim",
+        "test_member_process_records_windows",
     ):
         yield
         return

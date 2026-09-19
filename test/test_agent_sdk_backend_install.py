@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from unittest.mock import MagicMock
 
 import pytest
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -741,7 +743,19 @@ class TestProbeBackendsCoverage:
 # ── The endpoint ──
 
 
-def _request(*, app: str = "", user: str = "owner-1", owner: str = "owner-1"):
+#: ``_request``'s default body: asking for JSON RAISES, which is what aiohttp does
+#: for a request that carries none or carries something else. Distinct from a body
+#: of ``None``, which is valid JSON and a different branch of the handler.
+_NO_JSON = object()
+
+
+def _request(
+    *,
+    app: str = "",
+    user: str = "owner-1",
+    owner: str = "owner-1",
+    json_body: object = _NO_JSON,
+):
     """A request shaped like a real dashboard call, for the owner predicate.
 
     ``_is_dashboard_owner`` requires ``request["app"]`` present-and-EMPTY and
@@ -749,6 +763,10 @@ def _request(*, app: str = "", user: str = "owner-1", owner: str = "owner-1"):
     ``get`` returns truthy stubs) is refused rather than admitted -- the stub has
     to answer those two keys precisely or the test lands on the gate instead of
     its subject.
+
+    ``json_body`` is what ``await request.json()`` answers. Left unset, it raises
+    the way aiohttp does for a body that is absent or not JSON -- so a case has to
+    OPT IN to being well-formed, and the GET's own cases keep the shape they had.
     """
     req = MagicMock()
     req.path = "/api/acp-backends"
@@ -757,6 +775,13 @@ def _request(*, app: str = "", user: str = "owner-1", owner: str = "owner-1"):
     state = MagicMock()
     state.owner_id = owner
     req.app = {"state": state}
+
+    async def _json():
+        if json_body is _NO_JSON:
+            raise ValueError("not json")
+        return json_body
+
+    req.json = _json
     return req
 
 
@@ -946,6 +971,662 @@ class TestEndpointPayloadShape:
         assert by_policy["kas"]["installed"] == "unknown"
 
 
+class TestForgetProbe:
+    """Per-backend eviction, and the one delegation it has to know about."""
+
+    def test_it_drops_only_the_named_backend(self, monkeypatch):
+        """One button must not cost a re-resolve on seven other harnesses.
+
+        Two of the probes shell out or walk the filesystem, so a wholesale clear
+        would turn one re-check into that much work on the next poll.
+        """
+        _stub_resolvers(monkeypatch)
+        probe.probe_backend(ACP_BACKEND_CLAUDE)
+        probe.probe_backend(ACP_BACKEND_CODEX)
+        assert probe._cached(ACP_BACKEND_CLAUDE) is not None
+
+        probe.forget_probe(ACP_BACKEND_CLAUDE)
+
+        assert probe._cached(ACP_BACKEND_CLAUDE) is None
+        assert probe._cached(ACP_BACKEND_CODEX) is not None
+
+    def test_forgetting_kas_also_forgets_the_verdict_its_probe_reads(self, monkeypatch):
+        """``_probe_kas`` answers by calling ``probe_backend`` for kiro.
+
+        So dropping only the kas entry would rebuild it from kiro's still-cached
+        one and report the very verdict it was asked to re-take. The delegation is
+        declared beside the probes for exactly this reason: a caller that had to
+        know it would be a second place that can forget.
+        """
+        _stub_resolvers(monkeypatch)
+        probe.probe_backend(ACP_BACKEND_KAS)
+        assert probe._cached(ACP_BACKEND_KAS) is not None
+        assert probe._cached(ACP_BACKEND_KIRO) is not None
+
+        probe.forget_probe(ACP_BACKEND_KAS)
+
+        assert probe._cached(ACP_BACKEND_KAS) is None
+        assert probe._cached(ACP_BACKEND_KIRO) is None
+
+    def test_forgetting_kiro_also_forgets_the_copy_its_verdict_was_copied_into(self, monkeypatch):
+        """The coupling runs BOTH ways, because kas's entry is a copy of kiro's.
+
+        ``_probe_kas`` answers by calling ``probe_backend`` for kiro, so a re-check on
+        the kiro row that dropped only kiro leaves kas holding the pre-install copy --
+        the kiro row reads ready and the kas row still says missing, with a dead
+        switch, for the rest of the TTL. That is a re-check reporting one answer for a
+        machine it just measured and a different one for the same binary.
+        """
+        _stub_resolvers(monkeypatch)
+        probe.probe_backend(ACP_BACKEND_KAS)
+        assert probe._cached(ACP_BACKEND_KIRO) is not None
+        assert probe._cached(ACP_BACKEND_KAS) is not None
+
+        probe.forget_probe(ACP_BACKEND_KIRO)
+
+        assert probe._cached(ACP_BACKEND_KIRO) is None
+        assert probe._cached(ACP_BACKEND_KAS) is None
+
+    def test_forgetting_an_unprobed_backend_is_silent(self):
+        probe.forget_probe("never-probed")
+
+
+class TestEvictionOutranksAProbeAlreadyRunning:
+    """A probe that started before an eviction must not land its answer after it.
+
+    The lock is released while a probe resolves, and the dashboard polls this module
+    while the re-check button evicts -- so the poll's probe and the operator's
+    eviction genuinely overlap. Without a generation the poll's pre-install verdict
+    is written on top of the fresh one and every later reader is told the harness is
+    still missing until the TTL runs out, which is the state the button exists to
+    leave behind.
+    """
+
+    @staticmethod
+    def _blocking_probe(monkeypatch, backend, state):
+        """Install a probe for *backend* that parks until it is released.
+
+        Returns ``(entered, release)`` events: the caller waits on ``entered`` to
+        know the probe is inside the resolve with the lock released, which is the
+        only window the race exists in -- so nothing here is a timing guess.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _probe():
+            entered.set()
+            assert release.wait(timeout=10)
+            return state
+
+        monkeypatch.setitem(probe._PROBES, backend, _probe)
+        return entered, release
+
+    def test_a_probe_that_raced_an_eviction_does_not_store_its_verdict(self, monkeypatch):
+        stale = probe.BackendInstallState(
+            ACP_BACKEND_CLAUDE, ACP_BACKEND_CLAUDE, probe.MISSING, ("claude-code",)
+        )
+        entered, release = self._blocking_probe(monkeypatch, ACP_BACKEND_CLAUDE, stale)
+
+        answers: list[probe.BackendInstallState] = []
+        worker = threading.Thread(
+            target=lambda: answers.append(probe.probe_backend(ACP_BACKEND_CLAUDE))
+        )
+        worker.start()
+        assert entered.wait(timeout=10)
+
+        # The operator's re-check, mid-probe.
+        probe.forget_probe(ACP_BACKEND_CLAUDE)
+        release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+
+        # Its own caller still gets the answer it resolved: that verdict is honest
+        # about the machine it looked at, and discarding it would leave that caller
+        # with nothing.
+        assert answers == [stale]
+        # Nobody else does. The next reader re-resolves.
+        assert probe._cached(ACP_BACKEND_CLAUDE) is None
+
+    def test_a_probe_that_raced_nothing_still_stores_its_verdict(self, monkeypatch):
+        """The fence must not cost the caching the polling path depends on."""
+        fresh = probe.BackendInstallState(ACP_BACKEND_CLAUDE, ACP_BACKEND_CLAUDE, probe.INSTALLED)
+        entered, release = self._blocking_probe(monkeypatch, ACP_BACKEND_CLAUDE, fresh)
+
+        worker = threading.Thread(target=lambda: probe.probe_backend(ACP_BACKEND_CLAUDE))
+        worker.start()
+        assert entered.wait(timeout=10)
+        release.set()
+        worker.join(timeout=10)
+
+        assert probe._cached(ACP_BACKEND_CLAUDE) == fresh
+
+    def test_a_wholesale_clear_also_outranks_a_first_ever_probe(self, monkeypatch):
+        """The id with no entry to drop is the one a clear could miss.
+
+        A probe already in flight holds no cache entry, so a clear that bumped only
+        the ids it can see would leave that call free to write a pre-clear verdict.
+        """
+        stale = probe.BackendInstallState(
+            ACP_BACKEND_CODEX, ACP_BACKEND_CODEX, probe.MISSING, ("codex-acp",)
+        )
+        entered, release = self._blocking_probe(monkeypatch, ACP_BACKEND_CODEX, stale)
+
+        worker = threading.Thread(target=lambda: probe.probe_backend(ACP_BACKEND_CODEX))
+        worker.start()
+        assert entered.wait(timeout=10)
+
+        probe.clear_probe_cache()
+        release.set()
+        worker.join(timeout=10)
+
+        assert probe._cached(ACP_BACKEND_CODEX) is None
+
+    def test_forgetting_kiro_fences_an_in_flight_kas_probe(self, monkeypatch):
+        """The bump travels to the copy too, not only the pop.
+
+        An in-flight kas probe holds kiro's pre-install verdict in hand, so without
+        the bump on kas it writes that copy back after the kiro row was cleared.
+        """
+        stale = probe.BackendInstallState(
+            ACP_BACKEND_KAS, ACP_BACKEND_KAS, probe.MISSING, ("kiro-cli",)
+        )
+        entered, release = self._blocking_probe(monkeypatch, ACP_BACKEND_KAS, stale)
+
+        worker = threading.Thread(target=lambda: probe.probe_backend(ACP_BACKEND_KAS))
+        worker.start()
+        assert entered.wait(timeout=10)
+
+        probe.forget_probe(ACP_BACKEND_KIRO)
+        release.set()
+        worker.join(timeout=10)
+
+        assert probe._cached(ACP_BACKEND_KAS) is None
+
+    def test_forgetting_kas_fences_the_kiro_probe_its_own_probe_reads(self, monkeypatch):
+        """The delegation is fenced where it is dropped, not only dropped.
+
+        ``forget_probe(kas)`` drops kiro's entry because ``_probe_kas`` answers from
+        it. An in-flight kiro probe would rebuild exactly that entry, so the bump
+        has to travel to the same second id the pop does.
+        """
+        stale = probe.BackendInstallState(
+            ACP_BACKEND_KIRO, ACP_BACKEND_KIRO, probe.MISSING, ("kiro-cli",)
+        )
+        entered, release = self._blocking_probe(monkeypatch, ACP_BACKEND_KIRO, stale)
+
+        worker = threading.Thread(target=lambda: probe.probe_backend(ACP_BACKEND_KIRO))
+        worker.start()
+        assert entered.wait(timeout=10)
+
+        probe.forget_probe(ACP_BACKEND_KAS)
+        release.set()
+        worker.join(timeout=10)
+
+        assert probe._cached(ACP_BACKEND_KIRO) is None
+
+
+class TestForgetCachedResolution:
+    """The driver seam that makes the re-check REAL rather than a second read.
+
+    Its counterparts ``*_cached_negative`` only ever CONSULT the spawn path's cache,
+    and the rule behind that is about the verb: a GET is replayable and unattributed,
+    so a side effect inside one is a mutation nobody asked for. An owner-gated audited
+    POST is the request that did.
+    """
+
+    def test_it_returns_the_claude_adapter_cache_to_unresolved(self, monkeypatch):
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", (None, "/usr/bin"), raising=False)
+        driver.forget_cached_resolution(ACP_BACKEND_CLAUDE)
+        assert client._claude_acp_argv_cache is client._UNRESOLVED
+
+    def test_it_returns_the_codex_adapter_cache_to_unresolved(self, monkeypatch):
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", (None, "/usr/bin"), raising=False)
+        driver.forget_cached_resolution(ACP_BACKEND_CODEX)
+        assert client._codex_acp_argv_cache is client._UNRESOLVED
+
+    def test_it_clears_BOTH_pi_caches(self, monkeypatch):
+        """Either half cached absent kills the next spawn, so both have to go."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_pi_acp_argv_cache", (None, "/usr/bin"), raising=False)
+        monkeypatch.setattr(client, "_pi_bin_cache", (None, "/usr/bin"), raising=False)
+        driver.forget_cached_resolution(ACP_BACKEND_PI)
+        assert client._pi_acp_argv_cache is client._UNRESOLVED
+        assert client._pi_bin_cache is client._UNRESOLVED
+
+    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_SELF_SERVED_ACP))
+    def test_it_drops_one_self_served_key_and_keeps_the_siblings(self, backend, monkeypatch):
+        """These harnesses share ONE dict, so forgetting one is a key deletion."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        caches = {other: _ABSENT for other in ACP_BACKENDS_SELF_SERVED_ACP}
+        monkeypatch.setattr(client, "_self_served_bin_caches", caches)
+        driver.forget_cached_resolution(backend)
+        assert backend not in caches
+        for other in ACP_BACKENDS_SELF_SERVED_ACP - {backend}:
+            assert other in caches
+
+    def test_clearing_one_adapter_leaves_the_other_alone(self, monkeypatch):
+        """A re-check of codex must not make the next claude spawn re-resolve."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        kept = (None, "/usr/bin")
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", kept, raising=False)
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", (None, "/usr/bin"), raising=False)
+        driver.forget_cached_resolution(ACP_BACKEND_CODEX)
+        assert client._claude_acp_argv_cache is kept
+
+    def test_a_harness_with_no_cache_of_its_own_is_silent(self, monkeypatch):
+        """kiro resolves per spawn and KAS shares its answer: nothing to forget."""
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(client, "_self_served_bin_caches", {})
+        driver.forget_cached_resolution(ACP_BACKEND_KIRO)
+        driver.forget_cached_resolution(ACP_BACKEND_KAS)
+
+    def test_the_GET_still_never_clears_anything(self, monkeypatch):
+        """The seams' own rule, unchanged by the POST existing.
+
+        A read that mutated would be the thing those docstrings forbid, and the
+        endpoint pair only makes sense while this stays true.
+        """
+        from kiro_crew.acp import client
+
+        _stub_resolvers(monkeypatch)
+        sentinel = (None, "/usr/bin")
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", sentinel, raising=False)
+        probe.probe_backend(ACP_BACKEND_CLAUDE)
+        assert client._claude_acp_argv_cache is sentinel
+
+
+class TestRecheckClearsWhatTheGetCouldOnlyReport:
+    """The operator's own sequence, in order, because each step earns the next."""
+
+    def test_probe_then_install_then_recheck_is_INSTALLED_without_restart(self, monkeypatch):
+        """probe -> negative cached -> component appears -> re-check -> clean.
+
+        The middle step is the one a test usually skips: the process cache is
+        populated by a FAILED spawn, not by the probe, so it is set explicitly.
+        """
+        from kiro_crew.acp import client
+
+        # 1. The component is absent, and the probe says so.
+        _stub_resolvers(monkeypatch, adapter=(None, "/usr/bin"))
+        first = probe.probe_backend(ACP_BACKEND_CLAUDE)
+        assert first.installed == probe.MISSING
+        assert probe.COMPONENT_CLAUDE_ACP_ADAPTER in first.missing_components
+
+        # 2. A spawn tried and cached the absence, for the life of the process.
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", (None, "/usr/bin"), raising=False)
+
+        # 3. The operator runs the install command the panel printed. The GET can
+        #    only REPORT the divergence -- that is what restart_required is.
+        _stub_resolvers(monkeypatch)
+        probe.forget_probe(ACP_BACKEND_CLAUDE)
+        reported = probe.probe_backend(ACP_BACKEND_CLAUDE)
+        assert reported.installed == probe.INSTALLED
+        assert reported.restart_required is True
+
+        # 4. The re-check, which is allowed to clear.
+        probe.forget_for_recheck(ACP_BACKEND_CLAUDE)
+        rechecked = probe.probe_backend(ACP_BACKEND_CLAUDE)
+        assert rechecked.installed == probe.INSTALLED
+        assert rechecked.restart_required is False
+        # And the spawn path really was cleared -- the next spawn resolves fresh
+        # rather than reusing the absence. This is what separates a real re-check
+        # from a re-read that merely looks green.
+        assert client._claude_acp_argv_cache is client._UNRESOLVED
+
+    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_SELF_SERVED_ACP))
+    def test_the_same_sequence_holds_for_a_self_served_harness(self, backend, monkeypatch):
+        from kiro_crew.acp import client
+
+        _stub_resolvers(monkeypatch, self_served={backend: _PRESENT})
+        caches = {backend: _ABSENT}
+        monkeypatch.setattr(client, "_self_served_bin_caches", caches)
+        reported = probe.probe_backend(backend)
+        assert reported.installed == probe.INSTALLED
+        assert reported.restart_required is True
+
+        probe.forget_for_recheck(backend)
+        rechecked = probe.probe_backend(backend)
+        assert rechecked.installed == probe.INSTALLED
+        assert rechecked.restart_required is False
+        assert backend not in caches
+
+    def test_a_recheck_cannot_fake_a_green(self, monkeypatch):
+        """No parameter writes a verdict, so a still-absent component still says so."""
+        from kiro_crew.acp import client
+
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", client._UNRESOLVED, raising=False)
+        _stub_resolvers(monkeypatch, adapter=(None, "/usr/bin"))
+        probe.forget_for_recheck(ACP_BACKEND_CLAUDE)
+        state = probe.probe_backend(ACP_BACKEND_CLAUDE)
+        assert state.installed == probe.MISSING
+        assert probe.COMPONENT_CLAUDE_ACP_ADAPTER in state.missing_components
+        assert state.restart_required is False
+
+    def test_restart_required_survives_when_a_spawn_recaches_after_the_clear(self, monkeypatch):
+        """Unblocked, never suppressed.
+
+        The flag is read from the spawn path AFTER the clear, so a cache that is
+        negative again by then keeps saying so. This is also the residual race the
+        seam's docstring discloses: a resolver that began before the install
+        publishes its stale answer when it resumes. The honest consequence is that
+        the panel keeps telling the operator to restart, not that it goes green.
+        """
+        from kiro_crew.acp import client
+
+        _stub_resolvers(monkeypatch)
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", client._UNRESOLVED, raising=False)
+        probe.forget_for_recheck(ACP_BACKEND_CLAUDE)
+        # A spawn that was already resolving resumes and publishes its stale answer.
+        client._claude_acp_argv_cache = (None, "/usr/bin")
+        state = probe.probe_backend(ACP_BACKEND_CLAUDE)
+        assert state.installed == probe.INSTALLED
+        assert state.restart_required is True
+
+
+class TestRecheckEndpoint:
+    """Owner-gated, id-validated, and the row shape the GET already sends."""
+
+    def test_a_non_owner_is_refused_before_anything_is_cleared(self, monkeypatch):
+        """The refusal has to precede the mutation, not just the response.
+
+        This endpoint clears state on the spawn path. A non-owner reaching that
+        even to have the result discarded would be the mutation happening.
+        """
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        called: list[str] = []
+        monkeypatch.setattr(handler, "_recheck", lambda backend: called.append(backend) or {})
+
+        response = asyncio.run(
+            handler.api_acp_backend_recheck(
+                _request(user="someone-else", json_body={"backend": ACP_BACKEND_CLAUDE})
+            )
+        )
+
+        assert response.status == 403
+        assert json.loads(response.text or "{}")["code"] == "dashboard_owner_required"
+        assert called == []
+
+    def test_a_refused_recheck_is_audited_under_its_own_operation(self, monkeypatch):
+        """Not under the read's name.
+
+        An auditor asking who tried to re-probe a harness would otherwise find those
+        attempts filed as ``acp_backend_status_access``, which is the one question
+        the record exists to answer.
+        """
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        recorder = MagicMock()
+        monkeypatch.setattr(handler, "sel", lambda: recorder)
+        monkeypatch.setattr(handler, "_recheck", lambda backend: {})
+
+        asyncio.run(
+            handler.api_acp_backend_recheck(
+                _request(user="someone-else", json_body={"backend": ACP_BACKEND_CLAUDE})
+            )
+        )
+
+        kwargs = recorder.log_api_access.call_args.kwargs
+        assert kwargs["operation"] == "acp_backend_recheck"
+        assert kwargs["outcome"] == "denied"
+
+    def test_an_app_token_is_not_the_dashboard_owner(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        monkeypatch.setattr(handler, "_recheck", lambda backend: {})
+        response = asyncio.run(
+            handler.api_acp_backend_recheck(
+                _request(app="some-app", json_body={"backend": ACP_BACKEND_CLAUDE})
+            )
+        )
+        assert response.status == 403
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            None,
+            {},
+            {"backend": "not-a-backend"},
+            {"backend": None},
+            {"backend": 7},
+            {"backend": ["claude"]},
+        ],
+    )
+    def test_an_unknown_id_is_refused_and_probes_nothing(self, body, monkeypatch):
+        """The validation bounds a dict this process keeps.
+
+        Without it the backend id is a caller-chosen key written into the probe
+        cache on every request, so this is what keeps that dict to the ids the
+        build knows rather than defensive tidying.
+        """
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        called: list[str] = []
+        monkeypatch.setattr(handler, "_recheck", lambda backend: called.append(backend) or {})
+
+        response = asyncio.run(handler.api_acp_backend_recheck(_request(json_body=body)))
+
+        assert response.status == 400
+        assert json.loads(response.text or "{}")["code"] == "unknown_agent_backend"
+        assert called == []
+
+    def test_a_body_that_is_not_json_is_refused(self, monkeypatch):
+        """aiohttp raises rather than answering, and that is a 400 not a 500."""
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        called: list[str] = []
+        monkeypatch.setattr(handler, "_recheck", lambda backend: called.append(backend) or {})
+
+        response = asyncio.run(handler.api_acp_backend_recheck(_request()))
+
+        assert response.status == 400
+        assert json.loads(response.text or "{}")["code"] == "unknown_agent_backend"
+        assert called == []
+
+    def test_the_empty_string_is_a_real_backend_and_is_accepted(self, monkeypatch):
+        """kiro is spelled ``''``, so presence of the key -- not truthiness -- decides.
+
+        A truthiness check would refuse the shipped default, which is the one
+        harness every install has.
+        """
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        seen: list[str] = []
+
+        def _recheck(backend: str):
+            seen.append(backend)
+            return {"id": backend, "installed": "installed"}
+
+        monkeypatch.setattr(handler, "_recheck", _recheck)
+        response = asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": ACP_BACKEND_KIRO}))
+        )
+        assert response.status == 200
+        assert seen == [ACP_BACKEND_KIRO]
+        assert json.loads(response.text or "{}")["backend"]["id"] == ACP_BACKEND_KIRO
+
+    def test_it_answers_one_row_in_the_shape_the_list_sends(self, monkeypatch):
+        """Same builder as the GET, so a field cannot go missing from one verb.
+
+        Asserted against the GET's own row for the same backend rather than
+        against a literal: a hand-written expected shape is a third place the
+        contract lives.
+        """
+        from kiro_crew.acp import client
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        _stub_resolvers(monkeypatch)
+        # Same reason as above: this case runs the real re-probe, which clears the
+        # spawn path's cache by direct assignment.
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", client._UNRESOLVED, raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.core._selectable_acp_backends",
+            lambda: sorted(ACP_BACKENDS_KNOWN),
+        )
+
+        listed = {row["id"]: row for row in handler._snapshot()}
+        probe.clear_probe_cache()
+        response = asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": ACP_BACKEND_CLAUDE}))
+        )
+        rechecked = json.loads(response.text or "{}")["backend"]
+
+        assert response.status == 200
+        assert set(rechecked) == set(listed[ACP_BACKEND_CLAUDE])
+
+    def test_an_unwritable_audit_log_does_not_break_the_remedy(self, monkeypatch):
+        """A mutation whose audit failed is still one the operator asked for.
+
+        Refusing here would make an unwritable log break the panel's only way out
+        of the restart prompt, which is a worse failure than a missing record.
+        """
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        broken = MagicMock()
+        broken.log_api_access.side_effect = OSError("read-only")
+        monkeypatch.setattr(handler, "sel", lambda: broken)
+        monkeypatch.setattr(handler, "_recheck", lambda backend: {"id": backend})
+
+        response = asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": ACP_BACKEND_CLAUDE}))
+        )
+        assert response.status == 200
+
+    def test_the_successful_mutation_is_audited(self, monkeypatch):
+        """Unlike the GET beside it, the record of who cleared what is the point."""
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        recorder = MagicMock()
+        monkeypatch.setattr(handler, "sel", lambda: recorder)
+        monkeypatch.setattr(handler, "_recheck", lambda backend: {"id": backend})
+
+        asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": ACP_BACKEND_CLAUDE}))
+        )
+
+        recorder.log_api_access.assert_called_once()
+        kwargs = recorder.log_api_access.call_args.kwargs
+        assert kwargs["operation"] == "acp_backend_recheck"
+        assert kwargs["outcome"] == "success"
+        assert kwargs["resources"] == ACP_BACKEND_CLAUDE
+
+    def test_a_raising_reprobe_records_no_success(self, monkeypatch):
+        """The audit follows the work, so it cannot claim an outcome that did not happen.
+
+        Auditing first would hand the caller a 500 while the log said the re-probe
+        worked -- the one direction an audit record must not be wrong in.
+        """
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        recorder = MagicMock()
+        monkeypatch.setattr(handler, "sel", lambda: recorder)
+
+        def _boom(backend: str):
+            raise RuntimeError("resolver exploded")
+
+        monkeypatch.setattr(handler, "_recheck", _boom)
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                handler.api_acp_backend_recheck(_request(json_body={"backend": ACP_BACKEND_CLAUDE}))
+            )
+
+        assert recorder.log_api_access.call_count == 0
+
+    def test_the_probe_is_offloaded_and_the_CLEAR_IS_NOT(self, monkeypatch):
+        """The split that keeps the clear safe, asserted rather than commented.
+
+        The probe resolves binaries and may shell out, so it must leave the loop. The
+        clear must NOT: every reader on the spawn path has no ``await`` between its
+        check and its read, so those pairs are atomic against other loop tasks and
+        not against a worker thread. A clear from a thread can land inside one and
+        either raise ``KeyError`` in a session spawn or make an installed adapter
+        report "not found".
+
+        Asserted structurally, because the hazard is which THREAD the call runs on
+        and a timing assertion cannot say that.
+        """
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        monkeypatch.setattr(handler, "_recheck", lambda backend: {"id": backend})
+        offloaded: list[object] = []
+        real_to_thread = asyncio.to_thread
+
+        async def _spy(fn, /, *args, **kwargs):
+            offloaded.append(fn)
+            return await real_to_thread(fn, *args, **kwargs)
+
+        monkeypatch.setattr(handler.asyncio, "to_thread", _spy)
+        asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": ACP_BACKEND_CLAUDE}))
+        )
+        assert handler._recheck in offloaded
+        from kiro_crew.agent_sdk import forget_for_recheck
+
+        assert forget_for_recheck not in offloaded
+
+    def test_the_clear_runs_before_the_probe(self, monkeypatch):
+        """Order matters: probing first would measure through the cache being dropped."""
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        order: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.agent_sdk.forget_for_recheck",
+            lambda backend: order.append("clear"),
+        )
+        monkeypatch.setattr(
+            handler, "_recheck", lambda backend: order.append("probe") or {"id": backend}
+        )
+        asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": ACP_BACKEND_CLAUDE}))
+        )
+        assert order == ["clear", "probe"]
+
+    def test_a_refused_recheck_clears_nothing(self, monkeypatch):
+        """The mutation must sit behind the gate, not merely have its result discarded."""
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        cleared: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.agent_sdk.forget_for_recheck",
+            lambda backend: cleared.append(backend),
+        )
+        monkeypatch.setattr(handler, "_recheck", lambda backend: {"id": backend})
+
+        asyncio.run(
+            handler.api_acp_backend_recheck(
+                _request(user="someone-else", json_body={"backend": ACP_BACKEND_CLAUDE})
+            )
+        )
+        asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": "not-a-backend"}))
+        )
+        assert cleared == []
+
+
 class TestRouteIsRegistered:
     """A handler nothing routes to is invisible to the dashboard."""
 
@@ -962,6 +1643,27 @@ class TestRouteIsRegistered:
             for route in resource
         }
         assert ("/api/acp-backends", "GET") in routes
+
+    def test_the_recheck_route_is_registered_as_a_POST(self):
+        """The verb is the contract, not decoration.
+
+        A GET may not clear the spawn path's cache -- every ``*_cached_negative``
+        seam says so -- and the re-check does clear it, so registering this as
+        anything but a POST would put a side effect behind a replayable read.
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.routes import agent_config
+
+        app = web.Application()
+        agent_config.register(app)
+        routes = {
+            (resource.canonical, route.method)
+            for resource in app.router.resources()
+            for route in resource
+        }
+        assert ("/api/acp-backends/recheck", "POST") in routes
+        assert ("/api/acp-backends/recheck", "GET") not in routes
 
 
 def test_the_probe_is_offloaded_off_the_event_loop(monkeypatch):

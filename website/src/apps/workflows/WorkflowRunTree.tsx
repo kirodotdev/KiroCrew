@@ -11,7 +11,8 @@
  *     of its agents are still running, ✓ if all finished ok, ✗ if any failed),
  *     title, and agent count.
  *   - under each phase, the AGENTS with per-agent status (spinner / ✓ / ✗),
- *     their `label` (mono), and `last_tool` if present.
+ *     their `label` (mono), `last_tool` if present, and the time the agent took
+ *     once it has finished.
  *   - a narrator log strip (most recent `log` lines) and a budget readout.
  *
  * All LLM-derived strings are sanitized via sanitizeLlmOutput. Pure event-fold
@@ -23,9 +24,10 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { groupByPhase, latestBudget, type WfEvent } from './runModel'
-
+import { fmtElapsed } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+
 export interface WorkflowRunTreeProps {
   events: WfEvent[]
   /** Terminal status of the run; drives the per-phase fallback when no agents
@@ -174,6 +176,11 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                       <span className="font-mono truncate">{label}</span>
                       {lastTool && (
                         <span className="text-muted truncate">· {lastTool}</span>
+                      )}
+                      {a.elapsed_ms !== undefined && (
+                        <span className="ml-auto text-[10px] text-muted tabular-nums shrink-0">
+                          {fmtElapsed(a.elapsed_ms)}
+                        </span>
                       )}
                     </li>
                   )

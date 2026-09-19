@@ -385,6 +385,13 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # bounded CI step records unavailable evidence on failure; local
         # prepare-pr must not download a model or claim a calibration score.
         "scripts/ci-member-memory-benchmark.py",
+        # Reports Python advisories against a baseline and cannot fail a build on
+        # what it finds, so by this floor's own rule -- only repeatable
+        # verdict-producing gates belong here -- it is not a floor gate. It also
+        # queries an advisory database over the network, so putting it in the
+        # pre-push floor would make every contributor's push depend on that
+        # service being up in order to print a number nobody is blocked on.
+        "scripts/check_python_audit.py",
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))

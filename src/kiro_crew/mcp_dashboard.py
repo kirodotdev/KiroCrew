@@ -424,12 +424,17 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "agent": {
                         "type": "string",
                         "description": (
-                            "Agent to bind the session to. For a project-linked folder, "
-                            "omitting it uses the nearest inherited folder default agent, "
-                            "then the global default; otherwise it inherits the caller's "
-                            "agent. An explicit agent must resolve in the target workspace. "
-                            "Name kirocrew-worker explicitly for ordinary leaf work when no "
-                            "folder default applies."
+                            "Agent to bind the session to. Omitting it inherits the "
+                            "CALLER'S OWN agent, not a global default: create_session "
+                            "falls back to the calling slot's agent so the child stays in "
+                            "this workspace's memory boundary. A conductor that omits it "
+                            "therefore gets a second conductor, which has no fs_write and "
+                            "cannot do the work. The one exception: a `folder` whose "
+                            "nearest ancestor is linked to a project AND pins a "
+                            "default_agent supplies that agent instead. Name the agent the "
+                            "child needs explicitly \u2014 kirocrew-worker for a leaf work "
+                            "item \u2014 unless such a folder default applies. An explicit "
+                            "agent must resolve in the workspace the child is created in."
                         ),
                     },
                     "folder": {
@@ -438,10 +443,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "Sidebar folder to file the new session into, atomically with "
                             "creation — a folder id or a '/'-separated human path. Missing "
                             "path segments are created (mkdir -p), like chat_folder_create's "
-                            "`parent`. A crew-member DM may target another workspace only "
-                            "when this folder's inherited project is the unique root of an "
-                            "existing configured workspace. Omit to leave the session at "
-                            "the top level in the caller's workspace."
+                            "`parent`. A folder linked to a project (directly or via an "
+                            "ancestor) gives the child that project as its working "
+                            "directory, in the caller's workspace, as the dashboard does. "
+                            "Only when that project is the unique root of another "
+                            "configured workspace does the child move there, and only for "
+                            "a crew-member caller. Omit to leave the session at the top "
+                            "level in the caller's workspace."
                         ),
                     },
                 },

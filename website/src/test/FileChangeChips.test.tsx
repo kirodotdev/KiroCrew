@@ -122,6 +122,47 @@ describe('FileChangeChips', () => {
     expect(screen.queryByText(/removal/)).not.toBeInTheDocument()
   })
 
+  it('shows an unavailable state instead of counts or an inline diff for truncated snapshots', () => {
+    const file = { ...change('/large.ts', 'same', 'same'), truncated: true, snapshot_limit_chars: 200_000 }
+    render(<FileChangeChips fileChanges={[file]} />)
+    expect(screen.getByText('Diff unavailable: file is too large to compare (over 200,000 characters).')).toBeInTheDocument()
+    expect(screen.queryByText('no changes')).not.toBeInTheDocument()
+    expect(screen.queryByText(/addition|removal/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Show or hide the diff for /large.ts')).not.toBeInTheDocument()
+  })
+
+  it('suppresses aggregate totals when any snapshot in the batch is truncated', () => {
+    const truncated = { ...change('/large.ts', 'same', 'same'), truncated: true, snapshot_limit_chars: 200_000 }
+    render(<FileChangeChips fileChanges={[truncated, change('/complete.ts', 'a', 'a\nb')]} />)
+    expect(screen.getByText('2 files changed')).toBeInTheDocument()
+    expect(screen.queryByText(/addition|removal/)).not.toBeInTheDocument()
+  })
+
+  it('opens a truncated minimal chip as the file, not an unavailable diff', () => {
+    const onOpenDiff = vi.fn()
+    const onFileOpen = vi.fn()
+    const file = { ...change('/large.ts', 'before', 'after'), truncated: true, snapshot_limit_chars: 200_000 }
+    render(
+      <FileChangeChips
+        fileChanges={[file]}
+        style="minimal"
+        onOpenDiff={onOpenDiff}
+        onFileOpen={onFileOpen}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '/large.ts' }))
+    expect(onFileOpen).toHaveBeenCalledWith('/large.ts')
+    expect(onOpenDiff).not.toHaveBeenCalled()
+  })
+
+  it('lets a truncated minimal chip wrap within a narrow pane', () => {
+    const file = { ...change('/large.ts', 'before', 'after'), truncated: true, snapshot_limit_chars: 200_000 }
+    render(<FileChangeChips fileChanges={[file]} style="minimal" />)
+    const chip = screen.getByLabelText('/large.ts')
+    expect(chip).toHaveClass('max-w-full', 'min-w-0', 'min-h-[22px]', 'h-auto', 'whitespace-normal', 'py-1')
+    expect(chip).not.toHaveClass('h-[22px]')
+  })
+
   it('falls back to expanded for an unknown style value', () => {
     // Defensive default in the renderer map covers stale localStorage values
     // (e.g. legacy "tooltip"/"compact"/"full") until the migration runs.

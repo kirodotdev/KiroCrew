@@ -10,9 +10,20 @@ from pathlib import Path
 from kiro_crew.acp.types import ACP_CLIENT_CAPABILITIES
 
 
-def test_elicitation_is_declared() -> None:
-    """kiro-cli gates `elicitation/create` on this capability being present."""
-    assert ACP_CLIENT_CAPABILITIES["elicitation"] == {"form": {}, "url": {}}
+def test_elicitation_is_not_advertised_without_a_handler() -> None:
+    """Declaring `elicitation` with no handler is worse than declaring nothing.
+
+    It reads like a free forward-bet and is not one. A client that sees the
+    capability sends its human-in-the-loop prompts as `elicitation/create`
+    INSTEAD of falling back to `session/request_permission`; codex-acp gates on
+    `clientCapabilities.elicitation.form` exactly that way. We answer that method
+    with `-32601`, and the client turns the error into a cancellation of the tool
+    call the human was approving -- so the declaration does not wait quietly for
+    a handler, it breaks approval on every client that believes it.
+
+    Re-add the key in the same change that registers the handler.
+    """
+    assert "elicitation" not in ACP_CLIENT_CAPABILITIES
 
 
 def test_fs_and_terminal_stay_false() -> None:
@@ -60,7 +71,10 @@ def test_the_shared_process_transport_reads_capabilities_from_its_host() -> None
     """
     src = Path(__file__).resolve().parents[1] / "src/kiro_crew/acp/runtime.py"
     text = src.read_text(encoding="utf-8")
-    assert '"clientCapabilities": self._harness.client_capabilities' in text
+    # The declaration is read from the harness; the runtime only fills the
+    # settings channel a host declares (``client_meta_settings``) before sending.
+    assert "base = self._harness.client_capabilities" in text
+    assert '"clientCapabilities": client_capabilities' in text
     assert "ACP_CLIENT_CAPABILITIES" not in text
     assert "KAS_CLIENT_CAPABILITIES" not in text
 

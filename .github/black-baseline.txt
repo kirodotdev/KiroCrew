@@ -259,7 +259,6 @@ src/kiro_crew/mcp_gateway/manager.py
 src/kiro_crew/mcp_gateway/prewarm.py
 src/kiro_crew/mcp_gateway/rewriter.py
 src/kiro_crew/mcp_gateway/seed.py
-src/kiro_crew/mcp_gateway/session_servers.py
 src/kiro_crew/mcp_gateway/shareability.py
 src/kiro_crew/mcp_gateway/socketsec.py
 src/kiro_crew/mcp_gateway/spill.py
@@ -464,7 +463,6 @@ test/test_computer_use_overlay.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
 test/test_config_meta_stamp.py
-test/test_config_rmw_preserves_settings.py
 test/test_connections_kiro_spec_fields.py
 test/test_connections_l0_probe.py
 test/test_connections_registry.py
@@ -719,7 +717,6 @@ test/test_mcp_gateway_image_budget.py
 test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_pool_integ.py
 test/test_mcp_gateway_recaller.py
-test/test_mcp_gateway_session_inject.py
 test/test_mcp_gateway_shutdown_and_env.py
 test/test_mcp_gateway_stub_admission_fallback.py
 test/test_mcp_gateway_stub_optin.py
@@ -837,7 +834,6 @@ test/test_refresh_tokens.py
 test/test_regex_anchor_contract.py
 test/test_registry_hero_fields.py
 test/test_release_promotion.py
-test/test_release_promotion_contract.py
 test/test_remote_artifacts.py
 test/test_resolve_session_key.py
 test/test_resolve_skill_root_package.py

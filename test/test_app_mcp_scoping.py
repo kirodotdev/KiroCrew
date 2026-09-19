@@ -201,10 +201,16 @@ class TestGrantVersusGovernance:
         """
         from types import SimpleNamespace
 
-        from kiro_crew.platform.governance import _ceiling_mentions_mcp_server
+        from kiro_crew.platform.governance import (
+            ScopedRuleset,
+            _ceiling_mentions_mcp_server,
+        )
 
-        # deny-mode ruleset naming ONE tool under the server
-        ruleset = SimpleNamespace(mode="deny", allow=(), deny=("@srv/delete",))
+        # deny-mode ruleset naming ONE tool under the server. A REAL ruleset, not
+        # a namespace with the same fields: the reader asks the control for its
+        # patterns, so a stand-in that cannot answer proves nothing about a
+        # composed ceiling, which is the shape a second policy tier produces.
+        ruleset = ScopedRuleset(mode="deny", deny=("@srv/delete",))
         ceiling = SimpleNamespace(get=lambda scope: ruleset if scope == "mcp" else None)
 
         assert _ceiling_mentions_mcp_server(ceiling, "srv") is True
@@ -215,9 +221,12 @@ class TestGrantVersusGovernance:
         """Allow-mode listing a subset must not let the whole server through."""
         from types import SimpleNamespace
 
-        from kiro_crew.platform.governance import _ceiling_mentions_mcp_server
+        from kiro_crew.platform.governance import (
+            ScopedRuleset,
+            _ceiling_mentions_mcp_server,
+        )
 
-        ruleset = SimpleNamespace(mode="allow", allow=("@srv/read",), deny=())
+        ruleset = ScopedRuleset(mode="allow", allow=("@srv/read",))
         ceiling = SimpleNamespace(get=lambda scope: ruleset if scope == "mcp" else None)
         assert _ceiling_mentions_mcp_server(ceiling, "srv") is True
 
@@ -225,9 +234,12 @@ class TestGrantVersusGovernance:
         """`@srv-other` must not count as an opinion about `@srv`."""
         from types import SimpleNamespace
 
-        from kiro_crew.platform.governance import _ceiling_mentions_mcp_server
+        from kiro_crew.platform.governance import (
+            ScopedRuleset,
+            _ceiling_mentions_mcp_server,
+        )
 
-        ruleset = SimpleNamespace(mode="deny", allow=(), deny=("@srv-other",))
+        ruleset = ScopedRuleset(mode="deny", deny=("@srv-other",))
         ceiling = SimpleNamespace(get=lambda scope: ruleset if scope == "mcp" else None)
         assert _ceiling_mentions_mcp_server(ceiling, "srv") is False
 

@@ -43,6 +43,7 @@ def goose_projection(
     work_dir: object = None,
     session_key: str = "",
     channel_id: str = "",
+    session_token: str = "",
 ) -> SessionProjection:
     """The whole goose array -- spec translation AND pooled stubs.
 
@@ -64,6 +65,7 @@ def goose_projection(
         work_dir=work_dir,
         session_key=session_key,
         channel_id=channel_id,
+        session_token=session_token,
     )
 
 
@@ -171,6 +173,7 @@ class GooseMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> dict[str, object]:
         """The wire face: the ``mcpServers`` array for this goose session.
@@ -199,6 +202,7 @@ class GooseMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         ).params
 
     def session_projection(
@@ -210,6 +214,7 @@ class GooseMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> SessionProjection:
         """The structured face: :func:`goose_projection`, with ``kwargs`` ignored as
@@ -223,4 +228,5 @@ class GooseMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         )

@@ -40,6 +40,9 @@ import pytest
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp._dispatch import GATE_ENVELOPE_MARKER, build_permission_event, gate_envelope
 from kiro_crew.acp.client import (
+    _READBACK_FAULT_MAX_SHAPES,
+    _READBACK_FAULT_SHAPES,
+    _READBACK_STDERR_SCAN_CHARS,
     PI_ACP_BIN,
     PI_BIN,
     PI_GATE_EXTENSION_SHA256,
@@ -51,6 +54,8 @@ from kiro_crew.acp.client import (
     _ensure_pi_gate_launcher,
     _pi_commands_from_readback,
     _pi_gate_launcher_body,
+    _readback_detail_with_diagnosis,
+    _readback_stderr_diagnosis,
     _resolve_pi_acp_bin,
     _resolve_pi_bin,
     _seal_pi_gate_extension,
@@ -713,6 +718,211 @@ class TestTheReadBackComparesFilesNotStrings:
         assert "_same_file_spelling(extension_path)" in source
 
 
+#: A 40-char run of the base64 alphabet: the AWS secret-access-key shape the
+#: redactors' bare-secret detector is built for. Not a real key.
+_AWS_SECRET_SHAPE = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+
+class TestTheReadBackStderrDiagnosis:
+    """What a refused read-back tells the operator about the child's failure."""
+
+    #: One stderr per vocabulary phrase. Keyed by phrase so a shape added to
+    #: :data:`_READBACK_FAULT_SHAPES` without a sample here fails the coverage test
+    #: below rather than going unexercised.
+    SAMPLES = {
+        "its shebang interpreter could not be run": (
+            "/bin/sh: /opt/pi/bin/pi: /usr/bin/node: bad interpreter: No such file or directory"
+        ),
+        "it is built for a different CPU or executable format": (
+            "/bin/sh: /opt/pi/bin/pi: Bad CPU type in executable"
+        ),
+        "the OS killed it over its code signature": "/opt/pi/bin/pi: code signature invalid",
+        "a shared library it needs is missing": ("dyld: Library not loaded: @rpath/libnode.dylib"),
+        "the gateway passed it a flag this harness version does not accept": (
+            "pi: unknown flag --extension"
+        ),
+        "its configuration could not be parsed": "Error: cannot parse config at line 3",
+        "the OS denied the operation, as a sandbox, quarantine or privacy policy does": (
+            "/bin/sh: /opt/pi/bin/pi: Operation not permitted"
+        ),
+        "the OS refused to execute it": "/bin/sh: /opt/pi/bin/pi: Permission denied",
+        "the file was still being written": "/bin/sh: /opt/pi/bin/pi: Text file busy",
+        "the path is a directory, not a program": "/bin/sh: /opt/pi/bin/pi: Is a directory",
+        "its path loops through symlinks": (
+            "/bin/sh: /opt/pi/bin/pi: Too many levels of symbolic links"
+        ),
+        "the path does not exist": "/bin/sh: /opt/pi/bin/pi: No such file or directory",
+    }
+
+    @staticmethod
+    def _phrases():
+        return [phrase for _pattern, phrase in _READBACK_FAULT_SHAPES]
+
+    def test_the_exec_refusal_that_exit_126_cannot_distinguish_is_named(self):
+        # exit 126 is the shell refusing an exec; only the child's message says
+        # whether the OS denied it or the shebang could not be resolved, and those
+        # take different fixes.
+        denied = _readback_stderr_diagnosis("/bin/sh: /opt/pi/bin/pi: Permission denied\n")
+        shebang = _readback_stderr_diagnosis(
+            "/bin/sh: /opt/pi/bin/pi: /usr/bin/node: bad interpreter: No such file or directory\n"
+        )
+        assert denied == "the OS refused to execute it"
+        assert shebang.startswith("its shebang interpreter could not be run")
+        assert denied != shebang
+
+    def test_a_shebang_fault_names_the_interpreter_before_the_missing_file(self):
+        # The two shapes co-occur in one line and the order carries the meaning:
+        # the interpreter is the cause, the missing file only its symptom.
+        out = _readback_stderr_diagnosis(
+            "/bin/sh: /opt/pi/bin/pi: /usr/bin/node: bad interpreter: No such file or directory\n"
+        )
+        assert out.split("; ") == [
+            "its shebang interpreter could not be run",
+            "the path does not exist",
+        ]
+
+    def test_at_most_two_shapes_are_reported(self):
+        crowded = (
+            "Permission denied\nbad interpreter\nText file busy\nIs a directory\n"
+            "No such file or directory\nBad CPU type in executable\n"
+        )
+        assert len(_readback_stderr_diagnosis(crowded).split("; ")) <= _READBACK_FAULT_MAX_SHAPES
+
+    def test_every_vocabulary_shape_has_a_sample_and_reports_itself_first(self):
+        # Coverage in both directions: a phrase with no sample, and a sample whose
+        # phrase is not reported first, both fail here.
+        assert sorted(self.SAMPLES) == sorted(self._phrases())
+        for phrase, sample in self.SAMPLES.items():
+            assert _readback_stderr_diagnosis(sample).split("; ")[0] == phrase, phrase
+
+    def test_the_platform_wording_a_launcher_chooses_does_not_matter(self):
+        # Same fault, four spellings a shell, dyld, cmd.exe or Node might use.
+        for text in (
+            "permission denied",
+            "PERMISSION DENIED",
+            "pi: Permission denied (os error 13)",
+            "Error: spawn /opt/pi/bin/pi EACCES: Permission denied",
+        ):
+            assert _readback_stderr_diagnosis(text) == "the OS refused to execute it", text
+
+    def test_nothing_the_child_wrote_is_ever_published(self):
+        """The structural guarantee: output is drawn from the vocabulary, or empty.
+
+        This is what makes the credential question unanswerable rather than
+        answered. A scheme that echoes the child's bytes has to show no credential
+        survives any rejoining of them, and the redactors' patterns need contiguity
+        and label anchors that a single inserted byte destroys. Matching instead of
+        echoing means there is no path from a child byte to published text, so a
+        hostile stderr cannot produce one whatever it contains.
+        """
+        allowed = set(self._phrases())
+        secrets = (
+            "glpat-" + "aB3xY7zQ9wE2rT5yU8iO",
+            "AKIA" + "IOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "xoxb-" + "123456789012-abcdefghijklmnop",
+            "s3cr3tOpaqueTok3nValue",
+        )
+        splitters = ("", "\n", " ", "\x1b[31m", "\u2028", "\u00a0", "\u200b", "-", ".", "\r\n")
+        hostile = []
+        for secret in secrets:
+            for splitter in splitters:
+                for offset in range(0, len(secret), 3):
+                    spliced = secret[:offset] + splitter + secret[offset:]
+                    hostile.append(f"/bin/sh: /opt/pi/bin/pi: Permission denied\ntoken={spliced}\n")
+                    hostile.append(f"Authorization: Bearer {spliced}\nText file busy\n")
+        # The label pushed clean out of the scan window, and a capture far larger
+        # than the window.
+        far = "x" * (_READBACK_STDERR_SCAN_CHARS + 500)
+        hostile.append(f"Authorization: Bearer{far}\n{secrets[-1]}\nPermission denied\n")
+        hostile.append("y" * 5_000_000 + "\nPermission denied\ntoken=" + secrets[0] + "\n")
+
+        for text in hostile:
+            out = _readback_stderr_diagnosis(text)
+            if not out:
+                continue
+            assert all(part in allowed for part in out.split("; ")), out
+            for secret in secrets:
+                assert secret not in out
+                assert secret.split("-", 1)[-1] not in out
+
+    def test_a_colour_code_inside_a_token_body_publishes_no_token(self):
+        # The composition that defeats every normalising scheme: rejoining the run
+        # strips the `-` a prefixed pattern anchors on, and not rejoining leaves the
+        # `[31m` residue inside the run. Matching a vocabulary is indifferent to it.
+        token = "glpat-" + "aB3xY7zQ9wE2rT5yU8iO"
+        body = token[len("glpat-") :]
+        allowed = set(self._phrases())
+        for sgr in ("\x1b[31m", "\x1b[0m", "\x1b[1;32m", "\x1b[m", "\x1b[38;5;196m"):
+            for sgr_at in range(len(body) + 1):
+                for wrap_at in range(0, len(body) + 1, 3):
+                    if wrap_at == sgr_at:
+                        continue
+                    lo, hi = sorted((sgr_at, wrap_at))
+                    first, second = (sgr, "\n") if lo == sgr_at else ("\n", sgr)
+                    spliced = "glpat-" + body[:lo] + first + body[lo:hi] + second + body[hi:]
+                    out = _readback_stderr_diagnosis(
+                        f"auth failed token={spliced}\n/bin/sh: pi: Permission denied\n"
+                    )
+                    assert out == "the OS refused to execute it"
+                    assert all(part in allowed for part in out.split("; "))
+                    assert body not in out
+
+    def test_a_label_beyond_the_scan_window_publishes_no_token(self):
+        token = "s3cr3tOpaqueTok3nValue"
+        gap = "x" * (_READBACK_STDERR_SCAN_CHARS + 500)
+        out = _readback_stderr_diagnosis(
+            f"Authorization: Bearer{gap}\n{token}\n/bin/sh: pi: Permission denied\n"
+        )
+        assert out == "the OS refused to execute it"
+        assert token not in out
+
+    def test_only_the_tail_of_a_large_stderr_is_read(self):
+        # The window bounds the matching work, and it is the TAIL because a harness
+        # writes its banner first and fails last.
+        filler = "b" * (_READBACK_STDERR_SCAN_CHARS * 2)
+        assert (
+            _readback_stderr_diagnosis(
+                "Text file busy\n" + filler + "\n/bin/sh: pi: Permission denied\n"
+            )
+            == "the OS refused to execute it"
+        )
+        # The same shape left far enough back is outside the window and unread.
+        assert (
+            _readback_stderr_diagnosis(
+                "/bin/sh: pi: Permission denied\n" + filler + "\nText file busy\n"
+            )
+            == "the file was still being written"
+        )
+
+    def test_an_unreadable_or_silent_stderr_answers_nothing(self):
+        assert _readback_stderr_diagnosis(None) == ""
+        assert _readback_stderr_diagnosis(b"Permission denied") == ""
+        assert _readback_stderr_diagnosis("") == ""
+        assert _readback_stderr_diagnosis("   \n\t ") == ""
+        assert _readback_stderr_diagnosis("a harness banner and nothing else") == ""
+
+    def test_the_detail_separates_a_recognised_fault_from_an_unreadable_one(self):
+        # Three answers the operator needs apart: a named fault, a harness that
+        # explained itself in words this gateway has no shape for, and silence.
+        assert _readback_detail_with_diagnosis("exit 126", "pi: Permission denied\n") == (
+            "exit 126: the OS refused to execute it"
+        )
+        assert _readback_detail_with_diagnosis("exit 126", "harness gave up\n") == (
+            "exit 126, and its stderr holds no message this gateway recognises"
+        )
+        assert _readback_detail_with_diagnosis("exit 126", "") == "exit 126"
+        assert _readback_detail_with_diagnosis("exit 126", "  \n ") == "exit 126"
+        assert _readback_detail_with_diagnosis("no response", None) == "no response"
+
+    def test_an_unrecognised_stderr_is_described_and_never_quoted(self):
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        out = _readback_detail_with_diagnosis("exit 126", f"mystery failure key={secret}\n")
+        assert out == "exit 126, and its stderr holds no message this gateway recognises"
+        assert secret not in out
+        assert "mystery" not in out
+
+
 class TestTheReadBackReportsFailureRatherThanAssuming:
     """A read-back that could not run must never read as "loaded"."""
 
@@ -733,10 +943,85 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 3
             stdout = ""
+            stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "exit 3" in issue and "get_commands" in remedy
+
+    def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
+        """An exit code alone names a verdict, not a cause.
+
+        The launcher is /bin/sh exec'ing the resolved harness binary, so its message
+        is what tells an exec the OS refused apart from a shebang it cannot resolve.
+        The refusal carries which of the two it was, in the gateway's own words, and
+        the child's bytes stay out of it -- including the operator's home path.
+        """
+
+        class _Completed:
+            returncode = 126
+            stdout = ""
+            stderr = "/bin/sh: /Users/me/.local/bin/pi: Permission denied\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        assert "exit 126" in issue
+        assert "the OS refused to execute it" in issue
+        assert "/Users/me" not in issue
+
+    def test_a_silent_child_is_reported_as_the_bare_exit(self, tmp_path, monkeypatch):
+        """No placeholder: "the child said nothing" must not look like "Crew hid it"."""
+
+        class _Completed:
+            returncode = 126
+            stdout = ""
+            stderr = "   \n\t\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        assert issue.endswith("(exit 126)")
+
+    def test_a_response_that_never_came_still_reports_the_childs_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """A zero exit with no parseable answer is the other half of the same path."""
+
+        class _Completed:
+            returncode = 0
+            stdout = "not json at all"
+            stderr = "pi: unknown flag --extension\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        assert "no response" in issue
+        assert "a flag this harness version does not accept" in issue
+
+    def test_a_secret_in_the_childs_stderr_is_not_republished(self, tmp_path, monkeypatch):
+        """A refusal reaches the dashboard and the chat card; the child is foreign.
+
+        Both halves matter: a secret beside an UNRECOGNISED message, where there is
+        nothing to report, and a secret beside a RECOGNISED one, where the fault is
+        still named. Naming a fault publishes a phrase from the gateway's own
+        vocabulary, so it cannot carry a secret either way.
+        """
+
+        def _run(stderr):
+            class _Completed:
+                returncode = 126
+                stdout = ""
+
+            _Completed.stderr = stderr
+            monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+            issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+            return issue
+
+        unknown = _run(f"mystery: key={_AWS_SECRET_SHAPE} rejected\n")
+        assert _AWS_SECRET_SHAPE not in unknown
+        assert unknown.endswith("recognises)"), unknown
+
+        known = _run(f"key={_AWS_SECRET_SHAPE}\n/bin/sh: pi: Permission denied\n")
+        assert _AWS_SECRET_SHAPE not in known
+        assert "the OS refused to execute it" in known, "a secret must not cost the diagnosis"
 
     def test_a_registry_without_the_gate_is_refused_with_the_gate_remedy(
         self, tmp_path, monkeypatch
@@ -744,6 +1029,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry(("compact", None)))
+            stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
@@ -756,6 +1042,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry((PROBE, self.EXT)))
+            stderr = ""
 
         def _fake_run(argv, **kwargs):
             seen["argv"] = argv
@@ -780,6 +1067,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry((PROBE, self.EXT)))
+            stderr = ""
 
         def _fake_run(argv, **kwargs):
             seen["env"] = kwargs["env"]
@@ -803,6 +1091,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 0
             stdout = _response(_registry((PROBE, self.EXT)))
+            stderr = ""
 
         def _fake_run(argv, **kwargs):
             seen["env"] = kwargs["env"]

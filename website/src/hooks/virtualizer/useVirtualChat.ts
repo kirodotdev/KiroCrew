@@ -3830,13 +3830,18 @@ export function useVirtualChat<T>(
   // off-window target. Near targets union with the current window (no flash);
   // far targets jump (replace) to avoid mounting thousands of rows in between.
   //
-  // Returns `true` when it took the FAR path (window replaced, leaving an
-  // unmounted gap between the old viewport and the target). Callers use this
-  // to pick scroll behavior: a smooth glide across a far jump would scrub the
-  // scroller through blank spacer (visible flicker), so callers should
-  // teleport (instant) on a far jump and only glide on a near one.
+  // Returns `true` when the target is FAR. By default the window is then
+  // REPLACED, leaving an unmounted gap between the old viewport and the target,
+  // and callers should teleport (instant) rather than glide a native smooth
+  // scroll through blank spacer. With `unionOnly` a far target is left alone —
+  // nothing is mounted and the window stays where the reader is — for a caller
+  // that drives the scroll itself frame by frame (a converging glide): the
+  // scroll listener's `recomputeWindow` then follows each write, mounting rows
+  // as the viewport reaches them, exactly as it does under a fling. Replacing
+  // the window first would blank the rows under the reader for the frame before
+  // the first write pulls the window back.
   const mountIndex = useCallback(
-    (index: number): boolean => {
+    (index: number, opts?: { unionOnly?: boolean }): boolean => {
       const count = itemsRef.current.length
       if (count === 0) return false
       const t = Math.max(0, Math.min(count - 1, Math.floor(index)))
@@ -3845,6 +3850,7 @@ export function useVirtualChat<T>(
       // we can return the decision synchronously to the caller.
       const cur = windowRangeRef.current
       const far = !(jump.start <= cur.end + overscan * NEAR_JUMP_OVERSCAN_MULT && jump.end >= cur.start - overscan * NEAR_JUMP_OVERSCAN_MULT)
+      if (far && opts?.unionOnly) return true
       setWindowRange((prev) => {
         const near = jump.start <= prev.end + overscan * NEAR_JUMP_OVERSCAN_MULT && jump.end >= prev.start - overscan * NEAR_JUMP_OVERSCAN_MULT
         if (near) return { start: Math.min(prev.start, jump.start), end: Math.max(prev.end, jump.end) }
@@ -3853,6 +3859,26 @@ export function useVirtualChat<T>(
       return far
     },
     [overscan],
+  )
+
+  // Scroller-coordinate top of row `index` from the height index alone, so a
+  // caller can steer toward a row that is NOT mounted. Rows above it that are
+  // still unmeasured contribute their estimate, so the value refines as the
+  // viewport passes them and they measure in — a caller that re-reads it every
+  // frame converges on the true position; one that reads it once lands on the
+  // estimate. `leadingOffset` is the chrome between the scroller's content
+  // origin and the list's first row, which the index does not know about.
+  const estimateRowTop = useCallback(
+    (index: number): number | null => {
+      const el = scrollerRef.current
+      const count = itemsRef.current.length
+      if (!el || count === 0) return null
+      const t = Math.max(0, Math.min(count - 1, Math.floor(index)))
+      const idxTree = heightIndexRef.current
+      const off = idxTree ? idxTree.offsetOf(t) : getOffsetFn(t, count, getH)
+      return leadingOffset(el) + off
+    },
+    [getH, leadingOffset, scrollerRef],
   )
 
   // ---- Build virtualItems list ----
@@ -4061,6 +4087,7 @@ export function useVirtualChat<T>(
     scrollToIndex,
     scrollToBottom,
     mountIndex,
+    estimateRowTop,
     measureRef,
     /** True while an anchored entry is still waiting for its row to hydrate.
      *  The caller should cover the transcript with a skeleton for exactly this

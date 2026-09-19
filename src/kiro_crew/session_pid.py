@@ -9,6 +9,7 @@ See ``session.py`` module docstring for the full Process Sweep Architecture.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import signal
@@ -232,6 +233,14 @@ def _rewrite_pid_file(path: Path, content: str) -> bool:
 # runtimes are reclaimed by their own tracked-PID sweep, never by the
 # marker-based work sweep (see _is_sweepable_orphan_work).
 _MANAGED_AGENT_MARKERS: tuple[str, ...] = ("kiro-cli", "claude")
+
+# Exact argv0 basenames that may authorize an abandoned-scope reclaim. Unlike
+# _MANAGED_AGENT_MARKERS, this set is identity rather than substring matching:
+# it is deliberately private to _is_agent_runtime_anchor so the tracked-PID and
+# orphan-work sweeps retain their existing broader marker semantics.
+_MANAGED_AGENT_RUNTIME_BASENAMES: frozenset[bytes] = frozenset(
+    {b"claude", b"claude-agent-acp", b"kiro-cli", b"kiro-cli-chat"}
+)
 
 
 def _is_managed_agent_process(pid: int) -> bool:
@@ -712,6 +721,42 @@ def _pid_in_pgroup(pid: int, pgid: int, start_id: str | None) -> bool:
     return any(m.pid == pid and m.start_id == start_id for m in members)
 
 
+def _group_from_witnessed_descendant(
+    pid: int,
+    recorded_start: str | None,
+    records: dict[int, _ProviderChildRecord],
+) -> int | None:
+    """The group led by *pid*, once :func:`_pgroup_still_ours` vouches for it.
+
+    Companion to :func:`_isolated_provider_group` for the case it cannot serve: a
+    reaped leader. ``pgroup_of`` needs the leader in ``/proc``, so once it is gone
+    the group has no readable id and the escalation signals nothing -- while the
+    members left in that group keep running.
+
+    ``pgroup_of_leader`` resolves the id for a reaped leader, but from the pid
+    ALONE, and an unverified pid is what a RECYCLED one looks like: killpg on it
+    takes a stranger's tree. So this reads the number and then hands it to the same
+    ownership check the escalation itself uses, rather than carrying a second copy
+    of that loop.
+
+    What is added here is only the leader predicate: ``candidate == pid`` ties the
+    number to the leader we recorded, since a group a descendant ``setsid``-ed into
+    is not the one this pid led.
+
+    ``None`` -- no group signal, exactly as before -- when no verified member
+    vouches, when the group is not the one ``pid`` leads, and when signalling is
+    denied. POSIX only, like :func:`_isolated_provider_group`.
+    """
+    if platform_compat.IS_WINDOWS:
+        return None
+    candidate = platform_compat.pgroup_of_leader(pid)
+    if candidate is None or candidate != pid or candidate <= 1 or candidate == os.getpgrp():
+        return None
+    if not _pgroup_still_ours(candidate, pid, recorded_start, records, gated=True):
+        return None
+    return candidate
+
+
 def _provider_descendant_records(
     provider: object,
     pid: int,
@@ -988,9 +1033,30 @@ def _reap_provider_root(pid: int, recorded_start: str | None, *, gated: bool) ->
     signal re-checks it: that watcher can reap the leader zombie on its own, which
     frees the pid, and ``waitpid`` on a recycled pid consumes an UNRELATED child's
     exit status. That loss is silent and nothing detects or repairs it, so this
-    reads the identity here rather than trusting the one taken at entry. A genuine
-    zombie of ours keeps a readable ``/proc`` entry, so the check passes for the
-    case this exists to handle.
+    reads the identity here rather than trusting the one taken at entry.
+
+    WHY THE RE-READ IS ENOUGH, on every platform. Linux keeps ``/proc/<pid>/stat``
+    readable for a zombie. macOS ``proc_pidinfo`` refuses one, so
+    :func:`platform_compat.get_process_start_id` falls back to ``sysctl``, which
+    reads the same start instant from the kernel's zombie list. Either way the
+    identity of the state this teardown CREATES -- a killed root held unreaped to
+    keep its pgid unambiguous -- survives the exit and the check passes for the case
+    this exists to handle.
+
+    Where an identity cannot be read at all, refusing is deny-by-default working as
+    designed, not a gap to route around. An unreadable identity is exactly the case
+    where a recycled pid cannot be told from our own zombie: a freed pid can be taken
+    by another child of THIS process that is itself an unreaped zombie, and that
+    occupant reads as unreadable too, so a wait would steal its exit status and its
+    own watcher would report a code that never happened.
+
+    What such a refusal leaves behind is a ZOMBIE, which has already released its
+    memory: one process-table entry and an exit status, bounded by pid space and
+    gone when this process exits. That is not the leak this teardown exists to
+    close -- that one is a RUNNING descendant holding hundreds of megabytes with no
+    tracking entry left to find it by. And the entry is not necessarily permanent:
+    asyncio's child watcher may still reap it afterwards, since the root is this
+    process's child. A benign bounded entry is the cheaper side of the trade.
     """
     if not _root_identity_holds(pid, recorded_start, gated=gated):
         logger.warning(
@@ -1173,8 +1239,9 @@ def _sync_kill_provider(provider: object) -> None:
         return
     # Resolved once, while the root is alive. The root's zombie is then held
     # unreaped until every group signal has been sent (see below), so this id
-    # keeps naming OUR group for the whole escalation. Not resolved at all for an
-    # unverified root: the pgid would be whatever group holds that pid now.
+    # keeps naming OUR group for the whole escalation. Read BEFORE the descendant
+    # scan: that scan is unbounded in the width of the tree, and the watcher can
+    # reap the leader while it runs, which would cost a verified root its group.
     pgid = _isolated_provider_group(pid) if root_verified else None
     records = _provider_descendant_records(
         provider,
@@ -1183,6 +1250,26 @@ def _sync_kill_provider(provider: object) -> None:
         recorded_start=recorded_start,
         gated=pid_from_client,
     )
+    if pgid is None and pid_from_client:
+        # No group id from the root. Usually that root is a RECYCLED pid, and
+        # reading a group off it would name whatever group holds that pid now. But
+        # it is also the shape a REAPED leader presents -- no /proc entry to verify
+        # against -- and that root's group is still full of our running members.
+        # Telling the two apart needs evidence the pid cannot give, so the group is
+        # derived from a spawn-recorded descendant still in it; failing that this
+        # stays None and nothing is signalled, as before.
+        #
+        # Only for the RECORDED-pid shape. A `_proc`/`_active_proc` root came from a
+        # live handle whose returncode was None, so it was alive moments ago and
+        # `_isolated_provider_group` already had its answer -- there is no reaped
+        # leader to recover. That shape also passes `gated=False`, which makes every
+        # `_root_identity_holds` check pass on trust, including the ones bracketing
+        # the live descendant walk: a pid recycled to a foreign root would have that
+        # root's children walked into `records` and verified against identities read
+        # from the same stranger, so a witness drawn from them proves nothing. The
+        # recorded shape cannot reach that state -- an unverified root turns the walk
+        # off (`include_live_walk=root_verified`), leaving only the spawn snapshot.
+        pgid = _group_from_witnessed_descendant(pid, recorded_start, records)
     for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
         # killpg is authorized by GROUP OWNERSHIP, not by the root still being alive.
         # `_pgroup_still_ours` proves an identity-verified member of our tree owns this
@@ -1450,6 +1537,10 @@ def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
 
     # Third pass: remove stale session_pid_*.txt files for dead processes
     _prune_stale_session_pid_files(narrow_with_leaders=narrow_with_leaders)
+    # Fourth pass: bound the accumulation of session-token mappings, which are
+    # keyed by a token hash rather than by a pid and so cannot be probed for
+    # liveness at all.
+    _prune_stale_session_token_files()
 
     # Fourth pass: remove empty session workspace dirs (orphaned subagent dirs)
     sessions_dir = config_dir() / "sessions"
@@ -1544,6 +1635,59 @@ def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
     if stale_pid_files:
         logger.info("Cleaned up %d stale session PID files", stale_pid_files)
     return stale_pid_files
+
+
+#: How long an unrefreshed ``session_token_<sha256>.sig`` mapping is kept.
+#:
+#: Age is the ONLY signal available: the filename is a token hash, so unlike a
+#: ``session_pid_<pid>`` mapping there is no process to probe. It is nonetheless a
+#: safe signal, and for a specific reason rather than because the window is
+#: generous: the mapping is republished at the START of every turn
+#: (``messaging.identity.publish_turn_identity``), BEFORE anything in that turn can
+#: call a tool. So pruning a long-idle session's mapping cannot cost it identity —
+#: its next turn rewrites the file before the first resolution — and the window
+#: only decides how much disk an abandoned session holds in the meantime.
+_SESSION_TOKEN_TTL_SECS = 7 * 24 * 60 * 60
+
+
+def _prune_stale_session_token_files(ttl_secs: float = _SESSION_TOKEN_TTL_SECS) -> int:
+    """Remove ``session_token_*.sig`` mappings unrefreshed for *ttl_secs*.
+
+    This pass is the ONLY retraction path, deliberately: a teardown hook cannot
+    reach the case that actually accumulates files — a gateway that dies without
+    running one — so an age-based pass is what bounds the directory.
+
+    It runs where its caller runs: :func:`cleanup_orphaned_sessions` is startup and
+    graceful-shutdown only, NOT periodic. A long-lived gateway therefore holds one
+    mapping per session started since its last boot or clean stop. Stated because
+    the TTL below reads like a continuous expiry and is not one.
+
+    A mapping outliving its session is not a forgery risk: it names a session that
+    does not exist, and any holder of its token is inside the trust boundary. So
+    this is hygiene rather than a control, and it fails soft on every file it
+    cannot read or unlink.
+
+    Returns the number of mappings removed.
+    """
+    removed = 0
+    now = time.time()
+    try:
+        candidates = list(config_dir().glob("session_token_*.sig"))
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            if now - path.stat().st_mtime <= ttl_secs:
+                continue
+            path.unlink(missing_ok=True)
+        except OSError:
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - path.name is the sha256 DIGEST of a token, never a token  # noqa: E501
+            logger.debug("could not prune identity mapping %s", path.name, exc_info=True)
+            continue
+        removed += 1
+    if removed:
+        logger.info("Cleaned up %d stale session-token mappings", removed)
+    return removed
 
 
 def cleanup_orphaned_session_roots() -> int:
@@ -2431,6 +2575,24 @@ def _is_marked_mcp_launcher(cmdline: bytes) -> bool:
     return any(marker in normalized for marker in _MARKED_MCP_LAUNCHER_MARKERS)
 
 
+def _read_env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool | None:
+    """Tri-state read of *pid*'s ``KIROCREW_SPAWNED`` environment marker.
+
+    ``None`` distinguishes an unreadable environment from a readable one that
+    lacks the marker. An explicit *proc_root* permits fixture-owned process
+    tables on every host; production reads remain Linux-only.
+    """
+    if sys.platform != "linux" and proc_root is None:
+        return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
+    try:
+        environ = (root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    return needle in environ.split(b"\x00")
+
+
 def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
 
@@ -2441,15 +2603,7 @@ def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     identity. macOS/Windows keep the pre-existing cmdline-marker-only behavior.
     *proc_root* is a test seam for fixture-owned process tables.
     """
-    if sys.platform != "linux":
-        return False
-    root = proc_root if proc_root is not None else Path("/proc")
-    needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
-    try:
-        environ = (root / str(pid) / "environ").read_bytes()
-    except OSError:
-        return False
-    return needle in environ.split(b"\x00")
+    return _read_env_has_kirocrew_marker(pid, proc_root) is True
 
 
 def _is_sweepable_orphan_mcp(pid: int, cmdline: bytes) -> bool:
@@ -2654,6 +2808,30 @@ def _work_orphan_basename(cmdline: bytes) -> bytes:
     return args[0].rsplit(b"/", 1)[-1]
 
 
+def _is_agent_runtime_anchor(cmdline: bytes, *, has_kirocrew_marker: bool) -> bool:
+    """True when *cmdline* positively identifies an agent-runtime tree member.
+
+    This is the scope-reaper's authorization anchor, deliberately separate from
+    marker/descent ownership. It recognizes the generated sandbox launcher and
+    fingerprinted MCP workers through :func:`_is_orphan_mcp`, direct managed
+    runtimes (``kiro-cli`` / ``kiro-cli-chat`` / ``claude-agent-acp`` /
+    ``claude``) by exact argv0 basename, and the existing fingerprint-less MCP
+    launcher shapes only when that member itself carries the Kiro Crew spawn
+    marker. Peer gateway/CLI entrypoints are excluded.
+    """
+    if not cmdline:
+        return False
+    normalized = cmdline.replace(b"\x00", b" ")
+    if any(marker in normalized for marker in _GATEWAY_MARKERS):
+        return False
+    if _is_orphan_mcp(cmdline):
+        return True
+    basename = _work_orphan_basename(cmdline)
+    if basename in _MANAGED_AGENT_RUNTIME_BASENAMES:
+        return True
+    return has_kirocrew_marker and _is_marked_mcp_launcher(cmdline)
+
+
 def _is_sweepable_orphan_work(pid: int, cmdline: bytes, age_seconds: float) -> bool:
     """Third positive-identity path: agent-spawned TEST-RUNNER process
     (pytest coordinator or pytest-xdist/execnet worker) that outlived its
@@ -2733,8 +2911,8 @@ _REAPABLE_PID_FIELD: tuple[tuple[str, int], ...] = (
 )
 
 
-def _tracked_agent_pids() -> set[int]:
-    """PIDs a reaper can terminate, per both tracking files.
+def _read_tracked_agent_pids() -> tuple[set[int], bool]:
+    """Return the tracked PID snapshot and whether it is complete.
 
     Both files are read because a runtime absent from BOTH is exactly what
     :func:`_is_untracked_managed_agent_orphan` reports, and each reaper keys off
@@ -2743,32 +2921,46 @@ def _tracked_agent_pids() -> set[int]:
     session entry's third field is a start-time identity, numeric on Linux, and
     is never read as a PID.
 
-    Deliberately read WITHOUT either file lock. Readers cannot tear: rewrites
+    Reads remain lock-free. Readers cannot tear: rewrites
     go through :func:`_rewrite_pid_file` (temp file + rename, so a reader sees
     either the whole old or the whole new content) and tracking appends are
-    single short lines. Locking here would put a lock acquisition inside the
-    sweep's per-scan path for a purely diagnostic read. Any read failure yields
-    the entries found so far — the detector is report-only, so the worst
-    outcome is one spurious or one missing log line, never a kill.
+    single short lines. ``complete`` is false whenever a potential PID could
+    have been dropped; a missing file is a complete empty contribution.
     """
     tracked: set[int] = set()
+    complete = True
     paths = (_session_pid_file_path(), _pid_file_path())
     for path, (_label, reapable_index) in zip(paths, _REAPABLE_PID_FIELD):
         try:
             raw = path.read_text(encoding="utf-8")
-        except OSError:
-            continue  # absent or unreadable — nothing this file can claim
+        except OSError as exc:
+            if exc.errno != errno.ENOENT:
+                complete = False
+            continue
         for line in raw.split():
             fields = line.split(":")
             index = 0 if len(fields) == 1 else reapable_index
             if index >= len(fields):
-                continue  # truncated entry — no reapable field to read
+                complete = False
+                continue
             try:
                 value = int(fields[index])
             except ValueError:
-                continue  # malformed or partially-appended line
+                complete = False
+                continue
             if value > 0:
                 tracked.add(value)
+    return tracked, complete
+
+
+def _tracked_agent_pids() -> set[int]:
+    """PIDs a reaper can terminate, preserving report-only fail-open behavior.
+
+    Diagnostic callers intentionally accept a partial set. Any caller that can
+    authorize a kill must use :func:`_read_tracked_agent_pids` and require its
+    completeness flag.
+    """
+    tracked, _complete = _read_tracked_agent_pids()
     return tracked
 
 
@@ -3247,7 +3439,7 @@ def _sel_orphan_kill(pid: int, pgid: int, cmdline: bytes, method: str) -> None:
         logger.debug("SEL orphan-kill audit failed", exc_info=True)
 
 
-def _pid_cmdline(pid: int) -> bytes:
+def _pid_cmdline(pid: int, proc_root: Path | None = None) -> bytes:
     """Best-effort argv for *pid* on Linux; ``b""`` when unreadable or off-Linux.
 
     Empty is inconclusive, never "clean": every caller treats it as fail-closed
@@ -3256,12 +3448,14 @@ def _pid_cmdline(pid: int) -> bytes:
     Off-Linux deliberately has NO ``ps`` branch. Every consumer of this argv
     feeds a decision that also requires :func:`_env_has_kirocrew_marker`, which
     is fail-closed off Linux, so a subprocess here would only ever supply
-    evidence for a verdict that is already "refuse".
+    evidence for a verdict that is already "refuse". An explicit *proc_root*
+    permits fixture-owned process tables on every host.
     """
-    if sys.platform != "linux":
+    if sys.platform != "linux" and proc_root is None:
         return b""
+    root = proc_root if proc_root is not None else Path("/proc")
     try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes()
+        return (root / str(pid) / "cmdline").read_bytes()
     except OSError:
         return b""
 

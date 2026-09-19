@@ -44,6 +44,7 @@ import { recordSessionStart, recordEvent } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
+import { cronJobsQuery } from './api/cronJobsQuery'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
@@ -164,6 +165,7 @@ import {
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { appNotificationBadges, isAppNavId, mergeAppBadges } from './appNotificationBadges'
+import { appRunStates, nextSuccessExpiryMs, type AppRunState } from './appRunState'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtNumber, fmtPercent, fmtUnit } from './i18n/format'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
@@ -574,6 +576,69 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
 }
 
 /**
+ * Accessible name for a rail run-state mark.
+ *
+ * A literal key per state rather than one interpolated from the state value:
+ * `dynamicKeys.test.ts` polices composed keys, and a literal also keeps the
+ * three strings findable by grep from the catalog side.
+ */
+function runStateLabel(state: AppRunState | undefined): string {
+  if (state === 'running') return i18nT('app.app_job_running')
+  if (state === 'error') return i18nT('app.app_job_failed')
+  if (state === 'success') return i18nT('app.app_job_succeeded')
+  return ''
+}
+
+/**
+ * Run-state mark for an installed app's rail row.
+ *
+ * Renders in BOTH rail modes, unlike `ActivityIndicator` above. That component
+ * withholds itself when collapsed because a second anonymous dot there competes
+ * with the unread badge without identifying a session; this mark is the opposite
+ * case on both counts -- it names the row's own app, and the collapsed rail is
+ * exactly where "is that job still going?" has to be answerable without opening
+ * the app, which is the whole point of having it.
+ *
+ * Placed in a corner the count badge does not use. `BadgeIndicator` takes
+ * `top-1 right-1` collapsed and the `right-2` pill expanded; `ActivityIndicator`
+ * takes `right-8` expanded, and exactly one surface in the registry carries an
+ * `activitySelector` to render it -- `chat` (Sessions), a Main-group HOST
+ * surface. A host surface row never carries an `appName`, so it never receives
+ * this mark, and an app row never receives an activity count. The two cannot
+ * meet on one icon regardless of what an app is called.
+ *
+ * Colour alone does not carry the state. `running` is a filled dot inside a wide
+ * halo ring, `error` is a plain solid fill, and `success` is HOLLOW -- a ring
+ * with no fill. The error/success pair is the one that matters: red and green
+ * are the classic confusion, and a static red dot beside a static green one
+ * differing only in hue reads a failing job as a fresh success, silently, every
+ * time. The fill carries that distinction so hue does not have to, and `title`
+ * plus the accessible name state it in words for a sighted user and a screen
+ * reader.
+ *
+ * Nothing animates. An earlier revision pulsed `running` to mirror the Schedule
+ * page's badge, but this mark lives in persistent chrome on every page, so a
+ * long job would pull peripheral attention for its whole duration -- a cost the
+ * Schedule page does not pay, because the user goes there to watch. The halo
+ * ring distinguishes `running` without motion.
+ */
+function RunStateIndicator({ state, collapsed, label }: { state: AppRunState | undefined; collapsed: boolean; label: string }) {
+  if (!state) return null
+  const shape = state === 'running'
+    ? 'bg-accent ring-2 ring-accent/30'
+    : state === 'error'
+      ? 'bg-danger'
+      : 'bg-transparent ring-1 ring-ok'
+  const position = collapsed ? 'bottom-1 right-1' : 'right-8 top-1/2 -translate-y-1/2'
+  return <span
+    className={`absolute ${position} w-2 h-2 rounded-full z-10 ${shape}`}
+    role="status"
+    aria-label={label}
+    title={label}
+  />
+}
+
+/**
  * Badge slot for a nav item. Resolves the count from the surface registry
  * (built-in surfaces) and falls back to the `mc:app:badge`-driven `appBadges`
  * map (dynamic apps + bridges from non-Redux sources like global approvals)
@@ -581,7 +646,7 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
  * prior two-pipeline behavior without leaving per-id branches in the
  * renderer.
  */
-function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: boolean; appBadges: Record<string, number> }) {
+function NavBadge({ navId, collapsed, appBadges, runState }: { navId: string; collapsed: boolean; appBadges: Record<string, number>; runState?: AppRunState }) {
   const surface = getBuiltinSurface(navId)
   // selectSurfaceBadgeCount caches per-navId so this stays referentially
   // stable across renders inside a `.map()`.
@@ -600,6 +665,7 @@ function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: b
   return (
     <>
       <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
+      <RunStateIndicator state={runState} collapsed={collapsed} label={runStateLabel(runState)} />
       <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
       <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />
     </>
@@ -2157,6 +2223,14 @@ export default function App() {
               label: target.label,
               group: 'Apps',
               icon,
+              // The app's own name, carried rather than re-derived from `id`.
+              // `id` is `app-<name>` only for AppHost-routed apps and the BARE
+              // name for a native builtin, so parsing it back cannot tell a
+              // builtin app's row from a host surface's row -- and a helper that
+              // guesses would have to choose between missing every builtin app
+              // and letting an app named `schedule` claim host chrome. Passing
+              // the name the target already resolved avoids that choice.
+              appName: target.name,
             }]
           })
         setAppNavItems(items)
@@ -2303,6 +2377,46 @@ export default function App() {
     () => mergeAppBadges(appBadges, appNotificationBadges(notificationItems)),
     [appBadges, notificationItems],
   )
+
+  // Rail RUN STATE for installed apps, derived from the app's own cron jobs.
+  // Separate from the badge above and deliberately not merged into it: the badge
+  // is a count meaning "something is waiting for you", while this is the state of
+  // scheduled work and is addressed to nobody -- see `appRunState`.
+  //
+  // Reads the SHARED ['cron-jobs'] query rather than adding a poll. That key is
+  // invalidated on every server `refresh` frame (`useWebSocket`), which is where
+  // its freshness comes from, and several surfaces already observe it, so the
+  // rail costs no extra request. `enabled` is not gated on having installed apps:
+  // the query is shared, so gating it here would only change WHICH observer
+  // happens to fetch first.
+  const { data: cronJobsForRail } = useQuery({
+    ...cronJobsQuery,
+    refetchOnWindowFocus: false,
+  })
+  // The derivation is a pure function of the job list AND an instant, so it needs
+  // a clock of its own: without one a `success` mark stays on screen past its
+  // window whenever no refresh follows, and the window would be a claim the code
+  // does not keep. The clock is state rather than a `Date.now()` read inside the
+  // memo so it is a real dependency, and it advances on exactly two occasions --
+  // the job list changed, or the earliest showing `success` just expired. That is
+  // why there is no ticking interval: a per-second clock would re-render the rail
+  // continuously to show the same thing in every second but one.
+  const [runStateClockMs, setRunStateClockMs] = useState(() => Date.now())
+  const railAppRunStates = useMemo(
+    () => appRunStates(cronJobsForRail ?? [], runStateClockMs),
+    [cronJobsForRail, runStateClockMs],
+  )
+  // Fresh data is judged against now, not against the previous tick.
+  useEffect(() => { setRunStateClockMs(Date.now()) }, [cronJobsForRail])
+  useEffect(() => {
+    const due = nextSuccessExpiryMs(cronJobsForRail ?? [], runStateClockMs)
+    // Null means nothing is showing `success`, so the common case arms no timer.
+    // Re-arming on each clock change walks a batch of successes in expiry order
+    // and terminates when the last one is gone, rather than looping.
+    if (due === null) return
+    const timer = setTimeout(() => setRunStateClockMs(Date.now()), due)
+    return () => clearTimeout(timer)
+  }, [cronJobsForRail, runStateClockMs])
 
   const [updating, setUpdating] = useState(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
@@ -2560,7 +2674,7 @@ export default function App() {
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
   // spinner that never resolves, since the 30s refetch keeps retrying forever.
-  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | null>({
+  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | 'signin-required' | null>({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
       const u: KiroUsagePayload = d?.usage || {}
@@ -2635,9 +2749,13 @@ export default function App() {
       // warming cache). Scrape opt-in off with no API plan -> same treatment:
       // permanent until the user flips dashboard.usage_text_scrape_enabled, so
       // explain rather than hide (#7623 — hiding left no hint a knob exists).
+      // No readable Kiro credential -> also terminal, but a DIFFERENT remedy:
+      // sign in again, which is free, where flipping the scrape knob spends
+      // credits on a fetch that cannot authenticate (#11602).
       // Empty cache (Kiro warming) -> spinner.
       if (u.available === false) {
         if (u.reason === 'api_key_auth') return 'api-key' as const
+        if (u.reason === 'signin_required') return 'signin-required' as const
         if (u.reason === 'scrape_disabled') return 'scrape-disabled' as const
         return 'none' as const
       }
@@ -3207,7 +3325,7 @@ export default function App() {
   }
 
   const renderNavRow = (
-    n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode },
+    n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode; appName?: string },
   ) => (
     <NavItem
       navId={n.id}
@@ -3218,7 +3336,7 @@ export default function App() {
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
-      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} />}
+      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
     />
   )
 
@@ -3811,6 +3929,13 @@ export default function App() {
                 // the knob — hiding the segment here left users of v0.1.3-era
                 // dashboards with a pill that silently vanished (#7623).
                 segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_scrape_disabled')} aria-label={i18nT('app.kiro_credit_usage_scrape_disabled')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+              } else if (kiroUsageState === 'signin-required') {
+                // No live Kiro credential could be read (or it was rejected), so
+                // the free API never got an answer about this account. Terminal
+                // like 'scrape-disabled', but the label must name the FREE remedy,
+                // signing in again, because the scrape-disabled copy sent these
+                // users to a billed knob that cannot authenticate either (#11602).
+                segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_signin_required')} aria-label={i18nT('app.kiro_credit_usage_signin_required')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
               } else if (!kiroUsageState) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {

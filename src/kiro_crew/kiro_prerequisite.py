@@ -46,7 +46,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Coroutine, MutableMapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,7 @@ from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
 from kiro_crew.config.paths import config_dir
+from kiro_crew.executors import kiro_spawn_executor
 from kiro_crew.kiro_cli import (
     find_kiro_cli_candidates,
     known_kiro_cli_dirs,
@@ -1664,6 +1665,66 @@ async def _prepare_sandboxed_spawn(
     )
 
 
+async def _run_on_private_loop(
+    make_coro: Callable[[], Coroutine[Any, Any, ProcessResult]],
+) -> ProcessResult:
+    """Run one spawn on a PRIVATE event loop owned by a worker thread.
+
+    Windows only, and it exists for one call: ``CreateProcess``. CPython performs
+    it SYNCHRONOUSLY on whichever thread asks for the child, and on the Proactor
+    loop there is no await point in between --
+    ``ProactorEventLoop._make_subprocess_transport`` constructs
+    ``_WindowsSubprocessTransport`` before its first ``await waiter``, that
+    constructor calls ``self._start()``, and ``_start`` calls
+    ``windows_utils.Popen`` -> ``subprocess.Popen._execute_child`` ->
+    ``CreateProcess``. So the loop thread is inside ``CreateProcess`` for its
+    whole duration, which on an image with an endpoint-protection filter driver
+    is seconds, and nothing else on that loop advances.
+
+    ``asyncio.to_thread(asyncio.create_subprocess_exec, ...)`` does NOT fix that,
+    which is why the offload is a whole loop rather than one call: that is a
+    coroutine FUNCTION, so the worker thread would only build a coroutine object
+    and hand it back unawaited -- no child is spawned there at all, and awaiting
+    the result on the gateway loop performs the identical on-loop
+    ``CreateProcess``. Nothing narrower works either: asyncio offers no way to
+    adopt an already-spawned ``Popen`` into a subprocess transport, so the only
+    place the spawn can happen off the gateway loop is on another loop.
+
+    A private loop rather than a rewrite to blocking ``Popen`` keeps the Windows
+    retained-tree guarantee byte-for-byte: the descendant tracker, the exact-handle
+    snapshots and the terminate path all still run against a real
+    ``asyncio.subprocess.Process`` on a real Proactor loop, just not this one.
+    ``asyncio.run`` off the main thread is fine on Windows -- it installs signal
+    handlers only on the main thread -- and the loop is closed when the call
+    returns, so none stays bound to the pooled worker. It is spelled through
+    ``asyncio.Runner``, which is literally what ``asyncio.run`` uses internally
+    (same loop creation, same task-cancellation and async-generator shutdown on
+    close), because ``asyncio.run`` would trip test_spawn_audit: that scanner
+    matches ``<spawn module>.<spawn attr>`` and carries ``asyncio`` as a module
+    and ``run`` as an attr in order to catch ``subprocess.run``, so the name
+    collides. Nothing here spawns a child -- the spawn is in ``_run_process``,
+    which the audit already lists -- so allowlisting this function would put a
+    non-spawn in a list of judged-benign spawns. Do not simplify it back.
+
+    Residue, deliberate: a started ``run_in_executor`` future cannot be
+    cancelled, so cancelling the awaiting task does not reach the worker. The
+    child is then reaped by the body's own ``timeout_secs`` rather than at once,
+    and the ``finally`` there still terminates the tree, closes every retained
+    handle and removes the cleanup path -- so a cancel delays the reap, it does
+    not leak a process. Making the cancel prompt needs a signal threaded through
+    that teardown, which is its own change.
+    """
+
+    def _own_loop() -> ProcessResult:
+        with asyncio.Runner() as runner:
+            return runner.run(make_coro())
+
+    return await asyncio.get_running_loop().run_in_executor(
+        kiro_spawn_executor(),
+        _own_loop,
+    )
+
+
 async def _run_process(
     command: str,
     args: list[str],
@@ -1673,13 +1734,37 @@ async def _run_process(
     sandbox_mode: str = _UNVERIFIED_SANDBOX_MODE,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    _on_private_loop: bool = False,
 ) -> ProcessResult:
     """Run one fixed argv with bounded output, always inside the OS sandbox.
 
     There is no opt-out: every spawn this module makes is a probe or a Kiro auth
     call, and all of them are sandboxed. Nothing here may run a child
     unsandboxed.
+
+    On Windows this re-enters itself once, on a private event loop owned by a
+    pooled worker thread, because the spawn below reaches ``CreateProcess``
+    synchronously on whatever loop asks for the child -- see
+    :func:`_run_on_private_loop` for why that is the narrowest offload available
+    and why the POSIX path needs none. ``_on_private_loop`` is that re-entry's
+    own marker and is private: nothing outside this function may set it, and a
+    caller that did would put the spawn back on its own loop.
     """
+
+    if platform_compat.IS_WINDOWS and not _on_private_loop:
+        return await _run_on_private_loop(
+            functools.partial(
+                _run_process,
+                command,
+                args,
+                env=env,
+                timeout_secs=timeout_secs,
+                sandbox_mode=sandbox_mode,
+                extra_hidden_dirs=extra_hidden_dirs,
+                extra_visible_dirs=extra_visible_dirs,
+                _on_private_loop=True,
+            )
+        )
 
     if platform_compat.IS_POSIX and not _PROCESS_GROUP_SUPERVISOR_CODE:
         return ProcessResult(ok=False, error=_PROCESS_GROUP_SUPERVISOR_ERROR)

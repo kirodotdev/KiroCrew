@@ -170,7 +170,8 @@ async def _wait_durable_terminal(svc: WorkflowService, run_id: str):
     """An orderly restart waits for the driver's terminal flush, not just RAM status."""
     handle = svc.registry.get(run_id)
     assert handle is not None and handle.task is not None
-    await asyncio.wait_for(asyncio.shield(handle.task), timeout=3.0)
+    # The driver settles on causality; the cap only turns a hang into a failure.
+    await asyncio.wait_for(asyncio.shield(handle.task), timeout=_HANG_GUARD_SECS)
     snap = svc.status(run_id)
     assert snap and snap["status"] != "running"
     return snap
@@ -1117,11 +1118,12 @@ async def test_start_launches_run_and_injects_on_done(monkeypatch) -> None:
     svc = WorkflowService(sessions=FakeSessions([]), on_done=on_done)
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="slot:main")
     assert "run_id" in out
-    snap = await _wait_terminal(svc, out["run_id"])
+    # The driver settles only after the durable flush and the result-to-chat
+    # callback, so this wait is causal — not a wall-clock cover for disk I/O.
+    snap = await _wait_durable_terminal(svc, out["run_id"])
     assert snap["status"] == "finished"
     assert snap["result"] == {"ok": True}
-    # Terminal state precedes the durable flush and result-to-chat callback.
-    await asyncio.wait_for(notified.wait(), timeout=3.0)
+    assert notified.is_set()
     assert done and done[0]["session_key"] == "slot:main"
 
 
@@ -1402,8 +1404,7 @@ async def test_finished_run_injects_result_and_autoruns_agent_turn(monkeypatch) 
 
     svc = WorkflowService(sessions=FakeSessions([]), on_done=_on_done)
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="dashboard:chat-1")
-    await _wait_terminal(svc, out["run_id"])
-    await asyncio.sleep(0.05)  # let on_done fire
+    await _wait_durable_terminal(svc, out["run_id"])
 
     # (1) result summary injected as an assistant message into the ORIGINATING slot
     assert any(m["role"] == "assistant" and "demo" in m["content"] for m in origin.messages)
@@ -1432,8 +1433,7 @@ async def test_finished_run_busy_slot_queues_turn(monkeypatch) -> None:
         on_done=lambda rid, snap: inject_workflow_result(dstate, rid, snap, on_injected=_auto_turn),
     )
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="dashboard:chat-1")
-    await _wait_terminal(svc, out["run_id"])
-    await asyncio.sleep(0.05)
+    await _wait_durable_terminal(svc, out["run_id"])
     # Result still injected, but the turn was QUEUED (False), not started.
     assert any(m["role"] == "assistant" for m in origin.messages)
     assert started == [False]
@@ -1691,3 +1691,38 @@ async def test_rerun_keeps_birth_mode_and_current_caller_policy(original, caller
     assert result["status"] == "finished"
     binding = await asyncio.to_thread(read_binding, again["run_id"], required=True)
     assert binding["memory_mode"] == (strictest((original, caller)) or "persistent")
+
+
+async def test_durable_terminal_wait_includes_the_completion_callback(monkeypatch):
+    _patch_stream(monkeypatch, ["stub"])
+    flushing = asyncio.Event()
+    release = asyncio.Event()
+    done = []
+    svc = WorkflowService(sessions=FakeSessions([]), on_done=lambda *args: done.append(args))
+    original_persist = svc.registry.persist_async
+
+    async def persist(run_id):
+        handle = svc.registry.get(run_id)
+        if handle is not None and handle.status == "finished":
+            flushing.set()
+            await release.wait()
+        await original_persist(run_id)
+
+    monkeypatch.setattr(svc.registry, "persist_async", persist)
+    out = await svc.start(GOOD_SCRIPT)
+    waiter = None
+    try:
+        await asyncio.wait_for(flushing.wait(), timeout=3.0)
+        assert svc.status(out["run_id"])["status"] == "finished"
+        assert done == []
+        waiter = asyncio.create_task(_wait_durable_terminal(svc, out["run_id"]))
+        # Give the waiter one turn. A RAM-only poll returns before release;
+        # a durable wait remains blocked on the deliberately held flush.
+        await asyncio.sleep(0)
+        assert not waiter.done()
+    finally:
+        release.set()
+        if waiter is not None:
+            await waiter
+        await _wait_durable_terminal(svc, out["run_id"])
+    assert len(done) == 1

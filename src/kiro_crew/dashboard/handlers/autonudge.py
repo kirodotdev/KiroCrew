@@ -167,15 +167,25 @@ def _serialize_monitor(loop: Any) -> dict[str, Any]:
 #: branch of ``_timer`` returns before the sentinel is ever tested, and a
 #: filesystem path is owner-scoped regardless.
 #:
+#: ``config_generation`` is internal fence bookkeeping -- the token the
+#: structural-terminal stop compares against to refuse a stale completion. It is
+#: the automation's own private counter, carries no legacy-panel meaning, and has
+#: no truthful structured equivalent to MAP, so it is withheld like
+#: ``stop_sentinel_path`` rather than published or faked.
+#:
 #: A GATED prompt loop is in NEITHER case: it carries probe state but still
 #: delivers down the legacy path, so its message and its cycle accounting are
 #: real, and ``is_structured_monitor_loop`` already excludes it.
+#:
+#: ``goal_token`` is an authorisation a client sends back, not a fact about the subject.
 _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
     {
         "monitor",
         "message",
         "banner",
         "stop_sentinel_path",
+        "config_generation",
+        "goal_token",
         "max_cycles",
         "cycle_count",
         "last_fire_ts",

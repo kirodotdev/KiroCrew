@@ -2862,6 +2862,7 @@ def test_member_folder_create_inherits_ancestor_project_and_agent(tmp_path, monk
         project_dir=str(project),
         default_agent="starkai",
     )
+
     leaf = _folder(state, "folder-leaf01", "Readiness", parent_id=root["id"])
 
     created = asyncio.run(
@@ -2883,6 +2884,73 @@ def test_member_folder_create_inherits_ancestor_project_and_agent(tmp_path, monk
         )
         is child
     )
+
+
+@pytest.mark.parametrize("route", ["plain", "non_root_folder", "cross_workspace_folder"])
+def test_create_workspace_resolution_stays_off_the_event_loop(tmp_path, monkeypatch, route):
+    """Every create branch resolves filesystem/workspace identity off-loop.
+
+    The cross-workspace folder branch performs realpath comparisons; the plain
+    and non-root-folder siblings use the ordinary workspace mapper. Recording
+    both seams makes this fail if either call is moved back into the coroutine.
+    """
+    state = _make_state(tmp_path)
+    caller = _member_slot(state) if route == "cross_workspace_folder" else _slot(state, "chat-1")
+    folder_id = ""
+    if route == "cross_workspace_folder":
+        project, _cfg = _configured_folder_target(tmp_path, monkeypatch, "starkai")
+        folder_id = _folder(
+            state,
+            "folder-offloop-cross",
+            "Cross workspace",
+            project_dir=str(project),
+            default_agent="starkai",
+        )["id"]
+    else:
+        cfg = sc.KiroCrewConfig.load()
+        monkeypatch.setattr(sc.KiroCrewConfig, "load", staticmethod(lambda: cfg))
+        if route == "non_root_folder":
+            project = tmp_path / "offloop-checkout"
+            project.mkdir()
+            folder_id = _folder(
+                state,
+                "folder-offloop-nonroot",
+                "Checkout",
+                project_dir=str(project),
+            )["id"]
+
+    real_realpath = sc.os.path.realpath
+    real_workspace_name_for_dir = sc._workspace_name_for_dir
+    realpath_threads: list[int] = []
+    workspace_map_threads: list[int] = []
+
+    def tracked_realpath(*args, **kwargs):
+        realpath_threads.append(threading.get_ident())
+        return real_realpath(*args, **kwargs)
+
+    def tracked_workspace_name_for_dir(*args, **kwargs):
+        workspace_map_threads.append(threading.get_ident())
+        return real_workspace_name_for_dir(*args, **kwargs)
+
+    monkeypatch.setattr(sc.os.path, "realpath", tracked_realpath)
+    monkeypatch.setattr(sc, "_workspace_name_for_dir", tracked_workspace_name_for_dir)
+    loop_thread = threading.get_ident()
+
+    asyncio.run(
+        sc.create_session(
+            state,
+            caller_session_key=_key(caller),
+            folder_id=folder_id,
+        )
+    )
+
+    observed = realpath_threads + workspace_map_threads
+    assert observed, "the selected create branch must exercise a resolution seam"
+    assert loop_thread not in observed
+    if route != "plain":
+        assert realpath_threads, "folder project resolution must exercise realpath"
+    if route != "cross_workspace_folder":
+        assert workspace_map_threads, "ordinary binding resolution must map its workspace"
 
 
 def test_explicit_agent_overrides_the_folder_default_in_target_workspace(tmp_path, monkeypatch):
@@ -2945,18 +3013,45 @@ def test_non_member_cannot_use_a_folder_to_cross_workspaces(tmp_path, monkeypatc
     assert state.live_slot_count() == before
 
 
-@pytest.mark.parametrize("duplicate", [False, True])
-def test_folder_project_requires_one_configured_workspace(tmp_path, monkeypatch, duplicate):
+@pytest.mark.parametrize("member", [True, False])
+def test_non_root_folder_project_keeps_caller_workspace_as_cwd(tmp_path, monkeypatch, member):
+    """A folder linked to a checkout that is not a workspace root is the ordinary
+    dashboard configuration (`POST /api/chat/slots` just sets `slot.project`), so
+    it must keep working for EVERY caller: the child stays in the caller's
+    workspace with the folder's project as its cwd. Refusing it would regress
+    same-workspace agent-driven filing the dashboard still honors.
+    """
+    state = _make_state(tmp_path)
+    caller = _member_slot(state) if member else _slot(state, "chat-1")
+    project = tmp_path / "unmapped-project"
+    project.mkdir()
+    cfg = sc.KiroCrewConfig.load()
+    monkeypatch.setattr(sc.KiroCrewConfig, "load", staticmethod(lambda: cfg))
+    folder = _folder(state, "folder-target3", "Platform", project_dir=str(project))
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+    )
+
+    child = state.get_slot(created["target"])
+    assert child.workspace == caller.workspace
+    assert child.project == str(project.resolve()), "the folder project is the cwd"
+    assert child.agent == caller.agent, "no folder default: the caller's agent is inherited"
+    assert child._folder_workspace_authority == "", "no boundary crossed, no authority stamped"
+    written = state.conversation_log.get_metadata(slot_history_key(child))
+    assert "folder_workspace_authority" not in written
+
+
+def test_folder_project_shared_by_two_workspaces_is_ambiguous(tmp_path, monkeypatch):
     from kiro_crew.config.loader import WorkspaceConfig
 
     state = _make_state(tmp_path)
     caller = _member_slot(state)
-    project = tmp_path / "unmapped-project"
+    project = tmp_path / "shared-project"
     project.mkdir()
     cfg = sc.KiroCrewConfig.load()
-    if duplicate:
-        cfg.workspaces["target-a"] = WorkspaceConfig(dir=str(project))
-        cfg.workspaces["target-b"] = WorkspaceConfig(dir=str(project))
+    cfg.workspaces["target-a"] = WorkspaceConfig(dir=str(project))
+    cfg.workspaces["target-b"] = WorkspaceConfig(dir=str(project))
     monkeypatch.setattr(sc.KiroCrewConfig, "load", staticmethod(lambda: cfg))
     folder = _folder(
         state,
@@ -2971,9 +3066,7 @@ def test_folder_project_requires_one_configured_workspace(tmp_path, monkeypatch,
             sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
         )
 
-    assert exc.value.code == (
-        "folder_workspace_ambiguous" if duplicate else "folder_workspace_unmapped"
-    )
+    assert exc.value.code == "folder_workspace_ambiguous"
 
 
 @pytest.mark.parametrize("project_kind", ["missing", "sensitive"])
@@ -3035,11 +3128,17 @@ def test_cross_workspace_member_exception_never_crosses_memory_stores(tmp_path, 
 
 
 def test_member_ownership_without_folder_provenance_does_not_cross_workspace(tmp_path):
+    """`folder_id` is a mutable filing field any later move sets, so a filed,
+    member-owned, same-store child in another workspace is still refused: the
+    exception keys on the birth provenance the create stamps, not on filing.
+    """
     state = _make_state(tmp_path)
     caller = _member_slot(state)
+    _folder(state, "folder-filing2", "Filing only")
     child = _slot(state, "chat-owned", workspace="other")
     child._created_by = caller.key
     child.memory_store = caller.memory_store
+    child.folder_id = "folder-filing2"
 
     with pytest.raises(sc.SessionControlError) as exc:
         sc.authorize_target(
@@ -3050,6 +3149,105 @@ def test_member_ownership_without_folder_provenance_does_not_cross_workspace(tmp
         )
 
     assert exc.value.code == "workspace_mismatch"
+
+
+def test_folder_authority_lapses_when_the_child_leaves_its_birth_workspace(tmp_path, monkeypatch):
+    """The marker names the workspace the child was BORN into and is never
+    updated, so a child that has since moved (an agent switch) no longer matches
+    its own record and the exception lapses.
+    """
+    state = _make_state(tmp_path)
+    caller = _member_slot(state)
+    project, _cfg = _configured_folder_target(tmp_path, monkeypatch, "starkai")
+    folder = _folder(
+        state, "folder-target7", "Platform", project_dir=str(project), default_agent="starkai"
+    )
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+    )
+    child = state.get_slot(created["target"])
+    assert child._folder_workspace_authority == "target"
+    written = state.conversation_log.get_metadata(slot_history_key(child))
+    assert "folder_workspace_authority" not in written
+    from kiro_crew.session_agent_selection import session_folder_workspace_grant
+
+    assert session_folder_workspace_grant(slot_history_key(child)) == (
+        caller.key,
+        "target",
+        child.memory_store or "default",
+    )
+    assert (
+        sc.authorize_target(
+            state, caller_session_key=_key(caller), target=child.key, operation="read"
+        )
+        is child
+    )
+
+    child.workspace = "elsewhere"
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        sc.authorize_target(
+            state, caller_session_key=_key(caller), target=child.key, operation="read"
+        )
+    assert exc.value.code == "workspace_mismatch"
+
+
+def test_folder_authority_is_rehydrated_from_protected_session_record(tmp_path, monkeypatch):
+    """Both restore paths project the protected grant or fail closed."""
+    from kiro_crew.dashboard import chat_persistence as cp
+
+    state = _make_state(tmp_path)
+    caller = _member_slot(state)
+    project, _cfg = _configured_folder_target(tmp_path, monkeypatch, "starkai")
+    folder = _folder(
+        state, "folder-target8", "Platform", project_dir=str(project), default_agent="starkai"
+    )
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+    )
+    child = state.get_slot(created["target"])
+    meta = state.conversation_log.get_metadata(slot_history_key(child))
+    state._slots.pop(child.key)
+
+    restored = cp._rehydrate_slot_from_history(state, child.key, _prefetched_meta=meta)
+    assert restored is not None
+    assert restored._created_by == caller.key
+    assert restored._folder_workspace_authority == "target"
+    assert (
+        sc.authorize_target(
+            state, caller_session_key=_key(caller), target=restored.key, operation="read"
+        )
+        is restored
+    )
+
+
+def test_project_folder_without_a_default_agent_inherits_the_callers_agent(tmp_path, monkeypatch):
+    """An omitted agent inherits the CALLER's agent, not the global default -- the
+    rule `rfc-conductor-work-ledger.md` records. A project-linked folder adds its
+    own pinned `default_agent` ahead of that fallback and nothing else, so when
+    the folder pins none the caller's agent is what the cross-workspace binding
+    check sees -- and, bound to the caller's workspace, it is refused rather than
+    silently replaced by whatever the global default happens to be.
+    """
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    state = _make_state(tmp_path)
+    caller = _member_slot(state)
+    caller.agent = "starkai"
+    project, cfg = _configured_folder_target(tmp_path, monkeypatch, "target-worker")
+    cfg.agents["starkai"] = KiroCrewAgentConfig(
+        kiro_agent="starkai", workspace=caller.workspace, memory_store="default"
+    )
+    cfg.default_agent = "target-worker"
+    folder = _folder(state, "folder-target9", "Platform", project_dir=str(project))
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+        )
+
+    assert exc.value.code == "agent_workspace_mismatch"
+    assert "'starkai'" in exc.value.message, "the caller's agent, not the global default"
 
 
 def test_folder_target_change_during_create_revokes_the_decision(tmp_path, monkeypatch):
@@ -3080,6 +3278,83 @@ def test_folder_target_change_during_create_revokes_the_decision(tmp_path, monke
 
     assert exc.value.code == "folder_target_changed"
     assert state.live_slot_count() == before
+
+
+def test_filing_only_folder_recheck_ignores_inputs_the_create_never_consulted(
+    tmp_path, monkeypatch
+):
+    """The pre-allocation recheck revokes exactly the decisions that went stale.
+
+    A filing-only folder never reads `default_agent`, and a visual reparent
+    under another project-less folder changes nothing the create consumed, so
+    neither may 409 a create that is already correct. Only what was consumed --
+    here, the folder acquiring an inherited project mid-create -- revokes.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _folder(state, "folder-parent-a", "A")
+    folder = _folder(state, "folder-filing3", "Filing only", parent_id="folder-parent-a")
+    real_resolve = sc.resolve_agent_bindings
+
+    def resolve_then_edit_unconsumed(*args, **kwargs):
+        resolved = real_resolve(*args, **kwargs)
+        folder["default_agent"] = "reviewer"
+        _folder(state, "folder-parent-b", "B")
+        folder["parent_id"] = "folder-parent-b"
+        return resolved
+
+    monkeypatch.setattr(sc, "resolve_agent_bindings", resolve_then_edit_unconsumed)
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+    )
+    child = state.get_slot(created["target"])
+    assert child.folder_id == folder["id"]
+    assert child.agent == caller.agent, "an edit to an unread default_agent changes nothing"
+
+    project = tmp_path / "late-project"
+    project.mkdir()
+    second = _folder(state, "folder-filing4", "Filing only too")
+
+    def resolve_then_link_project(*args, **kwargs):
+        resolved = real_resolve(*args, **kwargs)
+        second["project_dir"] = str(project)
+        return resolved
+
+    monkeypatch.setattr(sc, "resolve_agent_bindings", resolve_then_link_project)
+    before = state.live_slot_count()
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(state, caller_session_key=_key(caller), folder_id=second["id"])
+        )
+    assert exc.value.code == "folder_target_changed"
+    assert state.live_slot_count() == before
+
+
+def test_explicit_agent_makes_the_folder_default_an_unconsumed_input(tmp_path, monkeypatch):
+    """With `agent` named, the folder's `default_agent` is never read, so a
+    concurrent edit to it must not revoke the create."""
+    state = _make_state(tmp_path)
+    caller = _member_slot(state)
+    project, _cfg = _configured_folder_target(tmp_path, monkeypatch, "starkai", "reviewer")
+    folder = _folder(
+        state, "folder-target10", "Platform", project_dir=str(project), default_agent="starkai"
+    )
+    real_resolve = sc.resolve_agent_bindings
+
+    def resolve_then_change(*args, **kwargs):
+        resolved = real_resolve(*args, **kwargs)
+        folder["default_agent"] = "someone-else"
+        return resolved
+
+    monkeypatch.setattr(sc, "resolve_agent_bindings", resolve_then_change)
+
+    created = asyncio.run(
+        sc.create_session(
+            state, caller_session_key=_key(caller), folder_id=folder["id"], agent="reviewer"
+        )
+    )
+
+    assert state.get_slot(created["target"]).agent == "reviewer"
 
 
 def test_create_refuses_an_unknown_folder(tmp_path):
@@ -3850,6 +4125,137 @@ def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypat
     # ceiling silently never binds.
     assert getattr(child, "_created_by", "") == caller.key
     assert state.creator_slot_count(caller.key) == 1
+
+
+def test_the_creator_session_id_is_frozen_at_mint_not_read_live(tmp_path, monkeypatch):
+    """The child's parent lineage must cite the creator that was live AT MINT.
+
+    The creator SID is stamped on the child at ``session_create`` time, from the
+    live caller handle. If instead it were read live at the child's first turn,
+    a creator slot closed and replaced in between (a distinct handle with its own
+    session id) would make the child cite the REPLACEMENT's crew log -- and that id
+    lands in the append-only, immutable ``session/opened`` entry with no recovery.
+
+    Mutation guard: re-read the creator SID live at emit (from the current slot
+    handle) and this test reddens, because the replacement below carries a
+    different session id than the one frozen at mint.
+    """
+    from unittest.mock import MagicMock
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "acp-sess-creator-at-mint"
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+
+    # Frozen at mint from the live caller handle, and witnessed by this process.
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+    assert getattr(child, "_lineage_minted", False) is True
+
+    # The sid is NOT written into the birth metadata: the transcript is a file an
+    # agent's file tools can edit, so nothing read back from it may become the
+    # gateway-authored crew-log lineage. Only the attribution rides the metadata,
+    # for the ownership boundary.
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert written.get("created_by") == caller.key
+    assert "created_by_sid" not in written
+
+    # Now the creator's handle is replaced with a distinct session id -- the exact
+    # window the finding names. The frozen value on the child must NOT follow it.
+    replacement = MagicMock()
+    replacement.session_id = "acp-sess-replacement"
+    caller._acp_client = replacement
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+
+
+def test_a_slot_nobody_minted_in_this_process_carries_no_lineage_witness(tmp_path):
+    """A slot that was not created through ``session_create`` in THIS process --
+    a person's own tab, a fork, a restore -- has no lineage witness, whatever its
+    ``_created_by`` says. The crew-log ``session/opened.parent`` write is gated on
+    the witness, so restored or hand-edited attribution never becomes lineage.
+
+    Mutation guard: default the flag to True, or set it on the plain
+    ``get_or_create_slot`` path, and this test reddens.
+    """
+    state = _make_state(tmp_path)
+    plain = _slot(state, "chat-9")
+    plain._created_by = "chat-1"  # what a restore from transcript metadata sets
+    assert getattr(plain, "_lineage_minted", False) is False
+    assert getattr(plain, "_created_by_sid", "") == ""
+
+
+def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
+    """``_ledger_lineage`` is the one seam between the slot and the crew-log
+    ``session/opened.parent`` write. It yields the creator only when this process
+    minted the slot; attribution that arrived any other way -- restored from a
+    transcript an agent's file tools can edit, or set by hand -- yields nothing,
+    so the emitter writes no ``parent`` and no metadata edit can forge lineage.
+
+    Mutation guard: drop the witness check and the second case reddens; read the
+    sid live instead of the frozen field and the first case reddens.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.chat_runner import _ledger_lineage
+
+    minted = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-creator-at-mint", _lineage_minted=True
+    )
+    assert _ledger_lineage(minted) == ("chat-1", "acp-sess-creator-at-mint")
+
+    restored = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-forged-by-editing-the-transcript"
+    )
+    assert _ledger_lineage(restored) == ("", "")
+    restored_explicit = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-x", _lineage_minted=False
+    )
+    assert _ledger_lineage(restored_explicit) == ("", "")
+
+    minted_without_handle = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="", _lineage_minted=True
+    )
+    assert _ledger_lineage(minted_without_handle) == ("chat-1", "")
+
+
+def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path, monkeypatch):
+    """The creator sid is backend-authored, so it is bounded where it is RETAINED.
+
+    An id past ``MAX_ACP_SESSION_ID_LEN`` is not stored on the child -- dropped,
+    never truncated, so it cannot push the child's ``session/opened`` entry over
+    the crew log's size cap and lose the whole entry. The sid is optional: absent
+    is a legal record, a clipped id would be a wrong one. (The sid never reaches
+    the birth metadata in any case; the bound is about the in-memory slot and the
+    entry it feeds.)
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "s" * (MAX_ACP_SESSION_ID_LEN + 1)
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert getattr(child, "_created_by_sid", "") == ""
+    # Still a witnessed mint: the slot half of the lineage is recorded, sid absent.
+    assert getattr(child, "_lineage_minted", False) is True
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert "created_by_sid" not in written
+    # The attribution itself is unaffected: the slot key is ours, not the backend's.
+    assert getattr(child, "_created_by", "") == caller.key
 
 
 def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
@@ -4853,3 +5259,88 @@ def test_close_slot_runs_the_pre_pop_check_synchronously_after_retirement(tmp_pa
     # second retirement is needed because the check itself suspends nothing.
     assert order == ["retire", "check"], order
     assert slot.key not in state._slots  # closed
+
+
+def test_transcript_metadata_cannot_mint_folder_workspace_authority(tmp_path, monkeypatch):
+    """Editable metadata cannot replace a missing protected grant."""
+    from kiro_crew.dashboard import chat_persistence as cp
+    from kiro_crew.session_agent_selection import _selection_path
+
+    state = _make_state(tmp_path)
+    caller = _member_slot(state)
+    project, _cfg = _configured_folder_target(tmp_path, monkeypatch, "starkai")
+    folder = _folder(
+        state, "folder-forged1", "Platform", project_dir=str(project), default_agent="starkai"
+    )
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+    )
+    child = state.get_slot(created["target"])
+    history_key = slot_history_key(child)
+    _selection_path(history_key).unlink()
+    state.conversation_log.update_metadata(
+        history_key,
+        {
+            "created_by": caller.key,
+            "folder_workspace_authority": "target",
+            "memory_store": caller.memory_store,
+        },
+    )
+    state._slots.pop(child.key)
+
+    restored = cp._rehydrate_slot_from_history(state, child.key)
+    assert restored is not None
+    assert restored._folder_workspace_grant is None
+    assert restored._folder_workspace_authority == ""
+    with pytest.raises(sc.SessionControlError) as exc:
+        sc.authorize_target(
+            state, caller_session_key=_key(caller), target=restored.key, operation="read"
+        )
+    assert exc.value.code == "workspace_mismatch"
+
+
+def test_final_folder_project_revalidation_precedes_allocation(tmp_path, monkeypatch):
+    """A pathname replacement during awaited preparation revokes creation."""
+    state = _make_state(tmp_path)
+    caller = _member_slot(state)
+    project, _cfg = _configured_folder_target(tmp_path, monkeypatch, "starkai")
+    folder = _folder(
+        state, "folder-pathrace", "Platform", project_dir=str(project), default_agent="starkai"
+    )
+    replacement = tmp_path / "replacement-project"
+    replacement.mkdir()
+    monkeypatch.setattr(sc, "_validate_project_dir", lambda _raw: (str(replacement), None))
+    before = state.live_slot_count()
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+        )
+
+    assert exc.value.code == "folder_target_changed"
+    assert state.live_slot_count() == before
+
+
+def test_recent_restore_projects_protected_folder_workspace_grant(tmp_path, monkeypatch):
+    """Bulk startup restore reads the same protected grant as targeted resume."""
+    from kiro_crew.dashboard.chat import restore_recent_sessions
+
+    state = _make_state(tmp_path)
+    caller = _member_slot(state)
+    project, _cfg = _configured_folder_target(tmp_path, monkeypatch, "starkai")
+    folder = _folder(
+        state, "folder-recent1", "Platform", project_dir=str(project), default_agent="starkai"
+    )
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id=folder["id"])
+    )
+    child = state.get_slot(created["target"])
+    state._slots.pop(child.key)
+
+    assert restore_recent_sessions(state, window_minutes=60) == 1
+    restored = state.get_slot(child.key)
+    assert restored._folder_workspace_grant == (
+        caller.key,
+        "target",
+        child.memory_store or "default",
+    )

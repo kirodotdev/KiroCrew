@@ -12,7 +12,7 @@ the dashboard, completion events unroutable.
 Why the gate stayed green: the ancestry walk is implemented in FOUR
 independent copies (``mcp_caller.CallerContext.from_env``,
 ``mcp_core._resolve_session_key``, the inline walk in
-``mcp_shared._resolve_excluded_tools``, ``mcp_gateway/stub.py``), each tested
+``mcp_shared._resolve_tool_policy``, ``mcp_gateway/stub.py``), each tested
 with hand-rolled per-file mocks that encode their author's topology
 assumptions. Mocks cannot detect that the assumption itself changed.
 
@@ -204,9 +204,9 @@ def test_mcp_core_resolves_session_key(topo, monkeypatch, view) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Walk copy 3: the inline walk in mcp_shared._resolve_excluded_tools
+# Walk copy 3: the inline walk in mcp_shared._resolve_tool_policy
 # ---------------------------------------------------------------------------
-# The policy session-key walk is inlined in ``_resolve_excluded_tools`` and
+# The policy session-key walk is inlined in ``_resolve_tool_policy`` and
 # its deep-walk step is a nested function reading the real /proc, so it
 # cannot be patched. Model the resolvable case with the file on the DIRECT
 # parent (kiro-cli): under the host view the very first ancestor matches and
@@ -244,9 +244,9 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
     urlopen = MagicMock(return_value=response)
     monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
-    assert mcp_shared._resolve_excluded_tools() == set()
+    assert mcp_shared._resolve_tool_policy().excluded == set()
     # The walk must have RESOLVED a session key and reached the gateway —
-    # under pidns it resolves empty and fail-opens without the call.
+    # under pidns it resolves empty and returns unresolved without the call.
     assert urlopen.called
     request = urlopen.call_args[0][0]
     assert request.get_header("X-session-key") == SESSION_KEY
@@ -400,9 +400,13 @@ def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     urlopen = MagicMock()
     monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
-    # No key resolvable -> startup-race fail-open WITHOUT a policy call and,
+    # No key resolvable -> startup-race refusal WITHOUT a policy call and,
     # crucially, WITHOUT the stolen key ever being read through the symlink.
-    assert mcp_shared._resolve_excluded_tools() == set()
+    policy = mcp_shared._resolve_tool_policy()
+    assert policy.excluded == set()
+    # Refusing to follow the symlink must not be reported as an empty
+    # exclusion list, or a stolen-key attempt would silently widen the deny.
+    assert policy.unresolved == "no_session_key"
     assert not urlopen.called
 
 
@@ -464,7 +468,7 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     ),
     "mcp_shared.py": (
         "reader: policy session-key /proc ancestry walk inline in "
-        "_resolve_excluded_tools — assumes HOST pids; .txt reads via "
+        "_resolve_tool_policy -- assumes HOST pids; .txt reads via "
         "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
     ),
     "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
@@ -493,7 +497,26 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "so in-namespace readers can look the file up directly without a /proc walk"
     ),
     "mcp_gateway/claim.py": "docstring reference to the contract (no code reads)",
-    "session_pid.py": "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead processes",
+    "session_pid.py": (
+        "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead "
+        "processes, and (age-bounded) session_token_*.sig mappings, whose "
+        "token-hash filenames name no pid to probe"
+    ),
+    "session_token_sig.py": (
+        "SIBLING contract, NOT a session_pid reader: owns the per-SESSION "
+        "token -> session-key mapping (session_token_<sha256(token)>.sig, one "
+        "file holding MAC + body, signed with a subkey derived from the same SEL "
+        "trust root under a DIFFERENT domain label so the two sidecars cannot be "
+        "cross-replayed). It appears in this scan only because it IMPORTS "
+        "session_pid_sig's hardened reader and key loader rather than copying "
+        "them, and because its docstring contrasts the two contracts. It reads "
+        "and writes no session_pid file and does no /proc walk — deliberately: "
+        "a pid names a PROCESS, and one kiro-cli process hosts many ACP "
+        "sessions, so pid-keyed identity answers with the parent for a "
+        "spawn_run subagent. Being pid-FREE is the property that makes it "
+        "namespace-insensitive, so the pid-view parametrization this file "
+        "requires of a new resolution path has nothing to vary"
+    ),
     "mcp_computer.py": (
         "comment reference only (no code reads): the computer-use stdio shim "
         "explains why it resolves identity with mcp_core._resolve_session_key_strict "

@@ -170,6 +170,21 @@ def _enable_text_scrape(monkeypatch):
     monkeypatch.setattr(sessions_mod, "_text_scrape_enabled", lambda: True)
 
 
+def _api_result(usage, auth_state=None):
+    """Wrap a fake usage value in the ``UsageResult`` fetch_usage_limits returns.
+
+    ``auth_state`` defaults to what the real function would report for this usage
+    value -- a dict means a credential was accepted, a bare None means a failure
+    it could not prove was an auth problem -- so a test that only cares about the
+    number does not have to name a state. The tests that ARE about the auth-class
+    states pass one explicitly.
+    """
+    api = sessions_mod.kiro_usage_api
+    if auth_state is None:
+        auth_state = api.AUTH_OK if usage is not None else api.AUTH_OTHER
+    return api.UsageResult(usage, auth_state)
+
+
 def _mock_proc(stdout: bytes):
     proc = MagicMock()
     proc.communicate = AsyncMock(return_value=(stdout, b""))
@@ -193,7 +208,8 @@ class TestFetchUsageBg:
         # Force the text-scrape fallback path by default (the real API client
         # would otherwise read this host's live token). API-primary behavior is
         # covered explicitly in TestFetchUsageBgApi.
-        with patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", return_value=None):
+        with patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value=_api_result(None)):
             yield
         _reset_usage_globals()
 
@@ -428,7 +444,7 @@ class TestFetchUsageDeadline:
             # Blocks like a wedged TLS handshake or a DNS lookup with no
             # resolver: urlopen's own timeout does not cover either.
             released.wait(30)
-            return None
+            return _api_result(None)
 
         try:
             with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
@@ -455,7 +471,7 @@ class TestFetchUsageDeadline:
 
         def _hang(*_args, **_kwargs):
             released.wait(30)
-            return None
+            return _api_result(None)
 
         try:
             with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
@@ -480,7 +496,7 @@ class TestFetchUsageDeadline:
              patch.object(sessions_mod, "_fetch_whoami",
                           AsyncMock(return_value={"email": "me@corp.com", "_profile_arn": arn})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value={**api_dict, "_profile_arn": arn}):
+                          return_value=_api_result({**api_dict, "_profile_arn": arn})):
             await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
 
         assert sessions_mod._usage_cache.get("credits_plan") == 100.0
@@ -627,7 +643,7 @@ class TestFetchUsageBgApi:
                               "email": "me@corp.com",
                               "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A"})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict), \
+                          return_value=_api_result(api_dict)), \
              patch("asyncio.create_subprocess_exec", spawn):
             await sessions_mod._fetch_usage_bg()
         # API path wins: real total cached, and the CREDIT-CONSUMING text scrape
@@ -643,7 +659,7 @@ class TestFetchUsageBgApi:
     async def test_api_none_falls_back_to_text_scrape(self):
         with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=None), \
+                          return_value=_api_result(None)), \
              patch("asyncio.create_subprocess_exec",
                    AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))):
             await sessions_mod._fetch_usage_bg()
@@ -660,7 +676,7 @@ class TestFetchUsageBgApi:
                           AsyncMock(return_value={
                               "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A"})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict), \
+                          return_value=_api_result(api_dict)), \
              patch.object(sessions_mod, "redact_credentials", lambda s: (s, 0)), \
              patch.object(sessions_mod, "redact_exfiltration_urls", lambda s: ("REDACTED", 0)):
             await sessions_mod._fetch_usage_bg()
@@ -740,7 +756,7 @@ class TestApiKeyAuthFailFast:
              patch.object(sessions_mod, "_fetch_whoami",
                           AsyncMock(return_value={"account_type": "IamIdentityCenter"})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict) as fetch:
+                          return_value=_api_result(api_dict)) as fetch:
             await sessions_mod._fetch_usage_bg()
         fetch.assert_called_once()
         assert sessions_mod._usage_cache["credits_plan"] == 10.0
@@ -889,7 +905,8 @@ class TestIdentityAccountCoupling:
         }
         with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
-             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", return_value=api_dict), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value=_api_result(api_dict)), \
              patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value=identity)):
             await sessions_mod._fetch_usage_bg()
         cache = sessions_mod._usage_cache
@@ -910,7 +927,8 @@ class TestIdentityAccountCoupling:
         }
         with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
-             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", return_value=api_dict), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value=_api_result(api_dict)), \
              patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value=identity)):
             await sessions_mod._fetch_usage_bg()
         cache = sessions_mod._usage_cache
@@ -1002,7 +1020,7 @@ class TestIdentityIsNotStale:
             with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
                  patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
                  patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                              return_value=dict(api_dict)), \
+                              return_value=_api_result(dict(api_dict))), \
                  patch.object(sessions_mod, "_fetch_whoami", fake_whoami):
                 await sessions_mod._fetch_usage_bg()
         # Two refreshes -> two whoami resolutions, and the SECOND identity wins.
@@ -1039,7 +1057,7 @@ class TestCredentialSelectionIsAnchored:
                           AsyncMock(return_value={"email": "me@corp.com",
                                                   "_profile_arn": self.ARN})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict) as fetch:
+                          return_value=_api_result(api_dict)) as fetch:
             await sessions_mod._fetch_usage_bg()
         assert fetch.call_args.kwargs.get("expected_arn") == self.ARN
 
@@ -1053,8 +1071,9 @@ class TestCredentialSelectionIsAnchored:
              patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
              patch.object(sessions_mod, "_fetch_whoami", whoami), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value={"credits_used": 1.0, "credits_plan": 10.0,
-                                        "source": "api", "_profile_arn": self.ARN}):
+                          return_value=_api_result(
+                              {"credits_used": 1.0, "credits_plan": 10.0,
+                               "source": "api", "_profile_arn": self.ARN})):
             await sessions_mod._fetch_usage_bg()
         assert whoami.await_count == 1
 
@@ -1075,7 +1094,7 @@ class TestCredentialSelectionIsAnchored:
              patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
              patch.object(sessions_mod, "_fetch_whoami", whoami), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=None), \
+                          return_value=_api_result(None)), \
              patch("asyncio.create_subprocess_exec",
                    AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))):
             await sessions_mod._fetch_usage_bg()
@@ -1095,7 +1114,7 @@ class TestCredentialSelectionIsAnchored:
              patch.object(sessions_mod, "wrap_argv", lambda argv, **k: (list(argv), None)), \
              patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict) as fetch:
+                          return_value=_api_result(api_dict)) as fetch:
             await sessions_mod._fetch_usage_bg()
         fetch.assert_called_once()
         assert fetch.call_args.kwargs.get("expected_arn") is None
@@ -1113,7 +1132,7 @@ class TestCredentialSelectionIsAnchored:
                           AsyncMock(return_value={"email": "solo@b.com",
                                                   "account_type": "BuilderId"})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict) as fetch:
+                          return_value=_api_result(api_dict)) as fetch:
             await sessions_mod._fetch_usage_bg()
         fetch.assert_called_once()
         assert fetch.call_args.kwargs.get("expected_arn") is None
@@ -1130,7 +1149,7 @@ class TestCredentialSelectionIsAnchored:
              patch.object(sessions_mod, "_fetch_whoami",
                           AsyncMock(return_value={"account_type": "BuilderId"})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict), \
+                          return_value=_api_result(api_dict)), \
              patch("asyncio.create_subprocess_exec", spawn):
             await sessions_mod._fetch_usage_bg()
         for call in spawn.call_args_list:
@@ -1145,7 +1164,7 @@ class TestCredentialSelectionIsAnchored:
              patch.object(sessions_mod, "_fetch_whoami",
                           AsyncMock(return_value={"_profile_arn": self.ARN})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
-                          return_value=api_dict):
+                          return_value=_api_result(api_dict)):
             await sessions_mod._fetch_usage_bg()
         assert "_profile_arn" not in sessions_mod._usage_cache
 
@@ -1168,7 +1187,7 @@ class TestTextScrapeIsOptIn:
         # The API path yields no plan -- the case that must not fall through
         # to the billed scrape.
         monkeypatch.setattr(
-            sessions_mod.kiro_usage_api, "fetch_usage_limits", lambda **k: None
+            sessions_mod.kiro_usage_api, "fetch_usage_limits", lambda **k: _api_result(None)
         )
         monkeypatch.setattr(
             sessions_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value="/bin/kiro")
@@ -1236,8 +1255,9 @@ class TestTextScrapeIsOptIn:
         monkeypatch.setattr(
             sessions_mod.kiro_usage_api,
             "fetch_usage_limits",
-            lambda **k: {"plan": "KIRO POWER", "resets": "2026-09-01",
-                         "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A"},
+            lambda **k: _api_result(
+                {"plan": "KIRO POWER", "resets": "2026-09-01",
+                 "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A"}),
         )
         with patch("asyncio.create_subprocess_exec", self._spawn_mock()):
             await sessions_mod._fetch_usage_bg()
@@ -1386,3 +1406,148 @@ class TestTextScrapeIsOptIn:
         from kiro_crew.config.loader import DashboardConfig
 
         assert DashboardConfig().usage_text_scrape_enabled is False
+
+
+class TestUnavailableReasonNamesTheRealRemedy:
+    """The pill's ``reason`` must not blame the opted-out scrape for an expired sign-in.
+
+    ``scrape_disabled`` renders copy asserting "the free usage API returned no plan
+    for this account" and telling the user to set
+    ``dashboard.usage_text_scrape_enabled``. When the read failed because no live
+    credential was readable, both halves are wrong: the API was never called, and
+    the scrape is a billed kiro-cli chat turn needing the same sign-in, so acting
+    on that advice spends credits on attempts that cannot succeed until
+    ``_record_scrape_outcome`` parks it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        _reset_usage_globals()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+        # Production default: the billed scrape is opted out, so the pill's only
+        # voice is the unavailable marker's reason.
+        monkeypatch.setattr(sessions_mod, "_text_scrape_enabled", lambda: False)
+        monkeypatch.setattr(
+            sessions_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value="/bin/kiro")
+        )
+        monkeypatch.setattr(sessions_mod, "_fetch_whoami", AsyncMock(return_value={}))
+        yield
+        _reset_usage_globals()
+
+    def _api(self, monkeypatch, usage, auth_state):
+        monkeypatch.setattr(
+            sessions_mod.kiro_usage_api,
+            "fetch_usage_limits",
+            lambda **k: _api_result(usage, auth_state),
+        )
+
+    # ---- the defect ------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_expired_credential_reports_signin_required(self, monkeypatch):
+        # The reported state: kiro-cli's stored token lapsed with nothing driving
+        # kiro-cli to renew it, so no candidate remained and no request was made.
+        self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_NO_CREDENTIAL)
+        await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache == {
+            "available": False, "reason": "signin_required",
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejected_credential_reports_signin_required(self, monkeypatch):
+        self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_REJECTED)
+        await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache.get("reason") == "signin_required"
+
+    # ---- the negative control -------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_no_plan_for_the_account_still_reports_scrape_disabled(self, monkeypatch):
+        # The API answered ABOUT the account and it has no CREDIT plan. Here the
+        # original copy is accurate and the billed scrape genuinely could find a
+        # number, so the message must not change.
+        self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_OTHER)
+        await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache.get("reason") == "scrape_disabled"
+
+    @pytest.mark.asyncio
+    async def test_partial_api_fields_are_still_kept(self, monkeypatch):
+        # Reason selection must not disturb the partial-field preservation the
+        # unavailable marker already carried.
+        self._api(
+            monkeypatch,
+            {"plan": "KIRO POWER", "resets": "2026-09-01"},
+            sessions_mod.kiro_usage_api.AUTH_OTHER,
+        )
+        await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache.get("plan") == "KIRO POWER"
+        assert sessions_mod._usage_cache.get("reason") == "scrape_disabled"
+
+    # ---- the non-regression guard ---------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_an_opted_in_scrape_still_runs_without_a_readable_credential(
+        self, monkeypatch
+    ):
+        # An empty candidate list does NOT prove kiro-cli cannot authenticate: it
+        # may authenticate from a store kiro_usage_api does not enumerate (see
+        # _identity_matches_account). Suppressing the scrape on this signal would
+        # break every host where it works today, so the scrape decision is
+        # deliberately untouched -- only the message changed.
+        monkeypatch.setattr(sessions_mod, "_text_scrape_enabled", lambda: True)
+        self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_NO_CREDENTIAL)
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await sessions_mod._fetch_usage_bg()
+        assert spawn.await_count == 1
+        # And the scrape's own number wins, rather than an unavailable marker.
+        assert sessions_mod._usage_cache.get("credits_plan") == 10000.0
+
+    # ---- the operator's log ---------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_the_operator_log_names_the_signin_not_the_knob(self, monkeypatch):
+        self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_NO_CREDENTIAL)
+        with patch.object(sessions_mod.logger, "info") as info:
+            await sessions_mod._fetch_usage_bg()
+        said = " ".join(str(c) for c in info.call_args_list)
+        assert "sign in" in said.lower()
+        assert "usage_text_scrape_enabled will NOT help" in said
+
+    @pytest.mark.asyncio
+    async def test_the_operator_log_keeps_naming_the_knob_when_that_is_the_cause(
+        self, monkeypatch
+    ):
+        self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_OTHER)
+        with patch.object(sessions_mod.logger, "info") as info:
+            await sessions_mod._fetch_usage_bg()
+        said = " ".join(str(c) for c in info.call_args_list)
+        assert "dashboard.usage_text_scrape_enabled = true" in said
+
+    # ---- the mapping itself ---------------------------------------------
+
+    def test_only_the_two_auth_class_states_map_to_signin_required(self):
+        api = sessions_mod.kiro_usage_api
+        mapping = {
+            state: sessions_mod._unavailable_reason(api.UsageResult(None, state))
+            for state in (
+                api.AUTH_OK, api.AUTH_NO_CREDENTIAL, api.AUTH_REJECTED, api.AUTH_OTHER,
+            )
+        }
+        assert mapping == {
+            api.AUTH_OK: "scrape_disabled",
+            api.AUTH_NO_CREDENTIAL: "signin_required",
+            api.AUTH_REJECTED: "signin_required",
+            api.AUTH_OTHER: "scrape_disabled",
+        }
+
+    def test_an_unknown_state_falls_back_to_the_existing_message(self):
+        # Fail-safe direction: an unrecognised state must not invent a
+        # re-authentication demand for a user whose sign-in is fine.
+        api = sessions_mod.kiro_usage_api
+        assert sessions_mod._unavailable_reason(
+            api.UsageResult(None, "something-new")
+        ) == "scrape_disabled"

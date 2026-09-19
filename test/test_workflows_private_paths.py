@@ -242,18 +242,41 @@ async def test_retired_or_deleted_memory_never_allocates_global(
     from kiro_crew.memory_stores import archive_member_memory_store, resolve_store_path
     from kiro_crew.workflows import agent_exec, agent_pool
 
-    def invalidate():
+    refusal: OSError | None = None
+
+    def invalidate() -> bool:
+        """Apply the damage; ``True`` once it has actually landed.
+
+        Windows refuses to delete a file that still has a live handle. Two things
+        can hold one: the fixture's own cached store, retired here explicitly,
+        and a workflow step reading memory for itself. The caller below only
+        injects once NO step is in flight, so the second holder cannot exist and
+        the unlink needs no retry -- a refusal here is a real one and is
+        reported, because ``ctx.parallel`` turns a raising branch into ``None``
+        and never re-raises (GATE A5), so an injection that fails inside one is
+        otherwise invisible and the run goes on to finish against an INTACT
+        store.
+
+        Synchronous on purpose: it runs with no await between the last step
+        finishing and the damage landing, so no other step can open a handle in
+        the middle of it.
+        """
+        nonlocal refusal
         if damage == "archived":
             archive_member_memory_store(world.stores["alice"], expected_owner="alice")
-        else:
-            from kiro_crew.context import release_cached_memory_store
+            return True
 
-            path = resolve_store_path(world.stores["alice"])
-            # Windows cannot unlink a live SQLite file. Retire the fixture's
-            # actual handles before simulating loss of the database itself.
-            release_cached_memory_store(world.stores["alice"])
+        from kiro_crew.context import release_cached_memory_store
+
+        path = resolve_store_path(world.stores["alice"])
+        release_cached_memory_store(world.stores["alice"])
+        try:
             path.unlink()
-            assert not path.exists()
+        except OSError as exc:
+            refusal = exc
+            return False
+        assert not path.exists()
+        return True
 
     svc = WorkflowService(
         sessions=world.sessions,
@@ -262,7 +285,7 @@ async def test_retired_or_deleted_memory_never_allocates_global(
         persist=False,
     )
     if not mid_run:
-        invalidate()
+        assert invalidate(), f"pre-run {damage} was never applied: {refusal!r}"
         rejected = await svc.start(SCRIPT, session_key="dashboard:alice")
         assert rejected["code"] == "workflow_memory_unavailable"
         assert not world.models
@@ -270,13 +293,23 @@ async def test_retired_or_deleted_memory_never_allocates_global(
         return
     base_stream = agent_pool.stream_and_collect
     invalidated = False
+    inflight = 0
 
     async def complete_then_invalidate(provider, prompt, **kwargs):
-        nonlocal invalidated
-        result = await base_stream(provider, prompt, **kwargs)
-        if not invalidated:
-            invalidated = True
-            invalidate()
+        nonlocal invalidated, inflight
+        inflight += 1
+        try:
+            result = await base_stream(provider, prompt, **kwargs)
+        finally:
+            inflight -= 1
+        # Inject when THIS step is the last one out, which is the signal the
+        # production path actually resolves: every other branch of the parallel
+        # group has returned, so no step holds a memory handle and the unlink
+        # cannot be refused for sharing. SCRIPT runs three more steps after that
+        # group, so the damage still lands mid-run. Synchronous from here to the
+        # unlink, so no step can open a handle in between.
+        if inflight == 0 and not invalidated:
+            invalidated = invalidate()
         return result
 
     for module in (agent_exec, agent_pool):
@@ -284,6 +317,10 @@ async def test_retired_or_deleted_memory_never_allocates_global(
     started = await svc.start(SCRIPT, session_key="dashboard:alice")
     run = svc.registry.get(started["run_id"])
     await asyncio.wait_for(run.task, 10)
+    # The subject is what the run does with destroyed memory, so an injection
+    # that never landed is a harness fact and is reported as one. Asserting the
+    # status first would blame the run for a store this test left intact.
+    assert invalidated, f"mid-run {damage} was never applied: {refusal!r}"
     assert run.status == "failed", run.result
     assert world.models and all(model._private_memory for model in world.models)
 

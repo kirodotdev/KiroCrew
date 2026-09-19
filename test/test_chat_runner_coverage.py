@@ -723,12 +723,15 @@ class TestSnapshotHelpers:
         target = tmp_path / "note.txt"
         target.write_text("hello\n", newline="\n")
 
-        assert chat_runner._safe_read_snapshot(str(target)) == "hello\n"
+        snapshot = chat_runner._safe_read_snapshot(str(target))
+        assert snapshot is not None
+        assert snapshot.content == "hello\n"
 
     def test_truncate_snapshot_marks_the_cut(self):
         out = chat_runner._truncate_snapshot("x" * (chat_runner._MAX_SNAPSHOT + 10))
 
-        assert out.endswith(f"... (truncated at {chat_runner._MAX_SNAPSHOT} chars)")
+        assert out.content.endswith(f"... (truncated at {chat_runner._MAX_SNAPSHOT} chars)")
+        assert out.truncated is True
 
     def test_reconstruct_declines_when_neither_state_is_plausible(self, tmp_path):
         """Ambiguous disk content must decline rather than fabricate a before."""
@@ -780,7 +783,7 @@ class TestSnapshotHelpers:
 
         got = chat_runner._snapshot_write_target({"command": "create", "path": str(target)})
 
-        assert got == {"path": str(target), "content": ""}
+        assert got == {"path": str(target), "content": "", "truncated": False}
 
 
 class TestFlushFileChanges:

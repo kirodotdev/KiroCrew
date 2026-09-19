@@ -34,6 +34,7 @@ from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.git_divergence import (
     UNREADABLE_TIMEOUT,
     DivergenceUnreadable,
@@ -70,7 +71,7 @@ from kiro_crew.platform.update_layout import detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
-from kiro_crew.platform_compat import reexec_python_module
+from kiro_crew.platform_compat import reexec_launcher, reexec_python_module
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1453,7 +1454,7 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
 async def _restart_gateway(
     state: DashboardState, *, resolver: Callable[[], str] | None = None
 ) -> bool:
-    """Save state, close sessions, and exec the same Python process once.
+    """Save state, close sessions, and exec the selected gateway entry point once.
 
     Restart is a process-wide transition.  Two callers must never both drain
     sessions and race separate successors for the same listener/lock, so the
@@ -1466,23 +1467,28 @@ async def _restart_gateway(
     state._gateway_restart_in_progress = True
     try:
         state.push_update_progress("restarting", "Restarting server…")
-        # Resolved through the managed-venv stable link rather than taken from
-        # ``sys.executable``: after a shadow-venv promotion the cached path
-        # names the superseded versioned tree, and exec'ing it would restart
-        # the OLD version right after the update reported success. For every
-        # other install shape the resolver answers ``sys.executable``.
-        # Offloaded: the resolver walks the venv's sibling directory, which is
-        # synchronous filesystem I/O this loop must not wait on.
-        # Applying callers import the resolver before the install can replace
-        # their import tree. A plain restart has no apply, so load it here.
-        if resolver is None:
-            from kiro_crew.platform.wheel_engine import respawn_executable
-
-            resolver = respawn_executable
-        exe = await asyncio.to_thread(resolver)
-        if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
-            state.push_update_progress("error", "Cannot restart: invalid Python executable path")
+        # Resolve off-loop and before saving/draining. An explicit broken launcher
+        # must not fall back to the running bundle's interpreter and import path.
+        try:
+            launcher = await asyncio.to_thread(resolve_restart_launcher)
+        except (ValueError, OSError) as exc:
+            logger.warning("Gateway launcher unavailable: %s", exc)
+            state.push_update_progress("error", "Cannot restart: invalid gateway launcher path")
             return False
+        exe = None
+        if launcher is None:
+            # Applying callers load this resolver before the install can replace
+            # their import tree. A plain restart has no apply, so load it here.
+            if resolver is None:
+                from kiro_crew.platform.wheel_engine import respawn_executable
+
+                resolver = respawn_executable
+            exe = await asyncio.to_thread(resolver)
+            if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
+                state.push_update_progress(
+                    "error", "Cannot restart: invalid Python executable path"
+                )
+                return False
         # circular import: kiro_crew.dashboard.chat imports from
         # kiro_crew.dashboard.handlers (which re-exports this module), so this
         # must stay inline to avoid an import cycle at module load.
@@ -1520,7 +1526,10 @@ async def _restart_gateway(
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
         await asyncio.sleep(0.5)
-        reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        if launcher is not None:
+            reexec_launcher(launcher, sys.argv[1:])
+        else:
+            reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         return True
     finally:
         state._gateway_restart_in_progress = False

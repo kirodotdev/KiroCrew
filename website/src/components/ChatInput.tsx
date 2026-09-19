@@ -138,7 +138,7 @@ import { useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-cor
 import SkillPickerMenu from './SkillPickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
 import ProjectSkillsTrustDialog from './ProjectSkillsTrustDialog'
-import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from './composerTokens'
+import { matchFileToken, matchPathToken, matchSkillToken, PATH_TOKEN_RE, replaceTokenAtCaret } from './composerTokens'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
@@ -1503,7 +1503,7 @@ function ChatInput({
     if (!voiceRecording || !cancel) return
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return
-      if (slashMenuOpenRef.current || filePickerOpenRef.current || skillPickerOpenRef.current) return
+      if (slashMenuOpenRef.current || filePickerOpenRef.current || skillPickerOpenRef.current || pathPickerOpenRef.current) return
       if (document.querySelector('[role="dialog"]')) return
       e.preventDefault()
       e.stopPropagation()
@@ -1637,6 +1637,18 @@ function ChatInput({
     : 'components.chatInput.continue_thread')
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
+  // Shell-style `./` / `../` completion. Its own open/query pair rather than a
+  // flag on the @ picker's, because the two carry different tokens and only one
+  // token can end at the caret — see `pathTokenAt` below.
+  const [pathPickerOpen, setPathPickerOpen] = useState(false)
+  const [pathQuery, setPathQuery] = useState('')
+  // The path token ending at the caret, or null. Gated on a project dir: `./`
+  // names nothing without the root it resolves against, so with no project the
+  // menu stays shut rather than opening on a listing that cannot be produced.
+  const pathTokenAt = useCallback(
+    (before: string) => (project ? matchPathToken(before) : null),
+    [project],
+  )
   const [fileQuery, setFileQuery] = useState('')
   const [skillPickerOpen, setSkillPickerOpen] = useState(false)
   const [skillQuery, setSkillQuery] = useState('')
@@ -2044,8 +2056,16 @@ function ChatInput({
       setSkillPickerOpen(false)
       setSkillQuery('')
     }
+    const pathQueryAtCaret = pathTokenAt(before)
+    if (pathQueryAtCaret !== null) {
+      setPathPickerOpen(true)
+      setPathQuery(pathQueryAtCaret)
+    } else {
+      setPathPickerOpen(false)
+      setPathQuery('')
+    }
     if (selection && voiceCaretRef) voiceCaretRef.current = selection
-  }, [onChange, onFileSelect, typedCommandMenus, voiceCaretRef])
+  }, [onChange, onFileSelect, pathTokenAt, typedCommandMenus, voiceCaretRef])
   const pasteBlocksRef = useRef(pasteBlocks)
   pasteBlocksRef.current = pasteBlocks
   // --- Prompt undo/redo history (per slot) ---
@@ -2090,6 +2110,8 @@ function ChatInput({
   filePickerOpenRef.current = filePickerOpen
   const skillPickerOpenRef = useRef(false)
   skillPickerOpenRef.current = skillPickerOpen
+  const pathPickerOpenRef = useRef(false)
+  pathPickerOpenRef.current = pathPickerOpen
 
   // Auto-focus textarea when the active session changes (autoFocusKey).
   // Track the previous key in a ref so the effect only acts on real key
@@ -2266,6 +2288,7 @@ function ChatInput({
       setSlashMenuOpen(false)
       setFilePickerOpen(false); setFileQuery('')
       setSkillPickerOpen(false); setSkillQuery('')
+      setPathPickerOpen(false); setPathQuery('')
     }
     // Exit history mode when value diverges from the recalled message
     // (user edited it, or the send pipeline cleared it).
@@ -2282,6 +2305,7 @@ function ChatInput({
     setSlashMenuOpen(false)
     setFilePickerOpen(false); setFileQuery('')
     setSkillPickerOpen(false); setSkillQuery('')
+    setPathPickerOpen(false); setPathQuery('')
   }, [slotId])
 
   // Record undo snapshots as the controlled value changes.
@@ -2816,6 +2840,7 @@ function ChatInput({
     if (
       !sentMessages?.length ||
       slashMenuOpenRef.current || filePickerOpenRef.current || skillPickerOpenRef.current ||
+      pathPickerOpenRef.current ||
       ime.isComposing(e) ||
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
@@ -3853,6 +3878,30 @@ function ChatInput({
         />
       )}
 
+      {/* Path completion is not gated on `onFileSelect`: a completed `./path`
+          is text the user typed, not a staged attachment, so there is nothing to
+          hand to the host. It IS gated on a project dir, which is the root every
+          `./` resolves against. */}
+      <FilePickerMenu
+        pathMode
+        query={pathQuery}
+        anchorRef={composerAnchorRef}
+        open={pathPickerOpen}
+        project={project}
+        sendOnEnter={sendOnEnter}
+        onSelect={({ relativePath, kind }) => {
+          // A shell completes a directory to `dir/` and waits for the next
+          // segment; a file completion is finished, so it gets the trailing
+          // space. Re-seeding the query on a directory keeps the menu open on
+          // the new level — the programmatic insert never reaches the composer's
+          // own onChange, so the token has to be handed over here.
+          applyPickedToken(PATH_TOKEN_RE, kind === 'dir' ? relativePath : `${relativePath} `)
+          if (kind === 'dir') setPathQuery(relativePath)
+          else { setPathPickerOpen(false); setPathQuery('') }
+        }}
+        onClose={() => { setPathPickerOpen(false); setPathQuery('') }}
+      />
+
       {typedCommandMenus && <SkillPickerMenu
         query={skillQuery}
         anchorRef={composerAnchorRef}
@@ -4087,6 +4136,9 @@ function ChatInput({
             const skillQ = fileQ === null ? matchSkillToken(before) : null
             if (typedCommandMenus && skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
             else { setSkillPickerOpen(false); setSkillQuery('') }
+            const pathQ = pathTokenAt(before)
+            if (pathQ !== null) { setPathPickerOpen(true); setPathQuery(pathQ) }
+            else { setPathPickerOpen(false); setPathQuery('') }
             recordCaret()
           }}
           onKeyDown={handleKeyDown}

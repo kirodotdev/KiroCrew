@@ -682,7 +682,12 @@ class TestClientSeam:
             tools=["@pooled", "@direct"],
         )
         monkeypatch.setattr(
-            client_mod, "injection_server_names", lambda _o, _a: frozenset({"pooled"})
+            # ``**_kw`` so the double keeps mirroring the real signature: the call
+            # site passes the session's checkout as ``work_dir``, and a double that
+            # refuses it turns this seam test into a test of the except branch.
+            client_mod,
+            "injection_server_names",
+            lambda _o, _a, **_kw: frozenset({"pooled"}),
         )
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         names = _by_name(client._session_mcp_servers())
@@ -697,7 +702,7 @@ class TestClientSeam:
         # session with missing tools.
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
 
-        def _boom(_o, _a):
+        def _boom(_o, _a, **_kw):
             raise RuntimeError("overlay unreadable")
 
         monkeypatch.setattr(client_mod, "injection_server_names", _boom)
@@ -828,6 +833,51 @@ class TestClientSeam:
         stub = {"name": "pooled", "command": "/stub", "args": [], "env": [], "type": "stdio"}
         client._pooled_broker_stubs = lambda: [dict(stub)]  # type: ignore[method-assign]
         assert client._pooled_mcp_servers() == [stub]
+
+    def _overlay_with_a_stub(self, root: Path) -> Path:
+        """A user-level overlay holding one broker stub for ``kirocrew``."""
+        from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+
+        overlay = root / "mcp-gateway" / "agents"
+        overlay.mkdir(parents=True)
+        (overlay / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "mcpServers": {
+                        "pooled": {
+                            _WRAPPER_MARKER: True,
+                            "command": "/stub",
+                            "args": ["--target-command=user-level-cmd"],
+                            "env": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return overlay
+
+    def test_a_project_agent_takes_no_stub_from_the_user_level_overlay(self, tmp_path, agents_dir):
+        """The client's own checkout reaches the overlay lookup.
+
+        Drives the real call chain rather than the module function, so a call site
+        that stops passing ``work_dir`` -- or is wrapped in a guard that is never
+        true -- fails here instead of silently resolving the overlay by name.
+        """
+        overlay = self._overlay_with_a_stub(tmp_path / "gw")
+        checkout = tmp_path / "checkout"
+        _write_project_spec(checkout, servers={"proj": {"command": "/bin/proj"}}, tools=None)
+
+        running_the_project_agent = AcpClient(work_dir=checkout, agent="kirocrew")
+        running_the_project_agent._mcp_gateway_overlay = overlay
+        assert running_the_project_agent._pooled_broker_stubs() == []
+
+        # Control: the same overlay and agent name, a checkout that declares
+        # neither, so the user-level stub is still this session's.
+        elsewhere = AcpClient(work_dir=tmp_path / "plain", agent="kirocrew")
+        elsewhere._mcp_gateway_overlay = overlay
+        assert [e["name"] for e in elsewhere._pooled_broker_stubs()] == ["pooled"]
 
 
 class TestPooledStubsOnTheClaudeMirror:

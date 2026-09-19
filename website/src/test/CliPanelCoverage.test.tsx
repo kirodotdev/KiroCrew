@@ -119,6 +119,7 @@ import CliPanel, {
   useDeleteTerminalSession,
 } from '../components/CliPanel'
 import { setTerminalFontSize, __resetTerminalFontStore } from '../hooks/useTerminalFont'
+import { setTerminalCloseFailed, useTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 
 /* ── MutationObserver delivery pin ─────────────────────────────────────────
@@ -996,5 +997,20 @@ describe('useDeleteTerminalSession', () => {
     await expect(
       act(async () => { await result.current.mutateAsync('pty-43') }),
     ).rejects.toThrow('Failed to delete terminal session (409)')
+  })
+
+  it('treats 404 as already gone: no error, and the close-failed toast stays down', async () => {
+    // The backend answers 404 once the PTY has been reaped (idle sweep, gateway
+    // restart, a second close racing the first); the shell is stopped, which
+    // is the outcome the user asked for, so the toast must not claim otherwise.
+    setTerminalCloseFailed(false)
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, status: 404 } as unknown as Response)))
+    const { result } = renderHookWithProviders(() => ({
+      del: useDeleteTerminalSession(),
+      failed: useTerminalCloseFailed(),
+    }))
+    await act(async () => { await result.current.del.mutateAsync('pty-44') })
+    expect(result.current.del.isError).toBe(false)
+    expect(result.current.failed).toBe(false)
   })
 })

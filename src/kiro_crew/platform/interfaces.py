@@ -143,6 +143,23 @@ class PublishRegistry(Protocol):
         ...
 
 
+class GatewayLifecycleProvider(Protocol):
+    """Edition-owned gateway launch selection, independent of update policy."""
+
+    def restart_launcher(self) -> str | None:
+        """Return an absolute stable launcher, or None for the core Python path.
+
+        The launcher receives the original CLI arguments without Python's ``-m``
+        prefix. It owns selecting the installed version and rebuilding its import
+        environment. Preserve its pathname: a symlink basename may select the app.
+        Return a native executable on Windows, not a shell command or batch file.
+        Implementations must be cheap and have their dependencies loaded at boot:
+        an update can remove the running package tree before this method is called.
+        Errors refuse restart; they must not silently select the old interpreter.
+        """
+        ...
+
+
 class AgentRuntime(Protocol):
     """The agent runtime: managed MCP servers + first-run setup."""
 

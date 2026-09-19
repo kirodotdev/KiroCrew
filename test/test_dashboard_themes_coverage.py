@@ -688,6 +688,7 @@ class TestDoInstallFailureCleanup:
             lambda path, **k: (
                 {
                     "slug": "lcars",
+                    "identity": "lcars",
                     "name": "LCARS",
                     "emoji": "🖖",
                     "level": 0,

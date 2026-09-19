@@ -6,6 +6,7 @@ import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent } from '../i18n/forma
 import { i18nT } from '../i18n/t'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import Clickable from './Clickable'
+import ErrorNotice from './ErrorNotice'
 import Modal from './Modal'
 
 // The usage view model is owned by `api/client.ts` next to the wire payload it
@@ -24,7 +25,7 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
  * value that means "still loading" — the others have nothing more to wait for,
  * so spinning on them would repeat the defect this distinction exists to remove.
  */
-export type KiroAccountUsage = KiroCreditUsage | null | 'none' | 'failed' | 'api-key' | 'scrape-disabled'
+export type KiroAccountUsage = KiroCreditUsage | null | 'none' | 'failed' | 'api-key' | 'scrape-disabled' | 'signin-required'
 
 /** True only for an actual reading, so the sentinels cannot reach a field access. */
 const isUsageReading = (usage: KiroAccountUsage): usage is KiroCreditUsage =>
@@ -229,11 +230,26 @@ function UsageSkeleton() {
   )
 }
 
-function CreditUsage({ usage }: { usage: KiroAccountUsage }) {
+function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () => void }) {
   // Only a cache that has not warmed yet is still loading. A failed fetch and an
   // account with no plan both have nothing pending, so they get the static
   // notice rather than a skeleton that never resolves.
   if (usage === null) return <UsageSkeleton />
+  // An expired sign-in is the one unreadable state the user can act on, so it
+  // takes the shared error surface and its agent hand-off. That hand-off opens
+  // the chat this overlay sits over, so the modal closes with it — a hand-off
+  // the user cannot see reads as a dead button. The remaining states report a
+  // configuration the account is in rather than a failure to recover from, so
+  // they stay on the passive notice.
+  if (usage === 'signin-required') {
+    return (
+      <ErrorNotice
+        message={i18nT('components.kiroAccountModal.credit_usage_signin_required')}
+        askAgent
+        onHandoff={onClose}
+      />
+    )
+  }
   if (!isUsageReading(usage)) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
@@ -319,7 +335,7 @@ export default function KiroAccountModal({ open, onClose, usage }: KiroAccountMo
     >
       <div className="flex flex-col gap-4">
         <AccountIdentity usage={usage} />
-        <CreditUsage usage={usage} />
+        <CreditUsage usage={usage} onClose={onClose} />
         <a
           href={KIRO_ACCOUNT_URL}
           target="_blank"

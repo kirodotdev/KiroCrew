@@ -22,28 +22,45 @@ from source_corpus import parsed_candidates
 
 from conftest import MockSlackClient
 from kiro_crew.slack import sessions_view
-from kiro_crew.slack.handler import _handle_sessions_command
+from kiro_crew.slack.handler import _handle_sessions_command, _is_sessions_keyword
 from kiro_crew.slack.sessions_view import (
     _SESSION_KIND_DASHBOARD,
     _SESSION_KIND_OTHER,
     _SESSION_KIND_TASKRUNNER,
+    SESSIONS_INCLUDE_ENDED_ARGS,
     _build_sessions_blocks,
     _classify_session_key,
     _collect_recent_sessions,
     _collect_recent_sessions_off_loop,
     _default_session_title,
+    sessions_include_ended,
 )
 
 
-def _write_jsonl(path: Path, *, title: str = "", agent: str = "", messages: list | None = None) -> None:
-    """Write a session JSONL file with an optional metadata line and messages."""
+def _write_jsonl(
+    path: Path,
+    *,
+    title: str = "",
+    agent: str = "",
+    messages: list | None = None,
+    closed: bool = False,
+    closed_at: float | None = None,
+) -> None:
+    """Write a session JSONL file with an optional metadata line and messages.
+
+    *closed* / *closed_at* write the dismissal record the End button leaves
+    behind, so a test can build a row the user has already ended.
+    """
     lines: list[str] = []
     meta: dict = {"_type": "metadata"}
     if title:
         meta["title"] = title
     if agent:
         meta["agent"] = agent
-    if title or agent:
+    if closed:
+        meta["closed"] = True
+        meta["closed_at"] = time.time() if closed_at is None else closed_at
+    if title or agent or closed:
         lines.append(json.dumps(meta))
     for role, content in messages or []:
         lines.append(json.dumps({"role": role, "content": content}))
@@ -292,7 +309,322 @@ class TestCollectRecentSessions:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Ended rows
+# ---------------------------------------------------------------------------
+
+
+class _LiveKeys:
+    """SessionManager stand-in whose live keys are a fixed set."""
+
+    def __init__(self, *keys: str) -> None:
+        self._keys = set(keys)
+
+    def has_session(self, key: str) -> bool:
+        return key in self._keys
+
+
+class TestEndedRowsLeaveTheList:
+    """The End button's promise: the row goes away and frees its slot."""
+
+    @pytest.fixture
+    def sess_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "sessions"
+        d.mkdir()
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", d)
+        return d
+
+    def test_dismissed_row_is_left_out(self, sess_dir):
+        _write_jsonl(sess_dir / "slack_C1.100.jsonl", title="kept")
+        _write_jsonl(sess_dir / "slack_C1.200.jsonl", title="ended by me", closed=True)
+        titles = [r["title"] for r in _collect_recent_sessions(None)]
+        assert titles == ["kept"]
+
+    def test_dismissed_row_frees_its_slot(self, sess_dir):
+        """The regression: an ended row must not spend one of ``limit`` slots.
+
+        Eleven transcripts, one of them dismissed, limit ten. The ten real ones
+        must all come back — if the dismissed row were merely skipped after the
+        cap was counted, the oldest real session would be pushed off instead.
+        """
+        now = time.time()
+        for i in range(10):
+            p = sess_dir / f"slack_C1.10{i:02d}.jsonl"
+            _write_jsonl(p, title=f"real {i}")
+            os.utime(p, (now - 100 - i, now - 100 - i))
+        dismissed = sess_dir / "slack_C1.9999.jsonl"
+        _write_jsonl(dismissed, title="ended by me", closed=True)
+        os.utime(dismissed, (now, now))  # newest, so it sorts first
+
+        rows = _collect_recent_sessions(None, limit=10)
+        titles = [r["title"] for r in rows]
+        assert "ended by me" not in titles
+        assert titles == [f"real {i}" for i in range(10)]
+
+    def test_opt_in_returns_the_dismissed_row_flagged(self, sess_dir):
+        _write_jsonl(sess_dir / "slack_C1.100.jsonl", title="kept")
+        _write_jsonl(sess_dir / "slack_C1.200.jsonl", title="ended by me", closed=True)
+        rows = _collect_recent_sessions(None, include_ended=True)
+        by_title = {r["title"]: r for r in rows}
+        assert set(by_title) == {"kept", "ended by me"}
+        assert by_title["ended by me"]["ended"] is True
+        assert by_title["kept"]["ended"] is False
+
+    def test_live_session_outranks_the_dismissal(self, sess_dir):
+        """A resumed conversation is listed immediately, flag still on disk."""
+        _write_jsonl(sess_dir / "slack_C1.200.jsonl", title="came back", closed=True)
+        rows = _collect_recent_sessions(_LiveKeys("slack_C1.200"))
+        assert [r["title"] for r in rows] == ["came back"]
+        assert rows[0]["ended"] is False
+        assert rows[0]["active"] is True
+
+    def test_a_later_write_does_not_undo_the_dismissal(self, sess_dir):
+        """Housekeeping writes must not resurface the row.
+
+        Consolidation, skill extraction and auto-titling all write the file on
+        the way out of an End, after the dismissal is stamped. A rule that
+        compared the file's mtime against ``closed_at`` would read those as the
+        user coming back and put the row straight back at the top, which is the
+        reported bug.
+        """
+        path = sess_dir / "slack_C1.200.jsonl"
+        stamped = time.time() - 60
+        _write_jsonl(path, title="ended by me", closed=True, closed_at=stamped)
+        os.utime(path, (stamped + 30, stamped + 30))  # written 30s AFTER the End
+        assert _collect_recent_sessions(None) == []
+
+    def test_absent_and_false_flags_are_both_listed(self, sess_dir):
+        _write_jsonl(sess_dir / "slack_C1.100.jsonl", title="no flag")
+        path = sess_dir / "slack_C1.200.jsonl"
+        path.write_text(
+            json.dumps({"_type": "metadata", "title": "flag false", "closed": False}) + "\n",
+            encoding="utf-8",
+        )
+        assert {r["title"] for r in _collect_recent_sessions(None)} == {"no flag", "flag false"}
+
+    def test_metadata_only_read_still_sees_the_flag(self, sess_dir):
+        """``with_messages=False`` reads line 0 only, which is where the flag is."""
+        _write_jsonl(
+            sess_dir / "slack_C1.200.jsonl",
+            title="ended by me",
+            closed=True,
+            messages=[("user", "hi")],
+        )
+        rows = sessions_view._collect_neutral(
+            None, sessions_dir=sess_dir, with_messages=False
+        )
+        assert rows == []
+
+
+class _LiveChannel:
+    """SessionManager stand-in that unfolds channel stems, as the real one does.
+
+    ``history._safe_key`` folds the ``:`` in ``slack:C1.200`` to ``_``, so the
+    filename is ``slack_C1.200.jsonl`` and the fold cannot be inverted from the
+    name alone. The real manager answers from the session map.
+    """
+
+    def __init__(self, *keys: str) -> None:
+        self._keys = set(keys)
+
+    def channel_key_for_stem(self, stem: str) -> str:
+        for key in self._keys:
+            if key.replace(":", "_") == stem:
+                return key
+        return ""
+
+    def has_session(self, key: str) -> bool:
+        return key in self._keys
+
+
+class TestChannelStemsResolveToTheirRealKey:
+    """A folded filename must not read as an idle session."""
+
+    @pytest.fixture
+    def sess_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "sessions"
+        d.mkdir()
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", d)
+        return d
+
+    def test_live_channel_session_is_not_read_as_idle(self, sess_dir):
+        _write_jsonl(sess_dir / "slack_C1.200.jsonl", title="live thread")
+        rows = _collect_recent_sessions(_LiveChannel("slack:C1.200"))
+        assert rows[0]["active"] is True
+        assert rows[0]["key"] == "slack:C1.200"
+
+    def test_a_live_dismissed_channel_row_stays_listed(self, sess_dir):
+        """The consequence the fold hid: a running session vanishing from view.
+
+        Read under the folded spelling the session looks idle, so a dismissal on
+        its transcript would hide a conversation that is still running, and the
+        row's End button would carry a key naming no live session.
+        """
+        _write_jsonl(sess_dir / "slack_C1.200.jsonl", title="live thread", closed=True)
+        rows = _collect_recent_sessions(_LiveChannel("slack:C1.200"))
+        assert [r["title"] for r in rows] == ["live thread"]
+        assert rows[0]["ended"] is False
+
+    def test_unknown_stem_keeps_the_folded_spelling(self, sess_dir):
+        """An empty resolver answer means "not knowable", never "guess"."""
+        _write_jsonl(sess_dir / "slack_C1.999.jsonl", title="unmapped")
+        rows = _collect_recent_sessions(_LiveChannel("slack:C1.200"))
+        assert [(r["key"], r["active"]) for r in rows] == [("slack_C1.999", False)]
+
+    def test_dashboard_stem_still_unfolds_without_the_resolver(self, sess_dir):
+        _write_jsonl(sess_dir / "dashboard_chat-1-100.jsonl", title="tab")
+        rows = _collect_recent_sessions(_LiveKeys("dashboard:chat-1-100"))
+        assert rows[0]["key"] == "dashboard:chat-1-100"
+        assert rows[0]["active"] is True
+
+    def test_a_raising_resolver_does_not_break_the_listing(self, sess_dir):
+        class _Boom:
+            def channel_key_for_stem(self, stem: str) -> str:
+                raise RuntimeError("map unreadable")
+
+            def has_session(self, key: str) -> bool:
+                return False
+
+        _write_jsonl(sess_dir / "slack_C1.200.jsonl", title="still listed")
+        rows = _collect_recent_sessions(_Boom())
+        assert [r["title"] for r in rows] == ["still listed"]
+
+    def test_an_answer_that_does_not_fold_back_is_refused(self, sess_dir):
+        """The resolver is verified, not trusted.
+
+        A key the filename does not fold to would put this row's End and Resume
+        buttons on one conversation while the transcript belongs to another.
+        """
+
+        class _WrongKey:
+            def channel_key_for_stem(self, stem: str) -> str:
+                return "slack:SOMEONE.else"
+
+            def has_session(self, key: str) -> bool:
+                return key == "slack:SOMEONE.else"
+
+        _write_jsonl(sess_dir / "slack_C1.200.jsonl", title="mine")
+        rows = _collect_recent_sessions(_WrongKey())
+        assert [(r["key"], r["active"]) for r in rows] == [("slack_C1.200", False)]
+
+
+class TestEndedRowRendering:
+    """An opted-in list has to show WHICH rows the user ended."""
+
+    def _row(self, **over) -> dict:
+        row = {
+            "key": "slack_C1.200",
+            "title": "ended by me",
+            "agent": "kirocrew",
+            "mtime": 0.0,
+            "active": False,
+            "ended": True,
+            "kind": _SESSION_KIND_OTHER,
+            "msgs": [],
+        }
+        row.update(over)
+        return row
+
+    def test_task_card_marks_an_ended_row(self):
+        blocks = _build_sessions_blocks([self._row()])
+        assert "🛑" in blocks[0]["title"]
+
+    def test_task_card_keeps_idle_and_active_glyphs(self):
+        idle = _build_sessions_blocks([self._row(ended=False)])
+        live = _build_sessions_blocks([self._row(ended=False, active=True)])
+        assert "⚫" in idle[0]["title"]
+        assert "🟢" in live[0]["title"]
+
+    def test_home_tab_marks_an_ended_row(self):
+        blocks = _build_sessions_blocks([self._row()], for_home_tab=True)
+        assert "🛑" in blocks[0]["text"]["text"]
+
+    def test_rendering_tolerates_a_row_without_the_key(self):
+        """Older collectors and monkeypatched ones return no ``ended`` key."""
+        row = self._row()
+        del row["ended"]
+        assert "⚫" in _build_sessions_blocks([row])[0]["title"]
+        assert "⚫" in _build_sessions_blocks([row], for_home_tab=True)[0]["text"]["text"]
+
+
+class TestSessionsIncludeEndedArgument:
+    """Typing the opt-in has to reach a handler and be read there."""
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("", False),
+            ("sessions", False),
+            ("all", True),
+            ("ended", True),
+            ("sessions all", True),
+            ("sessions ended", True),
+            ("  SESSIONS   All  ", True),
+            ("allowlist", False),
+        ],
+    )
+    def test_parses_either_half_of_the_phrase(self, text, expected):
+        assert sessions_include_ended(text) is expected
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("sessions", True),
+            (" Sessions ", True),
+            ("sessions all", True),
+            ("sessions ended", True),
+            ("sessions foo", False),
+            ("sessions all extra", False),
+            ("session", False),
+        ],
+    )
+    def test_keyword_admits_exactly_the_argument_it_reads(self, text, expected):
+        """The matcher and the reader share one vocabulary.
+
+        A form the matcher rejects never reaches the sessions handler at all,
+        so it would be sent to the agent as ordinary chat. Any word the reader
+        acts on must therefore be a word the matcher lets through.
+        """
+        assert _is_sessions_keyword(text) is expected
+
+    def test_every_accepted_argument_is_admitted_by_the_keyword(self):
+        for word in SESSIONS_INCLUDE_ENDED_ARGS:
+            assert _is_sessions_keyword(f"sessions {word}") is True
+            assert sessions_include_ended(f"sessions {word}") is True
+
+    @pytest.mark.asyncio
+    async def test_keyword_handler_forwards_the_opt_in(self):
+        seen: dict = {}
+
+        async def _fake(sessions, **kwargs):
+            seen.update(kwargs)
+            return []
+
+        slack = MockSlackClient()
+        with patch("kiro_crew.slack.handler._collect_recent_sessions_off_loop", _fake):
+            await _handle_sessions_command(
+                "sessions all", slack, "C1", "1.0", "1.0", "slack:C1", None
+            )
+        assert seen["include_ended"] is True
+
+    @pytest.mark.asyncio
+    async def test_keyword_handler_defaults_to_hiding_ended(self):
+        seen: dict = {}
+
+        async def _fake(sessions, **kwargs):
+            seen.update(kwargs)
+            return []
+
+        slack = MockSlackClient()
+        with patch("kiro_crew.slack.handler._collect_recent_sessions_off_loop", _fake):
+            await _handle_sessions_command(
+                "sessions", slack, "C1", "1.0", "1.0", "slack:C1", None
+            )
+        assert seen["include_ended"] is False
+
+
 class TestBuildSessionsBlocks:
+
     def test_empty_input(self):
         assert _build_sessions_blocks([]) == []
 

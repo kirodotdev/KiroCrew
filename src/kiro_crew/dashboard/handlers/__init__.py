@@ -117,6 +117,13 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_test,
     api_mcp_oauth_relay,
 )
+
+# ── Session crew log (handlers/crew_log.py) ──
+from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401
+    api_session_crew_log,
+    api_session_crew_log_projection,
+    install_crew_log_publisher,
+)
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_ack,
     api_cron_batch_delete,
@@ -171,6 +178,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_outbox_download,
     api_outbox_list,
     api_outbox_notify,
+    api_path_complete,
     api_project_git,
     api_project_git_log,
     api_project_git_status,
@@ -971,8 +979,11 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
 )
 
 # Flagged-file delivery consent — owner-gated, and the ONLY writer of
-# ``file_delivery_consent.json``. No CLI counterpart, deliberately.
+# ``file_delivery_consent.json``. Recording is arm (owner POST) + approve
+# (host-only ``kirocrew file-delivery approve``, which consumes the nonce).
 from kiro_crew.dashboard.handlers.file_delivery_consent import (  # noqa: E402, F401
+    api_file_delivery_consent_approve,
+    api_file_delivery_consent_arm_status,
     api_file_delivery_consent_delete,
     api_file_delivery_consent_get,
     api_file_delivery_consent_post,

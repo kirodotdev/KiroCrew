@@ -47,10 +47,16 @@ function MyPage() {
 }
 ```
 
-`useAppApi()` returns a client whose methods (`request`, `get`, `post`, `put`,
-`patch`, `del`) call the Gateway endpoints listed below, scoped to the
-`permissions.api` paths your `app.json` declares. All methods parse a JSON
+`useAppApi()` returns a client whose methods (`raw`, `request`, `get`, `post`,
+`put`, `patch`, `del`) call the Gateway endpoints listed below, scoped to the
+`permissions.api` paths your `app.json` declares. JSON methods parse a JSON
 response; an empty successful response returns `undefined`.
+
+- `raw(path, init?)` returns a successful `Response` without consuming its body.
+  Use it for binary downloads, text or streamed responses and response headers.
+  Non-success responses still throw `AppApiError`. Supply an `AbortSignal` for
+  long-lived streams and abort or cancel the reader when the component unmounts;
+  the method does not implement EventSource reconnect or SSE parsing.
 
 - `request<T>(path, init?)` accepts `RequestInit`, including raw bodies such as
   `FormData`, headers and an abort signal. It does not set a content type for you.
@@ -79,6 +85,16 @@ parse it only when the endpoint promises JSON (for example, a conflict response)
 Network, abort and successful-response JSON parsing failures retain their original
 error types. Stale-owner reauthentication signaling still runs before an HTTP
 failure is thrown.
+
+The path matcher uses the backend's declared-pattern semantics: `/api/example`
+matches itself and slash-delimited children; `/api/example/*` also includes the
+base path; `/api/example*` includes any string prefix match. Blank entries match
+nothing, surrounding whitespace is stripped, and request paths are normalized
+before matching. A bare trailing slash is literal, not shorthand for `/*`.
+
+An explicit authentication-expiry response (`403`, `X-Auth-Required: true`)
+notifies the dashboard's existing recovery handler. It does not turn ordinary
+permission denials into refresh attempts or automatically replay writes.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 

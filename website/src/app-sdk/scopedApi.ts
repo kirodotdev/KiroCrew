@@ -16,9 +16,14 @@
 import { createContext, useContext, type ReactNode } from 'react'
 import React from 'react'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+import { noteSessionExpiredResponse } from '../api/sessionExpirySignal'
 import { useAppIdentity } from './identity'
 
 export interface AppApi {
+  /** Unparsed successful response for downloads or streaming; HTTP failures still throw AppApiError.
+   * The caller owns reading/cancelling the body and should supply an AbortSignal for streams.
+   */
+  raw(path: string, init?: RequestInit): Promise<Response>
   /** Request with a JSON response, scoped to declared permissions. Body is passed through unchanged. */
   request<T = unknown>(path: string, init?: RequestInit): Promise<T>
   /** GET request scoped to declared permissions. */
@@ -91,14 +96,25 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     // declared scope (e.g. `/api/apps/x/../../secret` → `/api/secret`).
     const parsed = new URL(path, 'http://localhost')
     const normalized = parsed.pathname
-    const allowed = allowedPaths.some(p => normalized === p || normalized.startsWith(p.endsWith('/') ? p : p + '/'))
+    // Match token_auth._api_pattern_matches: normalize the request first, then
+    // interpret only declared trailing wildcards. No implicit feature grants.
+    const allowed = allowedPaths.some(entry => {
+      const pattern = entry.trim()
+      if (!pattern) return false
+      if (pattern.endsWith('/*')) {
+        const base = pattern.slice(0, -2)
+        return normalized === base || normalized.startsWith(base + '/')
+      }
+      if (pattern.endsWith('*')) return normalized.startsWith(pattern.slice(0, -1))
+      return normalized === pattern || normalized.startsWith(pattern + '/')
+    })
     if (!allowed) {
       throw new Error(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
     }
     return normalized + parsed.search
   }
 
-  const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+  const rawFetch = async (path: string, init?: RequestInit): Promise<Response> => {
     const safePath = check(path)
     // Restricted-session checks read this header. Only the host may select it:
     // accepting an app's override could attribute a restricted write to another
@@ -110,6 +126,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
       throw new Error('[app-sdk] X-Session-Key requires a host session binding')
     }
     const res = await fetch(safePath, { ...init, headers })
+    noteSessionExpiredResponse(res)
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
       // A stale pre-owner session denial raises the dashboard's re-auth prompt
@@ -119,6 +136,11 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
       noteStaleOwnerResponse(res.status, text)
       throw new ScopedApiError(res.status, text)
     }
+    return res
+  }
+
+  const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+    const res = await rawFetch(path, init)
     // An empty-body response is not JSON — res.json() would throw a SyntaxError
     // (e.g. a 204 No Content on DELETE, or a 200 with an empty body and no
     // Content-Length header). Read the body as text and only parse when it is
@@ -144,6 +166,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
   }
 
   return {
+    raw: rawFetch,
     request: (path, init) => jsonFetch(path, init),
     get: (path, init) => jsonFetch(path, { ...init, method: 'GET' }),
     post: (path, body, init) => jsonRequest(path, 'POST', body, init),

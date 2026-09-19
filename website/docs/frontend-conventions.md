@@ -80,7 +80,7 @@ Other shared modules:
   `TypewriterText.tsx`
 
 `src/kirocrew-ui/index.ts` re-exports the subset that apps may import as
-`@kirocrew/ui`. Adding a primitive there makes it app-facing API, so add
+`@kirocrew/app-sdk/ui`. Adding a primitive there makes it app-facing API, so add
 deliberately.
 
 Stories for these primitives live in `src/stories/` and render them in isolation

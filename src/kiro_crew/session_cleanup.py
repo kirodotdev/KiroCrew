@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.member_process_records import RecordScan
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
@@ -125,6 +126,7 @@ class CleanupState:
     idle_policy_source: tuple[int, int] | None = None
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
+    member_reclaim_cursor: RecordScan | None = None
     active_dashboard_slots: set[str] | None = None
     watchdog: SessionWatchdog | None = None
 
@@ -140,12 +142,17 @@ class CleanupDeps:
     cleanup_orphaned_mcp_servers: Callable[[], int]
     cleanup_orphaned_session_roots: Callable[[], int]
     cleanup_stale_sandbox_profiles: Callable[[], int]
+    reclaim_member_bindings: Callable[[RecordScan | None], tuple[int, RecordScan | None]]
     prune_pycache: Callable[[], tuple[int, int]]
     collect_active_pids: ActivePidCollector
     periodic_pid_sweep: PeriodicPidSweep
     kill_confirmed_and_writeback: PidWriteback
     find_orphan_mcp_candidates: Callable[[set[int]], list[int]]
     kill_orphan_mcps: Callable[[list[int]], int]
+    # Linux/systemd agent-scope reaper. Takes the live provider PID set and
+    # returns a summary object exposing ``.reclaimed`` (int). Typed loosely so
+    # this module need not import ``session_scope_reap`` at module load.
+    reap_agent_scopes: Callable[[set[int]], Any]
     build_child_map: Callable[[], dict[int, list[int]]]
     rss_mb_from_tree: Callable[[int, dict[int, list[int]]], int]
     get_session_rss_mb: Callable[[int], int]
@@ -308,6 +315,31 @@ class SessionCleanup:
             # This sweep treats failures as a silent best-effort
             # miss.  The watchdog must not promote the severity.
             pass
+
+    async def _reap_agent_scopes_hook(self) -> None:
+        # Reclaim abandoned agent cgroup scopes (Linux/systemd; a no-op
+        # elsewhere). The live provider/pool/in-flight PID set is gathered here
+        # so a scope containing any live tree is never touched; the reaper reads
+        # tracked PIDs from the session_pid files itself. Blocking subprocess
+        # work runs on the maintenance pool, exactly like the orphan-MCP sweep.
+        try:
+            active_pids, safe = self._active_pids()
+            if not safe:
+                return
+            summary = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.reap_agent_scopes,
+                active_pids,
+            )
+            reclaimed = int(getattr(summary, "reclaimed", 0) or 0)
+            if reclaimed:
+                self._deps.logger.info(
+                    "Periodic sweep: reclaimed %d abandoned agent scope(s)",
+                    reclaimed,
+                )
+        except Exception:
+            # Best-effort, like the orphan-MCP sweep: never promote severity.
+            self._deps.logger.debug("agent-scope reap hook failed", exc_info=True)
 
     async def _rss_threshold_check(self) -> None:
         if not self.state.rss_max_mb:
@@ -533,6 +565,9 @@ class SessionCleanup:
             await self._run_cleanup_ticks(interval)
         finally:
             boot_reclaim.cancel()
+            if self.state.member_reclaim_cursor is not None:
+                self.state.member_reclaim_cursor.close()
+                self.state.member_reclaim_cursor = None
 
     async def _run_cleanup_ticks(self, interval: float) -> None:
         # The sleep is chopped into short waits so a config write that shortens
@@ -566,6 +601,7 @@ class SessionCleanup:
             await self._owner._watchdog.tick()
             await self._sweep_session_roots()
             await self._sweep_sandbox_artifacts()
+            await self._sweep_member_bindings()
             await self._maybe_prune_pycache()
             await self._sweep_periodic_pids()
             await self._sweep_untracked_mcps()
@@ -598,6 +634,46 @@ class SessionCleanup:
         except Exception as exc:
             self._deps.logger.debug(
                 "sandbox launcher sweep failed: %s",
+                type(exc).__name__,
+            )
+
+    async def _sweep_member_bindings(self) -> None:
+        """Advance the canonical record scan on the existing maintenance executor."""
+        try:
+            pending = asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.reclaim_member_bindings,
+                self.state.member_reclaim_cursor,
+            )
+            try:
+                reclaimed, next_cursor = await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not abandon or cancel the worker's
+                # future before its returned cursor can be closed safely.
+                cursor = self.state.member_reclaim_cursor
+                try:
+                    while not pending.done():
+                        try:
+                            await asyncio.shield(pending)
+                        except asyncio.CancelledError:
+                            pass
+                    _, cursor = pending.result()
+                except Exception:
+                    pass
+                finally:
+                    if cursor is not None:
+                        cursor.close()
+                    self.state.member_reclaim_cursor = None
+                raise
+            self.state.member_reclaim_cursor = next_cursor
+            if reclaimed:
+                self._deps.logger.info(
+                    "Periodic sweep: reclaimed %d stale member-memory records",
+                    reclaimed,
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "member-memory binding sweep failed: %s",
                 type(exc).__name__,
             )
 

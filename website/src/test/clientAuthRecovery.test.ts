@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { attemptSilentRefresh, checkSessionExpired, removeAuthBanner, __resetAuthRecoveryStateForTests } from '../api/client'
 import { queryClient } from '../api/queryClient'
+import { noteSessionExpiredResponse } from '../api/sessionExpirySignal'
 
 const deny403 = (): Response =>
   new Response(JSON.stringify({ error: 'Token required' }), {
@@ -54,6 +55,18 @@ describe('client silent-refresh recovery (warm / background-poll path)', () => {
     expect(refreshCalls.length).toBe(1)
     expect((refreshCalls[0][1] as RequestInit).method).toBe('POST')
     expect(results).toEqual([true, true, true, true])
+  })
+
+  it('routes SDK expiry signals into the same single-flight recovery', async () => {
+    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }))
+    const response = deny403()
+    expect(noteSessionExpiredResponse(response)).toBe(true)
+    noteSessionExpiredResponse(deny403())
+    checkSessionExpired(deny403())
+    await flushMicrotasks()
+    expect(fetchMock.mock.calls.filter(c => c[0] === '/api/auth/refresh')).toHaveLength(1)
+    expect(response.bodyUsed).toBe(false)
+    expect(bannerEl()).toBeNull()
   })
 
   it('returns true when the 30-day refresh cookie mints fresh cookies (200)', async () => {

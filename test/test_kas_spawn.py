@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
 )
+from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.config.paths import kiro_agents_dir
 
 
@@ -350,6 +351,7 @@ def send(obj):
 # its host BEFORE answering initialize, and this stub records what came back.
 HOST_OWNED = "--auth-method" not in sys.argv[1:]
 CAPTURE = os.environ.get("KIROCREW_TEST_KAS_AUTH_CAPTURE")
+INIT_CAPTURE = os.environ.get("KIROCREW_TEST_KAS_INIT_CAPTURE")
 
 def ask_host_for_credential(stdin):
     send({"jsonrpc": "2.0", "id": 0, "method": "_kiro/auth/getAccessToken", "params": {}})
@@ -371,6 +373,9 @@ for line in sys.stdin:
     msg = json.loads(line)
     method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if method == "initialize":
+        if INIT_CAPTURE:
+            with open(INIT_CAPTURE, "w") as fh:
+                json.dump(params.get("clientCapabilities"), fh)
         if HOST_OWNED:
             ask_host_for_credential(sys.stdin)
         send({"jsonrpc": "2.0", "id": mid, "result": {
@@ -491,6 +496,109 @@ class TestKasInvocation:
             assert runtime.is_alive()
         finally:
             await runtime.kill()
+
+    async def _handshake_settings(self, tmp_path, monkeypatch, *, tools, tool_search):
+        """Spawn the stub with ``kirocrew``'s spec granting *tools* and return the
+        ``_meta.kiro.settings`` the stub saw on ``initialize``."""
+        spec = {**_STUB_AGENT_SPEC, "tools": tools}
+        # Both resolvers: the fixture's KIRO_HOME home AND the per-test pin the
+        # root conftest installs on ``agent.KIRO_AGENTS_DIR`` -- the spawn-time
+        # self-heal and the spec read consult the pinned one, and an absent file
+        # there is regenerated from the shipped default, which grants the loader.
+        from kiro_crew.agent import kiro_agents_dir_path
+
+        for agents_dir in {kiro_agents_dir(), kiro_agents_dir_path()}:
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            (agents_dir / f"{spec['name']}.json").write_text(json.dumps(spec), encoding="utf-8")
+        capture = tmp_path / "init-caps.json"
+        monkeypatch.setenv("KIROCREW_TEST_KAS_INIT_CAPTURE", str(capture))
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws-ts",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+            tool_search=tool_search,
+        )
+        try:
+            await runtime.spawn()
+            assert runtime.is_alive()
+        finally:
+            await runtime.kill()
+        caps = json.loads(capture.read_text())
+        # Everything but the settings channel is the shared declaration, untouched.
+        assert {k: v for k, v in caps.items() if k != "_meta"} == {
+            k: v for k, v in KAS_CLIENT_CAPABILITIES.items() if k != "_meta"
+        }
+        return caps["_meta"]["kiro"]["settings"]
+
+    @pytest.mark.asyncio
+    async def test_tool_search_rides_the_handshake_when_the_spec_grants_the_loader(
+        self, kas_stub, tmp_path, monkeypatch
+    ):
+        """KAS reads Tool Search from ``initialize``, not from the cli.json overlay.
+
+        With the operator's toggle on and the spawn agent's ``tools`` naming
+        ``tool_search``, the handshake carries ``enabled: true`` plus the
+        thresholds -- and no overlay file is written for this host.
+        """
+        settings = await self._handshake_settings(
+            tmp_path,
+            monkeypatch,
+            tools=["fs_read", "tool_search"],
+            tool_search=ToolSearchSettings(True, 5, 50_000),
+        )
+        assert settings == {"toolSearch": {"enabled": True, "minPct": 5, "minTokens": 50_000}}
+        assert not (tmp_path / "ws-ts" / ".kiro" / "settings" / "cli.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_tool_search_is_sent_off_when_the_spec_cannot_load_a_deferred_tool(
+        self, kas_stub, tmp_path, monkeypatch
+    ):
+        """THE invariant: deferral is never enabled for a spec without the loader.
+
+        KAS defers every MCP spec when told to and does not check that a
+        ``tool_search`` tool is mounted, so a granting-nothing spec would run
+        with its MCP tools deferred and unreachable. The client sends an explicit
+        false instead of leaving the key to the host's default.
+        """
+        settings = await self._handshake_settings(
+            tmp_path,
+            monkeypatch,
+            tools=["fs_read"],
+            tool_search=ToolSearchSettings(True, 5, 50_000),
+        )
+        assert settings["toolSearch"]["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_grant_is_read_from_the_spec_kas_projects_not_a_project_checkout(
+        self, kas_stub, tmp_path, monkeypatch
+    ):
+        """A project ``.kiro/agents`` spec granting the loader must not turn deferral
+        on: KAS is handed the user-level spec at session/new, and THAT one grants
+        nothing here, so the session would defer with no loader."""
+        work_dir = tmp_path / "ws-ts"
+        project_agents = work_dir / ".kiro" / "agents"
+        project_agents.mkdir(parents=True)
+        (project_agents / "kirocrew.json").write_text(
+            json.dumps({**_STUB_AGENT_SPEC, "tools": ["fs_read", "tool_search"]}),
+            encoding="utf-8",
+        )
+        settings = await self._handshake_settings(
+            tmp_path,
+            monkeypatch,
+            tools=["fs_read"],
+            tool_search=ToolSearchSettings(True, 5, 50_000),
+        )
+        assert settings["toolSearch"]["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_tool_search_value_leaves_the_channel_empty(
+        self, kas_stub, tmp_path, monkeypatch
+    ):
+        """No toggle threaded in: the handshake is the harness constant, byte for byte."""
+        settings = await self._handshake_settings(
+            tmp_path, monkeypatch, tools=["fs_read", "tool_search"], tool_search=None
+        )
+        assert settings == {}
 
     @pytest.mark.asyncio
     async def test_crew_owned_spawn_answers_the_credential_callback_before_initialize(

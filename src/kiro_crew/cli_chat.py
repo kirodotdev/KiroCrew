@@ -36,8 +36,10 @@ from kiro_crew.providers.base import (
     LLMEvent,
     LLMProvider,
 )
+from kiro_crew.sandbox import SandboxCeilingUnsealable
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.terminal_safe import safe_terminal_line
 
 logger = logging.getLogger(__name__)
 
@@ -328,11 +330,46 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
 
 
 def _run_chat(message: str | None, model: str | None, agent: str | None = None) -> None:
-    """Run chat at the sync CLI boundary and render SIGINT as a clean exit."""
+    """Run chat at the sync CLI boundary and render SIGINT as a clean exit.
+
+    Also renders a fail-closed SANDBOX REFUSAL as a message rather than a traceback.
+    The sandbox launcher raises ``SandboxCeilingUnsealable`` from its ceiling
+    materialisers when a governance ceiling cannot be made sealable — a symlink or a second hard link on the live-target pointer
+    is the shape an ordinary snapshot tool produces — and that refusal is deliberately
+    NOT in the ``AcpError`` hierarchy, so ``_stream_and_print``'s handler never sees it
+    and it escaped here as an unhandled exception. The remedy was technically on screen,
+    buried under a stack trace that reads as a Kiro Crew crash, which is the wrong thing
+    to tell an operator whose actual problem is one extra file link.
+
+    Printed verbatim: the exception's own text names the path and the one-step fix, and a
+    summary here would be a second wording of it that could drift.
+
+    The launcher entry point is named by ROLE above, not by its identifier: the spawn audit
+    classifies a function as sandbox-routed by matching that identifier as a substring of
+    the whole enclosing source, docstrings included, and this function's only spawn-shaped
+    call is ``asyncio.run``. Spelling it here makes the audit demand a resource-limit
+    ``preexec_fn`` and a cgroup scope for a child this function never creates, and makes
+    this function's own ``BENIGN_SPAWNS`` entry read as stale.
+    """
     try:
         asyncio.run(_chat(message, model, agent=agent))
     except KeyboardInterrupt:
         print("\nBye! 👻")
+    except SandboxCeilingUnsealable as exc:
+        # Escaped HERE as well as in the formatters that build these sentences, and the
+        # duplication is the point: this handler takes ANY builder of this exception,
+        # including ones in modules it does not own, and several embed a filename read
+        # from agent-writable state (``os.listdir`` of the md-notebook staging dir) where
+        # every byte but "/" and NUL is legal. Defusing at each builder keeps a NEW SINK
+        # safe; defusing at the sink keeps a NEW BUILDER safe. Only both cover both.
+        # ``safe_terminal_line`` strips controls without quoting, so the remedy's path and
+        # ``find`` invocation stay copyable -- see ``_print_wrapped``'s docstring.
+        print(f"\n❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
+        print(
+            "   Run `kirocrew doctor` to see this before the next spawn.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _can_prompt(interactive: bool) -> bool:

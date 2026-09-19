@@ -27,6 +27,17 @@ class MemberEssentialContextError(ValueError):
     """A declared essential source cannot be included completely and safely."""
 
 
+def _declared_document_count(resources: list) -> int:
+    """How many declared resources can become essential documents.
+
+    Only ``file://`` declarations are ever read; ``skill://``, ``knowledge://``
+    and other schemes stay on demand and never enter the essentials snapshot,
+    so they must not consume the document budget either. An agent that declares
+    seventy skills and no files loads zero documents.
+    """
+    return sum(1 for r in resources if isinstance(r, str) and r.startswith("file://"))
+
+
 class _ManagedEssentialSourceError(MemberEssentialContextError):
     """A managed source is excluded from wildcard discovery, never readable."""
 
@@ -488,7 +499,7 @@ def documents_for_member(
             f"Essential template {spec_path}: resources must be a list of strings"
         )
     if include_project and isinstance(resources, list):
-        if len(resources) > _MAX_DOCUMENTS:
+        if _declared_document_count(resources) > _MAX_DOCUMENTS:
             raise MemberEssentialContextError(f"Essential template {spec_path}: too many resources")
         for match, root in _resource_paths(resources, source_root, absolute_root):
             add(match, root, steering="steering" in match.parts)
@@ -499,7 +510,7 @@ def _resource_paths(
     resources: list[str], source_root: Path, absolute_root: Path
 ) -> list[tuple[Path, Path]]:
     paths: list[tuple[Path, Path]] = []
-    if len(resources) > _MAX_DOCUMENTS:
+    if _declared_document_count(resources) > _MAX_DOCUMENTS:
         raise MemberEssentialContextError(
             "Essential resource declaration exceeds the document limit"
         )

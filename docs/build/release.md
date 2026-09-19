@@ -199,9 +199,13 @@ there is no build step at stable-tag time to add it.
    pointer move. `Create GitHub Release` runs (the `if:` fix) and renders
    GitHub's own contributor block, so the body must not carry a second one —
    see "What the release body must not contain" below, because the body is
-   ASSEMBLED, not written, and the duplicate arrives on its own. Verify: stable
-   feed carries the bare `X.Y.Z`, the wheel filename has no `rc`, About shows
-   `X.Y.Z`, CHANGELOG shows no draft heading.
+   ASSEMBLED, not written, and the duplicate arrives on its own. The page appears
+   as a **draft** and becomes public only once `record-stable-promotion` has
+   written `stable-publication.json` onto it, so a release still drafted means a
+   required lane failed -- read that job, not the page. Verify: the release is
+   published and carries the marker asset, stable feed carries the bare `X.Y.Z`,
+   the wheel filename has no `rc`, About shows `X.Y.Z`, CHANGELOG shows no draft
+   heading.
 
    To ship the candidate's exact bytes instead — the only mode where stable runs
    the identical binary that was validated — set `vars.STABLE_PROMOTE_BYTES` to
@@ -222,7 +226,7 @@ concurrency group, and their version derivation.
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle; a bare tag verifies that same-commit bundle and promotes the exact files/OCI digest to stable without building. Then creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
-| `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. |
+| `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. |
 | `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
@@ -347,9 +351,86 @@ trailer). The unsigned electron-builder zip and DMG are inter-job handoffs and
 never become release assets. Windows `Setup.exe` is not attached. The release is
 marked `prerelease` when the channel is insider, and notes are generated.
 
-`github-release` is the one job that needs `contents: write`, and it is the only
-job that has it: the signing jobs hold AWS credentials but never
-`contents: write`. `test_workflow_permissions.py` pins that split.
+`github-release` and `record-stable-promotion` are the two jobs that need
+`contents: write`, and they are the only ones that have it: the signing jobs hold
+AWS credentials but never `contents: write`.
+`test_workflow_permissions.py` pins that split.
+
+**The release page is the publication boundary.** Every publish lane gates on
+`stable-gate`, which is a pre-flight (the version is documented in
+`CHANGELOG.md`; for a promotion, bytes insiders actually received), so the lanes
+then publish independently of one another. `github-release` therefore waits on
+the complete required set -- `publish-cli`, all six Linux format/arch lanes,
+`publish-docker` and `sign-and-notarize` -- rather than on macOS alone, so a
+version cannot become publicly visible while a required lane failed. It is the
+same set `record-promotion` requires, and
+`test_release_promotion_contract.py::test_the_promotion_record_and_the_release_page_require_the_same_lanes`
+keeps the two from drifting into two different definitions of "published".
+
+What this does and does not buy: nothing in the workflow can un-publish an OCI
+tag or an npm version, so the boundary withholds the **announcement**, not the
+bytes. A partial run leaves the already-published lanes in place and no release
+page; a rerun after the failing lane is fixed reaches `github-release` again with
+the same immutable artifacts, which is what makes the retry deterministic rather
+than a second, differently-composed release. `build-windows` stays outside the
+condition on purpose -- it is waited on so the installer artifact exists, but its
+result is soft-failed and must not gate the page.
+
+**A stable page is created as a draft, and `record-stable-promotion` completes
+it.** `github-release` is itself a publishing lane: it creates the release and
+uploads every asset in one action call, so a page published on create is visible
+from its first asset onward, and an upload that dies halfway leaves a live release
+offering some platforms and silently missing others. On the stable channel it
+therefore starts the page as a draft, and one further job -- gated on the same
+required lane set plus `github-release` itself -- writes the completion marker and
+then flips the draft visible, in that order. Insider is unchanged: those pages are
+prereleases, and `record-promotion` is already the record the promotion path
+consumes.
+
+**Nothing in this workflow writes to a release the public can already see.** That
+one rule is what the draft mechanism reduces to, and it is stronger than the
+individual failures that produced it: `draft: true` on an update withdrew a live
+page, a swallowed API error made a live page look absent, a rerun re-uploaded over
+bytes a marker already certified, and an interrupted re-upload left a mixed asset
+set visible on a public page. None of those can be undone by a later run.
+
+So a stable page is only ever **created**, as a draft, and only while the public
+cannot see one. A probe step reads the release's own state and answers `create`
+(absent or still a draft) or `skip` (already published, marked or not); the upload
+action carries `if: steps.page.outputs.action == 'create'`, which is why `draft` is
+a constant on the create path rather than a decision. A rerun of a finished stable
+release therefore touches nothing remote. Only gh's own "release not found" reads
+as absent -- any other API error fails the step, because a run that publishes
+nothing is recoverable and a wrong guess is a write to a live page.
+
+The marker is `stable-publication.json`, attached to the release it certifies. A
+release asset rather than a workflow artifact, because an artifact expires and
+"did this version publish completely?" outlives any retention window. It carries
+the tag, the version and base version, `promote_mode`, the OCI digest, the source
+commit and run id, and the required lane set -- so a complete publication is
+checkable rather than inferred from green job bubbles. If any required lane
+failed, the draft stays unpublished and no marker exists; there is no state where
+one is present without the other.
+
+Reruns reconcile against the release's own state, not against a record of what
+the run did -- and the question asked is whether the **marker** is on the release,
+not whether the page is visible, because those can disagree. A draft carries a
+"Publish release" button, so a half-populated page can be made public by hand, and
+releases published before this job existed are public with nothing certifying them
+either. Reading visibility alone would call both states complete and leave them
+uncertified forever. So: published **and** marked is a no-op that
+logs a notice; still drafted completes normally; and published-but-unmarked
+**fails the job**, because marking it would certify an asset set the run never
+uploaded and rebuilding it would rewrite a page users can already see. The error
+names the two ways out: delete the release page (keeping the tag) and re-run the
+tag, or accept the version as one published before the marker existed.
+
+Do not publish a stable draft by hand. It announces a release no marker certifies,
+and it is the state that failure exists to surface rather than repair.
+
+Windows is carved out here exactly as it is on the page -- absent from both
+`needs` and the condition, since a soft-failed result reports `success` regardless
+and this job downloads no artifacts to race.
 
 ### There is no PyPI publish
 
@@ -544,6 +625,16 @@ desktop uses. `publish-cli.yml` depends only on the built wheel and its own
 KMS key, never on Apple or CDSigner, so a macOS signing failure cannot block a
 CLI release. The same independence holds for `publish-linux.yml` (needs only
 `build-desktop`) and `publish-docker.yml` (needs only the wheel).
+
+Per-ARCH independence is narrower than that, and only the nightly lane has it.
+`build-desktop`'s caller job aggregates all three build legs, so its result
+cannot say which one failed. `nightly.yml` therefore passes
+`soft_fail_arm64: true`: a failed arm64 build leaves the x64 publishers running
+on their own artifact, and the arm64 publishers go red on their missing one
+rather than skipping. `release.yml` keeps the coupling, because its run records
+the stable promotion candidate and all three arm64 Linux roles are REQUIRED in
+`scripts/release_promotion.py` -- an x64-only publish there burns immutable keys
+for a version that can never be promoted (tracked in #1030).
 
 `SHA256SUMS` sits beside the wheel for legacy tooling, but it is only a
 corruption check. Authenticity comes from a canonical JSON artifact manifest

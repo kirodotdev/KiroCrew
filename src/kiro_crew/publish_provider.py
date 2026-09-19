@@ -340,6 +340,21 @@ class PublishProvider(ABC):
     #: each provider overrides it with its real name.
     display_name: str = "the publishing provider"
     install_hint: str = ""
+    #: Whether a published link serves the content with NO authentication. The
+    #: dashboard's publish flow reads this to decide whether to put the public
+    #: exposure warning and the blocking acknowledgment ("publish publicly") in
+    #: front of the confirm: those two say the content is going onto the open
+    #: internet, which is the truth for a public web destination and a falsehood
+    #: for one that stores content privately behind a login. Shown where it is
+    #: false, the gate trains the user to click past it where it is true.
+    #: The publish flow always requests ``visibility: PUBLIC``, so ``False`` is
+    #: a statement about that request: even a publication the provider files as
+    #: PUBLIC is served only to an authenticated reader. A provider whose PUBLIC
+    #: publications are readable by anyone must leave this ``True``.
+    #: Default ``True`` -- the failure mode of a wrong default is a missing
+    #: warning on a public link, so a provider must DECLARE that it needs
+    #: authentication rather than be assumed to.
+    public_reachable: bool = True
 
     @abstractmethod
     def available(self) -> bool:

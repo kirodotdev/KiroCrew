@@ -252,7 +252,9 @@ name into `ResolvedBindings`, in this order:
 An unresolvable workspace falls back to `default_workspace`. Memory identity
 resolves exactly: the reserved `default` assistant uses Global Memory V1;
 existing members keep their declared V1 binding until the owner chooses V2.
-New and opted-in members own unique private V2 stores. Missing, unreadable,
+Explicitly created and opted-in members own unique private V2 stores.
+Automatically discovered agents start on Global V1 without private allocation.
+Missing, unreadable,
 shared or mismatched private identity stops execution with an actionable error.
 Selecting a member as `default_agent` preserves that member's memory version and
 binding. With no agents configured, the resolver returns the existing defaults.

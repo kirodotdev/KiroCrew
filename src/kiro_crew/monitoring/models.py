@@ -235,6 +235,52 @@ class MonitorOutcome(str, Enum):
     TARGET_UNAVAILABLE = "target_unavailable"
 
 
+#: Terminal outcomes a directive re-arm may displace, because the SYSTEM imposed
+#: them: a spent bound, a finished subject, a lapsed approval, a vanished target.
+#: Everything else -- ``USER_STOP``, ``SESSION_CLOSE``, and any outcome a later
+#: version adds -- was recorded FOR a consumer and is retained evidence.
+#:
+#: The one source of truth for that split. ``autonudge._stopped_row_is_replaceable``
+#: applies it to a live ``NudgeLoop``, and the ``mcp_tools.control`` preflight
+#: applies it to the JSON reading of the same record, so the answer the agent is
+#: given before its turn ends cannot disagree with the answer the turn boundary
+#: enforces. Duplicating the set at either site is what lets them drift.
+REARMABLE_MONITOR_OUTCOMES = frozenset(
+    {
+        MonitorOutcome.SUCCESS,
+        MonitorOutcome.BLOCKED,
+        MonitorOutcome.BUDGET,
+        MonitorOutcome.TARGET_UNAVAILABLE,
+    }
+)
+
+
+def retained_outcome_blocks_rearm(outcome: object, stopped_reason: object = "") -> bool:
+    """Whether a recorded *outcome* is evidence a re-arm must not displace.
+
+    Accepts the enum or its serialized value, so one predicate serves both the
+    in-process record and the endpoint reading of it. Fails CLOSED: an outcome
+    this version does not recognise is treated as evidence, matching the ruling
+    that only a system-imposed stop is automatically re-armable.
+
+    ``None`` means no terminal outcome was recorded, which blocks nothing.
+    """
+    if outcome is None or outcome == "":
+        return False
+    try:
+        resolved = MonitorOutcome(outcome)
+    except ValueError:
+        # An unknown outcome is evidence, not a system stop.
+        return True
+    if resolved is MonitorOutcome.BLOCKED and str(stopped_reason or "") == (
+        MONITOR_STOP_INVALID_RECORD
+    ):
+        # A quarantined malformed record is an inspection artifact retained for a
+        # human, not a stop the system chose; the arm path refuses it too.
+        return True
+    return resolved not in REARMABLE_MONITOR_OUTCOMES
+
+
 class MonitorActionDisposition(str, Enum):
     """Terminal disposition reported by a started monitor action turn."""
 

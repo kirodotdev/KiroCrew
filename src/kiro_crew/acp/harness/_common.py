@@ -27,6 +27,7 @@ from kiro_crew.acp.harness.base import (
     ReclaimPolicy,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_POD_HOME_REMAP,
@@ -77,6 +78,10 @@ class MembershipHarness(HarnessAdapter):
     @property
     def reads_markdown_agent_specs(self) -> bool:
         return self.backend in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+
+    @property
+    def client_meta_settings(self) -> bool:
+        return self.backend in ACP_BACKENDS_CLIENT_META_SETTINGS
 
     def reclaim_policy(self, *, max_age_secs: float, max_rss_mb: float) -> ReclaimPolicy:
         """Pass the runtime's configured thresholds straight through.

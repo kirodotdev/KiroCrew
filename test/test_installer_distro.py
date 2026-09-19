@@ -482,9 +482,15 @@ def test_cli_restores_the_previous_venv_when_the_wheel_install_fails(
     assert 'mv "$VENV" "$_VENV_BACKUP"' in text, (
         "cli.sh no longer moves the working venv aside before the rebuild"
     )
-    assert 'mv "$_VENV_BACKUP" "$VENV"' in text, (
+    assert '_restore_tree "$_VENV_BACKUP" "$VENV"' in text, (
         "cli.sh no longer restores the pre-rebuild venv on a failed wheel "
         "install"
+    )
+    # The restore goes through _restore_tree, which refuses to `mv` onto a
+    # path that survived `rm -rf` (the move would nest the backup and read
+    # as a restore that never happened).
+    assert 'mv "$1" "$2"' in text and 'if [ -e "$2" ] || [ -L "$2" ]; then' in text, (
+        "cli.sh's restore helper no longer checks the target is gone before moving"
     )
     # The venv-creation step after the move-aside must be guarded too:
     # under `set -eu` an unguarded `"$PY" -m venv` failure (disk full at

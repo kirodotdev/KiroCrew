@@ -5384,8 +5384,15 @@ class VectorMemoryStore:
                 return True
         return False
 
-    def get_lessons(self, limit: int | None = None) -> list[dict]:
-        """Return lesson.* entries ordered by most recently updated."""
+    def get_lessons(self, limit: int | None = None, offset: int = 0) -> list[dict]:
+        """Return lesson.* entries ordered by most recently updated.
+
+        ``offset`` skips that many of the NEWEST rows and is honoured only with
+        a positive ``limit``: it exists so a paging reader (``GET /api/lessons``)
+        can walk back through the population one bounded window at a time
+        without materializing the rows it skips. The unbounded read has nothing
+        to page and ignores it.
+        """
         sql = (
             "SELECT * FROM semantic_memory "
             "WHERE is_deleted = 0 AND key LIKE 'lesson.%' "
@@ -5397,8 +5404,8 @@ class VectorMemoryStore:
         # connection. _db_lock is reentrant, so callers that already hold it
         # remain safe.
         if limit is not None and limit > 0:
-            sql += " LIMIT ?"
-            rows = self._fetch_all_locked(sql, (limit,))
+            sql += " LIMIT ? OFFSET ?"
+            rows = self._fetch_all_locked(sql, (limit, max(0, offset)))
         else:
             # Unbounded: the whole lesson population, which is what the
             # _stored_similarity_scorer callers (_rank_lessons,
@@ -5422,6 +5429,31 @@ class VectorMemoryStore:
             "SELECT COUNT(*) AS n FROM semantic_memory WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
         )
         return int(rows[0]["n"]) if rows else 0
+
+    def has_any_decodable_lesson(self) -> bool:
+        """Whether any active ``lesson.*`` row holds JSON that decodes at all.
+
+        The tier-authority test for the lessons LIST (``GET /api/lessons``),
+        which is looser than ``has_any_lesson()`` on purpose: the list keeps
+        every row that decodes -- a legacy string, a rule-less mapping, a
+        volatile pre-boundary row -- rendered through ``str()`` and marked
+        withheld, because this list is the only surface that can show such a
+        row so it stays deletable. The list drops only a row whose stored JSON
+        does not decode, so a store holding nothing but those rows has nothing
+        this list can answer with, and the JSONL tier must stay the authority.
+        Selects only ``value_json``, never the embedding blobs, and stops at the
+        first row that decodes.
+        """
+        rows = self._fetch_all_locked(
+            "SELECT value_json FROM semantic_memory WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
+        )
+        for row in rows:
+            try:
+                json.loads(row["value_json"])
+            except (ValueError, TypeError):
+                continue
+            return True
+        return False
 
     def delete_lesson(
         self, rule_substring: str, repo_scope: str | None = None, *, exact: bool = False

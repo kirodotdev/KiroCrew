@@ -748,12 +748,26 @@ async def test_the_token_never_reaches_the_prewarm_file(
 # ---------------------------------------------------------------------------
 
 
-def _bare_runtime(monkeypatch: pytest.MonkeyPatch, pid: int = 4242) -> Any:
+def _bare_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    pid: int = 4242,
+    published: list[tuple[str, str]] | None = None,
+) -> Any:
     from kiro_crew.acp.runtime import AcpRuntime
 
     runtime = AcpRuntime(work_dir="/tmp")
     runtime._mcp_gateway_socket = "/tmp/kirocrew-gw.sock"
     monkeypatch.setattr(type(runtime), "pid", property(lambda _self: pid))
+    # ``_own_stub_session`` now also publishes the token's signed mapping (the
+    # switch-free identity channel). Recorded rather than written: these are unit
+    # tests of the naming/claim contract, and letting them touch the mapping
+    # directory would make each one depend on a trust root it never set up.
+    import kiro_crew.acp.runtime as rt_mod
+
+    sink = published if published is not None else []
+    monkeypatch.setattr(
+        rt_mod, "publish_session_token", lambda token, key: sink.append((token, key))
+    )
     return runtime
 
 
@@ -827,18 +841,34 @@ async def test_an_unclaimed_worker_mints_a_token_but_pushes_no_claim(
 
 
 @pytest.mark.asyncio
-async def test_no_stub_entries_means_no_token_and_no_claim(
+async def test_no_stub_entries_still_names_the_session_but_pushes_no_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Gateway off: nothing to name, and nothing that would read the name."""
+    """Gateway off: nothing to CLAIM, but the session still gets a name.
+
+    A token without a reachable gatewayd is not inert, because gatewayd is not its
+    only reader: it also resolves through a MAC-signed mapping file
+    (:mod:`kiro_crew.session_token_sig`) that the strict identity resolver reads
+    with no daemon, no broker stub and no config switch. So a session on a
+    gateway-less install — the default install — needs a name of its own, and
+    withholding one is the identity gap this asserts against.
+
+    The claim half is independent and is asserted too: with no stub entries there
+    is no stub connection for a claim to inform, so no claim is pushed.
+    """
     import kiro_crew.acp.runtime as rt_mod
 
     async def _boom(*_a: Any, **_k: Any) -> bool:
         raise AssertionError("claimed a session with no stub connections to inform")
 
     monkeypatch.setattr(rt_mod, "send_claim", _boom)
-    runtime = _bare_runtime(monkeypatch)
-    assert await runtime._own_stub_session([], PARENT_KEY) == ([], "")
+    published: list[tuple[str, str]] = []
+    runtime = _bare_runtime(monkeypatch, published=published)
+    entries, token = await runtime._own_stub_session([], PARENT_KEY)
+    assert entries == []
+    assert token
+    # ...and the name is published, or the resolver would have nothing to read.
+    assert published == [(token, PARENT_KEY)]
 
 
 def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(

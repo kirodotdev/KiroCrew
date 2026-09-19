@@ -9,6 +9,7 @@
  * empty-body responses without throwing. These are security- and
  * correctness-sensitive, so they are enforced deterministically here.
  */
+import { installSessionExpiryHandler } from '../api/sessionExpirySignal'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, act } from '@testing-library/react'
 import React from 'react'
@@ -300,10 +301,11 @@ describe('scoped request options and HTTP errors', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('does not activate wildcard grants through the new request method', async () => {
+  it('honors declared wildcard grants on JSON requests without admitting siblings', async () => {
     const api = getScopedApi(['/api/apps/test/*'], 'dashboard:chat-2')
-    await expect(api.request('/api/apps/test/item')).rejects.toThrow(/not permitted/)
-    expect(fetchMock).not.toHaveBeenCalled()
+    await expect(api.request('/api/apps/test/item')).resolves.toEqual({})
+    await expect(api.request('/api/apps/test-other/item')).rejects.toThrow(/not permitted/)
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('does not let a caller invent a session when the host did not bind one', async () => {
@@ -339,5 +341,110 @@ describe('scoped request options and HTTP errors', () => {
     fetchMock.mockRejectedValueOnce(failure)
     const api = getScopedApi(['/api/apps/test'])
     await expect(api.request('/api/apps/test/item')).rejects.toBe(failure)
+  })
+})
+
+describe('scoped raw response and declared pattern parity', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it.each([
+    ['/api/demo/*', '/api/demo', true],
+    ['/api/demo/*', '/api/demo/child?q=1', true],
+    ['/api/demo/*', '/api/demo-other', false],
+    ['/api/demo*', '/api/demo-other', true],
+    [' /api/demo/* ', '/api/demo/child', true],
+    ['', '/api/demo', false],
+    [' ', '/api/demo', false],
+    ['/api/demo', '/api/demo/child', true],
+    ['/api/demo', '/api/demo-other', false],
+    ['/api/demo/', '/api/demo/child', false],
+    ['/api/demo/*', '/api/demo/../secret', false],
+    ['/api/demo/*', '/api/demo/%2e%2e/secret', false],
+  ])('matches declaration %s against %s as %s', async (pattern, path, allowed) => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}'))
+    vi.stubGlobal('fetch', fetcher)
+    const result = getScopedApi([pattern]).raw(path)
+    if (allowed) {
+      await expect(result).resolves.toBeInstanceOf(Response)
+      expect(fetcher).toHaveBeenCalledOnce()
+    } else {
+      await expect(result).rejects.toThrow('not permitted')
+      expect(fetcher).not.toHaveBeenCalled()
+    }
+  })
+
+  it('returns binary bytes and headers without consuming the body', async () => {
+    const bytes = new Uint8Array([0, 255, 128, 13])
+    const response = new Response(bytes, { headers: { 'Content-Disposition': 'attachment; filename="report.docx"' } })
+    const fetcher = vi.fn().mockResolvedValue(response)
+    vi.stubGlobal('fetch', fetcher)
+    const controller = new AbortController()
+    const result = await getScopedApi(['/api/demo'], 'dashboard:host').raw('/api/demo/download', {
+      method: 'POST', body: 'payload', signal: controller.signal,
+      headers: { 'X-Session-Key': 'dashboard:other' },
+    })
+    expect(result).toBe(response)
+    expect(result.bodyUsed).toBe(false)
+    expect(result.headers.get('Content-Disposition')).toContain('report.docx')
+    expect(new Uint8Array(await result.arrayBuffer())).toEqual(bytes)
+    const options = fetcher.mock.calls[0][1]
+    expect(options.signal).toBe(controller.signal)
+    expect(options.body).toBe('payload')
+    expect(new Headers(options.headers).get('X-Session-Key')).toBe('dashboard:host')
+  })
+
+  it('leaves a stream unconsumed for the caller to read and cancel', async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: ready\n\n')) }, cancel })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)))
+    const response = await getScopedApi(['/api/demo']).raw('/api/demo/stream')
+    const reader = response.body!.getReader()
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: ready\n\n')
+    await reader.cancel()
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('rejects caller identity on an unbound raw request before fetch', async () => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    await expect(getScopedApi(['/api/demo']).raw('/api/demo', {
+      headers: { 'X-Session-Key': 'dashboard:other' },
+    })).rejects.toThrow('requires a host session binding')
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('signals explicit auth expiry on both transports while retaining HTTP failures', async () => {
+    const handler = vi.fn()
+    const uninstall = installSessionExpiryHandler(handler)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('expired', {
+      status: 403, headers: { 'X-Auth-Required': 'true' },
+    })))
+    try {
+      const api = getScopedApi(['/api/demo'])
+      for (const method of ['raw', 'get'] as const) {
+        await expect(api[method]('/api/demo')).rejects.toMatchObject({ status: 403, body: 'expired' })
+      }
+      expect(handler).toHaveBeenCalledTimes(2)
+      // Callback runs before body consumption, like checkSessionExpired.
+      expect(handler.mock.calls[0][0].status).toBe(403)
+    } finally { uninstall() }
+    await expect(getScopedApi(['/api/demo']).raw('/api/demo')).rejects.toMatchObject({ status: 403 })
+    expect(handler).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    [403, undefined], [403, 'false'], [401, 'true'], [200, 'true'],
+  ])('does not report ordinary status %s with expiry header %s', async (status, value) => {
+    const handler = vi.fn()
+    const uninstall = installSessionExpiryHandler(handler)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', {
+      status, headers: value ? { 'X-Auth-Required': value } : {},
+    })))
+    try {
+      const result = getScopedApi(['/api/demo']).raw('/api/demo')
+      if (status >= 400) await expect(result).rejects.toMatchObject({ status })
+      else await expect(result).resolves.toBeInstanceOf(Response)
+      expect(handler).not.toHaveBeenCalled()
+    } finally { uninstall() }
   })
 })

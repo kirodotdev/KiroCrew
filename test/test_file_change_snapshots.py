@@ -58,26 +58,34 @@ def short_tmp_dir():
 
 class TestTruncateSnapshot:
     def test_below_cap_passes_through(self):
-        assert _truncate_snapshot("hello world") == "hello world"
+        assert _truncate_snapshot("hello world").content == "hello world"
 
     def test_empty_string_passes_through(self):
-        assert _truncate_snapshot("") == ""
+        assert _truncate_snapshot("").content == ""
 
     def test_exactly_at_cap_not_truncated(self):
         content = "a" * _MAX_SNAPSHOT
-        assert _truncate_snapshot(content) == content
+        assert _truncate_snapshot(content).content == content
 
     def test_above_cap_truncated_with_marker(self):
         content = "a" * (_MAX_SNAPSHOT + 100)
         out = _truncate_snapshot(content)
         # Original prefix preserved, marker appended.
-        assert out.startswith("a" * _MAX_SNAPSHOT)
-        assert "(truncated at" in out
-        assert str(_MAX_SNAPSHOT) in out
+        assert out.content.startswith("a" * _MAX_SNAPSHOT)
+        assert "(truncated at" in out.content
+        assert str(_MAX_SNAPSHOT) in out.content
+
+    @pytest.mark.parametrize(
+        ("length", "truncated"),
+        [(_MAX_SNAPSHOT - 1, False), (_MAX_SNAPSHOT, False), (_MAX_SNAPSHOT + 1, True)],
+    )
+    def test_reports_truncation_at_boundary(self, length: int, truncated: bool):
+        snapshot = _truncate_snapshot("é" * length)
+        assert snapshot.truncated is truncated
 
     def test_truncation_idempotent_on_already_short_content(self):
         out = _truncate_snapshot("short")
-        assert _truncate_snapshot(out) == "short"
+        assert _truncate_snapshot(out.content).content == "short"
 
 
 # ── _safe_read_snapshot ─────────────────────────────────────────────────────
@@ -87,7 +95,9 @@ class TestSafeReadSnapshot:
     def test_reads_normal_file(self, tmp_path: Path):
         f = tmp_path / "file.txt"
         f.write_text("hello\nworld\n")
-        assert _safe_read_snapshot(str(f)) == "hello\nworld\n"
+        snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "hello\nworld\n"
 
     def test_reads_utf8_regardless_of_locale(self, tmp_path: Path, monkeypatch):
         # Git and agent-authored files are UTF-8 whatever the host's preferred
@@ -97,14 +107,18 @@ class TestSafeReadSnapshot:
         import locale
 
         monkeypatch.setattr(locale, "getpreferredencoding", lambda *_a, **_k: "cp1252")
-        assert _safe_read_snapshot(str(f)) == "こんにちは"
+        snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "こんにちは"
 
     def test_normalizes_newlines_like_the_text_mode_read_it_replaces(self, tmp_path: Path):
         # The strReplace "before" is a text-mode read; a CRLF "after" that kept
         # its \r would diff every unchanged line as modified.
         f = tmp_path / "crlf.txt"
         f.write_bytes(b"one\r\ntwo\rthree\r\n")
-        assert _safe_read_snapshot(str(f)) == "one\ntwo\nthree\n"
+        snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "one\ntwo\nthree\n"
 
     def test_reads_through_the_descriptor_gate_not_by_name(self, tmp_path: Path):
         # The bytes served must come from the descriptor the gate validated, so
@@ -112,7 +126,9 @@ class TestSafeReadSnapshot:
         f = tmp_path / "file.txt"
         f.write_text("hello\n")
         with patch.object(Path, "read_text", side_effect=AssertionError("re-opened by name")):
-            assert _safe_read_snapshot(str(f)) == "hello\n"
+            snapshot = _safe_read_snapshot(str(f))
+        assert snapshot is not None
+        assert snapshot.content == "hello\n"
 
     def test_returns_none_for_missing_file(self, tmp_path: Path):
         assert _safe_read_snapshot(str(tmp_path / "ghost")) is None
@@ -179,7 +195,8 @@ class TestSafeReadSnapshot:
         big.write_text("x" * (_MAX_SNAPSHOT + 50))
         out = _safe_read_snapshot(str(big))
         assert out is not None
-        assert "(truncated at" in out
+        assert "(truncated at" in out.content
+        assert out.truncated is True
 
     def test_truncates_a_large_multibyte_file_with_the_marker(self, tmp_path: Path):
         # Four-byte code points: the byte cap must still leave MORE than the
@@ -188,8 +205,9 @@ class TestSafeReadSnapshot:
         big.write_text("\U0001f600" * (_MAX_SNAPSHOT + 1), encoding="utf-8")
         out = _safe_read_snapshot(str(big))
         assert out is not None
-        assert out.startswith("\U0001f600" * _MAX_SNAPSHOT)
-        assert "(truncated at" in out
+        assert out.content.startswith("\U0001f600" * _MAX_SNAPSHOT)
+        assert "(truncated at" in out.content
+        assert out.truncated is True
 
     def test_replaces_undecodable_bytes(self, tmp_path: Path):
         # errors="replace" is used so binary garbage doesn't crash the read.
@@ -197,7 +215,7 @@ class TestSafeReadSnapshot:
         f.write_bytes(b"hello\xff\xfeworld")
         out = _safe_read_snapshot(str(f))
         assert out is not None
-        assert "hello" in out and "world" in out
+        assert "hello" in out.content and "world" in out.content
 
 
 # ── _snapshot_write_target ─────────────────────────────────────────────────
@@ -228,7 +246,7 @@ class TestSnapshotWriteTarget:
         # File doesn't exist yet — chip should still surface with empty before.
         target = tmp_path / "new.txt"
         out = _snapshot_write_target({"command": "create", "path": str(target)})
-        assert out == {"path": str(target), "content": ""}
+        assert out == {"path": str(target), "content": "", "truncated": False}
 
     def test_str_replace_on_existing_file_captures_content(self, tmp_path: Path):
         f = tmp_path / "code.py"
@@ -291,6 +309,43 @@ class TestFlushFileChanges:
         assert meta["file_changes"][0]["after"] == "after\n"
         # Slot's accumulator is reset for the next turn.
         assert slot._file_changes == []
+
+    @pytest.mark.parametrize(
+        ("before_length", "after_length"),
+        [(_MAX_SNAPSHOT + 1, 1), (1, _MAX_SNAPSHOT + 1), (_MAX_SNAPSHOT + 1, _MAX_SNAPSHOT + 2)],
+    )
+    def test_truncated_payload_reports_the_snapshot_limit(
+        self, tmp_path: Path, before_length: int, after_length: int
+    ) -> None:
+        target = tmp_path / "large.txt"
+        target.write_text("a" * after_length)
+        captured = _snapshot_write_target(
+            {"command": "create", "path": str(target)},
+            diff_old_text="é" * before_length,
+        )
+        assert captured is not None
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [captured]
+        _flush_file_changes(slot)
+        change = slot.messages[-1]["meta"]["file_changes"][0]
+        assert change["truncated"] is True
+        assert change["snapshot_limit_chars"] == _MAX_SNAPSHOT
+
+    def test_untruncated_payload_keeps_the_legacy_shape(self, tmp_path: Path) -> None:
+        target = tmp_path / "small.txt"
+        target.write_text("after")
+        captured = _snapshot_write_target(
+            {"command": "create", "path": str(target)}, diff_old_text="before"
+        )
+        assert captured is not None
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [captured]
+        _flush_file_changes(slot)
+        assert slot.messages[-1]["meta"]["file_changes"][0] == {
+            "path": str(target),
+            "before": "before",
+            "after": "after",
+        }
 
     def test_dedup_keeps_first_before(self, short_tmp_dir: Path):
         d = short_tmp_dir

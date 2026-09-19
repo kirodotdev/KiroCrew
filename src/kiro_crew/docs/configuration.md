@@ -231,7 +231,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |
-| `agent.tool_search` | On the kiro-cli backend, defer MCP tool definitions when either threshold below is exceeded; alternate ACP backends ignore it | `true` |
+| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; KAS defers all of them, and only when the active agent's `tools` grants `tool_search` (otherwise the setting is sent off for that agent). Other ACP backends ignore it | `true` |
 | `agent.tool_search_min_pct` | Tool-definition context threshold as a percentage; `0` with the token threshold also `0` always defers | `5` |
 | `agent.tool_search_min_tokens` | Tool-definition token threshold; `0` with the percentage threshold also `0` always defers | `50000` |
 | `agent.fallback_model` | Model used after the active model exhausts its transient-retry budget. `"auto"` defers to availability-aware routing; `""` disables fallback | `"auto"` |
@@ -494,7 +494,13 @@ end in a dot or a space. A name that breaks any of those is reported when the co
 loads and no memory directory is created for it — guessing what was meant is how two
 crews would end up sharing one directory. Your entry stays in `config.json` exactly as
 you wrote it so you can fix the spelling; until you do, a member bound to it
-refuses execution with an explicit memory error.
+refuses execution with an explicit memory error. A member stuck on such a name has
+two ways out, and neither needs the gateway stopped: choose empty private memory
+for it (member settings, or `kirocrew agent update <name> --provision-memory`), or
+move it to Global Memory V1 with `kirocrew agent update <name> --memory-store=default`.
+Both leave your declaration and anything under `memory_stores/` untouched; they are
+the only two moves an existing binding ever permits, and only for a name no resolver
+can use.
 
 An undeclared name, mismatched owner, missing directory or unreadable database
 also refuses execution. There is no fallback to `default_memory_store` or Global

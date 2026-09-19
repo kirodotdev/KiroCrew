@@ -227,13 +227,36 @@ def _validate_signed_payload(payload: dict[str, Any]) -> dict[str, str]:
     return normalized
 
 
+def _installer_normalized_base(artifact_base: str) -> str:
+    """Normalize *artifact_base* the way the code that INSTALLS a wheel does.
+
+    ``cli.sh`` applies ``${ARTIFACT_BASE%/}`` and ``wheel_engine`` interpolates
+    the caller's base unchanged, so both drop at most ONE trailing slash before
+    building the canonical wheel URL.  ``str.rstrip("/")`` drops every one of
+    them, and that difference is a false green rather than a cosmetic one: given
+    ``https://host//`` the installers expect ``https://host//cli/...`` while an
+    rstripping gate expects ``https://host/cli/...``, so the gate would pass a
+    feed that every installer then refuses -- the exact failure this gate exists
+    to prevent.  Model the installer, then refuse a base that is still not
+    canonical instead of silently binding to a URL no installer reproduces.
+    """
+    normalized = artifact_base[:-1] if artifact_base.endswith("/") else artifact_base
+    if normalized.endswith("/"):
+        raise ManifestError(
+            "artifact base must not end in repeated slashes: the installers strip "
+            "exactly one, so a feed accepted against this base would be refused "
+            "at install time"
+        )
+    return normalized
+
+
 def _validate_target_binding(
     payload: dict[str, str], *, expected_channel: str, artifact_base: str
 ) -> None:
     if payload["channel"] != expected_channel:
         raise ManifestError("CLI manifest channel does not match the expected channel")
 
-    normalized_base = artifact_base.rstrip("/")
+    normalized_base = _installer_normalized_base(artifact_base)
     parsed_base = urlsplit(normalized_base)
     if (
         parsed_base.scheme != "https"
@@ -320,11 +343,21 @@ def _assemble_command(args: argparse.Namespace) -> None:
 def _verify_command(args: argparse.Namespace) -> None:
     """Verify a SIGNED manifest (e.g. a live channel feed) end to end.
 
-    Mirrors what cli.sh enforces at install time: schema validation, the
+    Used by publish-installer.yml to prove every live feed is installable by the
+    strict installer BEFORE it replaces the live cli.sh: schema validation, the
     pinned-key fingerprint, the embedded signature over the canonical payload,
-    and binding to the requested channel and artifact base. Used by
-    publish-installer.yml to prove every live feed is installable by the strict
-    installer BEFORE it replaces the live cli.sh.
+    and binding to the requested channel and artifact base.
+
+    The contract with cli.sh is one-directional, and the direction is the whole
+    point: whatever this command ACCEPTS, the installer must also accept.  It
+    may be stricter -- it caps the payload at 16 KiB against the installer's
+    64 KiB, caps every field at 2048 characters, and refuses a ``min_version``
+    above the version it ships -- because a gate that rejects a feed the
+    installer would have taken costs a publisher one loud failure.  It may never
+    be laxer, because that direction publishes a feed that bricks installs and
+    reports success while doing it.  ``test_cli_manifest_signature.py`` drives
+    one shared fixture set through this command AND through a real ``cli.sh``
+    run to hold that direction, so the two cannot drift apart silently.
     """
     manifest_any = _load_json(args.manifest)
     if not isinstance(manifest_any, dict):

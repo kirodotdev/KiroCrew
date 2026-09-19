@@ -179,6 +179,7 @@ def test_the_contract_declares_every_seam_this_suite_covers():
         "internal_sandbox",
         "pod_home_remap",
         "reads_markdown_agent_specs",
+        "client_meta_settings",
         "verifies_agent_activation",
         "protocol_version",
         "client_capabilities",
@@ -368,11 +369,28 @@ def test_kas_capabilities_open_only_the_settings_channel():
     """KAS's extra capability is the settings channel and nothing else.
 
     Every other ``_meta.kiro`` capability is a callback Crew does not implement,
-    so declaring one would invite a request with no handler.
+    so declaring one would invite a request with no handler. The channel is
+    declared EMPTY here: the runtime fills it at spawn from the operator's
+    settings (``client_meta_settings``), so the constant stays the pristine shape
+    every host's handshake is compared against.
     """
     kas = harness_for(ACP_BACKEND_KAS).client_capabilities
     assert kas["_meta"] == {"kiro": {"settings": {}}}
     assert {k: v for k, v in kas.items() if k != "_meta"} == ACP_CLIENT_CAPABILITIES
+
+
+def test_only_the_host_with_a_settings_channel_has_it_filled():
+    """H6: whether ``initialize`` carries settings is a membership answer.
+
+    KAS opened ``_meta.kiro.settings`` and reads Tool Search from it; kiro-cli has
+    no such channel and takes the same setting from the cli.json overlay. A host
+    answering yes here without the channel would have its handshake rejected;
+    one answering no while it HAS the channel runs with every setting at the
+    engine's default -- which for Tool Search on KAS is the silent "loader never
+    mounted" the runtime's gate exists to prevent.
+    """
+    assert harness_for(ACP_BACKEND_KAS).client_meta_settings is True
+    assert harness_for(ACP_BACKEND_KIRO).client_meta_settings is False
 
 
 # ── Seam 3: session extras ──

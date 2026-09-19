@@ -243,9 +243,10 @@ class TestCronJobCreation:
         assert job.enabled is True
         assert getattr(job, "user_paused", False) is False
 
-    def test_paused_at_registration_job_can_be_resumed(self) -> None:
-        """A job registered disabled can be re-enabled (resumed) via update_job."""
-        svc = MockCronService()
+    def test_paused_at_registration_job_can_be_resumed(self, tmp_path: Path) -> None:
+        """A real persisted disabled job resumes through the owned toggle API."""
+        svc = CronService(base_dir=tmp_path)
+        svc._dir.mkdir(parents=True, exist_ok=True)
         sdk = CronSDK("my-app", svc)
 
         job = _run(sdk.add_job(
@@ -256,13 +257,13 @@ class TestCronJobCreation:
         ))
         assert job.enabled is False
 
-        updated = _run(sdk.update_job(job.id, enabled=True, user_paused=False))
-
-        assert updated is not None
+        assert sdk.set_enabled(job.id, True)
+        updated = sdk.list_jobs()[0]
+        assert updated.id == job.id
         assert updated.enabled is True
         assert updated.user_paused is False
         # Resumed job shows up in the active (non-disabled) list again.
-        assert job in svc.list_jobs()
+        assert updated in svc.list_jobs()
 
 
 # ---------------------------------------------------------------------------
@@ -632,3 +633,93 @@ class TestCronVettingDenyPath:
 
         # Deny-by-default: nothing was added to the service.
         assert svc._jobs == []
+
+
+class TestOwnedCronToggle:
+    """Exercise real persistence, including a cache that missed an owner change."""
+
+    @pytest.fixture
+    def service(self, tmp_path):
+        svc = CronService(base_dir=tmp_path)
+        svc._dir.mkdir(parents=True, exist_ok=True)
+        return svc
+
+    def test_toggle_preserves_id_and_fields(self, service):
+        sdk = CronSDK("example", service)
+        job = sdk.add_job(name="example/daily", message="hello", every_secs=600)
+        assert sdk.set_enabled(job.id, False) is True
+        saved = json.loads(service._path.read_text(encoding="utf-8"))["jobs"][0]
+        assert (saved["id"], saved["enabled"], saved["user_paused"]) == (job.id, False, True)
+        assert saved["message"] == "hello"
+        assert sdk.set_enabled(job.id, True) is True
+        saved = json.loads(service._path.read_text(encoding="utf-8"))["jobs"][0]
+        assert (saved["id"], saved["enabled"], saved["user_paused"]) == (job.id, True, False)
+
+    def test_foreign_and_missing_ids_refuse_and_audit(self, service, monkeypatch):
+        from unittest.mock import Mock
+
+        audit = Mock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        other = CronSDK("other", service).add_job(name="other/job", message="hello", every_secs=600)
+        sdk = CronSDK("example", service)
+        before = service._path.read_bytes()
+        for job_id in [other.id, "missing"]:
+            with pytest.raises(PermissionError):
+                sdk.set_enabled(job_id, False)
+            assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+        assert service._path.read_bytes() == before
+
+    def test_owner_is_rechecked_after_store_reload(self, service):
+        sdk = CronSDK("example", service)
+        job = sdk.add_job(name="example/job", message="hello", every_secs=600)
+        state = json.loads(service._path.read_text(encoding="utf-8"))
+        state["jobs"][0]["created_by"] = "app:other"
+        service._path.write_text(json.dumps(state), encoding="utf-8")
+        before = service._path.read_bytes()
+        with pytest.raises(PermissionError):
+            sdk.set_enabled(job.id, False)
+        assert service._path.read_bytes() == before
+
+    @pytest.mark.asyncio
+    async def test_async_toggle_and_sync_loop_refusal(self, service):
+        from kiro_crew.apps.cron_sdk import CronSyncOnLoopError
+
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        with pytest.raises(CronSyncOnLoopError, match="set_enabled_async"):
+            sdk.set_enabled(job.id, False)
+        assert await sdk.set_enabled_async(job.id, False)
+        import asyncio
+
+        saved = await asyncio.to_thread(service._path.read_text, encoding="utf-8")
+        assert json.loads(saved)["jobs"][0]["enabled"] is False
+        with pytest.raises(PermissionError):
+            await CronSDK("other", service).set_enabled_async(job.id, True)
+
+    @pytest.mark.parametrize("field,value", [("enabled", False), ("user_paused", True)])
+    def test_pause_update_is_not_silently_ignored(self, service, field, value):
+        sdk = CronSDK("example", service)
+        job = sdk.add_job(name="example/job", message="hello", every_secs=600)
+        before = service._path.read_bytes()
+        with pytest.raises(ValueError, match="set_enabled"):
+            sdk.update_job(job.id, message="changed", **{field: value})
+        assert service._path.read_bytes() == before
+        assert job.message == "hello"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field,value", [("enabled", False), ("user_paused", True)])
+    async def test_async_pause_update_is_not_silently_ignored(self, service, field, value):
+        import asyncio
+
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        before = await asyncio.to_thread(service._path.read_bytes)
+        with pytest.raises(ValueError, match="set_enabled"):
+            await sdk.update_job_async(job.id, message="changed", **{field: value})
+        assert await asyncio.to_thread(service._path.read_bytes) == before
+        assert job.message == "hello"
+
+    @pytest.mark.parametrize("value", ["false", 0, 1, None])
+    def test_toggle_requires_boolean(self, service, value):
+        with pytest.raises(ValueError, match="boolean"):
+            CronSDK("example", service).set_enabled("missing", value)

@@ -18,6 +18,34 @@ silently reloading a fallback. The current request is delivered once and is not
 replayed as historical input. This includes cron, recovery and user-replay
 injections; queue drain supplies the exact appended row to the runner.
 
+## Dashboard app launch intents
+
+The App SDK's `slotKey` selects an existing dashboard slot through ordinary
+activation on both cold entry and navigation within an already-mounted chat.
+The session controller claims the target intent before URL synchronization and
+releases its message only after a fulfilled `switchSlot`. Slow activation does
+not expire a claimed message; failure shows the existing session-open error
+with the unsent message available to copy and never sends to a fallback. A routed
+chat waits for that exact target before using the message; an embedded chat never
+consumes the dashboard intent.
+`window.__mc_chat_launch` is claimed once: the session controller owns explicit
+targets and fresh drafts; `ChatPage` owns untargeted automatic sends. Unclaimed
+intents expire after ten seconds. A newer intent supersedes a pending target
+by ref identity, so its later completion cannot release the older message.
+`autoSend: false` seeds
+an unsent draft, appending to existing text when the target already has a draft.
+Without a target, the existing new-session controller creates
+one session and stages the draft before navigation, retaining it on creation
+failure for retry. Agent selection applies to new sessions only. These options
+do not attach app task metadata or change backend session authorization.
+App auto-send uses only the supplied text, leaving staged files, pasted content,
+knowledge and session references untouched. Existing composer sends and legacy
+URL auto-send retain their prior behavior. Refused app turns and failed app
+session creation keep their text in the page-level copyable error notice, not
+an unrelated draft. Recovery adds no user row to a busy slot. That notice survives slot changes
+but is not persisted across page unmounts. Creation failure does not re-arm a
+new-session intent for the next manual send.
+
 ## Implementation Boundaries
 
 `SessionManager` remains the compatibility facade in `session.py`; callers keep
@@ -33,7 +61,12 @@ state are composed behind that facade:
 - `session_lifecycle.py` — refresh/reload, reset/remove/destroy/discard,
   identity retirement, stop, drain, and close ordering
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
-  policy, and process/filesystem sweeps
+  policy, and process/filesystem sweeps. Its existing maintenance tick advances
+  a bounded canonical member-process record scan independently of txt mappings;
+  the streaming cursor is closed at exhaustion or cleanup-loop shutdown. On
+  cancellation, repeated requests remain shielded until the executor settles;
+  cleanup then closes the returned cursor once and propagates cancellation. See
+  [security](security.md) for the shared publication/reclamation lock contract.
 
 A dashboard slot bound to a remote crew keeps one memory boundary on both sides.
 `remote_relay.create_peer_slot()` always includes the validated `memory_mode` in
@@ -70,7 +103,13 @@ too; history deletion has no tombstone that retires the key or fences delayed
 saves. Selection retention follows the existing protected identity lifetime,
 rather than treating removal of an editable transcript as revocation of identity.
 A permitted non-owner dashboard caller may select a provider
-template or an existing V1 member, including the default assistant. A private V2
+template or an existing V1 member, including the default assistant. The same
+protected record may carry a `folder_workspace_grant` minted only by validated
+session-control creation. It freezes creator key, target workspace, and memory
+store for that stable effective session key. Selection rewrites preserve an
+existing grant, while restore projects it off-loop; transcript metadata is not a
+source. A malformed grant invalidates the protected record, and absence grants
+nothing. A private V2
 member choice requires the owner and is refused before provider reset or history
 mutation. Non-owner resolution retains the namespace it first resolved, even if
 discovery imports a same-named member during the request; a V1-to-V2 change during
@@ -669,10 +708,64 @@ send time.
   promoting the severity of errors the lifted inline blocks swallowed). The
   hooks are assembled through the `SessionManager` facade so existing
   monkeypatch seams remain observable: `idle_expiry`, `orphan_mcp`,
-  `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
+  `reap_agent_scopes`, `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
   `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
   sandbox-artifact, bytecode-cache, periodic tracked-PID, and untracked-MCP
   sweeps.
+- **Reaping abandoned agent scopes** (`session_scope_reap.py`,
+  Linux/systemd only): each agent session runs inside a transient
+  `systemd-run --user --scope` under a per-instance child of
+  `kirocrew-agents.slice` (`sandbox._agents_slice_name`). `--scope` GCs a
+  transient unit only after its process exits, so a hard gateway kill or restart
+  strands the whole tree: the leader dies, the `launcher`/`kiro-cli`/
+  `kiro-cli-chat` + MCP children reparent to the systemd user manager, and
+  nothing reaps the scope — the idle/RSS watchdog iterates only
+  `_sessions`, the PID sweeps know only tracked roots, and
+  `session_pid._is_untracked_managed_agent_orphan` is report-only. The reaper
+  reconciles the cgroup tree (the only authority on what this instance leaked)
+  against the live registry. It runs on every cleanup tick via the
+  `reap_agent_scopes` hook — never on the gateway boot path
+  (`AUTOSDE.yaml` `no-new-work-on-gateway-boot-path`: an orphan sweep whose
+  cost scales with leaked state must not delay `KIROCREW_READY`), so the first
+  tick after a restart is what picks up a previous gateway's strays; the hook
+  gathers the live provider/pool/in-flight
+  PID set (so a scope containing any live tree is never touched) and the reaper
+  requires a complete tracked-PID snapshot from the `session_pid` files. An
+  unreadable or malformed snapshot aborts that tick before any scope is scanned.
+  A scope is reclaimed
+  only when ALL hold: (i) no member PID is tracked or a live provider; (ii-a)
+  AT LEAST ONE member has positive agent-runtime argv identity — the generated
+  launcher, an exact argv0 basename of `kiro-cli`, `kiro-cli-chat`,
+  `claude-agent-acp`, or `claude`, or a marked MCP launcher — which is the
+  scope-wide stop authorization; (ii-b) EVERY member is this install's own — it
+  carries the `KIROCREW_SPAWNED` marker, or its `ppid` chain reaches a
+  marker-bearing member without leaving the scope's member set (ownership is by
+  tree: env-clearing grandchildren such as `chrome-headless` renderers under a
+  playwright `node` daemon carry no marker, and that leaked daemon tree is the
+  multi-GB survivor users report); an unreadable `environ` fails closed to "not
+  reclaimable"; (iii) the group leader is dead OR the
+  scope's `ActiveEnterTimestampMonotonic` predates this gateway's boot stamp;
+  and (iv) the scope is older than the module's 600-second grace floor. Reclaim is
+  `systemctl --user stop <unit>`, then a fallback SIGTERM → 3s → SIGKILL that
+  re-reads `cgroup.procs`, opens a pidfd, requires a post-pin `cgroup.procs`
+  read to retain that PID in the same scope, re-derives tree ownership, and
+  signals through that pidfd. A recycled PID can therefore never redirect a
+  signal; a host without pidfd support leaves the member untouched. `pid <= 1` and the
+  gateway's own PID are never signalled, and each reclaimed scope emits a SEL
+  `agent_scope_reap` event. Only THIS install's per-instance child slice is
+  enumerated: a degraded instance token (no per-instance child) is treated as
+  "nothing to reap here" rather than reaching into a co-resident gateway's
+  scopes. A no-op off Linux or without cgroup v2 delegation
+  (`sandbox._probe_cgroup_scope`). Marker inheritance by itself never authorizes
+  a scope-wide stop, so an intentional detached server left after its agent
+  runtime exits is preserved. The accepted fail-closed residual is that a scope
+  whose runtime-anchor members have all died is never reclaimed, even if every
+  survivor still has the marker or is an attributable env-cleared descendant;
+  old skipped scopes are summarized at INFO by stable reason category, making
+  that residual operator-visible. Stale
+  `session_pid_<pid>.txt`/`.sig` files are separately pruned by
+  `_prune_stale_session_pid_files` (below); the reaper adds no second deletion
+  path.
 - **Stuck-turn reporting** (`_stuck_turn_check`, threshold
   `_STUCK_TURN_REPORT_SECS` = 300s, not configurable): reports a turn whose
   consumer has stopped pulling events. Exists because the per-turn watchdog in
@@ -1299,10 +1392,14 @@ state a close compensates is not all scoped the same way.
   restore they skip: a store that rejected the `closed=True` write can still
   accept the next one, and a lock lost to the recreate is exactly that case.
 - **A drain that fails is reported, not swallowed.** `_persist_handover_tail`
-  returns whether rows were owed and reached disk, and every caller honours it —
-  because this frame is the last reference to those rows, so nothing will retry and
+  returns a named result: `rows_committed` says whether rows were owed and
+  reached disk, `prompts_lost` counts the durable-eligible queued prompts whose
+  only copy dies with the popped slot. The result is a tuple and therefore
+  always truthy, so callers read `rows_committed` rather than testing the
+  result itself — and every caller honours it, because this frame is the last
+  reference to those rows, so nothing will retry and
   nothing else will ever report them. Both PRE-SAVE hand-over exits therefore turn
-  a False into their path's own failure: `close_slot` raises
+  a failed commit into their path's own failure: `close_slot` raises
   `SlotCloseError(code="history_save_failed")` (the same code as an ordinary failed
   archive — from the caller's side it is one thing, a close whose history write did
   not land) and cleanup adds the key to `failed`. There is nothing to roll back on
@@ -1311,7 +1408,18 @@ state a close compensates is not all scoped the same way.
   those arms already end in `SlotCloseError` / `failed.append(name)`, so a lost tail
   reaches the caller regardless, and the drain only decides whether the rows
   survived. Every failure is also logged with the exact row count, which is the only
-  report anything in the process can still make about the rows themselves.
+  report anything in the process can still make about the rows themselves. A
+  non-zero `prompts_lost` additionally posts a dashboard notification naming the
+  slot and the count — never the prompt text, which may belong to a restricted
+  session — because the gateway log is not reachable by the person whose words
+  were dropped. Survival is judged by who writes the durable line next, not by
+  the slot's own persistence signature: a live transcript-sharing holder
+  rebuilds the shared line on its every full save, so an owed entry survives a
+  hand-over only when that holder's own queue carries it (a rehydrated holder
+  restores the entries as queue cards; a fresh recreate does not), while with
+  no live sharing holder the line is at rest and answers directly. An owed
+  entry with no durable future is counted lost on every exit — including the
+  no-write one.
 
 Three properties the route holds, each of which fails silently if broken:
 
@@ -1419,6 +1527,28 @@ when a switch is detected (stored SID exists AND providers differ).
    SID before consuming the lease; non-ACP providers already published their SID
    during allocation and consume the lease directly. Cancelled, failed, empty, or
    synthetic terminals leave it armed for the next prompt.
+
+**Replayed content carries no image reference.** `_replay_rows` and
+`_recall_rows` — the two row builders behind every history vehicle
+(`build_session_replay`, the thread-history fallback in `build_session_context`,
+and the transcript `compress_thread_history` hands to the LLM compressor) — hand
+each row out through
+`kiro_crew.image_refs.strip_image_refs`, which replaces every local image
+reference with `[image not carried into this context]`. Markdown references go
+through the attachment store's own `iter_local_refs`; bare paths go through the
+inliner's own `_PATH_RE`, narrowed to paths outside code spans that stand alone
+rather than sit inside a URL query, because the inliner rewrites text only after
+reading a file and an unconditional substitution would corrupt a URL or a code
+snippet instead of scrubbing it. A row's picture belonged
+to an earlier turn and a text vehicle cannot carry bytes, so the reference is
+the only thing that would arrive, and both readings of it are wrong: while the
+file is still readable `build_prompt_blocks` re-inlines it (a picture an earlier
+compaction already dropped returns at full byte cost on every later cold start),
+and once the file is gone the path is left in the prose next to the assistant's
+own earlier description of what it showed. Stripping at the row builders rather
+than at each consumer is what makes the guarantee hold for all three. The
+CURRENT turn is unaffected — it is excluded from the replay by identity, so a
+freshly attached image still becomes a real image block.
 
 **Same-provider resume:** unaffected. Normal `session/load` path with full
 native fidelity.
@@ -1648,6 +1778,137 @@ semaphore. When a DM arrives mid-turn, the dispatcher acts on
 WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later
 (capability-driven, like `supports_proactive_send=False`).
+
+### Queued prompt durability
+
+A prompt admitted while the slot is busy is answered `{"ok": true, "queued":
+true}` and held in `slot._queue`. Its transcript row is written by the DRAIN,
+not by the enqueue, so the queue is the only record until it runs — and a
+gateway restart in that window (an auto-update, a watchdog exit) used to drop
+the prompt with no row, no error card, and an empty queue on reload.
+
+The slot save therefore persists it. `slot.durable_queue_entries()`
+(`slot_queue_repository.durable_queue_entries`) selects the entries and the
+metadata line carries them as `queued_prompts`, a `SLOT_OWNED_META_KEYS` field
+so absence clears it.
+
+- **The accept STARTS the write, it does not wait for the interval.**
+  `queue_for_next_turn` hands `flush_slot_now` to the executor
+  (`start_queue_persist`) so the residual loss window is one save's duration
+  rather than one flush interval. BOTH accept sites use it: the busy-slot path
+  and `chat_handlers`' sub-agent hold branch, which holds an IDLE slot where no
+  drain is coming and the wait for the last sub-agent is unbounded. Each accepts
+  onto the same queue under the same ceilings, so each starts the write.
+  Started, not awaited: the acknowledgment keeps
+  its existing meaning — accepted in memory, durable on a flush — because making
+  durability a precondition would refuse a queued send on a slow or failing disk,
+  taking the user's words away at the one moment they cannot be re-read from the
+  transcript. A failed background write is logged and stays owed to the periodic
+  flush; with no running loop (a synchronous caller) the flush owns it as before.
+  **One writer per slot.** Two immediate writers would snapshot independently and
+  the transcript's file lock orders their commits, not their reads, so the older
+  snapshot could land last and put back a value missing an acknowledged prompt.
+  A send arriving mid-write records the debt (`_queue_persist_owed`) and the
+  finishing writer runs one follow-up pass when the queue still differs from disk.
+  That flag gates only the writers it starts, so the save closes the rest: inside
+  the history lock it compares the slot's committed-queue witness
+  (`_queue_persisted_sig`) against the value held when it read the queue, and
+  refuses the pass when another writer committed in between. Only a committed
+  value refuses — a queue that merely moved is an ordinary consistent past state —
+  and a refused pass leaves the queue owed rather than dropped, so losing the race
+  costs one flush interval of lag instead of an acknowledged prompt. A rows-only
+  write over another holder's line is exempt, since it defers the key instead of
+  deciding it. Both refusals this adds mark the slot dirty on the way out, because
+  `flush_slot_now` clears `_dirty` on any return that did not raise and compares
+  `_dirty_gen` to spot a concurrent mark: without it a refused pass would drop
+  window rows it never wrote, and the queue signal cannot cover them once the
+  overtaking writer has satisfied it.
+
+- **Only a plain user prompt is durable.** An entry carrying a `kind` is an
+  injection whose producer is gone (a cron notification names an event, and a
+  restart is not that event happening again); an entry carrying a `payload` is a
+  synthetic recovery continuation; an entry carrying `_on_consumed` /
+  `_on_irreversibly_consumed` acknowledges an automatic payload through a
+  callback that does not survive the process. `meta` rides along verbatim,
+  because it holds the admission-time containment snapshot the drain
+  re-validates against and an entry without one fails closed.
+- **Provenance does NOT survive the restart, and that is a security property.**
+  `_directive_user_origin` / `_directive_channel_origin` record that an entry's
+  words came from an authenticated human, and the drain reduces the consumed
+  entries' flags into `producer_is_user_facing`, which admits user-surface and
+  self-arming directives and exempts them from the LINKED containment
+  constraint. The metadata line is an ordinary readable-writable file in the
+  crew home, not a write-protected one, so a flag read back from it is
+  indistinguishable from one a prompt-injected agent's shell wrote — authority
+  granted to whoever can write the file. Neither half of the round trip moves
+  it: the keys are absent from `_DURABLE_QUEUE_KEYS` so the writer never emits
+  them, and `sanitize_restored_queue` drops a hand-added one, so a restored
+  entry is non-directive by construction.
+- **Correctness rests on the window and the queue being ONE observation.** The
+  drain removes the entry and appends its row in the same event-loop step, and
+  the save runs in the flush executor thread, so the save takes the pair under
+  one consistency generation: read the queue, snapshot the window, read the
+  queue again, retry while the two disagree, and REFUSE the save (nothing
+  written, the entry still owed) when no pair is proven inside the budget. Read
+  separately, the two halves could commit a file showing neither the entry nor
+  its row. A crash between the drain and the save loses the row as well, so a
+  replayed entry is a prompt the transcript never recorded — never a second copy
+  of one it did.
+- **Restored entries are handed back as queue CARDS, not dispatched.** Nothing
+  drains an idle slot on boot, so the user sends, edits or deletes them. This is
+  the same rule `sendTurn.ts` follows for an indeterminate send: a prompt whose
+  turn may have run un-persisted must never be auto-resent.
+- **Durability does not depend on the mutation site.** `_queue_persisted_sig`
+  records what the last committed save wrote and `slot.queue_persist_pending`
+  compares it against the live queue, so an in-place rewrite — a reorder, a
+  plan-approval filter, a force-stop clear — is picked up by the periodic flush
+  without each site marking the slot dirty. The flush and the resumed-slot no-op
+  guard both read it beside `_dirty`.
+- **A rows-only handover save defers the key** (it is in
+  `ROWS_ONLY_DEFERRED_META_KEYS`): the line describes the live holder, whose
+  queue this write does not own. The popped slot keeps owing its own entries,
+  which is the conservative side. `_persist_handover_tail` therefore treats an
+  owed queue as work — a queued prompt changes neither the window length nor
+  `_dirty`, so its "nothing owed" test would otherwise answer True over one — and
+  judges each owed entry's durable future by who writes the line next: an entry
+  with none is reported in every register that can still hold it — the
+  warning log, the `prompts_lost` field of its returned result, and a dashboard
+  notification that names the slot and the count (never the prompt text).
+  Nothing in the
+  process visits that slot again, the same position the held `/note` lines are in.
+- Bounds: `MAX_DURABLE_QUEUE_ENTRIES` entries and `MAX_DURABLE_QUEUE_BYTES` of
+  serialized value, admitted front-first because the front runs first. An
+  over-budget prompt is DROPPED, never truncated — a shortened prompt replayed
+  as the user's own words is worse than one reported as not carried. The SAME
+  two ceilings gate the restore, costed against the SAME key projection, because
+  the writer's bounds bound only what this gateway wrote and the line can be
+  edited outside it, while whatever the restore admits is retained live and
+  re-serialized by every later save. The projection matters: the restore adds
+  `kind: ""` to keep a restored entry out of the system-injection paths, and
+  billing itself for that key would make the reader's budget the smaller of the
+  two, so a queue written just under the ceiling would drop its tail on the way
+  back in — losing a prompt that WAS durably written.
+  `MAX_DURABLE_QUEUE_SCAN` bounds how much of the raw value is INSPECTED, which
+  the retention cap does not: the apply phase reading it is loop-affine, so a
+  hand-edited line must not buy startup work proportional to its own length.
+  Entries past it are counted as not restored, never quietly ignored.
+- The send is **not refused** when the bounds cannot carry it: taking the user's
+  words away at the one moment they cannot be re-read from the transcript is
+  worse than a best-effort durable copy. `durable_queue_view` returns the
+  persisted entries and the candidate count from ONE read of the queue, and the
+  save logs their difference once, naming the slot, so the omission is an
+  operational fact rather than a silent one. The pairing matters: counted from
+  two reads, an ordinary send landing during a save is reported as a prompt the
+  bounds refused. The ACCEPT reports it too, and earlier:
+  `warn_if_not_durable` logs at WARNING when the entry just queued is one the
+  write will not keep, naming the slot, the entry, the candidate count, the
+  carried count and which ceiling refused it. Both the verdict and the reason are
+  read off `durable_queue_entries`' own output — an entry absent from a full set
+  was refused by the count cap, absent from a short one by the byte budget — so
+  nothing re-implements the interacting ceilings. This is a LOG, not a receipt
+  field: a caller-visible `durable` boolean on the acknowledgments has no reader,
+  so it is not shipped, and the on-screen queue-card marker belongs with its
+  consumer (issue #11695).
 
 ## Cross-Surface Reply Mirror
 
@@ -2054,7 +2315,7 @@ a trust root on its own; publication therefore also writes a
   no-follow, regular-file, size-bounded) — `session_pid_sig` owns both the
   read and write discipline for the file family. Every `.txt` reader routes
   through it: `mcp_core._resolve_session_key` (host-pid + walk),
-  `mcp_shared._resolve_excluded_tools` (policy walk),
+  `mcp_shared._resolve_tool_policy` (policy walk),
   `mcp_caller.CallerContext.from_env` (host-pid + walk; also serves
   `mcp_gateway/stub.py`), and `mcp_gateway/gatewayd._resolve_peer_identity`
   (server-side peer walk). The sidecar is additive.

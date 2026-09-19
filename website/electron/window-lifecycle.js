@@ -1644,7 +1644,11 @@ function createWindowLifecycle(options) {
 
   function zoomMenuItem(apply) {
     return () => {
-      const wc = webContents.getFocusedWebContents();
+      // Match the sibling reload/devtools handlers: a BaseWindow has no
+      // top-level webContents, so getFocusedWebContents() returns null here and
+      // zoom would silently no-op. focusedDashboardWebContents() reaches the
+      // dashboard view nested in the contentView.
+      const wc = focusedDashboardWebContents();
       if (!wc) return;
       apply(wc);
       // Chromium applies zoom per-origin, so same-origin sibling windows move

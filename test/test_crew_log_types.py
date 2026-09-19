@@ -55,6 +55,7 @@ CANONICAL: dict[str, dict] = {
         "cwd": "/home/u/proj",
         "owner": "default",
         "resumed": False,
+        "parent": {"slot": "chat-7", "sid": "acp-sess-creator"},
     },
     "session/closed": {"reason": "reset"},
     "turn/started": {"turn": 3, "actor": "user", "depth": 0, "message_seq": 11, "attempt": 2},
@@ -337,6 +338,34 @@ def test_every_declared_field_refuses_a_wrong_json_type(entry_type):
             "turn/completed",
             {"turn": 1, "stop_reason": "end_turn", "tokens": {"nope": 1}},
             "data.tokens.nope",
+        ),
+        # The creator object names its slot or it names nothing: a `parent` with
+        # only a sid would be an edge to a unit the tree cannot place.
+        (
+            "session/opened",
+            {
+                "agent": "a",
+                "slot": "chat-9",
+                "model": "",
+                "cwd": "",
+                "owner": "default",
+                "resumed": False,
+                "parent": {"sid": "acp-sess-creator"},
+            },
+            "data.parent.slot",
+        ),
+        (
+            "session/opened",
+            {
+                "agent": "a",
+                "slot": "chat-9",
+                "model": "",
+                "cwd": "",
+                "owner": "default",
+                "resumed": False,
+                "parent": {"slot": "chat-7", "creator": "chat-7"},
+            },
+            "data.parent.creator",
         ),
         # An array's declared element type, and its members.
         (

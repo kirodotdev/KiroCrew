@@ -22,6 +22,7 @@ from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
     memory_index_path_for,
     memory_store_dir_for,
+    memory_store_namespace_lock,
     memory_stores_root,
     provision_member_memory,
     require_member_memory_store,
@@ -72,7 +73,7 @@ def _app(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entrypoint", ["create", "opt_in", "sync"])
+@pytest.mark.parametrize("entrypoint", ["create", "opt_in"])
 @pytest.mark.parametrize("platform,backend,mode,mechanism,delegates,remedy", _UNSUPPORTED)
 async def test_dashboard_refuses_unsupported_allocation_without_side_effects(
     monkeypatch, entrypoint, platform, backend, mode, mechanism, delegates, remedy
@@ -93,23 +94,12 @@ async def test_dashboard_refuses_unsupported_allocation_without_side_effects(
         return supported(session_key=session_key)
 
     monkeypatch.setattr(auth, "private_memory_execution_supported", check)
-    if entrypoint == "sync":
-        discovered = AgentInfo(
-            name="new-member",
-            filename="new-member.json",
-            description="",
-            model="auto",
-            source="package",
-        )
-        monkeypatch.setattr(handlers, "list_agents", lambda: [discovered])
     before = await asyncio.to_thread(_snapshot)
     async with TestClient(TestServer(app)) as client:
         if entrypoint == "create":
             response = await client.post(
                 "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
             )
-        elif entrypoint == "sync":
-            response = await client.post("/api/agents/sync")
         else:
             response = await client.put(
                 "/api/agents/reviewer", json={"provision_memory": True, "description": "Changed"}
@@ -212,7 +202,7 @@ async def _set_provisioning(client, enabled):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entrypoint", ["create", "opt_in", "sync"])
+@pytest.mark.parametrize("entrypoint", ["create", "opt_in"])
 async def test_owner_provisioning_pause_refuses_new_stores_and_can_be_resumed(
     monkeypatch, entrypoint
 ):
@@ -220,23 +210,12 @@ async def test_owner_provisioning_pause_refuses_new_stores_and_can_be_resumed(
     app = _app(monkeypatch)
     retire = AsyncMock(return_value=None)
     monkeypatch.setattr(handlers, "_retire_legacy_member_contexts", retire)
-    if entrypoint == "sync":
-        discovered = AgentInfo(
-            name="new-member",
-            filename="new-member.json",
-            description="",
-            model="auto",
-            source="package",
-        )
-        monkeypatch.setattr(handlers, "list_agents", lambda: [discovered])
 
     async def allocate(client):
         if entrypoint == "create":
             return await client.post(
                 "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
             )
-        if entrypoint == "sync":
-            return await client.post("/api/agents/sync")
         return await client.put("/api/agents/reviewer", json={"provision_memory": True})
 
     async with TestClient(TestServer(app)) as client:
@@ -425,3 +404,87 @@ async def test_provisioning_pause_preserves_v2_admission_binding_and_memory_mana
         assert auth.read_private_session_store(session_key) == store
 
     await asyncio.to_thread(check_existing_memory)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("platform,backend,mode,mechanism,delegates,remedy", _UNSUPPORTED)
+async def test_discovery_keeps_new_agents_v1_without_private_execution(
+    monkeypatch, enabled, platform, backend, mode, mechanism, delegates, remedy
+):
+    cfg = await asyncio.to_thread(
+        _environment, monkeypatch, platform, backend, mode, mechanism, delegates
+    )
+    cfg.memory.private_provisioning_enabled = enabled
+    await asyncio.to_thread(cfg.save)
+    app = _app(monkeypatch)
+    monkeypatch.setattr(
+        handlers,
+        "list_agents",
+        lambda: [
+            AgentInfo(
+                name="discovered",
+                filename="discovered.json",
+                description="",
+                model="auto",
+                source="package",
+            )
+        ],
+    )
+
+    def sync_snapshot():
+        # Sync still locks the store namespace to serialize package pruning.
+        with memory_store_namespace_lock():
+            return _snapshot()[1]
+
+    before_files = await asyncio.to_thread(sync_snapshot)
+    before_stores = (await asyncio.to_thread(KiroCrewConfig.load)).memory_stores
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/agents/sync")
+        assert response.status == 200, await response.text()
+        assert (await response.json())["synced"] == ["discovered"]
+        response = await client.post("/api/agents/sync")
+        assert response.status == 200, await response.text()
+        assert (await response.json())["synced"] == []
+    loaded = await asyncio.to_thread(KiroCrewConfig.load)
+    assert loaded.agents["discovered"].memory_store == "default"
+    assert loaded.memory_stores == before_stores
+    assert (await asyncio.to_thread(_snapshot))[1] == before_files
+
+
+@pytest.mark.asyncio
+async def test_discovered_agent_gets_v2_only_after_explicit_opt_in(monkeypatch):
+    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
+    app = _app(monkeypatch)
+    monkeypatch.setattr(
+        handlers,
+        "list_agents",
+        lambda: [
+            AgentInfo(
+                name="discovered",
+                filename="discovered.json",
+                description="",
+                model="auto",
+                source="package",
+            )
+        ],
+    )
+    retire = AsyncMock(return_value=None)
+    monkeypatch.setattr(handlers, "_retire_legacy_member_contexts", retire)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/agents/sync")
+        assert response.status == 200, await response.text()
+        loaded = await asyncio.to_thread(KiroCrewConfig.load)
+        assert loaded.agents["discovered"].memory_store == "default"
+        retire.assert_not_awaited()
+        response = await client.put("/api/agents/discovered", json={"provision_memory": True})
+        assert response.status == 200, await response.text()
+        store = (await response.json())["memory_store"]
+        assert store != "default"
+        before = await asyncio.to_thread(_snapshot)
+        response = await client.post("/api/agents/sync")
+        assert response.status == 200, await response.text()
+        assert (await response.json())["synced"] == []
+        assert await asyncio.to_thread(_snapshot) == before
+    loaded = await asyncio.to_thread(KiroCrewConfig.load)
+    assert await asyncio.to_thread(require_member_memory_store, loaded, "discovered") == store

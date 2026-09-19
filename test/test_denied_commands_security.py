@@ -96,7 +96,9 @@ class TestCatalog:
         # file tools, so a text regex over the command added refusals of read-only
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
-        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
+        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112). The
+        # flagged-file delivery self-protection floor added no row: it is an
+        # ungated argv-floor subcommand (see ``_UNGATED_TEMPLATES``), not a catalog rule.
         assert len(BUILTIN_DENIED_RULES) == 112
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
@@ -311,6 +313,7 @@ class TestSelfProtectionFlagInterposition:
     _UNGATED_TEMPLATES = {
         "self-protection-restart": "kirocrew {flags} restart",
         "self-protection-update": "kirocrew {flags} update",
+        "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
     }
@@ -452,6 +455,7 @@ class TestSelfProtectionFlagInterposition:
     _SUBCOMMANDS = {
         "self-protection-restart": ["restart"],
         "self-protection-update": ["update"],
+        "self-protection-file-delivery": ["file-delivery", "approve"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
     }
@@ -500,8 +504,85 @@ class TestSelfProtectionFlagInterposition:
                     cmd, denied_regexes=effective
                 ), f"{rule_id} not denied under {label}: {cmd!r}"
 
-    _QUOTES = ('"', "'")
-    # Single-token global options. ``-v --no-jail`` from ``_FLAGS`` is two
+    # ``file-delivery``'s ``action`` positional is REQUIRED, so neither form below
+    # dispatches: the bare one exits 2 and the help one prints usage and exits 0.
+    # The help form is a GOLDEN PATH -- the deny reason a blocked ``file_send``
+    # hands the model points at this command family, so quoting its usage is the
+    # documented next step -- and the floor refused it while it keyed on the
+    # subcommand word alone. Anything argparse would dispatch carries ``approve``.
+    _FILE_DELIVERY_NON_DISPATCHING = (
+        "kirocrew file-delivery",
+        "kirocrew file-delivery --help",
+        "kirocrew file-delivery -h",
+        "kirocrew -v file-delivery --help",
+        "python -m kiro_crew file-delivery --help",
+    )
+
+    def test_the_file_delivery_floor_allows_the_forms_that_dispatch_nothing(self):
+        from kiro_crew import security
+
+        effective = self._effective()
+        for cmd in self._FILE_DELIVERY_NON_DISPATCHING:
+            assert not security.is_denied(cmd, denied_regexes=effective), (
+                "the read-only help form of the new verb is a golden path and must not "
+                f"be refused: {cmd!r}"
+            )
+
+    def test_the_file_delivery_floor_covers_every_dispatchable_verb(self):
+        """The floor's verb set IS the parser's ``choices``, derived not restated.
+
+        A verb added to the CLI without a decision here would otherwise walk past
+        the floor silently, which is the failure mode the enumeration invites.
+
+        Read by AST rather than by calling a builder, because ``cli.py`` builds its
+        parser inline in ``main()``; and by AST rather than by grepping the source,
+        because a substring assertion stays green when the construct it names moves
+        or is wrapped.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew import cli
+        from kiro_crew.security import argv_floor
+
+        tree = ast.parse(inspect.getsource(cli))
+        choices: "list[str] | None" = None
+        required = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "add_argument"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "file_delivery_parser"
+            ):
+                continue
+            if not (node.args and isinstance(node.args[0], ast.Constant)):
+                continue
+            if node.args[0].value != "action":
+                continue
+            kwargs = {kw.arg: kw.value for kw in node.keywords}
+            listed = kwargs.get("choices")
+            assert isinstance(listed, (ast.List, ast.Tuple, ast.Set)), (
+                "the file-delivery action's choices must stay a literal this test can "
+                "read; a computed value would make the floor's set unverifiable here"
+            )
+            choices = [e.value for e in listed.elts if isinstance(e, ast.Constant)]
+            required = "nargs" not in kwargs
+
+        assert choices, "the file-delivery action positional was not found in cli.py"
+        assert argv_floor._SELF_FILE_DELIVERY_VERBS == frozenset(choices), (
+            "the file-delivery floor's verb set must equal the CLI's own choices; a new "
+            "verb needs a deliberate decision here, not a silent pass"
+        )
+        assert required, (
+            "the action positional must stay REQUIRED -- an optional one would make a "
+            "bare 'kirocrew file-delivery' dispatch, and this floor allows that form"
+        )
+
+    _QUOTES = ('"', "'")  # Single-token global options. ``-v --no-jail`` from ``_FLAGS`` is two
     # tokens and cannot be quoted as one flag, so it has no quoted cell.
     _SINGLE_TOKEN_FLAGS = ("-v", "-vv", "--verbose", "--no-jail")
 
@@ -8255,7 +8336,15 @@ class TestSandboxEscapeSshSelf:
         # single-flight worker re-enumerates and merges.
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"oldname"}))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_STAMP", 0.0)
+        # A stamp of 0.0 only reads as stale once ``time.monotonic()`` has
+        # passed the refresh window; on Linux that clock counts from boot, so a
+        # CI runner in its first five minutes served the set as fresh and never
+        # kicked the worker. Place the stamp one window behind the clock instead.
+        monkeypatch.setattr(
+            _argv_floor,
+            "_OWN_HOST_RESOLVE_STAMP",
+            _argv_floor.time.monotonic() - _argv_floor._OWN_HOST_REFRESH_SECS - 1.0,
+        )
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
         spawned: "list[dict]" = []

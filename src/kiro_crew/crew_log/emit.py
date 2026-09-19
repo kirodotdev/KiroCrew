@@ -489,6 +489,11 @@ _warned_high_water = False
 #: again -- and by ``reset_caches``.
 _live_overage_reported = False
 
+#: Consumers to wake when a session's log grows. Registered by
+#: :func:`add_growth_listener`, held here rather than imported so this writer
+#: names no reader.
+_growth_listeners: "list[Callable[[str], None]]" = []
+
 
 _subsystem: Any = None
 
@@ -725,6 +730,39 @@ def _report(what: str, exc: BaseException) -> None:
         )
     else:
         logger.debug("session log %s failed", what, exc_info=True)
+
+
+def add_growth_listener(listener: "Callable[[str], None]") -> None:
+    """Call *listener* with a session id after that session's log GROWS.
+
+    The one signal a consumer of this stream needs and cannot get from the file:
+    that there is something new to read. It fires once per drained batch rather
+    than once per entry, because the write-behind already groups a turn's burst
+    into one pass, and a listener woken per entry would do the same work several
+    times over the same read.
+
+    Registered rather than imported: this module is imported BY the dashboard, so
+    calling into a dashboard publisher from here would close an import cycle and
+    would put a consumer's name in the writer's own code. A listener that raises
+    is reported like a failed write and cannot stop the drain.
+
+    It runs on the WRITER thread, so a listener that does real work must hand it
+    to its own loop. Registering the same callable twice registers it twice; the
+    gateway installs its publisher once, at startup.
+    """
+    with _lock:
+        _growth_listeners.append(listener)
+
+
+def _notify_growth(session_id: str) -> None:
+    """Tell every listener *session_id* has new entries. Never raises."""
+    with _lock:
+        listeners = list(_growth_listeners)
+    for listener in listeners:
+        try:
+            listener(session_id)
+        except Exception as exc:  # pragma: no cover - a listener's own failure
+            _report("growth listener", exc)
 
 
 def _on_event_loop() -> bool:
@@ -1155,6 +1193,34 @@ def _record_loss_locked(session_id: str, jobs: "list[_PendingJob]", mark: bool) 
         loss.dropped_bytes += max(0, job.nbytes)
 
 
+def _owed_loss_markers_locked() -> int:
+    """How many sessions are owed a ``write/dropped`` marker. ``_lock`` held.
+
+    A session's loss debt lives in one of two places and a count that names it has
+    to read both. It sits in :data:`_pending_loss` while no marker job exists for
+    it. Once one is built it TRAVELS IN THE JOB: :func:`_loss_marker_job` takes the
+    debt out of the map to serialize it, and an append that raises hands the job --
+    debt and all -- to :func:`_retain`, which puts it at the front of that
+    session's bucket in :data:`_pending`.
+
+    So a marker waiting to be retried is owed while the map is empty, and reading
+    only the map reports nothing owed at exactly that moment. That moment is not an
+    edge case for a bounded shutdown: a marker whose filesystem is still failing is
+    retained by every attempt the budget allows, and the budget is spent only if
+    enough paced attempts fit inside the caller's timeout.
+
+    Counted per SESSION, because one marker covers a session's whole interval --
+    the same grain the map's own length carries.
+    """
+    owed = set(_pending_loss)
+    owed.update(
+        session_id
+        for session_id, jobs in _pending.items()
+        if any(job.loss is not None for job in jobs)
+    )
+    return len(owed)
+
+
 def _loss_marker_job(session_id: str, loss: _PendingLoss) -> _PendingJob:
     """Build the marker that must lead this session's next drain."""
 
@@ -1463,42 +1529,52 @@ def _write_batch(session_id: str, jobs: "list[_PendingJob]") -> bool:
     global _pending_total_bytes
     landed = False
     loss_marker_landed = False
-    for index, job in enumerate(jobs):
-        if job.loss is None:
-            with _lock:
-                loss_waiting = session_id in _pending_loss
-            if loss_waiting:
-                if landed:
-                    _note_progress(session_id)
-                _retain_without_failure(session_id, jobs[index:])
-                return loss_marker_landed
-        failure = _run_job(job.job, job.what)
-        if failure is None:
-            with _lock:
-                if job.counted:
-                    _pending_total_bytes -= job.nbytes
-                    job.counted = False
-            _finish(job)
-            landed = True
-            loss_marker_landed = loss_marker_landed or job.loss is not None
-            continue
-        if _permanent(failure):
-            if job.loss is not None:
-                _drop(session_id, jobs[index:], mark=True)
-                return False
-            # A permanent refusal owes a marker like any other loss. `_permanent`
-            # cannot split a LedgerError into its two causes -- a malformed entry
-            # the format rejected, or a well-formed entry refused because another
-            # process owns this log -- and the second is a genuine hole. Marking
-            # unconditionally is what makes the distinction unnecessary.
-            _drop(session_id, [job], mark=True)
-            continue
-        if landed:
-            _note_progress(session_id)
-        _retain(session_id, jobs[index:])
+    # One notification per pass, on whichever way this returns. The four exits
+    # each mean something different to the buffer and nothing different to a
+    # reader, whose only question is whether there is anything new on disk -- so
+    # the signal belongs where every exit passes through rather than repeated at
+    # each of them, where an exit added later would silently miss it.
+    try:
+        for index, job in enumerate(jobs):
+            if job.loss is None:
+                with _lock:
+                    loss_waiting = session_id in _pending_loss
+                if loss_waiting:
+                    if landed:
+                        _note_progress(session_id)
+                    _retain_without_failure(session_id, jobs[index:])
+                    return loss_marker_landed
+            failure = _run_job(job.job, job.what)
+            if failure is None:
+                with _lock:
+                    if job.counted:
+                        _pending_total_bytes -= job.nbytes
+                        job.counted = False
+                _finish(job)
+                landed = True
+                loss_marker_landed = loss_marker_landed or job.loss is not None
+                continue
+            if _permanent(failure):
+                if job.loss is not None:
+                    _drop(session_id, jobs[index:], mark=True)
+                    return False
+                # A permanent refusal owes a marker like any other loss.
+                # `_permanent` cannot split a LedgerError into its two causes -- a
+                # malformed entry the format rejected, or a well-formed entry
+                # refused because another process owns this log -- and the second
+                # is a genuine hole. Marking unconditionally is what makes the
+                # distinction unnecessary.
+                _drop(session_id, [job], mark=True)
+                continue
+            if landed:
+                _note_progress(session_id)
+            _retain(session_id, jobs[index:])
+            return loss_marker_landed
+        _note_progress(session_id)
         return loss_marker_landed
-    _note_progress(session_id)
-    return loss_marker_landed
+    finally:
+        if landed:
+            _notify_growth(session_id)
 
 
 def _retain_without_failure(session_id: str, jobs: "list[_PendingJob]") -> None:
@@ -1682,7 +1758,7 @@ def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
     if not drained:
         with _lock:
             held = _pending_count
-            loss_markers = len(_pending_loss)
+            loss_markers = _owed_loss_markers_locked()
             running = _writer_busy_locked()
         logger.warning(
             "session log did not finish writing within %.1fs of shutdown; "
@@ -2273,6 +2349,8 @@ def on_session_opened(
     cwd: str = "",
     owner: str = "default",
     resumed: bool = False,
+    parent_slot: str = "",
+    parent_sid: str = "",
 ) -> None:
     """Create the crew log if this session has none, then echo its header.
 
@@ -2287,6 +2365,19 @@ def on_session_opened(
     appends, so an agent or model switch that kept the conversation continues
     one log rather than starting a second one. ``model`` is not a header field
     in the storage schema, so it is carried on this entry instead.
+
+    ``parent_slot`` names the session that made this one through
+    ``session_create`` (the slot's ``_created_by``), and ``parent_sid`` the
+    creator's ACP session id as ``session_create`` froze it at mint (the slot's
+    ``_created_by_sid``) -- the creator crew log that holds the call. The edge is
+    written on the CHILD because that is the side that knows it: the creator is
+    stamped on the slot at mint, before any turn, while the creator never learns
+    the child's session id, which is assigned at the child's first turn. The sid
+    is NOT read live here: a creator slot can be closed and replaced between the
+    mint and the child's first turn, and a live read would cite the replacement's
+    crew log in an entry that can never be corrected. Both empty means nobody
+    created this session (a person's own tab, a fork) and no ``parent`` is
+    written at all, so a fold can tell "no creator" from "creator unknown".
     """
     if not session_id or not enabled():
         return
@@ -2366,18 +2457,23 @@ def on_session_opened(
         _remember(session_id, ledger)
         if not announce.setdefault("owed", created or bool(resumed)):
             return
-        ledger.append(
-            "session/opened",
-            {
-                "agent": agent or _DEFAULT_AGENT,
-                "slot": slot,
-                "model": model,
-                "cwd": cwd,
-                "owner": owner or "default",
-                "resumed": bool(resumed),
-            },
-            src=_SRC_GATEWAY,
-        )
+        data: dict[str, Any] = {
+            "agent": agent or _DEFAULT_AGENT,
+            "slot": slot,
+            "model": model,
+            "cwd": cwd,
+            "owner": owner or "default",
+            "resumed": bool(resumed),
+        }
+        if parent_slot:
+            # Written only when there IS a creator, and ``sid`` only when the
+            # creator still had a live handle: an empty string in either place
+            # would read as a creator with an empty name.
+            parent: dict[str, str] = {"slot": parent_slot}
+            if parent_sid:
+                parent["sid"] = parent_sid
+            data["parent"] = parent
+        ledger.append("session/opened", data, src=_SRC_GATEWAY)
 
     def _flag_creation_failed() -> None:
         # The creating record died with no crew log file behind it: no later append

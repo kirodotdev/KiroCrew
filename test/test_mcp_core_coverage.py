@@ -1444,8 +1444,10 @@ class TestValidateArgs:
             _validate_args("workflow_status", {"run_id": "r1", "junk": "x"})
 
     def test_schemaless_tool_passes_through_untouched(self):
+        # ``memory_recall`` validates its own ``query`` in the handler and has no
+        # entry in MCP_CORE_SCHEMAS, so it exercises the pass-through branch.
         raw = {"anything": 1}
-        assert _validate_args("learn_list", raw) == raw
+        assert _validate_args("memory_recall", raw) == raw
 
     def test_invalid_run_id_pattern_is_rejected(self):
         from kiro_crew.validation import ValidationError

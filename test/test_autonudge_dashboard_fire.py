@@ -51,6 +51,12 @@ def _slot(key: str = "chat-1-1785", *, running: bool = False, in_stage: bool = F
     slot.is_closing = False
     slot.mode = ""
     slot.memory_mode = "persistent"
+    # Real _ChatSlot defaults this False; a bare MagicMock would return a truthy
+    # Mock and trip the structural-terminal guard, so model the default here as
+    # for running / _in_stage_execution above.
+    slot._last_turn_structural_terminal = False
+    slot._last_turn_structural_terminal_loop_id = ""
+    slot._last_turn_structural_terminal_loop_gen = 0
     return slot
 
 
@@ -551,3 +557,284 @@ class TestDashboardNudgeSlotResolution:
         orch.dashboard_state = None
         assert await orch._fire_dashboard_nudge(_loop()) is False
         orch.autonudge_svc.remove.assert_not_awaited()
+
+
+class TestStructuralTerminalGuard:
+    """A message loop must STOP once its delivered turn is rejected as malformed.
+
+    The defect: ``_fire_dashboard_nudge`` returns True for any DISPATCHED turn
+    regardless of its terminal outcome, so ``_run_fire_cycle`` counts the cycle
+    and re-arms. A prompt the backend rejects for its SHAPE ("Improperly formed
+    request") is deterministic — re-firing the identical context reproduces it —
+    so the loop would burn cycle after cycle (the reported cycles 13, 14, ...)
+    on the same doomed turn. The slot carries the last turn's structural-terminal
+    verdict (``_last_turn_structural_terminal``); the fire path reads it and stops
+    the loop with the REPLACEABLE ``structural_terminal`` reason instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_structural_terminal_last_turn_stops_the_loop_without_firing(self) -> None:
+        orch = _orchestrator()
+        loop = _loop()
+        before = loop.cycle_count
+        # The fence stops the loop: update returns it inactive.
+        stopped = _loop()
+        stopped.active = False
+        orch.autonudge_svc.update = AsyncMock(return_value=stopped)
+        slot = _slot()
+        slot._last_turn_structural_terminal = True
+        slot._last_turn_structural_terminal_loop_id = loop.id
+        slot._last_turn_structural_terminal_loop_gen = loop.config_generation
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            # bool path (message loop) → False: nothing dispatched.
+            assert await orch._fire_dashboard_nudge(loop) is False
+        # The loop was stopped via the atomic (id, generation) fence, not removed.
+        orch.autonudge_svc.update.assert_awaited_once_with(
+            loop.id,
+            active=False,
+            stopped_reason=gw.STRUCTURAL_TERMINAL_REASON,
+            expected_generation=loop.config_generation,
+        )
+        orch.autonudge_svc.remove.assert_not_awaited()
+        assert spawn.calls == [], "a doomed malformed context was re-fired"
+        assert loop.cycle_count == before
+
+    @pytest.mark.asyncio
+    async def test_quiescing_loop_none_verdict_is_not_dispatched(self) -> None:
+        """update() returns None when the loop is quiescing/removed under
+        maintenance (``_acquire_mutation_lock`` returns None), NOT only when the
+        generation fence refuses. None must be treated as 'not a live target' --
+        return without dispatching -- exactly like the sibling
+        ``_stop_message_loop_if_structural_terminal`` seam, rather than falling
+        through and re-firing the doomed context on a loop being torn down.
+        """
+        orch = _orchestrator()
+        loop = _loop()
+        before = loop.cycle_count
+        # The mutation was refused because the loop is quiescing: update -> None.
+        orch.autonudge_svc.update = AsyncMock(return_value=None)
+        slot = _slot()
+        slot._last_turn_structural_terminal = True
+        slot._last_turn_structural_terminal_loop_id = loop.id
+        slot._last_turn_structural_terminal_loop_gen = loop.config_generation
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            # bool path (message loop) -> False: nothing dispatched.
+            assert await orch._fire_dashboard_nudge(loop) is False
+        assert spawn.calls == [], "a quiescing loop was wrongly dispatched"
+        assert loop.cycle_count == before
+
+    @pytest.mark.asyncio
+    async def test_stale_verdict_from_a_different_loop_does_not_stop_this_one(self) -> None:
+        """The verdict is loop-scoped: a stale flag left by a STOPPED malformed
+        loop must not deactivate a DIFFERENT loop armed later on the same slot.
+
+        Scenario: a malformed loop was stopped (its id is recorded with the slot
+        flag); the user then arms a NEW prompt loop on the same slot. The new
+        loop's first fire must NOT be stopped by the old loop's verdict.
+        """
+        orch = _orchestrator()
+        orch.autonudge_svc.update = AsyncMock()
+        slot = _slot()
+        slot._last_turn_structural_terminal = True
+        slot._last_turn_structural_terminal_loop_id = "old-malformed-loop"
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        new_loop = _loop()  # id "loop-abc" != "old-malformed-loop"
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            assert await orch._fire_dashboard_nudge(new_loop) is True
+        orch.autonudge_svc.update.assert_not_awaited()
+        assert spawn.calls == [slot], "the new loop's first turn was wrongly suppressed"
+
+    @pytest.mark.asyncio
+    async def test_same_loop_with_a_changed_instruction_is_not_stopped(self) -> None:
+        """Generation fence: a stale verdict recorded under an OLD config
+        generation must not stop the loop whose generation has advanced. The
+        guard passes the captured (old) generation to update(); the atomic fence
+        refuses (returns the loop still active), so the loop fires."""
+        orch = _orchestrator()
+        loop = _loop()
+        loop.config_generation = 3  # the loop's CURRENT generation
+        # update() fence refuses -> returns the loop unchanged (still active).
+        orch.autonudge_svc.update = AsyncMock(return_value=loop)
+        slot = _slot()
+        slot._last_turn_structural_terminal = True
+        slot._last_turn_structural_terminal_loop_id = loop.id
+        # verdict recorded under an OLDER generation than the loop now carries
+        slot._last_turn_structural_terminal_loop_gen = 1
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is True
+        # The guard DID consult the fence (passing the stale generation) but the
+        # fence refused, so the loop was dispatched, not suppressed.
+        orch.autonudge_svc.update.assert_awaited_once_with(
+            loop.id,
+            active=False,
+            stopped_reason=gw.STRUCTURAL_TERMINAL_REASON,
+            expected_generation=1,
+        )
+        assert spawn.calls == [
+            slot
+        ], "a re-armed loop with a new instruction was wrongly suppressed"
+
+    @pytest.mark.asyncio
+    async def test_clean_last_turn_fires_normally(self) -> None:
+        """The guard is inert unless the last turn was structurally terminal."""
+        orch = _orchestrator()
+        orch.autonudge_svc.update = AsyncMock()
+        slot = _slot()
+        slot._last_turn_structural_terminal = False
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            assert await orch._fire_dashboard_nudge(_loop()) is True
+        orch.autonudge_svc.update.assert_not_awaited()
+        assert spawn.calls == [slot]
+
+    @pytest.mark.asyncio
+    async def test_structured_monitor_wake_is_out_of_scope(self) -> None:
+        """A structured monitor wake carries its own context, not the repeated
+        prompt, so the structural-terminal guard must not touch it."""
+        orch = _orchestrator()
+        orch.autonudge_svc.update = AsyncMock()
+        slot = _slot()
+        slot._last_turn_structural_terminal = True
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        structured = _loop()
+        structured.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        spawned: list[asyncio.Task] = []
+
+        def _spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        orch.autonudge_svc.monitor_dispatch_is_authorized.return_value = True
+        with (
+            patch.object(gw, "spawn_guarded_turn", _spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=_run_chat_through_monitor_boundary),
+        ):
+            result = await orch._fire_dashboard_nudge(structured, "[Monitor wake]")
+            if spawned:
+                await spawned[0]
+        # The guard did not stop the loop; the wake followed its own dispatch
+        # contract (it dispatched, so a MonitorDispatchResult, never a bool).
+        orch.autonudge_svc.update.assert_not_awaited()
+        assert isinstance(result, gw.MonitorDispatchResult)
+
+
+class TestChannelStructuralTerminalHelper:
+    """The channel-adapter counterpart: a channel loop runs its turn inline and
+    holds the exception, so it stops the loop directly off the exception's
+    ``structural_terminal`` verdict rather than through the slot flag.
+
+    Pins ``_stop_message_loop_if_structural_terminal``, the shared seam the
+    slack fire adapter's ``except`` calls.
+    """
+
+    def _malformed_exc(self):
+        from kiro_crew.acp.client import AcpError
+
+        exc = AcpError("The request was rejected as malformed.", transient=False)
+        exc.structural_terminal = True
+        return exc
+
+    @pytest.mark.asyncio
+    async def test_structural_terminal_exception_stops_a_message_loop(self) -> None:
+        orch = _orchestrator()
+        loop = _loop()
+        stopped_loop = _loop()
+        stopped_loop.active = False
+        orch.autonudge_svc.update = AsyncMock(return_value=stopped_loop)
+        stopped = await orch._stop_message_loop_if_structural_terminal(
+            loop, self._malformed_exc(), wake_message=None, fired_generation=loop.config_generation
+        )
+        assert stopped is True
+        orch.autonudge_svc.update.assert_awaited_once_with(
+            loop.id,
+            active=False,
+            stopped_reason=gw.STRUCTURAL_TERMINAL_REASON,
+            expected_generation=loop.config_generation,
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_structural_exception_leaves_the_loop_alone(self) -> None:
+        orch = _orchestrator()
+        orch.autonudge_svc.update = AsyncMock()
+        loop = _loop()
+        stopped = await orch._stop_message_loop_if_structural_terminal(
+            loop,
+            RuntimeError("a transient boom"),
+            wake_message=None,
+            fired_generation=loop.config_generation,
+        )
+        assert stopped is False
+        orch.autonudge_svc.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_structured_monitor_wake_is_never_stopped_by_it(self) -> None:
+        orch = _orchestrator()
+        orch.autonudge_svc.update = AsyncMock()
+        loop = _loop()
+        stopped = await orch._stop_message_loop_if_structural_terminal(
+            loop,
+            self._malformed_exc(),
+            wake_message="[Monitor wake]",
+            fired_generation=loop.config_generation,
+        )
+        assert stopped is False
+        orch.autonudge_svc.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_instruction_changed_in_flight_is_not_stopped(self) -> None:
+        """Item 4 via the generation fence: a concurrent PATCH advances the
+        loop's config generation while the inline turn runs (possibly A->B->A).
+        The helper passes the fire-time generation to update(); the atomic fence
+        refuses (returns the loop still active), so the reconfigured loop is not
+        stopped on the old instruction's failure."""
+        orch = _orchestrator()
+        loop = _loop()
+        loop.config_generation = 4  # advanced since fire time
+        # update()'s fence refuses the stale stop -> returns the loop active.
+        orch.autonudge_svc.update = AsyncMock(return_value=loop)
+        stopped = await orch._stop_message_loop_if_structural_terminal(
+            loop,
+            self._malformed_exc(),
+            wake_message=None,
+            fired_generation=1,  # captured BEFORE the concurrent PATCH
+        )
+        assert (
+            stopped is False
+        ), "a loop reconfigured mid-turn was wrongly stopped on the old failure"
+        orch.autonudge_svc.update.assert_awaited_once_with(
+            loop.id,
+            active=False,
+            stopped_reason=gw.STRUCTURAL_TERMINAL_REASON,
+            expected_generation=1,
+        )

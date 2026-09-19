@@ -76,6 +76,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "cron_history",
         "knowledge",
         "heartbeat",
+        "monitoring",
         "skills",
         "session_summary",
         "telemetry",

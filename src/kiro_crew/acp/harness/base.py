@@ -298,6 +298,18 @@ class HarnessAdapter(abc.ABC):
 
     @property
     @abc.abstractmethod
+    def client_meta_settings(self) -> bool:
+        """The host reads feature settings from ``initialize``'s ``_meta.kiro.settings``.
+
+        When true the runtime fills that channel at spawn (today: MCP Tool
+        Search, gated on the spawn agent's loader grant). When false the host
+        takes its settings elsewhere -- kiro-cli reads the workspace ``cli.json``
+        overlay -- and the handshake is sent exactly as :attr:`client_capabilities`
+        declares it.
+        """
+
+    @property
+    @abc.abstractmethod
     def verifies_agent_activation(self) -> bool:
         """After session start, confirm the requested agent is the active mode.
 

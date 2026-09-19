@@ -133,6 +133,17 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # ``_iter_skill_files``: one check per directory (prune) and per SKILL.md
     # (skip), each against the ``realpath`` the walk computed for loop detection.
     "kiro_crew/skills.py": 2,
+    # ``_complete_path_listing`` / ``_scan_completion_dir``: the project root, the
+    # directory a `./` completion token named, and every entry that directory
+    # offers. Both halves of the contract hold. The argument is canonical without a
+    # resolve: the root is a ``realpath`` result, the token is walked one component
+    # at a time with a no-follow open (so no component is a link), the directory is
+    # then identified by ``pinned_fs.fd_real_path`` on the held descriptor rather
+    # than by its typed name, and a link entry is never offered. And the calls run
+    # on the dashboard's path-probe pool worker, never the event loop -- resolving
+    # the candidate there is what this endpoint must not do at all, since on Windows
+    # it would follow a junction aimed at a share.
+    "kiro_crew/dashboard/handlers/files.py": 3,
 }
 
 

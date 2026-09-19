@@ -78,6 +78,7 @@ from kiro_crew.agent_sdk.backend_install import (
     UNKNOWN,
     BackendInstallState,
     clear_probe_cache,
+    forget_for_recheck,
     probe_backend,
     probe_backends,
 )
@@ -154,6 +155,7 @@ __all__ = [
     "NativeCommandBatch",
     "clear_probe_cache",
     "finish_suspended_spawn",
+    "forget_for_recheck",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",

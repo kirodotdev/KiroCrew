@@ -290,7 +290,17 @@ agent sync provisions newly discovered members too. An absent, empty or `default
 create field is accepted for client compatibility and requests automatic private
 allocation. A supplied named store is rejected. `PUT /api/agents/{name}` and CLI
 update reject rebinding: an echoed current store is accepted, another identity
-(including global) is not.
+(including global) is not — with one exception, `unusable_legacy_binding`. A
+member whose binding names a store the shape rule refuses
+(`memory_store_name_defect` is not `None`) on a record with no ownership claim
+(`owner_member == ""`, `memory_version == 1`, or no record at all) may move to
+`default`, on both surfaces. Nothing is protected on that binding: no resolver
+composes a path for the name, so nothing under `memory_stores/` is read, replaced
+or removed by leaving it, and the member cannot run a turn on it. Any other
+destination is still `private_memory_immutable`, with an error naming the defect
+rather than calling a V1 name private, and a record claiming ownership under such a
+name stays refused because its ownership cannot be verified. The dead declaration
+itself is left in `memory_stores` verbatim, like every reported name.
 
 The typed `memory.private_provisioning_enabled` boolean defaults to true. The
 existing owner config PATCH API accepts only JSON booleans; the loader normalizes
@@ -309,6 +319,11 @@ binding. They may opt in to empty V2 memory through `PUT /api/agents/{name}` wit
 Their previous Global or named memory remains untouched. Unchanged legacy
 bindings permit unrelated metadata edits, including description and avatar.
 Broken existing V2 ownership requires recovery instead of another allocation.
+The dashboard opt-in validates the prior binding with `require_member_memory_store`
+before retiring idle providers, except when `unusable_legacy_binding` answers for
+it: that check would refuse the very name the opt-in is the way out of, and
+`provision_member_memory` re-runs the private-evidence half itself while skipping
+the legacy-file half for a name that composes no path.
 
 An actual dashboard V1-to-V2 opt-in returns `new_conversation_required: true`.
 The owner must finish or stop visible member work and its attached children
@@ -851,6 +866,31 @@ has two shapes: `{key: value}` for a dataclass-backed section, and
 re-emitted with `asdict` and so lose unmodelled keys the same way a section
 does. `hooks` needs neither: it is emitted raw and round-trips whole. A record
 deleted in memory stays deleted — restore fills into existing records only.
+
+A top-level key the core does not model is captured into `_extra_sections` and
+round-tripped, and by default also reported as `Config: unrecognized top-level
+keys`. Two exclusions from that warning are named in code:
+
+- `CONFIG_RESERVED_TOP_KEYS` in `resolution.py` (`meta`, retired keys) — stamped
+  by `save()` itself or written by an older build; never parsed, never
+  captured, dropped on the next save, never warned about.
+- `validation._APP_OWNED_TOP_KEYS` (`dev_fleet`) — a section a builtin app reads
+  from the file directly (`dev_fleet.repo_path`, prescribed by the Dev Fleet
+  "no checkout found" banner). Captured and round-tripped like any unknown
+  section, and NOT reported as unrecognized: the product told the operator to
+  write it. Private to the warning that is its only consumer; a second member
+  is the point at which this becomes an app-declared registration.
+
+A deprecated field is announced only when it holds something: `null` and an
+empty map, list or string carry nothing to migrate, so `validation` stays
+silent on them (`False` and `0` are chosen values and are still announced). A
+schema entry that is marked `deprecated=True` therefore accepts that an empty
+value of its type gets no notice; a field for which `""` or `[]` is itself a
+meaningful choice must not rely on the deprecation notice to surface that
+value. `to_dict()` also omits `telegram.accounts` when the map is empty: the
+field exists only so an operator's named-account tokens survive a save, and
+writing back an empty default materialized a deprecated key into every config,
+which every launch then warned about.
 
 Both capture from the BASE view of the document, not the merged one. When
 `config.local.json` shadows an unknown key that `config.json` also holds, a
@@ -1761,7 +1801,7 @@ happens to notice — which is the bug class this closes.
 | `KiroCrewConfig.save()` | `config/loader.py` |
 | `_persist_config_migration` | `config/loader.py` — a boot migration is a config write like any other |
 | `refresh_config_meta_stamp` | `config/loader.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
-| `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`; the per-channel savers and the STT PUT reach the file through here, bypassing the loader's writers |
+| `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`; the remaining per-channel savers and the STT PUT reach the file through here, bypassing the loader's writers. Held to a shrinking baseline by `TestTheAtomicJsonWriteConfigFamilyIsRatcheted`, so a new saver cannot join them; the Feishu and iMessage savers are already on `update_config_locked` and are the shape to copy |
 
 A handler that must answer only after the new value is in force calls
 `ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which

@@ -101,31 +101,34 @@ async def test_a_missing_agent_config_is_an_empty_policy(
 
 
 @pytest.mark.asyncio
-async def test_an_unparseable_agent_config_is_an_empty_policy(
+async def test_an_unparseable_agent_config_is_unreadable_not_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Behaviour preserved: malformed JSON answers {} rather than raising.
+    """Malformed JSON answers 409, not the ``{}`` a policy-free agent gets.
 
     The endpoint is deny-by-default about IDENTITY (an unresolved session is a
-    400/404), but permissive about a policy it cannot read: an unreadable file
-    must not take the MCP server's tool listing down.
+    400/404) and now also about a policy it cannot READ: the file may declare an
+    exclusion, so answering the empty body would let the caller run a tool that
+    spec forbids. An unreadable file still does not take the MCP server's tool
+    LISTING down -- the MCP side keeps listing every tool on an unresolved
+    policy and refuses only the call.
     """
     (tmp_path / f"{AGENT}.json").write_text("{ not json", encoding="utf-8")
     response = await _call(monkeypatch, tmp_path)
-    assert response.status == 200
-    assert _body(response) == {}
+    assert response.status == 409
+    assert _body(response)["code"] == "policy_unreadable"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content", ["[1, 2, 3]", "42", "null", "true", '"a string"'])
-async def test_a_valid_json_non_object_agent_config_is_an_empty_policy(
+async def test_a_valid_json_non_object_agent_config_is_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
 ) -> None:
     """A spec that is valid JSON but not an object parses fine, so the
-    JSONDecodeError guard never fires — but ``.get`` on the parsed value would
-    raise AttributeError out of the handler. It is a malformed spec: answer the
-    same empty policy as the unparseable case, and do not log it as a success
-    (only a config that was read AND understood earns the SEL ``ok`` record).
+    JSONDecodeError guard never fires -- but ``.get`` on the parsed value would
+    raise AttributeError out of the handler. It is a malformed spec: it takes the
+    same 409 as the unparseable case, and is not logged as a success (only a
+    config that was read AND understood earns the SEL ``ok`` record).
     """
     (tmp_path / f"{AGENT}.json").write_text(content, encoding="utf-8")
 
@@ -134,21 +137,28 @@ async def test_a_valid_json_non_object_agent_config_is_an_empty_policy(
     monkeypatch.setattr(sessions_mod, "_sel", lambda: sel)
     response = await sessions_mod.api_session_tool_policy(_request(_state()))
 
-    assert response.status == 200
-    assert _body(response) == {}
-    assert not sel.log_api_access.called, "a config that was never understood must not report ok"
+    assert response.status == 409
+    assert _body(response)["code"] == "policy_unreadable"
+    outcomes = [c.kwargs.get("outcome") for c in sel.log_api_access.call_args_list]
+    assert "ok" not in outcomes, "a config that was never understood must not report ok"
 
 
 @pytest.mark.asyncio
-async def test_a_non_dict_policy_is_an_empty_policy(
+async def test_a_non_dict_policy_is_unreadable_not_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Behaviour preserved: a policy of the wrong shape is not handed through."""
+    """A policy of the wrong shape is one this cannot read, not an absent one.
+
+    The operator wrote something under ``managedToolPolicy`` and its meaning is
+    unknown, which is the case that must not share an answer with an agent that
+    wrote nothing there.
+    """
     (tmp_path / f"{AGENT}.json").write_text(
         json.dumps({"managedToolPolicy": ["exclude"]}), encoding="utf-8"
     )
     response = await _call(monkeypatch, tmp_path)
-    assert _body(response) == {}
+    assert response.status == 409
+    assert _body(response)["code"] == "policy_unreadable"
 
 
 @pytest.mark.asyncio
@@ -186,6 +196,48 @@ async def test_an_unread_config_is_not_logged_as_ok(
 
     assert _body(response) == {}
     assert not sel.log_api_access.called, "an unread config must not report ok"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_namespaced_spec_is_unreadable_not_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The declared-name SCAN must not report a broken file as "no such agent".
+
+    A package-installed agent is namespaced on disk as ``<package>-<name>.json``
+    with its declared ``name`` left bare, so it has no ``<agent>.json`` filename
+    candidate and the scan is the only thing that could find its policy. That
+    scan resolves a name by PARSING each file and its reader folds a refusal into
+    "not a usable spec", which is indistinguishable from "a spec for someone
+    else" -- so an unparseable file leaves the scan reporting no match while the
+    policy it was looking for may be inside that very file.
+
+    Answering the empty policy there would run a tool this file may forbid.
+    """
+    (tmp_path / f"somepkg-{AGENT}.json").write_text("{ not json", encoding="utf-8")
+    response = await _call(monkeypatch, tmp_path)
+    assert response.status == 409
+    assert _body(response)["code"] == "policy_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_readable_specs_for_other_agents_stay_an_empty_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: an agent with no spec of its own is still an empty policy.
+
+    Only an UNREADABLE spec makes the answer unknown. A directory full of
+    perfectly readable specs that simply belong to other agents leaves this one
+    with a genuinely absent policy, and refusing there would refuse every agent
+    that has no spec file -- the case that must keep working.
+    """
+    (tmp_path / "somepkg-other.json").write_text(
+        json.dumps({"name": "other", "managedToolPolicy": {"exclude": ["x"]}}), encoding="utf-8"
+    )
+    (tmp_path / "another.json").write_text(json.dumps({"name": "another"}), encoding="utf-8")
+    response = await _call(monkeypatch, tmp_path)
+    assert response.status == 200
+    assert _body(response) == {}
 
 
 @pytest.mark.asyncio
@@ -290,9 +342,10 @@ async def test_two_specs_declaring_the_agent_name_are_denied_not_emptied(
 ) -> None:
     """Which of two same-name specs is live is undefined, so the policy is too.
 
-    The caller still fails open on ``{}`` (its own documented deviation), but
-    the record is a SEL ``denied`` naming both files, not the silence a missing
-    file gets -- and never an ``ok``.
+    Answered as 409 ``policy_unreadable`` rather than an empty policy: ``{}``
+    would be byte-identical to an agent that legitimately declares no
+    exclusions, and the caller would run a tool that one of these two files may
+    forbid. The record is a SEL ``denied`` naming both files, never an ``ok``.
     """
     (tmp_path / f"Alpha-{AGENT}.json").write_text(
         json.dumps({"name": AGENT, "managedToolPolicy": {"exclude": ["a"]}}), encoding="utf-8"
@@ -306,8 +359,8 @@ async def test_two_specs_declaring_the_agent_name_are_denied_not_emptied(
     monkeypatch.setattr(sessions_mod, "_sel", lambda: sel)
     response = await sessions_mod.api_session_tool_policy(_request(_state()))
 
-    assert response.status == 200
-    assert _body(response) == {}
+    assert response.status == 409
+    assert _body(response)["code"] == "policy_unreadable"
     kwargs = sel.log_api_access.call_args.kwargs
     assert kwargs["outcome"] == "denied"
     assert f"Alpha-{AGENT}.json" in kwargs["error"]

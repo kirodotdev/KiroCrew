@@ -3613,6 +3613,65 @@ function getSlotSub(state: ChatState, slot: string, id: string): SubagentActivit
   return getSlotSubs(state, slot)?.[id]
 }
 
+/** `getSlotSub` for the reducers that must not LOSE a frame: it creates the
+ *  entry when the wire names an agent this store holds none for, then returns it
+ *  to be mutated.
+ *
+ *  A read-only accessor is the right shape for a reducer whose frame only
+ *  decorates a card (an approval toggle has nothing to say about an agent it
+ *  cannot find). It is the wrong shape for the incremental lifecycle frames --
+ *  tool, streaming text, stalled, retrying -- because those are the ONLY
+ *  evidence the panel gets between one spawn frame and one done frame. Dropping
+ *  them when the container is missing makes the agent invisible for its whole
+ *  run and then complete out of nowhere, and the gap is reachable in normal use:
+ *  `clearSubagentsForSnapshot` keeps only `pending` entries across a reconnect,
+ *  so every agent already running at that moment has its entry discarded while
+ *  its remaining frames are all incremental ones.
+ *
+ *  A created entry is deliberately a MINIMUM: the frame that reaches here
+ *  carries no task text or agent name, so those stay empty and a later frame
+ *  that does carry them (`subagent_done`, a snapshot replay) fills them in. A
+ *  card reading "running, last tool X" with no title is worth more to the
+ *  operator than no card at all, which is the alternative.
+ *
+ *  Guards mirror the lifecycle reducers exactly, because this one WRITES:
+ *  `isUnsafeKey` refuses a poisoned slot or id outright, and `safeKey` reroutes
+ *  one to an inert own-property if it ever slips past. A hostile
+ *  `__proto__`/`constructor`/`prototype` id therefore creates nothing and
+ *  returns `undefined`, so the frame is dropped exactly as before. */
+function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActivity | undefined {
+  if (isUnsafeKey(slot) || isUnsafeKey(id)) return undefined
+  const existing = getSlotSub(state, slot, id)
+  if (existing) return existing
+  // An OWNERLESS frame must not mint a bucket. `isUnsafeKey` does not cover this:
+  // `isUnsafeKey('')` is false, and a degraded spawn (`parent_session_key: ''`)
+  // reaches here carrying `slot: ''`. Creating `slotActivity['']` would be a
+  // session bucket no session owns, which the global activity view then reports
+  // as an owned running agent, and nothing later removes it -- a snapshot replay
+  // refuses the same input, so it never overwrites the bucket.
+  // :func:`sseSubagentSnapshot` fails closed on the same condition.
+  //
+  // Scoped to the bucket branch on purpose. A frame whose slot IS the active one
+  // mints nothing: the write lands in `state.subagents`, which is where the
+  // lifecycle reducers put it too, so refusing that path would change behaviour
+  // this function did not introduce (the store's default `activeSlot` is `null`,
+  // and frames carrying that same value legitimately target the active map).
+  let subs: Record<string, SubagentActivity>
+  if (slot !== state.activeSlot) {
+    if (!slot) return undefined
+    subs = (state.slotActivity[safeKey(slot)] ??= { toolLog: [], subagents: {} }).subagents
+  } else {
+    subs = state.subagents
+  }
+  return (subs[safeKey(id)] ??= {
+    id, task: '', agent: '',
+    status: 'running', streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
+    // The frame that reached here carries no start time, so this instant is an
+    // assumption and is flagged as one rather than rendered as fact.
+    startedAtAssumed: true,
+  })
+}
+
 /**
  * Live "sub-agents running" signal for a slot, derived from the
  * subagent_spawn/tool/done WS events (the only real-time source — see the
@@ -4898,13 +4957,19 @@ const chatSlice = createSlice({
         requestedModel: action.payload.requested_model || existing?.requestedModel || undefined,
         childSession: action.payload.child_session || undefined,
         status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
+        // Reusing an entry's start time inherits whether that time was ASSUMED.
+        // Rebuilding the entry without this would silently promote an assumption
+        // to an assertion, because a spawn frame carries no start time of its own
+        // -- `Date.now()` is only genuine for an entry being created here.
+        startedAtAssumed: existing?.startedAt ? existing.startedAtAssumed : undefined,
         toolCount: 0, stalled: false,
       }
     },
     sseSubagentTool(state, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number }>) {
       const { slot, id } = action.payload
-      // Prototype-pollution guard is centralized in getSlotSub.
-      const a = getSlotSub(state, slot, id)
+      // Prototype-pollution guard is centralized in upsertSlotSub, which also
+      // creates the entry when this is the first frame naming the agent.
+      const a = upsertSlotSub(state, slot, id)
       if (a) {
         a.lastTool = action.payload.tool; a.status = 'tool'
         if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
@@ -4919,14 +4984,16 @@ const chatSlice = createSlice({
       // one-shot cancel auto-continue (subagent_recovering): the agent is
       // still alive and recovering — show ⟳ instead of letting it look hung.
       const { slot, id } = action.payload
-      if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
-      const a = getSlotSubs(state, slot)?.[id]
+      // Through the shared accessor, so this call site carries no hand-written
+      // copy of the poisoned-key list that could drift from `isUnsafeKey`.
+      const a = upsertSlotSub(state, slot, id)
       if (a) { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
     },
     sseSubagentStalled(state, action: PayloadAction<{ slot: string; id: string; stalled: boolean; idle_secs?: number }>) {
       const { slot, id } = action.payload
-      // Prototype-pollution guard is centralized in getSlotSub.
-      const a = getSlotSub(state, slot, id)
+      // Prototype-pollution guard is centralized in upsertSlotSub, which also
+      // creates the entry when this is the first frame naming the agent.
+      const a = upsertSlotSub(state, slot, id)
       if (!a) return
       a.stalled = action.payload.stalled
       // Keep the idle span with the flag it justifies, and clear it on the
@@ -4943,7 +5010,7 @@ const chatSlice = createSlice({
      *  agents run). Field presence decides what to apply; latest wins. */
     sseSubagentBatchUpdate(state, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
       for (const u of action.payload.updates || []) {
-        const a = getSlotSub(state, u.slot, u.id)
+        const a = upsertSlotSub(state, u.slot, u.id)
         if (!a) continue
         // Order matters: retrying (attempt) applies FIRST so a tool field in
         // the same merged entry — meaning work resumed — clears it last.
@@ -4962,7 +5029,7 @@ const chatSlice = createSlice({
     /** One coalesced ~1s frame of concatenated streaming text per agent. */
     sseSubagentBatchChunks(state, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
       for (const c of action.payload.chunks || []) {
-        const a = getSlotSub(state, c.slot, c.id)
+        const a = upsertSlotSub(state, c.slot, c.id)
         if (!a) continue
         a.retrying = false
         a.streaming += c.text
@@ -5032,6 +5099,15 @@ const chatSlice = createSlice({
         if (action.payload.requested_model) a.requestedModel = action.payload.requested_model
         if (action.payload.child_session && !a.childSession) a.childSession = action.payload.child_session
         if (isNative && action.payload.result !== undefined) a.result = action.payload.result
+        // A done frame carries authoritative `elapsed`, which reconstructs the
+        // real start for an entry whose start was only ASSUMED -- the same
+        // reconstruction the no-entry branch below already performs. Without it
+        // the entry would keep claiming its start is unknown after the one frame
+        // that settles it.
+        if (a.startedAtAssumed) {
+          a.startedAt = Date.now() - action.payload.elapsed * 1000
+          a.startedAtAssumed = undefined
+        }
       }
       else {
         subs[action.payload.id] = {

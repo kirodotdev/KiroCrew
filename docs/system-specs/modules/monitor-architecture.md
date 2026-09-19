@@ -581,6 +581,19 @@ enforced nowhere:
 - The stall streak is engine state, so a stuck watch stops itself. `MonitorState`
   carries `stall_digest`, `stall_streak` and `stall_started_at`; `decide_monitor`
   folds them and `monitor_stall_reason` names the stop `verdict_stall`.
+- A retained stop is evidence, and an arming tool must not acknowledge an arm it
+  cannot apply. Only a SYSTEM-imposed outcome is displaceable by a re-arm; a
+  consumer-recorded one (`USER_STOP`, `SESSION_CLOSE`, a quarantined record, an
+  outcome this version does not recognise) is preserved, and clearing it is an
+  owner-only dashboard action because it destroys audit evidence.
+  `monitoring.models.retained_outcome_blocks_rearm` is the one predicate that
+  answers this, consumed both by `autonudge._stopped_row_is_replaceable` at the
+  enforcement point and by the `mcp_tools.control` preflight that refuses in band
+  before the model ends its turn. What that shared predicate buys is that the
+  RULE cannot drift between the two sites; the preflight remains advisory, since
+  it fails open on an unreadable record and the turn boundary is what enforces.
+  Two copies of the rule is what lets the ack and the applier disagree on the
+  classification itself, which is the false-acknowledgement class of bug.
 
 ## Adding a new monitored kind
 
@@ -700,8 +713,8 @@ lifecycle stages, in different shapes:
 
 | Site | Lifecycle stage | Shape | Reachable from code |
 |---|---|---|---|
-| `mcp_shared._resolve_excluded_tools` | per call, cached per session | flat name set from `managedToolPolicy.exclude` | yes |
-| the same function's fail-open returns | before the exclude list is parsed | returns an empty set | nothing to migrate; withholds every exclusion equally |
+| `mcp_shared._resolve_tool_policy` | per call, cached per session | `ToolPolicy(excluded, unresolved)` from `managedToolPolicy.exclude` | yes |
+| the same function's unresolved returns | before the exclude list is parsed | empty set plus the reason it could not be read; `tools/call` refuses, `tools/list` still lists | nothing to migrate; the refusal is audited per call |
 | `acp/kas_agents.to_client_custom_agent` | startup projection, before the session exists | `excludedTools` list relayed to the agent host | yes |
 | `acp/session_mcp.session_mcp_disabled_tools` | session projection: Claude `permissions.deny`, codex `rawInput.server`/`tool` | `(server, tool)` pairs, unioned from the agent spec AND the dashboard-written global `mcp.json` | yes |
 | `agent._WORKER_MIRRORED_SHAPES` | derive-time copy | copies the persisted key | copies rather than resolves, so a rewrite here would alter a user's stored value |
@@ -725,3 +738,85 @@ Weighed against that: the mispick this rename would prevent has not been observe
 What remains available, because none of it is name-keyed: the tool descriptions, this
 spec, and the prompts that choose between the two. A caller reading `monitor_start`'s
 description learns it is the timer without the name having to carry it.
+
+### Which of the two is the default is an installation's choice
+
+Both arming tools are reachable on a stock install and neither is gated. `GET
+/api/monitors` answers its `enabled` field from whether the service object exists
+(`handlers/autonudge.py`), not from a key, so there has never been a switch that
+turns the structured engine on or off. What was unsettable is which of the two an
+arming takes, and the reason follows from the section above: no code chooses, so
+the choice is made by the model reading the two descriptions.
+
+`monitoring.prefer_structured_arming` (boolean, default `false`) decides which
+side has to justify itself. Off, the structured path is admissible only once the
+caller has satisfied itself the objective is fully determined by typed provider
+facts. On, a supported pull request is enough and the prompt loop becomes the
+exception that needs its own reason, and `monitor_watch`'s own description says
+so too. That is the whole extent of the key: it refuses neither tool, moves no
+argument in either `inputSchema`, and cannot guarantee which path the agent then
+arms -- the text is what it changes, and the text is what its tests measure.
+
+The two positions are NOT two routes, and reading them as a swap of defaults is
+the error to avoid: both send evidence the typed provider cannot observe --
+comments, advisory review findings -- to the prompt loop. What moves is the
+burden of proof. Off leans to the loop whenever the caller is unsure whether the
+objective is fully typed-decidable, because that judgement is the precondition;
+on, being a supported pull request is the precondition and the loop needs a
+positive reason. An installation that wants the cheap path for a few days is
+asking for exactly that shift, which is why the key is worth a row in the schema
+even though it changes no code path.
+
+It is read in `mcp_tools/control.py::schemas()`, which is the only place it is
+read, and read afresh on every build: `mcp_tools.build_tool_list` rebuilds
+descriptors per call rather than caching them, so a Settings write needs no
+gateway restart. It does not reach a session already open, because kiro-cli
+caches a session's tool list for that session's life -- the same limitation
+`mcp_tools/browser.py` records for `dashboard.use_builtin_browser`. A config read
+that raises resolves to the off position, since off is what ships.
+
+The key deliberately does not make `monitor_start` REFUSE a target the structured
+engine supports. `monitor_start` takes a free-text message and no typed target,
+so a refusal would have to guess from prose which armings were structured-capable;
+and `goal-conductor` and `pipeline-conductor` patrol their own session with it as
+their primary use, which a prose-matching refusal would break. A preference that
+cannot misfire is worth more here than an enforcement that can.
+
+The descriptor is not the only prose that states the choice, and the key moves
+only the descriptor. `config/prompt.md` carries the same rule in its own words
+("Prefer bounded `monitor_watch` when typed provider facts decide the whole
+objective"), and that sentence is true in both positions, so it is left alone
+rather than made flag-aware. The reason is reach, not effort: a prompt file is one
+of many agent prompts, while the descriptor is assembled for every session
+whatever prompt it runs, so the descriptor is the only copy a single read can
+move for all of them. An installation that turns the key on therefore gets the
+default restated on the tool list, not rewritten in every prompt.
+
+#### Two costs of making the structured path the default
+
+Both are properties of the engine rather than of the key, and both are what an
+operator is actually buying, so the key's help text names them.
+
+**Half of a review-ready objective is invisible to the typed provider.** A
+structured observation carries lifecycle, checks, mergeability, review decision
+and review-thread counts, and nothing else; `docs/architecture/mcp.md` states the
+same boundary from the tool's side ("requests that need comments or advisory
+findings route directly to the finite legacy tool whose agent turn can inspect
+them"). On this repository that is not a corner case: a pull request reaches
+`readiness: passed` only once every non-PASS whole-design verdict carries a
+disposition, and those verdicts live in comment bodies. A green typed board and an
+unanswered advisory finding are indistinguishable to a probe, which is why the
+prompt loop keeps `gate=false` for that evidence in both positions of this key.
+
+**An armed structured monitor is not freely swappable, though the key is.**
+Flipping the key back restores the previous wording on the next tool-list build
+and needs nothing else. An already-armed monitor is different:
+`monitor_stop` records `MonitorOutcome.USER_STOP`
+(`autonudge._apply_monitor_user_stop`), and `_stopped_row_is_replaceable` admits
+only `BUDGET`, `SUCCESS`, `BLOCKED` and `TARGET_UNAVAILABLE` -- the
+system-imposed outcomes. A consumer-recorded stop is retained evidence, and an
+unknown outcome fails closed the same way, so the next arm on that session is
+refused with "its owner must clear it first from the dashboard's goal popover".
+The consequence for an operator who turns this key on and then wants one session
+back on the prompt loop: an agent cannot make that swap, and the remedy is the
+owner's clear or restart action, never a retry.

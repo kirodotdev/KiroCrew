@@ -26,7 +26,7 @@ import { useCtx, AppScopedApiProvider, type AppApi, type AppInfo } from './scope
 // Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
 // exports, and a type vanishes at runtime, so an app author keeps these names
 // without the stub needing an entry it could not provide.
-export type { AppApi, AppInfo, AppPermissions } from './scopedApi'
+export type { AppApi, AppApiError, AppInfo, AppPermissions } from './scopedApi'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -317,11 +317,15 @@ export function useNavBadge(): (count: number) => void {
 export interface ChatLaunchOptions {
   /** Agent name to use for the session. */
   agent?: string
-  /** Initial message to send to the agent. */
+  /** Initial message, sent automatically unless autoSend is false. */
   message?: string
+  /** Existing dashboard slot key. Omit to start a new session. */
+  slotKey?: string
+  /** False seeds a draft only; the user must press Send. Defaults to true. */
+  autoSend?: boolean
 }
 
-/** Launch intent written to a global slot for ChatPage to consume on mount. */
+/** Launch intent written to a global slot for the routed chat to claim. */
 interface ChatLaunchIntent extends ChatLaunchOptions {
   ts: number
 }
@@ -330,8 +334,8 @@ interface ChatLaunchIntent extends ChatLaunchOptions {
  * Launch a chat session in the host dashboard.
  *
  * Writes launch intent to a lightweight global slot, then navigates to
- * /chat. ChatPage consumes the intent on mount — no timing issues,
- * no Redux coupling, no API calls. Same decoupled pattern as useNavBadge.
+ * /chat. The routed chat claims it on cold entry or hot navigation and owns
+ * session activation, draft creation and sending; apps need no Redux coupling.
  */
 export function useChatLauncher(): {
   openChat: (opts?: ChatLaunchOptions) => void
@@ -342,9 +346,13 @@ export function useChatLauncher(): {
     ;(window as Window & { __mc_chat_launch?: ChatLaunchIntent }).__mc_chat_launch = {
       agent: opts.agent,
       message: opts.message,
+      slotKey: opts.slotKey,
+      autoSend: opts.autoSend,
       ts: Date.now(),
     }
-    navigate('/chat')
+    navigate(opts.slotKey
+      ? `/chat?sid=${encodeURIComponent(opts.slotKey)}`
+      : opts.autoSend === false ? '/chat?new=1' : '/chat')
   }, [navigate])
 
   return { openChat }
@@ -449,3 +457,9 @@ export type { MessageRenderer, MessageRenderContext } from './messageRenderers'
 // stub to third-party apps and freeze the contract before its richest consumer —
 // the main composer, with configurable send keys and per-slot persisted drafts —
 // has exercised it. Publishing later is additive; un-publishing is a break.
+
+// Shared interaction and locale contracts; apps reuse the host implementations.
+export { useImeGuard } from '../hooks/useImeGuard'
+export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+export { activeLocale, fmtNumber, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
+export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'

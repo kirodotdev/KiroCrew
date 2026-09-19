@@ -272,11 +272,43 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         class _Completed:
             returncode = 3
             stdout = ""
+            stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         issue, remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
         assert "exit 3" in issue
         assert "debug config" in remedy
+
+    def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
+        """The child's own reason reaches the refusal, as on the pi read-back."""
+
+        class _Completed:
+            returncode = 1
+            stdout = ""
+            stderr = "Error: cannot parse config at line 3\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        assert "exit 1" in issue
+        assert "its configuration could not be parsed" in issue
+        # The fault, not the child's sentence: the line number is the harness's to
+        # repeat when the operator runs it, and quoting it would put child bytes back
+        # into a message that reaches the dashboard and the chat card.
+        assert "line 3" not in issue
+
+    def test_a_secret_in_the_childs_stderr_is_not_republished(self, tmp_path, monkeypatch):
+        # A 40-char run of the base64 alphabet: the AWS secret-key shape. Not real.
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+        class _Completed:
+            returncode = 1
+            stdout = ""
+            stderr = f"auth failed for key={secret}\n"
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        issue, _remedy = self._client(tmp_path)._verify_opencode_routing(_ARGV, "{}")
+        assert secret not in issue
+        assert issue.endswith("recognises)"), issue
 
     def test_an_unparseable_document_is_an_issue(self, tmp_path, monkeypatch):
         class _Completed:

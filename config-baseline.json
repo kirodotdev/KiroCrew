@@ -3979,6 +3979,36 @@
       "defaultValue": "slack"
     },
     {
+      "path": "monitoring",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Monitoring",
+      "help": "How a session's choice between the two monitoring paths is framed. Neither path is gated by this section; both are armable with it at its default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "prefer_structured_arming": false
+      }
+    },
+    {
+      "path": "monitoring.prefer_structured_arming",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Prefer the structured monitor when arming",
+      "help": "Which side has to justify itself before a supported pull request is watched. Off, the default and the shipped wording: the structured monitor monitor_watch is admissible only once the caller has satisfied itself that the objective is fully determined by typed provider facts, a judgement that leans to the prompt loop whenever the caller is unsure. On: a supported pull request is enough, and the prompt loop monitor_start becomes the exception that needs its own reason. Both positions send evidence the typed provider cannot observe -- comments, advisory review findings -- to the prompt loop, so this moves the burden rather than swapping two defaults. What it changes is the text those two descriptions give the agent: it does not refuse either tool and cannot guarantee which one the agent picks. Neither path is gated by this key -- both are armable with it off -- so turning it on grants no new unattended capability. The value is read afresh every time the tool list is built, so no gateway restart is needed; a session already open keeps the tool list it was given, so the change reaches the next session. Two things to know before turning it on. The structured path observes typed provider facts only -- lifecycle, checks, mergeability, review decision, review threads -- and not generic comments or advisory review findings, so an objective that depends on reading those still needs the prompt loop. And this key is reversible but an already-armed structured monitor is not: stopping one records a retained USER_STOP outcome that refuses a re-arm, so moving such a session to the prompt loop needs its owner to clear that record in the dashboard's monitor popover first.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "watchdog",
       "kind": "core",
       "type": "object",

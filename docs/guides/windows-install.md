@@ -460,13 +460,44 @@ on the non-blocking code (`LK_NBLCK`), with two behaviors by context. On the
 asyncio **event-loop thread** the acquire is single-shot — a spin-sleep there
 would freeze chat/heartbeat, so it takes the lock if free and otherwise fails
 immediately. **Off the loop** (cron, home migration, app backends) it polls up
-to a generous `_WIN_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
+to a generous `_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
 legitimately long holder such as a data-home migration, rather than racing it,
 yet bounded so a truly stuck/permission-denied fd still fails. Either way, if
 the lock cannot be taken the acquire **fails closed**: it raises rather than
 entering the critical section unserialized, since proceeding lock-less is the
 exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
+
+### The ceiling is not Windows-only
+
+`fcntl.flock` takes no timeout, so a bare POSIX acquire waits on a holder without
+limit. That is not a wait but a **hang**, and on the boot path it cannot be told
+apart from a slow start: `agents_spec_lock` → `file_lock(wait=True)` → `flock`
+leaves the gateway alive with no port bound, no `KIROCREW_READY` line and nothing
+logged at WARNING or ERROR, so an operator and a health check both keep waiting.
+
+POSIX therefore polls `LOCK_NB` up to the same `_LOCK_TIMEOUT_SECS` and raises
+the same named refusal, naming the ceiling and the reason. The bound costs the
+common case nothing, because the ceiling is far longer than any in-tree critical
+section (a sub-second read plus an atomic rename), so only a wait that has
+stopped being a wait is refused. Retries cover contention only: `EAGAIN`,
+`EACCES` and `EWOULDBLOCK` mean another holder has it, while any other errno is
+about the fd itself and surfaces at once rather than being reported as a stuck
+holder five minutes later. The sleep backs off to `_LOCK_POLL_MAX_SECS`, since a
+kernel-blocking acquire wakes not at all and a flat 10ms poll would wake ~30k
+times across the full ceiling.
+
+Unlike the Windows branch, POSIX keeps polling on the event-loop thread instead
+of degrading to a single shot. A spin-sleep on the loop is bad, but refusing a
+contended on-loop acquire outright would deny callers that legitimately take the
+lock on the loop (`bridges._mcp_lock` during app enable). Bounding the wait does
+not change which caller wins it.
+
+Failing closed is what makes the failure *reportable*: the gateway boot path logs
+an install failure at ERROR, prints the repair command and verifies what landed
+on disk, then binds its port regardless. A hang reaches none of that.
+`_WIN_LOCK_TIMEOUT_SECS` and `_WIN_LOCK_POLL_SECS` are aliases of the
+platform-neutral names.
 
 ## `os.kill(pid, 0)` is a process killer here, not a liveness probe
 

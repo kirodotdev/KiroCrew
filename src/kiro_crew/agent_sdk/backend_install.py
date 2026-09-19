@@ -101,10 +101,39 @@ COMPONENT_PI_CLI = "pi"
 CACHE_TTL_SECONDS: float = 30.0
 
 _cache: Dict[str, Tuple[float, "BackendInstallState"]] = {}
-# Guards the dict only. Deliberately NOT held across a probe: ``_probe_kas``
+#: Per-backend generation, bumped by every eviction. A probe runs with the lock
+#: RELEASED, so a verdict can be produced by a call that started before an
+#: eviction and finish after it -- and the dashboard polls this module while the
+#: re-check button evicts, which is exactly that race. The generation makes the
+#: write conditional on "nothing was dropped while I was resolving", so a stale
+#: answer can still be returned to its own caller but can never become the
+#: answer everyone else reads. Same shape as the resolution fence in
+#: ``acp.client``, for the same reason.
+_probe_epoch: Dict[str, int] = {}
+# Guards both dicts. Deliberately NOT held across a probe: ``_probe_kas``
 # re-enters :func:`probe_backend` for the kiro entry, which would deadlock on a
 # non-reentrant lock, and a duplicated concurrent probe costs nothing but work.
 _cache_lock = threading.Lock()
+
+
+def _epoch_locked(backend: str) -> int:
+    """This backend's generation, registering the id so a later clear covers it.
+
+    ``setdefault`` rather than ``get``: :func:`clear_probe_cache` bumps the ids it
+    can see, and a first-ever probe would otherwise be invisible to it -- leaving
+    the one case with no cached entry to drop as the one case a clear cannot fence.
+
+    Caller holds :data:`_cache_lock`.
+    """
+    return _probe_epoch.setdefault(backend, 0)
+
+
+def _bump_epoch_locked(backend: str) -> None:
+    """Retire every verdict for *backend* that is already being resolved.
+
+    Caller holds :data:`_cache_lock`.
+    """
+    _probe_epoch[backend] = _probe_epoch.get(backend, 0) + 1
 
 
 @dataclass(frozen=True)
@@ -327,6 +356,12 @@ def _probe_pi() -> BackendInstallState:
     )
 
 
+#: Backend id -> its probe. A probe that answers by calling :func:`probe_backend`
+#: for ANOTHER backend must also be named in :func:`forget_probe`, in BOTH
+#: directions: its own entry is a copy, so evicting the copy alone rebuilds it from
+#: the source, and evicting the source alone leaves the copy standing. ``_probe_kas``
+#: is the only one today. Nothing can detect the delegation automatically -- it is a
+#: call inside a function body -- so this note is the forcing function.
 _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_KIRO: _probe_kiro,
     ACP_BACKEND_KAS: _probe_kas,
@@ -345,6 +380,69 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
 }
 
 
+def forget_probe(backend: str) -> None:
+    """Drop *backend*'s cached verdict, and every verdict coupled to it.
+
+    Narrower than :func:`clear_probe_cache` on purpose. Re-checking one harness
+    must not make the panel's next poll re-resolve all eight, and the Claude and
+    self-served probes each shell out or walk the filesystem, so a wholesale clear
+    would turn one button into that much work.
+
+    KAS and KIRO are one PAIR, and the coupling runs both ways because ``_probe_kas``
+    answers by calling :func:`probe_backend` for kiro -- kas's entry is a COPY of
+    kiro's. Dropping only kas rebuilds it from kiro's still-cached verdict and reports
+    the very answer it was asked to re-take. Dropping only kiro leaves kas holding the
+    copy, so a re-check on the kiro row reports the fresh install while the kas row
+    keeps saying missing, with a dead switch, for the rest of the TTL. Either
+    direction alone makes the button lie about a machine it just measured, so the
+    eviction travels both ways.
+
+    Stated as branches rather than held in a table: two conditions with one reader
+    each cost a reader a lookup to learn what a named condition says outright, and
+    nothing can check a table anyway -- the delegation is a call inside
+    ``_probe_kas``'s body. The note on :data:`_PROBES` is what tells the next author
+    to come here.
+    """
+    with _cache_lock:
+        _cache.pop(backend, None)
+        # The bump travels with the pop, under one lock hold: a probe already in
+        # flight for this id resolved a machine that predates whatever the caller
+        # just did, so its answer must not be stored on top of the fresh one.
+        _bump_epoch_locked(backend)
+        if backend == ACP_BACKEND_KAS:
+            # The copy's source: leaving it would rebuild the copy from it.
+            _cache.pop(ACP_BACKEND_KIRO, None)
+            _bump_epoch_locked(ACP_BACKEND_KIRO)
+        elif backend == ACP_BACKEND_KIRO:
+            # The copy: leaving it keeps a pre-install verdict on the kas row while
+            # the kiro row it was copied from already reads the fresh one.
+            _cache.pop(ACP_BACKEND_KAS, None)
+            _bump_epoch_locked(ACP_BACKEND_KAS)
+
+
+def forget_for_recheck(backend: str) -> None:
+    """Drop BOTH caches that can make a fresh install read as unusable.
+
+    This module's TTL verdict, and the running gateway's own resolve result that
+    ``restart_required`` is derived from. Together they are what stands between an
+    operator who just ran the install command and a working switch.
+
+    **Non-blocking, and it must be called ON THE EVENT LOOP.** It resolves nothing --
+    it only drops what is remembered -- so there is no reason to offload it, and one
+    strong reason not to: :func:`drivers.acp.forget_cached_resolution` is only
+    thread-safe on the loop, because every reader on the spawn path is loop-resident
+    code with no ``await`` between its check and its read. Its docstring has the
+    evidence.
+
+    Deliberately NOT paired with the probe in one function. An earlier shape did
+    exactly that, and bundling them is what pushed the clear into the worker thread
+    the probe needs -- so the pairing was the defect, not a convenience. The caller
+    clears here, then offloads :func:`probe_backend`.
+    """
+    acp_driver.forget_cached_resolution(backend)
+    forget_probe(backend)
+
+
 def _policy_id(backend: str) -> str:
     """The policy-facing spelling, which is what the payload carries.
 
@@ -357,9 +455,16 @@ def _policy_id(backend: str) -> str:
 
 
 def clear_probe_cache() -> None:
-    """Drop every cached verdict, so the next probe re-resolves."""
+    """Drop every cached verdict, so the next probe re-resolves.
+
+    Every generation moves with the clear, not only the ids that had an entry: an
+    in-flight probe holds no entry yet, and it is the one whose write would put a
+    pre-clear verdict back.
+    """
     with _cache_lock:
         _cache.clear()
+        for known in list(_probe_epoch):
+            _bump_epoch_locked(known)
 
 
 def _cached(backend: str) -> BackendInstallState | None:
@@ -382,10 +487,17 @@ def probe_backend(backend: str) -> BackendInstallState:
     Never raises. A resolver that fails -- including an id with no probe at all
     -- yields ``UNKNOWN``, because the alternative is telling an operator to
     reinstall a harness whose presence was never actually determined.
+
+    The verdict is CACHED only if nothing evicted this backend while the probe
+    ran; see :data:`_probe_epoch`. The caller always gets the answer its own call
+    resolved, whether or not it was stored.
     """
     cached = _cached(backend)
     if cached is not None:
         return cached
+
+    with _cache_lock:
+        epoch = _epoch_locked(backend)
 
     probe = _PROBES.get(backend)
     if probe is None:
@@ -403,7 +515,13 @@ def probe_backend(backend: str) -> BackendInstallState:
             state = BackendInstallState(backend, _policy_id(backend), UNKNOWN)
 
     with _cache_lock:
-        _cache[backend] = (time.monotonic(), state)
+        # Store only under the generation this call started in. A caller that
+        # raced an eviction still gets its own answer -- it is honest about the
+        # machine it looked at -- but the cache keeps the eviction's meaning, so
+        # the next reader re-resolves instead of being handed a verdict taken
+        # before the install the eviction was announcing.
+        if _probe_epoch.get(backend, 0) == epoch:
+            _cache[backend] = (time.monotonic(), state)
     return state
 
 
@@ -430,6 +548,8 @@ __all__ = [
     "UNKNOWN",
     "BackendInstallState",
     "clear_probe_cache",
+    "forget_probe",
     "probe_backend",
     "probe_backends",
+    "forget_for_recheck",
 ]

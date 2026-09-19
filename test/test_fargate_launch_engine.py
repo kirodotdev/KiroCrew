@@ -10,6 +10,7 @@ otherwise orphan a task from teardown.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import itertools
 import json
@@ -22,6 +23,7 @@ import pytest
 
 from kiro_crew.cloud import fargate, fargate_engine
 from kiro_crew.cloud import launch_job as lj
+from kiro_crew.cloud import sizes
 from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
 from kiro_crew.cloud.fargate import (
@@ -842,6 +844,136 @@ def test_provision_refuses_an_unusable_size(monkeypatch) -> None:
         FargateLaunchEngine(_spec()).provision(
             tag=TAG, size_key="999/999", profile="p", region="us-west-2"
         )
+
+
+@pytest.mark.parametrize("tier_key", sizes.INTERACTIVE_TIER_KEYS)
+def test_an_interactive_tier_key_resolves_to_the_ladders_own_shape(tier_key: str) -> None:
+    """The three EC2 tier keys are accepted here, mapped from ``sizes.py``.
+
+    A caller who never asked for Fargate carries one of these, and
+    ``sizes.DEFAULT_TIER_KEY`` is one of them -- so the key refused by a lane that
+    did not map them is the one a caller gets by not choosing.
+
+    The expectation is DERIVED from the ladder, not written out: a raised ladder
+    must reach this lane, and a second table here would keep asserting the
+    retired shape while agreeing with itself.
+    """
+    tier = sizes.get_tier(tier_key)
+    parsed = fargate_engine._parse_size(tier_key)
+    assert parsed.cpu == str(tier.vcpu * 1024)
+    assert parsed.memory == str(tier.ram_gb * 1024)
+    assert parsed.ephemeral_storage_gib == tier.disk_gb
+
+
+@pytest.mark.parametrize("tier_key", sizes.INTERACTIVE_TIER_KEYS)
+def test_every_tier_shape_is_legal_on_fargates_own_table(tier_key: str) -> None:
+    """Derived numbers run through the same bounds check a hand-written pair does.
+
+    The mapping returns a KEY, so a tier whose shape leaves Fargate's cpu/memory
+    table is refused by name rather than handed to ``RunTask``. This asserts none
+    of the three does today, which is what makes the mapping usable rather than a
+    refusal in a new place.
+    """
+    respelled = fargate_engine._tier_as_pair(tier_key)
+    assert respelled is not None
+    cpu, memory, _gib = respelled.split(fargate_engine.FARGATE_SIZE_SEP)
+    low, high, step = fargate_engine.FARGATE_MEMORY_FOR_CPU[cpu]
+    assert low <= int(memory) <= high
+    assert (int(memory) - low) % step == 0
+
+
+def test_a_non_tier_key_is_left_alone() -> None:
+    """Only the three interactive keys are respelled.
+
+    ``light-x86`` is a real ladder key and deliberately NOT one of them: mapping it
+    would silently pick an architecture the caller did not ask this lane for.
+    """
+    assert fargate_engine._tier_as_pair("light-x86") is None
+    assert fargate_engine._tier_as_pair("1024/2048") is None
+    assert fargate_engine._tier_as_pair("nonsense") is None
+
+
+def test_a_refusal_names_the_key_the_caller_passed() -> None:
+    """Not its respelling, and it lists the tier keys as legal.
+
+    A message naming ``8192/32768/60`` for a caller who typed ``balanced`` sends
+    them looking for a value they never wrote.
+    """
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("nonsense")
+    message = str(raised.value)
+    assert "'nonsense'" in message
+    for tier_key in sizes.INTERACTIVE_TIER_KEYS:
+        assert tier_key in message, f"{tier_key} is accepted but not listed as legal"
+
+
+def test_a_refusal_for_a_tier_names_the_tier_the_caller_passed(monkeypatch) -> None:
+    """Not the pair it was respelled into.
+
+    A tier key cannot fail on today's ladder -- the test above asserts all three
+    are legal -- so the only way to exercise this is to move the ladder, which is
+    a thing that has happened. With a tier whose derived shape leaves Fargate's
+    table, the caller must read back the word they typed: a message naming
+    ``64000/256000/80`` for someone who wrote ``power`` sends them looking for a
+    value they never wrote.
+    """
+    real_get_tier = sizes.get_tier
+
+    def absurd(key: str):
+        tier = real_get_tier(key)
+        # A vCPU count no Fargate cpu size can match, so the respelling is refused.
+        return dataclasses.replace(tier, vcpu=tier.vcpu * 1000)
+
+    monkeypatch.setattr(sizes, "get_tier", absurd)
+
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("power")
+    message = str(raised.value)
+    assert "'power'" in message, f"the refusal must name the caller's key: {message}"
+    respelled = fargate_engine._tier_as_pair("power")
+    assert respelled is not None
+    assert (
+        respelled not in message
+    ), f"the refusal names the respelling {respelled!r}, which the caller never wrote"
+
+
+def test_a_storage_refusal_also_names_the_key_the_caller_passed(monkeypatch) -> None:
+    """Both ephemeral-storage branches, not only the cpu and memory ones.
+
+    The docstring's claim is universal, so every refusal has to carry it. A tier's
+    GiB arrives from the DERIVED respelling, so the out-of-range branch is reached
+    exactly the way the cpu branch is -- by moving the ladder -- and a caller who
+    typed ``power`` must not read back a GiB number they never wrote.
+    """
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("1024/2048/xx")
+    assert "'1024/2048/xx'" in str(raised.value)
+
+    real_get_tier = sizes.get_tier
+
+    def oversized_disk(key: str):
+        tier = real_get_tier(key)
+        # One GiB past Fargate's ceiling. vcpu and ram_gb stay legal, so the
+        # storage branch is the one this reaches.
+        return dataclasses.replace(tier, disk_gb=fargate_engine.EPHEMERAL_STORAGE_MAX_GIB + 1)
+
+    monkeypatch.setattr(sizes, "get_tier", oversized_disk)
+
+    with pytest.raises(ValueError) as raised:
+        fargate_engine._parse_size("power")
+    message = str(raised.value)
+    assert "ephemeral storage" in message, f"a different branch refused: {message}"
+    assert "'power'" in message, f"the refusal must name the caller's key: {message}"
+
+
+@pytest.mark.parametrize("size_key", ["1024/2048", "1024/2048/30"])
+def test_fargates_own_vocabulary_is_unchanged(size_key: str) -> None:
+    """The pair and triple spellings parse exactly as before the tier mapping."""
+    parsed = fargate_engine._parse_size(size_key)
+    parts = size_key.split(fargate_engine.FARGATE_SIZE_SEP)
+    assert parsed.cpu == parts[0]
+    assert parsed.memory == parts[1]
+    assert parsed.ephemeral_storage_gib == (int(parts[2]) if len(parts) == 3 else None)
 
 
 def test_provision_confirms_a_cached_revision_fingerprint(monkeypatch) -> None:

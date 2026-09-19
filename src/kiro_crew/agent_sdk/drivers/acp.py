@@ -52,6 +52,7 @@ __all__ = [
     "claude_components_resolve",
     "derived_agent_permissions",
     "finish_suspended_spawn",
+    "forget_cached_resolution",
     "kiro_cli_resolves",
     "provider_error_client",
     "resolve_pin_spelling",
@@ -432,6 +433,80 @@ def pi_cached_negative() -> bool:
         if not found:
             return True
     return False
+
+
+def forget_cached_resolution(backend: str) -> None:
+    """Drop what the RUNNING gateway cached about *backend*'s components resolving.
+
+    The counterpart to the ``*_cached_negative`` seams above, and the reason those
+    only ever READ. Their rule -- "a dashboard GET must not mutate a global on the
+    spawn path" -- is about the VERB: a GET is replayable and unattributed, so a
+    cache clear hidden inside one is a side effect nobody asked for. An owner-gated,
+    audited POST is the request that did ask, so this function is consistent with
+    those docstrings rather than a reversal of them.
+
+    **Call this ON THE EVENT LOOP.** Not a style preference -- it is the whole of its
+    thread safety. Every reader is loop-resident code with no ``await`` between its
+    check and its read::
+
+        if self.backend not in _self_served_bin_caches:
+            _self_served_bin_caches[self.backend] = await asyncio.to_thread(...)
+        binary, search_path = _self_served_bin_caches[self.backend]
+
+        if _claude_acp_argv_cache is _UNRESOLVED:
+            _claude_acp_argv_cache = await asyncio.to_thread(_resolve_claude_acp_bin)
+        cached_claude_resolution = _claude_acp_argv_cache
+
+    Those pairs are atomic with respect to other loop tasks precisely because nothing
+    awaits between them. From a WORKER THREAD they are not: a pop landing inside the
+    first pair raises ``KeyError`` in a session spawn, and a sentinel written inside
+    the second makes ``isinstance(cached, tuple)`` false, so an installed adapter
+    reports "not found". Both are reachable from a thread and neither is reachable
+    from the loop.
+
+    A resolution already in flight cannot undo this. The sentinel reset is what makes
+    the NEXT spawn resolve; ``bump_resolution_generation`` is what stops an OLDER one
+    from publishing over it. Every publish site captures the generation before it awaits
+    and writes only if it is still current, so a resolve that began before the
+    operator's install completes, uses its own answer for its own session, and does not
+    stamp that stale miss back over the cleared cache.
+
+    Silent for a backend with no cache of its own: kiro resolves per spawn and KAS
+    shares its answer, so there is nothing of theirs to forget.
+    """
+    from kiro_crew.acp import client as _client
+
+    unresolved = getattr(_client, "_UNRESOLVED", None)
+    if unresolved is None:  # pragma: no cover - the sentinel is module-level
+        return
+
+    # FIRST, so a resolution that completes between here and the sentinel reset is
+    # already fenced rather than racing the reset itself.
+    _client.bump_resolution_generation(backend)
+
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_PI,
+    )
+
+    # One backend's caches, named rather than cleared wholesale: re-checking codex
+    # must not make the next claude spawn re-resolve, or the button would cost work
+    # on harnesses the operator did not ask about.
+    sentinel_globals = {
+        ACP_BACKEND_CLAUDE: ("_claude_acp_argv_cache",),
+        ACP_BACKEND_CODEX: ("_codex_acp_argv_cache",),
+        ACP_BACKEND_PI: ("_pi_acp_argv_cache", "_pi_bin_cache"),
+    }.get(backend, ())
+    for name in sentinel_globals:
+        if hasattr(_client, name):
+            setattr(_client, name, unresolved)
+
+    # The self-served harnesses share one dict keyed by backend, so forgetting one
+    # is a key deletion and the others keep their answers.
+    caches = getattr(_client, "_self_served_bin_caches", None)
+    if isinstance(caches, dict):
+        caches.pop(backend, None)
 
 
 def pi_install_command() -> str:

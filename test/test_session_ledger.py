@@ -11,9 +11,11 @@ purge.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -568,9 +570,38 @@ async def test_compose_nudge_body_survives_snapshot_failure(monkeypatch):
     assert await compose_nudge_body("m", None, "chat-14-444") == "m"
 
 
+def _fire_adapter_bodies(src: str) -> dict[str, str]:
+    """Map each ``_fire_*_nudge`` adapter name to its own body text.
+
+    Split rather than matched so a body is attributed to the adapter it belongs
+    to and cannot borrow the next one's lines.
+    """
+    parts = re.split(r"\n    async def (?=_fire_\w+_nudge\()", "\n" + src.lstrip("\n"))[1:]
+    return {p.split("(", 1)[0]: p for p in parts}
+
+
+def _composer_offenders(adapters: dict[str, str]) -> list[str]:
+    """Adapters that never reach ``compose_nudge_body``, named in sorted order.
+
+    An adapter reaches it directly, or by delegating ONE hop to a sibling that
+    reaches it directly. One hop is deliberate: a longer chain would let two
+    adapters forward to each other and satisfy the rule without either ever
+    composing.
+    """
+    direct = {name for name, body in adapters.items() if "compose_nudge_body" in body}
+    offenders = []
+    for name, body in adapters.items():
+        if name in direct:
+            continue
+        if any(f"self.{target}(" in body for target in direct):
+            continue
+        offenders.append(name)
+    return sorted(offenders)
+
+
 def test_gateway_fire_callbacks_use_the_composer():
-    """EVERY fire path must go through compose_nudge_body — reverting a call site
-    to the snapshot-less render_nudge_message drops ledger injection for that
+    """EVERY fire path must reach compose_nudge_body -- reverting a call site to
+    the snapshot-less render_nudge_message drops ledger injection for that
     surface silently.
 
     Enumerated rather than counted. A hardcoded total says "3" until a channel is
@@ -578,23 +609,72 @@ def test_gateway_fire_callbacks_use_the_composer():
     adapter) while a channel that quietly opted itself out could keep the total
     correct by existing. Naming the offenders also tells whoever broke it which
     surface lost its ledger.
-    """
-    import inspect
-    import re
 
+    Reaching the composer counts whether an adapter calls it itself or delegates
+    to a shared fire path that does, because a channel that hands its whole turn
+    to a spine gets the snapshot from the spine. The delegation is resolved ONE
+    hop and only onto a target that calls the composer DIRECTLY, so a chain of
+    adapters forwarding to each other can never satisfy this by passing the
+    obligation around. An adapter that neither composes nor delegates is still an
+    offender, which is what ``test_the_composer_ratchet_is_not_vacuous`` pins.
+    """
     from kiro_crew.slack import gateway
 
     src = inspect.getsource(gateway)
-    # Split on the adapter definitions so each body is attributed to its own name.
-    parts = re.split(r"\n    async def (?=_fire_\w+_nudge\()", src)[1:]
-    adapters = {p.split("(", 1)[0]: p for p in parts}
-    assert adapters, "no _fire_*_nudge adapters found — this pattern went stale"
+    adapters = _fire_adapter_bodies(src)
+    assert adapters, "no _fire_*_nudge adapters found -- this pattern went stale"
 
-    offenders = sorted(name for name, body in adapters.items() if "compose_nudge_body" not in body)
+    offenders = _composer_offenders(adapters)
     assert not offenders, (
-        "these fire adapters do not call compose_nudge_body, so their surface's "
-        f"loops start each cycle without the work-ledger snapshot: {offenders}"
+        "these fire adapters neither call compose_nudge_body nor delegate to a "
+        "fire path that does, so their surface's loops start each cycle without "
+        f"the work-ledger snapshot: {offenders}"
     )
+
+
+def test_the_composer_ratchet_is_not_vacuous():
+    """The allowance above must not let a real opt-out through.
+
+    Three shapes are checked against the same helpers the ratchet uses: an
+    adapter that composes directly passes, one that delegates to a spine which
+    composes passes, and one that does neither is named. The fourth shape is the
+    one the one-hop rule exists for: two adapters that only forward to each other
+    never reach the composer, so both are named rather than excusing each other.
+    """
+    composes = """
+    async def _fire_alpha_nudge(self, loop):
+        body = await compose_nudge_body(loop.message, None, loop.slot_key)
+        return True
+"""
+    spine = """
+    async def _fire_dm_nudge(self, loop, adapter):
+        body = await compose_nudge_body(loop.message, None, loop.slot_key)
+        return True
+"""
+    delegates = """
+    async def _fire_beta_nudge(self, loop):
+        return await self._fire_dm_nudge(loop, _adapter())
+"""
+    opts_out = """
+    async def _fire_gamma_nudge(self, loop):
+        return await self._client.send(render_nudge_message(loop.message))
+"""
+    circular = """
+    async def _fire_delta_nudge(self, loop):
+        return await self._fire_epsilon_nudge(loop)
+
+    async def _fire_epsilon_nudge(self, loop):
+        return await self._fire_delta_nudge(loop)
+"""
+
+    assert _composer_offenders(_fire_adapter_bodies(composes + spine + delegates)) == []
+    assert _composer_offenders(_fire_adapter_bodies(composes + spine + opts_out)) == [
+        "_fire_gamma_nudge"
+    ]
+    assert _composer_offenders(_fire_adapter_bodies(spine + circular)) == [
+        "_fire_delta_nudge",
+        "_fire_epsilon_nudge",
+    ]
 
 
 # ── HTTP routes ───────────────────────────────────────────────────────────

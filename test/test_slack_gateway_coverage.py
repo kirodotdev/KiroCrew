@@ -2265,3 +2265,250 @@ def test_event_loop_is_not_required_for_module_helpers():
     with pytest.raises(RuntimeError):
         asyncio.get_running_loop()
     assert gw._digest_chunk_size() >= 1
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# _fire_webex_nudge  (adapter over the shared _fire_dm_nudge ladder)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+_WKEY = "webex:kirocrew:direct:a@b.test"
+
+
+def _webex_transport(
+    *,
+    authorized: bool = True,
+    current_key: str | None = None,
+    origin_room: str | None = None,
+) -> MagicMock:
+    """A Webex transport double exposing the surface the fire path uses.
+
+    Note where authorization lives: Webex holds its allow-list on the TRANSPORT,
+    where Discord holds it on the dispatcher. That difference is the whole reason
+    the adapter supplies ``authorize`` instead of the ladder calling one of them.
+    """
+    dispatcher = MagicMock()
+    dispatcher.current_session_key = MagicMock(
+        return_value=current_key if current_key is not None else _WKEY
+    )
+    dispatcher.handle_message = AsyncMock(return_value=None)
+    sessions = MagicMock()
+    sessions.is_busy = MagicMock(return_value=False)
+    sessions.get_origin_link = MagicMock(
+        return_value=SimpleNamespace(channel_id=origin_room) if origin_room else None
+    )
+    dispatcher.sessions = sessions
+    transport = MagicMock()
+    transport.dispatcher = dispatcher
+    transport.is_authorized = MagicMock(return_value=authorized)
+    transport.resolve_conversation = AsyncMock(return_value="a@b.test")
+    return transport
+
+
+def _webex_orchestrator(transport: MagicMock | None) -> Any:
+    orch = _make_orchestrator()
+    ds = _mock_dashboard_state()
+    ds.channel_transports = {"webex": transport} if transport is not None else {}
+    orch.dashboard_state = ds
+    orch.autonudge_svc = MagicMock()
+    orch.autonudge_svc.remove = AsyncMock()
+    return orch
+
+
+class TestFireWebexNudge:
+    """Synthetic-injection path for a Webex DM babysit loop."""
+
+    @pytest.mark.asyncio
+    async def test_no_transport_skips_without_removing_loop(self):
+        """Transport not running is transient: skip, but keep the loop armed."""
+        orch = _webex_orchestrator(None)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is False
+        orch.autonudge_svc.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unsupported_key_shape_retires_loop(self):
+        """A key that is not ``webex:{agent}:direct:{email}`` can never route."""
+        orch = _webex_orchestrator(_webex_transport())
+        assert await orch._fire_webex_nudge(_loop("webex:kirocrew:space")) is False
+        orch.autonudge_svc.remove.assert_awaited_once_with("loop-1")
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_email_retires_loop(self):
+        """The allow-list is re-checked at fire time because it can shrink."""
+        transport = _webex_transport(authorized=False)
+        orch = _webex_orchestrator(transport)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is False
+        transport.is_authorized.assert_called_once_with("a@b.test")
+        orch.autonudge_svc.remove.assert_awaited_once_with("loop-1")
+        transport.dispatcher.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rotated_session_retires_loop(self):
+        """Firing into a rotated key would run without the loop's context."""
+        transport = _webex_transport(current_key="webex:kirocrew:direct:a@b.test:gen2")
+        orch = _webex_orchestrator(transport)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is False
+        orch.autonudge_svc.remove.assert_awaited_once_with("loop-1")
+        transport.dispatcher.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_busy_session_skips_without_removing_loop(self):
+        """A human's own turn is running, so the cycle is skipped, not queued."""
+        transport = _webex_transport()
+        transport.dispatcher.sessions.is_busy = MagicMock(return_value=True)
+        orch = _webex_orchestrator(transport)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is False
+        orch.autonudge_svc.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delivers_a_direct_room_inbound_without_command_parsing(self):
+        transport = _webex_transport()
+        orch = _webex_orchestrator(transport)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is True
+        transport.dispatcher.handle_message.assert_awaited_once()
+        inbound = transport.dispatcher.handle_message.await_args.args[0]
+        kwargs = transport.dispatcher.handle_message.await_args.kwargs
+        assert kwargs == {"interpret_commands": False}
+        assert inbound.person_email == "a@b.test"
+        assert inbound.text.startswith("[auto-nudge cycle 1]")
+        from kiro_crew.webex.transport import ROOM_DIRECT
+
+        assert inbound.room_type == ROOM_DIRECT
+
+    @pytest.mark.asyncio
+    async def test_persisted_origin_link_wins_over_resolve_conversation(self):
+        """The bind is matched by VALUE, so the nudge must reuse its spelling.
+
+        ``resolve_conversation`` answers with the EMAIL, which delivers but is a
+        second spelling of the same room. Writing that spelling would make a
+        later unlink miss the binding, so a persisted link wins.
+        """
+        transport = _webex_transport(origin_room="ROOM_FROM_LINK")
+        orch = _webex_orchestrator(transport)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is True
+        inbound = transport.dispatcher.handle_message.await_args.args[0]
+        assert inbound.room_id == "ROOM_FROM_LINK"
+        transport.resolve_conversation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_email_is_the_first_turn_fallback_when_no_link_exists(self):
+        """With no binding yet there is nothing to disagree with."""
+        transport = _webex_transport(origin_room=None)
+        orch = _webex_orchestrator(transport)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is True
+        inbound = transport.dispatcher.handle_message.await_args.args[0]
+        assert inbound.room_id == "a@b.test"
+        transport.resolve_conversation.assert_awaited_once_with("a@b.test")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_failure_reports_false_and_keeps_the_loop(self):
+        transport = _webex_transport()
+        transport.dispatcher.handle_message = AsyncMock(side_effect=RuntimeError("boom"))
+        orch = _webex_orchestrator(transport)
+        assert await orch._fire_webex_nudge(_loop(_WKEY)) is False
+        orch.autonudge_svc.remove.assert_not_called()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# _fire_dm_nudge  (the shared ladder itself)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestDmFireSpineIsReusable:
+    """A dispatcher-routed channel joins by supplying an adapter, not a ladder.
+
+    This is the claim the extraction makes, so it is tested directly rather than
+    argued: a channel the gateway has never heard of fires correctly, and
+    inherits every guard, with no code beyond the five adapter members.
+    """
+
+    @staticmethod
+    def _adapter() -> Any:
+        return gw._DmDispatchAdapter(
+            channel="zulip",
+            supports_monitor=False,
+            authorize=lambda transport, _dispatcher, principal: bool(
+                transport.is_authorized(principal)
+            ),
+            resolve_conversation=(
+                lambda transport, _sessions, _key, principal: transport.resolve_conversation(
+                    principal
+                )
+            ),
+            build_inbound=lambda principal, conversation_id, text: SimpleNamespace(
+                who=principal, where=conversation_id, text=text
+            ),
+        )
+
+    @staticmethod
+    def _orchestrator(transport: MagicMock | None) -> Any:
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        ds.channel_transports = {"zulip": transport} if transport is not None else {}
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.remove = AsyncMock()
+        return orch
+
+    @staticmethod
+    def _transport(*, authorized: bool = True, current_key: str | None = None) -> MagicMock:
+        key = "zulip:kirocrew:direct:z1"
+        dispatcher = MagicMock()
+        dispatcher.current_session_key = MagicMock(
+            return_value=current_key if current_key is not None else key
+        )
+        dispatcher.handle_message = AsyncMock(return_value=None)
+        sessions = MagicMock()
+        sessions.is_busy = MagicMock(return_value=False)
+        dispatcher.sessions = sessions
+        transport = MagicMock()
+        transport.dispatcher = dispatcher
+        transport.is_authorized = MagicMock(return_value=authorized)
+        transport.resolve_conversation = AsyncMock(return_value="STREAM1")
+        return transport
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_channel_delivers_with_only_an_adapter(self):
+        transport = self._transport()
+        orch = self._orchestrator(transport)
+        loop = _loop("zulip:kirocrew:direct:z1")
+        assert await orch._fire_dm_nudge(loop, self._adapter()) is True
+        transport.dispatcher.handle_message.assert_awaited_once()
+        inbound = transport.dispatcher.handle_message.await_args.args[0]
+        assert (inbound.who, inbound.where) == ("z1", "STREAM1")
+        assert inbound.text.startswith("[auto-nudge cycle 1]")
+
+    @pytest.mark.asyncio
+    async def test_the_new_channel_inherits_the_authorization_guard(self):
+        transport = self._transport(authorized=False)
+        orch = self._orchestrator(transport)
+        loop = _loop("zulip:kirocrew:direct:z1")
+        assert await orch._fire_dm_nudge(loop, self._adapter()) is False
+        orch.autonudge_svc.remove.assert_awaited_once_with("loop-1")
+        transport.dispatcher.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_new_channel_inherits_the_generation_guard(self):
+        transport = self._transport(current_key="zulip:kirocrew:direct:z1:gen2")
+        orch = self._orchestrator(transport)
+        loop = _loop("zulip:kirocrew:direct:z1")
+        assert await orch._fire_dm_nudge(loop, self._adapter()) is False
+        orch.autonudge_svc.remove.assert_awaited_once_with("loop-1")
+        transport.dispatcher.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_monitor_wake_on_a_monitorless_channel_delivers_nothing(self):
+        """``supports_monitor=False`` refuses a wake instead of half-delivering it.
+
+        A channel with no structured dispatch cannot report whether the wake
+        landed. Delivering first and answering UNAVAILABLE afterwards would show
+        the text to the reader while the controller counts the wake as
+        undelivered and sends it again, so the refusal comes first.
+        """
+        transport = self._transport()
+        orch = self._orchestrator(transport)
+        loop = _loop("zulip:kirocrew:direct:z1")
+        result = await orch._fire_dm_nudge(loop, self._adapter(), "wake up")
+        assert result is monitor_models.MonitorDispatchResult.UNAVAILABLE
+        transport.dispatcher.handle_message.assert_not_awaited()
+        orch.autonudge_svc.remove.assert_not_called()

@@ -40,7 +40,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, cwd, `resumed` |
+| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, cwd, `resumed`; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts, credits, `duration_ms`, `stop_reason`, model, provider -- or `stop_reason: "failed"` with `error` and no usage |
@@ -344,8 +344,18 @@ the writer rather than racing it.
 **The residual:** a batch a wedged writer still holds cannot be finished from the
 shutdown thread, and the entries buffered behind it are left alone rather than written
 out of order. A False return means exactly that -- some entries did not land and the
-log's tail is short by them -- and the warning names the buffered count and whether a
-batch was in flight, so the gap is attributable rather than silent.
+log's tail is short by them -- and the warning names the buffered count, how many
+sessions are still owed a `write/dropped` marker, and whether a batch was in flight, so
+the gap is attributable rather than silent.
+
+The owed-marker count reads both places a session's loss debt lives. It sits in the
+pending-loss map while no marker job exists for that session; once one is built the debt
+travels INSIDE the job, because building the marker takes the debt out of the map to
+serialize it and a failed append hands the job back to the retained batch. A marker
+waiting to be retried is therefore owed while the map is empty, and that is a state a
+bounded shutdown reaches on its own schedule: the retry budget is spent only if enough
+paced attempts fit inside the caller's timeout, which is a property of the host. Counting
+the map alone reports nothing owed at exactly the moment a marker is owed.
 
 The drain runs on EVERY gateway mode, not only where a dashboard exists. The dashboard
 registers a cleanup hook, but a mode that builds no dashboard app never runs one and the
@@ -470,6 +480,30 @@ sites hold only a slot key or a transcript key.**
 |---|---|
 | `background/completed` | Every background model call runs on the shared `_bg` session. The session the work is FOR is known by slot or transcript key, so there is nothing to key the entry by. |
 | `subagent/*` | Spawn holds `parent_session_key`, a slot key; the child's own ACP session id is assigned later, so a spawn-time pointer into the child's log cannot exist yet; and subagent runs have no token or credit accounting to record. |
+
+The one lineage edge this log DOES carry is the `session_create` one, and it is
+written from the side that escapes the problem above. A created session's
+`session/opened` carries `parent {slot, sid?}`: the creator's key is stamped on
+the slot at mint (`_created_by`, `session_create`'s own attribution), so it is
+settled before the child's first turn, and the creator's ACP session id is
+FROZEN at that same mint (`_created_by_sid`), read off the live caller handle
+`session_create` just authorized -- NOT re-read at the child's first turn. A
+creator slot can be closed and replaced between mint and that turn, and a
+replacement is a distinct handle with its own session id; reading the id live at
+emit would then cite the replacement's crew log and corrupt this child's immutable
+`session/opened` lineage with no recovery. Freezing at mint captures the id that
+was live when the child was made. Both halves are used only when the slot carries
+the process-local witness `session_create` sets at mint (`_lineage_minted`,
+never persisted): `_created_by` is also restored from transcript metadata for the
+ownership boundary, and that file is editable by an agent's file tools, so a
+restored value must never become the gateway-authored lineage this fenced log
+exists to protect -- a child whose gateway restarted between mint and its first
+turn writes no `parent`. A
+person's own tab and a fork carry no `parent`, so a fold distinguishes "nobody
+created this" from "creator unknown" only for sessions minted in the live process. The tree of sessions is therefore a fold
+over each session crew log's `session/opened`, keyed by SLOT (the creator's `sid`
+changes when its slot recycles, so it is a citation of the unit that was live,
+not the tree key).
 
 So the next change is not more emitters. It is one slot-key-to-ACP-session-id
 resolver, which unblocks both of these and the approvals alongside them, where

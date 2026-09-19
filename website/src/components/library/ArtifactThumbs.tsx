@@ -12,6 +12,7 @@ import { THEME_VAR_NAMES, buildSrcdoc } from '../../lib/widgetSrcdoc'
 import MarkdownRenderer from '../MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
+import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
 
@@ -100,16 +101,23 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
   // permanent if a further re-mint arrives first. Same reasoning as
   // ArtifactBody's `everLoaded`; keep the two in step.
   const [everLoaded, setEverLoaded] = useState(false)
+  // A mint can succeed while the frame never fires `load`, leaving the thumb at
+  // opacity 0 forever. This is a grid cell, so the recovery affordance is NOT a
+  // retry button (opening the artifact re-mints — see the failed branch below);
+  // it is simply revealing the frame once the silence window elapses so a
+  // blank-but-present preview is not trapped invisible across the whole grid.
+  // Same watch WidgetFrame / ArtifactBody use; keep the four in step.
+  const { silent: loadSilent, onLoaded: onFrameLoaded } = useSilentLoadWatch(blobUrl)
   // The load listener is bound on the ref rather than via an `onLoad` prop: the
   // a11y lint rule counts any handler prop on a non-interactive element as an
   // interaction, and the repo's eslint ratchet has no room for a new warning.
   useEffect(() => {
     const el = iframeRef.current
     if (!el || !blobUrl) return
-    const onLoad = () => setEverLoaded(true)
+    const onLoad = () => { setEverLoaded(true); onFrameLoaded() }
     el.addEventListener('load', onLoad)
     return () => el.removeEventListener('load', onLoad)
-  }, [blobUrl])
+  }, [blobUrl, onFrameLoaded])
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -187,7 +195,7 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
             // paint its own WHITE canvas over this element's background, which
             // across a grid of cards reads as the page flashing.
             colorScheme: theme,
-            opacity: everLoaded ? 1 : 0,
+            opacity: everLoaded || loadSilent ? 1 : 0,
           }}
         />
       ) : failed ? (

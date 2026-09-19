@@ -90,11 +90,39 @@ describe('shortcutRegistry — table invariants', () => {
     expect(resolveShortcut('close-chat', {}, 'other')).toEqual({ id: 'close-chat', primary: { key: 'w', mod: true }, aliases: [{ key: 'w', alt: true, shift: true }] })
     expect(resolveShortcut('shortcuts-modal', {}, 'mac').primary).toEqual({ key: '/', mod: true })
     expect(resolveShortcut('shortcuts-modal', {}, 'mac').aliases).toEqual([{ key: 'k', alt: true }])
-    expect(resolveShortcut('open-settings', {}, 'other').primary).toEqual({ key: ',', mod: true })
-    expect(resolveShortcut('open-settings', {}, 'other').aliases).toEqual([{ key: ',', alt: true }])
+    // Open settings: ⌘, on macOS (with an Option+, alias), but DELIBERATELY
+    // Alt+, — not the Ctrl+, conventional default — on Windows/Linux (#783,
+    // regression-fixed in #9824: Ctrl+, is a CJK-IME comma and blocked input).
+    expect(resolveShortcut('open-settings', {}, 'mac').primary).toEqual({ key: ',', mod: true })
+    expect(resolveShortcut('open-settings', {}, 'mac').aliases).toEqual([{ key: ',', alt: true }])
+    expect(resolveShortcut('open-settings', {}, 'other').primary).toEqual({ key: ',', alt: true })
+    expect(resolveShortcut('open-settings', {}, 'other').aliases).toEqual([])
     expect(shortcutEntry('new-chat')?.browserReserved).toBe(true)
     expect(shortcutEntry('close-chat')?.browserReserved).toBe(true)
     expect(shortcutEntry('shortcuts-modal')?.browserReserved).toBeUndefined()
+  })
+
+  it('open-settings on Windows/Linux is Alt+, never Ctrl+, — Ctrl+, is a CJK-IME comma (#783, #9824)', () => {
+    // REGRESSION PIN. #9555 flipped this to the conventional Ctrl+, default; on
+    // Windows/Linux Ctrl+, is how a Chinese IME types a comma, so it swallowed
+    // all comma input (#9824). PR #783 deliberately kept Windows/Linux on Alt+,
+    // and nothing claims Ctrl+, there — electron/app-menu.js only DISPLAYS the
+    // Alt+, caption on File > Settings…, so the key stays free for the IME. This
+    // chord also fires ahead of
+    // the global enable/disable gate, so a wrong default cannot be worked around
+    // by turning shortcuts off. A prose comment alone is what failed here — this
+    // assertion is the guarantee. Do not "restore" the Ctrl+, convention here.
+    const other = resolveShortcut('open-settings', {}, 'other')
+    expect(other.primary).toEqual({ key: ',', alt: true })
+    expect(other.primary).not.toEqual({ key: ',', mod: true }) // never Ctrl+, on Windows/Linux
+    // Ctrl+, must not be matched on Windows/Linux; Alt+, must be.
+    const r = resolveShortcuts({}, 'other')
+    expect(matchShortcutEvent(ev('Comma', { ctrlKey: true }), r, 'other')).toBeNull()
+    expect(matchShortcutEvent(ev('Comma', { altKey: true }), r, 'other')).toBe('open-settings')
+    // macOS is unaffected: ⌘, stays the primary, Option+, an accepted alias.
+    const macR = resolveShortcut('open-settings', {}, 'mac')
+    expect(macR.primary).toEqual({ key: ',', mod: true })
+    expect(macR.aliases).toEqual([{ key: ',', alt: true }])
   })
 
   it('keeps the literal-Ctrl chords literal: ⌃G on every platform, ⌃1–9 on macOS (Alt+1–9 elsewhere)', () => {
@@ -171,7 +199,10 @@ describe('shortcutRegistry — matchShortcutEvent', () => {
     expect(matchShortcutEvent(ev('KeyN', { altKey: true, shiftKey: true }), r, 'other')).toBe('new-chat')
     expect(matchShortcutEvent(ev('Slash', { ctrlKey: true }), r, 'other')).toBe('shortcuts-modal')
     expect(matchShortcutEvent(ev('KeyK', { altKey: true }), r, 'other')).toBe('shortcuts-modal')
-    expect(matchShortcutEvent(ev('Comma', { ctrlKey: true }), r, 'other')).toBe('open-settings')
+    // Open settings on Windows/Linux is Alt+, (#783/#9824): Ctrl+, must NOT fire,
+    // because Ctrl+, is how a CJK IME types a comma.
+    expect(matchShortcutEvent(ev('Comma', { altKey: true }), r, 'other')).toBe('open-settings')
+    expect(matchShortcutEvent(ev('Comma', { ctrlKey: true }), r, 'other')).toBeNull()
     // Families: Alt+1 (chat jump), ⌘[ (bracket cycle), Alt+C (panel nav), Ctrl+1 (instance)
     expect(matchShortcutEvent(ev('Digit1', { altKey: true }), r, 'other')).toBeNull()
     expect(matchShortcutEvent(ev('BracketLeft', { ctrlKey: true }), r, 'other')).toBeNull()

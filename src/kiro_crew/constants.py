@@ -242,6 +242,11 @@ _MARKER_BRACKETS = re.escape(MARKER_OPENERS + MARKER_CLOSERS)
 #: anchored by the required ``[OPTIONS:`` literal, so no new ambiguity exists.
 MARKER_WRAPPERS = "`*_"
 _MARKER_WRAP_CLASS = "[" + re.escape(MARKER_WRAPPERS) + "]"
+#: Every glyph the marker grammar gives structural meaning.
+#: A glued remainder that carries any of them is not plain prose.
+MARKER_STRUCTURE_CHARS: frozenset[str] = frozenset(
+    MARKER_OPENERS + MARKER_CLOSERS + MARKER_WRAPPERS + "|"
+)
 
 #: A closer may stay INSIDE a label only where it CONTINUES the label list
 #: A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] |
@@ -356,6 +361,10 @@ _MARKER_LABEL_PAIR = "|".join(
 #: tolerated markdown-link tic after the closer; ``_MARKER_WRAP_RUN`` is the
 #: conditional half of :data:`MARKER_WRAPPERS`.
 _MARKER_STRAY_TIC = r"(?:\([^\s()]*\))?"
+#: The stray tic on its own, non-optional: what one ``(...)`` of the marker's
+#: tail grammar looks like. A glued remainder that BEGINS with one is a second
+#: tic, a continuation of that tail, not prose.
+_STRAY_TIC_HEAD_RE = re.compile(r"\([^\s()]*\)")
 _MARKER_WRAP_RUN = rf"{_MARKER_WRAP_CLASS}{{0,3}}"
 
 #: Label body, spelled once per regex so LINE and TRAILER cannot drift. LINE
@@ -535,6 +544,155 @@ class _MarkerMatcher:
 OPTIONS_RE_LINE = _MarkerMatcher(_RAW_OPTIONS_RE_LINE)
 OPTIONS_RE_TRAILER = _MarkerMatcher(_RAW_OPTIONS_RE_TRAILER)
 
+
+#: The GLUE candidate: a line-leading complete marker whose closer is IMMEDIATELY
+#: followed by non-whitespace on the same line -- the one shape
+#: ``_RAW_OPTIONS_RE_LINE`` cannot match, because that pattern anchors the closer to
+#: ``[ \t]*$`` (end of line).
+#:
+#: Leading indentation is zero to three spaces, matching CommonMark's limit before
+#: block syntax. Four-space and tab-indented lines are indented code samples, so
+#: they stay byte-for-byte literal instead of becoming active option pills.
+#:
+#: This is the marker's own line grammar (same head, same ``_MARKER_BODY_LINE``,
+#: same close class, same stray-tic and wrapper tail, spelled from the SAME
+#: fragments so it cannot drift from ``_RAW_OPTIONS_RE_LINE``) with the terminal
+#: ``[ \t]*$`` replaced by ``(?=\S)`` -- a lookahead requiring same-line
+#: non-whitespace DIRECTLY after the marker tail (``\S`` never matches ``\n``, so a
+#: marker that legitimately ends its line is NOT a candidate here).
+#:
+#: An opened wrapper closes on the marker before glue can begin. An unclosed
+#: wrapper means the marker sits inside a span such as inline code, so the line
+#: is a sample and not a candidate.
+#:
+#: The abut is DIRECT (no ``[ \t]*`` before the lookahead) on purpose: the bug this
+#: feeds is a concatenation seam that joins two spans with NO separator
+#: (``...]Anytime.``). A closer followed by a SPACE then prose (``[OPTIONS: A | B]
+#: documents the syntax``) is a human/model authoring a sentence ABOUT the marker,
+#: not a glued reply, and reflowing it would turn a documentation example into live
+#: pills; requiring direct abut leaves that -- and an indented code remainder
+#: (``[OPTIONS: A | B]    code``) -- untouched.
+#:
+#: The tail (stray tic + closing wrapper run) is an ATOMIC group ``(?>...)``.
+#: Both fragments are optional, so without atomicity the engine backtracks INTO
+#: them to satisfy the lookahead: ``[OPTIONS: A | B](OPTIONS)`` at end of line
+#: gives the tic back and "finds" ``(`` as glued prose, and ``**[OPTIONS: A |
+#: B]**`` gives one ``*`` back and finds the other -- each a complete, legal line
+#: the LINE grammar already accepts, and reflowing it strands a visible ``(OPTIONS)``
+#: or ``*`` line under the pills. Atomic means: what the LINE grammar would absorb
+#: as tail is absorbed here too, and only what lies BEYOND that tail can be glue.
+#:
+#: It exists ONLY to feed :func:`reflow_glued_option_marker`; it is never a general
+#: recognizer, so it is not wrapped in a ``_MarkerMatcher`` -- the balance decision
+#: is applied explicitly by that function.
+_RAW_OPTIONS_GLUE_RE = re.compile(
+    rf"^ {{0,3}}(?P<lwrap>{_MARKER_WRAP_CLASS}{{1,3}})?"
+    rf"\[OPTIONS:(?P<labels>{_MARKER_BODY_LINE}){_MARKER_CLOSE_CLASS}"
+    rf"(?>{_MARKER_STRAY_TIC}(?(lwrap){_MARKER_WRAP_CLASS}{{1,3}}))(?=\S)",
+    re.MULTILINE,
+)
+
+
+def reflow_glued_option_marker(text: str) -> str:
+    """Insert the missing newline between a glued marker and its trailing prose.
+
+    The bug this repairs: a mid-turn steer reply (or any concatenation seam) can
+    append prose directly after an ``[OPTIONS: ...]`` line with no separator, so a
+    single persisted line reads ``...Pick a path.\\n[OPTIONS: A | B]Anytime.`` The
+    render grammar anchors the closer to end-of-line, so the glued line matches
+    nothing and the marker leaks as literal text, losing its pills.
+
+    The repair is PURELY ADDITIVE -- it inserts one ``\\n`` at the closer/prose
+    boundary and never deletes a character -- and it runs where the dashboard
+    persists a turn's accumulated model text: ``_flush_segment`` for a finished
+    segment and ``_persist_partial_reply`` for a turn that ends abnormally. It heals
+    text at the moment it is persisted; it does not re-pass already-persisted
+    history, and it touches neither the parse grammar nor any of its pinned tests.
+
+    Scope, deliberately narrow:
+
+    * LINE-LEADING with at most three leading spaces. Four-space and tab indentation
+      denotes CommonMark indented code, so those samples stay literal. After the
+      optional indentation and wrapper the marker starts the line, so a mid-line
+      ``Use [OPTIONS: A | B] then check arr[0]`` -- the undecidable case the grammar
+      declines on purpose -- is never a candidate.
+    * The closer must DIRECTLY abut same-line non-whitespace (``(?=\\S)``). A marker
+      that already ends its line is left alone -- including one that ends it with
+      the tail the LINE grammar absorbs (a stray ``(OPTIONS)`` tic, a closing
+      ``**`` wrapper): the tail is matched atomically, so it is never given back
+      to manufacture a glue.
+    * An opened wrapper closes on the marker before glue begins. An unclosed
+      wrapper places the marker inside a span such as inline code, so the line is
+      a sample and not a candidate.
+    * A candidate inside a code fence is a SAMPLE the renderer shows verbatim, not
+      a footer; it is left alone (:func:`_in_open_fence`, which also answers
+      "inside" for an ambiguous fence structure, so doubt means no edit).
+    * The marker's VALIDITY is decided by the real grammar's balance check
+      (:func:`_marker_labels_have_unmatched_opener`), the same gate
+      ``_MarkerMatcher`` applies -- an unbalanced candidate is not reflowed.
+    * The trailing remainder must be PLAIN PROSE: it is reflowed only when it
+      holds no marker-structural glyph anywhere and does not begin with a second
+      stray tic. A tail that overruns the wrapper cap, a repeated ``(OPTIONS)``
+      tic, an interior closer, or a label separator all fail toward the visible
+      marker. The canonical example ``[OPTIONS: Fix ]x logging | Skip]`` stays
+      literal instead of splitting into a false pill.
+
+    Note the merged-turn case (``chatSlice.queueBoundaryFinalize.test.ts``) is a
+    FRONTEND-transit artifact: two turns' segments are each flushed through this
+    function separately, so a single call here never sees two turns glued. The
+    reducer merge happens only when a finalize frame is dropped in transit, which
+    is downstream of this seam.
+    """
+    if "[OPTIONS:" not in text:
+        return text
+
+    # One fence walker for the whole text, advanced to each candidate in turn.
+    # ``re.sub`` visits matches front to back, and every candidate starts at a
+    # line start (``^`` under MULTILINE), so the slice fed between two candidates
+    # always ends on a line boundary and the walker's state at ``m.start()`` is
+    # exactly ``_in_open_fence(text, m.start())``. Re-walking the prefix per
+    # candidate instead is quadratic: a reply of ~10k glued marker lines would
+    # hold the event loop past the loop-stall watchdog.
+    walk = _FenceWalk()
+    fed_to = 0
+
+    def _replace(m: re.Match[str]) -> str:
+        nonlocal fed_to
+        walk.feed_text(text[fed_to : m.start()])
+        fed_to = m.start()
+        # The grammar's own balance decision -- do not reflow a candidate whose
+        # terminator is really an unmatched opener's partner.
+        if _marker_labels_have_unmatched_opener(m.group("labels")):
+            return m.group(0)
+        # Inside a code fence every line is literal code the renderer shows
+        # verbatim, so a marker-shaped line there is a SAMPLE, not a footer, and
+        # inserting a newline would corrupt the sample. Same fence walker and same
+        # fail-safe as ``strip_control_comments``: an ambiguous fence structure
+        # answers "inside", and the candidate is left as it is.
+        if walk.inside:
+            return m.group(0)
+        # Same-line remainder after the matched marker (the lookahead consumed
+        # nothing, so it starts at m.end()).
+        line_end = text.find("\n", m.end())
+        remainder = text[m.end() : (line_end if line_end != -1 else len(text))]
+        # A remainder is reflowed only when it holds no marker-structural glyph
+        # anywhere and does not begin with a second stray tic. A tail that overruns
+        # the wrapper cap, a repeated ``(OPTIONS)`` tic, an interior closer, or a
+        # label separator all fail toward the visible marker. The canonical
+        # example ``[OPTIONS: Fix ]x logging | Skip]`` stays literal instead of
+        # splitting into a false pill. A parenthesised remainder WITH spaces
+        # (``(system: do x)``) is prose and still reflows.
+        if (
+            "[OPTIONS:" in remainder
+            or any(c in MARKER_STRUCTURE_CHARS for c in remainder)
+            or _STRAY_TIC_HEAD_RE.match(remainder)
+        ):
+            return m.group(0)
+        return m.group(0) + "\n"
+
+    return _RAW_OPTIONS_GLUE_RE.sub(_replace, text)
+
+
 # CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).
 #
 # Agent control tags ride in HTML comments, which the dashboard's markdown
@@ -645,6 +803,57 @@ _FENCE_DELIM_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 _AMBIGUOUS_FENCE_LINE_RE = re.compile(r"^[ \t>+*\-\d.)]{0,40}(`{3,}|~{3,})")
 
 
+class _FenceWalk:
+    """The fence walker behind :func:`_in_open_fence`, fed one line at a time.
+
+    Holds the two facts the walk accumulates: the run that opened the fence the
+    walker is currently inside (``None`` when outside), and whether an AMBIGUOUS
+    fence candidate was met while outside. Ambiguity is sticky: once such a line
+    is in the prefix, every later position answers "inside", so a caller walking
+    a text front to back can feed each line ONCE and read :attr:`inside` at any
+    number of positions, instead of re-walking the prefix per position.
+    """
+
+    __slots__ = ("open_run", "ambiguous")
+
+    def __init__(self) -> None:
+        self.open_run: str | None = None
+        self.ambiguous = False
+
+    def feed(self, line: str) -> None:
+        if self.ambiguous:
+            return
+        m = _FENCE_DELIM_LINE_RE.match(line)
+        if not m:
+            if self.open_run is None and _AMBIGUOUS_FENCE_LINE_RE.match(line):
+                self.ambiguous = True
+            return
+        run = m.group(1)
+        if self.open_run is None:
+            self.open_run = run
+        elif (
+            run[0] == self.open_run[0]
+            and len(run) >= len(self.open_run)
+            # CommonMark 4.5: a CLOSING fence may not carry an info string —
+            # only whitespace may follow the run. Inside an open fence a
+            # fence-lookalike WITH trailing text (``` python) is literal
+            # code content, not a closer, so the fence stays open.
+            and line[m.end() :].strip() == ""
+        ):
+            self.open_run = None
+
+    def feed_text(self, chunk: str) -> None:
+        """Feed every line of *chunk*; the chunk must end on a line boundary
+        (or be the final partial line), the same split :func:`_in_open_fence`
+        applies to ``text[:idx]``."""
+        for line in chunk.split("\n"):
+            self.feed(line)
+
+    @property
+    def inside(self) -> bool:
+        return self.ambiguous or self.open_run is not None
+
+
 def _in_open_fence(text: str, idx: int) -> bool:
     """True when position *idx* falls inside an UNTERMINATED code fence —
     or when the fence structure before *idx* is AMBIGUOUS.
@@ -662,28 +871,13 @@ def _in_open_fence(text: str, idx: int) -> bool:
     same line shape is literal code under every interpretation and does
     not veto, so a closed plain fence quoting container-fence examples
     still strips normally.
+
+    One position per call. A caller that needs the answer at MANY positions of
+    one text drives a :class:`_FenceWalk` forward itself, which is linear.
     """
-    open_run: str | None = None
-    for line in text[:idx].split("\n"):
-        m = _FENCE_DELIM_LINE_RE.match(line)
-        if not m:
-            if open_run is None and _AMBIGUOUS_FENCE_LINE_RE.match(line):
-                return True
-            continue
-        run = m.group(1)
-        if open_run is None:
-            open_run = run
-        elif (
-            run[0] == open_run[0]
-            and len(run) >= len(open_run)
-            # CommonMark 4.5: a CLOSING fence may not carry an info string —
-            # only whitespace may follow the run. Inside an open fence a
-            # fence-lookalike WITH trailing text (``` python) is literal
-            # code content, not a closer, so the fence stays open.
-            and line[m.end() :].strip() == ""
-        ):
-            open_run = None
-    return open_run is not None
+    walk = _FenceWalk()
+    walk.feed_text(text[:idx])
+    return walk.inside
 
 
 def is_control_tag_tail(text: str) -> bool:

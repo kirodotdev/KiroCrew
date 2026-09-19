@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight, clampFrameHeight } from '../utils/widgetHeights'
-import { Maximize2, Minimize2, ExternalLink, Download, Star, RotateCw } from 'lucide-react'
+import { Maximize2, Minimize2, ExternalLink, Download, Star, RotateCw, Eye } from 'lucide-react'
 import { Btn, IconButton, IconButtonGroup } from './ui'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../hooks/useNearViewport'
 
 // Upper bound on the text a single widget action may pre-fill into the
@@ -238,6 +239,13 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   // already rendered — and permanent if a further rebuild lands first. Same
   // reasoning as ArtifactBody's `everLoaded`; keep the two in step.
   const [iframeLoaded, setIframeLoaded] = useState(false)
+  // A mint can succeed (blobUrl in hand) while the frame never fires `load` —
+  // an engine that navigates but never rasterizes. Without a watch the frame
+  // stays at opacity 0 forever with no notice. `silent` arms the same recovery
+  // affordance mintFailed uses; the reveal below also un-hides the frame so a
+  // slow-but-eventual document is never trapped invisible. Same affordance
+  // ArtifactBody carries; keep the four in step.
+  const { silent: loadSilent, onLoaded: onFrameLoaded } = useSilentLoadWatch(blobUrl)
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -574,6 +582,37 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         </Btn>
       </div>}
 
+      {/* Silent load: the mint succeeded but the frame never reported `load`
+          within the grace window, so it is showing an empty box. Distinct from
+          mintFailed (a known read failure) — this is a frame that did not
+          report, so the copy does not assert a failure and the action is
+          labeled by what it does (bring the widget back), matching
+          ArtifactBody's docSilent branch.
+
+          Guarded on `loadSilent && !mintFailed`, NOT on `!iframeLoaded`:
+          `loadSilent` is cleared by `onFrameLoaded` on every real load, so it is
+          already false whenever the current document loaded. `iframeLoaded`, by
+          contrast, is set once on the FIRST load and never reset (it gates the
+          fade-in), so a silent RE-mint after a good first render leaves it true
+          — and an `!iframeLoaded` guard would then suppress the very notice this
+          exists for. `mintFailed` still wins, so a known read failure shows the
+          retry row above rather than this cause-neutral one. */}
+      {loadSilent && !mintFailed && <div className="px-3 py-2 flex items-center gap-3 text-text">
+        <span role="status">{i18nT('components.artifactBody.no_longer_showing')}</span>
+        {/* Eye + "Show artifact", NOT a reload arrow + "Retry": a silent load is
+            a frame that did not report, not a known failure, so the recovery
+            must not assert an error the surface cannot verify. This matches
+            ArtifactBody's docSilent branch exactly — one recovery affordance
+            for the one silent-load situation across every consumer. */}
+        <Btn
+          disabled={mintPending}
+          onClick={retryMint}
+        >
+          <Eye className="lucide-inline" />
+          {i18nT('components.artifactBody.show_artifact')}
+        </Btn>
+      </div>}
+
       {/* While the document URL is in flight the row must keep the height the
           skeleton reserved. Rendering nothing here collapsed the row to its
           header for a full round trip and then regrew it — the exact scroll
@@ -610,7 +649,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         <iframe
           ref={iframeRef}
           src={blobUrl}
-          onLoad={() => setIframeLoaded(true)}
+          onLoad={() => { setIframeLoaded(true); onFrameLoaded() }}
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
           // NO clipboard-write delegation here, deliberately. These frames host
           // agent-generated HTML whose scripts run on load, so a delegated
@@ -630,7 +669,11 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
             // left out when the artifact frame was promoted, so the inline-widget
             // surface still had the gap.
             transform: 'translateZ(0)',
-            opacity: iframeLoaded ? 1 : 0,
+            // Reveal on load OR when the silence window elapses: a frame that
+            // never fires `load` must not stay invisible forever. If the
+            // document does eventually paint the user sees it; if it never
+            // does, the notice below explains the blank.
+            opacity: iframeLoaded || loadSilent ? 1 : 0,
           }}
           title={title}
         />

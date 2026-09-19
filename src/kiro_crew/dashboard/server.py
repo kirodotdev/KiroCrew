@@ -412,6 +412,18 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # boundary, and the handler re-asserts host-locality itself because a
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
+        # Flagged-file delivery approval step-up, the exact mirror
+        # of /api/update/approve above and STRICT for the identical reason: its
+        # only legitimate caller is `kirocrew file-delivery approve` on the gateway
+        # host presenting the sandbox-masked nonce plus X-Internal-Secret. As with
+        # update approve, "no browser ever posts to it -- the SPA can only ARM;
+        # keeping it off the cookie fall-through means a dashboard bearer cannot
+        # even reach the handler whose refusal is the boundary". The handler
+        # (api_file_delivery_consent_approve -> _approve_is_local) re-asserts
+        # host-locality itself, so the STRICT entry is the outer of two fences and
+        # a local_only=False deployment that reclassifies strict paths as mixed is
+        # still caught by the handler's own check.
+        "/api/file-delivery/consent/approve",
         # Dev Fleet pod lifecycle — the agent surface behind the ``pod_up`` /
         # ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
         # runs behind a sandbox with its own user namespace, so its shells cannot
@@ -4416,6 +4428,12 @@ async def start_dashboard(
     # failed warm never blocks readiness.
     await warm_sel_singleton()
 
+    # Bind the crew-log push to this loop and register it with the session
+    # emitter. Installed here rather than lazily on a first request: the frame
+    # exists so a watching client learns of a growth it did not ask for, and a
+    # publisher armed by the first read would miss every growth before it.
+    handlers.install_crew_log_publisher(state)
+
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
         # Outermost: privacy-safe per-route latency. Times the FULL
@@ -4703,7 +4721,16 @@ async def start_dashboard(
     _prior_dump = await asyncio.to_thread(newest_dump_with_stacks)
     if _prior_dump is not None:
         _age_h = await asyncio.to_thread(dump_age_seconds, _prior_dump) / 3600
-        if _age_h < 168:  # Only surface dumps less than 7 days old
+        # One stall is reported once, on the first start after it, across every
+        # surface below. A dump stays on disk for a week and is re-detected on
+        # every start, so an unclaimed warning-and-replay prints the same thread
+        # stacks at every boot for that week — and a reader cannot tell that log
+        # from a gateway wedging right now, which is the only reason to print it
+        # at all. The claim is the same idempotency key the notification uses, so
+        # the log line, the replay and the notification agree on what has already
+        # been reported; the dump stays on disk for `kirocrew doctor` to show on
+        # demand.
+        if _age_h < 168 and await asyncio.to_thread(claim_dump_notification, _prior_dump):
             logger.warning(
                 "⚠️  Prior loop-stall crash dump found: %s (%.1f hours ago). "
                 "Run `kirocrew doctor` for details.",
@@ -4722,35 +4749,32 @@ async def start_dashboard(
             # exited by hard-exit: no `finally` ran, nothing was flushed, and any
             # turn in flight lost work that was written but not yet committed.
             # The user needs to know that happened rather than discovering a
-            # monitoring loop had silently stopped hours earlier. Claimed once
-            # per dump — the dump is re-detected for up to 7 days on every
-            # start, so notifying unconditionally would alert every restart.
-            if await asyncio.to_thread(claim_dump_notification, _prior_dump):
-                # Say who the loop was working for, from the same evidence the
-                # doctor reads, so the person restarting knows which job to look
-                # at without opening the dump.
-                try:
-                    _attr_lines = describe(
-                        await asyncio.to_thread(attribute_dump, _prior_dump, data_home())
-                    )
-                except Exception:
-                    logger.debug("stall attribution for notification failed", exc_info=True)
-                    _attr_lines = []
-                try:
-                    state.notify(
-                        "heartbeat",
-                        "⚠️ Gateway restarted after an event-loop stall",
-                        (
-                            f"The previous gateway stopped responding and exited "
-                            f"{_age_h:.1f}h ago, then restarted. Work in flight at "
-                            f"that moment was interrupted and not saved. "
-                            + ("".join(f"{ln}. " for ln in _attr_lines))
-                            + f"Thread stacks: {_prior_dump}"
-                        ),
-                        meta={"url": "/settings", "dump": str(_prior_dump)},
-                    )
-                except Exception:
-                    logger.debug("stall-exit notification failed", exc_info=True)
+            # monitoring loop had silently stopped hours earlier.
+            # Say who the loop was working for, from the same evidence the
+            # doctor reads, so the person restarting knows which job to look
+            # at without opening the dump.
+            try:
+                _attr_lines = describe(
+                    await asyncio.to_thread(attribute_dump, _prior_dump, data_home())
+                )
+            except Exception:
+                logger.debug("stall attribution for notification failed", exc_info=True)
+                _attr_lines = []
+            try:
+                state.notify(
+                    "heartbeat",
+                    "⚠️ Gateway restarted after an event-loop stall",
+                    (
+                        f"The previous gateway stopped responding and exited "
+                        f"{_age_h:.1f}h ago, then restarted. Work in flight at "
+                        f"that moment was interrupted and not saved. "
+                        + ("".join(f"{ln}. " for ln in _attr_lines))
+                        + f"Thread stacks: {_prior_dump}"
+                    ),
+                    meta={"url": "/settings", "dump": str(_prior_dump)},
+                )
+            except Exception:
+                logger.debug("stall-exit notification failed", exc_info=True)
 
     # Fire background MCP probe at startup (non-blocking). The probe spawns a
     # handshake subprocess per configured MCP server, so under cautious boot it

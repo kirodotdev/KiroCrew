@@ -32,6 +32,18 @@
        PRs only -- on a fork PR the override is not consumed: merge the RFC
        first, or ask a maintainer to push the branch to this repository). -->
 
+## Backwards compatibility
+
+<!-- Does this change REJECT, RENAME or REMOVE anything main currently accepts
+     (new required field, stricter validator, narrowed type, removed kind,
+     renamed key)? One of:
+       Compatible: <one line on why nothing that works today stops working>
+     or:
+       Breaking: <what stops working>. Writer sweep on origin/main @ <sha>:
+       <every writer/caller found and how each is handled>.
+     A Breaking change tightens one contract; the writers it breaks may live in
+     other open PRs, so re-run the sweep on fresh main before the last push. -->
+
 ## Tests
 
 <!-- Automated tests added/updated and the behavior each one locks in. -->

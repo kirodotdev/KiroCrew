@@ -159,8 +159,10 @@ from kiro_crew.slack.format import (
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (
     _SESSIONS_DEFAULT_LIMIT,
+    SESSIONS_INCLUDE_ENDED_ARGS,
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
+    sessions_include_ended,
 )
 from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
@@ -2735,16 +2737,27 @@ async def _handle_compact_command(
 
 
 def _is_sessions_keyword(text: str) -> bool:
-    """True when the whole stripped, lower-cased message is the bare
-    ``sessions`` keyword.
+    """True when the whole stripped, lower-cased message is the ``sessions``
+    keyword, on its own or with its one argument.
 
     The ONE predicate shared by the native ``handle_message`` branch, the
     transport ``maybe_handle_keyword_command`` branch, and the linked-thread
     fall-through in ``maybe_route_linked_thread`` — keeping all three sites on
     one helper guarantees the intercept matches exactly what the keyword
     branches match, so the keyword cannot be swallowed by a linked thread.
+
+    The argument is matched here as well as in
+    :func:`kiro_crew.slack.sessions_view.sessions_include_ended`, and it has to
+    be: a message this predicate rejects is never routed to the sessions
+    handler at all, so ``sessions all`` would reach the agent as ordinary chat
+    and the opt-in would have no way to be typed.
     """
-    return text.strip().lower() == "sessions"
+    words = text.strip().lower().split()
+    if not words or words[0] != "sessions":
+        return False
+    if len(words) == 1:
+        return True
+    return len(words) == 2 and words[1] in SESSIONS_INCLUDE_ENDED_ARGS
 
 
 async def maybe_handle_keyword_command(
@@ -6011,13 +6024,19 @@ async def _handle_sessions_command(
     and :func:`kiro_crew.slack.sessions_view._build_sessions_blocks` so the
     keyword, the ``/<command> sessions`` slash command, and the App Home Tab
     all render the same Block Kit content with the same Resume button wiring.
+
+    *cmd_text* is the message as typed; ``sessions all`` / ``sessions ended``
+    asks for rows the user has dismissed with End, which are otherwise left out.
     """
+    include_ended = sessions_include_ended(cmd_text)
     # Wrap the collector so a transient OSError still produces a SEL audit
     # entry. Without this, an IO failure would skip the audit entirely and
     # the access attempt would be invisible to the security pipeline.
     # Mirrors the slash and Home Tab error-path patterns.
     try:
-        rows = await _collect_recent_sessions_off_loop(sessions, limit=_SESSIONS_DEFAULT_LIMIT)
+        rows = await _collect_recent_sessions_off_loop(
+            sessions, limit=_SESSIONS_DEFAULT_LIMIT, include_ended=include_ended
+        )
     except Exception as exc:
         # Redact-then-truncate: redact() first so credential / exfil
         # patterns aren't split mid-string by the truncation step.

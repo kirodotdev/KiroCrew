@@ -16,7 +16,7 @@ from member_memory_helpers import patch_private_memory_supported
 from test_members_dm_thread import _make_members_app
 
 from kiro_crew.agent_discovery import AgentInfo
-from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard import chat_handlers, chat_runner
 from kiro_crew.dashboard.chat_persistence import (
@@ -27,7 +27,11 @@ from kiro_crew.dashboard.chat_persistence import (
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
 from kiro_crew.memory import MemoryStore
-from kiro_crew.memory_stores import UnknownMemoryStore, provision_member_memory
+from kiro_crew.memory_stores import (
+    UnknownMemoryStore,
+    persist_member_config,
+    provision_member_memory,
+)
 from kiro_crew.providers.base import (
     EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
@@ -113,7 +117,10 @@ async def _template_chat(tmp_path, monkeypatch, *, first_turn=True):
         assert response.status == 200, await response.text()
         assert TEMPLATE in (await response.json())["synced"]
     synced = KiroCrewConfig.load()
-    private_store = synced.agents[TEMPLATE].memory_store
+    assert synced.agents[TEMPLATE].memory_store == "default"
+    # The namespace collision requires an owner-created private member.
+    private_store = provision_member_memory(synced, TEMPLATE)
+    synced.save()
     assert synced.memory_stores[private_store].memory_version == 2
     assert read_private_session_store("dashboard:template-chat") is None
     return state, slot, private_store
@@ -196,9 +203,15 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
             response = await asyncio.wait_for(client.post("/api/agents/sync", json={}), 10)
             assert response.status == 200, await response.text()
             assert TEMPLATE in (await response.json())["synced"]
-            private_store = (
-                (await asyncio.to_thread(KiroCrewConfig.load)).agents[TEMPLATE].memory_store
-            )
+
+            def opt_in():
+                cfg = KiroCrewConfig.load()
+                assert cfg.agents[TEMPLATE].memory_store == "default"
+                store = provision_member_memory(cfg, TEMPLATE)
+                cfg.save()
+                return store
+
+            private_store = await asyncio.to_thread(opt_in)
 
             later_task = asyncio.create_task(
                 client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": TEMPLATE})
@@ -1730,3 +1743,108 @@ async def test_failed_empty_chat_private_grant_restores_protected_selection(tmp_
     assert session_agent_selection_kind(key, TEMPLATE) == "template"
     assert state.conversation_log.get_metadata(key)["agent"] == TEMPLATE
     assert read_private_session_store(key) is None
+
+
+def _prewarmed_member_state(tmp_path, monkeypatch, *, sid: str | None):
+    """An empty new chat whose pre-warm left ``sid`` behind, plus a member.
+
+    The eager pre-warm allocates while the chat is still on the default agent,
+    and the switch handler's own reset preserves the persistence entry, so what
+    survives into the pin is a resume pointer with no live provider.
+    """
+    patch_private_memory_supported(monkeypatch)
+    cfg = KiroCrewConfig.load()
+    cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    store = provision_member_memory(cfg, "reviewer")
+    persist_member_config(cfg, "reviewer", create=True)
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    monkeypatch.setattr(chat_runner, "_maybe_auto_title", AsyncMock())
+    holder = {"sid": sid}
+    state.sessions.resumable_sid = MagicMock(side_effect=lambda _key: holder["sid"])
+
+    def _forget(_key):
+        dropped, holder["sid"] = holder["sid"], None
+        return dropped
+
+    state.sessions.forget_conversation = MagicMock(side_effect=_forget)
+    return state, store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sid", [None, "acp-prewarm-sid"])
+async def test_new_chat_member_pick_binds_private_memory_over_a_prewarm(tmp_path, monkeypatch, sid):
+    """ "+ New conversation" then picking a member must bind its private store.
+
+    Regression test. A pre-warm's surviving resume pointer is not V1 context:
+    the chat has never been sent a message, so the pick is granted and the turn
+    runs on the member's private store instead of reporting no verified private
+    assignment while the member's name is displayed. Both parametrizations
+    assert the same outcome, so the pre-warm is what varies and the binding is
+    what does not.
+    """
+    state, store = await asyncio.to_thread(_prewarmed_member_state, tmp_path, monkeypatch, sid=sid)
+    async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+        response = await asyncio.wait_for(client.post("/api/chat/slots", json={"name": "new"}), 10)
+        assert response.status == 200, await response.text()
+        slot = state._slots["new"]
+        key = f"dashboard:{slot.key}"
+        assert await asyncio.to_thread(read_private_session_store, key) is None
+        response = await asyncio.wait_for(
+            client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": "reviewer"}), 10
+        )
+        assert response.status == 200, await response.text()
+    assert slot.agent == "reviewer"
+    assert slot.memory_store == store
+    assert await asyncio.to_thread(read_private_session_store, key) == store
+    # Nothing can resume the default agent's pre-warmed process into the
+    # member's private store: the pointer is dropped, not merely ignored.
+    assert state.sessions.resumable_sid(key) is None
+    assert state.sessions.forget_conversation.called is bool(sid)
+
+
+@pytest.mark.asyncio
+async def test_new_chat_v1_pick_keeps_its_prewarmed_session(tmp_path, monkeypatch):
+    """A V1 pick has nothing to grant and must keep its resumable session."""
+    state, _ = await asyncio.to_thread(
+        _prewarmed_member_state, tmp_path, monkeypatch, sid="acp-prewarm-sid"
+    )
+    cfg = KiroCrewConfig.load()
+    cfg.agents["plain"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    cfg.save()
+    async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+        response = await asyncio.wait_for(client.post("/api/chat/slots", json={"name": "v1"}), 10)
+        assert response.status == 200, await response.text()
+        slot = state._slots["v1"]
+        response = await asyncio.wait_for(
+            client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": "plain"}), 10
+        )
+        assert response.status == 200, await response.text()
+    state.sessions.forget_conversation.assert_not_called()
+    assert state.sessions.resumable_sid(f"dashboard:{slot.key}") == "acp-prewarm-sid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("obstacle", ["transcript_rows", "unreadable_transcript", "live_provider"])
+async def test_prewarmed_session_is_kept_when_the_chat_is_not_provably_empty(
+    tmp_path, monkeypatch, obstacle
+):
+    """Only a provably empty chat may lose its pre-warm; each check fails closed."""
+    from kiro_crew.dashboard.chat_persistence import release_prewarmed_session
+
+    state, _ = await asyncio.to_thread(
+        _prewarmed_member_state, tmp_path, monkeypatch, sid="acp-prewarm-sid"
+    )
+    key = "dashboard:not-empty"
+    if obstacle == "transcript_rows":
+        await asyncio.to_thread(state.conversation_log.append, key, "user", "earlier V1 turn")
+    elif obstacle == "unreadable_transcript":
+        state.conversation_log.has_messages = MagicMock(side_effect=OSError("unreadable"))
+    else:
+        state.sessions.get_provider = MagicMock(return_value=MagicMock())
+    released = await asyncio.wait_for(
+        release_prewarmed_session(state, key, "reviewer", KiroCrewConfig.load()), 10
+    )
+    assert released is False
+    state.sessions.forget_conversation.assert_not_called()

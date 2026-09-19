@@ -162,21 +162,24 @@ describe('MarkdownPanel — annotation selection highlight', () => {
     const { rerender } = render(<TwoPanels active="a" showB={false} />, { wrapper })
     const tabA = screen.getByTestId('tab-a')
     selectWordInParagraph(await within(tabA).findByText(/alpha beta gamma/), 'beta')
-    await screen.findByLabelText('Comment on the selected text')
+    const boxA = await screen.findByLabelText('Comment on the selected text')
     expect(highlightRegistry.get('mc-annotate')?.map(r => r.toString())).toEqual(['beta'])
 
     rerender(<TwoPanels active="b" />)
+    // Inactive tabs keep their ranges, not their portaled input. Wait for A's
+    // exit animation instead of asserting on its brief overlap with B's input.
+    await waitFor(() => expect(boxA).not.toBeInTheDocument())
     const tabB = screen.getByTestId('tab-b')
     selectWordInParagraph(await within(tabB).findByText(/delta epsilon zeta/), 'epsilon')
-    await waitFor(() => expect(screen.getAllByLabelText('Comment on the selected text')).toHaveLength(2))
-    const boxB = screen.getAllByLabelText('Comment on the selected text')[1]
+    const boxB = await screen.findByLabelText('Comment on the selected text')
     expect(highlightRegistry.get('mc-annotate')?.map(r => r.toString()).sort()).toEqual(['beta', 'epsilon'])
 
     fireEvent.keyDown(boxB, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryAllByLabelText('Comment on the selected text')).toHaveLength(1))
+    await waitFor(() => expect(screen.queryAllByLabelText('Comment on the selected text')).toHaveLength(0))
     expect(highlightRegistry.get('mc-annotate')?.map(r => r.toString())).toEqual(['beta'])
 
     rerender(<TwoPanels active="a" />)
+    await screen.findByLabelText('Comment on the selected text')
     expect(highlightRegistry.get('mc-annotate')?.map(r => r.toString())).toEqual(['beta'])
   })
 
@@ -184,12 +187,13 @@ describe('MarkdownPanel — annotation selection highlight', () => {
     const { rerender } = render(<TwoPanels active="a" showB={false} />, { wrapper })
     const tabA = screen.getByTestId('tab-a')
     selectWordInParagraph(await within(tabA).findByText(/alpha beta gamma/), 'beta')
-    await screen.findByLabelText('Comment on the selected text')
+    const boxA = await screen.findByLabelText('Comment on the selected text')
 
     rerender(<TwoPanels active="b" />)
+    await waitFor(() => expect(boxA).not.toBeInTheDocument())
     const tabB = screen.getByTestId('tab-b')
     selectWordInParagraph(await within(tabB).findByText(/delta epsilon zeta/), 'epsilon')
-    await waitFor(() => expect(screen.getAllByLabelText('Comment on the selected text')).toHaveLength(2))
+    await screen.findByLabelText('Comment on the selected text')
     expect(highlightRegistry.get('mc-annotate')?.map(r => r.toString()).sort()).toEqual(['beta', 'epsilon'])
 
     rerender(<TwoPanels active="a" showB={false} />)

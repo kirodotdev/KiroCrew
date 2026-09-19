@@ -632,7 +632,8 @@ class _LoopHarness:
     resolution are stubbed out so the loop needs no gateway environment.
     """
 
-    def __init__(self, monkeypatch, call_tool_fn, loop_kwargs: dict | None = None):
+    def __init__(self, monkeypatch, call_tool_fn, loop_kwargs: dict | None = None,
+                 list_tools_fn=None):
         import os
         import sys
         import threading
@@ -643,13 +644,17 @@ class _LoopHarness:
         self._stdin = io.TextIOWrapper(io.open(rfd, "rb"))
         monkeypatch.setattr(sys, "stdin", self._stdin)
         monkeypatch.setattr(mcp_shared, "respond", self._record)
-        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", lambda *a: set())
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), ""),
+        )
         self.sel_mock = MagicMock()
         monkeypatch.setattr(mcp_shared, "sel", lambda: self.sel_mock)
         self._os = os
         self._thread = threading.Thread(
             target=mcp_shared.run_mcp_stdio_loop,
-            args=("test-server", "0.0.0", lambda: [], call_tool_fn),
+            args=("test-server", "0.0.0", list_tools_fn or (lambda: []), call_tool_fn),
             kwargs=loop_kwargs or {},
             daemon=True,
         )
@@ -843,9 +848,9 @@ class TestStdioLoopCallerIdentity:
 
         def policy(session="", *, member_memory_proof=""):
             seen.append((session, member_memory_proof))
-            return set()
+            return mcp_shared.ToolPolicy(frozenset(), "")
 
-        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", policy)
+        monkeypatch.setattr(mcp_shared, "_resolve_tool_policy", policy)
         try:
             for req_id, method, session, proof in (
                 (1, "tools/list", "dashboard:alice", "alice.list-proof"),
@@ -877,9 +882,9 @@ class TestStdioLoopCallerIdentity:
 
         def policy(session="", *, member_memory_proof=""):
             seen.append((session, member_memory_proof))
-            return set()
+            return mcp_shared.ToolPolicy(frozenset(), "")
 
-        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", policy)
+        monkeypatch.setattr(mcp_shared, "_resolve_tool_policy", policy)
         try:
             for req_id, method, session, proof in (
                 (1, "tools/call", "dashboard:alice", "alice.current-proof"),
@@ -1007,7 +1012,7 @@ class TestStdioLoopCallerIdentity:
         # present.
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         monkeypatch.setattr(
-            mcp_shared, "_resolve_excluded_tools", lambda *a: {"blocked"}
+            mcp_shared, "_resolve_tool_policy", lambda *a, **k: mcp_shared.ToolPolicy(frozenset({"blocked"}), "")
         )
         try:
             harness.send(_tools_call_with_caller(21, "blocked", "dashboard:chat-9"))
@@ -1017,6 +1022,189 @@ class TestStdioLoopCallerIdentity:
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "rejected_excluded"
             assert kw["session_key"] == "dashboard:chat-9"
+        finally:
+            harness.close()
+
+    def test_unresolved_policy_refuses_the_call(self, monkeypatch):
+        # The one reason that refuses. It means ONE thing -- the gateway read a
+        # spec for this session and could not determine its policy -- so an
+        # operator's exclusion may exist and is being withheld, and running the
+        # tool would ignore it.
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "policy_unreadable"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(41, "echo", "dashboard:chat-7"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            # The tool never ran.
+            assert ran == []
+            # The refusal is loud and says why, rather than looking like a
+            # missing tool.
+            body = json.dumps(harness.responses[0][1])
+            assert "tool policy could not be read" in body
+            assert "policy_unreadable" in body
+            # And it is attributable: the audit names the caller and the path.
+            assert harness.wait_for(
+                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert kw["outcome"] == "rejected_policy_unresolved"
+            assert kw["session_key"] == "dashboard:chat-7"
+            assert kw["error"] == "managedToolPolicy.unresolved:policy_unreadable"
+        finally:
+            harness.close()
+
+    def test_no_usable_answer_does_not_refuse_the_call(self, monkeypatch):
+        """``resolution_failed`` stays permissive, against the security argument.
+
+        On the argument it should refuse: an exclusion may exist and the process
+        holding it cannot answer. That was implemented and measured, and the
+        repository's real-MCP end-to-end lane will not run a legitimate first tool
+        call under it. In this deployment an ordinary call reaches this arm, so
+        refusing costs every caller their tools rather than costing an attacker
+        one. Kept permissive and audited until the gateway can say why.
+        """
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "resolution_failed"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(53, "echo", "dashboard:chat-13"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == ["echo"]
+            ops = [
+                c.kwargs.get("operation")
+                for c in harness.sel_mock.log_api_access.call_args_list
+            ]
+            assert "tool_policy.unenforced_call" in ops
+        finally:
+            harness.close()
+
+    def test_a_gateway_that_declines_this_caller_does_not_refuse(self, monkeypatch):
+        """``policy_forbidden`` is a boundary the gateway HOLDS, not one it lost.
+
+        The 403 is ``member_session_unverified``: a session claiming a private
+        memory store without a proof the gateway can verify. That is the steady
+        state for a whole class of callers rather than a window that closes, so
+        refusing would deny them tools permanently. The call proceeds and the
+        window is audited.
+        """
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "policy_forbidden"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(54, "echo", "dashboard:chat-14"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == ["echo"]
+            ops = [
+                c.kwargs.get("operation")
+                for c in harness.sel_mock.log_api_access.call_args_list
+            ]
+            assert "tool_policy.unenforced_call" in ops
+        finally:
+            harness.close()
+
+    def test_an_identity_reason_lets_the_call_run_and_audits_it(self, monkeypatch):
+        # no_session_key / agent_not_resolved mean no AGENT was named, and a
+        # managedToolPolicy is a property of an agent -- so there is no operator
+        # exclusion for this call to bypass. The gateway returns the same 404
+        # both for a session still registering and for a caller it can never
+        # name, so refusing here denies the second class forever. The call runs,
+        # and the window is audited rather than silent.
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "agent_not_resolved"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(51, "echo", "dashboard:chat-11"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == ["echo"]
+            ops = [
+                c.kwargs.get("operation")
+                for c in harness.sel_mock.log_api_access.call_args_list
+            ]
+            assert "tool_policy.unenforced_call" in ops
+        finally:
+            harness.close()
+
+    def test_an_unreadable_policy_refuses_the_call(self, monkeypatch):
+        # The other half: the gateway NAMED an agent and could not read its
+        # policy, so an operator exclusion may exist and is being withheld.
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "policy_unreadable"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(52, "echo", "dashboard:chat-12"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == []
+            assert "tool policy could not be read" in json.dumps(harness.responses[0][1])
+        finally:
+            harness.close()
+
+    def test_unresolved_policy_still_lists_every_tool(self, monkeypatch):
+        # The anti-brick half. kiro-cli calls tools/list ONCE per
+        # session and caches the answer, so hiding tools on a transient policy
+        # failure would hide them for the session's whole life. Listing is not
+        # the enforcement point; the call path above is.
+        tools = [{"name": "echo"}, {"name": "blocked"}]
+        harness = _LoopHarness(
+            monkeypatch, lambda n, a: "ok", list_tools_fn=lambda: list(tools)
+        )
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "no_session_key"),
+        )
+        try:
+            harness.send(
+                {"jsonrpc": "2.0", "id": 42, "method": "tools/list", "params": {}}
+            )
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            listed = [t["name"] for t in harness.responses[0][1]["tools"]]
+            assert listed == ["echo", "blocked"]
+            # The widened listing window is recorded, so it is attributable.
+            ops = [
+                c.kwargs.get("operation")
+                for c in harness.sel_mock.log_api_access.call_args_list
+            ]
+            assert "tool_policy.unfiltered_listing" in ops
+        finally:
+            harness.close()
+
+    def test_resolved_empty_policy_runs_the_call(self, monkeypatch):
+        # The control for the test above it: a session whose policy WAS read
+        # and excludes nothing must still be able to call tools. A fix that
+        # refused here would brick every session that never had an exclusion.
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), ""),
+        )
+        try:
+            harness.send(_tools_call_with_caller(43, "echo", "dashboard:chat-8"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == ["echo"]
+            assert "could not be read" not in json.dumps(harness.responses[0][1])
         finally:
             harness.close()
 
@@ -1076,10 +1264,10 @@ class TestPerSessionToolPolicy:
                 lambda _cls: SimpleNamespace(dashboard=SimpleNamespace(url="http://localhost:5476"))
             ),
         )
-        assert mcp_shared._resolve_excluded_tools("dashboard:alice", member_memory_proof=proof) == {
+        assert mcp_shared._resolve_tool_policy("dashboard:alice", member_memory_proof=proof).excluded == {
             "blocked"
         }
-        assert mcp_shared._resolve_excluded_tools("dashboard:global") == {"blocked"}
+        assert mcp_shared._resolve_tool_policy("dashboard:global").excluded == {"blocked"}
         assert requests[0]["X-session-key"] == "dashboard:alice"
         assert requests[0].get("X-member-session-proof") == (
             proof if proof == "signed.current-proof" else None
@@ -1120,11 +1308,11 @@ class TestPerSessionToolPolicy:
         )
         monkeypatch.setattr(mcp_shared, "_read_internal_secret", lambda: "s3cr3t", raising=False)
 
-        a = mcp_shared._resolve_excluded_tools("dashboard:chat-1")
-        b = mcp_shared._resolve_excluded_tools("dashboard:chat-2")
+        a = mcp_shared._resolve_tool_policy("dashboard:chat-1").excluded
+        b = mcp_shared._resolve_tool_policy("dashboard:chat-2").excluded
         assert a == {"tool_a"}
         assert b == {"tool_b"}  # NOT session-1's cached policy
         # Cache hit path: no third HTTP call for a repeat lookup.
         n = len(calls)
-        assert mcp_shared._resolve_excluded_tools("dashboard:chat-1") == {"tool_a"}
+        assert mcp_shared._resolve_tool_policy("dashboard:chat-1").excluded == {"tool_a"}
         assert len(calls) == n

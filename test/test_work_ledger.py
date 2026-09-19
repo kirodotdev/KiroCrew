@@ -2346,7 +2346,17 @@ def test_purge_conductor_keeps_the_breadcrumb_until_the_header_is_gone(monkeypat
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", _refuse_header)
+    latest = wl._newest_activity(directory, wl.census_items(directory))
+    assert latest is not None
+    purge_time = latest + timedelta(seconds=1)
 
+    class PurgeClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # Filesystem write times and the Windows wall clock can differ.
+            return purge_time.astimezone(tz) if tz else purge_time.astimezone().replace(tzinfo=None)
+
+    monkeypatch.setattr(wl, "datetime", PurgeClock)
     assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is False
 
     assert (directory / "conductor.json").exists()

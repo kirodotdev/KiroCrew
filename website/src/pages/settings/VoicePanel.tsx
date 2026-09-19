@@ -17,6 +17,10 @@ type VoiceConfig = {
 }
 
 const PROVIDER_OPTIONS = ['system', 'piper', 'polly']
+
+// Consent-gate service key for Polly; shared so the gate and the cache
+// invalidation below cannot drift apart.
+const PROVIDER_POLLY = 'polly'
 /**
  * Catalog KEY per provider — not the label itself. This table is evaluated at
  * module load, so an `i18nT()` call here would freeze the boot language and
@@ -156,6 +160,14 @@ export function VoicePanel() {
       }
       setSaveError(i18nT('pages.settings.voicePanel.failed_to_save_voice_config'))
     },
+    onSuccess: (_data, patch) => {
+      // The consent gate caches the resolved account under this key; a new
+      // profile/region does not touch it, so the gate keeps showing the old
+      // account and Confirm 409s on the stale value. Re-probe on a real change.
+      if ('aws_profile' in patch || 'region' in patch) {
+        qc.invalidateQueries({ queryKey: ['awsConsent', PROVIDER_POLLY] })
+      }
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: ['voiceConfig'] }),
   })
 
@@ -225,7 +237,7 @@ export function VoicePanel() {
               ) : isPolly ? (
                 <>
                   <AwsConsentGate
-                    service="polly"
+                    service={PROVIDER_POLLY}
                     onConsentChange={() => qc.invalidateQueries({ queryKey: ['voiceVoices'] })}
                   />
                   {/* The catalogue read failed and the picker below is showing the

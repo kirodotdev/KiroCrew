@@ -39,6 +39,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         EmbeddingSource,
         ExternalAccessPolicy,
         FeatureApp,
+        GatewayLifecycleProvider,
         IdentityProvider,
         ImportSourceProvider,
         JailProvider,
@@ -283,6 +284,7 @@ class PlatformContext:
     # is [RESERVED] — see RESERVED_METHODS.
     agent_runtime: "AgentRuntime"
     agent_executable: "AgentExecutableResolver"
+    gateway_lifecycle: "GatewayLifecycleProvider"
     sandbox: "SandboxPolicy"
     credentials: "CredentialPolicy"
     security: "PolicyAuthority"

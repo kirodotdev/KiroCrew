@@ -86,10 +86,32 @@ docstring states the rule this file obeys: such a set is "NEVER sourced from
 ``config.json`` -- an agent-writable exemption would be a hole in the redaction
 ceiling."
 
-The authenticated, OWNER-gated dashboard handler opens the path directly and is
-the only writer. There is deliberately no CLI verb: a terminal command that
-records a grant on request is a grant an automated caller can take, and its guard
-would have to key on an env var an in-process agent can unset.
+Recording a grant takes TWO acts, not one
+------------------------------------------
+The owner-gated dashboard session is an IDENTITY check, not a proof that a human
+is present: anyone running computer use points an agent at an owner-authenticated
+browser, and a prompt-injected auto-approved click then satisfies the owner gate
+and self-grants -- the "agent can self-approve" hole this step-up exists to close.
+So recording a grant is split, exactly as :mod:`kiro_crew.platform.update_stepup`
+splits installing code:
+
+* the OWNER-gated dashboard handler ARMS a request and writes a single-use
+  approval nonce to a sandbox-HIDDEN file. Arming grants nothing; the nonce never
+  reaches the SPA.
+* ``kirocrew file-delivery approve``, run on the gateway host, reads that nonce
+  and presents it back. Reading the file needs filesystem access as the
+  gateway's own user -- the identity an agent-driven dashboard bearer cannot
+  forge. The nonce lives in its own leaf (``file-delivery-consent-pending/``)
+  that is bind-MASKED from the agent sandbox in every mode, so a prompt-injected
+  agent cannot even forge a nonce there with a runtime-constructed shell path
+  (the file gate's text/argv matcher alone would not stop that write; the mask
+  does). Only then is the grant recorded.
+
+The CLI verb is therefore the STEP-UP that closes the hole, not a second door
+that widens it: it authorizes nothing on its own, it consumes an owner-armed
+nonce that an automated caller can neither read nor forge. WITHDRAWAL keeps a
+single owner-gated door with no step-up, because revoking is the fail-safe
+direction.
 
 Known limit, stated rather than papered over
 --------------------------------------------
@@ -107,14 +129,21 @@ record exists even though the refusal does not.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+import os
+import secrets
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import file_delivery_consent_path
+from kiro_crew.config.paths import data_home
+from kiro_crew.platform_compat import make_owner_only_dir
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +164,13 @@ GRANTABLE_CLASSES: frozenset[str] = frozenset({CLASS_OWNER_DASHBOARD})
 #: that asserts the two sets stay disjoint.
 NEVER_GRANTABLE_CLASSES: frozenset[str] = frozenset({"slack_upload", "channel_upload"})
 
-#: Human-facing labels for the confirmation surface and the log lines.
+#: Human-facing labels for the confirmation surface and the log lines. Plain
+#: language rather than the internal class id: the confirmation surface is the
+#: one place a first-time reader decides whether to allow delivery, so the
+#: destination is named in words they can picture ("this computer" / "the
+#: dashboard Files view") instead of the product-internal term "outbox".
 CLASS_LABELS: dict[str, str] = {
-    CLASS_OWNER_DASHBOARD: "This machine's outbox and my own dashboard",
+    CLASS_OWNER_DASHBOARD: "This computer and your dashboard Files view",
 }
 
 #: Serialises the read-modify-write below. Deliberately an IN-PROCESS lock, and
@@ -155,10 +188,12 @@ CLASS_LABELS: dict[str, str] = {
 #:
 #: One writer makes this sufficient. ``aws_consent`` needs a cross-process file lock
 #: because it has TWO writers -- its dashboard handler and the ``kirocrew
-#: aws-consent`` CLI. This grant has exactly one writer, the owner-gated dashboard
-#: handler, and deliberately NO CLI verb (a terminal command that records a grant on
-#: request is a grant an automated caller can take). One writer in one process is
-#: served by a process-local lock.
+#: aws-consent`` CLI. This grant still has exactly one writer of the STORE, the
+#: owner-gated dashboard handler, running in the gateway process. The
+#: ``kirocrew file-delivery approve`` verb does NOT write the store: it consumes
+#: an owner-armed nonce and drives the same in-process handler over loopback, so
+#: it is a step-up that authorizes a write rather than a second writer of it. One
+#: store writer in one process is served by a process-local lock.
 #:
 #: WHAT IS NOT SERIALISED, stated because it is a narrowing: two gateway
 #: processes sharing one data home do not serialise their writes against each
@@ -168,6 +203,20 @@ CLASS_LABELS: dict[str, str] = {
 #: row whose ``destination_class`` disagrees with its key and ``_read_all`` fails
 #: soft to "no consent" on anything unparseable.
 _STORE_LOCK = threading.Lock()
+
+#: Serializes arming against the compare-and-unlink of the pending nonce. The
+#: racing actors are THREADS in one process, not two processes: the arm endpoint
+#: and the approve handler both run their file work on the gateway's
+#: ``asyncio.to_thread`` pool (dashboard/handlers/file_delivery_consent.py), and
+#: the ``kirocrew file-delivery approve`` CLI is an HTTP client that POSTs to the
+#: gateway rather than touching the file itself (cli_server.py). So a
+#: ``threading.Lock`` is the right primitive; an OS file lock would guard against
+#: a second writing process that this design does not have. Held across
+#: :func:`arm_grant`'s write and :func:`claim_grant`'s read-compare-unlink
+#: so a fresh arm cannot land in the window between the compare and the unlink and
+#: be deleted. A DISTINCT lock from ``_STORE_LOCK`` (which guards the grant store)
+#: so the two unrelated critical sections never nest.
+_PENDING_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -294,6 +343,389 @@ def revoke(destination_class: str) -> bool:
         _write_all(data)
     audit_decision(destination_class, outcome="revoked")
     return True
+
+
+# ── Human-only step-up before a grant is recorded ───────────────────────────
+#
+# WHY THE OWNER GATE IS NOT ENOUGH ON ITS OWN. ``is_owner_dashboard_request``
+# proves the request carries the owner's dashboard SESSION, which is an identity
+# check, not a proof that a HUMAN is present. Anyone running computer use points
+# an agent at an owner-authenticated browser; a prompt-injected agent with an
+# auto-approved click then satisfies the owner gate and records a grant that
+# makes every later scanner-flagged file deliverable. That is precisely the
+# "agent can self-approve" hole this step-up closes, and an identity
+# gate does not close it.
+#
+# So recording a grant is split into two acts with different authority, exactly
+# as :mod:`kiro_crew.platform.update_stepup` splits installing code -- and for
+# the same reason (RFC OQ7: a dashboard session is a transferable bearer, fine
+# for operations, not for a security-critical write):
+#
+# * **Arm** (the SPA can do this): record a pending grant request and write a
+#   single-use approval nonce to a keystone file. The nonce NEVER travels to the
+#   SPA; the arm response carries a request id and the command to run, nothing
+#   that approves anything.
+# * **Approve** (only the host can do this): ``kirocrew file-delivery approve``
+#   reads the nonce from that file and presents it back to the gateway. Reading
+#   the file needs filesystem access as the gateway's own user -- the identity an
+#   agent-driven browser cannot forge. The nonce lives in ``file-delivery-consent-pending/``,
+#   registered in :data:`security._CREW_SECRET_LEAVES` AND bind-MASKED from the
+#   agent sandbox via :data:`sandbox._CREW_HIDDEN_LEAVES`, so a prompt-injected
+#   agent can neither read it nor forge one there with a runtime-constructed shell
+#   path -- the mask, not the text/argv file gate, is what closes the forge path.
+#   A remote/automated dashboard bearer cannot read the host's disk either, so it
+#   cannot mint an approval.
+#
+# WHAT THIS DELIBERATELY DOES NOT DEFEND AGAINST, same as update_stepup: genuine
+# local code execution as the gateway's own user. A process that can read the
+# data home can approve -- and could equally write the owner's outbox directly
+# with file tools, which is the bounded audience the module header already names.
+# The adversary this closes is the network-reachable / agent-driven dashboard
+# bearer, and against that one the nonce file is a real boundary.
+#
+# ONE agent-reachable path into that "local execution" class IS fenced, though,
+# because it is reachable without the operator ever running arbitrary code:
+# computer use (desktop observation + input synthesis) would let a prompt-injected
+# agent TYPE `kirocrew file-delivery approve` into a host terminal and complete the
+# owner's armed step-up itself. So the approve handler refuses to record a grant
+# while computer use is enabled (see ``api_file_delivery_consent_approve``): with
+# that tier active the terminal step-up stops proving a human is present, so it
+# is excluded rather than trusted. This does not turn the bounded-audience actor
+# above into a defended one -- a human at the machine, or code they run, still can
+# approve -- it removes the one path an agent could take with a single opt-in flag.
+#
+# WITHDRAWAL is deliberately NOT stepped up: revoking consent is the fail-safe
+# direction, and a step-up on it would let the party the consent constrains keep
+# a grant alive by making withdrawal harder. Only the grant-recording direction
+# gains a gate.
+
+#: How long an armed grant request stays approvable. Same budget as update
+#: step-up (RFC OQ7): long enough to switch to a terminal, short enough that a
+#: forgotten arm does not linger as a standing approval-in-waiting.
+GRANT_PENDING_TTL_SECS = 600
+
+#: The armed-grant nonce lives in its OWN top-level leaf,
+#: ``file-delivery-consent-pending/``, which is registered BOTH in
+#: :data:`security._CREW_SECRET_LEAVES` (the file gate refuses a statically-named
+#: agent write) AND in :data:`sandbox._CREW_HIDDEN_LEAVES` (bind-masked in every
+#: sandbox mode, so the directory is not even visible to a spawned command).
+#:
+#: The mask is the load-bearing half. It is NOT under ``trust/`` on purpose:
+#: ``trust/`` is sandbox-VISIBLE (it holds SEL append targets an in-sandbox MCP
+#: server writes), so a prompt-injected agent could FORGE a nonce there with a
+#: runtime-constructed shell path — the acknowledged evadable tier the file
+#: gate's text/argv matcher does not catch — and then drive the owner's loopback
+#: browser to POST that chosen nonce, recording a grant with no human present.
+#: Masking a leaf with no in-sandbox reader closes that path: the gateway writes
+#: it on arm and the host ``kirocrew file-delivery approve`` reads it, both
+#: outside the sandbox, so masking costs no live consumer.
+#:
+#: A whole DIRECTORY, not a single file, because arming renames a sibling
+#: ``.tmp`` into place and a mask covers the leaf, not its ancestors.
+_PENDING_GRANT_DIRNAME = "file-delivery-consent-pending"
+_PENDING_GRANT_FILENAME = "nonce.json"
+
+
+class StepUpError(Exception):
+    """An arm/approve step failed; the message is owner-facing."""
+
+
+@dataclass(frozen=True)
+class PendingGrant:
+    """One armed grant request, as persisted in the nonce file."""
+
+    request_id: str
+    nonce: str
+    destination_class: str
+    created_at: float
+    safety_epoch: str = ""
+
+    @property
+    def expires_in(self) -> int:
+        return max(0, int(self.created_at + GRANT_PENDING_TTL_SECS - time.time()))
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_in <= 0
+
+
+def safety_epoch() -> str:
+    """A digest of every condition that makes the host step-up trustworthy.
+
+    The step-up proves a human is present ONLY while the agent cannot read the
+    nonce, and each condition that guarantees that was being checked at APPROVE
+    time alone. A point-in-time read is defeated by the window: an agent under
+    computer use can arm, queue a delayed ``kirocrew file-delivery approve``, then
+    drive the owner-gated toggle to turn computer use OFF, and the delayed command
+    passes a check that only ever asks about NOW.
+
+    Binding the epoch into the armed request closes the whole family at once
+    rather than adding an Nth point-in-time guard: the request is claimable only
+    while every condition still reads exactly as it did when the owner armed it.
+    A change in EITHER direction invalidates it, including unsafe-to-safe, because
+    a request armed under an untrustworthy configuration was never a human's.
+
+    Never raises: an unreadable condition contributes a distinct ``"?"`` marker,
+    so it cannot silently equal a readable one and the claim refuses.
+    """
+    parts: list[str] = []
+    for name, probe in (
+        ("cu", _epoch_computer_use),
+        ("mode", _epoch_sandbox_mode),
+        ("mask", _epoch_mask_applies),
+        ("deleg", _epoch_delegates),
+    ):
+        try:
+            parts.append(f"{name}={probe()}")
+        except Exception:  # noqa: BLE001 -- unreadable must not equal readable
+            parts.append(f"{name}=?")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
+
+
+def _epoch_computer_use() -> str:
+    from kiro_crew.computer_use import enable_state
+
+    return "on" if enable_state.is_enabled() else "off"
+
+
+def _epoch_sandbox_mode() -> str:
+    from kiro_crew.sandbox import configured_sandbox_mode, effective_sandbox_mode
+
+    return effective_sandbox_mode(configured_sandbox_mode())
+
+
+def _epoch_mask_applies() -> str:
+    from kiro_crew.sandbox import configured_sandbox_mode, credential_mask_applies
+
+    return "yes" if credential_mask_applies(configured_sandbox_mode()) else "no"
+
+
+def _epoch_delegates() -> str:
+    from kiro_crew.sandbox import spawn_delegates_masking
+
+    return "yes" if spawn_delegates_masking() else "no"
+
+
+def pending_grant_path():
+    return data_home() / _PENDING_GRANT_DIRNAME / _PENDING_GRANT_FILENAME
+
+
+def arm_grant(destination_class: str, *, source: str = "dashboard") -> PendingGrant:
+    """Record a pending grant request; return it (nonce included, for the FILE).
+
+    The caller serving the SPA must never forward the nonce -- hand the SPA
+    :func:`public_pending_view` instead. Written owner-only from birth
+    (O_CREAT|O_EXCL, mode 0600) so no world-readable moment exists, replacing any
+    previous request: arming grants nothing by itself, so last-writer-wins needs
+    no coordination.
+    """
+    if destination_class not in GRANTABLE_CLASSES:
+        raise ValueError(f"destination class {destination_class!r} can never be granted")
+    pending = PendingGrant(
+        request_id=secrets.token_hex(8),
+        nonce=secrets.token_hex(32),
+        destination_class=destination_class,
+        created_at=time.time(),
+        # Stamped at ARM, compared at claim: the request is only claimable while
+        # every trustworthiness condition still reads as it did for the owner.
+        safety_epoch=safety_epoch(),
+    )
+    path = pending_grant_path()
+    # Held across the write so the replace is serialized against a concurrent
+    # approve's compare-and-unlink: without it, an unlink that already compared
+    # the OLD file could delete this fresh request between our replace and its
+    # unlink.
+    with _PENDING_LOCK:
+        make_owner_only_dir(path.parent)
+        # Keyed on the fresh request id, not the pid: two concurrent arms run in the
+        # SAME process (executor threads), so a pid-keyed temp name is one shared file
+        # both writers interleave into.
+        tmp = path.with_name(f"{path.name}.{pending.request_id}.tmp")
+        try:
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "request_id": pending.request_id,
+                            "nonce": pending.nonce,
+                            "destination_class": pending.destination_class,
+                            "created_at": pending.created_at,
+                            "safety_epoch": pending.safety_epoch,
+                            "source": source,
+                        }
+                    )
+                )
+            os.replace(tmp, path)
+        except OSError as exc:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise StepUpError(f"could not record the pending grant request: {exc}") from exc
+    logger.info(
+        "Armed file-delivery consent request %s for %s (from %s)",
+        pending.request_id,
+        destination_class,
+        source,
+    )
+    return pending
+
+
+def read_pending_grant() -> PendingGrant | None:
+    """The current armed grant request, or ``None`` when absent/expired/unreadable.
+
+    An expired request reads as ``None`` and is left on disk rather than unlinked
+    here: the file is a single fixed path that the next :func:`arm_grant` replaces
+    with ``os.replace``, so a concurrent arm landing between the expiry check and
+    an unlink would otherwise have its fresh request deleted. An expired row is
+    already inert -- it reads as ``None`` so no approval can be minted from it --
+    so proactively removing it buys nothing and races a live arm. Unreadable or
+    malformed files also read as ``None``: an approval must never be minted from a
+    file this module cannot vouch for. A row whose ``destination_class`` is not
+    grantable is refused for the same reason :func:`read_grant` refuses a
+    self-disagreeing row.
+    """
+    path = pending_grant_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    try:
+        pending = PendingGrant(
+            request_id=str(raw["request_id"]),
+            nonce=str(raw["nonce"]),
+            destination_class=str(raw["destination_class"]),
+            created_at=float(raw["created_at"]),
+            # Absent on a row written before the epoch existed. Left EMPTY rather
+            # than defaulted to the current epoch, so such a row can never match
+            # and the claim refuses -- fail closed, re-arm to proceed.
+            safety_epoch=str(raw.get("safety_epoch", "")),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if pending.destination_class not in GRANTABLE_CLASSES:
+        return None
+    if pending.expired:
+        return None
+    return pending
+
+
+def claim_grant(nonce: str) -> PendingGrant:
+    """Validate *nonce* AND consume the armed request, atomically.
+
+    Single-use has to be decided in one step. Validating and clearing as two
+    steps lets two concurrent approvals both validate the SAME nonce before
+    either clears it; a :func:`revoke` landing between their two
+    :func:`record_grant` writes then leaves the later writer silently restoring
+    consent the owner had just withdrawn. Nothing self-corrects that -- the grant
+    is simply back, and the owner has to notice and revoke again -- so the
+    ordering that made a failed write non-destructive is not worth that outcome.
+
+    Both the compare and the unlink happen under :data:`_PENDING_LOCK`, which is
+    the same lock :func:`arm_grant` holds across its ``os.replace``, so exactly
+    one caller can leave here holding a given request: the second finds no file
+    and is refused. The lock is a threading lock because the racing callers are
+    threads on the gateway's ``to_thread`` pool.
+
+    Raises :class:`StepUpError` on a missing, expired or mismatched nonce, having
+    consumed nothing. A caller whose own write then fails hands the request back
+    with :func:`restore_pending_grant`.
+    """
+    with _PENDING_LOCK:
+        pending = read_pending_grant()
+        if pending is None:
+            raise StepUpError(
+                "no armed grant request (it may have expired) -- confirm from the "
+                "dashboard's Security panel first"
+            )
+        if not nonce or not hmac.compare_digest(pending.nonce, nonce):
+            raise StepUpError("approval nonce does not match the armed request")
+        # The step-up's whole claim is that a human armed this while the agent
+        # could not read the nonce. Checking that only at approve time is
+        # defeated by the window between the two: an agent under computer use can
+        # arm, queue a delayed approve, then drive the owner-gated toggle to turn
+        # computer use off, and a NOW-only check waves the delayed command
+        # through. Compared here, inside the claim, so no caller can consume a
+        # request whose conditions moved after it was armed.
+        current = safety_epoch()
+        if not pending.safety_epoch or not hmac.compare_digest(pending.safety_epoch, current):
+            raise StepUpError(
+                "the sandbox or computer-use configuration changed after this request "
+                "was armed, so it no longer proves a human approved it -- confirm "
+                "from the dashboard's Security panel again"
+            )
+        try:
+            os.unlink(pending_grant_path())
+        except FileNotFoundError:
+            # Another claimer won between the read and the unlink. It is holding
+            # this request, so this caller must not also act on it.
+            raise StepUpError("approval nonce does not match the armed request") from None
+        except OSError as exc:
+            # The claim could not be made single-use, so it is not made at all:
+            # returning here would hand two callers the same nonce.
+            raise StepUpError(f"could not consume the armed grant request: {exc}") from exc
+    return pending
+
+
+def restore_pending_grant(pending: PendingGrant) -> bool:
+    """Re-arm a claimed request after the caller's own write failed.
+
+    Keeps a failed :func:`record_grant` non-destructive -- the property the old
+    validate-then-clear ordering provided -- without giving up single-use: the
+    request is gone for the whole window, so no second approval can hold it, and
+    it comes back only if this write failed.
+
+    Restores ONLY when the path is still empty. A request armed after this one
+    was claimed is NEWER, and overwriting it would delete a live request nobody
+    approved and resurrect one whose approval already failed. Returns whether the
+    request was restored, so a caller can tell the owner to re-arm instead.
+    Never raises: a restore that cannot be written leaves the owner re-arming,
+    which is the same remedy.
+    """
+    path = pending_grant_path()
+    with _PENDING_LOCK:
+        try:
+            make_owner_only_dir(path.parent)
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "request_id": pending.request_id,
+                            "nonce": pending.nonce,
+                            "destination_class": pending.destination_class,
+                            "created_at": pending.created_at,
+                            "safety_epoch": pending.safety_epoch,
+                            "source": "restored",
+                        }
+                    )
+                )
+        except OSError:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return False
+    return True
+
+
+def public_pending_view(pending: PendingGrant | None) -> dict[str, Any]:
+    """The SPA-safe projection: everything EXCEPT the nonce."""
+    if pending is None:
+        return {"armed": False}
+    return {
+        "armed": True,
+        "request_id": pending.request_id,
+        "destination_class": pending.destination_class,
+        "expires_in": pending.expires_in,
+        "approve_command": "kirocrew file-delivery approve",
+    }
 
 
 def audit_decision(destination_class: str, *, outcome: str, detail: str = "") -> None:

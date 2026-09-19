@@ -50,6 +50,7 @@ from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIX
 from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
+from kiro_crew.terminal_safe import safe_terminal_line
 
 try:
     import resource as _resource_mod
@@ -57,7 +58,7 @@ except ImportError:  # non-POSIX (Windows)
     _resource_mod = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from concurrent.futures import ThreadPoolExecutor
     from typing import Any
 
@@ -354,6 +355,17 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # race. Precreating it would re-materialise the retired name on every machine.
     "ledgers",
     "cron-history",
+    # The single-use step-up nonce that authorizes recording a flagged-file
+    # delivery grant. Whole DIRECTORY (arm renames a sibling ``.tmp`` into place),
+    # with NO in-sandbox reader: the gateway writes it on arm and the host
+    # ``kirocrew file-delivery approve`` reads it. Masked because a same-UID agent
+    # could otherwise FORGE a nonce here with a runtime-constructed shell path
+    # (the file gate's text/argv matcher does not see such a path) and then drive
+    # the owner's loopback browser to POST that chosen nonce, recording a grant
+    # with no human present -- the exact self-approval hole the step-up exists to
+    # close. Deliberately NOT under ``trust/``, which is sandbox-visible for SEL
+    # appends.
+    "file-delivery-consent-pending",
     # The cron in-flight markers, masked rather than sealed read-only because
     # nothing in the sandbox reads one: they are written and cleared by the run
     # task in the GATEWAY process, and the boot-time loop-stall breaker that acts
@@ -1028,6 +1040,15 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
+    # Same lazily-created shape as aws-control-staging: the file-delivery step-up
+    # nonce dir is created on demand only when the owner first ARMS a grant
+    # (``file_delivery_consent.arm_grant`` -> ``make_owner_only_dir(path.parent)``).
+    # On a fresh install with no prior arm the leaf is absent at spawn, the
+    # ``isdir``-guarded SENSITIVE_DIRS loop skips it, and a later dashboard arm
+    # materialises the nonce INSIDE a running sandbox's view -- where a same-UID
+    # agent reads it and drives the loopback /approve to self-grant. Precreated
+    # (empty, 0o700) before every spawn so the mask always has a name to bind over.
+    "file-delivery-consent-pending",
     "appearance-library",
     "quarantined-clones",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
@@ -1265,7 +1286,8 @@ def _refuse_if_dangling_symlink(target: str) -> None:
     with contextlib.suppress(OSError):
         pointed_at = os.readlink(target)
     raise SandboxCeilingUnsealable(
-        f"the governance ceiling {target} is a DANGLING symlink -> {pointed_at}. "
+        f"the governance ceiling {safe_terminal_line(target)} is a DANGLING symlink -> "
+        f"{safe_terminal_line(pointed_at)}. "
         "mount(2) cannot seal it and it would leave the path writable inside the "
         "sandbox. Remove or repoint it, or lower sandbox_level to run without the seal "
         "deliberately."
@@ -1289,14 +1311,16 @@ def _refuse_if_symlink_leaf(target: str) -> None:
         return
     except OSError as exc:
         raise SandboxCeilingUnsealable(
-            f"cannot stat the masked directory {target} to check for a symlink: {exc}"
+            f"cannot stat the masked directory {safe_terminal_line(target)} to check for "
+            f"a symlink: {safe_terminal_line(str(exc))}"
         ) from exc
     if stat.S_ISLNK(info.st_mode):
         pointed_at = "(unreadable)"
         with contextlib.suppress(OSError):
             pointed_at = os.readlink(target)
         raise SandboxCeilingUnsealable(
-            f"the masked directory {target} is a SYMLINK -> {pointed_at}. The mask would "
+            f"the masked directory {safe_terminal_line(target)} is a SYMLINK -> "
+            f"{safe_terminal_line(pointed_at)}. The mask would "
             "bind over the link's target, not the name, leaving the leaf replaceable in a "
             "writable parent so a sandboxed process could point the pre-created staging "
             "directory at a tree it controls. Remove or repoint it."
@@ -1317,19 +1341,22 @@ def _require_real_dir_nofollow(target: str) -> None:
         info = os.lstat(target)
     except OSError as exc:
         raise SandboxCeilingUnsealable(
-            f"cannot re-check the masked directory {target} after a create race: {exc}"
+            f"cannot re-check the masked directory {safe_terminal_line(target)} after a "
+            f"create race: {safe_terminal_line(str(exc))}"
         ) from exc
     if stat.S_ISLNK(info.st_mode):
         pointed_at = "(unreadable)"
         with contextlib.suppress(OSError):
             pointed_at = os.readlink(target)
         raise SandboxCeilingUnsealable(
-            f"the masked directory {target} became a SYMLINK -> {pointed_at} in the create "
+            f"the masked directory {safe_terminal_line(target)} became a SYMLINK -> "
+            f"{safe_terminal_line(pointed_at)} in the create "
             "race. Refusing rather than binding the mask over the link's target."
         )
     if not stat.S_ISDIR(info.st_mode):
         raise SandboxCeilingUnsealable(
-            f"cannot mask {target}: a non-directory won the create race at the path"
+            f"cannot mask {safe_terminal_line(target)}: a non-directory won the create "
+            "race at the path"
         )
 
 
@@ -1577,12 +1604,20 @@ def _materialize_live_target_mask_target() -> str | None:
     if not os.path.isdir(root):
         return None
     target = os.path.join(root, _LIVE_TARGET_LEAF)
-    _refuse_if_dangling_symlink(target)
-    # A RESOLVING link is the attack entry, not just a dangling one: a mount follows its
-    # target, so the mask would bind over the referent while the lexical name stayed an
+    # ANY symlink refuses, dangling or resolving, and in ONE sentence. A resolving link
+    # is the attack entry rather than just a dangling one: a mount follows its target, so
+    # the mask would bind over the referent while the lexical name stayed an
     # agent-replaceable link in a writable directory. Refused before the isfile check,
     # exactly as the directory materialiser refuses before its isdir check.
-    _refuse_if_symlink_leaf(target)
+    #
+    # This refuses a SUPERSET of what the two generic helpers
+    # (``_refuse_if_dangling_symlink`` then ``_refuse_if_symlink_leaf``) refused between
+    # them, so nothing is admitted that they rejected. The pointer gets its own for two
+    # reasons: those helpers say "the masked DIRECTORY <path> is a SYMLINK", which names
+    # the wrong kind of thing for a JSON document an operator is about to go look at; and
+    # the sentence is shared with ``live_target_pointer_unfitness`` so doctor's
+    # pre-spawn warning and this refusal cannot come to describe one file two ways.
+    _refuse_if_live_target_symlink(target)
     if os.path.exists(target):
         _refuse_unless_sole_regular_link(target)
         return None
@@ -1625,6 +1660,129 @@ def _materialize_live_target_mask_target() -> str | None:
     )
 
 
+def _refuse_if_live_target_symlink(target: str) -> None:
+    """Refuse the spawn when the live-target pointer's path is a symlink of any kind.
+
+    One check for both link shapes, because both fail the same way: a mask binds over the
+    path a link RESOLVES to, so the link's own name stays a writable entry in the data
+    home and a sandboxed process can replace it with a pin of its own. A dangling link is
+    the same hole with the referent missing.
+
+    Deliberately NOT the shared ``_refuse_if_symlink_leaf``: its sentence names "the
+    masked directory", and this target is a JSON document. It also has to be the sentence
+    :func:`live_target_pointer_unfitness` reports, so the pre-spawn warning and the
+    refusal stay one string.
+
+    Refused rather than removed: ``lstat`` then ``unlink`` is not atomic, so removing it
+    here would race whoever put it there.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot stat the live-target pointer {safe_terminal_line(target)} to check "
+            f"for a symlink: {safe_terminal_line(str(exc))}"
+        ) from exc
+    if not stat.S_ISLNK(info.st_mode):
+        return
+    points_at = "(unreadable)"
+    with contextlib.suppress(OSError):
+        points_at = os.readlink(target)
+    raise SandboxCeilingUnsealable(_live_target_symlink_detail(target, points_at))
+
+
+class LiveTargetUnfitness(NamedTuple):
+    """Why the live-target pointer cannot be masked, and what fixes it.
+
+    ``path`` is the pointer and ``detail`` is the SAME sentence
+    :class:`SandboxCeilingUnsealable` carries for that shape -- see
+    :func:`live_target_pointer_unfitness` for why the two must be one string.
+
+    Deliberately no shape TAG beside them: every reader wants the sentence rather than a
+    branch, and a constant a surface only MIGHT want is a guess about a caller that does
+    not exist. The shapes are still told apart without matching prose, by comparing
+    ``detail`` against the formatter that builds it, which is what the tests do. A surface
+    that needs to branch can add the tag then, against a real requirement.
+    """
+
+    path: str
+    detail: str
+
+
+# Every interpolated value in the three sentences below goes through
+# ``safe_terminal_line`` because BOTH readers print the sentence to a terminal verbatim:
+# doctor through ``_print_wrapped`` and ``kirocrew chat`` through ``❌ {exc}``. One of
+# those values is chosen by whoever planted the unfit pointer -- a SYMLINK's target comes
+# back from ``os.readlink`` as arbitrary bytes -- so it can carry OSC/CSI sequences that
+# retitle the window, write the clipboard, or redraw the lines around the diagnosis. The
+# adversary is the sandboxed agent this pointer-masking exists to contain, and an operator
+# running ``kirocrew doctor`` after "agents stopped starting" is the expected trigger, so
+# the bytes are defused where the sentence is BUILT rather than at each surface that
+# prints it -- a surface added later cannot forget.
+#
+# ``safe_terminal_line`` and not ``repr``: these sentences carry a path and a ``find``
+# invocation the operator is meant to COPY, and ``repr`` would quote the whole value and
+# escape its separators -- the same "two unusable fragments" outcome ``keep_tokens_whole``
+# exists to prevent. Stripping control sequences leaves an ordinary path byte-identical.
+def _live_target_irregular_detail(target: str) -> str:
+    """The refusal sentence for a non-regular file at the pointer's path."""
+    return (
+        f"cannot mask {safe_terminal_line(target)}: a non-regular file (a link, FIFO, "
+        "socket, or device node) is sitting at the live-target pointer's path. The "
+        "launcher's isdir/isfile loops classify neither, so its mask would be silently "
+        "skipped for every sandbox. Remove or replace it with a regular file."
+    )
+
+
+def _live_target_multilink_detail(target: str, links: int) -> str:
+    """The refusal sentence for a pointer reachable under more than one name.
+
+    Names the ``find`` invocation rather than only the condition: a hard link is left by
+    ordinary operation (``cp -al``, rsnapshot, a dotfile manager), so the operator who
+    meets this has no reason to know which OTHER path shares the inode, and without the
+    command the remedy "remove the extra link" names no file to remove.
+    """
+    # ``shlex.quote`` per path, rather than one pair of quotes around the whole command: a
+    # data home holding a space makes `find /opt/my data -samefile ...` a two-directory
+    # search that answers a different question WITHOUT erroring, so the remedy has to
+    # survive being pasted and not merely read correctly. Quoting applies to the DISPLAYED
+    # text, so for the pathological case of a path holding a control byte the command is
+    # illustrative rather than runnable; a terminal that cannot be driven matters more.
+    return (
+        f"cannot mask {safe_terminal_line(target)}: the live-target pointer has {links} "
+        "hard links, so a mask over this name would leave another path to the same "
+        "bytes unmasked. List the names under the data home with the command "
+        f"find {shlex.quote(safe_terminal_line(os.path.dirname(target)))} -samefile "
+        f"{shlex.quote(safe_terminal_line(target))} "
+        "-- that searches the data home only, and the tools that leave a link here "
+        "(snapshot and backup runs, a dotfile manager) usually keep theirs somewhere "
+        "else, so if it reports just the pointer, run it again from the mount point "
+        "holding it with -xdev added: a hard link cannot cross a filesystem, but it can "
+        "sit anywhere on this one. Then remove the extra link(s) and restart."
+    )
+
+
+def _live_target_symlink_detail(target: str, points_at: str) -> str:
+    """The refusal sentence for a symlink squatting the pointer's path.
+
+    Wording of its own rather than the shared directory-leaf refusal's: that helper is
+    reached for real directories too and says "the masked directory", which for
+    ``live_target.json`` names the wrong kind of thing to an operator reading it.
+
+    ``points_at`` is the one value here an adversary picks outright -- see the note above
+    this group for why it is defused when the sentence is built.
+    """
+    return (
+        f"cannot mask {safe_terminal_line(target)}: the live-target pointer is a "
+        f"SYMLINK -> {safe_terminal_line(points_at)}. "
+        "A mask binds over the link's target, not the name, so the name stays "
+        "replaceable in a writable directory and a sandboxed process could point it "
+        "at a checkout it controls. Replace it with a regular file, and restart."
+    )
+
+
 def _refuse_unless_sole_regular_link(target: str) -> None:
     """Raise unless *target* is a regular file with exactly one hard link.
 
@@ -1635,23 +1793,87 @@ def _refuse_unless_sole_regular_link(target: str) -> None:
     — whether planted by a same-uid process in a namespace that could see a staging
     temp, or left by an operator's ``ln``. ``FileNotFoundError`` propagates so a
     publish-race caller can tell "gone" from "unfit".
+
+    The sentences come from the module-level formatters so ``kirocrew doctor`` can report
+    the same condition, in the same words, BEFORE a spawn refuses on it.
     """
     st = os.lstat(target)
     if not stat.S_ISREG(st.st_mode):
-        raise SandboxCeilingUnsealable(
-            f"cannot mask {target}: a non-regular file (a link, FIFO, socket, or device "
-            "node) is sitting at the live-target pointer's path. The launcher's "
-            "isdir/isfile loops classify neither, so its mask would be silently "
-            "skipped for every sandbox. Remove or replace it with a regular file."
+        raise SandboxCeilingUnsealable(_live_target_irregular_detail(target))
+    if st.st_nlink != 1:
+        raise SandboxCeilingUnsealable(_live_target_multilink_detail(target, st.st_nlink))
+
+
+def live_target_pointer_unfitness() -> LiveTargetUnfitness | None:
+    """Classify the LIVE live-target pointer the way a spawn would, WITHOUT spawning.
+
+    ``None`` means nothing to report: a healthy pointer, an absent one (the materialiser
+    publishes a stub for it), or no data home yet. Anything else is a shape that makes
+    :func:`_materialize_live_target_mask_target` refuse, so it refuses EVERY Linux agent
+    spawn on the host until an operator fixes it.
+
+    It exists because the refusal is the operator's only notice today, and it arrives too
+    late and in the wrong place: a hard link on a config file is ordinary operation for a
+    snapshot tool (``cp -al``, rsnapshot) and for a dotfile manager, so the condition
+    appears without anybody doing anything wrong, and the first symptom is that agents
+    stop starting. ``kirocrew doctor`` is where an operator looks for that, and this is
+    the read that lets it answer.
+
+    Shares the refusal's own sentences rather than paraphrasing them, so the pre-spawn
+    warning and the post-refusal error cannot drift into describing the same file two
+    different ways — and so a reworded remedy reaches both surfaces at once.
+
+    Read-only and total: it never creates, moves or removes anything, and a data home it
+    cannot resolve or stat is reported as nothing rather than as a fault, because doctor
+    must not turn its own probe failure into a verdict about the host.
+
+    The POINTER itself is the exception: if it exists but cannot be stat'd the ``OSError``
+    propagates rather than reading as fit, because ``None`` here means "nothing to
+    report" and a pointer whose shape is unknown may still refuse every spawn. Doctor
+    renders that as "could not check". Absent is the one genuinely fit failure to stat.
+    """
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; doctor must survive a bad home
+        logger.debug("could not resolve the crew data home for live-target fitness")
+        return None
+    if not os.path.isdir(root):
+        return None
+    target = os.path.join(root, _LIVE_TARGET_LEAF)
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        # Absent is FIT: the materialiser publishes the absent-equivalent stub, which
+        # is the whole reason that function exists.
+        return None
+    except OSError:
+        # NOT ``return None``: None is this function's word for FIT, and an unreadable
+        # pointer is not fit -- it is unknown. Swallowing it would make doctor print
+        # nothing at all for a pointer it cannot classify, which reads as "checked,
+        # healthy" while every Linux spawn may still refuse on it. Doctor's own caller
+        # turns the raise into "could not check (...)", which is the honest answer and the
+        # one its docstring promises. Only the ABSENT case above is genuinely fit.
+        logger.debug("could not stat the live-target pointer %s", target, exc_info=True)
+        raise
+    if stat.S_ISLNK(st.st_mode):
+        points_at = "(unreadable)"
+        with contextlib.suppress(OSError):
+            points_at = os.readlink(target)
+        return LiveTargetUnfitness(
+            path=target,
+            detail=_live_target_symlink_detail(target, points_at),
+        )
+    if not stat.S_ISREG(st.st_mode):
+        return LiveTargetUnfitness(
+            path=target,
+            detail=_live_target_irregular_detail(target),
         )
     if st.st_nlink != 1:
-        raise SandboxCeilingUnsealable(
-            f"cannot mask {target}: the live-target pointer has {st.st_nlink} hard links, "
-            "so a mask over this name would leave another path to the same bytes "
-            "unmasked. List every name for these bytes with "
-            f"'find {os.path.dirname(target)} -samefile {target}', remove the extra "
-            "link(s), and restart."
+        return LiveTargetUnfitness(
+            path=target,
+            detail=_live_target_multilink_detail(target, st.st_nlink),
         )
+    return None
 
 
 def _md_notebook_degraded_mask_dirs() -> list[str]:
@@ -5316,6 +5538,11 @@ def _build_launcher_script(
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
     sandbox_level_json = json.dumps(sandbox_level)
+    # Read at build time so the launcher and the gateway publisher share one bound.
+    from kiro_crew import member_process_records as _records
+
+    record_lock_wait_secs = float(_records.LOCK_WAIT_SECS)
+    record_lock_poll_secs = float(_records._LOCK_POLL_SECS)
     strict_host_key_opt = (
         " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
     )
@@ -5338,10 +5565,13 @@ import sys
 # from the filesystem.
 sys.path[:] = [p for p in sys.path if p not in ("", sys.path[0])]
 import ctypes
+import fcntl
 import json
 import os
+import signal
 import stat
 import tempfile
+import time
 
 # Hoisted from Steps 5/6 (used only AFTER unshare()+mount isolation): a
 # FIRST-TIME stdlib import reads module files off disk, and once the child has
@@ -5504,6 +5734,89 @@ SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
 SANDBOX_LEVEL = {sandbox_level_json}
+# Bounded contention wait shared with member_process_records (the gateway side).
+RECORD_LOCK_WAIT_SECS = {record_lock_wait_secs!r}
+RECORD_LOCK_POLL_SECS = {record_lock_poll_secs!r}
+
+def _namespace_record_directory():
+    """Pin the protected directory; never follow a replaced path component."""
+    home = {str(config_dir().resolve())!r}
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open("/", flags)
+    try:
+        for component in home.strip("/").split("/"):
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        for component in (None, "member-memory-bindings", "pids"):
+            if component is not None:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                next_fd = os.open(component, flags, dir_fd=fd)
+                os.close(fd)
+                fd = next_fd
+            info = os.fstat(fd)
+            if info.st_uid != REAL_UID or info.st_mode & 0o022:
+                raise PermissionError("unsafe namespace record directory")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+def _namespace_record_lock(directory, wait=0.0):
+    """Same stable lock/flags as member_process_records.record_lock (Linux).
+
+    ``wait`` bounds a retry on contention only (BlockingIOError: the gateway
+    sweep or another publisher holds the lock). Unsafe/replaced lock objects
+    raise at once. The lock call itself never blocks, so the bound holds.
+    """
+    fd = os.open(".reclaim.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+                 | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != REAL_UID
+                or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise PermissionError("unsafe process record lock")
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(RECORD_LOCK_POLL_SECS)
+        current = os.stat(".reclaim.lock", dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino)):
+            raise PermissionError("process record lock changed")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+def _retire_namespace_record(directory, name, owned_fd):
+    """Retire only our inode, under the common publication/reclamation lock."""
+    if name is None or owned_fd is None:
+        return
+    lock = None
+    try:
+        lock = _namespace_record_lock(directory)
+        expected = os.fstat(owned_fd)
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (stat.S_ISREG(current.st_mode) and current.st_uid == REAL_UID
+                and current.st_nlink == 1
+                and (current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino)):
+            os.unlink(name, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        sys.stderr.write("sandbox: WARNING -- namespace record retirement skipped\\n")
+    finally:
+        if lock is not None:
+            os.close(lock)
 
 def main():
     argv = sys.argv[1:]
@@ -5528,39 +5841,107 @@ def main():
         # ── Parent: write identity UID/GID map ──
         os.close(c2p_w)
         os.close(p2c_r)
-        os.read(c2p_r, 1)  # wait for child to unshare(NEWUSER)
-        with open(f"/proc/{{pid}}/setgroups", "w") as f:
-            f.write("deny")
-        with open(f"/proc/{{pid}}/uid_map", "w") as f:
-            f.write(f"{{REAL_UID}} {{REAL_UID}} 1\\n")
-        with open(f"/proc/{{pid}}/gid_map", "w") as f:
-            f.write(f"{{REAL_GID}} {{REAL_GID}} 1\\n")
-        os.write(p2c_w, b"x")  # signal child to proceed
-        # The bound PID is this unsandboxed launcher, not its child. Publish
-        # the child's real namespace pair from the trusted side of the fence
-        # before allowing it to run. A nested private view cannot forge this.
-        if os.read(c2p_r, 1) != b"n":
-            sys.exit("sandbox: FATAL - child did not publish its namespace readiness")
-        os.close(c2p_r)
-        _namespace_dir = {str(config_dir().resolve() / "member-memory-bindings" / "pids")!r}
-        os.makedirs(_namespace_dir, mode=0o700, exist_ok=True)
-        _namespaces = []
-        for _kind in ("user", "mnt"):
-            _info = os.stat(f"/proc/{{pid}}/ns/{{_kind}}")
-            _namespaces.append([_info.st_dev, _info.st_ino])
-        with open("/proc/self/stat") as _handle:
-            _stat = _handle.read()
-        _start = _stat[_stat.rfind(")") + 2:].split()[19]
-        _fd, _temporary = tempfile.mkstemp(dir=_namespace_dir, suffix=".tmp")
-        with os.fdopen(_fd, "w") as _handle:
-            json.dump({{"process_start": _start, "namespaces": _namespaces,
-                       "private_memory": {private_memory!r}}}, _handle)
-        os.replace(_temporary, os.path.join(_namespace_dir, f"{{os.getpid()}}.namespace.json"))
-        os.write(p2c_w, b"n")
-        os.close(p2c_w)
-        _, status = os.waitpid(pid, 0)
-        code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
-        sys.exit(code)
+        _directory = _owned_fd = _temporary = _published = None
+        _shutdown_signal = None
+        _waiting = False
+
+        def _request_shutdown(signum, frame):
+            nonlocal _shutdown_signal, _waiting
+            _shutdown_signal = signum
+            if _waiting:
+                _waiting = False
+                raise SystemExit(128 + signum)
+
+        def _parent_wait(operation, *args):
+            # Only interrupt pipe/wait calls, never inode acquisition,
+            # publication or retirement. The inner finally disarms raising
+            # before the outer finally, including on repeated signals.
+            nonlocal _waiting
+            try:
+                _waiting = True
+                if _shutdown_signal is not None:
+                    raise SystemExit(128 + _shutdown_signal)
+                return operation(*args)
+            finally:
+                _waiting = False
+
+        signal.signal(signal.SIGTERM, _request_shutdown)
+        signal.signal(signal.SIGINT, _request_shutdown)
+        try:
+            _parent_wait(os.read, c2p_r, 1)  # wait for child to unshare(NEWUSER)
+            with open(f"/proc/{{pid}}/setgroups", "w") as f:
+                f.write("deny")
+            with open(f"/proc/{{pid}}/uid_map", "w") as f:
+                f.write(f"{{REAL_UID}} {{REAL_UID}} 1\\n")
+            with open(f"/proc/{{pid}}/gid_map", "w") as f:
+                f.write(f"{{REAL_GID}} {{REAL_GID}} 1\\n")
+            _parent_wait(os.write, p2c_w, b"x")  # signal child to proceed
+            # Publish from the trusted parent before releasing the child.
+            if _parent_wait(os.read, c2p_r, 1) != b"n":
+                sys.exit("sandbox: FATAL - child did not publish its namespace readiness")
+            # Optional authority publication: an unsafe/unavailable root skips
+            # at once; a lock the gateway sweep holds is waited for, bounded.
+            # Neither ever runs an unlocked writer.
+            _lock = None
+            try:
+                _directory = _namespace_record_directory()
+                _lock = _namespace_record_lock(_directory, wait=RECORD_LOCK_WAIT_SECS)
+            except BlockingIOError:
+                sys.stderr.write(
+                    "sandbox: WARNING -- skipping namespace record publication; "
+                    f"process record lock held for more than {{RECORD_LOCK_WAIT_SECS:g}}s "
+                    "by another publisher or the reclaim sweep (member memory denied "
+                    "for this launch).\\n"
+                )
+            except OSError:
+                sys.stderr.write(
+                    "sandbox: WARNING -- skipping namespace record publication; "
+                    "protected directory/lock unavailable (member memory denied). "
+                    "Check ownership and chmod 0700 on the protected directories.\\n"
+                )
+            if _lock is not None:
+                try:
+                    _namespaces = []
+                    for _kind in ("user", "mnt"):
+                        _info = os.stat(f"/proc/{{pid}}/ns/{{_kind}}")
+                        _namespaces.append([_info.st_dev, _info.st_ino])
+                    with open("/proc/self/stat") as _handle:
+                        _stat = _handle.read()
+                    _start = _stat[_stat.rfind(")") + 2:].split()[19]
+                    _target = f"{{os.getpid()}}.namespace.json"
+                    try:
+                        _existing = os.stat(_target, dir_fd=_directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if (not stat.S_ISREG(_existing.st_mode) or _existing.st_uid != REAL_UID
+                                or _existing.st_nlink != 1):
+                            raise PermissionError("unsafe namespace record target")
+                    # mkstemp has no dir_fd parameter. procfs reaches the pinned
+                    # directory, not a path that can redirect after validation.
+                    _owned_fd, _path = tempfile.mkstemp(
+                        dir=f"/proc/self/fd/{{_directory}}", suffix=".tmp")
+                    _temporary = os.path.basename(_path)
+                    with os.fdopen(os.dup(_owned_fd), "w") as _handle:
+                        json.dump({{"process_start": _start, "namespaces": _namespaces,
+                                   "private_memory": {private_memory!r}}}, _handle)
+                    os.replace(
+                        _temporary, _target, src_dir_fd=_directory, dst_dir_fd=_directory)
+                    _published = _target
+                finally:
+                    os.close(_lock)
+            _parent_wait(os.write, p2c_w, b"n")
+            _, status = _parent_wait(os.waitpid, pid, 0)
+            code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
+            sys.exit(code)
+        finally:
+            # Keep the inode open until retirement so inode reuse cannot
+            # mistake a replacement for ours. SIGKILL cannot run this block.
+            _retire_namespace_record(_directory, _published, _owned_fd)
+            _retire_namespace_record(_directory, _temporary, _owned_fd)
+            for _close_fd in (_owned_fd, _directory, c2p_r, p2c_w):
+                if _close_fd is not None:
+                    os.close(_close_fd)
     else:
         # ── Child: unshare, wait for maps, mount, exec ──
         os.close(c2p_r)
@@ -6759,6 +7140,20 @@ def kiro_internal_sandbox_enabled() -> bool:
         return False
 
 
+def kiro_internal_sandbox_switch() -> tuple[str, str]:
+    """The settings file and key that toggle kiro-cli's internal sandbox.
+
+    Returns ``(path, key)`` so a diagnostic can name the exact switch an
+    operator has to edit — ``kiro_internal_sandbox_enabled`` answers *whether*
+    delegation is on but not *where* it was decided, and a caller that spelled
+    either half itself would drift silently the day kiro-cli renames one.
+
+    Reads the module globals at call time, so a test that repoints
+    :data:`_KIRO_INTERNAL_SETTINGS_PATH` gets its own path back here too.
+    """
+    return _KIRO_INTERNAL_SETTINGS_PATH, _KIRO_INTERNAL_SANDBOX_KEY
+
+
 def delegated_workspace_exposes_agents_dir(work_dir: "str | os.PathLike[str] | None") -> str | None:
     """Reason a kiro-cli spawn must be refused because its workspace would leave
     the sealed kiro agents tree writable, or ``None`` when it may proceed.
@@ -6954,12 +7349,29 @@ def _delegate_to_kiro_internal_sandbox(
     # seatbelt and must not burn the warning for the first real delegation).
     if not _kiro_delegation_warned:
         _kiro_delegation_warned = True
-        logger.warning(
-            "SECURITY: delegating this %s kiro-cli spawn to kiro-cli's internal "
-            "sandbox and skipping Kiro Crew's OS wrapper. Env scrubbing still "
-            "applies.",
-            "Windows" if sys.platform == "win32" else "macOS",
-        )
+        if sys.platform == "win32":
+            logger.warning(
+                "SECURITY: delegating this Windows kiro-cli spawn to kiro-cli's "
+                "internal sandbox and skipping Kiro Crew's OS wrapper. Env scrubbing "
+                "still applies."
+            )
+        else:
+            # macOS delegation is decided by a settings file, so name it: the
+            # operator who has to change this cannot find it from "delegating"
+            # alone, and the symptom they arrive with is a denied read of a
+            # path OUTSIDE the workspace, which looks like a macOS privacy
+            # (TCC) problem and is not one.
+            logger.warning(
+                "SECURITY: delegating this macOS kiro-cli spawn to kiro-cli's "
+                "internal sandbox and skipping Kiro Crew's OS wrapper (%s sets "
+                '"%s": true). Env scrubbing still applies. kiro-cli owns file '
+                "access for these spawns, so a path its own profile does not allow "
+                'fails with "Operation not permitted" regardless of what macOS '
+                "privacy settings grant; set that key to false to hand isolation "
+                "back to Kiro Crew's profile.",
+                _KIRO_INTERNAL_SETTINGS_PATH,
+                _KIRO_INTERNAL_SANDBOX_KEY,
+            )
     if sys.platform == "win32":
         return list(argv), None
     unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
@@ -9269,6 +9681,76 @@ def credential_mask_applies(mode: str) -> bool:
     # ENFORCED adapter reaches here at all: ``enforce_sandbox_floor`` returns early
     # for every harness this core does not enforce, so no first-class path changes.
     return False
+
+
+def spawn_delegates_masking() -> bool:
+    """Whether the agent spawn is DELEGATED, so Crew's own hidden-dir mask never runs.
+
+    :func:`credential_mask_applies` answers whether ``wrap_argv`` would thread
+    ``extra_hidden_dirs`` through the backend it selects. That is the right
+    question for a mode/backend hole and the wrong one for a DELEGATION hole: on
+    macOS with kiro-cli's internal sandbox enabled, a backend is present, so that
+    predicate answers True, and yet the spawn is handed to kiro-cli
+    (``_delegate_to_kiro_internal_sandbox``) and Crew's mask is not applied at
+    all. Native Windows delegates for the same reason with no Crew backend to
+    apply.
+
+    Kept here rather than in a caller, for the reason
+    :func:`credential_mask_applies` states about itself: a control whose security
+    argument depends on the mask must not carry its own copy of when the mask is
+    skipped. It is a SEPARATE predicate rather than a widening of that one
+    because the two answer different questions, and their existing callers depend
+    on the narrower answer -- a caller that only needs "would the backend carry
+    the mask" must not start refusing a delegated spawn it never cared about.
+
+    Read-only, and never raises: an unreadable delegation setting reads as
+    DELEGATED, which is the fail-closed direction -- a mask that may not run is
+    not trusted.
+    """
+    try:
+        if sys.platform == "win32":
+            return True
+        return bool(sys.platform == "darwin" and kiro_internal_sandbox_enabled())
+    except Exception:  # noqa: BLE001 -- an unverifiable setting is delegated, not trusted
+        return True
+
+
+def unconfined_live_agent_pid(pids: "Iterable[int]") -> int | None:
+    """The first pid among *pids* that is NOT actually confined, or ``None``.
+
+    Confinement is decided at SPAWN by :func:`wrap_argv`, and ``agent.sandbox``
+    is a live setting -- it carries no ``restart=True`` marker, so it reaches the
+    running gateway the moment it is saved. A session spawned while the tier was
+    ``off`` therefore stays unconfined after the config flips, and a control that
+    reads only :func:`configured_sandbox_mode` is asking about the NEXT spawn
+    while the hazard is a process already running. This asks about the processes.
+
+    Reuses the platform predicates ``member_memory_auth`` uses for the same
+    question rather than inventing a second answer: on Linux a confined child
+    holds different user/mount namespaces than the gateway, so MATCHING
+    namespaces mean unconfined; on macOS Seatbelt membership is read directly.
+    Both return ``None`` when the answer cannot be read, and an unreadable
+    process counts as UNCONFINED -- "cannot verify" is not "is confined".
+
+    Native Windows has no Crew confinement to verify, so every pid there answers
+    unconfined and a caller whose security argument needs the mask refuses on
+    that platform, which is the same posture ``spawn_delegates_masking`` takes.
+    """
+    for pid in pids:
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+            return pid if isinstance(pid, int) and not isinstance(pid, bool) else -1
+        try:
+            if sys.platform == "linux":
+                if platform_compat.process_namespaces_match(pid, os.getpid()) is not False:
+                    return pid
+            elif sys.platform == "darwin":
+                if platform_compat.process_is_sandboxed(pid) is not True:
+                    return pid
+            else:
+                return pid
+        except Exception:  # noqa: BLE001 -- unreadable is unconfined, never confined
+            return pid
+    return None
 
 
 def effective_sandbox_mode(mode: str) -> str:

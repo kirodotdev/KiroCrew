@@ -147,13 +147,29 @@ handled by an agent. Operational enablement is a human/infrastructure step:
    is enforced mechanically: `publish-installer.yml` refuses to publish while
    `cli.sh` still pins `CLI_MANIFEST_KEY_ID="UNCONFIGURED"`, and — once a key
    is pinned — refuses unless every LIVE channel feed verifies against that
-   key (`cli-manifest.py verify`, the same checks the installer runs), so
-   neither the pin commit nor any later merge can replace the live installer
-   with one that refuses the feeds it is pointed at.
+   key (`cli-manifest.py verify`), so neither the pin commit nor any later
+   merge can replace the live installer with one that refuses the feeds it is
+   pointed at. That gate is a SEPARATE implementation of the installer's
+   contract, so the direction between them is what is guaranteed rather than
+   equality: whatever the gate accepts, `cli.sh` must also accept. The gate is
+   deliberately stricter in three places (a 16 KiB payload cap against the
+   installer's 64 KiB, a 2048-character cap per field, and refusing a
+   `min_version` above the shipped version), each of which costs a publisher
+   one loud failure instead of shipping a feed nobody can install. It may never
+   be laxer, and `test_cli_manifest_signature.py` drives one shared fixture set
+   (valid, wrong-channel, wrong-host, tampered, legacy) through the gate AND
+   through a real `cli.sh` run so the two cannot drift apart silently.
 
 Pinned versions released before enablement have no immutable signed manifest and
-therefore fail closed under the new installer unless an authorized backfill signs
-the already-published digest. Do not replace the KMS key in place: schema v1 pins
+therefore fail closed under the new installer. The project's disposition is a
+documented cutoff rather than a backfill: `0.1.0` and `0.1.1` are the only
+published releases without a manifest, the minimum pinnable release is `0.1.2`,
+and the user-facing statement of that is `docs/guides/install.md` ("Pinning an
+exact version"). A backfill would sign an already-published digest with the
+operational key, minting an attestation for bytes that no signing pipeline
+produced. Reversing that decision is a release operation, not a code change: the
+only code-side facts are the floor stated in that section and the pinned
+examples that cite it. Do not replace the KMS key in place: schema v1 pins
 one key. For rotation, first ship an installer revision that trusts both old and
 new public keys, then switch the publisher, and retire the old key only after the
 overlap window. The same key also verifies the gateway's feature-video manifest

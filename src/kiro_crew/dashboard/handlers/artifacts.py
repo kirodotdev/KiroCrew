@@ -4541,6 +4541,13 @@ async def api_artifact_publish_providers(request: web.Request) -> web.Response:
                 # send the user somewhere generic, and a provider's own hint is the only
                 # thing that knows WHICH action makes it available.
                 "install_hint": str(getattr(p, "install_hint", "") or ""),
+                # Whether the published link is served with no authentication. The
+                # FE gates the public-exposure warning and the acknowledgment modal
+                # on it; a destination that stores content privately declares False
+                # so the flow stops telling the user their content is on the open
+                # internet. Coerced to a real bool so a stub attribute cannot leak a
+                # non-JSON value into the response.
+                "public_reachable": bool(p.public_reachable),
                 "sharing_model": _sharing_model_dict(sm),
                 "sync_model": {
                     "authority": sy.authority,

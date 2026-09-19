@@ -1120,6 +1120,45 @@ def require_member_memory_store(config, member: str, *, require_directory: bool 
     return require_memory_store(store, config=config, require_directory=require_directory)
 
 
+def unusable_legacy_binding(config, member: str) -> str | None:
+    """Why *member*'s V1 binding names a store no resolver composes, or ``None``.
+
+    The one binding shape the immutability rules protect nothing on. A name that
+    fails :func:`memory_store_name_defect` is dropped by :func:`usable_store_names`
+    and refused by every resolver before a path is composed, so no directory under
+    ``memory_stores/`` is read, replaced or removed by moving the member off it, and
+    there is no legacy tree for :func:`_require_legacy_store_files` to inspect. The
+    member is simply dead: every turn fails at :func:`require_member_memory_store`,
+    and so would any repair that validates the binding it is about to replace.
+
+    Answers the defect only for a record with no ownership claim
+    (``owner_member == ""`` and ``memory_version == 1``) or no record at all. A
+    record claiming private ownership under an unusable name is not a legacy
+    binding and stays refused by the callers: ownership cannot be verified for a
+    store that has no path, and a refusal is the only answer that adopts nothing.
+
+    Pure -- no filesystem call and no config load -- so the dashboard handler and
+    the CLI can both ask with the config they already hold.
+    """
+    agent = config.agents.get(member)
+    if agent is None:
+        return None
+    store = agent.memory_store
+    if store == DEFAULT_MEMORY_STORE:
+        return None
+    defect = memory_store_name_defect(store)
+    if defect is None:
+        return None
+    record = config.memory_stores.get(store) if isinstance(store, str) else None
+    if record is not None and (
+        getattr(record, "owner_member", "") != ""
+        or type(getattr(record, "memory_version", None)) is not int
+        or record.memory_version != 1
+    ):
+        return None
+    return defect
+
+
 _NAMESPACE_LOCK_STATE = threading.local()
 
 

@@ -189,7 +189,24 @@ class KasHarness(MembershipHarness):
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
                 # the overlay that answers which servers those are.
-                stubbed = session_servers_mod.injection_server_names(mcp_gateway_overlay, agent)
+                stubbed = session_servers_mod.injection_server_names(
+                    mcp_gateway_overlay,
+                    agent,
+                    # Deliberately UNSCOPED. The projection above is built from
+                    # ``paths.kiro_agents_dir()`` alone, so the agent this session
+                    # runs is the user-level one even when the checkout declares a
+                    # file of the same name -- KAS refuses a project-only agent at
+                    # session start rather than projecting it
+                    # (``agent_discovery.project_agent_files``). Handing the
+                    # checkout to a name-keyed lookup over that same user-level
+                    # directory would collapse this set to empty, project the
+                    # user-level servers un-subtracted, and run them outside the
+                    # broker: no pool, no caller-identity attribution, no
+                    # governance. ``agent_sdk.backends.overlay_project_scope``
+                    # answers ``{}`` for this host on the injection half for
+                    # the same reason.
+                    work_dir=None,
+                )
             except Exception:
                 # Empty is the SAFE direction: it declares a stubbed server twice
                 # (the injection still wins) rather than withholding one nothing

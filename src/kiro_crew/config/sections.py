@@ -5657,6 +5657,59 @@ class InstancesConfig:
 
 
 @dataclass
+class MonitoringConfig:
+    """Which side justifies itself when a session picks a monitoring path.
+
+    Two paths can watch the same pull request today and NEITHER is gated. The
+    probe-gated structured monitor (``monitor_watch``) and the per-interval
+    prompt loop (``monitor_start``) are both armable on a stock install, and
+    ``GET /api/monitors`` answers ``enabled`` from whether the service object
+    exists rather than from any key, so there has never been a switch that
+    turns the structured engine on or off.
+
+    What is genuinely unsettable is which of the two an arming takes, and the
+    reason is that no code chooses: the choice is made by the model reading the
+    two tool descriptions. So this section is read exactly where those
+    descriptions are built -- ``mcp_tools/control.py::schemas()`` -- and
+    nowhere else. That is the honest extent of it, and the help text below says
+    so rather than implying an enforcement this key does not have.
+    """
+
+    prefer_structured_arming: bool = field(
+        default=False,
+        metadata=_meta(
+            "Prefer the structured monitor when arming",
+            "Which side has to justify itself before a supported pull request is "
+            "watched. Off, the default and the shipped wording: the structured "
+            "monitor monitor_watch is admissible only once the caller has "
+            "satisfied itself that the objective is fully determined by typed "
+            "provider facts, a judgement that leans to the prompt loop whenever "
+            "the caller is unsure. On: a supported pull request is enough, and "
+            "the prompt loop monitor_start becomes the exception that needs its "
+            "own reason. Both positions send evidence the typed provider cannot "
+            "observe -- comments, advisory review findings -- to the prompt loop, "
+            "so this moves the burden rather than swapping two defaults. What it "
+            "changes is the text those two descriptions give the agent: it does "
+            "not refuse either tool and cannot guarantee which one the agent "
+            "picks. Neither path is gated by this key -- both are armable with it "
+            "off -- so turning it on grants no new unattended capability. The "
+            "value is read afresh every time the tool list is built, so no "
+            "gateway restart is needed; a session already open keeps the tool "
+            "list it was given, so the change reaches the next session. Two "
+            "things to know before turning it on. The structured path observes "
+            "typed provider facts only -- lifecycle, checks, mergeability, "
+            "review decision, review threads -- and not generic comments or "
+            "advisory review findings, so an objective that depends on reading "
+            "those still needs the prompt loop. And this key is reversible but "
+            "an already-armed structured monitor is not: stopping one records a "
+            "retained USER_STOP outcome that refuses a re-arm, so moving such a "
+            "session to the prompt loop needs its owner to clear that record in "
+            "the dashboard's monitor popover first.",
+        ),
+    )
+
+
+@dataclass
 class HeartbeatConfig:
     """Heartbeat background task queue (~/.kiro/crew/workspace/HEARTBEAT.md)."""
 

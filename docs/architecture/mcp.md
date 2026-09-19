@@ -801,6 +801,120 @@ Fingerprint schema 5 regenerates cached plain-flag overlays on upgrade. The
 interpreter path in the entry's `command` is the one value the codec cannot
 cover: the CLI runs it, not the stub.
 
+### Overlay scope: user-level agents only
+
+The rewriter reads `~/.kiro/agents/` and writes one overlay per agent NAME, so the
+overlay directory describes user-level agents and nothing else. kiro-cli also
+resolves `--agent` against `<project>/.kiro/agents/`, which means a session can be
+running an agent of that same name from a different file. `session_servers`
+therefore takes the session's checkout: an agent the checkout declares has no
+overlay, the lookup answers nothing, and the session launches the servers its
+project spec declares.
+
+Injecting the user-level stub instead handed that session servers the project
+never declared, and left the project's own declaration of a same-named server
+unlaunched, because a session-injected entry outranks the spec entry it shadows.
+The scope reaches `pooled_session_servers` and `injection_server_names` through
+one guard, because the second is what a mirror withholds from its own projection:
+a name withheld but not injected costs the session that server entirely. Which
+names a checkout declares is read from `agent_discovery.project_agent_files` and
+`project_agent_name`, the same pair `acp/session_mcp.py` resolves the session's
+agent spec through, so the two cannot disagree about which file the session runs.
+
+Those servers run unpooled -- outside the pool, outside caller-identity
+attribution, outside broker governance -- the same direction every other
+unvouchable stub takes here, and the lookup says so at WARNING rather than debug:
+this is an ordinary configuration rather than an error path, so at debug the
+governance downgrade would be exactly as silent as the defect it replaces. Brokering them instead is not an overlay change:
+`gatewayd` resolves a backend command from `KIROCREW_MCP_TARGET_<SERVER>` in its
+OWN process env, written at daemon launch from the rewriter's `target_env`, and a
+stub never tells the daemon its target. An overlay written for a project agent
+after launch therefore has no target the daemon can resolve, so closing that half
+needs a channel for a target the daemon was not started with.
+
+One host is the exception, and for it the scope must NOT be applied. KAS projects
+the agent spec itself from `paths.kiro_agents_dir()` alone
+(`acp/kas_agents.load_agent_spec`), refusing a project-only agent at session start
+rather than projecting it, so the user-level agent IS the one a KAS session runs
+even when the checkout declares that name. Scoping its lookup would collapse the
+stub set to empty, the projection would declare the user-level servers
+un-subtracted, and they would run outside the broker while the operator has the
+gateway switched on -- the governance loss inverted. Membership lives in
+`ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY` and is read through
+`agent_sdk.backends.overlay_project_scope` rather than as "is KAS", so a host added
+later that reads the user level alone joins the set instead of needing a branch.
+The KAS harness's own call passes `work_dir=None` for the same reason, which keeps
+both halves of that session -- what is injected and what is withheld -- on one
+answer.
+
+The checkout is only half of that scope. `project_agent_files` scans the `*.json`
+and `*.md` spec forms alike, because whether a checkout's spec may be projected is
+a governance question for its consumers rather than a question of form; this
+lookup is narrower, since it is deciding whether the agent the session RUNS came
+from the checkout. kiro-cli discovers `*.json` in a checkout, so a project
+`foo.md` with no JSON twin must not suppress a user-level `foo.json`'s stubs: that
+would leave the servers kiro-cli does activate running with no pool, no
+caller-identity attribution and no governance, which is the same loss this scope
+exists to prevent, reached from the other side. `overlay_project_scope` therefore answers
+in keywords -- the checkout together with `markdown_specs` -- and every call site
+splats that one mapping, so no site can take the checkout without its format rule.
+
+`markdown_specs` is `has_mirror`, the same registry read both call paths already
+use to decide whether a projection happens at all, because the hosts genuinely
+disagree and each answer is right for the host holding it. A MIRRORED host's array
+is composed by Crew from a spec `acp/session_mcp.py` resolves through
+`project_agent_files`, which honours the markdown form: a project `foo.md`
+declaring `gitlab` comes back from `_agent_spec_for` with that server. For those
+hosts the markdown file IS the agent running, so its shadow must suppress the
+overlay -- otherwise the user-level `foo.json`'s stub survives, outranks the
+project's own declaration, and mounts that stub's command and credentials under the
+checkout's agent. A host with no mirror resolves no project spec through Crew at
+all, so it takes the JSON-only answer for the same reason kiro-cli does.
+
+`ACP_BACKENDS_MARKDOWN_AGENT_SPECS` -- a host reading the markdown form from a
+checkout itself -- is deliberately not OR-ed in, because its only member also reads
+the user level alone and leaves with no checkout, so the term would have no caller
+able to reach it. `test_agent_sdk_capabilities` pins that containment, so a host
+which breaks it fails there naming the decider.
+
+That kiro-cli discovers project `*.json` and not project `*.md` is MEASURED on the
+shipped binary rather than read off a document, because the documents disagree: the
+vendored upstream reference describes the IDE 1.0 / CLI 3.0 schema and says the
+filename without `.json` or `.md` becomes the agent name, while
+`agent_spec_format`'s own header records markdown as the v3 engine's form. On
+kiro-cli 2.22.0, `kiro-cli agent list` run inside a checkout holding both
+`probe-json.json` and `probe-md.md` lists exactly one workspace agent, `probe-json`;
+`probe-md` does not appear. A newer CLI that does discover project markdown would
+make this backend a member of the markdown set, which is the condition the
+containment pin names. That measurement is not a one-off: the
+`KIROCREW_E2E_REAL_KIRO_CLI`-gated suite pins it beside the session/new precedence
+guard, and its failure message names the set to join, so an upgrade that adds
+project markdown discovery reports the remedy rather than silently reopening the
+defect.
+
+The parse requirement travels with the form set, because both answer one question:
+WHICH RESOLVER decides this session's spec. A mirrored host's spec comes from
+`session_mcp._project_spec_path_for`, which scans both forms and matches on
+`project_agent_name` -- filename fallback included -- and which, once it matches a
+project file, returns that file's read without falling back to the user level. So a
+malformed project spec leaves a mirrored session with NO spec: no `tools` allowlist,
+no project servers. The overlay must not fill that gap with the user-level agent's
+stubs, so a mirrored host takes `dispatchable_only=False` and suppresses on the
+malformed file. kiro-cli resolves the checkout itself, reports a malformed spec as an
+error and runs the user-level agent instead, so it takes `dispatchable_only=True` and
+keeps the stubs that belong to the agent it is actually running. The two hosts take
+OPPOSITE answers on the same file, and `overlay_project_scope` computes both facets
+from one `has_mirror` read so neither can be set without the other.
+
+A project spec that does not PARSE is not a shadow for a kiro session either.
+`project_agent_name` falls back to the filename stem for a malformed file, so a
+broken `foo.json` matched `foo` and withheld a good user-level agent's stubs, while
+kiro-cli reports that file as an error and offers no such mode -- measured the same
+way: a malformed project spec yields `Error: Json supplied at ... is invalid` and
+zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, and
+its default is unchanged so the governance refusal in `agent.py`, for which a file
+in any state is a claim on the name, keeps refusing.
+
 ## How app agents reach MCP servers
 
 An app declares MCP servers in its manifest, and
@@ -836,8 +950,7 @@ Containment for app agents has three layers:
 |-------|-----------|----------------|
 | Agent config | `managedToolPolicy` renders as `disabledTools`; a `neutralize` entry re-declares a server with every tool disabled and does not add it to `tools` | Written at registration, no network |
 | kiro-cli | Reads `disabledTools` and filters before the model sees the list | In-process, no network |
-| MCP server | `GET /api/session-tool-policy` returns the calling session's `managedToolPolicy.exclude`, and the server filters `tools/list` and `tools/call` | Gateway round-trip |
-
+| MCP server | `GET /api/session-tool-policy` returns the calling session's `managedToolPolicy.exclude`, and the server filters `tools/list` and `tools/call`. When that read fails the policy is `unresolved`: `tools/call` refuses with an audited error, `tools/list` still lists everything | Gateway round-trip |
 `managedToolPolicy` and `includeMcpJson` are in
 `bridges._FRAMEWORK_OWNED_AGENT_KEYS`, so they are refreshed from the template on
 every boot rather than preserved as user preferences. Preserving them is wrong in
@@ -849,15 +962,73 @@ exclude list, which the framework would then faithfully preserve forever.
 discovers the real tool names, so a server that grows a tool cannot quietly slip
 past a stale pattern.
 
-The third layer is defense in depth for hosts that ignore `disabledTools`, and it
-fails **open** by design: kiro-cli calls `tools/list` once at session start, so
-returning an empty list on a transient gateway failure would leave that session
-permanently believing the server has no tools, unrecoverable without a restart.
-A missing session key is not cached (a startup race must be retryable); a
-resolved key whose policy call fails gets a 30s negative cache so a persistently
-unreachable gateway does not add a 5s timeout to every tool call. The gateway
-side is deny-by-default in the opposite sense: a caller that cannot prove its
-identity gets a 400/404, never an empty policy.
+The third layer is defense in depth for hosts that ignore `disabledTools`. When the
+policy cannot be read, what it does depends on WHY, because the reasons differ in
+kind and its two consumers carry different risk.
+
+`tools/call` fails **closed** on `policy_unreadable`, the gateway's `409`: a spec for
+this session exists and its policy could not be determined, so an operator exclusion may
+exist and be withheld. The call is refused with an error naming the reason and audited as
+`rejected_policy_unresolved`. The test for admitting a reason here is that it means ONE
+thing, because a refusal derived from an ambiguous reason is wrong for half the callers
+it hits.
+
+`resolution_failed` -- no usable answer, meaning nothing came back or a `5xx` said the
+gateway is broken -- passes that test and is still permissive, which is the one place
+this contract says something different from what the security argument alone would say.
+Refusing on it was implemented and measured, and the repository's real-MCP end-to-end
+lane will not run a legitimate first tool call under it: five heads with it refusing all
+fail that lane and the two with it permissive both pass. So in this deployment an
+ordinary call reaches that arm, and refusing there does not cost an attacker a tool call,
+it costs an ordinary caller every tool call. It stays permissive and audited until the
+gateway can say why a real call lands there, which is a gateway-side question.
+
+The other reasons stay permissive, each because no operator exclusion is known to exist
+for that caller or because refusal would be permanent rather than a window that closes. `agent_not_resolved` is the `404`, returned both for a session still
+registering (a policy may exist) and for a caller the gateway can never map to an agent
+(no policy can exist); refusing denies the second class forever. `no_session_key` is
+the same gap inside the MCP process, where no agent is named at all. `policy_forbidden`
+is ANY `4xx`: the gateway answered and made a decision about this caller, which for
+`403 member_session_unverified` is the steady state of a session claiming a private
+memory store without a verifiable proof. A boundary the gateway is enforcing is not a
+boundary it failed to read. The test is deliberately the status class and not a list of
+codes -- a list is only as complete as its author's knowledge of the endpoint, and a
+status it never learned would be refused as though it were an outage. Each call through one of these windows is audited as
+`tool_policy.unenforced_call`, so they are visible instead of silent. Closing the `404`
+needs the endpoint to distinguish registering from unmappable.
+
+`tools/list` never filters on an unresolved policy at all, whatever the reason:
+kiro-cli calls it once at session start and caches the answer, so hiding tools on a
+transient failure would leave that session permanently believing the server has no
+tools, unrecoverable without a restart. A listed tool that refuses when called is
+not a hole; an unlisted tool that runs is. Each unfiltered listing is audited as
+`tool_policy.unfiltered_listing`.
+
+A session that has ever resolved its policy is served from the per-session cache and
+never reaches these paths again, so a refusal only affects a session whose policy has
+never been read once.
+
+A missing session key is not cached as a policy (a startup race must be
+retryable, and it clears in milliseconds); a resolved key whose policy call fails
+gets a 60s negative cache so a persistently unreachable gateway does not add a 5s
+timeout to every tool call. That negative cache reports the reason of the clock it
+hit -- the short window an identity race, the long window `resolution_failed` -- so
+a cached read lands in the same class its live form would. Serving one shared reason
+would repeat the conflation the resolver exists to undo, one level down. The gateway
+side is deny-by-default in the same sense: a caller that cannot prove its identity
+gets a 400/404, never an empty policy.
+
+An empty body from that endpoint means one thing only: this agent genuinely
+declares no exclusions. A spec that EXISTS and cannot be read -- unparseable,
+valid JSON that is not an object, a `managedToolPolicy` of the wrong shape, or two
+specs declaring one agent name -- answers `409` with `{"error":
+"policy_unreadable"}` and a SEL `denied` record. Sharing the empty body with those
+cases would make an unreadable deny indistinguishable from no deny on the wire, so
+no caller could tell them apart however carefully it fails closed. The MCP side
+maps that `409` to `unresolved="policy_unreadable"` and does NOT negative-cache
+it: the answer is immediate so there is no timeout to debounce, and both negative
+clocks are process-global, so caching one session's malformed spec there would
+refuse calls for every sibling session in a pooled backend.
 
 ## The MCP-first rule
 
@@ -1723,9 +1894,13 @@ the surfaces with typed wake dispatch and completion correlation. Webex retains
 finite legacy prompt loops but refuses `monitor_watch` at both the stateless tool
 and authoritative consumer boundaries.
 The legacy `monitor_start` descriptor routes supported pull-request readiness
-through `monitor_watch` only when typed provider facts fully determine the
-objective. Objectives that require interpreting comments or advisory review
-evidence keep a finite legacy loop instead of claiming the structured probe
+through `monitor_watch`, and which of the two it names as the DEFAULT is the
+installation's choice: with `monitoring.prefer_structured_arming` off (the
+shipped position) the structured path is offered only when typed provider facts
+fully determine the objective, and with it on the structured path is the default
+and the legacy loop is the exception. Neither position refuses either tool.
+Objectives that require interpreting comments or advisory review evidence keep a
+finite legacy loop in both positions instead of claiming the structured probe
 observes those facts.
 
 `monitor_watch.kind` is the closed set `github_pull_request`,

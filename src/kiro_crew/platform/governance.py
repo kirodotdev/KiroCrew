@@ -821,9 +821,25 @@ class Decision:
 # A control that can answer "is this item permitted?" for ONE level.  Both
 # ``ScopedRuleset`` and the composed ``_AndRuleset`` satisfy it — the evaluator
 # only ever calls ``permits``, so it stays archetype-shape-agnostic.
+#
+# The two projection queries exist because a consumer cannot answer them with
+# ``permits``: a per-tool rule (``@srv/delete``) matches only itself, so a
+# sentinel probe sails past it, and a force-pin is a pattern to union rather than
+# a question to ask. Reading ``.allow`` / ``.deny`` attributes off the control is
+# not an option either — a composed fold is an ``_AndRuleset``, which holds its
+# patterns in its halves. So the control answers for every tier it carries, and
+# ``_AndRuleset`` answers by delegating to both halves.
 @runtime_checkable
 class RulesetLike(Protocol):
     def permits(self, item: str) -> Decision:  # pragma: no cover - protocol stub
+        raise NotImplementedError
+
+    def declared_patterns(self) -> Tuple[str, ...]:  # pragma: no cover - protocol stub
+        """Every pattern this control names, in any list, at any tier."""
+        raise NotImplementedError
+
+    def force_deny_patterns(self) -> Tuple[str, ...]:  # pragma: no cover - protocol stub
+        """Patterns this control denies outright, at any tier."""
         raise NotImplementedError
 
 
@@ -887,6 +903,24 @@ class ScopedRuleset:
             return Decision(False, f"{item!r} matches deny pattern {hit!r}", rule="rule1-deny")
         return Decision(True, f"{item!r} not denied", rule="rule1-deny")
 
+    def declared_patterns(self) -> Tuple[str, ...]:
+        """Every pattern this ruleset names, in either list.
+
+        Both lists, because either one is an opinion about the items it names: an
+        allow-mode set that lists some of a server's tools says as much about that
+        server as a deny-mode set that excludes one.
+        """
+        return self.allow + self.deny
+
+    def force_deny_patterns(self) -> Tuple[str, ...]:
+        """The patterns this ruleset denies outright.
+
+        Only a deny-mode set has any: an allow-mode set is an allowlist whose own
+        ``deny`` is ignored (Rule 1), and ``gate_decision`` enforces it as the
+        closed set it is, so it projects no pattern to union anywhere.
+        """
+        return self.deny if self.mode == MODE_DENY else ()
+
     def compose(self, narrower: "RulesetLike") -> "RulesetLike":
         """Rule 2 / inheritance — intersect this (ceiling) with a *narrower* set.
 
@@ -941,6 +975,19 @@ class _AndRuleset:
                 return Decision(False, i.reason, rule="rule2-intersect", layer=i.layer)
             return Decision(False, f"profile: {i.reason}", rule="rule2-intersect", layer="profile")
         return Decision(True, "permitted by both levels", rule="rule2-intersect", layer="both")
+
+    def declared_patterns(self) -> Tuple[str, ...]:
+        """Every pattern either half names — a half may be a nested pair."""
+        return _dedup(self.outer.declared_patterns() + self.inner.declared_patterns())
+
+    def force_deny_patterns(self) -> Tuple[str, ...]:
+        """Every outright denial either half carries, unioned.
+
+        A fold of an authority with a subordinate tier is this shape whenever the
+        two modes differ, and the authority's denials bind through it: composition
+        may only tighten, so a half's deny survives the fold it is folded into.
+        """
+        return _dedup(self.outer.force_deny_patterns() + self.inner.force_deny_patterns())
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -2148,15 +2195,23 @@ def _dedup(items: Tuple[str, ...]) -> Tuple[str, ...]:
 def _command_deny_patterns(control: object) -> Tuple[str, ...]:
     """Extract force-deny command patterns from a parsed ``commands`` control.
 
-    A DENY-mode ScopedRuleset's ``deny`` tuple IS the set of force-pins: patterns
-    that must remain denied regardless of user opt-out. An ALLOW-mode ruleset is
-    an allowlist (deny-by-default) enforced by ``gate_decision`` and CANNOT be
-    projected as a deny-pattern union, so it returns ``()`` (with a debug log).
-    Any non-ScopedRuleset control (e.g. an ``_AndRuleset`` that can only arise
-    from an allow-mode combination) also returns ``()``.
+    A DENY-mode set's ``deny`` tuple IS the set of force-pins: patterns that must
+    remain denied regardless of user opt-out. An ALLOW-mode set is an allowlist
+    (deny-by-default) enforced by ``gate_decision`` and projects no pattern to
+    union. Ask the control (``force_deny_patterns``) rather than reading its
+    attributes: a fold of two tiers is an ``_AndRuleset``, which holds its
+    patterns in its halves, and an authority's pins bind through such a fold.
+
+    The test is :class:`RulesetLike` conformance, not a list of the two shapes
+    that satisfy it today: naming them would make any later archetype in this
+    scope project no pin at all, which is the same empty projection this asks
+    about. A control of another archetype (a capability gate, a scoped map)
+    carries no pins to union and yields ``()`` with a debug log.
     """
-    if isinstance(control, ScopedRuleset) and control.mode == MODE_DENY:
-        return control.deny
+    if isinstance(control, RulesetLike):
+        pins = control.force_deny_patterns()
+        if pins:
+            return pins
     if control is not None:
         logger.debug("commands control %r yields no force-deny pins", type(control))
     return ()
@@ -4006,6 +4061,15 @@ def _ceiling_mentions_mcp_server(ceiling: Optional[GovernanceCeiling], server: s
     some of a server's tools is also an opinion, and auto-approving the whole
     server would grant the rest.
 
+    Asks the control for its patterns (``declared_patterns``) instead of reading
+    ``.allow`` / ``.deny`` off it: a ceiling folded from two policy tiers is an
+    ``_AndRuleset``, which carries neither attribute, and an attribute read there
+    reports "no rule about this server" for a fold whose halves both name it —
+    handing out the one grant that never reaches the gate. The question asked of
+    the control is :class:`RulesetLike` conformance rather than "are you one of
+    the two shapes that exist today", so an archetype added to this scope later
+    is asked rather than silently read as empty.
+
     A pattern scan deliberately does NOT answer "is this scope governed" — it
     answers "is THIS SERVER named". The empty-allowlist case (allow-mode with no
     patterns = deny-all) produces no patterns to match and is caught by the
@@ -4017,13 +4081,10 @@ def _ceiling_mentions_mcp_server(ceiling: Optional[GovernanceCeiling], server: s
     if ceiling is None:
         return False
     ruleset = ceiling.get("mcp")
-    if ruleset is None:
+    if not isinstance(ruleset, RulesetLike):
         return False
     prefix = f"@{server}".casefold()
-    patterns = tuple(getattr(ruleset, "allow", ()) or ()) + tuple(
-        getattr(ruleset, "deny", ()) or ()
-    )
-    for pattern in patterns:
+    for pattern in ruleset.declared_patterns():
         candidate = str(pattern).strip().casefold()
         if candidate == prefix or candidate.startswith(prefix + "/"):
             return True

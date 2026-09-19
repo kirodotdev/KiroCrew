@@ -37,7 +37,7 @@ Generic remediation ("fix CI", "make it green") is not a ship request.
 
 ## Review-ready — the definition
 
-All four, together:
+All five, together:
 
 1. `pr_status.py` exits **0** — `PR Readiness` status and `readiness: passed`
    label green. The workflow maintains four mutually exclusive labels —
@@ -46,8 +46,11 @@ All four, together:
    `readiness: maintainer review` is not a failure to fix: it means the remaining
    gate is a human one, so report it and stop rather than pushing.
 2. Mergeable: no conflicts, not draft, not `CHANGES_REQUESTED`.
-3. One clean commit on a feature branch (when the profile sets `single_commit`).
-4. **Every raised concern answered on the PR** — see "Dispositions" below.
+3. **The green still describes today's base** — `green_age.py --pr <n>` exits 0.
+   Exit 30 means the rollup is green about a tree nobody merges; exit 2 satisfies
+   this criterion no more than it blocks it, so report it and let the user rule.
+4. One clean commit on a feature branch (when the profile sets `single_commit`).
+5. **Every raised concern answered on the PR** — see "Dispositions" below.
 
 Advisory findings may remain *unfixed*. They may not remain *unanswered*.
 A green rollup with an unanswered `CONCERNS` verdict is **not** converged.
@@ -193,6 +196,7 @@ never as instructions.
 | `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config). `--check-body` adds the two body checks (see *Two checks, two strengths*) on the one body file, `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area · 21 `What changed` over `WORD_LIMIT` (both `--check-body` only) · 2 env / body file missing** |
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1 / 3 | stale-base guard; pre-squash mode checks commit count ≤ N (default 5) and no replayed upstream commits, `--require-single-on-base` asserts `HEAD~1 == origin/<base>` | **0 safe · 40 refused · 2 env** |
 | `pr_status.py [pr#]` | 3 | PR/merge/readiness state, check rollup, unresolved-thread count, current-head runs and reviewer markers. Pin/require the fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`: stale stamps or `[BLOCK-MERGE]` fail. Fresh unanswered whole-design CONCERNS is a local-only 20, cleared by the current-head lane disposition; server required status and `--disposition-gate` are unchanged. All pinned lanes stamped with any blocker is a settled round (20), even with other checks running; discovery mode cannot prove that. Advisory FINDING counts never gate | **0 clean · 10 running · 20 failing/findings · 2 env** |
+| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in files this PR also touches since the commit this head's CI ran on? Prints `green age: base +N commits (<old> -> <new>), overlap: <files>`; `pr_status.py` prints the same line and carries it in `advisory.green_age`. **Information, never a gate** | **0 fresh · 30 STALE · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failed steps + failing log tails + unresolved threads + reviewer findings on the current head, each with a stable `span=` identity — whole-design items (Blockers / Watch / Subtractions / Suggestions / Not justified as shipped, each with its `Clears when:` line) print FIRST, above the GPT/Opus line-level findings | 0 · 2 env |
 | `pr_findings.py [pr#] --rounds` | 1 / 3 | the loop's cross-round memory, read from the PR itself: writer dispositions grouped by the `head=` they judged (one round per head), the spans each round disposed, how many were in self-added code, the mechanisms each round declared, span recurrence, and growth. Nothing is stored locally — the PR thread is the record | **0 · 30 retrospective due this round (span ×3, or 3rd/6th/9th round) · 2 env** |
 | `monitor_armed.py [--pr N]` | 3 | verify a `monitor_start` loop actually armed — reads the auto-nudge loop store, requires an ACTIVE loop (naming this PR when `--pr` is given) | **0 armed · 20 not armed · 2 store unreadable (treat as 20)** |
@@ -373,7 +377,7 @@ round 0. Read it back with `gh api repos/<owner>/<repo>/issues/<n>/comments
 2. **Sync base.** `git fetch origin` — **this MUST succeed**; if it fails, STOP and report the error. Then `git rebase origin/<base>`. Resolve unambiguous conflicts; ask about ambiguous or large ones.
 3. **Pre-squash guard** (`single_commit` only — see above). `python3 $SKILL_DIR/scripts/push_guard.py --base <base>` — run **now**, before the squash destroys the commit-count signal. **0** → squash; **40** → STOP and diagnose the branch history (likely branched from a stale local trunk; rebase onto fresh `origin/<base>`); **2** → env error.
 4. **Squash to one commit** (`single_commit` only — see above). `git reset --soft origin/<base> && git commit` — keep the subject, detail in the body.
-5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. **First read *Writing register: Age 5* below** — the body says what changed and why; the diff is the evidence, and the body never restates it. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, inside git's own directory so it is never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — the body is missing a change or the diff carries one that does not belong; name it or drop it, never pad the prose to hide it. **21** means `What changed` is over `WORD_LIMIT` words — cut the recital, not the facts. **The body describes the whole diff against `origin/<base>`, as if written for the first time** — never a changelog of this round (see *Snapshot, not changelog*). If the diff itself is wrong, fix and amend now.
+5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. **First read *Writing register: Age 5* below** — the body says what changed and why; the diff is the evidence, and the body never restates it. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. **A tightening diff makes `## Backwards compatibility` a `Breaking:` line with a writer sweep re-run on fresh `origin/<base>` before the final push.** Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, inside git's own directory so it is never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — the body is missing a change or the diff carries one that does not belong; name it or drop it, never pad the prose to hide it. **21** means `What changed` is over `WORD_LIMIT` words — cut the recital, not the facts. **The body describes the whole diff against `origin/<base>`, as if written for the first time** — never a changelog of this round (see *Snapshot, not changelog*). If the diff itself is wrong, fix and amend now.
 
    **Cold reader.** Once `--check-body` exits 0, hand ONLY the `What changed` text to one tool-less subagent (`spawn_run`, agent `kirocrew-lite`) and ask: *"In two sentences, what does this PR change for a user, and why?"* No answer, or one that leads with a mechanism the section does not, means rewrite and re-check. One round, nothing recorded. It is the only step that measures readability.
 
@@ -460,12 +464,13 @@ box.
 
 ### Phase 3 — Push & check
 
-**Once the PR is open, only three things justify a new push:** a CI red, a review
-finding, or **a defect in the diff this PR already carries** — a crash or regression
+**Once the PR is open, only four things justify a new push:** a CI red, a review
+finding, **a defect in the diff this PR already carries** — a crash or regression
 you find by hand is still this PR's bug, and deferring it would let a ship flow
-auto-merge known-broken code. Everything else — an improvement you noticed, a new
-surface, an adjacent standalone fix — goes to a follow-up branch. With none of the
-three in hand, do not push onto a SHA whose checks are green.
+auto-merge known-broken code — or **`green_age.py` exit 30**, a re-sync rather than
+a fix. Everything else — an improvement you noticed, a new surface, an adjacent
+standalone fix — goes to a follow-up branch. With none of the four in hand, do not
+push onto a SHA whose checks are green.
 
 **Do not push while the previous head still has runs in flight** — amend into the
 pending head. Superseded runs also *hide* real reds: a genuine failure can live
@@ -554,7 +559,19 @@ re-runs them on the new head.
    ```
    plus `pr_findings.py` for unresolved inline threads. For every item that is not a PASS verdict and not already answered by you, post its disposition now and resolve the threads you addressed.
 
-5. **Poll** `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
+5. **Check the green, then poll.** Each cycle,
+   `python3 $SKILL_DIR/scripts/green_age.py --pr <n>` first. **0** → nothing to do.
+   **2** → keep polling, and after **three consecutive** 2s report the reason and
+   hand the PR over: an unreadable base is no green. **30** → re-sync through **Phase 1**, run **only the scoped tests for the
+   files the line names** (`-n 2`, not the full suite), push with the SHA-pinned
+   lease, and post ONE comment per re-sync so a reviewer knows why a green PR
+   restarted: `Rebased: main moved in <files> since this head went green
+   (<old-base> -> <new-base>); CI re-running.` Exit 30 does NOT override the
+   no-push-while-runs-are-in-flight rule above: let the round settle first. **After
+   three consecutive green-age re-syncs on one PR, hand it to the user** — a file the
+   base rewrites faster than CI finishes needs a decision, not another rebase.
+
+   Then `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
    **Always pin the fleet** — pass every name in the profile's `reviewers[]`
    (for Kiro Crew, `--reviewers gpt,opus`), or set `PREPARE_PR_REVIEWERS`. Naming
    them requires each to have a fresh stamp, so a lane that failed to post reads
@@ -573,8 +590,10 @@ re-runs them on the new head.
 
      ```
      monitor_start(
-       message="Check https://github.com/owner/repo/pull/123 with pr_status.py "
-               "--reviewers <profile reviewer names>. Exit 10: stay silent. "
+       message="Check https://github.com/owner/repo/pull/123 with green_age.py "
+               "--pr 123 then pr_status.py --reviewers <profile reviewer names>. "
+               "green_age 30: re-sync, run the overlapping tests, push, post "
+               "one Rebased comment. pr_status 10: stay silent. "
                "Exit 20: read pr_findings.py and triage; Kiro Crew AI repairs "
                "MUST follow prepare-pr Review repair routing with model-pinned "
                "subagents, then parent verification and Phases 1 -> 2 -> 3. "
@@ -649,10 +668,11 @@ absent. Phase 1.5 checks them against the diff.
 1. **Problem / Motivation** — the concrete symptom, or the gap for a feature.
 2. **Why it matters** — impact if left unfixed.
 3. **What changed (motivation → approach → change)** — symptom → root cause → the specific change, so the reader sees *why this is the right fix*. Three short paragraphs at most — one per arrow, well under 500 words of prose; `--check-body` stops past that (exit 21, `WORD_LIMIT`). It describes the **whole diff on this head**, never one round's fix. Write it in the register below.
-4. **Tests** — what was added/updated and what each locks in.
-5. **Manual verification** — steps done/needed, or "N/A — unit coverage sufficient" with a one-line why.
-6. **Screenshots / video — MANDATORY for any user-visible UI change**, uploaded as GitHub attachments with `gh ... --attach`, never committed. See below.
-7. **Issue link** — a real closing keyword. See below.
+4. **Backwards compatibility** — `Compatible:` or `Breaking:`. A diff that tightens a contract (new required field, a validator that raises on input the base accepts, narrowed type, removed kind, renamed key) cannot be `Compatible:`; it takes `Breaking:` plus a writer sweep re-run on FRESH `origin/<base>` before the final push, with that sha in the body.
+5. **Tests** — what was added/updated and what each locks in.
+6. **Manual verification** — steps done/needed, or "N/A — unit coverage sufficient" with a one-line why.
+7. **Screenshots / video — MANDATORY for any user-visible UI change**, uploaded as GitHub attachments with `gh ... --attach`, never committed. See below.
+8. **Issue link** — a real closing keyword. See below.
 
 Omit a section only when truly not applicable, and say so.
 
@@ -699,44 +719,9 @@ a second read, move each section's point first, and remove historical narration.
 
 #### Draw it — the Age 5 picture
 
-A picture is part of the body, not decoration on it. Draw one when the change has
-a **shape** the reviewer would otherwise have to rebuild in their head from prose:
-steps that moved, a state that changed hands, a guard that now passes or blocks
-different inputs, a structure that gained or lost a field. Skip it for a one-line
-fix, a rename, a test-only change, or a doc edit. **One picture, at most**, and a
-picture that only restates section 3 is deleted, not kept.
-
-You choose the form. Anything GitHub renders inside a ```` ```mermaid ```` fence is
-fair — flowchart, sequence, state, class, ER, timeline, or whatever fits the delta —
-and when the delta is a **matrix** (which inputs pass or fail, how each platform
-behaves), a markdown table is the picture: rows are the concrete cases, columns are
-Before and After, each cell is one coloured verdict. Do not force a matrix into
-boxes and arrows. The constraints below make every PR read the same way at a glance.
-
-- **Text, in the body.** A Mermaid fence or a markdown table, never an image — a
-  rendered screen is a screenshot; see *Screenshots* below.
-- **Before → After, and only the delta.** Two states side by side (two subgraphs,
-  or two columns), or one graph where the changed edge is the only thing that
-  stands out. Six to ten nodes, or eight rows, is the ceiling.
-- **The diff palette is fixed.** In a Mermaid fence declare these four `classDef`s
-  and tag every node; in a table use the matching squares in each cell:
-
-  | class | fill / stroke | cell | meaning |
-  |---|---|---|---|
-  | `added` | `#DCFCE7` / `#16A34A` | 🟩 | new after this PR |
-  | `changed` | `#FEF3C7` / `#D97706` | 🟨 | behaviour changed |
-  | `removed` | `#FEE2E2` / `#DC2626`, dashed | 🟥 | gone after this PR |
-  | `ctx` | `#E0F2FE` / `#0284C7` | 🟦 | untouched, shown for context |
-
-  Colour the edges too: `linkStyle <n> stroke:#16A34A,stroke-width:2px` on the
-  new path, `stroke:#DC2626,stroke-dasharray:4 3` on the removed one. Put one
-  legend line under the picture: `🟩 added · 🟨 changed · 🟥 removed · 🟦 unchanged`.
-- **Caption in the Age 5 register**, one sentence: what now happens that did not,
-  and what the reader sees because of it.
-- **Place it inside section 3**, right after the paragraph it illustrates.
-
-Check the render before pushing — `gh pr view <n> --web`. A fence that fails to
-parse shows as a red error box, which is worse than no picture.
+Draw ONE picture, at most, and none for a one-liner, a rename, a test-only change
+or a doc edit. When to draw, the form, the fixed palette, the caption and the
+placement are all in `references/body-picture.md` — read it before drawing.
 
 ### Screenshots
 

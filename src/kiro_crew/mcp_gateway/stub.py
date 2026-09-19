@@ -48,7 +48,11 @@ from kiro_crew.mcp_gateway.hashing import (
     hash_command,
     hash_effective_env,
 )
-from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
+from kiro_crew.mcp_gateway.pool import (
+    _DEFAULT_READ_BUFFER_LIMIT,
+    READ_BUFFER_LIMIT_BYTES,
+    PoolKey,
+)
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.metrics.events import MCP_RECONNECTS, emit_counter
 
@@ -95,10 +99,11 @@ _BRIDGE_KEEPALIVE_TYPE = "keepalive"
 #   session -- the user has to notice and act.
 # * Waiting is RECOVERABLE. While the stub retries, the stdio transport to
 #   kiro-cli stays open and newly arriving requests are buffered (see
-#   ``StubSession.next_line``); a call that waits too long is failed by
-#   kiro-cli's own per-call tool timeout, which costs that one call and nothing
-#   else -- unlike a call already in flight when the connection dropped, which
-#   is failed fast with ``-32603`` before any retry begins. Under overload the
+#   ``StubSession.next_line``) for ``_QUEUED_GRACE_SECS``, long enough that an
+#   ordinary restart serves them for real; past that each one is failed with the
+#   same retryable ``-32603`` a call already in flight gets, so the SESSION
+#   keeps waiting while no individual CALL waits longer than the live bridge
+#   would have let it (see :func:`_drain_while_disconnected`). Under overload the
 #   system queues and waits -- it trades time for capacity -- rather than dying.
 #
 # So the budget has to outlast not one supervisor respawn but a short CRASH LOOP
@@ -157,6 +162,42 @@ _RECONNECT_BACKOFF_START_SECS = 0.5
 # ~150: enough not to hammer a daemon that is trying to come up, still fast
 # enough that a session re-attaches within seconds of the endpoint binding.
 _RECONNECT_BACKOFF_MAX_SECS = 10.0
+# How long a request that ARRIVES while the bridge is down may sit unanswered
+# before it is failed retryably. The budget above is how long the SESSION waits;
+# this is how long any one CALL waits, and the two are separate on purpose: a
+# session that gives up loses its tools irreversibly, while a call that is failed
+# retryably costs one retry.
+#
+# Deliberately the same figure a LIVE bridge already allows a silent gateway
+# (``_BRIDGE_PING_INTERVAL_SECS`` x ``_BRIDGE_PING_MAX_MISSES``), so the two
+# waits agree: a queued call is not held longer than a forwarded one would be
+# before the peer is declared dead. Sizing it from that constant rather than
+# picking a number also means it cannot drift away from the patience the rest of
+# this file shows a slow daemon.
+#
+# Short enough to matter: an ordinary restart re-attaches inside it and the call
+# is served for real, so the error path is reached only by the crash loop the
+# budget exists for. Long enough to matter: it is not zero, because failing a
+# call the next second would have answered turns a recoverable hiccup into a
+# visible tool error for no gain.
+_QUEUED_GRACE_SECS = _BRIDGE_PING_INTERVAL_SECS * _BRIDGE_PING_MAX_MISSES
+# Lines the stdin reader thread may hold for a consumer that is not reading. The
+# reader BLOCKS on a full queue, so kiro-cli's pipe applies backpressure and a
+# slow consumer cannot balloon RSS. ``_drain_while_disconnected`` holds itself to
+# the same COUNT for the same reason: it moves lines out of the queue, so a bound
+# of its own is what keeps that guarantee from being defeated.
+_STDIN_QUEUE_MAXSIZE = 256
+# Byte bounds on what ``_drain_while_disconnected`` RETAINS. Both dimensions are
+# load-bearing, the same pair and the same reasoning as
+# ``gatewayd._MAX_PENDING_FRAMES`` / ``_MAX_PENDING_BYTES``: a count bound alone
+# admits ``_STDIN_QUEUE_MAXSIZE`` x the largest line the transport will carry, and
+# a byte bound alone leaves the per-object overhead of very many tiny frames
+# unaccounted. The aggregate follows the per-frame ceiling upward so one frame the
+# reader was willing to return can never trip it alone, and is floored at the
+# SHIPPED read limit so tuning ``mcp_gateway.read_buffer_limit_bytes`` down (1 KiB
+# is accepted) cannot tighten the hold along with it.
+_HELD_FRAME_BYTES = READ_BUFFER_LIMIT_BYTES
+_HELD_TOTAL_BYTES = max(_DEFAULT_READ_BUFFER_LIMIT, _HELD_FRAME_BYTES)
 # Coupled to the DEFAULT of ``mcp_gateway.spawn_queue_wait_secs``
 # (``config/sections.py``): the daemon holds a queued stub for about that long
 # before a capacity refusal, and this budget is how long the stub keeps
@@ -838,7 +879,10 @@ class StubSession:
       simply call ``run_bridge`` again on a fresh socket. Creating the reader
       per call would put two threads on fd 0 -- splitting kiro-cli's lines
       between two consumers -- while any line the first one had already
-      dequeued dies with the old frame.
+      dequeued dies with the old frame. The head buffer
+      (:meth:`push_front`) is the same argument one level up: the drain that
+      runs while the bridge is down dequeues lines to judge them, and a frame it
+      chose not to answer belongs to the stream, not to that task.
     * **the ``initialize`` frame.** The stdin pump consumes and forwards it
       once and kiro-cli never re-sends it, so without a copy here a fresh daemon
       would hold a never-initialized backend that rejects every later call --
@@ -867,6 +911,11 @@ class StubSession:
         self.reconnects: int = 0
         self._subscribed: bool = False
         self._line_q: Optional["asyncio.Queue[bytes]"] = None
+        #: Lines already taken off the queue that no pump has forwarded yet.
+        #: :func:`_drain_while_disconnected` fills this while the bridge is down;
+        #: :meth:`next_line` empties it before touching the queue, so the next
+        #: bridge forwards them ahead of anything that arrives later.
+        self._head: list[bytes] = []
 
     def note_outbound(self, line: bytes, msg: dict) -> None:
         """Record what a forwarded frame means for a future reconnect."""
@@ -927,10 +976,72 @@ class StubSession:
         stdin open cannot hang graceful SIGTERM -- the older
         ``run_in_executor(readline)`` used the default executor, which
         ``asyncio.run()`` joins via ``shutdown_default_executor()``.
+
+        Lines put back by :meth:`push_front` come out first, in the order
+        kiro-cli sent them. That is what lets the disconnected drain inspect a
+        frame without consuming it: whatever it did not answer is handed to the
+        next bridge ahead of anything newer, so a reconnect never reorders the
+        stream.
         """
+        if self._head:
+            return self._head.pop(0)
         if self._line_q is None:
             self._line_q = self._start_reader()
         return await self._line_q.get()
+
+    def push_front(self, lines: list[bytes]) -> None:
+        """Return dequeued lines to the head of the inbound stream, in order.
+
+        Called from the drain's ``finally`` so a cancellation cannot strand the
+        frames it was holding: they belong to kiro-cli's stream, not to the task
+        that happened to be looking at them.
+        """
+        if lines:
+            self._head = list(lines) + self._head
+
+    def take_pending_request_ids(self) -> list:
+        """Ids of every request nobody will forward, dropping the frames.
+
+        For the terminal path only. These frames are normally forwarded by the
+        next bridge, but when the reconnect gives up there is no next bridge, so
+        leaving them would mean those calls are never answered for the rest of a
+        session whose stdout is about to close. The ids join
+        :attr:`outstanding_ids` and are answered by the terminal
+        :func:`_emit_error_frames` -- the same single-response rule as everywhere
+        else, which is why the frames are dropped as the ids are taken.
+
+        BOTH places a line can be waiting are read, and reading only one is a hole
+        rather than an omission: the head holds what the drain handed back, while
+        the queue holds whatever the reader thread has put there since -- a
+        pipelined burst, or anything that arrived in the window between the drain
+        being awaited and this call. A line left in the queue is a request that no
+        longer has any reader at all.
+
+        A buffered ``initialize`` is included rather than deferred: deferral
+        exists so the handshake replay can answer it for real, and by the time
+        this is called no replay is coming.
+
+        The reader thread may still put another line in after this returns. That
+        one is genuinely unanswerable -- the process is on its way out and stdout
+        is about to close -- and no bookkeeping here can change it.
+        """
+        lines = list(self._head)
+        self._head = []
+        if self._line_q is not None:
+            while True:
+                try:
+                    lines.append(self._line_q.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+        ids = []
+        for line in lines:
+            try:
+                msg = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(msg, dict) and "method" in msg and "id" in msg:
+                ids.append(msg["id"])
+        return ids
 
     def _start_reader(self) -> "asyncio.Queue[bytes]":
         loop = asyncio.get_running_loop()
@@ -938,7 +1049,9 @@ class StubSession:
         # run_coroutine_threadsafe) when the queue is full, so a stalled
         # writer.drain() (gatewayd slow to accept) cannot let the reader keep
         # draining stdin into an unbounded queue and balloon RSS.
-        line_q: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=256)
+        line_q: "asyncio.Queue[bytes]" = asyncio.Queue(
+            maxsize=_STDIN_QUEUE_MAXSIZE
+        )
 
         def _blocking_reader() -> None:
             fh = sys.stdin.buffer
@@ -1674,6 +1787,199 @@ async def _reconnect_wait(stop_event: asyncio.Event, delay: float) -> bool:
         return True
 
 
+def _is_failable_request(msg: Any) -> bool:
+    """Is this a frame the drain may answer with an error of its own?
+
+    A JSON-RPC request has both ``method`` and ``id``. A notification has no
+    ``id`` and answering one is a protocol violation, so it can only be held.
+    ``initialize`` is excluded for the opposite reason: the handshake replay can
+    still answer it for real, which is the same exception
+    :func:`_split_abandoned_ids` makes for an in-flight one.
+    """
+    if not isinstance(msg, dict) or "method" not in msg or "id" not in msg:
+        return False
+    return msg.get("method") != "initialize"
+
+
+#: What a call queued during a reconnect is told when its grace runs out. One
+#: constant because two paths emit it -- the expiry sweep and the retention
+#: bound -- and a caller that learns to retry on one must see the same words on
+#: the other.
+_QUEUED_FAIL_MESSAGE = (
+    "Gateway restarted and is not back yet; this call was failed so it would "
+    "not hang. Retry it."
+)
+
+
+def _no_room_to_hold(
+    line: bytes, held: list, held_bytes: int
+) -> bool:
+    """Would retaining ``line`` breach either dimension of the hold bound?
+
+    Both are checked because either alone is a hole: a count bound admits
+    ``_STDIN_QUEUE_MAXSIZE`` frames of ``_HELD_FRAME_BYTES`` each, and a byte
+    bound leaves the per-object overhead of very many tiny frames unaccounted.
+    The per-frame ceiling is checked too, so one enormous line is answered
+    immediately rather than parked for the whole reconnect.
+    """
+    return (
+        len(held) >= _STDIN_QUEUE_MAXSIZE
+        or len(line) > _HELD_FRAME_BYTES
+        or held_bytes + len(line) > _HELD_TOTAL_BYTES
+    )
+
+
+async def _drain_while_disconnected(
+    session: StubSession,
+    *,
+    pool_label: str,
+    grace_secs: float,
+    stop: asyncio.Event,
+) -> None:
+    """Answer requests that arrive while the bridge is down, once grace expires.
+
+    Runs CONCURRENTLY with :func:`_reconnect` and is the only consumer of
+    kiro-cli's stream for that window, because ``run_bridge`` -- and with it the
+    ``stdin_pump`` that normally reads the session queue -- has already returned.
+    Without this, a request issued in that window sits in the queue unread for as
+    long as the reconnect runs: not forwarded, not failed, and indistinguishable
+    from a hang. That is the whole defect; the in-flight half is already answered
+    by ``_split_abandoned_ids`` + :func:`_emit_error_frames` before the reconnect
+    starts.
+
+    Each frame is HELD first and failed only if ``grace_secs`` passes with the
+    bridge still down, so the common case -- an ordinary restart that re-attaches
+    in a few seconds -- forwards the call and answers it for real. Nothing is
+    forwarded from here: held frames go back to the session
+    (:meth:`StubSession.push_front`) and the next bridge sends them in order.
+    A frame that WAS failed is dropped instead, because forwarding an id after
+    answering it would let the new daemon answer it a second time.
+
+    Three kinds of frame are never failed, only held: a notification (no id to
+    answer), an unparseable line (it is forwarded verbatim, as ``stdin_pump``
+    does), and ``initialize`` (the replay answers it for real). ``grace_secs`` is
+    a parameter purely so a test need not wait the real window.
+
+    Holding is bounded in BOTH dimensions -- ``_STDIN_QUEUE_MAXSIZE`` frames and
+    ``_HELD_TOTAL_BYTES`` of them, with ``_HELD_FRAME_BYTES`` per frame -- because
+    either bound alone leaves a hole (see :func:`_no_room_to_hold`). At a bound the
+    frame is not held, and what happens then depends on whether it can be
+    answered: a request is failed immediately, and a frame with no id is dropped
+    and logged. Holding is only the courtesy that lets a quick reattach serve a
+    call for real, so it is what yields under pressure -- never the answer.
+
+    The ending is COOPERATIVE -- the caller sets ``stop`` and waits -- and that is
+    load-bearing rather than tidy. This loop removes a frame from ``held`` when it
+    answers it, so a cancellation landing inside the answering ``await`` would
+    leave that frame neither forwarded nor reliably answered: a silent hang, the
+    one outcome this function exists to remove. A stop is only ever observed
+    BETWEEN iterations, so an answer in flight always completes. Everything still
+    held is handed back in the ``finally``.
+    """
+    # (line, id-to-fail-or-None, deadline). One ordered list rather than a queue
+    # plus a timer set, so removing an expired request cannot reorder the frames
+    # that outlive it.
+    held: list[tuple[bytes, Any, float]] = []
+    held_bytes = 0
+    # Both waitables are typed as the same Future[Any] so one ``asyncio.wait``
+    # can hold them together; the loop tells them apart by identity, not by type.
+    pending: Optional["asyncio.Future[Any]"] = None
+    stop_wait: Optional["asyncio.Future[Any]"] = None
+    try:
+        while True:
+            # Answer whatever is due FIRST, on every pass. Doing this only when
+            # the wait below times out would let a caller that keeps the queue
+            # ready starve the sweep: each pass would take a new line and loop,
+            # and the grace -- the one promise this function makes -- would never
+            # be enforced on the lines already held.
+            now = _reconnect_now()
+            expired = [rid for _l, rid, d in held if rid is not None and d <= now]
+            if expired:
+                kept = [entry for entry in held if entry[1] is None or entry[2] > now]
+                held_bytes = sum(len(line) for line, _rid, _d in kept)
+                held = kept
+                await _emit_error_frames(
+                    expired, _QUEUED_FAIL_MESSAGE, pool_label=pool_label
+                )
+                logger.info(
+                    "stub reconnect: failed %d call(s) queued while disconnected "
+                    "pool=%s",
+                    len(expired),
+                    pool_label,
+                )
+            if pending is None:
+                # Kept ACROSS timeouts rather than re-issued: cancelling a
+                # ``Queue.get`` that has already been woken is the one way this
+                # loop could drop a line kiro-cli sent.
+                pending = asyncio.ensure_future(session.next_line())
+            deadlines = [d for _l, rid, d in held if rid is not None]
+            timeout = max(0.0, min(deadlines) - _reconnect_now()) if deadlines else None
+            if stop_wait is None:
+                stop_wait = asyncio.ensure_future(stop.wait())
+            done, _still = await asyncio.wait(
+                {pending, stop_wait},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_wait in done:
+                return
+            if pending in done:
+                line = pending.result()
+                pending = None
+                if not line:
+                    # kiro-cli closed stdin. Hold the EOF so the next
+                    # ``stdin_pump`` reports ``stdin_eof`` exactly as it would
+                    # have, and stop draining: nothing else is coming.
+                    held.append((line, None, 0.0))
+                    return
+                try:
+                    msg = json.loads(line)
+                except (ValueError, TypeError):
+                    msg = None
+                failable = _is_failable_request(msg)
+                if _no_room_to_hold(line, held, held_bytes):
+                    # Retention is full in one of its dimensions, so this frame
+                    # cannot be kept for the new bridge. What it can still be is
+                    # ANSWERED: holding exists only to give a quick reattach the
+                    # chance to serve the call for real, and that courtesy is what
+                    # yields at a bound -- never the answer itself, which is the
+                    # one outcome a caller cannot work around.
+                    if failable:
+                        await _emit_error_frames(
+                            [msg["id"]], _QUEUED_FAIL_MESSAGE, pool_label=pool_label
+                        )
+                        continue
+                    # Nothing here to answer: a notification has no id, and
+                    # neither has a line that does not parse. Dropped rather than
+                    # held, for the same reason ``_serve_capacity_refusal`` drops
+                    # them, and logged because it is a real loss.
+                    logger.warning(
+                        "stub reconnect: dropped an unanswerable frame at the "
+                        "retention bound, held=%d/%d bytes=%d/%d pool=%s",
+                        len(held),
+                        _STDIN_QUEUE_MAXSIZE,
+                        held_bytes,
+                        _HELD_TOTAL_BYTES,
+                        pool_label,
+                    )
+                    continue
+                held_bytes += len(line)
+                if failable:
+                    held.append((line, msg["id"], _reconnect_now() + grace_secs))
+                else:
+                    held.append((line, None, 0.0))
+    finally:
+        if stop_wait is not None and not stop_wait.done():
+            stop_wait.cancel()
+        if pending is not None:
+            if pending.done() and not pending.cancelled():
+                with contextlib.suppress(Exception):
+                    held.append((pending.result(), None, 0.0))
+            else:
+                pending.cancel()
+        session.push_front([line for line, _rid, _d in held])
+
+
 async def _reconnect(
     socket_path: str,
     payload: dict,
@@ -2008,6 +2314,67 @@ def fallback_counts() -> dict[str, Any]:
         "terminal_total": terminal_total,
         "terminal_by_server": terminal_by_server,
     }
+
+
+async def _reconnect_while_draining(
+    socket_path: str,
+    payload: dict,
+    session: StubSession,
+    stop_event: asyncio.Event,
+    *,
+    poolable: bool,
+    pool_label: str,
+) -> Optional[tuple[asyncio.StreamReader, asyncio.StreamWriter, dict, str]]:
+    """:func:`_reconnect`, with kiro-cli's stream still being read while it runs.
+
+    The two are paired in one function rather than inline in the serve loop so the
+    PAIRING is testable. Neither half is meaningful alone: a reconnect running
+    without the drain leaves requests that arrive meanwhile unread for the whole
+    budget, and a drain that exists but is never started alongside the reconnect
+    does nothing at all. This shape is what makes that pairing assertable.
+
+    The drain is the only reader of the session's queue for this window, and it is
+    stopped -- and AWAITED -- before returning, so the bridge that follows finds
+    exactly one consumer and a stream still in kiro-cli's order.
+    """
+    stop_draining = asyncio.Event()
+    drain = asyncio.ensure_future(
+        _drain_while_disconnected(
+            session,
+            pool_label=pool_label,
+            grace_secs=_QUEUED_GRACE_SECS,
+            stop=stop_draining,
+        )
+    )
+    try:
+        return await _reconnect(
+            socket_path,
+            payload,
+            session,
+            stop_event,
+            poolable=poolable,
+            pool_label=pool_label,
+        )
+    finally:
+        # ASKED to stop, not cancelled: the drain removes a frame from its hold
+        # when it answers it, so a cancellation landing inside that answer would
+        # lose the frame both ways. It observes the stop between iterations, so an
+        # answer in flight finishes first. The wait is bounded because the only
+        # thing that can hold it is the same wedged-stdout case
+        # ``_emit_error_frames`` already bounds; a cancel is the last resort there,
+        # and by then the caller cannot be answered at all.
+        stop_draining.set()
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(drain), timeout=_ERROR_EMIT_TIMEOUT_SECS + 1.0
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            drain.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await drain
+        # Either way the drain has run its ``finally`` and handed back everything
+        # it held before the next pump reads a line -- two readers on one queue is
+        # what would reorder the stream.
 
 
 async def alog_fallback(
@@ -2521,17 +2888,17 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         #   upstream before dying, and replaying could double a side effect. The
         #   one exception is an unanswered ``initialize``, which the replay can
         #   still answer for real.
-        # * NEWLY ARRIVING requests are neither dropped nor answered. The stdin
+        # * NEWLY ARRIVING requests are held briefly, then failed. The stdin
         #   reader thread (``StubSession._start_reader``) keeps reading fd 0 into
-        #   the session's bounded queue for as long as ``_reconnect`` runs; no
-        #   pump drains it, so they simply wait there (up to 256 lines, after
-        #   which the reader blocks and kiro-cli's pipe applies backpressure).
-        #   The next ``run_bridge`` pulls from the SAME queue and forwards them
-        #   to the new connection in order, tracking their ids as outstanding
-        #   from that point. A request that waits longer than kiro-cli's own
-        #   per-call tool timeout is failed by kiro-cli -- that one call, not the
-        #   session. stdout stays open throughout, so kiro-cli never sees the
-        #   transport close until the budget is genuinely spent.
+        #   the session's bounded queue, and ``_drain_while_disconnected`` below
+        #   is what reads that queue while no pump exists -- holding each frame
+        #   for ``_QUEUED_GRACE_SECS`` so an ordinary restart still forwards and
+        #   answers it for real, then failing whatever is left with the same
+        #   retryable ``-32603``. Held frames go back to the head of the stream,
+        #   so the next ``run_bridge`` forwards them in order and tracks their ids
+        #   as outstanding from that point; a failed one is dropped, because its
+        #   id has been answered. stdout stays open throughout, so kiro-cli never
+        #   sees the transport close until the budget is genuinely spent.
         _to_fail, deferred_init_id = _split_abandoned_ids(session)
         await _emit_error_frames(
             _to_fail,
@@ -2592,7 +2959,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             )
 
         await alog_fallback(f"bridge_lost_{session.reason}", stub_uuid, pool_label, args)
-        attached = await _reconnect(
+        attached = await _reconnect_while_draining(
             args.socket,
             payload,
             session,
@@ -2628,6 +2995,15 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # subsequent call. Exec would convert "wedged" into "fast-failing", not into
     # "working" — reconnecting is what converts it into "working", and it has
     # already been tried by the time we get here.
+    #
+    # Anything the drain handed back that no bridge forwarded is answered here.
+    # Normally the next ``run_bridge`` sends those frames on; this path has no
+    # next bridge, so without this they would die with stdout unanswered -- the
+    # very shape the drain exists to remove. Ids already listed are skipped: one
+    # response per id, the same rule as everywhere else.
+    for _held_id in session.take_pending_request_ids():
+        if _held_id not in session.outstanding_ids:
+            session.outstanding_ids.append(_held_id)
     if session.outstanding_ids:
         _abandoned = session.outstanding_ids
         # Dropped as they are answered: this is the last writer, but leaving them

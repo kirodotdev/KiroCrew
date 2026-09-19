@@ -5,10 +5,11 @@ and shared rather than copied for a reason that is about SECURITY DRIFT rather
 than about line count. Three rules live here, and each one is a rule a second copy
 would eventually stop matching:
 
-1. Which env a control-plane element carries (``KIROCREW_SESSION_KEY`` and the
-   three values that make it usable). A key added for one backend and missed by
-   another does not fail: the second backend's control plane simply comes up
-   unable to do the thing the new key enabled, silently.
+1. Which env a control-plane element carries (the per-session TOKEN,
+   ``KIROCREW_SESSION_KEY``, and the three values that make them usable). A key
+   added for one backend and missed by another does not fail: the second
+   backend's control plane simply comes up unable to do the thing the new key
+   enabled, silently.
 2. Which of Crew's OWN managed servers must not be mounted at all, because this
    channel cannot hand them a session identity and they would answer ``not_bound``
    to every call. DERIVED from the managed set, never enumerated -- a server added
@@ -39,15 +40,40 @@ from typing import Any, Mapping
 
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 logger = logging.getLogger(__name__)
 
 
-def control_plane_identity_env(session_key: str, channel_id: str, *, label: str) -> dict[str, str]:
+def control_plane_identity_env(
+    session_key: str,
+    channel_id: str,
+    *,
+    label: str,
+    session_token: str = "",
+) -> dict[str, str]:
     """The env Crew's own control plane needs, resolved for this session.
 
     Resolved live rather than read from the spec, exactly as ``managed_mcp_spec_entry``
     resolves the command -- the spec is hand-editable and this is an identity.
+
+    ``session_token`` is this ACP session's own name
+    (``mcp_gateway.claim.mint_stub_session_token``), and it rides BESIDE
+    ``KIROCREW_SESSION_KEY`` rather than replacing it. Two reasons, and the second is
+    why the pair is not redundant:
+
+    * the token resolves through a MAC-signed mapping file the gateway republishes on
+      every warm-pool ``rekey()`` (:mod:`kiro_crew.session_token_sig`), so where the
+      env key has gone stale -- the process was re-keyed to another session after this
+      element was built -- the token still names the CURRENT owner. The strict
+      resolver reads it first for exactly that reason;
+    * the env key remains the fallback for the case the token cannot cover: no SEL
+      trust root to sign the mapping with. Dropping it would trade a stale-identity
+      bug for a no-identity one.
+
+    Empty when the caller has no token to give (a test double, a projection built
+    before one was minted), and an empty value is simply not emitted -- so an element
+    built without one is byte-identical to the pre-token shape.
 
     ``KIROCREW_BOUND_PORT`` for the same reason ``members.member_dispatch_session_server``
     carries it: without the port the child falls through to the run marker, whose
@@ -69,6 +95,8 @@ def control_plane_identity_env(session_key: str, channel_id: str, *, label: str)
         env.update(_managed_mcp_env())
     except Exception:  # pragma: no cover - defensive; the helper is fail-soft
         logger.warning("%s session MCP: could not resolve the managed home", label, exc_info=True)
+    if session_token:
+        env[STUB_SESSION_TOKEN_ENV] = session_token
     if session_key:
         env["KIROCREW_SESSION_KEY"] = session_key
     if channel_id:

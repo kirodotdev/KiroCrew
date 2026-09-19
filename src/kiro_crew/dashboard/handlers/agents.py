@@ -131,9 +131,10 @@ from kiro_crew.memory_stores import (
     memory_store_namespace_lock,
     persist_member_config,
     provision_member_memory,
-    require_member_memory_not_archived,
+    require_member_memory_store,
     retire_unpublished_member_memory_store,
     rollback_member_memory_archive_if_active,
+    unusable_legacy_binding,
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.sandbox import (
@@ -4065,7 +4066,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     synced: list[str] = []
     pruned: list[str] = []
     prune_candidates: dict[str, dict] = {}
-    prior_stores: dict[str, str] = {}
     try:
         discovered_agents = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), lambda: list(list_agents())
@@ -4123,7 +4123,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         getattr(disc, "source", "?"),
                     )
                     continue
-                await _drained_to_thread(require_member_memory_creation, disc.name)
                 _has_on_disk = await asyncio.to_thread(
                     lambda: _spec_stem_on_disk(kiro_agents_dir_path(), _dn)
                     or _namespaced_agent_file_exists(_dn)
@@ -4143,8 +4142,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     description=disc.description,
                     source=disc.source,
                 )
-                prior_stores[disc.name] = cfg.agents[disc.name].memory_store
-                await _drained_to_thread(provision_member_memory, cfg, disc.name)
+                # Discovery registers a template, not consent to private memory.
+                # The owner can opt in through the existing member update action.
                 synced.append(disc.name)
 
         # Prune agents whose kiro_agent file no longer exists on disk.
@@ -4171,17 +4170,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     del cfg.agents[name]
                     pruned.append(name)
     except BaseException as exc:
-        await _retire_failed_member_allocations(cfg, prior_stores)
-        if isinstance(exc, UnknownMemoryStore):
-            return web.json_response(
-                {
-                    "ok": False,
-                    "error": str(exc),
-                    "code": "member_memory_unavailable",
-                    "synced": [],
-                },
-                status=409,
-            )
         if not isinstance(exc, Exception):
             raise
         logger.warning("Failed to scan installed agents", exc_info=True)
@@ -4207,18 +4195,10 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             # them. _drained_to_thread so a cancellation cannot release the
             # asyncio lock while the worker is mid-write.
             to_add = {n: cfg.agents[n] for n in synced if n in cfg.agents}
-            to_add_stores = {
-                n: (
-                    cfg.agents[n].memory_store,
-                    dataclasses.asdict(cfg.memory_stores[cfg.agents[n].memory_store]),
-                )
-                for n in to_add
-            }
 
             def _write_sync() -> list[str]:
                 retired_stores: list[str] = []
                 created_archives: list[tuple[str, str]] = []
-                skipped_allocations: list[tuple[str, str]] = []
 
                 def _mutate(doc: dict) -> dict | None:
                     agents = coerce_dict_section(doc, "agents")
@@ -4226,18 +4206,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     changed = False
                     for aname, acfg in to_add.items():
                         if aname not in agents:
-                            store_name, store_record = to_add_stores[aname]
-                            existing = stores.get(store_name)
-                            if existing is not None and existing != store_record:
-                                raise UnknownMemoryStore(
-                                    f"memory store {store_name!r} ownership changed concurrently"
-                                )
-                            require_member_memory_not_archived(store_name, expected_owner=aname)
-                            stores[store_name] = store_record
                             agents[aname] = dataclasses.asdict(acfg)
                             changed = True
-                        else:
-                            skipped_allocations.append((to_add_stores[aname][0], aname))
                     # Prune ONLY this sync's snapshot candidates, and only
                     # while the in-lock entry still equals the snapshot entry:
                     # an agent (re)added or edited between the discovery
@@ -4276,8 +4246,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         raise
                 from kiro_crew.context import release_cached_memory_store
 
-                for store_name, owner in skipped_allocations:
-                    retire_unpublished_member_memory_store(store_name, owner)
                 for store_name in retired_stores:
                     release_cached_memory_store(store_name)
                 return retired_stores
@@ -4289,7 +4257,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 for store_name in retired_stores:
                     await release_markdown_memory_store(state, store_name)
         except BaseException as exc:
-            await _retire_failed_member_allocations(cfg, prior_stores)
             if not isinstance(exc, Exception):
                 raise
             logger.warning("Failed to save config after agent sync", exc_info=True)
@@ -4339,7 +4306,10 @@ async def _retire_failed_member_allocations(
     for owner, prior in prior_stores.items():
         try:
             store = config.agents[owner].memory_store
-            if store == prior:
+            # The global store is never an allocation of this operation: a member
+            # moving OFF a dead name lands on it, and a failed move must not be
+            # read as an unpublished private store to retire.
+            if store == prior or store == DEFAULT_MEMORY_STORE:
                 continue
             await _drained_to_thread(retire_unpublished_member_memory_store, store, owner)
         except BaseException:
@@ -4999,14 +4969,34 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             except CapabilityError as exc:
                 return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         prior_memory_store = agent.memory_store
+        # A binding is immutable in both directions -- a private store is never
+        # shared or rebound, and a live V1 binding is kept until the owner opts in
+        # -- with one exception: a V1 binding whose name no resolver composes
+        # (``unusable_legacy_binding``) may move to the global store. Nothing is
+        # protected on it: the name resolves no directory, so the member cannot
+        # run a turn on it, and the same name is what refused every repair.
+        dead_binding = None
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
-            return web.json_response(
-                {
-                    "error": "A member's private memory cannot be rebound or shared",
-                    "code": "private_memory_immutable",
-                },
-                status=409,
-            )
+            dead_binding = unusable_legacy_binding(cfg, name)
+            if dead_binding is None:
+                return web.json_response(
+                    {
+                        "error": "A member's private memory cannot be rebound or shared",
+                        "code": "private_memory_immutable",
+                    },
+                    status=409,
+                )
+            if body["memory_store"] != DEFAULT_MEMORY_STORE:
+                return web.json_response(
+                    {
+                        "error": f"memory store {prior_memory_store!r} is unusable "
+                        f"({dead_binding}); this member can move only to "
+                        f"{DEFAULT_MEMORY_STORE!r} or to private memory",
+                        "code": "private_memory_immutable",
+                    },
+                    status=409,
+                )
+            agent.memory_store = DEFAULT_MEMORY_STORE
         prior_record = cfg.memory_stores.get(prior_memory_store)
         if body.get("provision_memory") and (
             prior_record is None or prior_record.memory_version != 2
@@ -5192,12 +5182,25 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         setup_refusal = None
         try:
             try:
+                if dead_binding is not None:
+                    # Validate the binding the member is MOVING TO, here rather than
+                    # inside ``persist_member_config``: that writer re-runs the same
+                    # check, but a refusal raised there is a 500, and a member with
+                    # a stale private declaration or directory of its own is exactly
+                    # the case it refuses (a lost private binding is restored, never
+                    # papered over with the global store).
+                    await _drained_to_thread(require_member_memory_store, cfg, name)
                 if body.get("provision_memory"):
                     prior_record = cfg.memory_stores.get(prior_memory_store)
                     if prior_record is None or prior_record.memory_version != 2:
-                        from kiro_crew.memory_stores import require_member_memory_store
-
-                        await _drained_to_thread(require_member_memory_store, cfg, name)
+                        # The precondition validates the binding being REPLACED, so
+                        # it must not run on one that only fails by name: that is
+                        # the state this opt-in is the way out of, and
+                        # ``provision_member_memory`` re-checks the private-evidence
+                        # half itself and skips the file half for such a name. After
+                        # a move to the global store the check above already ran.
+                        if dead_binding is None and unusable_legacy_binding(cfg, name) is None:
+                            await _drained_to_thread(require_member_memory_store, cfg, name)
                         setup_refusal = await _retire_legacy_member_contexts(
                             request, cfg, name, prior_memory_store
                         )

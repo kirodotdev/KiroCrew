@@ -4,6 +4,8 @@ if (!m) throw new Error('[vendor/kirocrew-app-sdk] Host modules not initialized.
 export const {
   useAppApi, useAppEvents, useTheme, useAppInfo, useNavigate, useNotify,
   useNavBadge, useChatLauncher, AppApiProvider,
+  useImeGuard, useLanguageGeneration, activeLocale,
+  fmtNumber, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText,
   // Marker protocol. Naming an export the host does not provide is a load-time failure for the
   // whole app, so this list is checked against the protocol barrel by chatProtocolBoundary.test.ts.
   parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,

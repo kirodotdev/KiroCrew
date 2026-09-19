@@ -263,26 +263,10 @@ def publish_member_session_pid(
     """Trusted publisher only; an unknown process incarnation grants nothing."""
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
         return
-    path = _binding_path(pid, home or config_dir())
+    from kiro_crew.member_process_records import publish_binding
+
     store = private_memory_store_for_session(session_key) if memory_store is None else memory_store
-    start = platform_compat.get_process_start_id(pid)
-    if not start or not isinstance(session_key, str) or not session_key:
-        path.unlink(missing_ok=True)
-        return
-    for directory in (path.parent.parent, path.parent):
-        platform_compat.make_owner_only_dir(directory)
-        platform_compat.restrict_dir_to_owner(directory)
-    atomic_write(
-        path,
-        json.dumps(
-            {
-                "version": 2,
-                "session_key": session_key,
-                "process_start": start,
-                "memory_store": store,
-            }
-        ),
-    )
+    publish_binding(home or config_dir(), pid, session_key, store)
 
 
 def _private_memory_mcp_failure(backend: str) -> str:

@@ -4,10 +4,14 @@ import type { useScrollManager } from './useScrollManager'
 import { usePinnedPrompt } from './usePinnedPrompt'
 import { jumpAnchorIdx } from '../../utils/pinnedPrompt'
 import { attachUserScrollIntent, glideOnceStep, pollRowSettled } from '../../utils/searchScroll'
+import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
 
 export interface UseChatPageTranscriptEarlyControllerOptions {
   activeTip: unknown
-  mountIndexRef: MutableRefObject<(index: number) => boolean>
+  mountIndexRef: MutableRefObject<(index: number, opts?: { unionOnly?: boolean }) => boolean>
+  /** The virtualizer's height-index estimate of a row's top, for steering a
+   *  jump toward a row that is not mounted yet. */
+  estimateRowTopRef: MutableRefObject<(index: number) => number | null>
   scrollerRef: ReturnType<typeof useScrollManager>['scrollerRef']
   scrollToDisplayIndex: ReturnType<typeof useScrollManager>['scrollToDisplayIndex']
   slotRunningRef: MutableRefObject<boolean>
@@ -22,6 +26,7 @@ export interface UseChatPageTranscriptEarlyControllerOptions {
 export function useChatPageTranscriptEarlyController({
   activeTip,
   mountIndexRef,
+  estimateRowTopRef,
   scrollerRef,
   scrollToDisplayIndex,
   slotRunningRef,
@@ -242,43 +247,79 @@ export function useChatPageTranscriptEarlyController({
   } = usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true })
   /** Jump the transcript back to the pinned prompt, landing it just below the
    *  banner so the prompt is read in context — which also un-pins the banner,
-   *  since its prompt is no longer above the fold. */
+   *  since its prompt is no longer above the fold.
+   *
+   *  One converging glide for every distance (utils/convergingGlide): smooth
+   *  travel to a destination re-derived every frame, then convergence until
+   *  the destination holds still. What differs by distance is only how the
+   *  destination is read before the target row is mounted. */
   const scrollToPinnedPrompt = useCallback((target: number) => {
-    const chrome = pinnedJumpChrome()
     cancelAnimationFrame(navScrollRafRef.current)
     navPollCancelRef.current?.()
+    const sc0 = scrollerRef.current
+    if (!sc0) return
     // The jump lands at the head of the target's consecutive prompt run — a
-    // steer pair, a subagent fan-out, an unanswered nudge run — so the row on
-    // the hand-off line is a non-prompt and the previous turn's banner
-    // survives the landing. Rationale and near/far interaction: see
-    // jumpAnchorIdx's docblock (utils/pinnedPrompt.ts).
+    // steer sent before any output, a double-send — so the row on the hand-off
+    // line is a non-prompt and the previous turn's banner survives the landing.
+    // Rationale and near/far interaction: see jumpAnchorIdx's docblock
+    // (utils/pinnedPrompt.ts).
     const anchor = jumpAnchorIdx(displayItemsRef.current, target)
-    const jumpedFar = mountIndexRef.current(anchor)
-    if (jumpedFar) {
-      // Far target: the window was REPLACED, the path between is unmounted
-      // spacer — a glide would scrub blank. Teleport via the convergence
-      // path, same as every other far jump.
-      navToDisplayIndex(anchor, { behavior: 'auto', align: 'start', offset: -chrome })
-      return
-    }
-    // NEAR jump — the common case: the pinned prompt is the previous turn.
-    // mountIndex UNIONED the whole path above, so every row between here and
-    // the target is now mounting. Wait the few frames those rows take to
-    // measure (reading, not scrolling), then compute the distance ONCE from
-    // live geometry and glide in a single smooth scroll. Measuring first is
-    // what makes the one glide land exactly (no estimatedHeight rows left on
-    // the path); gliding once is what keeps it a real scroll — a convergence
-    // poll's per-frame auto writes would cancel the animation and read as a
-    // teleport. A user scroll or a newer navigation aborts the wait.
+    // NEAR: the window is unioned up to the target, so every row on the path
+    // mounts and measures before the glide starts and the destination is exact
+    // from the first frame. FAR: nothing is mounted — replacing the window at
+    // the target would blank the rows under the reader for a frame — and the
+    // glide steers by the height index's estimate instead, the window following
+    // each write as under a fling. The estimate refines as rows measure in, and
+    // the goal is re-read every frame, so the glide converges on the true
+    // position rather than the estimate. A teleport was the previous far path;
+    // it read as the banner "jumping to the top", and a far landing that then
+    // shifted was never corrected.
+    const far = mountIndexRef.current(anchor, { unionOnly: true })
     window.dispatchEvent(new Event('mc-chat-scroll-jump'))
     const rowEl = (): HTMLElement | null =>
       (scrollerRef.current?.querySelector(`[data-display-index="${anchor}"]`) as HTMLElement | null)
+    // Live destination: the row's top from the DOM once it is mounted, the
+    // height index's estimate until then, less the chrome the previous turn's
+    // banner needs to pin completely at the landing.
+    const goal = (): number | null => {
+      const sc = scrollerRef.current
+      if (!sc) return null
+      const row = rowEl()
+      const rowTop = row
+        ? sc.scrollTop + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
+        : estimateRowTopRef.current(anchor)
+      if (rowTop == null) return null
+      return Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, rowTop - pinnedJumpChrome()))
+    }
+    const reduced = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    let cancelled = false
+    let detach = attachUserScrollIntent(sc0, () => { cancelled = true; navPollCancelRef.current?.() })
+    const startGlide = () => {
+      const first = goal()
+      if (first == null) { detach(); navPollCancelRef.current = null; return }
+      const cancelGlide = runConvergingGlide({
+        goal,
+        read: () => scrollerRef.current?.scrollTop ?? 0,
+        write: (top) => { const sc = scrollerRef.current; if (sc) sc.scrollTop = top },
+        durationMs: glideDurationMs(first - sc0.scrollTop),
+        reduced,
+        raf: (cb) => (navScrollRafRef.current = requestAnimationFrame(cb)),
+        cancelRaf: (id) => cancelAnimationFrame(id),
+        onEnd: () => { detach(); navPollCancelRef.current = null },
+      })
+      navPollCancelRef.current = () => { cancelled = true; cancelGlide() }
+    }
+    if (far) { startGlide(); return }
+    // NEAR: wait the few frames the unioned rows take to commit and measure
+    // (reading, not scrolling) so the travel's endpoint is exact from its first
+    // frame. 2 stable frames is enough: rows measure synchronously on mount via
+    // measureRef; the wait only covers React committing the window. The frame
+    // cap (~0.5s) guarantees the glide still happens if some row never stops
+    // moving (an animated widget) — convergence absorbs whatever is left.
     let lastH: number | null = null
     let stable = 0
     let frames = 0
-    let cancelled = false
-    let detach2: (() => void) | null = null
-    const detach = attachUserScrollIntent(scrollerRef.current ?? undefined, () => { cancelled = true })
     navPollCancelRef.current = () => { cancelled = true; detach() }
     const tick = () => {
       if (cancelled) { detach(); return }
@@ -288,76 +329,21 @@ export function useChatPageTranscriptEarlyController({
       else stable = 0
       lastH = h
       frames += 1
-      // 2 stable frames is enough: rows measure synchronously on mount via
-      // measureRef; the wait only covers React committing the unioned window.
-      // The frame cap (~0.5s) guarantees the glide still happens if some row
-      // never stops moving (e.g. an animated widget).
       if ((h != null && stable >= 2) || frames >= 30) {
-        // SELF-DRIVEN converging glide, not a native smooth scroll. A native
-        // animation is cancelled by ANY other scrollTop write — and writes DO
-        // land mid-glide: the upward window expansion's anchor compensation,
-        // the height-sync compensation, a re-measuring row. Each cancellation
-        // strands the scroll wherever the write happened (the probe showed
-        // landings at 34-61px with the banner clipped or dropped — the exact
-        // "some fixed spots never reach the previous message" report). Owning
-        // every frame's write makes the glide uncancellable, and re-deriving
-        // the destination each frame from LIVE geometry (row rect + the
-        // banner currently pinned) absorbs those same mid-flight shifts —
-        // mid-glide image loads and the banner swap included — so the glide
-        // CONVERGES on the true landing instead of a stale one. One motion,
-        // no post-landing correction. User scroll intent still aborts.
+        // Hand the abort listener to the glide: the wait's is detached here and
+        // a fresh one is attached so the glide's own cancel owns it.
         detach()
-        detach2 = attachUserScrollIntent(scrollerRef.current ?? undefined, () => { cancelled = true })
-        navPollCancelRef.current = () => { cancelled = true; detach2?.() }
-        const GLIDE_MS = 450
-        const t0 = performance.now()
-        const sc0 = scrollerRef.current
-        const from = sc0 ? sc0.scrollTop : 0
-        const reduced = typeof window.matchMedia === 'function'
-          && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
-        // Reduced motion removes the eased TRAVEL, not the convergence above.
-        // `goal` is re-derived every frame because rows mount, images load and
-        // the banner swaps DURING the jump — and the swap is caused by our own
-        // write, so it is only visible on the frame AFTER it. Landing after a
-        // single frame therefore reads geometry that was true before those
-        // shifts, which is the stale landing this glide exists to avoid. The
-        // reduced path jumps straight to `goal` each frame and stops once `goal`
-        // has stopped moving.
-        let lastGoal: number | null = null
-        const glide = () => {
-          if (cancelled) { detach2?.(); return }
-          const sc = scrollerRef.current
-          const row = rowEl()
-          if (!sc || !row) { detach2?.(); navPollCancelRef.current = null; return }
-          const liveTarget = sc.scrollTop
-            + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
-            - pinnedJumpChrome()
-          const goal = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, liveTarget))
-          if (reduced) {
-            sc.scrollTop = goal
-            const settled = lastGoal != null && Math.abs(goal - lastGoal) < 1
-            lastGoal = goal
-            // Bounded by the same GLIDE_MS the eased path spends, so a row that
-            // never stops resizing cannot hold the loop open.
-            if (settled || performance.now() - t0 >= GLIDE_MS) {
-              detach2?.(); navPollCancelRef.current = null; return
-            }
-            navScrollRafRef.current = requestAnimationFrame(glide)
-            return
-          }
-          const t = Math.min(1, (performance.now() - t0) / GLIDE_MS)
-          sc.scrollTop = from + (goal - from) * easeOutCubic(t)
-          if (t >= 1) { detach2?.(); navPollCancelRef.current = null; return }
-          navScrollRafRef.current = requestAnimationFrame(glide)
-        }
-        navScrollRafRef.current = requestAnimationFrame(glide)
+        detach = attachUserScrollIntent(scrollerRef.current ?? undefined, () => {
+          cancelled = true
+          navPollCancelRef.current?.()
+        })
+        startGlide()
         return
       }
       navScrollRafRef.current = requestAnimationFrame(tick)
     }
     navScrollRafRef.current = requestAnimationFrame(tick)
-  }, [navToDisplayIndex, pinnedJumpChrome, scrollerRef, mountIndexRef, displayItemsRef])
+  }, [pinnedJumpChrome, scrollerRef, mountIndexRef, estimateRowTopRef, displayItemsRef])
 
   return {
     scrollBottom,

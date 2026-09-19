@@ -2074,6 +2074,10 @@ function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; prob
   const { copied, flash } = useCopiedFlash()
   const [confirmedGone, setConfirmedGone] = useState(false)
   useEffect(() => {
+    // The verdict belongs to THIS probeUrl. A reused instance handed a different
+    // one must not keep the previous path's "confirmed missing" wording while its
+    // own probe is still in flight.
+    setConfirmedGone(false)
     if (!probeUrl) return
     let cancelled = false
     fetch(probeUrl, { method: 'HEAD' })
@@ -2162,6 +2166,20 @@ function ImgWithFallback({
 }: React.ImgHTMLAttributes<HTMLImageElement> & ExtraProps) {
   const [errored, setErrored] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  // Both flags describe the outcome of loading THIS `src`, so neither may
+  // outlive it. React reuses an instance whenever the element at a key keeps its
+  // type, so a reused image can be handed a different `src`; without this a good
+  // image inherits a previous one's failure and renders as broken, with nothing
+  // to clear it short of a full remount. Adjusted during render rather than in an
+  // effect, per React's own guidance for resetting state on a prop change: an
+  // effect runs after paint, so it would show one frame of the previous image's
+  // outcome. Setting state here is a bail-out when the value is unchanged.
+  const [outcomeSrc, setOutcomeSrc] = useState(src)
+  if (outcomeSrc !== src) {
+    setOutcomeSrc(src)
+    setErrored(false)
+    setLoaded(false)
+  }
   const basePath = useContext(BasePathCtx)
   const compact = useContext(CompactImagesCtx)
   const version = useContext(ImageVersionCtx)
@@ -2923,6 +2941,43 @@ function rehypeSourcepos() {
 const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
+
+/** Give every root-level block a key that depends on its POSITION, not on the
+ *  tags of its siblings.
+ *
+ *  `hast-util-to-jsx-runtime` keys each child `<tagName>-<count of that tagName
+ *  so far>`, so a block's key depends on what its earlier siblings are. When a
+ *  later streaming line reclassifies an EARLIER line -- a `===` underline turns
+ *  the paragraph above it into a heading -- that earlier sibling stops being a
+ *  `p`, every later paragraph's counter shifts down, and React unmounts and
+ *  remounts blocks whose own text never changed. A settled paragraph losing its
+ *  node loses the reader's selection and restarts its animations, and the browser
+ *  lays the replacement out afresh.
+ *
+ *  Wrapping each root child in one uniform element makes that counter a
+ *  positional index, so a block keeps its key for as long as it keeps its place.
+ *  `display: contents` leaves the wrapper without a box, so margins, margin
+ *  collapsing and descendant selectors see the tree they saw before. Applied on
+ *  every render rather than only while streaming: a wrapper that appeared or
+ *  vanished when the stream ended would itself remount every block, which is the
+ *  thing this prevents.
+ */
+export function rehypeStableRootKeys() {
+  return (tree: HastRoot) => {
+    let wrapped = false
+    const children = tree.children.map((child): RootContent => {
+      if (child.type !== 'element') return child
+      wrapped = true
+      return {
+        type: 'element',
+        tagName: 'div',
+        properties: { style: 'display: contents' },
+        children: [child],
+      }
+    })
+    if (wrapped) tree.children = children
+  }
+}
 
 /** Number of trailing characters glowed while a message streams. */
 const GLOW_TAIL_CHARS = 30
@@ -4123,6 +4178,10 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
     if (smooth) tail.push(rehypeStreamingReveal)
     rehypePlugins = [...baseRehype, ...tail]
   }
+  // Last, so it wraps the root shape every other plugin has finished producing:
+  // an earlier position would let a later plugin read `div` where it expects the
+  // block itself.
+  rehypePlugins = [...rehypePlugins, rehypeStableRootKeys]
   // `fixCodeFences` runs FIRST: its later passes CREATE code blocks the raw
   // source did not have (blank line before a fence glued to preceding text,
   // splitting a closing fence glued to trailing text). Rewriting boundaries

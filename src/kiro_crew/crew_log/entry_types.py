@@ -172,6 +172,35 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 required=True,
                 note="True when this claim re-attached to an existing crew log.",
             ),
+            Field(
+                "parent",
+                JSON_OBJECT,
+                fields=(
+                    Field(
+                        "slot",
+                        JSON_STRING,
+                        required=True,
+                        note="The creating session's key, as session_create attributed it.",
+                    ),
+                    Field(
+                        "sid",
+                        JSON_STRING,
+                        note=(
+                            "The creator's ACP session id, frozen by session_create when "
+                            "it minted this session -- the creator crew log that holds the "
+                            "call. Absent when the creator had no live handle at mint, or "
+                            "when its id exceeded MAX_ACP_SESSION_ID_LEN and was dropped "
+                            "at retention rather than stored."
+                        ),
+                    ),
+                ),
+                note=(
+                    "The session that made this one through session_create. Recorded "
+                    "on the CHILD, because the child knows its creator at its first turn "
+                    "while the creator never learns the child's session id. Absent on a "
+                    "person's own tab, on a fork, and on a spawn_run subagent."
+                ),
+            ),
         ),
     ),
     EntryType(

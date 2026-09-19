@@ -66,6 +66,20 @@ def _ensure_utf8_process_environment() -> None:
     os.environ.update(_UTF8_PROCESS_ENV)
 
 
+def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
+    """Re-enter a validated stable launcher, preserving its dispatch pathname.
+
+    The launcher, not the core, replaces version-specific environment values.
+    Windows execv joins its arguments without quoting, so quote each token for
+    the native CRT parser. POSIX receives the original argument vector directly.
+    """
+    _ensure_utf8_process_environment()
+    argv = [launcher, *args]
+    if IS_WINDOWS:
+        argv = [subprocess.list2cmdline([arg]) for arg in argv]
+    os.execv(launcher, argv)
+
+
 def reexec_python_module(module: str, args: Sequence[str], executable: str | None = None) -> None:
     """Replace this process with ``<executable> -m module``.
 
@@ -610,17 +624,112 @@ else:
 #  - OFF the loop (cron, app backends — threads/subprocesses): the wait must
 #    cover a legitimately long holder that can hold the lock across a
 #    multi-second operation, and a waiter there must NOT give up and race it. So
-#    use a generous ceiling that no real hold approaches, matching POSIX's "wait
-#    for the lock" as closely as a bounded spin can.
+#    use a generous ceiling that no real hold approaches.
 #  - ON the loop (e.g. bridges._mcp_lock during app enable): a spin-sleep would
 #    freeze chat/heartbeat, so that path never sleeps at all (single-shot).
-_WIN_LOCK_POLL_SECS = 0.01
+_LOCK_POLL_SECS = 0.01
+# Backoff cap for the POSIX poll. A kernel-blocking acquire sleeps at zero cost,
+# so a flat 10ms poll would add ~30k pointless wakeups across the full ceiling;
+# doubling up to this bound keeps the first polls tight (a holder finishing a
+# sub-second critical section is still seen at once) and makes a long wait cheap.
+_LOCK_POLL_MAX_SECS = 0.25
 # Generous off-loop ceiling: longer than any legitimate hold, short enough that
 # a truly stuck/permission-denied fd still fails.
-_WIN_LOCK_TIMEOUT_SECS = 300.0
+_LOCK_TIMEOUT_SECS = 300.0
+
+# The ceiling is not Windows-only. ``fcntl.flock`` has no timeout argument, so an
+# unbounded POSIX acquire waits on a stuck holder without limit -- and on the boot
+# path that is a gateway which never binds its port and logs nothing, which reads
+# as a slow start rather than a failure. Both platforms refuse past this same
+# ceiling, so the failure is reportable. ``_WIN_*`` are aliases of these names.
+_WIN_LOCK_POLL_SECS = _LOCK_POLL_SECS
+_WIN_LOCK_TIMEOUT_SECS = _LOCK_TIMEOUT_SECS
 
 
-def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -> bool:
+def _lock_timeout_message(timeout: float, *, exclusive: bool = True) -> str:
+    """The one refusal string both platforms raise when the ceiling is hit.
+
+    Names the ceiling and the reason. A caller that catches this as best-effort
+    work has nothing else to report, so this message is the only evidence of WHY
+    the critical section was declined.
+    """
+    kind = "exclusive" if exclusive else "shared"
+    return (
+        f"could not acquire {kind} file lock within {timeout:g}s "
+        "(a holder is stuck); refusing to proceed unserialized"
+    )
+
+
+def _posix_acquire_blocking(
+    fd: int,
+    mode: int,
+    *,
+    timeout: float | None = None,
+) -> bool:
+    """POSIX bounded lock acquire: poll ``LOCK_NB`` until free or *timeout*.
+
+    Returns True if the lock was taken, False if the ceiling was reached.
+
+    ``fcntl.flock`` takes no timeout, so polling the non-blocking code is the only
+    way to bound the wait -- the same shape :func:`_win_acquire_blocking` uses, for
+    the same reason: a stuck holder must not be waited on without limit.
+
+    Retries cover contention ONLY. ``EAGAIN``/``EACCES``/``EWOULDBLOCK`` mean
+    another holder has it; any other errno is about this fd and propagates at
+    once, so a real defect is not reported as a stuck holder at the ceiling.
+
+    NEVER polls on the asyncio event-loop thread, matching
+    :func:`_win_acquire_blocking`: ``time.sleep`` there would freeze chat and
+    heartbeat for the whole wait, and a freeze long enough to miss a heartbeat is
+    a supervisor kill. On the loop the acquire is single-shot -- take it if free,
+    else refuse at once -- so a caller fails closed instead of stalling every
+    other session. Off the loop, which is where the lock is normally taken, it
+    polls to the ceiling as a real wait.
+
+    The sleep BACKS OFF from ``_LOCK_POLL_SECS`` to ``_LOCK_POLL_MAX_SECS``: a
+    flat 10ms poll would wake ~30k times across the full ceiling for no benefit,
+    while a kernel-blocking acquire wakes not at all. The first polls stay tight,
+    so a holder finishing its sub-second critical section is picked up promptly,
+    and a long wait settles into a cheap idle.
+    """
+    nb_mode = mode | fcntl.LOCK_NB
+
+    def _try_once() -> bool:
+        try:
+            fcntl.flock(fd, nb_mode)
+            return True
+        except OSError as exc:
+            # Only "someone holds it" is retryable. EBADF/EINVAL and friends are
+            # real errors about THIS fd and must surface now, not at the ceiling.
+            if exc.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                raise
+            return False
+
+    try:
+        asyncio.get_running_loop()
+        on_loop = True
+    except RuntimeError:
+        on_loop = False
+    if on_loop:
+        # Single attempt only -- a poll-sleep here blocks the event loop.
+        return _try_once()
+
+    ceiling = _LOCK_TIMEOUT_SECS if timeout is None else timeout
+    deadline = time.monotonic() + ceiling
+    delay = _LOCK_POLL_SECS
+    while True:
+        if _try_once():
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        # Never sleep past the deadline, so the refusal lands at the ceiling
+        # rather than up to one backed-off interval after it.
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, _LOCK_POLL_MAX_SECS)
+
+
+def _win_acquire_blocking(fd: int, *, timeout: float = _LOCK_TIMEOUT_SECS) -> bool:
     """Windows blocking lock acquire: spin on LK_NBLCK until free or timeout.
 
     Returns True if the lock was taken, False if it could not be.
@@ -658,7 +767,7 @@ def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -
             return True
         if time.monotonic() >= deadline:
             return False
-        time.sleep(_WIN_LOCK_POLL_SECS)
+        time.sleep(_LOCK_POLL_SECS)
 
 
 @contextlib.contextmanager
@@ -668,27 +777,43 @@ def file_lock(
     exclusive: bool = True,
     required: bool = False,
     wait: bool = True,
+    timeout: float | None = None,
 ) -> Iterator[None]:
     """Acquire an advisory lock on ``fd`` for the duration of the block.
 
-    POSIX: ``fcntl.flock(LOCK_EX|LOCK_SH)`` with ``LOCK_UN`` release.
+    POSIX: ``fcntl.flock(LOCK_EX|LOCK_SH)`` with ``LOCK_UN`` release, acquired by
+    polling the non-blocking code up to ``_LOCK_TIMEOUT_SECS``. ``flock`` itself
+    takes no timeout, and an unbounded wait on a stuck holder is not a wait but a
+    hang: on the boot path it leaves a gateway that binds no port and logs
+    nothing, which no supervisor or health check can act on.
     Windows: ``msvcrt.locking`` on the first byte, acquired by spinning on the
-    non-blocking code up to ``_WIN_LOCK_TIMEOUT_SECS`` — because msvcrt's own
+    non-blocking code up to ``_LOCK_TIMEOUT_SECS`` — because msvcrt's own
     "blocking" code gives up after ~10s with EDEADLOCK, which cannot be treated
     as a wait. ``msvcrt`` has no shared mode, so a shared request is satisfied
     with an exclusive lock (correctness over concurrency — readers genuinely
     serialize with the holder, but never see torn writes).
 
-    On Windows the acquire is single-shot when called on the asyncio event-loop
-    thread (a spin-sleep there would freeze chat/heartbeat) and a bounded poll
-    up to the timeout otherwise; either way, if the lock cannot be taken
+    On BOTH platforms, if the lock cannot be taken within the ceiling
     ``file_lock`` FAILS CLOSED — it raises rather than entering the critical
     section unserialized, since proceeding lock-less is the exact fail-open that
-    loses writes. The timeout is a safety ceiling against a stuck holder, not a
-    normal wait (every in-tree critical section is a sub-second read + atomic
-    rename). ``required`` is kept for call-site intent and does not change
-    the outcome (both paths refuse to proceed without the lock). On POSIX the
-    acquire blocks until the lock is free.
+    loses writes. On BOTH platforms the acquire is additionally single-shot when
+    called on the asyncio event-loop thread: a poll-sleep there would freeze chat
+    and heartbeat for the whole wait, and a freeze long enough to miss a heartbeat
+    is a supervisor kill, so a contended on-loop caller is refused at once and
+    fails closed rather than stalling every other session. The timeout is a safety
+    ceiling against a stuck holder, not a normal wait. ``required`` is kept for
+    call-site intent and does not change the outcome (both paths refuse to proceed
+    without the lock).
+
+    *timeout* overrides that ceiling for a caller whose critical section is
+    legitimately long, and must be set by any caller that can hold the lock past
+    ``_LOCK_TIMEOUT_SECS``. The default suits the common case — a sub-second read
+    plus an atomic rename — but it is NOT an upper bound on every in-tree holder:
+    ``frontend._staging_lock`` spans an ``npm run build`` plus an install, so a
+    default ceiling would refuse a contender while the holder is still working
+    rather than because it is stuck. A ceiling shorter than the holder's real
+    work turns a wait into a spurious refusal, which is the failure this
+    parameter exists to prevent.
 
     *wait* is for a caller whose work is OPTIONAL and retried later, and which
     may run on the event-loop thread: with ``wait=False`` the acquire is
@@ -711,8 +836,20 @@ def file_lock(
         if not wait:
             # BlockingIOError (an OSError) when held: same fail-closed contract
             # as the Windows branch, reported by the platform rather than by us.
-            mode |= fcntl.LOCK_NB
-        fcntl.flock(fd, mode)
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
+        elif not _posix_acquire_blocking(fd, mode, timeout=timeout):
+            # Past the ceiling the holder is stuck, not busy. Refuse LOUDLY
+            # rather than wait on it without limit: an unbounded wait here leaves
+            # a boot with no port bound and no log line, while a raise is
+            # something the caller can report and recover from -- the gateway
+            # boot path logs it at ERROR, prints the repair command, and still
+            # binds its port.
+            raise OSError(
+                _lock_timeout_message(
+                    _LOCK_TIMEOUT_SECS if timeout is None else timeout,
+                    exclusive=exclusive,
+                )
+            )
         try:
             yield
         finally:
@@ -728,19 +865,21 @@ def file_lock(
         # strictly safer, and callers already run under `with`, so the fd is
         # cleaned up. `required` is kept for call-site intent and does not
         # change the outcome — both paths refuse to proceed lock-less.
-        timeout = _WIN_LOCK_TIMEOUT_SECS if wait else 0.0
-        # Called with no keyword on the waiting path, so the default-argument
-        # call shape existing tests stub out is preserved.
-        acquired = _win_acquire_blocking(fd) if wait else _win_acquire_blocking(fd, timeout=0.0)
+        ceiling = 0.0 if not wait else (_LOCK_TIMEOUT_SECS if timeout is None else timeout)
+        # The waiting path with no explicit ceiling is called with no keyword, so
+        # the default-argument call shape existing tests stub out is preserved.
+        if not wait:
+            acquired = _win_acquire_blocking(fd, timeout=0.0)
+        elif timeout is None:
+            acquired = _win_acquire_blocking(fd)
+        else:
+            acquired = _win_acquire_blocking(fd, timeout=timeout)
         if not acquired:
             if not wait:
                 # Held right now. BlockingIOError so the caller can tell this
                 # from the stuck-holder ceiling below, matching POSIX LOCK_NB.
                 raise BlockingIOError("file lock is held; not waiting for it")
-            raise OSError(
-                f"could not acquire exclusive file lock within {timeout:g}s "
-                "(a holder is stuck); refusing to proceed unserialized"
-            )
+            raise OSError(_lock_timeout_message(ceiling, exclusive=exclusive))
         try:
             yield
         finally:
@@ -785,22 +924,22 @@ def acquire_lock(fd: int, *, exclusive: bool = True) -> None:
     """Low-level lock acquire for the acquire-now / release-later fd-handoff
     pattern (where a context manager does not fit).
 
-    POSIX: ``fcntl.flock`` (blocks until free). Windows: single-shot on the
-    asyncio loop thread, else a bounded poll up to ``_WIN_LOCK_TIMEOUT_SECS``
-    (see :func:`_win_acquire_blocking`). If the lock cannot be taken it FAILS
+    POSIX and Windows both wait up to ``_LOCK_TIMEOUT_SECS`` off the asyncio loop
+    thread and are both single-shot on it: POSIX polls ``fcntl.flock`` with
+    ``LOCK_NB`` (:func:`_posix_acquire_blocking`), Windows polls ``msvcrt.locking``
+    (:func:`_win_acquire_blocking`). If the lock cannot be taken it FAILS
     CLOSED — raises rather than letting the caller proceed unserialized — since
     a stuck holder past the ceiling is an error, not a routine wait, and
     proceeding lock-less is the fail-open that loses writes. Pair every call
     with :func:`release_lock` on the same ``fd``.
     """
     if IS_POSIX:
-        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not _posix_acquire_blocking(fd, mode):
+            raise OSError(_lock_timeout_message(_LOCK_TIMEOUT_SECS, exclusive=exclusive))
         return
     if not _win_acquire_blocking(fd):
-        raise OSError(
-            f"could not acquire file lock within {_WIN_LOCK_TIMEOUT_SECS:g}s "
-            "(a holder is stuck); refusing to proceed unserialized"
-        )
+        raise OSError(_lock_timeout_message(_LOCK_TIMEOUT_SECS))
 
 
 def release_lock(fd: int) -> None:
@@ -3923,6 +4062,38 @@ def pgroup_of_leader(pid: int) -> int | None:
         return pid
     except PermissionError:
         return None
+
+
+def pid_confirmed_absent(pid: int) -> bool:
+    """Positive absence only; query failures preserve lifecycle records.
+
+    Windows OpenProcess(ERROR_INVALID_PARAMETER) means the PID is absent.
+    An opened, exited process also counts; denied/unknown queries never do.
+    """
+    if type(pid) is not int or not 1 < pid <= 0xFFFFFFFF:
+        return False
+    if IS_POSIX:
+        return pid <= 0x7FFFFFFF and pid_liveness(pid) == PID_DEAD
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return _windows_last_error() == 87  # ERROR_INVALID_PARAMETER
+        try:
+            code = wintypes.DWORD()
+            return bool(
+                kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != 259
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return False
 
 
 def pid_exists(pid: int) -> bool:

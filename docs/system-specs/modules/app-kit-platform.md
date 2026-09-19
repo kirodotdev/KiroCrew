@@ -10,12 +10,28 @@ document is the behaviour and the one-way doors.
 
 ## Scoped frontend HTTP transport
 
-`useAppApi()` exposes `request(path, RequestInit)` and JSON verb helpers through
-one unchanged API-path check. The generic method forwards raw bodies; JSON verb
-helpers serialize their body argument and keep their method authoritative.
+`useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and
+JSON verb helpers through one API-path check. The check normalizes the request
+before matching declared patterns using the backend's semantics: a bare prefix
+matches itself and children at a slash boundary, trailing `/*` matches the base
+and its children, and trailing `*` matches a string prefix. Blank declarations
+match nothing; declaration whitespace is stripped. No implicit feature grants
+are added. A trailing slash without `*` follows the backend's literal rule.
+
+`raw` returns a successful `Response` without reading it, preserving binary
+bytes, headers and streams. The caller owns consumption and cancellation;
+streaming callers supply an abort signal and cancel on unmount. `request` and
+JSON helpers retain JSON parsing and empty-response behavior. The generic method
+forwards raw bodies; JSON verb helpers serialize their body argument and keep
+their method authoritative.
 Request options never add a permission. HTTP failures preserve the existing error
 message and expose status plus unparsed response body through the type-only
-`AppApiError` contract; network and parsing failures remain distinct.
+`AppApiError` contract; network and parsing failures remain distinct. Both raw
+and JSON transports signal an explicit `403` with `X-Auth-Required: true` to the
+dashboard's installed recovery handler without consuming the response body.
+The handler owns existing single-flight refresh, embedded handoff and banner
+behavior. A document without that handler still throws the original HTTP error;
+there is no SDK-owned credential refresh or automatic request replay.
 
 The host owns session attribution. Chat hosts bind their session; routed app
 pages bind the established `dashboard:ui` page identity. A provided host key
@@ -23,6 +39,84 @@ wins over caller headers; an unbound host rejects caller-selected session keys.
 See the [API reference](../../app-kit/api-reference.md#app-sdk-hooks-dashboard-ui)
 and [trust model](../../architecture/app-platform-trust-model.md) for the method
 contract and the distinction between a frontend guardrail and token enforcement.
+
+## Shared frontend module resolution
+
+External app bundles import shared UI values through `@kirocrew/app-sdk/ui`.
+Its vendor stub exports the same runtime names as the host UI barrel, including
+`SourceBadge`. Settings primitives, `Clickable`, `Modal` and `ErrorNotice` also
+reuse the host implementations rather than copied interaction/focus logic.
+The registry key `@kirocrew/ui` is internal to the host registry,
+not a browser import-map specifier.
+
+`@tanstack/react-query` resolves through the import map to a vendor stub backed
+by the host's existing module instance. Its hooks, providers and context are
+shared with the dashboard; apps must externalize this dependency rather than
+bundle a second copy. Runtime export parity and identity are regression-tested
+against the pinned dependency. That runtime export surface is app-facing: a
+dependency upgrade must preserve those names and their behavior, or ship an
+explicit breaking App Kit migration rather than silently removing exports. The
+export-parity test makes removed or renamed stub bindings fail the host build.
+Apps needing a newly added export declare `minKiroCrewVersion` for the first
+host release supplying it; this minimum-version gate is not protection against
+future incompatible removals. No independent dependency-version negotiation is
+introduced.
+
+## Host-mediated chat launch and cron toggles
+
+`useChatLauncher().openChat` accepts `slotKey` and `autoSend`. Without a target,
+the default sends the message in a new session; `autoSend: false` instead creates
+a new draft session through the existing session controller. With `slotKey`, the
+routed chat activates that exact slot on cold entry and hot navigation before
+filling or sending. Target activation owns the mount fetch, so a previously
+active Redux slot cannot refresh itself over the app's target.
+The controller retains a claimed message through slow
+activation; a rejected switch reports failure and the unsent message together
+in the existing copyable session-open notice, without sending to another slot.
+Failure notices label the retained message and tell the user to copy it to retry;
+unknown targets use a generic session label rather than exposing an internal key.
+A user switch during activation reports cancellation explicitly.
+A targeted draft appends to any unsent text through the shared draft merge helper,
+persists the merged text, and leaves no second prefill to overwrite it on return.
+An existing slot retains its agent. App auto-sends carry only their explicit
+message: staged files, pasted blocks, session links and knowledge remain owned by
+the composer. App text does not resolve composer file, directory or paste tokens.
+It also captures no pending question or folder suggestion on behalf of the user:
+accepted or queued app sends cannot dismiss a blocking ask, explicitly retire a
+stateless card, or age a folder suggestion. Ordinary server-frame retirement of
+stateless cards when a new turn is delivered remains unchanged. Manual composer
+and explicit card-answer actions retain their existing behavior.
+Once the server accepts a message into the interactive queue, the user's
+separate **Cancel and move back to input** action retains the shared queue
+contract: it merges that card's current text into the draft without overwriting
+existing text or sending again. This explicit recovery action is distinct from
+automatic launch-failure or activation-cancellation recovery. Edited entries and
+entries reloaded in another tab retain the same queue behavior.
+A rejected send leaves the composer unchanged and keeps the failed payload in
+the existing page-level, copyable error notice. The notice survives slot switches
+until dismissed, replaced by another action error, or the page is unmounted;
+it is not persisted or sent to the OS notification center. Failed app creation
+uses the same notice with or without an origin slot, without re-arming a new
+session for the next manual send. No failed app turn inserts a synthetic user
+row into a busy slot, so its pending approvals remain visible.
+Embedded chat surfaces never consume the
+dashboard's launch intent. Repeated rendering of a `new=1` navigation consumes
+that new-session request once, including while creation is pending. A failed
+fresh-draft creation retains the claimed prompt for the controller's retry.
+No task-binding metadata or session-authority grant is introduced.
+
+`CronSDK.set_enabled` and `set_enabled_async` delegate to the existing cron
+service's pause/resume transition, preserving the job ID and history. The service
+checks the expected app owner inside its lock after reloading persisted state;
+missing and foreign jobs are refused and the SDK audits ownership denial.
+Sync calls refuse on a running event loop. `update_job` refuses both `enabled`
+and `user_paused` updates explicitly instead of silently ignoring a toggle.
+Callers use the scoped transition method rather than assigning pause fields.
+This validation is deliberately pause-field-only, not a general unknown-key
+validator. Other kwargs such as `script`, `command` and `context_enabled` are not
+made updatable or newly validated here; their underlying service behavior is
+unchanged. Existing app cron permission
+and runtime execution checks remain required.
 
 ## App Store source selection
 

@@ -7,15 +7,18 @@ import ast
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tmpdir_helpers import short_tmp_base
 
 from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
@@ -4610,8 +4613,118 @@ class TestRuntimeHelpers:
                 return b'{"token":"tok-xyz"}'
 
         monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
+        monkeypatch.setattr(rt, "unix_socket_urlopen", lambda *a, **k: _Resp())
         monkeypatch.setattr(rt, "loopback_urlopen", lambda *a, **k: _Resp())
         assert rt.mint_token(c, "demo", "1h") == "tok-xyz"
+
+    def test_mint_token_uses_attested_loopback_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows mints through the ownership-attested loopback port only."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / ".local_secret").write_text("s3cret")
+
+        class _Resp:
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *a: object) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b'{"token":"tok-tcp"}'
+
+        tcp_calls: list[object] = []
+
+        def _tcp(req: object, timeout: float) -> "_Resp":
+            tcp_calls.append(req)
+            return _Resp()
+
+        monkeypatch.setattr(rt, "IS_WINDOWS", True)
+        monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "loopback_urlopen", _tcp)
+        monkeypatch.setattr(
+            rt,
+            "unix_socket_urlopen",
+            lambda *a, **k: pytest.fail("Windows must not use the unix opener"),
+        )
+        monkeypatch.setattr(
+            rt,
+            "pod_socket_path",
+            lambda *a, **k: pytest.fail("Windows must not build a unix socket path"),
+        )
+        monkeypatch.setattr(
+            rt,
+            "_attested_gateway_verifier",
+            lambda *a, **k: pytest.fail("Windows must not build a unix peer verifier"),
+        )
+
+        assert rt.mint_token(c, "demo", "1h") == "tok-tcp"
+        assert len(tcp_calls) == 1
+        req = tcp_calls[0]
+        assert req.get_header("X-local-secret") == "s3cret"  # type: ignore[attr-defined]
+
+    def test_mint_token_sends_the_secret_only_over_the_pod_socket(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The X-Local-Secret request rides the pod's AF_UNIX socket, never TCP.
+
+        A TCP transport would attest ownership and then open a
+        SEPARATE loopback connection carrying the secret: a pod exiting inside
+        that window frees the port for any local user, and loopback TCP has no
+        peer-credential API to tell the squatter from the gateway. The socket
+        lives inside the pod's owner-only home, so delivery there cannot reach
+        another user -- and `unix_socket_urlopen` has no TCP handler, making
+        "no fallback" structural. This test pins both properties: the TCP
+        opener is never consulted, and the secret-bearing request lands on
+        exactly the pod's own socket path.
+        """
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / ".local_secret").write_text("s3cret")
+
+        class _Resp:
+            def __enter__(self) -> "_Resp":
+                return self
+
+            def __exit__(self, *a: object) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b'{"token":"tok-uds"}'
+
+        tcp_calls: list[object] = []
+        uds_calls: list[dict[str, object]] = []
+
+        def _tcp(*a: object, **k: object) -> "_Resp":
+            tcp_calls.append(a)
+            return _Resp()
+
+        def _uds(
+            req: object, timeout: float, *, socket_path: object, verify_peer: object = None
+        ) -> "_Resp":
+            uds_calls.append({"req": req, "socket_path": socket_path, "verify_peer": verify_peer})
+            return _Resp()
+
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
+        monkeypatch.setattr(rt, "loopback_urlopen", _tcp)
+        monkeypatch.setattr(rt, "unix_socket_urlopen", _uds)
+
+        assert rt.mint_token(c, "demo", "1h") == "tok-uds"
+        assert tcp_calls == []  # the secret-bearing call has no TCP path at all
+        port = rt.derive_port(c, "demo")
+        assert uds_calls[0]["socket_path"] == rt.pod_socket_path(c, "demo", port)
+        assert callable(uds_calls[0]["verify_peer"])  # peer check rides every send
+        req = uds_calls[0]["req"]
+        assert req.get_header("X-local-secret") == "s3cret"  # urllib-normalized key
 
     def test_mint_token_refuses_a_foreign_port_holder(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5455,16 +5568,189 @@ class TestReviewRound1Fixes:
             def read(self) -> bytes:
                 return b'{"token":"t"}'
 
-        def _urlopen(req: object, timeout: int = 5) -> "_Resp":
+        def _urlopen(
+            req: object,
+            timeout: int = 5,
+            *,
+            socket_path: object = None,
+            verify_peer: object = None,
+        ) -> "_Resp":
             captured["url"] = req.full_url  # type: ignore[attr-defined]
             return _Resp()
 
         # Mint now requires positive ownership proof; this test is about the URL
         # it builds, so grant the proof rather than exercising the guard here.
         monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
+        monkeypatch.setattr(rt, "unix_socket_urlopen", _urlopen)
         monkeypatch.setattr(rt, "loopback_urlopen", _urlopen)
         rt.mint_token(c, "demo", "1 h")
         assert "ttl=1%20h" in captured["url"]
+
+
+class TestMintPeerVerification:
+    """Connect-time peer verification on the pod's unix socket.
+
+    ``port_owner`` proves the pid RECORD is fresh; these tests pin the other
+    half: the process ANSWERING the socket file must be that recorded pid, as
+    read from the kernel's peer credentials on the connected socket, before a
+    single HTTP byte (and the ``X-Local-Secret`` header behind it) is sent.
+    """
+
+    def _grant_record_freshness(self, monkeypatch: pytest.MonkeyPatch, pid: int) -> None:
+        monkeypatch.setattr(rt, "port_owner", lambda *a, **k: rt.OWNER_POD)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: pid)
+
+    def test_verifier_refuses_a_mismatched_peer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        self._grant_record_freshness(monkeypatch, 4242)
+        monkeypatch.setattr(rt, "get_peer_pid", lambda sock: 9999)
+        verify = rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+        with pytest.raises(rt.PodError, match="refusing to send"):
+            verify(object())
+
+    def test_verifier_refuses_when_attestation_expires_before_connect(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The connected peer needs a fresh record, not only a matching pid."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        attestations = iter((4242, None))
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: next(attestations))
+        monkeypatch.setattr(rt, "get_peer_pid", lambda sock: 4242)
+        verify = rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+        with pytest.raises(rt.PodError, match="not the currently attested gateway"):
+            verify(object())
+
+    def test_verifier_refuses_an_unreadable_peer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``None`` from the kernel is a refusal, never a pass (deny-by-default)."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        self._grant_record_freshness(monkeypatch, 4242)
+        monkeypatch.setattr(rt, "get_peer_pid", lambda sock: None)
+        verify = rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+        with pytest.raises(rt.PodError, match="unidentifiable process"):
+            verify(object())
+
+    def test_verifier_refuses_when_no_pid_is_attested(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No provable record at send time = no verifier at all, fail closed."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: None)
+        with pytest.raises(rt.PodOwnershipUnproven):
+            rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+
+    def test_verifier_accepts_the_attested_peer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
+        c = PodConfig.load()
+        self._grant_record_freshness(monkeypatch, 4242)
+        monkeypatch.setattr(rt, "get_peer_pid", lambda sock: 4242)
+        verify = rt._attested_gateway_verifier(c, "demo", 7999, Path("/x/sock"))
+        assert verify(object()) is None  # no raise = the send may proceed
+
+    @staticmethod
+    def _serve_once(server_sock: socket.socket, received: list[bytes]) -> threading.Thread:
+        """Accept one connection and record whatever arrives (empty = refused)."""
+
+        def _run() -> None:
+            try:
+                conn, _ = server_sock.accept()
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(2)
+                data = b""
+                try:
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                except OSError:
+                    pass
+                received.append(data)
+                if data:
+                    body = b'{"token":"tok-live"}'
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                        b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+                    )
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        return thread
+
+    def _mint_against_live_listener(
+        self, monkeypatch: pytest.MonkeyPatch, attested_pid: int
+    ) -> tuple[list[bytes], "rt.PodError | None"]:
+        """Drive the REAL kernel peer check: a live in-process unix listener
+        (peer pid = ``os.getpid()``) answers the pod's derived socket path,
+        while the attested record names *attested_pid*. Only record freshness
+        is granted; ``get_peer_pid`` runs unpatched against the real socket.
+        """
+        if platform_compat.IS_WINDOWS:
+            pytest.skip("AF_UNIX transport is POSIX-only")
+        root = Path(tempfile.mkdtemp(prefix="podpeer-", dir=short_tmp_base()))
+        try:
+            monkeypatch.setenv("KIROCREW_POD_ROOT", str(root))
+            c = PodConfig.load()
+            home = c.home_dir("demo")
+            home.mkdir(parents=True)
+            (home / ".local_secret").write_text("s3cret")
+            port = rt.derive_port(c, "demo")
+            socket_path = rt.pod_socket_path(c, "demo", port)
+            socket_path.parent.mkdir(parents=True, exist_ok=True)
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                server.bind(str(socket_path))
+                server.listen(1)
+                received: list[bytes] = []
+                thread = self._serve_once(server, received)
+                self._grant_record_freshness(monkeypatch, attested_pid)
+                error: rt.PodError | None = None
+                try:
+                    assert rt.mint_token(c, "demo", "1h") == "tok-live"
+                except rt.PodError as exc:
+                    error = exc
+                server.close()
+                thread.join(timeout=5)
+                return received, error
+            finally:
+                server.close()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_mint_refuses_a_rebound_socket_before_any_bytes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rebind window: a same-UID process rebinds the socket path.
+
+        The listener is real and answering, the pid record is fresh, but the
+        kernel says the peer is this test process, not the attested gateway
+        (pid 1). The mint must refuse AND the listener must observe zero bytes
+        -- the request line, let alone the secret header, never went out.
+        """
+        received, error = self._mint_against_live_listener(monkeypatch, attested_pid=1)
+        assert error is not None and "refusing to send" in str(error)
+        assert received in ([], [b""])  # connection at most; never a byte of HTTP
+
+    def test_mint_sends_when_the_kernel_names_the_attested_peer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Benign path, no new denials: attest THIS process, the real
+        ``SO_PEERCRED``/``LOCAL_PEERPID`` read agrees, the mint completes."""
+        received, error = self._mint_against_live_listener(monkeypatch, attested_pid=os.getpid())
+        assert error is None
+        assert len(received) == 1 and b"X-Local-Secret: s3cret" in received[0]
 
 
 class TestReviewRound2Fix:
@@ -5883,6 +6169,58 @@ class TestPlatformGuard:
         assert not isinstance(exc.value, rt.PodBackendAbsent)
         assert detail in str(exc.value)
 
+    def test_stale_explicit_bus_address_still_gets_the_manager_remedy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Operationally unknown, yet the remedy names what a stale address needs.
+
+        The class must stay a plain :class:`rt.PodError` — a stale address is
+        never proof that no backend exists, and that proof is what authorizes
+        destructive worktree removal. Only the text changes: the old one told the
+        caller to rerun the command that had just failed.
+        """
+        stale = "unix:path=/run/user/4242/stale-bus"
+        detail = "Failed to get D-Bus connection: Connection refused"
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", stale)
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(rt.os, "getuid", lambda: 4242, raising=False)
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(returncode=1, stderr=detail),
+        )
+
+        result = rt.probe_user_bus()
+        message = rt.user_bus_failure_message(result)
+
+        assert result.status == rt.USER_BUS_ERROR
+        assert "stale" in message
+        assert "loginctl enable-linger tester" in message
+        assert "sudo loginctl enable-linger 4242" in message
+        assert "./dev-backend.sh" in message
+        # The circular instruction is gone.
+        assert "fix that error before using pod commands" not in message
+        assert detail in message
+
+    def test_a_present_socket_keeps_the_generic_probe_remedy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The socket exists, so a stopped per-user manager is not the diagnosis."""
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+        detail = "Failed to connect to bus: Connection reset by peer"
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(returncode=1, stderr=detail),
+        )
+
+        message = rt.user_bus_failure_message(rt.probe_user_bus())
+
+        assert "fix that error before using pod commands" in message
+        assert "enable-linger" not in message
+
     def test_user_bus_probe_preserves_an_unclassified_failure(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -6205,6 +6543,77 @@ class TestSessionBus:
         self._bus(monkeypatch, tmp_path / "run", exists=False)
         monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=/tmp/dbus-abc")
         assert rt.has_session_bus() is True
+
+    def test_uncheckable_transports_are_never_called_stale(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only ``unix:path=`` names something to stat, so nothing else is judged.
+
+        ``session_bus_socket()`` falls back to the conventional path for an
+        address it cannot resolve, and that path existing is what keeps the
+        generic remedy. A transport with no filesystem identity must not be
+        described as a stopped per-user manager.
+        """
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        (tmp_path / "bus").touch()
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=/tmp/dbus-abc")
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(
+                returncode=1, stderr="Failed to connect to bus: Connection refused"
+            ),
+        )
+
+        assert rt.has_session_bus() is True
+        assert rt.session_bus_socket() == str(tmp_path / "bus")
+        assert "stale" not in rt.user_bus_failure_message(rt.probe_user_bus())
+
+    def test_present_socket_named_by_the_address_is_the_path_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A refusal names the path actually judged, not a conventional one."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        sock = elsewhere / "bus"
+        sock.touch()
+        self._bus(monkeypatch, tmp_path / "run", exists=False)
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={sock}")
+        assert rt.session_bus_socket() == str(sock)
+
+    def test_percent_escaped_address_path_is_decoded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """D-Bus percent-escapes address values, so a raw compare would miss."""
+        spaced = tmp_path / "run dir"
+        spaced.mkdir(parents=True, exist_ok=True)
+        sock = spaced / "bus"
+        sock.touch()
+        self._bus(monkeypatch, tmp_path / "run", exists=False)
+        escaped = str(sock).replace(" ", "%20")
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={escaped}")
+        assert rt.session_bus_socket() == str(sock)
+
+    def test_no_session_remedy_is_actionable_for_the_actor_who_can_act(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``loginctl`` needs the SYSTEM bus, so it is not always self-service.
+
+        A caller that cannot reach a bus cannot run ``loginctl`` either, and
+        ``sudo loginctl enable-linger <name>`` fails outright where root's name
+        lookup does not resolve the account. The message therefore also names the
+        privileged uid form and a preview path that needs no systemd at all.
+        """
+        sock = self._bus(monkeypatch, tmp_path / "run", exists=False)
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(rt.os, "getuid", lambda: 4242, raising=False)
+
+        message = rt.user_bus_failure_message(
+            rt.UserBusProbe(rt.USER_BUS_NO_SESSION, str(sock), "")
+        )
+        assert "loginctl enable-linger tester" in message
+        assert "sudo loginctl enable-linger 4242" in message
+        assert "./dev-backend.sh" in message
 
     def test_require_systemd_explains_a_missing_bus(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

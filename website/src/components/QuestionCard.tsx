@@ -36,6 +36,24 @@ interface QuestionCardProps {
   onDraftChange?: (active: boolean) => void
 }
 
+/** Which questions a freshly mounted card starts folded shut.
+ *
+ *  Only questions after the first, and only when there is more than one. The
+ *  predicate deliberately matches the auto-fold on answering below: a lone
+ *  question is what the card exists for, so folding it would buy nothing and cost
+ *  every single-question card an extra click before it can be answered. With
+ *  several, a fully open card is taller than the viewport and buries the composer
+ *  and the conversation above it, so it opens at one question and walks DOWN as
+ *  each answer folds the question it settled.
+ *
+ *  Shared by the initial state and the question-set reset so the two cannot
+ *  drift: a replaced payload has to behave exactly like a fresh mount.
+ */
+const initialCollapsed = (questions: Question[]): Record<number, boolean> =>
+  questions.length > 1
+    ? Object.fromEntries(questions.slice(1).map((_, i) => [i + 1, true]))
+    : {}
+
 function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftChange }: QuestionCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
@@ -53,8 +71,10 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
   /* Which questions are folded shut. A 3-question card with four options each is
      taller than the viewport, so an un-foldable card buries the composer and the
      conversation above it. Answering also folds the question it answered, so a
-     multi-question card walks DOWN towards Submit instead of growing past it. */
-  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({})
+     multi-question card walks DOWN towards Submit instead of growing past it.
+     A fresh card starts in that walked-down shape rather than at full height:
+     see `initialCollapsed`. */
+  const [collapsed, setCollapsed] = useState<Record<number, boolean>>(() => initialCollapsed(questions))
   /* All three state maps are keyed by question INDEX, which only holds while the
      question set does. PendingQuestionCard keys this component by `ask_id` — but
      a legacy (ask_id-less) card falls back to the slot key, so a second
@@ -76,7 +96,7 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
     setLastKey(questionKey)
     setSelections({})
     setCustomInputs({})
-    setCollapsed({})
+    setCollapsed(initialCollapsed(questions))
   }
 
   const toggleCollapsed = (qIdx: number) =>
@@ -114,12 +134,32 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
       return { ...prev, [qIdx]: next }
     })
     setCustomInputs(prev => ({ ...prev, [qIdx]: '' }))
-    /* Auto-fold the question this pick just settled. Only for single-select — a
-       multi-select is not finished after one click — only when the card holds
-       more than one question, and never when the click DESELECTED (there is no
-       answer to summarise and the user is still choosing). */
+    /* Auto-fold the question this pick just settled, and open the next one that
+       still has no answer. Only for single-select — a multi-select is not
+       finished after one click — only when the card holds more than one
+       question, and never when the click DESELECTED (there is no answer to
+       summarise and the user is still choosing).
+
+       The fold and the hand-off have to happen together. Folding alone would
+       leave every following question shut, because a fresh card already starts
+       with them folded, so each one would cost a click on a muted row to find
+       before it could be answered. Together they walk the card DOWN: exactly one
+       question is open at a time, it is always the next one that needs an
+       answer, and the card ends fully folded on Submit once nothing is left.
+       Answered means a picked option or typed custom text, the same pair Submit
+       reads, so re-opening an earlier question to change its pick hands off to
+       whatever is still outstanding rather than to the question after it. */
     if (!multi && !wasSelected && questions.length > 1) {
-      setCollapsed(prev => ({ ...prev, [qIdx]: true }))
+      const answered = (i: number) =>
+        i === qIdx ||
+        (selections[i]?.size ?? 0) > 0 ||
+        (customInputs[i] ?? '').trim() !== ''
+      const nextUnanswered = questions.findIndex((_, i) => !answered(i))
+      setCollapsed(prev => ({
+        ...prev,
+        [qIdx]: true,
+        ...(nextUnanswered === -1 ? {} : { [nextUnanswered]: false }),
+      }))
     }
   }
 

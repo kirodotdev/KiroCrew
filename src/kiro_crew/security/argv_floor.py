@@ -124,7 +124,7 @@ from .shell_normalizer import (
     _substitution_depth_delta,
     _xargs_here_string_rebuild,
 )
-from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
+from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -654,17 +654,14 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
             continue
         redirect = _shell_normalizer._output_redirect_scan(redirect_word)
         if redirect is not None:
-            # An OUTPUT redirect and its target are not this command's arguments, and
-            # neither says anything about where the program comes from -- so the walk has
-            # to step over both and keep looking, exactly as it does for a stdin
-            # redirect. Falling through instead read the leftover descriptor digits of
-            # `2>&1` as a script path and answered False, so `python 2>&1 <<< '<program>'`
-            # had its stdin program go unscanned. Bash runs every one of these.
+            # An OUTPUT redirect and its target are not this command's arguments and say
+            # nothing about where the program comes from, so the walk steps over both and
+            # keeps looking, as for a stdin redirect. Falling through read the leftover
+            # digits of `2>&1` as a script path, so `python 2>&1 <<< '<program>'` went unscanned.
             redirect_target, position = redirect
             # A chain of output redirects glued into ONE word (`>a>a>a...`) is walked
-            # here, in place. Re-injecting each remainder into the token stream instead
-            # re-sliced the word per operator, which is quadratic in its length on a
-            # floor that runs for every command.
+            # here, in place, to stay linear in the word length on a floor that runs
+            # for every command.
             while position < len(redirect_word):
                 further = _shell_normalizer._output_redirect_scan(redirect_word, position)
                 if further is None:
@@ -1527,8 +1524,7 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
         return False
     for tokens in _self_token_frames(_shell_join_continuations(text_lower)):
         programs = _argv_programs(tokens)
-        # Once per FRAME, not once per token: this is the loop whose per-token scan
-        # made the floor quadratic.
+        # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)
         for i in range(len(tokens)):
             prog_idx = _self_program_index(tokens, i, scan)
@@ -1550,6 +1546,11 @@ def _is_self_restart(text_lower: str) -> bool:
 def _is_self_update(text_lower: str) -> bool:
     """``kirocrew update`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("update",))
+
+
+def _is_self_file_delivery(text_lower: str) -> bool:
+    """``kirocrew file-delivery <verb>`` behind any shell dressing of interposed flags."""
+    return _matches_self_subcommand(text_lower, ("file-delivery", _SELF_FILE_DELIVERY_VERBS))
 
 
 def _is_self_gateway_restart(text_lower: str) -> bool:

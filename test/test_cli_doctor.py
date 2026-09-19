@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1133,7 +1133,17 @@ class TestGatewayMemoryLines:
 class TestDoctorAgentAuth:
     """One sign-in row per selectable harness, from its declaration."""
 
-    def _run(self, monkeypatch, capsys, backends, signed_in):
+    def _run(
+        self,
+        monkeypatch,
+        capsys,
+        backends,
+        signed_in,
+        *,
+        vault_holds=False,
+        vault_detail=None,
+        vault_import_fails=False,
+    ):
         from kiro_crew import acp_backends
 
         probes: list[int] = []
@@ -1144,6 +1154,18 @@ class TestDoctorAgentAuth:
 
         monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: backends)
         monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", probe)
+        # The vault is always patched so no test reads the developer's real
+        # sign-in vault -- the host-auth-callback row probes it via a deferred
+        # import, and an unpatched probe would make these tests host-dependent.
+        if vault_import_fails:
+            monkeypatch.setitem(sys.modules, "kiro_crew.auth.bridge", None)
+        else:
+            monkeypatch.setattr(
+                "kiro_crew.auth.bridge.vault_holds_identity", lambda: vault_holds
+            )
+            monkeypatch.setattr(
+                "kiro_crew.auth.bridge.describe_vault_identity", lambda: vault_detail
+            )
         cli_doctor._doctor_agent_auth()
         return capsys.readouterr().out, len(probes)
 
@@ -1183,6 +1205,140 @@ class TestDoctorAgentAuth:
         assert "could not check" in out
         assert "not signed in" not in out
 
+    def test_a_vault_owned_kas_row_names_the_vault(self, monkeypatch, capsys) -> None:
+        """When Crew's vault holds a usable identity the KAS spawn is vault-owned,
+        so the row names the vault and carries the vault's own detail line -- and
+        the verdict comes from the vault probe, not from the shared kiro-cli
+        probe, which the kiro row still consumes exactly once for itself."""
+        detail = "social/Google, expires in 42m, refresh token present -> usable"
+        out, probes = self._run(
+            monkeypatch,
+            capsys,
+            ["", "kas"],
+            signed_in=True,
+            vault_holds=True,
+            vault_detail=detail,
+        )
+        assert probes == 1
+        assert "✅ Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert detail in out
+        # The kiro row is untouched: it still reports the host store's own state.
+        assert "✅ kiro-cli's own sign-in" in out
+
+    def test_a_vault_owned_row_alone_consumes_no_kiro_cli_probe(
+        self, monkeypatch, capsys
+    ) -> None:
+        """The vault verdict is the row's whole answer, so with no other host-store
+        row on the board the kiro-cli probe never runs at all -- and a store that
+        was never measured must not be claimed present, so the secondary-detail
+        line stays absent too. With no detail line to affirm health the glyph is
+        the row's "could not check" marker, never a green asserted from silence."""
+        out, probes = self._run(
+            monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=True
+        )
+        assert probes == 0
+        assert "⚠️  Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert "✅ Kiro Crew vault" not in out
+        # The guard on the secondary line is load-bearing: nothing probed
+        # kiro-cli's store here, so nothing may be asserted about it.
+        assert "also present" not in out
+
+    def test_a_rejected_refresh_vault_owner_is_not_a_green_row(
+        self, monkeypatch, capsys
+    ) -> None:
+        """The vault still OWNS the spawn when the issuer has rejected its refresh
+        token (``is_usable`` cannot know that without a network call), but the
+        glyph column is what an operator scans -- a ✅ above a detail line whose
+        verdict says the sign-in is expired would bury the remedy. Ownership
+        keeps the vault text; health downgrades the glyph."""
+        detail = (
+            "social/Google, expires in 42m, refresh token present, refresh REJECTED "
+            "by issuer at 2026-09-18T01:00 -> sign-in expired -- sign in again from "
+            "the dashboard or sign out"
+        )
+        out, probes = self._run(
+            monkeypatch,
+            capsys,
+            ["kas"],
+            signed_in=True,
+            vault_holds=True,
+            vault_detail=detail,
+        )
+        assert probes == 0
+        assert "⚠️  Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert "✅ Kiro Crew vault" not in out
+        # Wrapped, not reworded: the remedy reaches the row.
+        for word in detail.split():
+            assert word in out, word
+
+    def test_both_stores_holding_reports_the_second_store_too(
+        self, monkeypatch, capsys
+    ) -> None:
+        """The two stores can hold DIFFERENT accounts. The vault owns the spawn,
+        but a row that silently dropped kiro-cli's own sign-in would trade one
+        wrong report for another -- so it is reported as secondary detail, and
+        never adjudicated."""
+        out, probes = self._run(
+            monkeypatch,
+            capsys,
+            ["", "kas"],
+            signed_in=True,
+            vault_holds=True,
+            vault_detail="social/Google, expires in 42m, refresh token present -> usable",
+        )
+        assert probes == 1
+        assert "also present and may be a different account" in out
+        assert "the relay uses the vault" in out
+
+    def test_vault_not_holding_falls_back_to_the_kiro_cli_row(
+        self, monkeypatch, capsys
+    ) -> None:
+        """An empty vault leaves the row exactly as it was: kiro-cli's store is
+        the runtime's fallback owner, probed once."""
+        out, probes = self._run(
+            monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=False
+        )
+        assert probes == 1
+        assert "✅ kiro-cli's own sign-in" in out
+        assert "Kiro Crew vault" not in out
+
+    def test_a_stored_but_unusable_vault_identity_is_still_reported(
+        self, monkeypatch, capsys
+    ) -> None:
+        """A lapsed vault identity does not own the spawn, but it is exactly why a
+        spawn is failing for an operator who signed in through Crew -- so the
+        detail line (with its remedy) prints beneath the fallback row rather than
+        vanishing with the ownership."""
+        detail = (
+            "social/Google, access token expired, no refresh token "
+            "-> NOT usable -- sign in again or sign out"
+        )
+        out, probes = self._run(
+            monkeypatch,
+            capsys,
+            ["kas"],
+            signed_in=True,
+            vault_holds=False,
+            vault_detail=detail,
+        )
+        assert probes == 1
+        assert "✅ kiro-cli's own sign-in" in out
+        # Wrapped, not reworded: every word of the detail reaches the row.
+        for word in detail.split():
+            assert word in out, word
+
+    def test_a_vault_import_failure_degrades_to_the_kiro_cli_path(
+        self, monkeypatch, capsys
+    ) -> None:
+        """kiro_crew.auth brings the cryptography wheel with it; a broken install
+        must degrade this advisory row to the kiro-cli path, never lose it."""
+        out, probes = self._run(
+            monkeypatch, capsys, ["kas"], signed_in=True, vault_import_fails=True
+        )
+        assert probes == 1
+        assert "✅ kiro-cli's own sign-in" in out
+        assert "Kiro Crew vault" not in out
+
 
 class TestDoctorKas:
     """`kirocrew doctor` KAS backend section — gated on acp_backend == kas.
@@ -1201,6 +1357,16 @@ class TestDoctorKas:
         monkeypatch.setattr(
             cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: self._Cfg(backend))
         )
+
+    def _patch_vault(self, monkeypatch, holds: bool = False, detail: str | None = None) -> None:
+        """Stub both vault probes so no test reads the developer's real vault.
+
+        ``_report_kas_backend`` reaches ``vault_holds_identity`` and
+        ``describe_vault_identity`` on every run, so every test that gets past
+        the binary check needs these pinned to stay host-independent.
+        """
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: holds)
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: detail)
 
     def test_silent_when_backend_not_kas(self, monkeypatch, capsys) -> None:
         self._patch_cfg(monkeypatch, "")
@@ -1236,8 +1402,31 @@ class TestDoctorKas:
         # The exact invocation, so a reader can reproduce it by hand.
         assert "acp --agent-engine v3 --auth-method cli" in out
         assert "auth owner:  kiro-cli credential store" in out
+        # The token line agrees with its own auth owner line: cli-owned spawn,
+        # cli-named token source.
+        assert "token:       ➖ kiro-cli's own sign-in (see the sign-in rows above)" in out
         assert "crew vault:" not in out
         assert "✅ v3 supported" in out
+        assert issues == []
+
+    def test_vault_import_failure_falls_back_to_cli_auth(self, monkeypatch, capsys) -> None:
+        """A broken auth install cannot abort the KAS doctor section."""
+        self._patch_cfg(monkeypatch, "kas")
+        monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
+        monkeypatch.setattr(
+            cli_doctor,
+            "_kas_relay_help",
+            lambda _binary: "--agent-engine <ENGINE>  v1, v2 (default), or v3",
+        )
+        monkeypatch.setitem(sys.modules, "kiro_crew.auth.bridge", None)
+        issues: list[str] = []
+
+        cli_doctor._doctor_kas(issues)
+
+        out = capsys.readouterr().out
+        assert "auth owner:  kiro-cli credential store" in out
+        assert "crew vault:" not in out
+        assert "token:       ➖ kiro-cli's own sign-in" in out
         assert issues == []
 
     def test_crew_sign_in_prints_the_crew_owned_argv(self, monkeypatch, capsys) -> None:
@@ -1262,12 +1451,18 @@ class TestDoctorKas:
         assert "--auth-method" not in out
         assert "auth owner:  Kiro Crew vault" in out
         assert "crew vault:  social/Google" in out
+        # The token line agrees with its own auth owner line: vault-owned spawn,
+        # vault-named token source -- naming kiro-cli's store here would
+        # contradict the owner line two rows up.
+        assert "token:       ➖ Kiro Crew vault sign-in (see the auth owner line above)" in out
+        assert "kiro-cli's own sign-in" not in out
         assert issues == []
 
     def test_engine_missing_appends_issue(self, monkeypatch, capsys) -> None:
         """A kiro-cli that offers engines but not ours cannot serve KAS."""
         self._patch_cfg(monkeypatch, "kas")
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
+        self._patch_vault(monkeypatch)
         monkeypatch.setattr(
             cli_doctor,
             "_kas_relay_help",
@@ -1289,6 +1484,7 @@ class TestDoctorKas:
         """
         self._patch_cfg(monkeypatch, "kas")
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
+        self._patch_vault(monkeypatch)
         monkeypatch.setattr(
             cli_doctor,
             "_kas_relay_help",
@@ -1311,6 +1507,7 @@ class TestDoctorKas:
         """
         self._patch_cfg(monkeypatch, "kas")
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
+        self._patch_vault(monkeypatch)
         monkeypatch.setattr(cli_doctor, "_kas_relay_help", lambda _binary: None)
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
@@ -1365,6 +1562,10 @@ class TestDoctorKas:
         self._patch_cfg(monkeypatch, "kas")
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
         monkeypatch.setattr(cli_doctor, "_kas_relay_help", lambda _binary: "v3")
+        # Pinned False so the assertion reads the cli-owned token line rather
+        # than the developer's real vault state.
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
@@ -3021,3 +3222,117 @@ class TestCronHealth:
         self._run(monkeypatch, tmp_path)
 
         assert path.read_bytes() == before, "doctor must not mutate crons.json"
+
+
+class TestProjectSectionAndAuthRow:
+    """`kirocrew doctor` Project labels + the local-bind auth row.
+
+    The Project row resolves the Kiro Crew SOURCE CHECKOUT (``cli.py``
+    ``_PROJECT_MARKERS``), never the user's own workspace, so its labels must
+    say so. The Configuration auth row must not advertise a loopback
+    exemption: the dashboard middleware requires a valid token on every
+    request (``token_auth.py``), and local CLI/MCP callers authenticate with
+    the local secret instead.
+    """
+
+    def _run_doctor(self, tmp_path: Path, monkeypatch, capsys, *, project_dir: str) -> str:
+        """Drive the full ``_doctor()`` hermetically and return its output.
+
+        Mirrors the mock harness of ``test_cli.py``'s doctor tests: config
+        pinned to a pristine default, binaries "found", probes stubbed, so
+        the run is deterministic and spawns nothing.
+        """
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        def _pristine() -> KiroCrewConfig:
+            cfg = KiroCrewConfig()
+            cfg.stt.enabled = False
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
+        monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
+
+        async def _probe(server):
+            server.status = "ok"
+            server.tools = []
+            return server
+
+        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
+        with (
+            patch(
+                "kiro_crew.cli_doctor.shutil.which",
+                side_effect=lambda b, **_kw: f"/usr/local/bin/{b}",
+            ),
+            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
+            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
+            patch("urllib.request.urlopen"),
+            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
+            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_doctor.probe_server", side_effect=_probe),
+            patch.dict(
+                "os.environ",
+                {
+                    "KIROCREW_PROJECT_DIR": project_dir,
+                    "SLACK_APP_TOKEN": "",
+                    "SLACK_BOT_TOKEN": "",
+                },
+                clear=False,
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                cli_doctor._doctor()
+        return capsys.readouterr().out
+
+    def test_set_project_dir_is_labelled_source_checkout(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # Carry both _PROJECT_MARKERS so the directory measurably IS a
+        # Kiro Crew source checkout.
+        (tmp_path / "skills").mkdir()
+        (tmp_path / "src" / "kiro_crew").mkdir(parents=True)
+        out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir=str(tmp_path))
+        assert f"source dir:  ✅ {tmp_path} (Kiro Crew source checkout)" in out
+        assert "project dir:" not in out
+        # tmp_path holds no .git — the warning names the checkout, so the
+        # adjacent row is not read as a finding about the user's workspace.
+        assert "git repo:    ⚠️  source checkout is not a git repo" in out
+
+    def test_partially_marked_dir_is_not_called_a_checkout(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # A single marker must not qualify as a Kiro Crew source checkout.
+        (tmp_path / "skills").mkdir()
+        out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir=str(tmp_path))
+        assert f"source dir:  ✅ {tmp_path}" in out
+        assert "(Kiro Crew source checkout)" not in out
+        assert "git repo:    ⚠️  not a git repo" in out
+        assert "source checkout is not a git repo" not in out
+
+    def test_not_set_hint_names_checkout_and_wheel_installs(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir="")
+        assert "source dir:  ⚠️  not set" in out
+        assert "not needed for wheel installs" in out
+        assert "run kirocrew setup from project root" not in out
+
+    def test_auth_row_never_advertises_loopback_exemption(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # is_local_only is patched True, so this exercises the local-bind
+        # branch; its auth row must never advertise a loopback exemption.
+        out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir="")
+        assert "no token required" not in out
+        assert "loopback trusted" not in out
+        assert "auth:        token required — loopback is not exempt (CLI/MCP use the local secret)" in out
+
+    def test_auth_row_claim_is_grounded_in_the_middleware(self) -> None:
+        # The row's claim is prose; this pins it to production code so a
+        # reinstated loopback exemption for ordinary API routes reds a test
+        # instead of drifting the way the old row did. /api/status is the
+        # canonical gated route: it must never join the bypass sets.
+        from kiro_crew.dashboard import token_auth
+
+        assert "/api/status" not in token_auth._BYPASS_EXACT
+        assert "/api/status" not in token_auth._BYPASS_EXACT_METHODS
+        assert not any("/api/status".startswith(p) for p in token_auth._BYPASS_PREFIXES)

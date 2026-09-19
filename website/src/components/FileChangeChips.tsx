@@ -14,11 +14,21 @@ import { countLines } from '../utils/diffLineCounts'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export interface FileChangeEntry {
   path: string
   before: string
   after: string
+  truncated?: boolean
+  snapshot_limit_chars?: number
+}
+
+const LEGACY_SNAPSHOT_LIMIT_CHARS = 200_000
+
+function TruncatedNotice({ fc }: { fc: FileChangeEntry }) {
+  const limit = fmtNumber(fc.snapshot_limit_chars ?? LEGACY_SNAPSHOT_LIMIT_CHARS)
+  return <span className="text-muted text-[11px] italic">{i18nT('components.fileChangeChips.diff_unavailable_file_exceeds_snapshot_limit', { limit })}</span>
 }
 
 /** Re-exported for this component's existing importers; defined in
@@ -157,6 +167,28 @@ function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onTogg
       <span className="flex min-w-[8ch] items-center justify-end gap-1">
         <Stats added={added} removed={removed} />
       </span>
+    </div>
+  )
+}
+
+function TruncatedRow({ fc, isArtifact, onFileOpen }: {
+  fc: FileChangeEntry
+  isArtifact?: boolean
+  onFileOpen?: (path: string) => void
+}) {
+  const name = basename(fc.path)
+  return (
+    <div data-testid={`fcc-row-${fc.path}`} className="fcc-row group/fcrow pierre-surface" title={fc.path}>
+      <div data-fcc-header className="flex items-center gap-2 min-h-[36px] px-[10px] py-1.5 bg-[color-mix(in_srgb,var(--bg-elevated)_50%,var(--bg))] font-mono text-[12px] leading-[18px] text-muted">
+        <FileDiff size={13} className="shrink-0 text-muted" aria-hidden />
+        {onFileOpen ? (
+          <button type="button" data-fcc-filename className="min-w-0 truncate text-left text-muted hover:text-accent cursor-pointer bg-transparent border-none p-0 font-mono text-[12px]" onClick={() => onFileOpen(fc.path)} title={fc.path} aria-label={i18nT('components.fileChangeChips.open_in_side_panel', { path: fc.path })}>{name}</button>
+        ) : (
+          <span className="min-w-0 truncate" title={fc.path} data-fcc-filename>{name}</span>
+        )}
+        {isArtifact && <span data-fcc-artifact-badge className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium">{i18nT('components.fileChangeChips.artifact')}</span>}
+        <span className="ml-auto"><TruncatedNotice fc={fc} /></span>
+      </div>
     </div>
   )
 }
@@ -409,7 +441,9 @@ function ExpandedList({ fileChanges, onFileOpen, artifactPaths, disclosureKey }:
   const [sideBySide, setSideBySide] = useDiffSplit()
   const n = fileChanges.length
   // Count once per file: reused by each row AND the header roll-up.
-  const stats = fileChanges.map(fc => countLines(fc.before, fc.after))
+  const stats = fileChanges.map(fc => fc.truncated ? { added: 0, removed: 0 } : countLines(fc.before, fc.after))
+  const hasTruncatedSnapshot = fileChanges.some(fc => fc.truncated)
+  const hasCompleteDiff = fileChanges.some(fc => !fc.truncated)
   const totalAdded = stats.reduce((s, x) => s + x.added, 0)
   const totalRemoved = stats.reduce((s, x) => s + x.removed, 0)
   const overflow = n > COLLAPSED_COUNT
@@ -429,7 +463,7 @@ function ExpandedList({ fileChanges, onFileOpen, artifactPaths, disclosureKey }:
       <div className="flex flex-wrap items-center gap-2 px-[10px] py-1.5 min-h-[36px] bg-[color-mix(in_srgb,var(--bg-elevated)_50%,var(--bg))] border-b border-border font-mono text-[12px] leading-[18px] text-muted">
         <FileDiff size={14} className="text-muted shrink-0" />
         <span className="font-medium">{i18nT('components.fileChangeChips.file', { count: n })} {i18nT('components.fileChangeChips.changed')}</span>
-        {(totalAdded > 0 || totalRemoved > 0) && (
+        {!hasTruncatedSnapshot && (totalAdded > 0 || totalRemoved > 0) && (
           <>
             <span className="text-muted/50" aria-hidden="true">·</span>
             {totalAdded > 0 && (
@@ -444,22 +478,31 @@ function ExpandedList({ fileChanges, onFileOpen, artifactPaths, disclosureKey }:
             side panel's toggle (lit in split mode; diffSplitToggles.test.ts
             asserts the gate is not inverted). Always visible: the header bar
             has no hover reveal, unlike DiffBlock's slotted controls. */}
-        <button onClick={() => setSideBySide(v => !v)} className={`ml-auto flex items-center justify-center w-[22px] h-[22px] rounded-md cursor-pointer transition-colors border-none shrink-0 ${sideBySide ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`} title={sideBySide ? i18nT('components.fileChangeChips.switch_to_unified_view') : i18nT('components.fileChangeChips.switch_to_split_view')} aria-label={sideBySide ? i18nT('components.fileChangeChips.switch_to_unified_view') : i18nT('components.fileChangeChips.switch_to_split_view')}><Columns2 size={13} /></button>
+        {hasCompleteDiff && <button onClick={() => setSideBySide(v => !v)} className={`ml-auto flex items-center justify-center w-[22px] h-[22px] rounded-md cursor-pointer transition-colors border-none shrink-0 ${sideBySide ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`} title={sideBySide ? i18nT('components.fileChangeChips.switch_to_unified_view') : i18nT('components.fileChangeChips.switch_to_split_view')} aria-label={sideBySide ? i18nT('components.fileChangeChips.switch_to_unified_view') : i18nT('components.fileChangeChips.switch_to_split_view')}><Columns2 size={13} /></button>}
       </div>
       <div className="flex flex-col">
         {fileChanges.slice(0, visibleCount).map((fc, i) => (
-          <ExpandedRow
-            key={fc.path}
-            fc={fc}
-            added={stats[i].added}
-            removed={stats[i].removed}
-            isArtifact={artifactPaths?.has(fc.path)}
-            onFileOpen={onFileOpen}
-            sideBySide={sideBySide}
-            // Per-file key so each row's open/closed state survives a
-            // re-render (and a scroll-out remount) independently.
-            disclosureKey={disclosureKey ? `${disclosureKey}-${fc.path}` : undefined}
-          />
+          fc.truncated ? (
+            <TruncatedRow
+              key={fc.path}
+              fc={fc}
+              isArtifact={artifactPaths?.has(fc.path)}
+              onFileOpen={onFileOpen}
+            />
+          ) : (
+            <ExpandedRow
+              key={fc.path}
+              fc={fc}
+              added={stats[i].added}
+              removed={stats[i].removed}
+              isArtifact={artifactPaths?.has(fc.path)}
+              onFileOpen={onFileOpen}
+              sideBySide={sideBySide}
+              // Per-file key so each row's open/closed state survives a
+              // re-render (and a scroll-out remount) independently.
+              disclosureKey={disclosureKey ? `${disclosureKey}-${fc.path}` : undefined}
+            />
+          )
         ))}
         {overflow && (
           <button
@@ -479,15 +522,21 @@ function ExpandedList({ fileChanges, onFileOpen, artifactPaths, disclosureKey }:
 
 /* ── Minimal: stats-only liquid-glass pill, filename hovers above on hover ── */
 function MinimalChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void }) {
-  const { added, removed } = countLines(fc.before, fc.after)
+  const { added, removed } = fc.truncated ? { added: 0, removed: 0 } : countLines(fc.before, fc.after)
   return (
     <span className="relative inline-flex group/tip">
       <span className="glass-surface absolute bottom-full left-0 mb-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-text whitespace-nowrap font-mono z-10 pointer-events-none opacity-0 translate-y-1 group-hover/tip:opacity-100 group-hover/tip:translate-y-0 transition-all duration-150">
         {basename(fc.path)}
       </span>
-      <button onClick={onClick} className="glass-surface file-chip inline-flex items-center gap-1 h-[22px] px-2.5 rounded-full text-[11px] font-medium cursor-pointer" aria-label={fc.path}>
-        <Stats added={added} removed={removed} />
-      </button>
+      {fc.truncated ? (
+        <button type="button" onClick={onClick} className="glass-surface file-chip inline-flex max-w-full min-w-0 min-h-[22px] h-auto items-center gap-1 px-2.5 py-1 whitespace-normal rounded-full text-[11px] font-medium cursor-pointer" aria-label={fc.path}>
+          <TruncatedNotice fc={fc} />
+        </button>
+      ) : (
+        <button type="button" onClick={onClick} className="glass-surface file-chip inline-flex items-center gap-1 h-[22px] px-2.5 rounded-full text-[11px] font-medium cursor-pointer" aria-label={fc.path}>
+          <Stats added={added} removed={removed} />
+        </button>
+      )}
     </span>
   )
 }
@@ -499,8 +548,9 @@ function MinimalChip({ fc, onClick }: { fc: FileChangeEntry; onClick: () => void
  *   changed file. Closed rows never load Pierre. Clicking a header expands the
  *   file inline and mounts Pierre until the row finishes collapsing; the
  *   filename opens the side-panel file tab when that action is available.
- * - `minimal`: stats-only glass pills that wrap, filename on hover. Clicking
- *   one still opens the standalone diff tab via `onOpenDiff`.
+ * - `minimal`: stats-only glass pills that wrap, filename on hover. A complete
+ *   snapshot opens its standalone diff via `onOpenDiff`; a truncated snapshot
+ *   opens the actual file via `onFileOpen` because no trustworthy diff exists.
  */
 const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff, onFileOpen, style = 'expanded', artifactPaths, disclosureKey }: {
   fileChanges: FileChangeEntry[]
@@ -521,7 +571,13 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff,
     return (
       <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mt-2 mb-1.5">
         {fileChanges.map(fc => (
-          <MinimalChip key={fc.path} fc={fc} onClick={() => onOpenDiff?.(fc.path, fc.after, fc.before)} />
+          <MinimalChip
+            key={fc.path}
+            fc={fc}
+            onClick={fc.truncated
+              ? () => onFileOpen?.(fc.path)
+              : () => onOpenDiff?.(fc.path, fc.after, fc.before)}
+          />
         ))}
       </div>
     )

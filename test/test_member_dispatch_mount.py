@@ -37,6 +37,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MEMBER_DISPATCH,
 )
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.members import (
     MEMBER_DISPATCH_SERVER,
     is_member_session_key,
@@ -208,11 +209,18 @@ class TestKasMemberProjection:
 
 
 class _ClientStub:
-    """The three attributes ``_append_member_dispatch_server`` reads."""
+    """The four attributes ``_append_member_dispatch_server`` reads.
+
+    ``_stub_session_token`` joined them when the dashboard element started
+    carrying this session's signed identity token beside its session key: the
+    real ``AcpClient`` mints one in ``__init__``, so a double without it models a
+    client that cannot exist.
+    """
 
     backend = ACP_BACKEND_CLAUDE
     _session_key = MEMBER_KEY
     _claude_settings_authored = True
+    _stub_session_token = "e" * 64
 
 
 def _base_servers() -> list[dict]:
@@ -227,6 +235,14 @@ class TestClaudeMemberAppend:
         out = self._run(_ClientStub())
         assert [e["name"] for e in out][-1] == MEMBER_DISPATCH_SERVER
         assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in out[-1]["env"]
+        # ...and this session's signed identity token, which the strict resolver
+        # prefers because a rekey cannot leave it stale.
+        assert {
+            "name": STUB_SESSION_TOKEN_ENV,
+            "value": _ClientStub._stub_session_token,
+        } in out[
+            -1
+        ]["env"]
 
     def test_non_member_session_is_untouched(self):
         stub = _ClientStub()

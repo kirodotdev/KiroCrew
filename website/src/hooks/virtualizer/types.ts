@@ -218,9 +218,17 @@ export interface UseVirtualChatReturn<T> {
   scrollToBottom: (behavior?: ScrollBehavior) => void
   /** Ensure `index` is mounted (in the window) without scrolling — lets a
    * caller's DOM-based scroll target an off-window item. Returns `true` when
-   * it took the FAR path (window replaced, leaving an unmounted gap to the
-   * target) so callers can teleport instead of gliding through blank space. */
-  mountIndex: (index: number) => boolean
+   * the target is FAR (off the current window by more than the near-jump
+   * slack). By default a far target REPLACES the window, leaving an unmounted
+   * gap, so callers teleport instead of gliding through blank space; with
+   * `unionOnly` a far target mounts nothing and the caller steers toward it
+   * itself, letting the window follow each write (see `estimateRowTop`). */
+  mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
+  /** Scroller-coordinate top of row `index` from the height index, mounted or
+   * not. Unmeasured rows above it contribute estimates, so re-read it each
+   * frame while steering toward an unmounted row. `null` with no scroller or
+   * no items. */
+  estimateRowTop: (index: number) => number | null
   /** Ref callback used per-item to register ResizeObserver measurement. */
   measureRef: (index: number) => (el: HTMLElement | null) => void
   /** True while an anchored entry is still waiting for its row to hydrate, so a

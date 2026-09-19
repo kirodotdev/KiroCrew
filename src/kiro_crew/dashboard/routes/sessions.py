@@ -22,6 +22,13 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/sessions/{id}/agents/{agent_id}/stream", handlers.api_session_agent_stream
     )
+    # Crew log: the projection path is registered first, ahead of the range read
+    # it shares a prefix with, per this module's ordering rule.
+    app.router.add_get(
+        "/api/sessions/{id}/crew-log/projection/{name}",
+        handlers.api_session_crew_log_projection,
+    )
+    app.router.add_get("/api/sessions/{id}/crew-log", handlers.api_session_crew_log)
     app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)

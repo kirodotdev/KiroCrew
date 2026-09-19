@@ -435,6 +435,84 @@ def _redirect_bytecode_cache() -> None:
     os.environ["PYTHONPYCACHEPREFIX"] = candidate
 
 
+class _AsyncFixtureScanGate:
+    """Run pytest-asyncio's fixture scan only when a fixture was registered since.
+
+    pytest-asyncio 0.20.3 hooks ``pytest_pycollect_makeitem`` and, for EVERY test
+    function name it sees, walks EVERY fixture definition the session has registered
+    so far to wrap the async ones (``_preprocess_async_fixtures``). Fixtures already
+    wrapped are skipped by a set lookup, but the ~1,400 synchronous ones are
+    re-inspected with ``asyncio.iscoroutinefunction`` on each call. That is
+    O(tests x fixtures): cProfile of a ``--collect-only`` over this suite (112,246
+    tests) counted 87,244 scans x ~1,420 fixtures = 123.8 million coroutine checks,
+    1,098 of the 1,285 profiled seconds -- 85% of collection. Every xdist worker pays
+    it in full, and under coverage instrumentation each check costs ~2.3x more, which
+    is what made the CI shards' ~33-minute "collection" phase.
+
+    The scan's result only changes when a fixture is ADDED, and pytest funnels every
+    registration -- conftest, module, class, unittest, plugin -- through
+    ``FixtureManager._register_fixture``. So this wraps that one method to raise a
+    dirty flag, and lets the scan through only while the flag is up. A scan on a clean
+    flag would iterate the same definitions and find nothing new: the async marker
+    (``_force_asyncio_fixture``) is set by the decorator at definition time and
+    ``asyncio_mode`` is fixed for the run, so the skip is behaviour-preserving.
+
+    Pinned to the plugin version it patches: upstream's own fix for this (v0.25.1,
+    then v1.0.0) sits behind the v0.23 event-loop-scope rework this suite has not
+    migrated to. When pytest-asyncio moves, delete this class and the install below.
+    """
+
+    def __init__(self, scan) -> None:
+        self._scan = scan
+        self.dirty = True
+        self.scans = 0
+
+    def mark_dirty(self) -> None:
+        self.dirty = True
+
+    def __call__(self, config, processed_fixturedefs) -> None:
+        if not self.dirty:
+            return
+        self._scan(config, processed_fixturedefs)
+        self.scans += 1
+        self.dirty = False
+
+
+def _gate_pytest_asyncio_fixture_scan() -> None:
+    """Install :class:`_AsyncFixtureScanGate` once per process (each xdist worker)."""
+    try:
+        import pytest_asyncio.plugin as pa
+    except ImportError:  # pragma: no cover - plugin absent; nothing to gate
+        return
+    from _pytest.fixtures import FixtureManager
+
+    scan = getattr(pa, "_preprocess_async_fixtures", None)
+    register = getattr(FixtureManager, "_register_fixture", None)
+    if isinstance(scan, _AsyncFixtureScanGate):
+        return  # already installed (pytest_configure re-entered in-process)
+    if scan is None or register is None:
+        # Both seams are private to their packages. A version that renamed either
+        # must not turn into a crash before collection; it turns into the slow
+        # collection this gate exists to remove, said out loud so the pin is revisited.
+        warnings.warn(
+            "pytest-asyncio fixture-scan gate not installed: a private seam moved "
+            "(pytest_asyncio.plugin._preprocess_async_fixtures / "
+            "_pytest.fixtures.FixtureManager._register_fixture); collection will be slow",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    gate = _AsyncFixtureScanGate(scan)
+
+    @functools.wraps(register)
+    def _register_fixture(self, *args, **kwargs):
+        gate.mark_dirty()
+        return register(self, *args, **kwargs)
+
+    FixtureManager._register_fixture = _register_fixture
+    pa._preprocess_async_fixtures = gate
+
+
 def _root_can_create_real_symlink() -> bool:
     """Probe real-link capability for tests collected outside ``test/`` too.
 
@@ -1403,11 +1481,13 @@ def pytest_make_collect_report(collector):
     above turns it into, so an emitter is caught whether or not it reached the host.
     ``reset_for_testing()`` then drops what was built (stopping an exporter thread if
     one exists), so the next module starts clean and the attribution stays per-module.
-    Recorded per worker under xdist: every worker collects the whole tree.
+    Fail the collection report on the detecting worker: file shards do not all
+    collect the test that asserts the record, and xdist forwards collection errors
+    to the controller even when that worker executes no tests.
     """
     provider = _metrics_provider_module()
     built_before = bool(provider is not None and getattr(provider, "_ever_built", False))
-    yield
+    outcome = yield
     if not isinstance(collector, pytest.Module):
         return
     provider = _metrics_provider_module()
@@ -1421,6 +1501,13 @@ def pytest_make_collect_report(collector):
         IMPORT_TIME_METRIC_EMITTERS.append(collector.nodeid)
     with contextlib.suppress(Exception):
         provider.reset_for_testing()
+    report = outcome.get_result()
+    if not report.failed:
+        report.outcome = "failed"
+        report.longrepr = (
+            f"Import-time metric emission: {IMPORT_TIME_METRIC_EMITTERS[-1]}. "
+            "Build the value inside the test or fixture instead."
+        )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -1430,6 +1517,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _prefer_short_tmp_base()
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
+    _gate_pytest_asyncio_fixture_scan()
     global _SESSION_CWD
     try:
         _SESSION_CWD = os.getcwd()
@@ -1991,8 +2079,9 @@ def _restore_log_record_factory():
     installing over the already-installed wrapper captured it as its own base factory.
 
     **Sharding hides this class, so the floor cannot rely on a full-suite run to find it.**
-    ``ci.yml`` slices the suite into duration-balanced pytest-split groups and a leak only
-    damages tests in the SAME process, so PR CI usually cannot observe it at all; the
+    ``ci.yml`` assigns whole files to Linux/Windows shards before import (macOS keeps
+    pytest-split groups), and a leak only damages tests in the SAME process, so PR CI
+    usually cannot observe it at all; the
     release job runs the suite whole and is otherwise the first place it appears -- as
     failures in files unrelated to the cause, long after the diff merged. Restoring here
     removes the class outright rather than improving the odds of noticing it.

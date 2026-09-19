@@ -11,7 +11,7 @@ function installMenuAPI() {
   const api: MenuAPI = {
     getAppMenuItems: vi.fn(async (id: string) => id === 'file-menu'
       ? [
-          { type: 'normal', index: 0, label: 'Settings…', accelerator: 'CmdOrCtrl+,', enabled: true, checked: false },
+          { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: true, checked: false },
           { type: 'separator', index: 1 },
           { type: 'normal', index: 2, label: 'Exit', accelerator: '', enabled: true, checked: false },
         ]
@@ -250,6 +250,24 @@ describe('WindowsTitlebarMenu', () => {
     // The Electron accelerator token is rewritten to the cap the user reads.
     expect(screen.getByRole('menuitem', { name: /Zoom In/ })).toHaveTextContent('Ctrl+Plus')
     expect(screen.getByRole('menuitem', { name: /Unavailable/ })).toBeDisabled()
+  })
+
+  it('shows Settings as Alt+, on Windows, never a Ctrl chord (CJK IME comma, #9824)', async () => {
+    // On Windows this component IS the application menu: the submenu is drawn
+    // here rather than by Menu.popup(), so this row is the rendered caption a
+    // Windows user actually reads. electron/app-menu.js sends `Alt+,` off macOS
+    // with registerAccelerator false, which claims no key — Ctrl+, has to stay
+    // free because it is how a Chinese or Japanese IME types a comma. This
+    // assertion is what makes the caption a tested surface rather than one that
+    // only a screenshot could vouch for.
+    installMenuAPI()
+    render(<header><WindowsTitlebarMenu /></header>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const settings = await screen.findByRole('menuitem', { name: /Settings/ })
+    expect(settings).toHaveTextContent('Alt+,')
+    expect(settings).not.toHaveTextContent('Ctrl+,')
   })
 
   it('opens a different menu when its label is clicked without a hover first', async () => {

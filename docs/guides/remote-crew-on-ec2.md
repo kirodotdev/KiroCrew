@@ -173,8 +173,8 @@ port into the CSRF allowlist — see
   runtime couldn't load its shared library on this host; memory falls back
   gracefully and keeps working. Safe to ignore unless you specifically rely on
   local vector memory.
-- **`project dir: not set`** — cosmetic. Run `kirocrew setup` from a project root
-  if you want a default project directory.
+- **`source dir: not set`** — cosmetic. It is set from a Kiro Crew source
+  checkout by `kirocrew setup`; wheel installs do not need it.
 
 ## Related
 

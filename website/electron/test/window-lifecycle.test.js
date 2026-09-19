@@ -390,6 +390,23 @@ describe("window lifecycle source contracts", () => {
       );
     }
   });
+
+  it("resolves the zoom target from the dashboard view, not the focused webContents", () => {
+    const zoom = SOURCE.match(
+      /function zoomMenuItem\(apply\) \{([\s\S]*?)\n  \}/,
+    );
+    assert.ok(zoom, "zoomMenuItem missing");
+    assert.match(
+      zoom[1],
+      /focusedDashboardWebContents\(\)/,
+      "zoom must resolve the dashboard view like the sibling reload/devtools handlers",
+    );
+    assert.doesNotMatch(
+      zoom[1],
+      /webContents\.getFocusedWebContents\(\)/,
+      "getFocusedWebContents() returns null under BaseWindow+contentView, so zoom would silently no-op",
+    );
+  });
 });
 
 describe("main window frame-load diagnostics", () => {

@@ -1208,45 +1208,86 @@ def test_member_history_tools_cannot_cross_private_store(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "handler_name",
+    ("handler_name", "fence_code"),
     [
-        "api_session_control_create",
-        "api_session_control_stop",
-        "api_session_control_close",
-        "api_session_control_send",
-        "api_session_control_read",
+        # `bob` is another crew member's agent, bound to `member-bob`: a member may
+        # not create a child inside memory it was never assigned, so the
+        # delegation gate refuses the create.
+        ("api_session_control_create", "memory_delegation_denied"),
+        # The owner's tab was created by no agent, so the creator fence refuses.
+        ("api_session_control_stop", "not_creator"),
+        ("api_session_control_close", "not_creator"),
+        ("api_session_control_send", "not_creator"),
+        ("api_session_control_read", "not_creator"),
     ],
 )
-async def test_ordinary_private_caller_cannot_reach_owner_via_session_control(
-    env, member_proof, handler_name
+async def test_private_member_store_caller_cannot_reach_owner_via_session_control(
+    env, member_proof, handler_name, fence_code, tmp_path
 ):
-    """A private V2 caller that is NOT a crew-member DM slot stays refused on all
-    five routes.
+    """A caller bound to a crew member's V2 store cannot reach the OWNER's
+    sessions through any of the five routes.
 
-    This is the narrowed residual of the former blanket refusal. The caller here
-    is ``dashboard:alice`` — a verified V2 caller, but NOT a ``member-*`` DM slot
-    — so it must not reach ``dashboard:owner`` (an unbound/owner session) or
-    borrow Global V1 memory by creating a session on the ``default`` agent. The
-    ``member_scope_denied`` refusal in ``_require_internal`` still fires for it,
-    because the member admission is keyed on the ``member-*`` session key.
+    ``dashboard:alice`` is bound to ``member-alice`` — a crew member's private V2
+    store — so under case (b) it is a MEMBER caller and IS admitted through
+    ``_require_internal``'s gate (the member operating model runs from an
+    ordinary chat slot too, not only a ``member-*`` DM slot). The protection of
+    the owner therefore moves DOWN to the inner fence in ``session_control.py``,
+    and it must still hold: reaching the owner's tab (a session this caller did
+    not create) or borrowing another store's memory by creating a child on an
+    agent bound elsewhere (``bob``) is refused THERE — at the exact fence — never
+    at a 2xx and never by some earlier check that happens to fail.
 
-    A genuine crew-member DM slot IS admitted through this gate now (the member
-    operating model); that path, and the ownership fence that bounds it, are
-    covered by ``test_session_control_member_gate`` and
-    ``test_member_session_control``.
+    Both ends of the request resolve, on purpose. The caller is an OPEN slot
+    (``alice``, history key ``dashboard:alice``) bound to ``member-alice``; the
+    owner's tab is an open slot created by no agent. An unresolvable caller or
+    target would be refused BEFORE the fence (``caller_unidentified`` /
+    ``target_not_found``) and prove nothing about it, so the ratchet pins the one
+    fence code each route reaches — the same exact-code discipline the pre-change
+    test applied to the gate's ``member_scope_denied``. A genuinely non-member
+    private caller (a V2 store with no ``owner_member``) still gets
+    ``member_scope_denied``; that, and the member admission path, are covered in
+    ``test_session_control_member_gate``.
     """
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_utils import slot_history_key
     from kiro_crew.dashboard.handlers import session_control
+
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("alice")
+    caller.memory_store = "member-alice"
+    assert slot_history_key(caller) == "dashboard:alice"  # the proof's session key
+    owner_tab = state.get_or_create_slot("owner", workspace=caller.workspace)
+    assert not owner_tab._created_by  # the user's own tab: no agent made it
+    env_with_slots = SimpleNamespace(**{**vars(env), "state": state})
+
+    # Give EACH route the inputs it validates BEFORE the fence, so a pre-fence
+    # input check (``message_required`` for send, ``target_required`` for read,
+    # ``agent_unresolved`` for create) cannot short-circuit the request. ``send``
+    # needs a non-empty ``message``; ``read`` reads ``target`` from the query
+    # string, not the JSON body; ``create`` names a CONFIGURED agent (``bob``)
+    # whose store is not the caller's, which is the delegation the gate refuses.
+    read_query = {"target": owner_tab.key} if handler_name == "api_session_control_read" else None
+    body: dict | None = {"target": owner_tab.key, "agent": "bob"}
+    if handler_name == "api_session_control_send":
+        body["message"] = "reach the owner"
+    if handler_name == "api_session_control_read":
+        body = None  # read is a GET: inputs come from the query, not a body
 
     response = await getattr(session_control, handler_name)(
         request(
-            env,
-            body={"target": "dashboard:owner", "agent": "default"},
+            env_with_slots,
+            body=body,
+            query=read_query,
             internal=True,
             proof=member_proof,
         )
     )
-    assert response.status == 403
-    assert json.loads(response.text)["code"] == "member_scope_denied"
+    assert response.status == 403, response.text
+    assert json.loads(response.text)["code"] == fence_code, response.text
+    # And the owner's tab is untouched: still open, no message delivered.
+    assert state.get_slot(owner_tab.key) is owner_tab
+    assert not owner_tab.messages
 
 
 def test_forged_mcp_caller_without_proof_cannot_read_private_history(env, monkeypatch):

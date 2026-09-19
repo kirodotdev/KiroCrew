@@ -63,6 +63,14 @@ dev = [
     # runtime concern for the desktop bundle, NOT a core install_requires. Pinned to
     # the exact version the desktop matrix ships (packaging/build-desktop.sh).
     "imageio-ffmpeg==0.6.0",
+    # Python vulnerability audit, pinned like every other tool here and installed
+    # by the SAME `--group dev` step, which is what makes the audit reproducible:
+    # the step this replaces ran `pip install pip-audit` with no version, so two
+    # runs a week apart could disagree about the same tree and nobody could tell a
+    # new advisory from a new tool. No audit tool was declared anywhere in the
+    # repository, so there was no existing one to reuse; pip-audit is PyPA's own
+    # and is the tool the removed step used, which keeps the choice boring.
+    "pip-audit==2.10.1",
 ]
 
 [tool.black]

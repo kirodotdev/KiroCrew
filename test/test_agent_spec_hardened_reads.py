@@ -1097,9 +1097,17 @@ _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # need the failure CLASS (transient vs deterministic) rather than ``None``: the
 # KAS projection, the overlay rewriter and the tool-policy read. Each names
 # itself so a sensitive-target denial is attributed to the surface that asked.
+# The tool-policy read has TWO sites under one label: the direct-filename read,
+# and the sweep that asks whether any spec in the directory is unreadable before
+# reporting "no policy" -- the declared-name scan folds a refusal into "no
+# match", so that sweep is how the surface learns the difference. Both belong to
+# the same resolution and so carry the same label.
 _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
-    "kiro_crew/dashboard/handlers/sessions.py": [("session_tool_policy", "dashboard")],
+    "kiro_crew/dashboard/handlers/sessions.py": [
+        ("session_tool_policy", "dashboard"),
+        ("session_tool_policy", "dashboard"),
+    ],
     "kiro_crew/doctor_deadpath.py": [("doctor", "cli")],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
     "kiro_crew/slack/handler.py": [("slack_resolve_agent", "slack")],

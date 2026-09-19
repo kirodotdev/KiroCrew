@@ -647,7 +647,7 @@ class TestKeywordCommands:
     async def test_sessions_keyword_allowed(self, slack, sessions, owner, monkeypatch):
         monkeypatch.setattr(
             "kiro_crew.slack.sessions_view._collect_recent_sessions",
-            lambda s, limit=0, kind=None: [],
+            lambda s, limit=0, kind=None, include_ended=False: [],
         )
         handled = await h.maybe_handle_keyword_command(
             "sessions", slack, sessions, "C1", "t1", "msg1", "t1", "U1"
@@ -995,7 +995,7 @@ class TestRunHelper:
 class TestSessionsHelper:
     @pytest.mark.asyncio
     async def test_collector_failure_is_audited(self, slack, monkeypatch):
-        def _boom(_sessions, limit=0, kind=None):
+        def _boom(_sessions, limit=0, kind=None, include_ended=False):
             raise OSError("history unreadable")
 
         monkeypatch.setattr("kiro_crew.slack.sessions_view._collect_recent_sessions", _boom)
@@ -1006,7 +1006,7 @@ class TestSessionsHelper:
     async def test_rows_render_blocks(self, slack, monkeypatch):
         monkeypatch.setattr(
             "kiro_crew.slack.sessions_view._collect_recent_sessions",
-            lambda s, limit=0, kind=None: [{"key": "s1"}],
+            lambda s, limit=0, kind=None, include_ended=False: [{"key": "s1"}],
         )
         monkeypatch.setattr(h, "_build_sessions_blocks", lambda rows: [{"type": "divider"}])
         await h._handle_sessions_command("sessions", slack, "C1", "t1", "msg1", "t1", None)

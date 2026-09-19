@@ -171,6 +171,7 @@ class CompactionCoordinator:
         session = owner._sessions.get(key)
         if session:
             session.prompt_count += 1
+            self._record_floor(key, session, provider, pct)
 
         # Go through the owner so patches on SessionManager._trigger_compaction
         # keep intercepting the call after this extraction.
@@ -186,6 +187,33 @@ class CompactionCoordinator:
             elif pct > 0:
                 self._deps.logger.info("Session %s context at %.0f%%", key, pct)
         return pct
+
+    def _record_floor(self, key: str, session: Any, provider: LLMProvider, pct: float) -> None:
+        """Pin a session that started with no history to its first confirmed reading.
+
+        ``floor_pending`` is set on the session whose cold start consumed a
+        replay suppression (``SessionManager.consume_replay_suppression``), so
+        it started with no conversation.  Its first CONFIRMED reading is the
+        floor a fresh session on this key reads before anyone has said
+        anything.  Recorded once per provider and never lowered: a reading that
+        arrives after telemetry confirms may include turns that ran meanwhile,
+        which only over-states the floor -- and an over-stated floor declines a
+        reset, never forces one.  The flag lives on the session so it dies with
+        it; nothing here outlives the registry entry.  Bookkeeping, not a gate:
+        it decides nothing about compaction and lives outside the ladder.
+        """
+        if not getattr(session, "floor_pending", False):
+            return
+        if pct <= 0 or self._deps.context_pct_is_unknown(provider):
+            return
+        session.floor_pending = False
+        if getattr(session, "floor_pct", None) is None:
+            session.floor_pct = pct
+            self._deps.logger.info(
+                "Session %s context floor recorded at %.0f%% (fresh session, no history)",
+                key,
+                pct,
+            )
 
     async def compact_if_needed(self, key: str) -> str:
         """Await a compaction attempt before a between-turn caller proceeds."""
@@ -570,6 +598,12 @@ class CompactionCoordinator:
         )
         return self._owner._judge_compact_effect(key, pct_before, pct_after)
 
+    def _floor_pct(self, key: str) -> float | None:
+        """The recorded no-conversation floor of *key*'s live session, if known."""
+        session = self._owner._sessions.get(key)
+        floor = getattr(session, "floor_pct", None)
+        return floor if isinstance(floor, (int, float)) else None
+
     def _judge_compact_effect(self, key: str, pct_before: float, pct_after: float) -> bool:
         """Arm damping for an ineffective drop and report critical context."""
         freed = pct_before - pct_after
@@ -578,6 +612,30 @@ class CompactionCoordinator:
                 time.monotonic() + self._deps.compact_failure_cooldown_secs
             )
             still_critical = pct_after >= self._deps.post_compact_reset_pct
+            verdict = (
+                "still critical — escalating to reset" if still_critical else "cooldown applied"
+            )
+            if still_critical:
+                floor = self._floor_pct(key)
+                if (
+                    floor is not None
+                    and pct_after - floor < self._deps.compact_min_effect_pct_points
+                ):
+                    # A reset replaces the conversation with NOTHING and keeps
+                    # everything else, so the most it can free is the distance
+                    # down to the floor. When that distance is under the same
+                    # bar compaction just failed, the reset would destroy the
+                    # conversation and land on a reading that is critical again.
+                    # The message reports the two numbers it compared and
+                    # nothing it did not measure: the floor is a reading, not a
+                    # breakdown of what fills the window.
+                    still_critical = False
+                    verdict = (
+                        f"still critical, but a fresh session on this key already read "
+                        f"{floor:.1f}% at its first confirmed reading — a reset is "
+                        f"unlikely to free {self._deps.compact_min_effect_pct_points:.1f} "
+                        f"points; keeping the conversation and the cooldown"
+                    )
             self._deps.logger.warning(
                 "Session %s compaction ineffective — context %.1f%% -> %.1f%% "
                 "(freed %.1f < %.1f points); %s",
@@ -586,7 +644,7 @@ class CompactionCoordinator:
                 pct_after,
                 freed,
                 self._deps.compact_min_effect_pct_points,
-                ("still critical — escalating to reset" if still_critical else "cooldown applied"),
+                verdict,
             )
             return still_critical
         self.state.cooldown_until.pop(key, None)

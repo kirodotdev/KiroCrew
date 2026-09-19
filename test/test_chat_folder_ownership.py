@@ -59,11 +59,13 @@ def _state(*slots: _ChatSlot, folders: list[dict[str, Any]] | None = None) -> Da
     # bare MagicMock here would be iterated instead and raise.
     state.conversation_log = None
 
-    async def _mutate(fn: Any) -> Any:
+    async def _mutate(fn: Any, on_committed: Any = None) -> Any:
         # The real store runs the callback under a lock and hands back its
         # second element; the ownership decisions live inside that callback, so a
         # mock that never calls it would prove nothing.
-        _changed, value = fn(state._folders)
+        changed, value = fn(state._folders)
+        if changed and on_committed is not None:
+            on_committed()
         return value
 
     state.mutate_folders = AsyncMock(side_effect=_mutate)

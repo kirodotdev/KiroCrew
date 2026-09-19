@@ -277,6 +277,21 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether a settings file is re-seeded on a model switch. Invisible when "
         "right, a stale model when wrong"
     ),
+    "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": (
+        "which channel carries the Tool Search setting to the engine -- the "
+        "workspace cli.json overlay for this set, the initialize handshake for "
+        "ACP_BACKENDS_CLIENT_META_SETTINGS. Both members honour the setting the "
+        "user chose, so a non-member is not Tool-Search-less and an available mark "
+        "would put a cross beside a harness that loses nothing. A wrong membership "
+        "writes the value where the engine never reads it -- the dashboard shows "
+        "the setting on while the engine runs with it off, which is a defect"
+    ),
+    "ACP_BACKENDS_CLIENT_META_SETTINGS": (
+        "the other half of that split: taking feature settings from the ACP "
+        "initialize request rather than from the overlay file. Same reasoning, and "
+        "the two sets are complements over the same user-visible setting rather "
+        "than two capabilities"
+    ),
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": (
         "tolerating a restore result that carries no modes block. Pure "
         "response-shape handling behind a restore that either works or does not"
@@ -298,6 +313,17 @@ OFF_CARD_SETS: Mapping[str, str] = {
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": (
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"
+    ),
+    "ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY": (
+        "which directory a host resolves its agent specs from, and therefore "
+        "whether the session's project checkout scopes the broker-overlay lookup. "
+        "Both states are correct behaviour for the host that holds them, and "
+        "neither is a feature a reader would choose a harness for: a member's "
+        "sessions keep their brokered servers, a non-member's project agent gets "
+        "the servers it actually declared. A wrong membership is a defect either "
+        "way -- a project agent running the user-level agent's servers, or a "
+        "member's servers dropping out of pool and caller-identity attribution "
+        "while the operator has the gateway switched on"
     ),
     "ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD": (
         "whether a freshly installed MCP server reaches a RUNNING session. The one "

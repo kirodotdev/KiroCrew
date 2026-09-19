@@ -18,19 +18,17 @@
  */
 import { useEffect, useRef } from 'react'
 import { useAppSelector } from '../store'
-import type { Notification as KiroCrewNotification } from '../types'
-
-/** True when an attention surface (native banner included) must skip *n*. */
-function isSilenced(n: Pick<KiroCrewNotification, 'silenced' | 'priority'>): boolean {
-  return !!n.silenced || n.priority === 'passive'
-}
+// Shared with the tab-title attention count rather than kept file-local: two
+// attention surfaces that spell this rule separately can drift apart, and the
+// backend states it once for all of them.
+import { isSilencedNote } from '../store/notificationsSlice'
 
 export function useNativeNotification(botName: string, avatar: string) {
   const notifCount = useAppSelector(
-    (s) => s.notifications.items.filter((n) => !n.acked && !isSilenced(n)).length,
+    (s) => s.notifications.items.filter((n) => !n.acked && !isSilencedNote(n)).length,
   )
   const latestNotif = useAppSelector((s) => {
-    const unacked = s.notifications.items.filter((n) => !n.acked && !isSilenced(n))
+    const unacked = s.notifications.items.filter((n) => !n.acked && !isSilencedNote(n))
     return unacked.length > 0 ? unacked[unacked.length - 1] : null
   })
 

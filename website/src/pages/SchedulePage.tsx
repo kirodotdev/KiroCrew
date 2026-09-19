@@ -1465,7 +1465,7 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
   })
   if (!update || dismissed) return null
   const dismiss = () => {
-    try { localStorage.setItem(key, '1') } catch { /* private mode: just hide for this view */ }
+    safeSetItem(key, '1')
     setDismissed(true)
   }
   return (

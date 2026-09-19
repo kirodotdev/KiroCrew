@@ -106,16 +106,28 @@ channel none of them describes, add a set — do not widen an existing one.
 ### And this appears on the card
 
 Every decision in this stage is READ BACK to the operator. Developer > Agent
-Backend renders one capability card per harness, and each line of it is projected
-from these memberships by `agent_sdk/backend_cards.py` — so a membership is not
-only what the code branches on, it is what an operator comparing two harnesses is
-shown before they pick one.
+Backend is a LIST of harnesses and a DETAIL for whichever row is highlighted, and
+the detail is that harness's capability card — each line projected from these
+memberships by `agent_sdk/backend_cards.py`. So a membership is not only what the
+code branches on, it is what an operator comparing two harnesses is shown before
+they pick one.
+
+Exactly one card is ever on screen, which is why the capability list is not behind
+a disclosure: it was collapsed when every harness's card rendered stacked down the
+page, and with one card there is nothing to bury. Highlighting a row shows its
+card and never switches the backend — the one **Use \<name\>** button does that —
+so a harness this machine cannot run still gets a row and a full card. Under the
+old control an unselectable harness had no chip at all, which meant the harnesses
+an operator most needed to read about were the ones the page had least room for.
 
 That projection is why this stage costs a new harness nothing beyond the decisions
 it already owes. A harness that joins `ACP_BACKENDS_KNOWN` and decides every set
 renders a complete card with no edit to any card file, no frontend edit and no
 locale edit: labels are written once per CAPABILITY and reused by every harness.
-`test_backend_cards.py` holds that as a test rather than as a promise.
+`test_backend_cards.py` holds the server half of that, and
+`AgentBackendTab.test.tsx`'s "renders a complete detail for a backend the panel has
+never heard of" holds the panel half — a projection nothing renders is not a
+feature, so both halves are asserted.
 
 Each set reaches one of four buckets, and a new set must be put in one of them or
 `test_backend_cards` fails — the same forcing function the disposition table applies

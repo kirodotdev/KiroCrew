@@ -153,9 +153,7 @@ class TestNoFailOpenConfigWriters:
             # Scope per function: the same local name (`data`) is reused across
             # unrelated handlers, so a file-wide match reports false positives.
             funcs = [
-                n
-                for n in ast.walk(tree)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]
             for func in funcs:
                 fail_open: dict[str, int] = {}
@@ -225,9 +223,7 @@ class TestNoModeWideningConfigWriters:
             except SyntaxError:
                 continue
             for func in [
-                n
-                for n in ast.walk(tree)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]:
                 # Names bound to a config path in this function.
                 cfg_names = set()
@@ -600,9 +596,7 @@ class TestAutoUpdateToggleKeepsSettings:
                 assert after[key] == value, f"{key} was lost by the toggle"
 
     @pytest.mark.asyncio
-    async def test_unreadable_config_fails_loudly_and_changes_nothing(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_unreadable_config_fails_loudly_and_changes_nothing(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.handlers import updates
 
         path = tmp_path / "config.json"
@@ -642,11 +636,13 @@ class TestEveryConfigWriterIsLocked:
     second family of writers reaches ``config.json`` through
     ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s channel savers,
     ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable) and still bypasses the
-    lock. :meth:`KiroCrewConfig.save` (``updates.py``'s log-level PUT, the
-    workspace CRUD in ``files.py``, several ``agents.py`` CRUD endpoints) used
-    to be in that family but is not: it now holds the same
-    ``<path>.lock`` sidecar — see ``TestSaveHoldsTheAdvisoryLock`` in
-    ``test_config_save_locking.py``. Green here does not mean every config
+    lock; that family has its own ratchet,
+    :class:`TestTheAtomicJsonWriteConfigFamilyIsRatcheted` below, which holds it
+    to a baseline that may only shrink. :meth:`KiroCrewConfig.save`
+    (``updates.py``'s log-level PUT, the workspace CRUD in ``files.py``, several
+    ``agents.py`` CRUD endpoints) is NOT in that family: it holds the same
+    ``<path>.lock`` sidecar — see ``TestSaveHoldsTheAdvisoryLock``
+    in ``test_config_save_locking.py``. Green here does not mean every config
     writer is locked -- it means this class of them is.
     """
 
@@ -687,9 +683,7 @@ class TestEveryConfigWriterIsLocked:
             # reports false positives -- and, worse, would let a genuine offender
             # hide behind an unrelated function's rebinding of the same name.
             funcs = [
-                n
-                for n in ast.walk(tree)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]
             for func in funcs:
                 config_names: set[str] = set()
@@ -755,9 +749,7 @@ class TestEveryConfigWriterIsLocked:
 
         flagged: set[str] = set()
         for func in [
-            n
-            for n in ast.walk(tree)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]:
             config_names = {
                 tgt.id
@@ -783,4 +775,226 @@ class TestEveryConfigWriterIsLocked:
             f"(flagged: {sorted(flagged)}). ``innocent`` writes a CALLER-SUPPLIED "
             "path -- the agent-spec write in agents.py is that shape -- and must "
             "not be flagged."
+        )
+
+
+class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
+    """The second config-writer family may shrink but never grow.
+
+    ``TestEveryConfigWriterIsLocked`` above covers calls to
+    ``write_config_atomically``. A second family reaches ``config.json``
+    through ``kiro_crew.agent._atomic_json_write``, takes no advisory lock on
+    the ``<path>.lock`` sidecar, and is therefore invisible to that scan --
+    ``loader.py``'s own docstring names the set and calls converting it
+    follow-up work. Those writers hold only the in-process asyncio
+    ``_get_config_lock()``, which serializes callers on this event loop and
+    nothing else, so one of them can still land between a lock holder's read
+    and write and silently revert it.
+
+    The shape matters for channels specifically. Each per-channel settings
+    saver in ``messaging.py`` is a hand-copied credential-write skeleton, and
+    every new channel adds another copy. Without a ratchet the next one
+    inherits the unlocked write by copy-paste, and nothing about that line
+    announces the lock it is missing.
+
+    So this pins the family to a baseline that may only SHRINK. Adding an entry
+    means a new unlocked config writer, which the first test refuses; removing
+    an entry means a writer was converted, which the second test requires you
+    to record. Both directions are enforced, because a baseline that is allowed
+    to rot stops describing the code and starts hiding it.
+
+    To clear an entry, route the write through ``update_config_locked`` (see
+    ``api_feishu_config_save`` and ``api_imessage_config_save`` for the shape:
+    stage the mutation in a closure, return ``None`` to skip a no-op write, and
+    map ``ConfigReadError`` to the handler's existing corrupt-config response),
+    then delete its line below.
+    """
+
+    #: ``loader.py`` only names this family in prose; it owns the locked
+    #: primitive itself and is exempt as a whole, matching the sibling class.
+    _ALLOWED_FILES = {"loader.py"}
+
+    #: Resolvers whose return value IS a config document path.
+    _CONFIG_PATH_FUNCS = {"config_path", "config_local_path"}
+
+    _WRITER = "_atomic_json_write"
+
+    #: ``file.py:function`` for every writer still on the unlocked path.
+    #: Keyed by function rather than line so an unrelated edit above does not
+    #: churn it. THIS LIST MAY ONLY SHRINK.
+    _BASELINE = frozenset(
+        {
+            "core.py:api_stt_config",
+            "mcp.py:api_mcp_gateway_enable",
+            "messaging.py:_discord_config_save_locked",
+            "messaging.py:_slack_config_save_locked",
+            "messaging.py:_telegram_config_save_locked",
+            "messaging.py:_wecom_config_save_locked",
+            "messaging.py:api_teams_config_save",
+            "messaging.py:api_webex_config_save",
+        }
+    )
+
+    @classmethod
+    def _is_config_path_call(cls, node) -> bool:
+        import ast
+
+        if not isinstance(node, ast.Call):
+            return False
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        return name in cls._CONFIG_PATH_FUNCS
+
+    @classmethod
+    def _write_target(cls, node):
+        """The AST node holding the write target, or ``None`` if not a writer call.
+
+        Two spellings reach the same writer and both have to be seen. The direct
+        call passes the path first; the off-loop forms
+        (``asyncio.to_thread(_atomic_json_write, path, data)``,
+        ``functools.partial(_atomic_json_write, path, data)``) pass the WRITER
+        first and the path second. Matching only the direct form would miss
+        every channel saver in ``messaging.py``, which is the whole population
+        this guards.
+        """
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if called == cls._WRITER and node.args:
+            return node.args[0]
+        if len(node.args) >= 2:
+            first = node.args[0]
+            name = getattr(first, "attr", None) or getattr(first, "id", None)
+            if name == cls._WRITER:
+                return node.args[1]
+        return None
+
+    @classmethod
+    def _offenders(cls) -> set[str]:
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        found: set[str] = set()
+        for path in root.rglob("*.py"):
+            if "_vendor" in path.parts or path.name in cls._ALLOWED_FILES:
+                continue
+            src = path.read_text(encoding="utf-8", errors="replace")
+            if cls._WRITER not in src:
+                continue
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            # Scope per function: the same local name (``path``) is reused across
+            # unrelated functions, so a file-wide binding map both reports false
+            # positives and lets a genuine offender hide behind another
+            # function's rebinding.
+            for func in [
+                n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]:
+                config_names = {
+                    t.id
+                    for n in ast.walk(func)
+                    if isinstance(n, ast.Assign) and cls._is_config_path_call(n.value)
+                    for t in n.targets
+                    if isinstance(t, ast.Name)
+                }
+                for node in ast.walk(func):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    target = cls._write_target(node)
+                    if target is None:
+                        continue
+                    if cls._is_config_path_call(target) or (
+                        isinstance(target, ast.Name) and target.id in config_names
+                    ):
+                        found.add(f"{path.name}:{func.name}")
+        return found
+
+    def test_no_new_writer_joins_the_unlocked_family(self):
+        new = sorted(self._offenders() - self._BASELINE)
+        assert not new, (
+            "config.json must be written through update_config_locked(), which "
+            "holds the <path>.lock sidecar across the whole read-modify-write. "
+            "_atomic_json_write takes no advisory lock, so a writer using it can "
+            "land between another process's read and write and silently revert "
+            "it. A new per-channel settings saver is the usual way this "
+            "arrives: copy the shape in api_feishu_config_save or "
+            "api_imessage_config_save instead.\n  " + "\n  ".join(new)
+        )
+
+    def test_the_baseline_records_no_writer_that_is_already_converted(self):
+        """A stale entry is as harmful as a missing one: it grants a permission
+        nothing needs, and the next reader trusts the list over the code."""
+        stale = sorted(self._BASELINE - self._offenders())
+        assert not stale, (
+            "these writers no longer use the unlocked path, so the baseline is "
+            "describing code that does not exist. Delete their lines from "
+            "_BASELINE.\n  " + "\n  ".join(stale)
+        )
+
+    def test_the_imessage_saver_is_on_the_locked_path(self):
+        """The conversion this ratchet shipped with, pinned against a revert.
+
+        Asserted through the same scan rather than by grepping for a name, so a
+        future edit that reinstates the unlocked write fails here even if it
+        keeps the ``update_config_locked`` import around.
+        """
+        assert "messaging.py:api_imessage_config_save" not in self._offenders()
+
+    def test_the_matcher_sees_both_spellings_and_spares_a_caller_supplied_path(self):
+        """The scan is not vacuous: exercise the shapes a regression would take.
+
+        A ratchet asserting a subset relation is indistinguishable from one whose
+        matcher is broken, and this matcher has to see through a local variable
+        AND through the off-loop wrappers to work at all.
+        """
+        import ast
+
+        source = (
+            "def direct():\n"
+            "    path = config_path()\n"
+            "    _atomic_json_write(path, {})\n"
+            "\n"
+            "def offloaded():\n"
+            "    path = config_path()\n"
+            "    await asyncio.to_thread(_atomic_json_write, path, {})\n"
+            "\n"
+            "def partialed():\n"
+            "    functools.partial(_atomic_json_write, config_path(), {})\n"
+            "\n"
+            "def innocent(path):\n"
+            "    _atomic_json_write(path, {})\n"
+            "\n"
+            "def unrelated():\n"
+            "    path = config_path()\n"
+            "    _atomic_json_write(other_path, {})\n"
+        )
+        tree = ast.parse(source)
+
+        flagged: set[str] = set()
+        for func in [
+            n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]:
+            config_names = {
+                t.id
+                for n in ast.walk(func)
+                if isinstance(n, ast.Assign) and self._is_config_path_call(n.value)
+                for t in n.targets
+                if isinstance(t, ast.Name)
+            }
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Call):
+                    continue
+                target = self._write_target(node)
+                if target is None:
+                    continue
+                if self._is_config_path_call(target) or (
+                    isinstance(target, ast.Name) and target.id in config_names
+                ):
+                    flagged.add(func.name)
+
+        assert flagged == {"direct", "offloaded", "partialed"}, (
+            "the matcher does not see the shape it exists to forbid "
+            f"(flagged: {sorted(flagged)}). ``innocent`` writes a CALLER-SUPPLIED "
+            "path and ``unrelated`` writes a different file; neither may be "
+            "flagged, or the ratchet cannot be cleared by honest code."
         )

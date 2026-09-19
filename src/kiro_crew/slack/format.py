@@ -56,15 +56,19 @@ LINK_DASHBOARD_ACTION = "mc_link_dashboard"
 
 
 def extract_options(text: str) -> tuple[str, list[str]]:
-    """Extract OPTIONS choices from LLM response and strip the tag.
+    """Extract OPTIONS choices and remove the marker span from the response.
 
-    Returns (cleaned_text, choices). If no OPTIONS found, choices is empty.
+    Text before and after the marker is kept, matching the other readers of
+    ``OPTIONS_RE_LINE``. Returns (cleaned_text, choices). If no OPTIONS is found,
+    choices is empty.
     """
     m = _OPTIONS_RE.search(text)
     if not m:
         return text, []
     choices = [c.strip() for c in m.group("labels").split("|") if c.strip()]
-    cleaned = text[: m.start()].rstrip()
+    before = text[: m.start()].rstrip()
+    after = text[m.end() :].strip()
+    cleaned = before + ("\n" + after if after else "") if before else after
     return cleaned, choices
 
 

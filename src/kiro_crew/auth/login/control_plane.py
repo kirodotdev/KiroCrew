@@ -2,21 +2,26 @@
 
 An IAM Identity Center sign-in yields an SSO-OIDC access token, but KAS routes
 enterprise traffic by ``profile ARN`` (the ``X-Kiro-Profile-Arn`` header), which the
-token itself does not carry. The desktop clients resolve it by calling the Kiro
-control-plane bearer service's ``ListAvailableProfiles`` with the fresh token; we do
-the same. Contract mirrored from the KAS bundle's vendored
-``@amzn/kiro-control-plane-bearer-client`` (AWS JSON 1.0 protocol, bearer auth):
+token itself does not carry. kiro-cli resolves it by calling the Kiro control-plane
+service's (CPS) ``ListAvailableProfiles`` with the fresh token; we do the same.
+Contract mirrored from kiro-cli's ``list_available_profiles`` (its bearer client
+pointed at ``Endpoint::cps_for_region``, AWS JSON 1.0 protocol, bearer auth):
 
-  POST https://kirocontrolplanebearerservice.<region>.amazonaws.com/
+  POST https://management.<region>.kiro.dev/
     Content-Type: application/x-amz-json-1.0
-    X-Amz-Target: KiroControlPlaneBearerService.ListAvailableProfiles
+    X-Amz-Target: AmazonCodeWhispererService.ListAvailableProfiles
     Authorization: Bearer <accessToken>
     body: {"maxResults": ...}
   -> {"profiles": [{"arn": ..., "profileName": ...}, ...], "nextToken": ...}
 
-NOT yet verified against a live enterprise tenant — the request/response shape is
-taken from the client the Kiro desktop app itself ships, and every failure path here
-surfaces as a coded error rather than a stored-but-unusable credential.
+The host is the CPS deployment name under ``kiro.dev``, NOT the service id of the
+vendored client (``KiroControlPlaneBearerService``): that id is only the Smithy
+service name and has no DNS record, so deriving a hostname from it makes every IdC
+poll die in the resolver right after the device code has been redeemed. The CPS
+answers an invalid bearer with HTTP 400 ``AccessDeniedException`` rather than a
+connection error, which is how a reachable-but-unauthorized call is told apart from
+a wrong host. Every failure path here surfaces as a coded error rather than a
+stored-but-unusable credential.
 """
 
 from __future__ import annotations
@@ -33,7 +38,16 @@ logger = logging.getLogger(__name__)
 # One page is plenty: the common enterprise case is a single profile, and callers
 # that see several pick the first (multi-profile selection is a documented follow-up).
 _MAX_RESULTS = 10
-_TARGET = "KiroControlPlaneBearerService.ListAvailableProfiles"
+_TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
+
+# Control-plane (CPS) endpoints per region, mirroring kiro-cli's
+# ``Endpoint::cps_for_region``. Regions without a dedicated CPS fall back to
+# us-east-1, which is also what kiro-cli's ``DEFAULT_ENDPOINT`` resolves to.
+_CPS_ENDPOINTS = {
+    "us-east-1": "https://management.us-east-1.kiro.dev/",
+    "eu-central-1": "https://management.eu-central-1.kiro.dev/",
+}
+_DEFAULT_CPS_REGION = "us-east-1"
 
 
 class ControlPlaneError(Exception):
@@ -47,7 +61,8 @@ class KiroProfile:
 
 
 def control_plane_url(region: str) -> str:
-    return f"https://kirocontrolplanebearerservice.{region}.amazonaws.com/"
+    """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does."""
+    return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
 
 
 async def list_available_profiles(

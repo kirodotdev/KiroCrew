@@ -1,8 +1,9 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import KiroAccountModal from '../components/KiroAccountModal'
 import type { KiroCreditUsage } from '../api/client'
+import { installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'
 import { renderWithProviders } from './helpers'
 
 const BASE_USAGE: KiroCreditUsage = {
@@ -18,6 +19,13 @@ const BASE_USAGE: KiroCreditUsage = {
 describe('KiroAccountModal', () => {
   beforeEach(() => {
     localStorage.removeItem('kirocrew:account-email-hidden')
+    __resetNavSeamForTests()
+    sessionStorage.clear()
+    installSoftNavigate(() => {})
+  })
+
+  afterEach(() => {
+    __resetNavSeamForTests()
   })
 
   it('combines owner identity, plan, remaining credits, and billing details', async () => {
@@ -186,6 +194,61 @@ describe('KiroAccountModal', () => {
     expect(screen.queryByText('Credit usage unavailable')).not.toBeInTheDocument()
     expect(screen.queryByText('Checking account…')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
+  })
+
+  it('tells the user to sign in again instead of blaming the opted-out scrape', async () => {
+    // 'signin-required' is terminal until the user re-authenticates (#11602). It
+    // must NOT render the scrape-disabled copy: that asserts the free API
+    // returned no plan for this account (it was never called) and points at a
+    // knob whose billed /usage turn needs the same lapsed sign-in, so acting on
+    // it spends credits on attempts that cannot succeed.
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="signin-required" />)
+
+    expect(await screen.findByText(/Sign in to Kiro again/)).toBeInTheDocument()
+    // The remedy the user must not be sent to.
+    expect(
+      screen.queryByText(/Set dashboard\.usage_text_scrape_enabled to true/),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Credit usage unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByText('Checking account…')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
+  })
+
+  it('offers the agent hand-off on an expired sign-in and closes the modal with it', async () => {
+    // An expired sign-in is the one unreadable state the user can act on, so it
+    // renders through the shared ErrorNotice rather than a hand-written notice
+    // (AUTOSDE errors-use-error-notice). The hand-off opens the chat this modal
+    // sits over, so the modal must close with it: a hand-off the user cannot see
+    // reads as a dead button.
+    const onClose = vi.fn()
+    renderWithProviders(
+      <KiroAccountModal open onClose={onClose} usage="signin-required" />,
+    )
+
+    const handoff = await screen.findByRole('button', { name: /Ask the agent/i })
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.click(handoff)
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('leaves the hand-off off the states that report a configuration, not a failure', async () => {
+    // 'api-key' and 'scrape-disabled' describe how the account is set up; there
+    // is no error for the agent to act on, so they keep the passive notice. This
+    // pins the split — a blanket migration would put a recovery button next to a
+    // line that needs no recovery.
+    for (const usage of ['api-key', 'scrape-disabled'] as const) {
+      const { unmount } = renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={usage} />,
+      )
+
+      expect(
+        screen.queryByRole('button', { name: /Ask the agent/i }),
+      ).not.toBeInTheDocument()
+
+      unmount()
+    }
   })
 
   it('calls onClose from the accessible close control', async () => {

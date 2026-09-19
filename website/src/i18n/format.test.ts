@@ -50,6 +50,7 @@ import {
   fmtDateTimeNumeric,
   fmtTimeNumeric,
   fmtDuration,
+  fmtElapsed,
   fmtList,
   fmtNumber,
   fmtPercent,
@@ -405,6 +406,63 @@ describe('fmtDuration', () => {
   it('renders an em dash when no part is finite', () => {
     expect(fmtDuration([[NaN, 'second']])).toBe('—')
     expect(fmtDuration([])).toBe('—')
+  })
+})
+
+describe('fmtElapsed', () => {
+  it('shows a tenth under ten seconds and drops it above', () => {
+    // Golden (en). The bands exist because useful precision changes with
+    // magnitude: a tenth matters on a 4-second step and is noise on a 37-second
+    // one.
+    expect(fmtElapsed(4_200)).toBe('4.2s')
+    expect(fmtElapsed(9_990)).toBe('10.0s')
+    expect(fmtElapsed(37_400)).toBe('37s')
+  })
+
+  it('rounds the tenth up at the midpoint', () => {
+    // 4.25s has no exact tenth, and Intl rounds half away from zero. Pinned
+    // because a reader comparing two adjacent rows should know the last digit
+    // can move by one rather than truncating.
+    expect(fmtElapsed(4_250)).toBe('4.3s')
+  })
+
+  it('keeps a trailing zero under ten seconds, so the width does not jump', () => {
+    expect(fmtElapsed(3_000)).toBe('3.0s')
+    expect(fmtElapsed(0)).toBe('0.0s')
+  })
+
+  it('rounds to whole seconds before splitting, so 119.6s is never 1m 60s', () => {
+    // The invalid form is reachable by flooring minutes before rounding the
+    // remainder, which is the bug this ordering exists to prevent.
+    expect(fmtElapsed(119_600)).toBe('2m 0s')
+    expect(fmtElapsed(398_000)).toBe('6m 38s')
+  })
+
+  it('keeps the seconds place above a minute rather than collapsing to 2m', () => {
+    // A series must step 2m 1s -> 2m 0s -> 59s. A bare `2m` for one tick reads
+    // as a different magnitude.
+    expect(fmtElapsed(121_000)).toBe('2m 1s')
+    expect(fmtElapsed(59_000)).toBe('59s')
+  })
+
+  it('formats in the app language, not the host default', async () => {
+    // Derived, not golden: proves the wiring rather than pinning a zh literal.
+    // zh joins unit lists with nothing, so a hardcoded space would leave a gap.
+    await withLanguage('zh-CN', () => {
+      expect(fmtElapsed(398_000)).toBe(
+        new Intl.ListFormat('zh-CN', { type: 'unit', style: 'narrow' }).format([
+          new Intl.NumberFormat('zh-CN', { style: 'unit', unit: 'minute', unitDisplay: 'narrow' }).format(6),
+          new Intl.NumberFormat('zh-CN', { style: 'unit', unit: 'second', unitDisplay: 'narrow' }).format(38),
+        ]),
+      )
+    })
+  })
+
+  it('renders an em dash for a span that cannot be measured', () => {
+    // Same sentinel fmtDuration uses, so a caller can hand over an unmeasurable
+    // span without branching.
+    expect(fmtElapsed(NaN)).toBe('—')
+    expect(fmtElapsed(Infinity)).toBe('—')
   })
 })
 

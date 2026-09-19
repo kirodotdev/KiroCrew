@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -60,7 +61,7 @@ from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.learn import LessonStore
-from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
 from kiro_crew.memory import MemoryStore
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
@@ -2057,6 +2058,79 @@ def _update_approve() -> None:
         sys.exit(1)
     print(f"\n✅ Approved. The gateway is applying v{body.get('version', pending.version)}")
     print("   and will restart itself; watch progress in the dashboard.")
+
+
+def _file_delivery_approve() -> None:
+    """Approve a flagged-file delivery consent armed from the dashboard.
+
+    Same step-up shape as :func:`_update_approve`: the proof of host identity is
+    READING THE NONCE FILE, which lives on the keystone floor with owner-only
+    permissions, so presenting its nonce back to the gateway demonstrates
+    filesystem access as the gateway's own user -- the step an owner-authenticated
+    but agent-DRIVEN browser cannot perform, which is the hole this closes. The
+    gateway records the grant only after the nonce validates.
+    """
+    from kiro_crew.file_delivery_consent import read_pending_grant
+
+    print("👻 Approving the pending flagged-file delivery consent…\n")
+    pending = read_pending_grant()
+    if pending is None:
+        print("❌ No armed grant request (it may have expired).")
+        print("   Confirm from the dashboard's Security panel first, then re-run this.")
+        sys.exit(1)
+    print(f"  📦 {pending.destination_class}, expires in {pending.expires_in}s")
+
+    port = resolve_client_port(None)
+    url = f"http://127.0.0.1:{port}/api/file-delivery/consent/approve"
+    payload = json.dumps({"nonce": pending.nonce}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    # Same local-secret / unix-socket authentication as _update_approve: reading
+    # the secret is itself host-local evidence, and an absent secret still works
+    # on a default loopback install where no token auth runs.
+    secret = read_local_secret(port)
+    if secret:
+        headers["X-Internal-Secret"] = secret
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        from kiro_crew.dashboard.urls import dashboard_socket_path
+
+        socket_path: str | None = str(dashboard_socket_path(port))
+    except Exception:
+        socket_path = None
+    try:
+        # NOT `loopback_urlopen`: this request carries the single-use nonce AND
+        # the local secret, and that opener's own contract says a caller whose
+        # request carries a credential another process could capture on the port
+        # wants `unix_socket_urlopen` instead. Its TCP fallback fires on a STALE
+        # socket -- exactly the dead-gateway case in which a foreign process may
+        # hold the loopback port -- so falling back would hand both credentials
+        # to whatever answers. A gateway that is gone is reported as not running
+        # rather than retried on a port nothing trustworthy is holding.
+        #
+        # TCP stays the transport only where there is no unix socket to prefer
+        # (native Windows has no `AF_UNIX`): there the port IS the only local
+        # transport, so no fallback decision exists to get wrong.
+        if socket_path is not None and hasattr(socket, "AF_UNIX"):
+            approve_resp = unix_socket_urlopen(req, 15, socket_path=socket_path)
+        else:
+            approve_resp = loopback_urlopen(req, timeout=15)
+        with approve_resp as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        print(
+            f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
+        )
+        sys.exit(1)
+    except (urllib.error.URLError, OSError):
+        print("❌ Gateway is not running — start it, then re-run: kirocrew file-delivery approve")
+        sys.exit(1)
+    grant = body.get("grant") if isinstance(body, dict) else None
+    dest = grant.get("destination_class") if isinstance(grant, dict) else pending.destination_class
+    print(f"\n✅ Confirmed delivery to {dest}. The dashboard now shows it as confirmed.")
 
 
 def _status(args: argparse.Namespace) -> None:

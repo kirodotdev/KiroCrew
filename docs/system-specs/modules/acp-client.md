@@ -204,7 +204,7 @@ Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not fou
 |---|---|---|
 | `fs.readTextFile` / `fs.writeTextFile` | `false` | We serve no `fs/*` handler; advertising them would invite requests that hit `_reject_unknown_server_request`. |
 | `terminal` | `false` | Same — the agent uses its own tools. |
-| `elicitation` | `{form: {}, url: {}}` | **Forward-bet.** kiro-cli 2.14.0 compiles the `elicitation/create` schema (form + url modes, `requestedSchema` with `enum`/`oneOf` single-select and array multi-select) and gates it on this capability, but does **not** yet route an MCP server's `elicitation/create` out over ACP — a stub MCP server issuing one gets `-32601 method not found`. Declaring it costs nothing today and makes the richer native prompt available the moment upstream ships the bridge. **Consequence to accept:** once the bridge lands, inbound `elicitation/create` requests will be rejected by `_reject_unknown_server_request` until a handler is wired — the same failure mode as today, but then attributable to us rather than upstream.
+| `elicitation` | *(absent)* | **Withdrawn forward-bet.** It was declared while kiro-cli 2.14.0 compiled the `elicitation/create` schema but did not yet route an MCP server's request out over ACP, on the reasoning that declaring it cost nothing until a handler existed. It costs something. A client that sees the capability sends its human-in-the-loop prompts as `elicitation/create` **instead of** falling back to `session/request_permission` — codex-acp gates on `clientCapabilities.elicitation.form` exactly that way — so the declaration does not wait inertly for a handler, it diverts a working path onto one that answers `-32601`, which that client turns into a cancellation of the tool call the human was approving. Absent, every affected client returns to the fallback that works. Re-add the key **in the same change** that registers the handler: `test_elicitation_is_not_advertised_without_a_handler` fails the moment it reappears. Handler work is tracked in #891. |
 
 **Request-id namespaces are independent.** Our outbound requests (prompt, initialize, set_model, ...) use `_next_req_id()`; the agent's inbound server→client requests (`session/request_permission`) carry their own id counter. The two collide on small integers, so `JsonRpcMessage.is_response_for(req_id)` requires both `id == req_id` **and** `method is None` — a response never has a `method`. Without the `method is None` guard, a permission request whose id equals the in-flight prompt's `req_id` was misclassified as that prompt's completion in `_process_message`, ending the turn early and leaving the tool's permission unanswered → the agent turn hangs on follow-up messages (the agent waits forever for a `session/request_permission` response that never comes).
 
@@ -413,10 +413,21 @@ KAS opts into a readiness barrier through its harness notification declaration.
 Its `_kiro/mcp/status` and `_kiro/tools/didChange` notifications carry an explicit
 `params.sessionId` and full `servers` / `tags` snapshots. The reader stages both
 methods before the create/load response and transfers only that session's frames.
-Status entries carry `name`, `status`, `failedAuthorization`, `errorMessage`, and
-`_meta.kiro.resource.source.origin`; the required Crew declarations have origin
-`client`. Tool tags have `source: "mcp"` and `tag: "@server/tool"`; these establish
-exposure, not the native callable identifier.
+Status entries carry `name`, `status`, `failedAuthorization`, `errorMessage`,
+`tools` (the connected server's catalog) and `_meta.kiro.resource.source.origin`;
+the required Crew declarations have origin `client`. Exposure -- the model can
+reach the connected server's tools -- is established by EITHER a non-empty
+`tools` catalog on the server's own `connected` entry OR a tool tag with
+`source: "mcp"` and `tag: "@server/tool"`; neither is the native callable
+identifier. Both are accepted because released kiro-cli versions differ: captured
+2.18.0 and 2.20.0 send the catalog and the tags; captured 2.22.0 (KAS 0.66.0)
+sends the full catalog on the connected entry but its `didChange` snapshots list
+only `builtin` tags (`read`, `write`, `shell`, `web`), with or without
+`tool_search` in the agent's tools -- no MCP tag ever arrives. The two kinds of
+evidence are kept apart: a full tag snapshot replaces the tag evidence (a tag
+that disappears is retracted) but never the catalog evidence, and a reconnect
+(`connecting` after `connected`) clears both, so the next connected snapshot's
+catalog or a later tag frame must re-establish it.
 
 Provenance is read off the whole snapshot, not one entry. A backend that stamps
 any entry stamps them all (released 2.20.0 stamps `connecting` and `connected`
@@ -448,7 +459,8 @@ never implies `client`; the connecting state on such a backend stays pending as
 usual.
 
 After activation, create and load wait for every required managed server to be
-`connected` and represented in the tool-tag snapshot when exposure is permitted.
+`connected` and exposed (a connected catalog or a tool tag, as above) when
+exposure is permitted.
 The required roster is the union of the ACTIVE custom agent's `mcpServers`
 declarations and the actual session-level injection, intersected with Crew's
 managed server catalog. Inactive agents and inherited global/external servers do

@@ -45,6 +45,7 @@ from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
+from kiro_crew.session_token_sig import schedule_session_token_publish
 
 logger = logging.getLogger(__name__)
 
@@ -567,6 +568,12 @@ class AcpSessionProvider(LLMProvider):
             channel_id,
             getattr(self._handle, "stub_session_token", ""),
         )
+        # Re-point this session's SIGNED token mapping at the claiming session, for
+        # the reason AcpClient.rekey states: the token survives the rekey so the
+        # file is what moves. It matters more here — this runtime hosts several
+        # sessions at once, so the mapping is the only channel that can tell them
+        # apart without a daemon. Fire-and-forget; offloads its own file I/O.
+        schedule_session_token_publish(getattr(self._handle, "stub_session_token", ""), session_key)
 
     def reclaim(self) -> None:
         """Re-push this session's claim (parity with AcpClient.reclaim).
@@ -587,6 +594,19 @@ class AcpSessionProvider(LLMProvider):
             self._channel_id,
             token,
         )
+
+    @property
+    def session_identity_token(self) -> str:
+        """This session's per-session identity token, or ``""``.
+
+        The uniform name the shared per-turn publisher reads
+        (``messaging.identity._publish_session_token``), parity with
+        :attr:`AcpClient.session_identity_token`. On this provider the token lives
+        on the session HANDLE rather than on the runtime, because the runtime is
+        shared by every session on it and the token names exactly one.
+        """
+        token = getattr(self._handle, "stub_session_token", "")
+        return token if isinstance(token, str) else ""
 
     @property
     def _agent(self) -> str:

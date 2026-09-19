@@ -40,18 +40,58 @@ def _pr_payload(checks: list[dict[str, str]], **overrides: object) -> str:
     return json.dumps(payload)
 
 
+def _fake_git(args: list[str]) -> tuple[int, str, str]:
+    """Answer the git commands the embedded green-age probe issues.
+
+    A fresh verdict by construction: the base is reported as having moved in
+    nothing. Tests that need a STALE probe pass their own ``moved``/``mine``.
+    """
+    return _fake_git_with(args, moved=[], mine=[])
+
+
+def _fake_git_with(
+    args: list[str], moved: list[str], mine: list[str], commits: int = 0
+) -> tuple[int, str, str]:
+    rest = args[1:]
+    if rest[:1] == ["fetch"]:
+        return 0, "", ""
+    if rest[:2] == ["rev-parse", "--is-inside-work-tree"]:
+        return 0, "true", ""
+    if rest[:1] == ["rev-parse"]:
+        return 0, "a" * 40, ""
+    if rest[:1] == ["merge-base"]:
+        return 0, "b" * 40, ""
+    if rest[:2] == ["rev-list", "--count"]:
+        return 0, str(commits), ""
+    if rest[:2] == ["diff", "--name-only"]:
+        # Two-dot compares the tested base with the base tip (what main gained);
+        # three-dot compares the base with this head (what the branch owns).
+        return 0, "\n".join(mine if "..." in rest[-1] else moved), ""
+    if rest[:1] == ["show"]:
+        return 0, "", ""
+    raise AssertionError("unexpected git command: {}".format(args))
+
+
 def _install_fake_gh(
     module: ModuleType,
     payload: str,
     comments: str = "[]",
     head_run_events: list[str] | None = None,
     permissions: dict[str, str] | None = None,
+    git: object = None,
+    pr_files: list[str] | None = None,
 ) -> None:
     events = ["pull_request"] if head_run_events is None else head_run_events
+    fake_git = git or _fake_git
 
     def fake_run(args: list[str]) -> tuple[int, str, str]:
+        if args[:1] == ["git"]:
+            return fake_git(args)  # type: ignore[operator]
         if args[:3] == ["gh", "auth", "status"]:
             return 0, "", ""
+        # The green-age probe's own query, which asks for `files` and nothing else.
+        if args[:3] == ["gh", "pr", "view"] and "files" in args:
+            return 0, "\n".join(pr_files or []), ""
         if args[:3] == ["gh", "pr", "view"]:
             return 0, payload, ""
         if args[:3] == ["gh", "repo", "view"]:
@@ -321,9 +361,104 @@ def test_report_emits_only_the_consumed_surface(capsys) -> None:
         "bot_comments_readable",
         "elided_stamp_reviewers",
         "findings",
+        "green_age",
         "stale_reviewers",
         "unresolved_threads",
     }
+
+
+def test_the_green_age_line_qualifies_the_rollup_without_gating_it(capsys) -> None:
+    """A green is a verdict about one base commit; the line says which.
+
+    Printed beside the rollup because it qualifies the rollup, and read from the
+    same JSON object the poll loop already parses.
+    """
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}]))
+
+    code = module.main(["pr_status.py", "42", "--json"])
+    out = capsys.readouterr().out
+    report = json.loads([ln for ln in out.strip().splitlines() if ln.strip()][-1])
+
+    assert code == 0
+    assert "green age: base +0 commits" in out
+    assert "overlap: none" in out
+    assert report["advisory"]["green_age"]["stale"] is False
+    # Advisory only: never in the key a stall tripwire compares.
+    assert "green_age" not in report["progress_key"]
+
+
+def test_a_stale_green_is_reported_and_changes_no_exit_code(capsys) -> None:
+    """THE WHOLE POINT: information for the merger, never a gate.
+
+    The base moved in a file this PR also owns, so the green describes a tree
+    that will not merge -- and the tool still exits 0, because turning this
+    into a gate would put a client-side heuristic in front of every merge on a
+    repository whose merge gap is measured in minutes.
+    """
+    module = _load_script()
+    _install_fake_gh(
+        module,
+        _pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}]),
+        git=lambda args: _fake_git_with(
+            args, moved=["src/kiro_crew/ledger/store.py"], mine=[], commits=3
+        ),
+        pr_files=["src/kiro_crew/ledger/store.py"],
+    )
+
+    code = module.main(["pr_status.py", "42", "--json"])
+    out = capsys.readouterr().out
+    report = json.loads([ln for ln in out.strip().splitlines() if ln.strip()][-1])
+
+    assert code == 0, "the green-age line is information, not a gate"
+    assert "src/kiro_crew/ledger/store.py (same-file)" in out
+    assert report["advisory"]["green_age"]["stale"] is True
+    assert report["advisory"]["green_age"]["commits"] == 3
+
+
+def test_a_probe_that_cannot_measure_says_unavailable(capsys) -> None:
+    """Unknown reads as unknown, in both directions.
+
+    A probe that cannot answer must not report a fresh green, and must not turn a
+    readable PR into an error either.
+    """
+    module = _load_script()
+
+    def exploding_git(args: list[str]) -> tuple[int, str, str]:
+        raise RuntimeError("git is not installed on this host")
+
+    _install_fake_gh(
+        module,
+        _pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}]),
+        git=exploding_git,
+    )
+
+    code = module.main(["pr_status.py", "42", "--json"])
+    out = capsys.readouterr().out
+    report = json.loads([ln for ln in out.strip().splitlines() if ln.strip()][-1])
+
+    assert code == 0
+    assert "green age: unavailable" in out
+    assert "FRESH" not in out
+    assert report["advisory"]["green_age"]["ok"] is False
+
+
+def test_the_probe_is_asked_about_the_hosts_own_base_branch() -> None:
+    """A PR against a release branch is measured against THAT branch."""
+    module = _load_script()
+    seen: dict[str, object] = {}
+    _install_fake_gh(module, _pr_payload([], baseRefName="release/0.7"))
+    real = module.probe_green_age
+
+    def spy(base, head_sha, pr):
+        seen.update({"base": base, "head": head_sha, "pr": pr})
+        return real(base, head_sha, pr)
+
+    module.probe_green_age = spy
+    module.main(["pr_status.py", "42"])
+
+    assert seen["base"] == "release/0.7"
+    assert seen["head"] == "f" * 40
 
 
 def test_passed_aggregate_does_not_clear_an_observed_failing_row() -> None:

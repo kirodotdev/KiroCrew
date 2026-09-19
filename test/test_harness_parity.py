@@ -68,6 +68,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_PRIVATE_MEMORY_MCP,
     ACP_BACKENDS_SIDE_READONLY,
+    ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     BASELINE_SELECTABLE_BACKENDS,
     selectable_backends,
 )
@@ -667,15 +668,25 @@ def test_only_overlay_readers_are_written_to() -> None:
     gated on anything wider leaves a stale overlay in the user's workspace that no
     later clear can reach — and the overlay names an effort level, so a harness
     that DOES read the file later inherits a level nobody set for it.
+
+    The two overlay keys have DIFFERENT reader sets, so each writer names its own:
+    the effort write keeps the slash-dialect set it always had, while Tool Search
+    is written only for kiro-cli's Rust engine -- KAS takes that setting over the
+    wire (measured: the relay forwards no ``toolSearch.*`` key from this file), so
+    a Tool Search write gated on the wider set is a dead file that makes the
+    dashboard's "deferred" badge lie.
     """
-    for fn in (
-        providers_acp.AcpProvider._apply_effort_overlay,
-        providers_acp.AcpProvider._apply_tool_search_overlay,
-    ):
+    expected = {
+        providers_acp.AcpProvider._apply_effort_overlay: "ACP_BACKENDS_KIRO_SLASH_COMMANDS",
+        providers_acp.AcpProvider._apply_tool_search_overlay: "ACP_BACKENDS_TOOL_SEARCH_OVERLAY",
+    }
+    for fn, membership in expected.items():
         source = inspect.getsource(fn)
         assert (
-            "ACP_BACKENDS_KIRO_SLASH_COMMANDS" in source
+            membership in source
         ), f"{fn.__name__}: overlay write is not scoped to the overlay's readers"
+    assert ACP_BACKENDS_TOOL_SEARCH_OVERLAY < ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    assert ACP_BACKEND_KAS not in ACP_BACKENDS_TOOL_SEARCH_OVERLAY
 
 
 def test_codex_spawn_keeps_its_own_branch() -> None:

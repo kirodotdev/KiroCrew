@@ -215,6 +215,12 @@ class TestCronListFields:
         mock_job.name = "test"
         mock_job.message = "msg"
         mock_job.enabled = True
+        # Serialized alongside `enabled`, because the two together are what tell a
+        # user pause apart from an execution auto-pause.
+        mock_job.user_paused = False
+        # Read to derive the owning `app`; a MagicMock here would flow into the
+        # payload as one, which is the failure this stub's comment below describes.
+        mock_job.created_by = ""
         mock_job.last_status = "ok"
         mock_job.agent_id = ""
         mock_job.channel = "C123"

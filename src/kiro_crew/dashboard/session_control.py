@@ -46,8 +46,14 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
-from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir, _unhide_folder
+from kiro_crew.dashboard.chat_folders import (
+    _nearest_folder_value,
+    _resolve_folder_project_dir,
+    _unhide_folder,
+    _validate_project_dir,
+)
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
 from kiro_crew.dashboard.chat_utils import (
@@ -68,7 +74,7 @@ from kiro_crew.memory_stores import memory_store_version, named_store_or_empty
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import record_agent_selection
-from kiro_crew.validation import MAX_LONG_STRING
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_LONG_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -126,23 +132,118 @@ CRON_LINK_PREFIX = "cron:"
 APP_CRON_OWNER_PREFIX = "app:"
 
 
-def _member_caller(caller_key: str) -> bool:
-    """Whether *caller_key* is a crew member's pinned DM slot.
+def _member_caller(state: "DashboardState", caller_key: str) -> bool:
+    """Whether *caller_key* is a crew member acting through one of its slots.
 
-    A member DM session dispatches its real work into worker sessions it
-    creates and patrols — that is the member operating model, not an optional
-    capability — so the surface authorizes it WITHOUT the global
-    ``agent.session_control`` opt-in. What bounds it instead is ownership:
-    :func:`authorize_target` restricts a member caller to slots it created
-    itself, so the automatic grant never reaches the user's own sessions.
+    A crew member runs in TWO kinds of slot, and both are the member operating
+    model rather than an optional capability, so the surface authorizes either
+    WITHOUT the global ``agent.session_control`` opt-in. What bounds them
+    instead is ownership: :func:`authorize_target` restricts a member caller to
+    slots it created itself, so the automatic grant never reaches the user's
+    own sessions.
 
-    Spelled through the members module's own prefix constant (imported
-    lazily — members imports validation which sits below this module in the
-    layering) rather than a restated literal, so the two cannot drift.
+    * (a) a pinned DM slot, keyed ``member-<slug>`` — recognised by the members
+      module's own prefix constant (imported lazily, since ``members`` imports
+      ``validation`` which sits below this module in the layering) rather than a
+      restated literal, so the two cannot drift; and
+    * (b) an ORDINARY dashboard chat slot (``chat-<n>-<ts>``) whose bound memory
+      store is that member's private V2 store — the same store a DM slot would
+      be bound to. A member's whole operating model (``session_create`` /
+      ``session_send`` / ``session_read_message`` / ``session_stop`` /
+      ``session_close``) also runs from such a chat slot, so refusing it there
+      would leave the member chat-only in the surface it exists to drive. The
+      store, not the key, is the member's identity here: it is what
+      :func:`_store_is_member_owned` reads off the config record.
+
+    Case (b) needs the caller's slot to read its bound store, hence *state*;
+    ``member_dispatch`` gates the bypass either way (:func:`_member_bypass`).
+
+    This predicate decides the switch BYPASS, re-read live at every gate so a
+    member the operator un-assigns loses it at once — a change that can only
+    tighten. It is not what keeps an admitted member creator-FENCED: the config
+    record case (b) reads is mutable, so the HTTP gate carries its verified
+    admission into :func:`authorize_target` (``precomputed_ownership_fenced``)
+    rather than letting the fence re-derive it here a beat later.
     """
     from kiro_crew.members import DM_SLOT_KEY_PREFIX
 
-    return caller_key.startswith(DM_SLOT_KEY_PREFIX)
+    if caller_key.startswith(DM_SLOT_KEY_PREFIX):
+        return True
+    slot = state.get_slot(caller_key)
+    if slot is None:
+        return False
+    return _store_is_member_owned(getattr(slot, "memory_store", "") or "")
+
+
+def _store_is_member_owned(store: str) -> bool:
+    """Whether *store* is a crew member's private V2 memory store, right now.
+
+    The ONE predicate that recognises a member store, shared by the HTTP gate
+    (``handlers/session_control.py``'s ``_private_caller_refusal``) and the inner
+    switch bypass here (:func:`_member_caller` case (b)), so the two layers cannot
+    disagree on what a member store is. It answers from the CONFIG RECORD, never
+    the on-disk ownership manifest: it runs at :func:`authorize_target`'s
+    synchronous gate, where a manifest ``stat`` / ``read`` would be blocking IO on
+    the event loop. ``KiroCrewConfig.load()`` is the cached read the switch gate
+    beside it already performs (warmed by :func:`prewarm_enabled_check`), and the
+    fields it reads are in-memory attributes of the loaded record.
+
+    ``True`` requires ALL of: a record for *store*; ``memory_version == 2``; a
+    non-empty ``owner_member``; and that owner still an ACTIVE agent bound to
+    exactly this store (the live-binding test ``active_member_memory_stores``
+    applies). A crew can be deleted while a chat slot bound to its store is still
+    live — the store record is retained with ``owner_member`` set but the agent is
+    gone from ``cfg.agents`` — and a retired owner must not keep the switch bypass
+    past a governance switch the operator turned off.
+
+    Everything else is ``False``, and every ``False`` is FAIL-CLOSED for what this
+    predicate decides — admission and the switch bypass: ``default``/empty, a
+    missing record, a non-V2 store, an ownerless V2 store, a retired or re-bound
+    owner, an unreadable config, or a degraded ``memory_stores`` section all
+    withhold member status, and a caller then falls back under the global switch
+    like any other. Withdrawing the case-(b) admission can never open the surface
+    wider than it is.
+
+    It is deliberately NOT the ownership FENCE's source of truth. The record is
+    mutable — an operator's own config writer can un-assign the member, drop
+    ``memory_version`` (the loader coerces a missing key to ``1``), or drop the
+    entry outright — and any of those can land between the HTTP gate's admission
+    and the inner authorization. The fence therefore does not re-derive member
+    status from this record: the gate carries its VERIFIED admission into
+    :func:`authorize_target` as ``precomputed_ownership_fenced`` (see
+    ``handlers/session_control.py``), so a member admitted as one stays
+    creator-fenced for the whole request whatever the record says a beat later.
+    """
+    if not store or store == "default":
+        return False
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        logger.warning(
+            "session_control: config read failed — store %r is not treated as a member store",
+            store,
+            exc_info=True,
+        )
+        return False
+    if cfg.degraded_sections & {DEGRADED_WHOLE_CONFIG, "memory_stores"}:
+        logger.warning(
+            "session_control: memory_stores config section degraded — store %r is not "
+            "treated as a member store",
+            store,
+        )
+        return False
+    record = cfg.memory_stores.get(store)
+    if record is None or getattr(record, "memory_version", 1) != 2:
+        return False
+    owner = getattr(record, "owner_member", "")
+    if not owner:
+        return False
+    owners_bound_here = [
+        member
+        for member, agent in cfg.agents.items()
+        if getattr(agent, "memory_store", None) == store
+    ]
+    return owners_bound_here == [owner]
 
 
 def _cron_caller(caller_key: str) -> bool:
@@ -201,7 +302,7 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
     this session", not "is a person at the keyboard", so a person working in an
     agent-created session keeps that session's reach rather than their own.
     """
-    if _member_caller(caller_key) or _cron_caller(caller_key):
+    if _member_caller(state, caller_key) or _cron_caller(caller_key):
         return True
     slot = state.get_slot(caller_key)
     if slot is None:
@@ -405,7 +506,7 @@ def member_dispatch_enabled() -> bool:
     return bool(cfg.agent.member_dispatch)
 
 
-def _member_bypass(caller_key: str) -> bool:
+def _member_bypass(state: "DashboardState", caller_key: str) -> bool:
     """Whether *caller_key* may skip the ``session_control`` switch as a member.
 
     The single expression both switch gates key on, extracted rather than
@@ -415,12 +516,13 @@ def _member_bypass(caller_key: str) -> bool:
     turned off, the member is no longer exempt and the switch gate applies to
     it like any other caller.
 
-    Keyed on the immutable slot-key prefix (via :func:`_member_caller`) AND the
-    config ceiling — the two together decide the bypass, and neither is a proxy
-    for it. ``member_dispatch_enabled`` is read at the gate, synchronously,
-    right before the act, exactly as ``session_control_enabled`` is beside it.
+    Keyed on :func:`_member_caller` (a ``member-`` DM slot OR a chat slot bound
+    to a member's V2 store — hence *state*) AND the config ceiling: the two
+    together decide the bypass, and neither is a proxy for it.
+    ``member_dispatch_enabled`` is read at the gate, synchronously, right before
+    the act, exactly as ``session_control_enabled`` is beside it.
     """
-    return _member_caller(caller_key) and member_dispatch_enabled()
+    return _member_caller(state, caller_key) and member_dispatch_enabled()
 
 
 async def prewarm_enabled_check() -> None:
@@ -894,47 +996,50 @@ def _resolve_slot(state: "DashboardState", target: str) -> "_ChatSlot | None":
     return found[0] if found else None
 
 
-def _folder_creation_values(
-    folders: list[dict[str, Any]], folder_id: str
+def _folder_target_inputs(
+    folders: list[dict[str, Any]], folder_id: str, *, agent_requested: bool
 ) -> tuple[bool, object, object]:
-    """Return existence plus the nearest inherited project and default agent.
+    """Snapshot the folder inputs a create CONSUMES: existence, project, agent.
 
-    The values stay raw so the same pure read can be repeated under the folder
-    lock immediately before allocation. Filesystem validation happens separately,
-    off the event loop, after this snapshot is captured.
+    Pure -- built on ``_nearest_folder_value``, the same ancestor walk
+    ``_resolve_folder_project_dir`` runs, so there is one definition of "the
+    folder's inherited project" -- and therefore safe to repeat under the
+    folder-store lock immediately before allocation. Filesystem validation of the
+    project happens separately, off the loop, from the same snapshot.
+
+    The third element is the inherited ``default_agent`` only when the create
+    would actually READ it: a project-linked folder with the ``agent`` argument
+    omitted. An explicit agent overrides it, and a filing-only folder never
+    consults it (see ``create_session``), so in both cases it is recorded as ""
+    and a concurrent edit to it cannot revoke a decision that never depended on
+    it. Every input that IS consumed -- including a filing-only folder's absence
+    of a project -- stays in the tuple, so the pre-allocation recheck revokes
+    exactly the decisions that went stale and nothing else.
     """
-    by_id = {
-        str(folder.get("id") or ""): folder
-        for folder in _safe_folder_tree(folders)
-        if isinstance(folder, dict)
-    }
-    if folder_id not in by_id:
+    tree = _safe_folder_tree(folders)
+    if not any(str(folder.get("id") or "") == folder_id for folder in tree):
         return False, "", ""
-    project: object = ""
-    default_agent: object = ""
-    seen: set[str] = set()
-    current_id = folder_id
-    while current_id and current_id not in seen:
-        seen.add(current_id)
-        folder = by_id.get(current_id)
-        if folder is None:
-            break
-        if not project and folder.get("project_dir"):
-            project = folder.get("project_dir")
-        if not default_agent and folder.get("default_agent"):
-            default_agent = folder.get("default_agent")
-        if project and default_agent:
-            break
-        current_id = str(folder.get("parent_id") or "")
+    project = _nearest_folder_value(tree, folder_id, "project_dir")
+    default_agent = (
+        _nearest_folder_value(tree, folder_id, "default_agent")
+        if project and not agent_requested
+        else ""
+    )
     return True, project, default_agent
 
 
-def _folder_workspace_name(config: KiroCrewConfig, project_dir: str) -> str:
-    """Return the unique configured workspace rooted at *project_dir*.
+def _folder_workspace_names(config: KiroCrewConfig, project_dir: str) -> list[str]:
+    """Every configured workspace whose root directory IS *project_dir*.
 
-    Folder targeting never uses the loader's unknown-name fallback: two names
-    resolving to the base workspace, or two configured names resolving to one
-    directory, would make the requested memory boundary ambiguous.
+    Compared by realpath, so this is filesystem work and callers on the event
+    loop run it via ``asyncio.to_thread``. Deliberately not the loader's
+    ``_workspace_name_for_dir``: that helper falls back to ``"default"`` for an
+    unknown directory, and folder targeting must never let an unknown path
+    resolve to a memory boundary by fallback. An empty list means the folder's
+    project is not a workspace root (the ordinary dashboard configuration -- a
+    folder linked to some checkout), and the caller keeps its own workspace with
+    that project as the child's cwd; two or more names means the boundary is
+    ambiguous and the create refuses.
     """
     matches: list[str] = []
     for name, workspace_config in config.workspaces.items():
@@ -942,18 +1047,33 @@ def _folder_workspace_name(config: KiroCrewConfig, project_dir: str) -> str:
         candidate = raw if raw.is_absolute() else config_dir() / raw
         if os.path.realpath(str(candidate)) == project_dir:
             matches.append(name)
-    if not matches:
+    return matches
+
+
+def _unique_binding_workspace(config: KiroCrewConfig, workspace_dir: Path) -> str:
+    """The configured workspace an agent binding's directory names, or "".
+
+    Used only on the cross-workspace branch of ``create_session``, where the
+    question is whether the answering agent is bound to the folder-selected
+    TARGET workspace. ``_workspace_name_for_dir`` would answer ``"default"`` for
+    an unrecognised directory, which on this branch would read as "bound to the
+    default workspace" -- and would pass the check whenever the target is itself
+    named ``default``. Here an unmapped binding answers "" (it is provably not
+    the target, whose root DID map, so the caller reports a mismatch) and a
+    multiply-mapped one is refused as unverifiable. Filesystem work (realpath):
+    callers on the event loop run it via ``asyncio.to_thread``.
+    """
+    binding_dir = workspace_dir.expanduser()
+    binding_project = os.path.realpath(
+        str(binding_dir if binding_dir.is_absolute() else config_dir() / binding_dir)
+    )
+    names = _folder_workspace_names(config, binding_project)
+    if len(names) > 1:
         raise SessionControlError(
-            "folder project is not the root of a configured workspace",
-            code="folder_workspace_unmapped",
+            "cannot uniquely verify the effective agent's workspace binding",
+            code="agent_unverifiable",
         )
-    if len(matches) != 1:
-        raise SessionControlError(
-            "folder project maps to more than one configured workspace",
-            code="folder_workspace_ambiguous",
-            status=409,
-        )
-    return matches[0]
+    return names[0] if names else ""
 
 
 async def create_session(
@@ -965,6 +1085,13 @@ async def create_session(
     folder_id: str = "",
 ) -> dict[str, Any]:
     """Open a new session in the caller's workspace, persisted at birth.
+
+    A project-linked ``folder_id`` gives the child that project as its cwd (and
+    its pinned ``default_agent`` when the caller names none), still in the
+    caller's workspace; only a crew member creating into a folder whose project is
+    the unique root of ANOTHER configured workspace places the child there, and
+    records that placement in the child's protected stable-session selection
+    record for ``authorize_target``. The rules and their reasons are inline below.
 
     The new slot is an ordinary dashboard session -- it appears in the sidebar, the
     user can read it, type into it and close it -- so this gives a workstream a home
@@ -1014,7 +1141,7 @@ async def create_session(
     # switch like any other caller. Every other caller still needs the switch.
     # The member's automatic grant is bounded by ownership in `authorize_target`,
     # not here: creation makes the caller the owner by construction.
-    if not session_control_enabled() and not _member_bypass(caller_key):
+    if not session_control_enabled() and not _member_bypass(state, caller_key):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",
@@ -1037,15 +1164,21 @@ async def create_session(
     caller_workspace = getattr(caller_slot, "workspace", "default") or "default"
     workspace = caller_workspace
     project_dir = ""
-    folder_values: tuple[bool, object, object] | None = None
+    folder_inputs: tuple[bool, object, object] | None = None
     folder_project = ""
     folder_agent = ""
+    # Set only when the folder route places the child OUTSIDE the caller's
+    # workspace; it is what `authorize_target`'s one exception keys on.
+    folder_workspace_authority = ""
+    agent_requested = bool(agent.strip())
     if folder_id:
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in folders]
         )
-        folder_values = _folder_creation_values(folder_snapshot, folder_id)
-        exists, raw_project, raw_agent = folder_values
+        folder_inputs = _folder_target_inputs(
+            folder_snapshot, folder_id, agent_requested=agent_requested
+        )
+        exists, _raw_project, raw_agent = folder_inputs
         if not exists:
             raise SessionControlError("folder not found", code="folder_not_found")
         if raw_agent and not isinstance(raw_agent, str):
@@ -1053,6 +1186,8 @@ async def create_session(
                 "folder default_agent must be a string", code="folder_agent_invalid"
             )
         folder_agent = raw_agent.strip() if isinstance(raw_agent, str) else ""
+        # The same walk `_folder_target_inputs` took, plus validation (realpath,
+        # isdir, sensitive-path screen) -- filesystem work, so off the loop.
         folder_project, folder_project_error = await asyncio.to_thread(
             _resolve_folder_project_dir, folder_snapshot, folder_id
         )
@@ -1073,34 +1208,83 @@ async def create_session(
         )
 
     try:
-        # A folder-linked project is authority only when it is the unique root of
-        # a workspace the operator already configured. No request field can name
-        # a workspace or path directly. The member-only cross-workspace branch is
-        # what keeps ordinary sessions and scheduled runs under their existing
-        # boundary while allowing a member DM to dispatch project-local work.
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         if folder_project:
-            workspace = await asyncio.to_thread(_folder_workspace_name, cfg, folder_project)
-            if workspace != caller_workspace and not _member_caller(caller_key):
+            # Dashboard parity first: a folder linked to a project gives the child
+            # that project as its cwd, in the CALLER'S workspace -- exactly what
+            # `POST /api/chat/slots` does with the same folder. The ordinary
+            # configuration is a folder linked to some checkout that is not a
+            # workspace root, and that case must keep working for every caller.
+            #
+            # A project that IS the unique root of a configured workspace other
+            # than the caller's is the one case that changes the memory boundary,
+            # and it is member-only: no request field can name a workspace or a
+            # path directly, the mapping is derived from operator configuration,
+            # and it is refused rather than guessed when two names share the root.
+            # Offloaded: `_folder_workspace_names` resolves realpaths.
+            workspace_matches = await asyncio.to_thread(
+                _folder_workspace_names, cfg, folder_project
+            )
+            if len(workspace_matches) > 1:
                 raise SessionControlError(
-                    "only a crew member DM can create a worker in another workspace",
-                    code="folder_workspace_forbidden",
+                    "folder project maps to more than one configured workspace",
+                    code="folder_workspace_ambiguous",
+                    status=409,
                 )
+            if workspace_matches and workspace_matches[0] != caller_workspace:
+                if not _member_caller(state, caller_key):
+                    raise SessionControlError(
+                        "only a crew member can create a worker in another workspace",
+                        code="folder_workspace_forbidden",
+                    )
+                workspace = workspace_matches[0]
+                folder_workspace_authority = workspace
             project_dir = folder_project
         else:
             project_dir = await asyncio.to_thread(default_project_dir, workspace)
 
-        # An explicit agent remains an override. A configured folder otherwise
-        # uses its nearest inherited default, then the global default, matching
-        # the dashboard's folder create semantics. A filing-only folder with no
-        # project retains caller-agent inheritance for compatibility.
-        inherited_agent = (
-            folder_agent or cfg.default_agent
-            if folder_project
-            else (getattr(caller_slot, "agent", "") or "")
-        )
+        # An explicit agent remains an override. An omitted one inherits the
+        # CALLER'S agent, not the global default -- the recorded rule (see
+        # `rfc-conductor-work-ledger.md`, "Dispatch rule"): the caller is already
+        # running here, so its agent is the one bound here, and the global
+        # default would put the child on another workspace's memory store the
+        # moment that default is bound elsewhere. A project-linked folder adds ONE
+        # input ahead of that fallback: its nearest inherited `default_agent`,
+        # which is explicit operator configuration on the folder and is still
+        # checked against the target workspace below like any other name. A
+        # filing-only folder never consults it (`_folder_target_inputs`).
+        #
+        # Sanitized like `title`, and for the same reason: the value arrives from
+        # the calling model or the folder store, is persisted verbatim to the
+        # metadata line, and is pushed to every dashboard client.
+        inherited_agent = folder_agent or (getattr(caller_slot, "agent", "") or "")
         agent_name = sanitize_outbound(agent.strip() or inherited_agent)
+        # Resolved with the child's own `project_dir`: a materialized kiro agent
+        # is declared per project directory rather than registered in
+        # `config.agents`, so resolving without it would report an app's agent as
+        # unresolvable for the session being created.
         bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, agent_name, project_dir)
+        # ONE invariant covers every branch of agent resolution: the agent that
+        # will actually ANSWER must be bound to the workspace the child is created
+        # in. Authorization reads `slot.workspace` while execution follows the
+        # agent's own binding, so any branch where those disagree carries another
+        # workspace's memory store into the child. On the cross-workspace branch
+        # the binding must name the target UNIQUELY (`_unique_binding_workspace`):
+        # the loader's `"default"` fallback for an unknown directory would read as
+        # an answer here. Both are filesystem work, so both are offloaded.
+        if folder_workspace_authority:
+            agent_workspace = await asyncio.to_thread(
+                _unique_binding_workspace, cfg, Path(bindings.workspace_dir)
+            )
+        else:
+            # Workspace mapping is kept on the same worker-thread boundary as
+            # the realpath-backed cross-workspace mapper. The current helper is
+            # an in-memory comparison, but this branch is the sibling seam for
+            # binding-to-workspace resolution and must not silently move a
+            # filesystem-backed implementation onto the gateway event loop.
+            agent_workspace = await asyncio.to_thread(
+                _workspace_name_for_dir, cfg, bindings.workspace_dir
+            )
     except SessionControlError:
         raise
     except Exception:
@@ -1109,24 +1293,11 @@ async def create_session(
             code="agent_unverifiable",
         ) from None
 
-    if folder_project:
-        binding_dir = Path(bindings.workspace_dir).expanduser()
-        binding_project = os.path.realpath(
-            str(binding_dir if binding_dir.is_absolute() else config_dir() / binding_dir)
-        )
-        try:
-            agent_workspace = _folder_workspace_name(cfg, binding_project)
-        except SessionControlError:
-            raise SessionControlError(
-                "cannot uniquely verify the effective agent's workspace binding",
-                code="agent_unverifiable",
-            ) from None
-    else:
-        agent_workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
     if agent_workspace != workspace:
         who = repr(agent_name) if agent_name else "the default agent"
+        where = repr(agent_workspace) if agent_workspace else "no configured workspace"
         raise SessionControlError(
-            f"{who} is bound to workspace {agent_workspace!r}, not the target's " f"{workspace!r}",
+            f"{who} is bound to {where}, not the target's {workspace!r}",
             code="agent_workspace_mismatch",
         )
     if not bindings.requested_resolved:
@@ -1227,21 +1398,51 @@ async def create_session(
         ) from None
 
     if folder_id:
-        # Recompute the inherited values under the folder lock as the LAST await
-        # before allocation. A rename or visual move is irrelevant, but changing
-        # the project, default agent, parent chain, or deleting the folder revokes
-        # the target decision made above.
-        current_folder_values = await state.read_folders(
-            lambda folders: _folder_creation_values(folders, folder_id)
+        # Recompute the CONSUMED inputs under the folder lock as the LAST await
+        # before allocation, with the same snapshot shape as above. Deleting the
+        # folder, changing or reparenting away the inherited project, or (only
+        # when it was read) changing the inherited default agent revokes the
+        # decision made above; a rename, a visual move, or an edit to a
+        # `default_agent` this create never consulted does not.
+        current_folder_inputs, folder_generation = await state.read_folders(
+            lambda folders: (
+                _folder_target_inputs(folders, folder_id, agent_requested=agent_requested),
+                state.folders_generation(),
+            )
         )
-        if not current_folder_values[0]:
+        if not current_folder_inputs[0]:
             raise SessionControlError("folder not found", code="folder_not_found")
-        if current_folder_values != folder_values:
+        if current_folder_inputs != folder_inputs:
             raise SessionControlError(
                 "folder target changed while the session was being created",
                 code="folder_target_changed",
                 status=409,
             )
+        if folder_project:
+            # Validate the exact raw project captured under the folder lock. Once
+            # this worker hop returns there is no further await before allocation;
+            # the generation check below closes a concurrent folder edit during
+            # the hop without moving realpath or stat onto the event loop.
+            raw_project = current_folder_inputs[1]
+            if not isinstance(raw_project, str):
+                raise SessionControlError(
+                    "folder target changed while the session was being created",
+                    code="folder_target_changed",
+                    status=409,
+                )
+            current_folder_project, current_project_error = await asyncio.to_thread(
+                _validate_project_dir, raw_project.strip()
+            )
+            if (
+                current_project_error
+                or current_folder_project != folder_project
+                or state.folders_generation() != folder_generation
+            ):
+                raise SessionControlError(
+                    "folder project changed while the session was being created",
+                    code="folder_target_changed",
+                    status=409,
+                )
 
     # Re-resolved and re-gated HERE, adjacent to the allocation, because every
     # decision above was made before this coroutine suspended -- for the
@@ -1351,6 +1552,46 @@ async def create_session(
         # unattributed, so ordinary human use never consumes an automated caller's
         # share.
         slot._created_by = caller_key
+        # Grant-time provenance for the ONE cross-workspace exception in
+        # `authorize_target`: the workspace NAME this create placed the child into
+        # through folder authority, or "" when the child stayed in the caller's
+        # workspace. Stamped here, in the same synchronous window as `created_by`,
+        # and never again -- `folder_id` is a mutable filing field any later move
+        # sets, so it cannot carry this meaning.
+        slot._folder_workspace_authority = folder_workspace_authority
+        # The authorization input is a projection of the protected selection
+        # record, never transcript metadata. Keep the complete tuple in memory so
+        # the gate can require creator, target workspace and store to agree.
+        slot._folder_workspace_grant = (
+            (caller_key, folder_workspace_authority, bindings.memory_store_name or "default")
+            if folder_workspace_authority
+            else None
+        )
+        # Freeze the creator's ACP session id HERE, at mint, from the live caller
+        # handle we just authorized -- not later at the child's first turn. The
+        # creator slot can be closed and replaced between this mint and that turn,
+        # and a replacement is a distinct handle with its own session id; reading
+        # the id live at emit would then cite the replacement's crew log and corrupt
+        # the child's immutable `session/opened` lineage with no recovery path.
+        # `live_caller` is the same object the authorization gate above resolved,
+        # so this is the id that was live when the child was made. Empty when the
+        # caller's handle has no ACP session yet, which is recorded as absent.
+        # Bounded HERE, at retention, by the one constant every store of a
+        # backend-authored session id shares: an id past it is dropped, not
+        # truncated, so an oversize backend id can neither grow the slot's
+        # metadata nor make the child's ``session/opened`` entry too large to
+        # land -- the sid is optional, its absence is a legal record.
+        _creator_sid = crew_log_emit.session_id_of(getattr(live_caller, "_acp_client", None))
+        slot._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
+        # Witness that THIS process stamped the two fields above at mint. Neither
+        # the flag nor the sid is persisted: the transcript is a file an agent's
+        # file tools can edit, and the crew log is fenced from those tools exactly
+        # so nothing in it can be forged as gateway-authored -- so the child's
+        # first turn writes `session/opened.parent` only when this flag is set,
+        # never from `created_by` read back off disk. A restart between mint and
+        # the child's first turn therefore loses the link rather than trusting
+        # metadata for it.
+        slot._lineage_minted = True
         # The creator's interactive auto-approve grant follows the work it is
         # handing off. Without this a trusted operator dispatches a worker that
         # then blocks on an approval prompt nobody is watching -- the same failure
@@ -1500,7 +1741,12 @@ async def create_session(
             # Preserve the namespace resolved for this request, including a
             # template later imported as a same-named private member. Automatic
             # publication cannot overwrite a newer explicit owner selection.
-            record_agent_selection(session_key, agent_name, bindings)
+            record_agent_selection(
+                session_key,
+                agent_name,
+                bindings,
+                folder_workspace_grant=slot._folder_workspace_grant,
+            )
             log.update_metadata(session_key, metadata)
             birth_persisted = True
 
@@ -1538,6 +1784,12 @@ async def create_session(
                     # losing it on restart would strand every worker a member
                     # dispatched — controllable in memory, orphaned after reboot.
                     **({"created_by": slot._created_by} if slot._created_by else {}),
+                    # Cross-workspace grant provenance is deliberately absent:
+                    # it lives in the protected stable-session selection record.
+                    # `created_by_sid` is deliberately NOT written: the transcript
+                    # is agent-editable, so nothing read back from it may become
+                    # crew-log lineage. The sid lives on the slot for this process
+                    # only (see `_lineage_minted`).
                     # The agent's memory silo, recorded ONLY when it is not the
                     # default. This is what lets the consolidator write an agent's
                     # semantic, episodic and lesson rows into its own store
@@ -1612,6 +1864,10 @@ async def create_session(
         detail={
             "agent": slot.agent or "",
             "folder_id": slot.folder_id or "",
+            # The workspace folder authority placed the child into, or "" when it
+            # stayed in the caller's: the one create that changes a memory boundary
+            # must be readable as such in the audit trail.
+            "folder_workspace_authority": slot._folder_workspace_authority or "",
             # What the child was BORN with, so an auto-approved tool call in it is
             # traceable to the creator's grant rather than appearing unexplained.
             # Always present: "false" is the record that the grant did not transfer.
@@ -1633,6 +1889,7 @@ def authorize_target(
     target: str,
     operation: str,
     skip_enabled_check: bool = False,
+    precomputed_ownership_fenced: bool | None = None,
 ) -> "_ChatSlot":
     """Resolve *target* and decide whether *caller* may act on it.
 
@@ -1647,6 +1904,29 @@ def authorize_target(
     session control got switched off mid-operation is not a containment boundary,
     and the config read is the one part of this function that can touch the disk
     on a cache miss. Every containment and identity refusal still runs.
+
+    ``precomputed_ownership_fenced`` is an ownership-fence verdict the caller of
+    this function already holds, honoured instead of re-deriving one here. Two
+    callers hold one:
+
+    * The HTTP gate (``handlers/session_control.py``'s ``_private_caller_refusal``)
+      admits a crew member on its VERIFIED private scope and passes ``True`` down
+      through every route. The inline fence (:func:`_caller_is_ownership_fenced`
+      → :func:`_member_caller` → :func:`_store_is_member_owned`) re-reads the
+      MUTABLE config record, and an operator's own writer can flip that record —
+      un-assign the member, drop ``memory_version`` (coerced to ``1`` by the
+      loader), drop the entry — in the awaits between the gate and this call. A
+      member admitted as one must stay bounded to what it created for the whole
+      request, so the verified decision travels with the request rather than
+      being recomputed from whatever the record says at the fence.
+    * ``close_target`` resolves the verdict ONCE up front (behind
+      ``prewarm_enabled_check``) and passes it to both its initial gate and its
+      SYNCHRONOUS point-of-no-return re-check, so no ``KiroCrewConfig.load()`` runs
+      on the loop inside ``close_slot``'s no-suspension window — the same
+      blocking-IO hazard ``skip_enabled_check`` closes for the switch read.
+
+    When ``None`` (an owner or agent-created caller the gate did not admit as a
+    member) the fence is evaluated inline as before.
     """
 
     def deny(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -1694,7 +1974,11 @@ def authorize_target(
     # (default true = today's behaviour) is on. Turn that ceiling off and the
     # member falls back under the switch. The member's reach stays bounded by
     # the ownership check below, which restricts it to slots it created itself.
-    if not skip_enabled_check and not session_control_enabled() and not _member_bypass(caller_key):
+    if (
+        not skip_enabled_check
+        and not session_control_enabled()
+        and not _member_bypass(state, caller_key)
+    ):
         raise deny(
             "session control is disabled in config (agent.session_control)",
             "session_control_disabled",
@@ -1801,26 +2085,50 @@ def authorize_target(
             "mirrored_caller",
         )
 
-    workspace_differs = getattr(slot, "workspace", "default") != getattr(
-        caller_slot, "workspace", "default"
+    target_workspace = getattr(slot, "workspace", "default") or "default"
+    workspace_differs = target_workspace != (
+        getattr(caller_slot, "workspace", "default") or "default"
     )
-    member_folder_child = (
-        _member_caller(caller_key)
-        and bool(getattr(slot, "folder_id", ""))
-        and getattr(slot, "_created_by", "") == caller_key
-        and (getattr(slot, "memory_store", "") or "default")
-        == (getattr(caller_slot, "memory_store", "") or "default")
-    )
-    if workspace_differs and not member_folder_child:
-        # A member's directly-created folder worker is the sole exception. The
-        # folder create path uniquely maps its project to configured workspace,
-        # and matching protected stores keep the memory silo unchanged. Every
-        # other cross-workspace target retains the existing refusal.
-        raise deny("target session belongs to a different workspace", "workspace_mismatch")
-    if (
+    if workspace_differs:
+        # Workspaces are the memory boundary; reaching across one would let a
+        # session act on work it cannot see. The SOLE exception is a crew member
+        # reaching the child its own `session_create` placed in another workspace
+        # through a project-linked folder. The complete grant is loaded from the
+        # protected stable-session selection record, never filing or transcript
+        # metadata. It names the creator, target workspace, and authorized store;
+        # all three must still match live slot state. The ordinary creator fence
+        # below continues to use `_created_by` independently. Member status is
+        # re-read live on the inline path, while a carried fence verdict stands
+        # during close_target's no-suspension re-check.
+        protected_grant = getattr(slot, "_folder_workspace_grant", None)
+        protected_store = (
+            protected_grant[2]
+            if isinstance(protected_grant, tuple) and len(protected_grant) == 3
+            else ""
+        )
+        member_folder_child = (
+            protected_grant == (caller_key, target_workspace, protected_store)
+            and protected_store == (getattr(slot, "memory_store", "") or "default")
+            and protected_store == (getattr(caller_slot, "memory_store", "") or "default")
+            and (
+                _member_caller(state, caller_key)
+                if precomputed_ownership_fenced is None
+                else precomputed_ownership_fenced
+            )
+        )
+        if not member_folder_child:
+            raise deny("target session belongs to a different workspace", "workspace_mismatch")
+    # Resolve the fence verdict ONCE. A caller passing ``precomputed_ownership_fenced``
+    # already holds it — the HTTP gate's verified member admission, or
+    # ``close_target``'s up-front pass — so honour that value rather than
+    # re-deriving it from the config record here (see the docstring). Everyone
+    # else evaluates it inline.
+    ownership_fenced = (
         _caller_is_ownership_fenced(state, caller_key)
-        and getattr(slot, "_created_by", "") != caller_key
-    ):
+        if precomputed_ownership_fenced is None
+        else precomputed_ownership_fenced
+    )
+    if ownership_fenced and getattr(slot, "_created_by", "") != caller_key:
         # The fence every exempted caller class is bounded by, plus anything they
         # created. It reaches ONLY the sessions the caller made itself
         # (`created_by` is written at birth and rehydrated on restart). Always
@@ -1832,9 +2140,20 @@ def authorize_target(
         # refusal every other unattended caller gets: a scheduled job reaches the
         # sessions it dispatched and nothing else. Fail-closed on an unowned slot,
         # which is what an ownerless rehydrate looks like.
+        #
+        # The reason is cosmetic (the error string only). A carried verdict says
+        # WHETHER the caller is fenced, not WHY, and telling the member wording
+        # from the agent-created wording needs ``_member_caller``, which can read
+        # config — the ``close_target`` re-check runs in a no-suspension window and
+        # MUST NOT reach it. So on a carried verdict the text names the rule
+        # rather than a class it cannot see; the cron prefix is still readable
+        # without config, and the inline path keeps the three-way wording since
+        # it is already reading config anyway.
         if _cron_caller(caller_key):
             fence_reason = "a scheduled run can only control sessions it created itself"
-        elif _member_caller(caller_key):
+        elif precomputed_ownership_fenced is not None:
+            fence_reason = "this session can only control sessions it created itself"
+        elif _member_caller(state, caller_key):
             fence_reason = "a crew member can only control worker sessions it created itself"
         else:
             fence_reason = "an agent-created session can only control sessions it created itself"
@@ -1921,6 +2240,7 @@ async def stop_target(
     *,
     caller_session_key: str,
     target: str,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Stop *target*'s in-flight turn, via the same path as the Stop button.
 
@@ -1940,6 +2260,14 @@ async def stop_target(
     Still no force flag: escalation is decided by the target's own stop state and
     the window above, never by anything the caller can ask for, so advertising one
     would promise a hard kill a first call cannot deliver.
+
+    ``caller_fenced`` is the ownership-fence verdict the HTTP gate carries for a
+    caller it admitted as a crew member (``True``); ``None`` for every other
+    caller. Forwarded to :func:`authorize_target` as
+    ``precomputed_ownership_fenced`` — see there for why the verified admission
+    travels with the request instead of being re-derived from config at the fence.
+    The same parameter, with the same meaning, is on :func:`close_target`,
+    :func:`send_to_target` and :func:`read_messages`.
     """
     # Prewarmed BEFORE `authorize_target`, and that ordering is load-bearing.
     # `stop_slot_turn`'s IDLE branch logs to the SEL with no await before it, so on
@@ -1978,6 +2306,7 @@ async def stop_target(
         caller_session_key=caller_session_key,
         target=target,
         operation="stop",
+        precomputed_ownership_fenced=caller_fenced,
     )
     # Both calls below are SYNCHRONOUS, which is what lets them sit here at all:
     # the rule the comment above states is that nothing may SUSPEND between the
@@ -2017,6 +2346,7 @@ async def close_target(
     *,
     caller_session_key: str,
     target: str,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Close *target*, the same archival the tab ✕ performs.
 
@@ -2042,11 +2372,27 @@ async def close_target(
         logger.warning("session-control SEL prewarm failed", exc_info=True)
     await prewarm_enabled_check()
 
+    caller_key = caller_slot_key(state, caller_session_key)
+    # Resolve the ownership-fence verdict ONCE, up front, while the config cache
+    # is warm from ``prewarm_enabled_check`` above and we are not yet inside
+    # ``close_slot``'s no-suspension window. BOTH the initial gate and the
+    # synchronous re-check reuse it via ``precomputed_ownership_fenced`` rather
+    # than recomputing — the fence can read config on a cache miss
+    # (``_member_caller`` → ``_store_is_member_owned`` → ``KiroCrewConfig.load()``),
+    # which is exactly the blocking-IO-on-the-event-loop the close critical
+    # section must not do. A verdict the HTTP gate already carried (a caller it
+    # admitted as a crew member) is honoured as-is; otherwise it is computed here.
+    # An empty ``caller_key`` (unidentifiable caller) makes it ``False`` and the
+    # gate below still raises ``caller_unidentified`` before the fence is consulted.
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
     slot = authorize_target(
         state,
         caller_session_key=caller_session_key,
         target=target,
         operation="close",
+        precomputed_ownership_fenced=caller_fenced,
     )
     slot_key = slot.key
     # Deferred for the same import cycle `stop_target` documents.
@@ -2069,6 +2415,11 @@ async def close_target(
         # this run with no await — an async prewarm-then-check would put an await
         # back before the pop and reopen the very window this closes. Every
         # containment and identity refusal still runs.
+        #
+        # `precomputed_ownership_fenced=caller_fenced` closes the SECOND disk
+        # touch: the ownership fence's own config read (member-store lookup),
+        # resolved once above and reused here so this callback never loads config
+        # on the loop.
         try:
             live = authorize_target(
                 state,
@@ -2076,6 +2427,7 @@ async def close_target(
                 target=slot_key,
                 operation="close",
                 skip_enabled_check=True,
+                precomputed_ownership_fenced=caller_fenced,
             )
         except SessionControlError as exc:
             # A stale-authorization refusal (mirrored/linked/workspace/caller-gone)
@@ -2140,6 +2492,7 @@ async def send_to_target(
     caller_session_key: str,
     target: str,
     message: str,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Deliver *message* to *target* as its next agent turn.
 
@@ -2181,6 +2534,7 @@ async def send_to_target(
         caller_session_key=caller_session_key,
         target=target,
         operation="send",
+        precomputed_ownership_fenced=caller_fenced,
     )
 
     # A crew-bound target executes its turns on the peer, not here. The delivery
@@ -2243,6 +2597,7 @@ def read_messages(
     target: str,
     limit: int = DEFAULT_READ_MESSAGES,
     since: int | None = None,
+    caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Read *target*'s transcript tail plus enough state to poll it.
 
@@ -2261,6 +2616,7 @@ def read_messages(
         caller_session_key=caller_session_key,
         target=target,
         operation="read",
+        precomputed_ownership_fenced=caller_fenced,
     )
 
     # Indexes are ABSOLUTE positions in the session, not offsets into the live

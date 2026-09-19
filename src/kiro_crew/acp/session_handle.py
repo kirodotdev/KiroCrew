@@ -158,6 +158,7 @@ from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.recovery.ladder import InfraError, classify_infra_error
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 logger = logging.getLogger(__name__)
 
@@ -1251,14 +1252,42 @@ class AcpSessionHandle:
         # stopReason, logged only as a closed protocol value (see
         # _DRAIN_CLOSED_STOP_REASONS). The count is bounded by the queue, and
         # the log line is one per turn regardless of how many frames drained.
+        #
+        # ONE class of leftover frame is NOT the abandoned turn's to destroy.
+        # The abandoned turn's own frames are owed to nobody: this method
+        # refuses to start while _turn_done is clear and sets it in its own
+        # finally, so that turn's generator has already exited by the time the
+        # drain runs — dropping them loses nothing a consumer was still waiting
+        # for. A command/config call is different. send_command / compact /
+        # set_config_option never touch _turn_done, so their _wait_for_response
+        # can be IN FLIGHT when the next turn starts, and for a oneshot the
+        # response IS the terminal. Destroying it strands that caller until its
+        # own timeout (60s for send_command, which then reports "" for a call
+        # the backend answered). _awaited_responses names exactly the req_ids
+        # still being waited on, which is the discriminator the dispatch loop
+        # already routes responses on; retain those and let everything else
+        # drain. Re-injected AFTER the loop, never inside it: putting a frame
+        # back into the queue being drained would loop forever (the same reason
+        # _wait_for_response re-injects from its finally).
         _stale_dropped = 0
         _stale_terminals = 0
         _stale_reasons: list[str] = []
+        _stale_owed: list[JsonRpcMessage] = []
         while True:
             try:
                 stale = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if (
+                stale is not None
+                and stale.method is None
+                and stale.id is not None
+                and stale.id in self._awaited_responses
+            ):
+                # A live waiter is inside _wait_for_response for this id. Hand
+                # it back instead of counting it: it is not a lost frame.
+                _stale_owed.append(stale)
+                continue
             if (
                 stale is not None
                 and stale.id is not None
@@ -1280,6 +1309,26 @@ class AcpSessionHandle:
                 _stale_title = (
                     _stale_tc.get("title") if isinstance(_stale_tc, dict) else ""
                 ) or "<unknown tool>"
+                # Hand back everything retained so far BEFORE the await below,
+                # which is the ONE await in this loop. reject_tool writes to the
+                # child's stdin and that write is not bounded short: a backend
+                # that already delivered a command response but has stopped
+                # reading its own stdin applies backpressure that blocks it, and
+                # an owed waiter carries a 60s deadline it would burn while its
+                # frame sat in this list. The await is also the yield point at
+                # which that waiter gets scheduled, so handing the frame back
+                # here is what actually pays it. Cleared so the re-injection
+                # after the loop cannot put the same frame back twice; anything
+                # the waiter did not take is re-read by this loop and retained
+                # again, which terminates because the queue only shrinks.
+                #
+                # This is also why the re-injection after the loop needs no
+                # try/finally: _stale_owed is empty at the only interruption
+                # point, so the CancelledError below cannot strand a retained
+                # frame.
+                for _owed in _stale_owed:
+                    self._queue.put_nowait(_owed)
+                _stale_owed.clear()
                 try:
                     await self.reject_tool(stale.id)
                 except asyncio.CancelledError:
@@ -1361,6 +1410,13 @@ class AcpSessionHandle:
                             _stale_reasons.append("<non-standard>")
                     elif stale.error is not None:
                         _stale_terminals += 1
+
+        for _owed in _stale_owed:
+            # Order-preserving: the frames go back in the order they were read,
+            # and a waiter that has since given up is harmless — the dispatch
+            # loop drops a response with no entry in _awaited_responses, and the
+            # next drain would too.
+            self._queue.put_nowait(_owed)
 
         if _stale_dropped:
             # One line per turn; count + terminal tally only. The stopReason
@@ -4977,7 +5033,11 @@ class AcpSessionHandle:
         be recognised as a duplicate, so it would reintroduce exactly the
         unbounded growth the cap refuses.
         """
-        if not isinstance(child_sid, str) or not child_sid or len(child_sid) > 128:
+        if (
+            not isinstance(child_sid, str)
+            or not child_sid
+            or len(child_sid) > MAX_ACP_SESSION_ID_LEN
+        ):
             return False
         if child_sid == self._session_id:
             # A parent is never its own sub-agent, in the count or in a roster row.

@@ -185,6 +185,20 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
   const fmtElapsed = displayElapsed >= 60 ? `${Math.floor(displayElapsed / 60)}m ${displayElapsed % 60}s` : `${displayElapsed}s`
+  // A running card whose start time was only ASSUMED has no elapsed figure to
+  // show: the agent may have been running long before the frame that minted its
+  // entry, so a number here would be wrong rather than merely imprecise. A
+  // `subagent_done` or snapshot frame supplies real timing and this resolves.
+  // Withheld HERE rather than inside the line above so that line stays exactly
+  // as it was: its `m`/`s` concatenation is frozen i18n debt, and rewriting the
+  // line would move that debt onto a line this change wrote.
+  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed
+  // What the header calls this agent. An entry recovered from an incremental
+  // frame has no agent name, and showing nothing left two such cards reading as
+  // the same "Running Tool" with no way to tell them apart -- the same complaint
+  // the progress row had, so the same fallback answers it. This is not a redesign
+  // of the header, only a refusal to leave the recovered state anonymous.
+  const identity = a.agent || (a.id ? `agent #${a.id.slice(-6)}` : '')
 
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
@@ -221,7 +235,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       >
         <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
         <span className="text-[13px] font-semibold text-text truncate min-w-0" title={i18nT('pages.chat.activityViewer.subagent', { label: statusLabel })}>{statusLabel}</span>
-        {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={a.agent}>{a.agent}</code>}
+        {identity && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={identity}>{identity}</code>}
         {(() => {
           const resolvedKnown = !!a.model
           const display = a.model || a.requestedModel || ''
@@ -260,12 +274,14 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             </code>
           )
         })()}
-        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
+        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{shownElapsed}</span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
-      {/* Input (task) */}
-      {!collapsed && (
+      {/* Input (task). Gated on the task itself: an entry recovered from an
+          incremental frame has none, and the header over an empty block reads as
+          a task that is blank rather than one not yet known. */}
+      {!collapsed && a.task && (
         <div className="px-3 pt-1 pb-2">
           <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
           <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>

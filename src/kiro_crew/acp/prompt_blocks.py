@@ -30,10 +30,23 @@ import base64
 import json
 import logging
 import os
-import re
 from pathlib import Path
 
 from kiro_crew.hooks import is_unc_shape, safe_read_file_bytes, unc_probe_allowed
+
+# The path grammar and the history scrubber live in the LEAF module
+# kiro_crew.image_refs for the same reason the Pillow machinery lives in
+# kiro_crew.imaging: kiro_crew.context needs the scrubber and the
+# agent-sdk-boundary gate forbids application code from importing
+# kiro_crew.acp. The pattern names are re-exported because this module and
+# its tests are where they have always been read from.
+from kiro_crew.image_refs import (  # noqa: F401 -- re-exported, see comment
+    _PATH_RE,
+    _POSIX_PATH_RE,
+    _WINDOWS_PATH_RE,
+    STRIPPED_IMAGE_MARKER,
+    strip_image_refs,
+)
 
 # The budget constants and Pillow machinery live in the LEAF module
 # kiro_crew.imaging (shared with the gateway's tool-result rewrite, which must
@@ -65,68 +78,6 @@ IMAGE_MEDIA_TYPES: dict[str, str] = {
 #: unbounded image becomes an unbounded write. Matches the Slack producer cap so
 #: a file that passed ingestion is not silently dropped here.
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
-
-# Absolute paths ending in a supported raster suffix.
-#
-# Two properties are load-bearing, and BOTH were learned from real defects:
-#
-# 1. The quantifier is non-greedy. A greedy `+` swallows the separator between
-#    two paths, so "/tmp/a.png and /tmp/b.png" matched as ONE span ending at the
-#    final ".png" -- not a file, so every image in a multi-image message was
-#    dropped.
-#
-# 2. The character class holds HORIZONTAL whitespace only, and a lookbehind
-#    forbids starting inside a URL or another path. With `\s` (which includes
-#    "\n") a leading URL chained across the newline into the appended path:
-#    `slack/events.py` emits "<user text>\n<image path>", so
-#
-#        see https://example.com/docs\n/tmp/a.png
-#
-#    matched as "//example.com/docs\n/tmp/a.png" -- one nonexistent path. Any
-#    Slack message containing a link therefore lost its image. The `(?<![\w:/])`
-#    guard rejects the "/" inside "https://" as a start position, which also
-#    stops a URL that merely ends in ".png" from being probed as a local file.
-_SUFFIX_GROUP = r"(?:png|jpg|jpeg|gif|webp|bmp)"
-
-#: Space and tab only -- NEVER `\s`. See note 2 above.
-_PATH_CHARS = r"[\w./@~ \t()\-]"
-
-#: Must not begin mid-token: rules out "https://host/..." and a "/" that is
-#: already part of a longer path.
-_NOT_MID_TOKEN = r"(?<![\w:/])"
-
-_POSIX_PATH_RE = re.compile(
-    rf"{_NOT_MID_TOKEN}(/{_PATH_CHARS}+?\.{_SUFFIX_GROUP})",
-    re.IGNORECASE,
-)
-
-# Windows absolute paths: a drive letter ("C:\...", "C:/...") or a UNC share
-# ("\\\\host\\share\\..."). Temp attachments land in %LOCALAPPDATA%\Temp and
-# dashboard uploads in %USERPROFILE%\.kiro\crew\uploads, so on Windows the
-# POSIX grammar matched NOTHING and every image stayed prose -- then the temp
-# file was deleted at end of turn, leaving a dead reference.
-#
-# Platform-gated rather than merged into one pattern: backslash and ":" are
-# legal in POSIX filenames, so accepting Windows shapes everywhere makes prose
-# like `the path C:\docs\logo.png is an example` a candidate -- and on Linux a
-# file with that literal name can exist in the CWD, which would inline a file
-# the user only mentioned. Matching the host's own grammar keeps that impossible.
-#
-# The UNC alternative accepts both separators after the leading pair
-# (``\\host\share\...`` and ``//host/share/...``): the dashboard composer
-# serializes image attachments with forward slashes (a markdown destination
-# cannot carry raw backslashes -- CommonMark eats ``\`` before punctuation),
-# and Windows file APIs accept the forward-slash form verbatim. The leading
-# pair likewise accepts ``//``; ``(?<![\w:/])`` guards it from matching inside
-# a URL's ``://``.
-_WINDOWS_PATH_CHARS = r"[\w\\/.@ \t()\-]"
-_WINDOWS_PATH_RE = re.compile(
-    rf"(?<![\w:])(?:(?<![\w:/]))((?:[A-Za-z]:[\\/]|[\\/]{{2}}[^\\/:*?\"<>|\r\n]+[\\/])"
-    rf"{_WINDOWS_PATH_CHARS}+?\.{_SUFFIX_GROUP})",
-    re.IGNORECASE,
-)
-
-_PATH_RE = _WINDOWS_PATH_RE if os.name == "nt" else _POSIX_PATH_RE
 
 
 def build_prompt_blocks(
