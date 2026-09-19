@@ -8545,6 +8545,7 @@
       "cycle_reasoning_effort": "推論努力度をサイクル",
       "focus_pending_approval": "保留中の承認にフォーカス",
       "focus_text_input": "テキスト入力にフォーカス",
+      "edit_last_message": "最後のメッセージを編集",
       "group_actions": "アクション",
       "group_chat_navigation": "チャットナビゲーション",
       "group_panel_navigation": "パネルナビゲーション",

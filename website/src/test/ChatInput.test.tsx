@@ -659,6 +659,28 @@ describe('ChatInput', () => {
       expect(onChange).toHaveBeenLastCalledWith('third')
     })
 
+    it('Ctrl+Up on empty input fires the edit-last request instead of recalling (#11402)', () => {
+      const onChange = vi.fn()
+      const onEditLastRequest = vi.fn()
+      renderWithProviders(
+        <ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} onEditLastRequest={onEditLastRequest} />,
+      )
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp', ctrlKey: true })
+      expect(onEditLastRequest).toHaveBeenCalledTimes(1)
+      expect(onChange).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+Up with composer content is unclaimed (no edit request, no recall)', () => {
+      const onChange = vi.fn()
+      const onEditLastRequest = vi.fn()
+      renderWithProviders(
+        <ChatInput {...defaultProps} value="draft text" onChange={onChange} sentMessages={sent} onEditLastRequest={onEditLastRequest} />,
+      )
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp', ctrlKey: true })
+      expect(onEditLastRequest).not.toHaveBeenCalled()
+      expect(onChange).not.toHaveBeenCalled()
+    })
+
     it('repeated ArrowUp walks from newest to oldest', () => {
       const onChange = vi.fn()
       const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} />)

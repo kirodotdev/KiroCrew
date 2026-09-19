@@ -8545,6 +8545,7 @@
       "cycle_reasoning_effort": "循环切换推理强度",
       "focus_pending_approval": "聚焦待处理的审批",
       "focus_text_input": "聚焦文本输入框",
+      "edit_last_message": "编辑最后一条消息",
       "group_actions": "操作",
       "group_chat_navigation": "聊天导航",
       "group_panel_navigation": "面板导航",

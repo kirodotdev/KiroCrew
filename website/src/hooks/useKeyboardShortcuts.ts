@@ -275,6 +275,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'toggle-focus-mode': 'hooks.useKeyboardShortcuts.toggle_focus_mode',
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
+  'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
   'instance-1': 'hooks.useKeyboardShortcuts.switch_to_local',
