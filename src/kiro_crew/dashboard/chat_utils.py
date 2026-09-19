@@ -533,6 +533,57 @@ def _append_compaction_notice(state: DashboardState, slot: _ChatSlot, msg_text: 
     )
 
 
+def _append_recap_notice(state: DashboardState, slot: _ChatSlot, recap_text: str) -> None:
+    """Append a session-recap notice as an assistant status row and broadcast it.
+
+    Mirrors ``_append_compaction_notice``: ``kind="recap"`` in ``meta`` (which
+    survives a history reload) AND the top-level ``extra`` (the live websocket
+    path), so the dashboard renders it as a muted system notice rather than a
+    real assistant turn, and ``deriveFollowUpOptions`` skips over it the same
+    way it skips compaction notices.
+
+    Single chokepoint for the recap surface — the event is backend-neutral
+    (EVENT_SESSION_RECAP; KAS is the first producer) and every future producer
+    must route through here. Defense-in-depth: the mapping layer already
+    redacts, but this chokepoint posts to an external surface, so the
+    redaction is reapplied — both passes are idempotent.
+    """
+    recap_text, _ = redact_credentials(recap_text)
+    recap_text, _ = redact_exfiltration_urls(recap_text)
+    recap_text = recap_text.strip()
+    if not recap_text:
+        return
+    # Backend-composed English line, matching the compaction-notice family
+    # (those are backend strings too) — no per-kind frontend label surface.
+    # No leading glyph: ``kind="recap"`` renders through NoticeCard, which
+    # paints its own Lucide icon, so an emoji here would sit beside it as a
+    # second status indicator (AUTOSDE no-emoji-as-icons). The "session so
+    # far" anchor is temporal: on the drain-capture path this row renders
+    # AFTER the user's new prompt, and an unanchored "Recap: ... Next: X"
+    # reads as the agent's plan for THAT prompt.
+    msg_text = f"Recap — session so far: {recap_text}"
+    # Same-text dedupe against the MOST RECENT recap row, not the transcript
+    # tail: on the drain-capture path the user's new prompt row is already
+    # appended when the recap arrives, so the previous recap is never the
+    # tail. A backend that re-emits an unchanged recap on every resume must
+    # not stack identical rows. DIFFERENT text still appends — newer
+    # information wins; full supersede-in-place needs a row-replacement
+    # primitive no notice kind has today (compaction rows accumulate the
+    # same way).
+    for prior in reversed(slot.messages):
+        if not (isinstance(prior, dict) and isinstance(prior.get("meta"), dict)):
+            continue
+        if prior["meta"].get("kind") != "recap":
+            continue
+        if prior.get("content") == msg_text:
+            return
+        break
+    meta = {"kind": "recap"}
+    append_and_surface(
+        state, slot, "assistant", msg_text, "msg msg-a", meta=meta, extra={"kind": "recap"}
+    )
+
+
 def _broadcast_compaction_result(
     state: DashboardState, slot: _ChatSlot, event: "LLMEvent"
 ) -> str | None:
