@@ -27,6 +27,18 @@ bounded ``keepalive_timeout`` so idle persistent connections are also reaped
 does not cover). Neither knob weakens ``client_max_size`` or the bind-address
 logic. Deployments exposed beyond loopback should still front the gateway with
 a hardened reverse proxy; this guard is the in-process backstop.
+
+The runner also disables aiohttp's server-side request-body decompression
+(``auto_decompress=False``). aiohttp's parser decompresses a
+``Content-Encoding``-encoded request body SYNCHRONOUSLY on the event loop
+(``DeflateBuffer.feed_data`` -> ``decompress_sync``), so a single
+highly-compressible body can wedge the loop long enough to trip the loop-stall
+watchdog and take the whole gateway down (event-loop starvation, CWE-400).
+No Kiro Crew client sends compressed request bodies, so the code path is pure
+attack surface. With decompression off, such a body would reach handlers as
+raw bytes and fail JSON parsing with a confusing 400 — the
+:func:`reject_compressed_body_middleware` below turns that into an explicit
+415 instead.
 """
 
 from __future__ import annotations
@@ -35,7 +47,7 @@ import asyncio
 import logging
 from typing import Any
 
-from aiohttp import web
+from aiohttp import hdrs, web
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +61,53 @@ HEADER_READ_TIMEOUT = 30.0
 # resource-exhaustion vector; 75s matches common reverse-proxy defaults and is
 # transparent to HTTP clients (they simply reconnect).
 KEEPALIVE_TIMEOUT = 75.0
+
+
+@web.middleware  # type: ignore[misc]
+async def reject_compressed_body_middleware(
+    request: web.Request,
+    handler: object,
+) -> web.StreamResponse:
+    """Refuse requests that carry a compressed (``Content-Encoding``) body.
+
+    The hardened runner runs with ``auto_decompress=False`` (see module
+    docstring), so a compressed body is never inflated server-side — it would
+    reach the handler as raw bytes and fail there with an opaque 400. This
+    middleware gives the sender the honest contract instead: an explicit 415
+    before any handler touches the body. Header-only inspection, loop-safe.
+
+    ``identity`` is a no-op encoding and passes through. Requests without a
+    body (e.g. a stray header on a GET) also pass — there is nothing to
+    decompress, so rejecting them would only break odd-but-harmless clients.
+    """
+    encoding = request.headers.get(hdrs.CONTENT_ENCODING, "").strip().lower()
+    if encoding and encoding != "identity" and request.can_read_body:
+        # Identify the sender: the one production stall this guards against
+        # came from an unrecorded client (no access log on the request path),
+        # so the rejection itself is the detector for who sends compressed
+        # bodies. User-Agent is attacker-controlled prose — logged for triage,
+        # never trusted.
+        logger.warning(
+            "rejected compressed request body: peer=%s method=%s path=%s "
+            "content_encoding=%s user_agent=%r",
+            request.remote,
+            request.method,
+            request.rel_url.path,
+            encoding,
+            request.headers.get(hdrs.USER_AGENT, ""),
+        )
+        return web.json_response(
+            {
+                "code": "unsupported_content_encoding",
+                "error": "unsupported_content_encoding",
+                "message": (
+                    f"Compressed request bodies are not supported "
+                    f"(Content-Encoding: {encoding}). Send the body uncompressed."
+                ),
+            },
+            status=415,
+        )
+    return await handler(request)  # type: ignore[operator]
 
 
 class SlowlorisRequestHandler(web.RequestHandler):
@@ -171,10 +230,14 @@ class SlowlorisServer(web.Server):
             )
         except TypeError:
             # Failsafe mirrors web.Server.__call__: strip custom handler_args.
+            # ``auto_decompress`` is deliberately KEPT: it is the security knob
+            # that prevents on-loop request-body decompression (see module
+            # docstring). If a future aiohttp drops the kwarg, this re-raises
+            # loudly instead of silently re-enabling the wedge.
             kwargs = {
                 k: v
                 for k, v in self._kwargs.items()
-                if k in ("debug", "access_log_class")
+                if k in ("debug", "access_log_class", "auto_decompress")
             }
             return SlowlorisRequestHandler(
                 self,
@@ -200,6 +263,15 @@ class SlowlorisAppRunner(web.AppRunner):
         # keepalive_timeout is forwarded to RequestHandler via the runner's
         # **kwargs; only set it if the caller has not overridden it.
         kwargs.setdefault("keepalive_timeout", keepalive_timeout)
+        # Never inflate request bodies on the event loop: aiohttp's parser
+        # decompresses Content-Encoding bodies synchronously in-loop
+        # (DeflateBuffer.feed_data -> decompress_sync), which a single
+        # compression-bomb request can turn into a multi-second loop stall.
+        # With this off the DeflateBuffer is never constructed; the paired
+        # reject_compressed_body_middleware returns an explicit 415 for such
+        # requests. Not overridable: a caller passing True would re-enable the
+        # exact in-loop decompression this runner exists to prevent.
+        kwargs["auto_decompress"] = False
         super().__init__(app, **kwargs)
         self._header_read_timeout = header_read_timeout
 

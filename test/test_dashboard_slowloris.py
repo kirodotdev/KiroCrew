@@ -27,6 +27,7 @@ from kiro_crew.dashboard.slowloris import (
     SlowlorisRequestHandler,
     SlowlorisServer,
     build_hardened_runner,
+    reject_compressed_body_middleware,
 )
 
 
@@ -214,3 +215,153 @@ async def test_connection_made_non_oserror_still_escapes() -> None:
             handler.connection_made(_Boom())
     finally:
         await runner.cleanup()
+
+
+# ── Request-body decompression hardening (event-loop wedge, CWE-400) ──────────
+#
+# aiohttp's parser inflates a Content-Encoding request body synchronously on
+# the event loop (DeflateBuffer.feed_data -> decompress_sync); one
+# compression-bomb request can stall the loop past the loop-stall watchdog and
+# kill the gateway. The hardened runner therefore runs with
+# auto_decompress=False, and the paired middleware answers such requests with
+# an explicit 415.
+
+
+def _gzip_body() -> tuple[bytes, int]:
+    """A small gzip payload plus its decompressed length (they must differ)."""
+    import gzip
+
+    raw = b"x" * 4096
+    compressed = gzip.compress(raw)
+    assert len(compressed) != len(raw)
+    return compressed, len(raw)
+
+
+@pytest.mark.asyncio
+async def test_hardened_runner_disables_auto_decompress() -> None:
+    """The runner forces auto_decompress off and the handler protocol factory
+    receives it — including through the TypeError failsafe."""
+    runner = build_hardened_runner(await _make_app())
+    assert runner._kwargs.get("auto_decompress") is False
+    # The failsafe kwarg strip must keep the security knob rather than
+    # silently re-enabling decompression.
+    await runner.setup()
+    try:
+        server = runner.server
+        assert isinstance(server, SlowlorisServer)
+        kept = {k for k in server._kwargs if k in ("debug", "access_log_class", "auto_decompress")}
+        assert "auto_decompress" in kept
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_compressed_body_is_not_inflated_server_side() -> None:
+    """With the hardened runner, a gzip body reaches the handler as raw bytes.
+
+    This is the structural proof that no DeflateBuffer ran on the loop: were
+    auto_decompress still on, the handler would see the decompressed length.
+    """
+    compressed, raw_len = _gzip_body()
+    app = web.Application()
+    seen: dict[str, int] = {}
+
+    async def _echo_len(request: web.Request) -> web.Response:
+        seen["len"] = len(await request.read())
+        return web.Response(text="ok")
+
+    app.router.add_post("/", _echo_len)
+    runner = build_hardened_runner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    host, port = runner.addresses[0][:2]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"http://{host}:{port}/",
+                data=compressed,
+                headers={"Content-Encoding": "gzip"},
+                # The client must not renegotiate the body we hand it.
+                compress=False,
+            ) as resp:
+                assert resp.status == 200
+        assert seen["len"] == len(compressed)
+        assert seen["len"] != raw_len
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_middleware_rejects_compressed_body_with_415(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Content-Encoding body gets an explicit 415 before any handler runs."""
+    compressed, _ = _gzip_body()
+    app = web.Application(middlewares=[reject_compressed_body_middleware])
+    handled: list[str] = []
+
+    async def _handler(_request: web.Request) -> web.Response:
+        handled.append("ran")
+        return web.Response(text="ok")
+
+    app.router.add_post("/", _handler)
+    runner = build_hardened_runner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    host, port = runner.addresses[0][:2]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"http://{host}:{port}/",
+                data=compressed,
+                headers={"Content-Encoding": "gzip"},
+                compress=False,
+            ) as resp:
+                assert resp.status == 415
+                body = await resp.json()
+                assert body["error"] == "unsupported_content_encoding"
+            assert handled == []
+            # The rejection identifies the sender (peer/method/path/encoding)
+            # so an unexpected legitimate client is diagnosable from logs.
+            reject_logs = [
+                r for r in caplog.records if "rejected compressed request body" in r.getMessage()
+            ]
+            assert len(reject_logs) == 1
+            message = reject_logs[0].getMessage()
+            assert "peer=127.0.0.1" in message
+            assert "method=POST" in message
+            assert "path=/" in message
+            assert "content_encoding=gzip" in message
+            # Plain requests pass through untouched.
+            async with session.post(f"http://{host}:{port}/", data=b"plain") as resp2:
+                assert resp2.status == 200
+            assert handled == ["ran"]
+            # identity is a no-op encoding and must not be rejected.
+            async with session.post(
+                f"http://{host}:{port}/",
+                data=b"plain",
+                headers={"Content-Encoding": "identity"},
+            ) as resp3:
+                assert resp3.status == 200
+            # A stray header on a body-less request is harmless: nothing to
+            # decompress, so it passes.
+            async with session.get(
+                f"http://{host}:{port}/x",
+                headers={"Content-Encoding": "gzip"},
+            ) as resp4:
+                assert resp4.status == 404
+    finally:
+        await runner.cleanup()
+
+
+def test_start_paths_use_compressed_body_middleware() -> None:
+    """Both server start paths wire the 415 middleware into their app."""
+    assert dashboard_server.reject_compressed_body_middleware is reject_compressed_body_middleware
+    import inspect
+
+    src = inspect.getsource(dashboard_server)
+    # Three occurrences: the module import plus one per middleware list
+    # (dashboard + headless API server).
+    assert src.count("reject_compressed_body_middleware,") == 3

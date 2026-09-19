@@ -149,7 +149,10 @@ from kiro_crew.dashboard.port_reclaim import (
     reclaim_stale_gateway_port,
 )
 from kiro_crew.dashboard.routes import register_all
-from kiro_crew.dashboard.slowloris import build_hardened_runner
+from kiro_crew.dashboard.slowloris import (
+    build_hardened_runner,
+    reject_compressed_body_middleware,
+)
 from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
     _cookie_port_from_host,
@@ -4619,6 +4622,11 @@ async def start_dashboard(
         deny_audit_middleware,
         host_canonical_redirect,
         host_validation_middleware,
+        # Compressed request bodies are refused outright (415): the hardened
+        # runner runs with auto_decompress=False (see dashboard.slowloris), so
+        # they could never be served — this gives senders the honest error
+        # before any handler reads raw compressed bytes.
+        reject_compressed_body_middleware,
         no_cache_middleware,
         csrf_middleware,
         token_auth_middleware(
@@ -5466,7 +5474,7 @@ async def start_api_server(
     await warm_sel_singleton()
 
     # Explicit ordering mirrors start_dashboard: latency → deny-audit → host →
-    # csrf → token → audit.
+    # 415-compressed-body → csrf → token → audit.
     app.middlewares[:] = [
         # Outermost: privacy-safe, bounded-cardinality per-route latency (rec #1).
         # The MCP routes are registered AFTER this assignment, so the middleware
@@ -5477,6 +5485,9 @@ async def start_api_server(
         # POSITION here, not by each deny site remembering to.
         deny_audit_middleware,
         host_validation_middleware,
+        # 415 for compressed request bodies — same rationale as start_dashboard
+        # (the hardened runner never decompresses; see dashboard.slowloris).
+        reject_compressed_body_middleware,
         csrf_middleware,
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
