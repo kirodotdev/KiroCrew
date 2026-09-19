@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
+from kiro_crew.cron_history import _SUMMARY_CAP, CronHistoryStore, CronRunRecord
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -62,12 +62,20 @@ async def test_append_writes_job_file_and_index(store: CronHistoryStore, tmp_pat
 
 @pytest.mark.asyncio
 async def test_append_caps_summary_and_trace(store: CronHistoryStore, tmp_path: Path) -> None:
-    rec = _record(summary="x" * 500, trace="y" * 60_000)
+    rec = _record(summary="x" * 900, trace="y" * 60_000)
     await store.append(rec)
 
     job_file = tmp_path / "cron-history" / "job1.jsonl"
     data = json.loads(job_file.read_text(encoding="utf-8").strip())
-    assert len(data["summary"]) == 200
+    # An EXACT length, not a bound: a cut summary spends the whole budget, so
+    # anything shorter means a cap moved or the split lost characters.
+    assert len(data["summary"]) == _SUMMARY_CAP
+    # Head, marker on its own line, then the kept end — see truncate_summary
+    # and test_cron_history_summary_truncation.py for what survives a cut.
+    head, marker, kept = data["summary"].split("\n")
+    assert marker == "..."
+    assert set(head) == set(kept) == {"x"}
+    assert len(head) + len(kept) + len(marker) + 2 == _SUMMARY_CAP
     assert data["trace"].endswith("...[truncated]")
 
 

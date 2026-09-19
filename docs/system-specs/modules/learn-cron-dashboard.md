@@ -782,6 +782,44 @@ shape they were written with and the next trim applies the new retention.
 attribute the store compares against is in bytes. The directory decision above is
 NOT re-run — usability is a property of the filesystem, not of these caps.
 
+**The summary cut keeps the facts (`truncate_summary`).** `append()` is the ONE
+place a summary is truncated: `cron.py`'s run recorder used to slice its own
+`[:200]` on the way in, which cut before the configured cap could apply and, in
+the incident on #2836, before the pull-request URL a run had just produced — so
+the next session re-derived the same pull request half an hour later. The summary
+is the only short, INDEXED record of a run (the trace is capped separately at 50
+KB and is not in the index), so what a cut must preserve is what makes the record
+findable. Over the cap, the result keeps as much of the head as fits, one `...`
+marker for the removed middle, every URL that fits — whole, since half a link is
+not findable — and the end of the final non-blank line, where a run states how it
+finished. A URL is written once — the head stops before any copy the kept URLs or
+the outcome fragment already carry — the head is never cut through a URL, the result
+never exceeds the cap (so the function is a fixed point on its own output), and input
+at or under the cap is returned untouched.
+
+Two rules protect a link against the machinery around it. Only a trailing `.` or `,`
+is treated as prose: an address really can end in `!` (`…/wiki/Yahoo!`) or `?`, and a
+wider set would rewrite a live link into a dead one. And the `...` marker is dropped
+when charging its four characters would leave the result with no URL at all — a link
+that fits the cap on its own must reach the index, and "something was removed" is
+worth less than the address it would evict. Whenever a link fits beside the marker,
+the cut stays marked. Inside the cap, URLs are reserved BEFORE the outcome fragment
+is sized: a fragment allowed half the cap first can consume the room a shorter link
+needed, and a link is the one fact the fragment cannot stand in for. They are
+reserved in order of each URL's LAST appearance, since a link named again in the
+closing line is the run's freshest fact.
+
+What `cron_summary_cap` decides is ROOM: the cap is spent on links before prose,
+newest first, so a single link shorter than the cap always survives while a run that
+produced several keeps only as many as the aggregate budget holds (a link longer than
+the cap is dropped rather than halved, and a cap at or under the marker's own length
+keeps no structure at all).
+The default of 200 therefore holds a summary's outcome line plus the newest links
+that fit, dropping the oldest link of a run that produced several and the narration
+around them; an operator who wants those kept raises the knob — at 500 a realistic
+four-link sweep summary is stored whole.
+`test_cron_history_summary_truncation.py` pins both the default and this paragraph.
+
 Only an unconditional security block counts. A governance `TOOL_DENY` and an
 unattended-approval timeout also arrive unapproved, but they describe the policy
 state or an absent approver rather than a defect in the job — the same reason the

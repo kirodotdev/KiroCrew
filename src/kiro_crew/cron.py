@@ -5050,7 +5050,11 @@ class CronService:
                         finished_at=finished_at,
                         duration_ms=int((finished_at - exec_started_at) * 1000),
                         status=status,
-                        summary=(run_result or job.last_error or "")[:200],
+                        # Uncut on purpose: CronHistoryStore.append is the one
+                        # truncation site, applying the configured cap through
+                        # truncate_summary, which keeps URLs and the outcome
+                        # line. A slice here would cut ahead of both.
+                        summary=run_result or job.last_error or "",
                         trace=run_result or "",
                         error=job.last_error or "",
                     )

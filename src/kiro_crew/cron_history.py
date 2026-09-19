@@ -25,6 +25,7 @@ import errno
 import json
 import logging
 import os
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -36,6 +37,12 @@ from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
 
+#: Default summary cap. What it decides is ROOM: ``truncate_summary`` spends that
+#: room on links before prose, newest first, so the default holds a summary's
+#: outcome line plus as many whole links as the budget allows — one link always,
+#: several only while the budget lasts. An operator who wants a run's NARRATION
+#: kept, or every link of a run that produced many, raises
+#: ``cron_history.cron_summary_cap`` — see the cap tests for what that buys.
 _SUMMARY_CAP = 200
 _TRACE_CAP = 50 * 1024  # 50KB
 _MAX_RECORDS_PER_JOB = 100
@@ -44,6 +51,261 @@ _MAX_INDEX_RECORDS = 2000
 #: Errnos that mean "this store is refused", not "this attempt failed". Only
 #: these disable history for the process's lifetime — see ``_degrade``.
 _DENIAL_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS})
+
+
+#: A URL run, stopped only at whitespace and at the characters that cannot
+#: appear in one. Which trailing characters actually belong to the address is
+#: decided by ``_trim_url``, because a bracket can be either. The scheme is
+#: matched case-insensitively: a scheme is case-insensitive per RFC 3986, and a
+#: summary that shouts ``HTTPS://…`` otherwise holds a link this treats as prose
+#: and is free to cut in half.
+_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+
+#: Trailing characters that close a sentence rather than an address. Only these
+#: two: real addresses end in ``!`` (``…/wiki/Yahoo!``), in ``?`` (an empty
+#: query), and in ``:`` or ``;`` inside a path segment, so trimming those
+#: rewrites a live link into a dead one — the opposite of the point.
+_SENTENCE_ENDERS = ".,"
+
+#: Closing bracket -> its opener, for deciding whether the bracket is the URL's
+#: own or the prose's.
+_CLOSERS = {")": "(", "]": "["}
+
+#: Marks the removed middle. One marker, however much was removed.
+_CUT_MARKER = "..."
+
+
+def truncate_summary(text: str, cap: int) -> str:
+    """Cut ``text`` to ``cap`` characters without dropping what makes it findable.
+
+    The summary is the only SHORT, INDEXED record of a cron run — the trace is
+    capped separately (50 KB) and is not in the index — so the summary is what a
+    later session searches. A blind ``text[:cap]`` keeps a summary's opening and
+    throws away its conclusion, which is exactly where the outcome and the URL of
+    whatever the run produced both sit: a run that opens a pull request records
+    the link at the end, so a cut that drops the end leaves nothing findable and
+    the next session re-derives the same pull request.
+
+    What survives, in this order:
+
+    1. as much of the head as still fits, cut BEFORE a URL rather than through
+       one;
+    2. one ``...`` marker standing for everything removed, dropped only when
+       charging it would leave the result with no URL at all;
+    3. as many URLs as the remaining budget holds, newest first and each one
+       whole — half a link is not findable, so a URL is kept entire or not at
+       all, with only the prose around it trimmed off;
+    4. the end of the final non-blank line, where a run states how it finished.
+
+    A URL is written once: the head stops before any copy the kept URLs or the
+    outcome fragment already carry, so one fact never spends the budget twice.
+    Input at or under the cap is returned unchanged, and the result never
+    exceeds the cap, which makes the function a fixed point: applying it to its
+    own output returns that output. When the URLs alone cannot fit, the ones
+    that do are kept newest first, since the link a run has just produced is
+    the one a later run needs.
+    """
+    if cap <= len(_CUT_MARKER):
+        # Nothing structured fits in a budget this small; the cap still holds.
+        return text[: max(cap, 0)]
+    if len(text) <= cap:
+        return text
+
+    # URLs claim room FIRST, newest first, whole or not at all. Sizing the
+    # outcome fragment before them lets half the cap go to prose and drop a link
+    # that would have fitted, and a link is the fact the fragment cannot replace.
+    #
+    # "Newest" is a URL's LAST appearance, not its first: a link mentioned early
+    # and again in the closing line is the run's freshest fact, and ranking it by
+    # the early mention hands its room to a link the run cared about less.
+    #
+    # A separator is charged only when something already precedes the link, so a
+    # URL that exactly fills the remaining room is kept rather than dropped for a
+    # newline it does not need.
+    candidates = _newest_first(text)
+    links, used = _fit_links(candidates, cap - len(_CUT_MARKER) - 1)
+
+    # The marker is charged first, EXCEPT when charging it would leave the record
+    # with no link at all: a URL that fits the cap on its own must reach the
+    # index, and "something was removed" is worth less than the address it would
+    # evict. Only that case drops the marker — whenever a link already fits
+    # beside it, the cut stays marked.
+    marked = True
+    if not links:
+        wider, wider_used = _fit_links(candidates, cap)
+        if wider:
+            links, used, marked = wider, wider_used, False
+
+    # The end of the final non-blank line gets what the links left, and never
+    # more than half the cap, so a single-line summary cannot spend the whole
+    # budget on its own tail.
+    spent = used + (len(_CUT_MARKER) + 1 if marked else 0)
+    tail = _outcome_tail(text, min(cap // 2, cap - spent - (1 if links else 0)))
+
+    # A link the surviving fragment already carries needs no line of its own.
+    # Membership is decided against the URLs the fragment HOLDS, never by
+    # substring: one link's whole address is often a prefix of another's
+    # (``…/pull/28`` inside ``…/pull/2836``), and a substring test drops the
+    # shorter one as already present when it is nowhere in the result. Dropping
+    # a link here only shortens the result, so the cap still holds.
+    if tail:
+        tail_urls = set(_unique_urls(tail))
+        links = [u for u in links if u not in tail_urls]
+
+    body = "\n".join([*links, tail] if tail else links)
+    # One newline for the marker's own line, one for the body's first line.
+    marker_cost = len(_CUT_MARKER) + (1 if body else 0) if marked else 0
+    head_room = cap - len(body) - marker_cost - 1
+    head = _head_before(text, head_room).rstrip() if head_room > 0 else ""
+
+    # One rule for where a URL lands: the body holds it, and the head stops at
+    # the first one it reaches. A second copy buys nothing and spends the budget
+    # twice on one fact. There is no case to distinguish: a URL whole inside the
+    # head is always one the body carries too, because the head budget is the
+    # link budget minus one, so a URL the links step had no room for cannot fit
+    # in the head either. Trimming only shortens the head, so the cap holds.
+    if head:
+        head_urls = _url_spans(head)
+        if head_urls:
+            head = head[: head_urls[0][0]].rstrip()
+
+    # The marker gets its own line so it never fuses onto the end of a kept
+    # URL — "<url>..." reads as a longer, dead link.
+    parts = ([head] if head else []) + ([_CUT_MARKER] if marked else []) + (
+        [body] if body else []
+    )
+    return "\n".join(parts)
+
+
+def _fit_links(candidates: list[str], budget: int) -> tuple[list[str], int]:
+    """As many whole URLs as ``budget`` holds, in the order given, plus the spend.
+
+    A separator is charged only when something already precedes the link, so a URL
+    that exactly fills the budget is kept rather than dropped for a newline it does
+    not need. The returned spend is the length of the joined result.
+    """
+    kept: list[str] = []
+    used = 0
+    for url in candidates:
+        need = len(url) + (1 if kept else 0)
+        if used + need <= budget:
+            kept.insert(0, url)
+            used += need
+    return kept, used
+
+
+def _url_spans(text: str) -> list[tuple[int, int, str]]:
+    """``(start, end, url)`` for every URL in ``text``, prose trimmed off.
+
+    The positions are what lets a caller compare URLS rather than TEXT: a link
+    whose whole address is a prefix of another's is a distinct URL, and only a
+    span tells them apart.
+    """
+    spans: list[tuple[int, int, str]] = []
+    for match in _URL_RE.finditer(text):
+        # Never empty: the pattern needs a scheme plus one character, and
+        # _trim_url stops at the scheme, so the shortest survivor is "http://a".
+        url = _trim_url(match.group(0))
+        spans.append((match.start(), match.start() + len(url), url))
+    return spans
+
+
+def _unique_urls(text: str) -> list[str]:
+    """URLs in order of appearance, first occurrence only, prose trimmed off."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for _start, _end, url in _url_spans(text):
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _newest_first(text: str) -> list[str]:
+    """Unique URLs, the one appearing LATEST first.
+
+    A URL's freshness is where it appears LAST: a link named in the opening
+    sentence and again in the closing line is the run's newest fact, and ranking
+    it by the opening mention gives its room away.
+    """
+    last_seen: dict[str, int] = {}
+    for start, _end, url in _url_spans(text):
+        last_seen[url] = start
+    return sorted(last_seen, key=lambda url: last_seen[url], reverse=True)
+
+
+def _trim_url(url: str) -> str:
+    """Drop the trailing characters that close the prose, not the address.
+
+    A link written mid-sentence collects the full stop after it, and a link in
+    parentheses collects the closing one. A bracket is only prose when it is
+    UNMATCHED inside the run — ``.../Foo_(bar)`` closes its own group and keeps
+    it, while ``(https://host/p)`` does not and loses it. Trimming a balanced
+    bracket stores a dead link, which is the thing this function exists to
+    avoid.
+
+    Only a TRAILING run is considered, so punctuation inside an address is never
+    touched: ``…/a.b,c:d/`` survives whole. And only ``.`` and ``,`` count as
+    prose there, because an address really can end in ``!`` or ``?``; a wider set
+    turns ``…/wiki/Yahoo!`` into a dead link, which is the failure this function
+    exists to prevent.
+
+    The scan is bounded by the scheme rather than by emptiness: ``https://`` is
+    never trimmable, so a bare ``http://a`` is returned as it stands and the
+    string can never be run down to nothing.
+    """
+    while len(url) > len("https://"):
+        last = url[-1]
+        if last in _SENTENCE_ENDERS:
+            url = url[:-1]
+            continue
+        opener = _CLOSERS.get(last)
+        if opener is not None and url.count(opener) < url.count(last):
+            url = url[:-1]
+            continue
+        break
+    return url
+
+
+def _outcome_tail(text: str, limit: int) -> str:
+    """End of the final non-blank line, at most ``limit`` characters.
+
+    Clipped from the LEFT, so the line's conclusion survives, and never clipped
+    into the middle of a URL: a partial link is noise, and the whole one is
+    restated by ``truncate_summary`` anyway.
+    """
+    if limit <= 0:
+        return ""
+    line = ""
+    for candidate in reversed(text.splitlines()):
+        if candidate.strip():
+            line = candidate.strip()
+            break
+    if len(line) <= limit:
+        return line
+    start = len(line) - limit
+    for match in _URL_RE.finditer(line):
+        if match.start() < start < match.end():
+            start = match.end()
+            break
+    return line[start:]
+
+
+def _head_before(text: str, limit: int) -> str:
+    """Opening of ``text``, at most ``limit`` characters, never splitting a URL.
+
+    The spans are measured on the WHOLE text, not on the slice: a slice can end
+    inside ``https://`` itself, where the pattern has nothing to match yet, and
+    a scan of the slice would report no URL and leave a bare ``a http`` behind.
+    """
+    end = limit
+    for match in _URL_RE.finditer(text):
+        if match.start() >= end:
+            break
+        if match.start() < end < match.end():
+            end = match.start()
+            break
+    return text[:end]
 
 
 @dataclass
@@ -252,7 +514,18 @@ class CronHistoryStore:
     async def append(self, record: CronRunRecord) -> None:
         """Write record to job file and index."""
         # Cap fields
-        record.summary = record.summary[:self._summary_cap]
+        # The ONE truncation site for a summary: cron.py's run, timeout and
+        # cancel recorders all hand the whole text over uncut, so the
+        # configured cap and the keep-the-facts rule apply once, here. A
+        # caller that pre-slices defeats both.
+        #
+        # One boundary this does not reach: a command cron's failure path caps
+        # the JOB FIELD it writes (``job.last_error = err_str[:200]`` in
+        # slack/gateway.py), which is a registry-size decision about crons.json,
+        # not a decision about this record. The recorder still passes that field
+        # over whole, so such a summary is simply as long as the field it came
+        # from. Lifting that cap belongs to whoever owns the registry's size.
+        record.summary = truncate_summary(record.summary, self._summary_cap)
         if len(record.trace) > self._trace_cap:
             record.trace = record.trace[:self._trace_cap] + "\n...[truncated]"
 
