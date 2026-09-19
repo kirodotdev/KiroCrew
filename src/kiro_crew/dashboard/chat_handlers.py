@@ -155,6 +155,7 @@ from kiro_crew.dashboard.state import (
     is_stop_event_row,
     is_turn_interrupted,
     parse_cls_meta,
+    record_project,
     request_slot_origin,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
@@ -3139,7 +3140,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # temporarily stale; existing named slots with an explicit project keep
         # it and continue to use the project endpoint for scope changes.
         if folder_project and folder_applied and not slot.project:
-            slot.project = folder_project
+            record_project(slot, folder_project)
         # Default project to workspace directory so file search works out of the box
         if not slot.project:
             cfg_proj = cfg.dashboard.default_project if cfg else ""
@@ -3159,7 +3160,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 cfg_proj = resolved if eligible else ""
             else:
                 cfg_proj = ""
-            slot.project = cfg_proj or default_project_dir(workspace)
+            record_project(slot, cfg_proj or default_project_dir(workspace))
         if is_new_slot and cfg is not None and not instance_id:
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)
@@ -6788,6 +6789,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # silently erase an action that happened after the agent pick).
         pre_await_workspace = slot.workspace
         pre_await_project = slot.project
+        pre_await_project_cleared = bool(getattr(slot, "project_cleared", False))
         pre_await_memory_store = slot.memory_store
 
         # Commit the agent BEFORE any await in this section: a message send
@@ -7011,7 +7013,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             slot.workspace = _CommitToken(new_workspace)
             committed_workspace = slot.workspace
         if slot.project == pre_await_project:
-            slot.project = _CommitToken(new_project)
+            record_project(slot, _CommitToken(new_project))
             committed_project = slot.project
         # The store is the THIRD field of that binding, and leaving it behind
         # splits the slot in half: the turn resolves its store fresh from the new
@@ -7049,6 +7051,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
                 slot.project = pre_await_project
+                slot.project_cleared = pre_await_project_cleared
             if committed_memory_store is not None and slot.memory_store is committed_memory_store:
                 slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's
@@ -9185,6 +9188,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             )
         prior_workspace = slot.workspace
         prior_project = slot.project
+        prior_project_cleared = bool(getattr(slot, "project_cleared", False))
         # Commit as identity tokens (the agent handler's _CommitToken
         # precedent): ``slot.project`` has lock-free writers -- the in-turn
         # set_project directive lands during the reset await -- so a rollback
@@ -9193,7 +9197,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         committed_workspace = _CommitToken(ws_name)
         committed_project = _CommitToken(default_project_dir(ws_name))
         slot.workspace = committed_workspace
-        slot.project = committed_project
+        record_project(slot, committed_project)
         logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
 
         def _rollback() -> None:
@@ -9211,6 +9215,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 slot.workspace = prior_workspace
             if slot.project is committed_project:
                 slot.project = prior_project
+                slot.project_cleared = prior_project_cleared
             slot._dirty = True
 
         # skip_if_busy: message dispatch does not take slot._lock, so a send
@@ -9407,6 +9412,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
         old_project = slot.project
+        old_project_cleared = bool(getattr(slot, "project_cleared", False))
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
         # writes this field without the lock, and may legitimately write the
@@ -9414,7 +9420,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # cannot tell such a same-text write from this handler's own commit and
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
-        slot.project = committed_project
+        record_project(slot, committed_project)
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),
@@ -9451,6 +9457,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 # same 409 the sibling switch handlers use.
                 if slot.project is committed_project:
                     slot.project = old_project
+                    slot.project_cleared = old_project_cleared
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -10418,6 +10425,10 @@ def _hydrate_slot_from_history(
         slot.workspace = meta["workspace"]
     if meta.get("project"):
         slot.project = meta["project"]
+    if meta.get("project_cleared") is True:
+        # The guard above tests the project for TRUTH and a cleared slot persists an EMPTY
+        # one, so the marker needs restoring on its own or the resume reads as never-scoped.
+        slot.project_cleared = True
     if meta.get("channel_folder_filed"):
         # Resuming from History must carry the filing marker forward, or the
         # next save of this slot drops it and the conversation is re-filed.

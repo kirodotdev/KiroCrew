@@ -934,7 +934,13 @@ def taskrunner_env(monkeypatch, tmp_path):
     """Replace every collaborator ``_run_task`` constructs, and expose the spies."""
     from kiro_crew.config import KiroCrewConfig
 
-    state: dict = {"vector": None, "sessions": None, "runner_kwargs": None, "observed": []}
+    state: dict = {
+        "vector": None,
+        "sessions": None,
+        "runner_kwargs": None,
+        "observed": [],
+        "cwd_keys": [],
+    }
 
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cls()))
     monkeypatch.setattr(cli_server, "KiroCrewConfig", KiroCrewConfig)
@@ -962,7 +968,12 @@ def taskrunner_env(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli_server, "register_skill_read_observer", lambda ctx: state["observed"].append(ctx)
     )
-    monkeypatch.setattr(cli_server, "_session_work_dir", lambda key: tmp_path)
+
+    def _session_cwd(key: str) -> Path:
+        state["cwd_keys"].append(key)
+        return tmp_path
+
+    monkeypatch.setattr(cli_server, "session_default_cwd", _session_cwd)
     monkeypatch.setattr(cli_server, "make_sync_embed_fn", lambda: (lambda text: [0.0]))
     monkeypatch.setattr(cli_server, "model_file_present", lambda: True)
     monkeypatch.setattr(cli_server, "store_embedding_space_is_stale", lambda vs: False)
@@ -1011,6 +1022,10 @@ class TestRunTask:
         assert kw["auto_test"] is False  # --no-test inverts into auto_test
         assert kw["fresh"] is False
         assert kw["global_timeout"] == 90.0
+        # The runner binds the PER-SESSION default, asked for under the taskrunner's own
+        # key -- a shared workspace default would answer a directory no provider binds.
+        assert kw["work_dir"] == tmp_path
+        assert taskrunner_env["cwd_keys"] == ["taskrunner:main"]
         assert taskrunner_env["ran"] == (spec.resolve(), "my-run")
         assert taskrunner_env["sessions"].pool_started is True
         assert taskrunner_env["sessions"].closed is True
