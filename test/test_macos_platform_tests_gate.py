@@ -255,6 +255,18 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         assert mac["needs"] == ["decide"]
         assert mac["if"] == "needs.decide.outputs.run == 'true'"
 
+    def test_native_reap_contract_triggers_the_macos_lane(self) -> None:
+        steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        filters = next(step["with"]["filters"] for step in steps if step.get("id") == "filter")
+        paths = yaml.safe_load(filters)["darwin"]
+        assert {
+            "src/kiro_crew/session_pid.py",
+            "src/kiro_crew/session_lifecycle.py",
+            "src/kiro_crew/session_cleanup.py",
+            "src/kiro_crew/session_pool.py",
+            "test/test_darwin_native_provider_reap.py",
+        } <= set(paths)
+
     def test_the_on_demand_lane_calls_the_nightly_workflow_not_a_copy(self) -> None:
         # One suite, two callers. A hand-maintained subset here would be a second
         # copy of the shard and contract steps that could drift from the nightly's

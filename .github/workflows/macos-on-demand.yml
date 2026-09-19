@@ -139,6 +139,12 @@ jobs:
               - "test/test_socketsec.py"
               - "test/test_member_memory_filesystem.py"
               - "test/test_terminal_handler.py"
+              # Native lifecycle contracts must not depend on the SHA sample.
+              - "src/kiro_crew/session_pid.py"
+              - "src/kiro_crew/session_lifecycle.py"
+              - "src/kiro_crew/session_cleanup.py"
+              - "src/kiro_crew/session_pool.py"
+              - "test/test_darwin_native_provider_reap.py"
               - "test/macos-expected-failures.txt"
               - "test/macos-collect-ignore.txt"
               # This lane and the workflow it calls.
