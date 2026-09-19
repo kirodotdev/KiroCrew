@@ -9,9 +9,11 @@ real, owner-only, non-symlink directory.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
+import sys
 
 import pytest
 
@@ -178,22 +180,40 @@ class TestPrivateLoginDir:
     def test_guard_reads_mode_back_through_bsd_stat_with_bash(self, tmp_path):
         # macOS ships BSD stat, which has no -c and spells the octal mode
         # -f %Lp. A shim with that surface stands in for Darwin on a Linux
-        # host: it rejects -c the way BSD does and answers -f %Lp from the real
-        # stat, so a GNU-only read-back fails here exactly as it does on macOS.
-        real_stat = shutil.which("stat")
-        assert real_stat is not None
+        # host: it accepts only -f %Lp and reads the real mode via Python,
+        # without relying on the host's stat dialect.
+        tmp_path = tmp_path / "home with 'quotes'"
+        tmp_path.mkdir()
+        python = shlex.quote(sys.executable.replace("\\", "/"))
+        read_mode = shlex.quote(
+            'import os, stat, sys; print(format(stat.S_IMODE(os.stat(sys.argv[1]).st_mode), "o"))'
+        )
         shim = tmp_path / "shim"
         shim.mkdir()
         fake_stat = shim / "stat"
         fake_stat.write_text(
             "#!/bin/sh\n"
-            'case "$1" in\n'
-            '  -c) echo "stat: illegal option -- c" >&2; exit 1 ;;\n'
-            f'  -f) [ "$2" = "%Lp" ] || exit 1; exec "{real_stat}" -c %a "$3" ;;\n'
-            "  *) exit 1 ;;\n"
-            "esac\n"
+            '[ "$#" = 3 ] && [ "$1" = "-f" ] && [ "$2" = "%Lp" ] || exit 1\n'
+            f'{python} -c {read_mode} "$3"\n',
+            encoding="utf-8",
         )
         fake_stat.chmod(0o755)
+        for args in (("-c", "%a"), ("-f", "%a"), ("-f", "%Lp", "extra")):
+            rejected = subprocess.run(
+                [_BASH, str(fake_stat), *args, str(tmp_path)],
+                capture_output=True,
+                timeout=10,
+                **UTF8_TEXT,
+            )
+            assert rejected.returncode != 0
+        observed = subprocess.run(
+            [_BASH, str(fake_stat), "-f", "%Lp", str(fake_stat)],
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+        assert observed.returncode == 0, observed.stderr
+        assert observed.stdout.strip() == "755"
         env = {
             "HOME": str(tmp_path),
             "PATH": f"{shim}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -202,6 +222,7 @@ class TestPrivateLoginDir:
             [_BASH, "-c", login._login_dir_guard()],
             env=env,
             capture_output=True,
+            timeout=10,
             **UTF8_TEXT,
         )
         assert res.returncode == 0, res.stderr

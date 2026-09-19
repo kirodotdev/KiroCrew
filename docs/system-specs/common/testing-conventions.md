@@ -166,6 +166,14 @@ silent until some assertion happens to expect a non-empty one.
 pins the import for every module that spawns the fake, because co-location alone does
 not stop a second consumer from hand-rolling the read.
 
+### Host tool dialects
+
+A test double for a platform-specific CLI must not depend on another host's
+flags. The BSD `stat -f %Lp` fixture reads real permission bits with Python's
+`os.stat` and `stat.S_IMODE`, rather than delegating to GNU `stat -c %a`.
+Reject unsupported arguments and verify actual modes; never substitute a fixed
+successful response for the permission check. Quote paths and bound subprocesses.
+
 ### Links: use the conftest helpers, do not skip on Windows
 
 Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
