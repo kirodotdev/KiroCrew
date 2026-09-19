@@ -979,7 +979,10 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # absent by design: it is a pure in-memory lookup that performs no filesystem
 # work and can never reach the denial log line.
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
+    "kiro_crew/agent.py": [
+        ("require_foreign_spec_ceiling", "unknown"),
+        ("require_fork_governance", "unknown"),
+    ],
     "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
     "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
     "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],

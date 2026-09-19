@@ -170,11 +170,14 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent import (
     DerivedSpecSnapshot,
     DerivedSpecStale,
+    ForeignSpecCeilingUnverified,
     ForkGovernanceUnresolved,
     ensure_agent_materialized,
+    require_foreign_spec_ceiling,
     require_fork_governance,
     require_fresh_derived_spec,
     require_unchanged_derived_spec,
+    require_unchanged_foreign_spec,
 )
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_LAUNCH, launch_for
@@ -4551,6 +4554,7 @@ class AcpClient:
         # over-strict, while a None substituted there would short-circuit the
         # re-check on any path that reached it. None = no spawn yet.
         self._derived_spec_snapshot: DerivedSpecSnapshot | None = None
+        self._foreign_spec_snapshot: Any = None
         # The mirror's CLIENT OBLIGATION from the same spec parse as the array
         # (``SessionProjection.denied_tools``): ``(server, tool)`` pairs the spec
         # switched off that the backend cannot refuse on the wire, so this client
@@ -7479,6 +7483,19 @@ class AcpClient:
                 await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
             except ForkGovernanceUnresolved as exc:
                 raise AcpError(str(exc)) from exc
+            # Same seam, sibling hazard: a DECLINED shared agent home keeps a
+            # FOREIGN spec in place, whose allowedTools/autoApprove were
+            # ceiling-filtered under the writing instance's policy, not this
+            # one's. Pre-authorized grants bypass the PreToolUse gate, so the
+            # spawn is the one place left to verify them against OUR ceiling.
+            # The returned snapshot is the bracket's first half; the
+            # post-initialize check below proves kiro-cli consumed those bytes.
+            try:
+                self._foreign_spec_snapshot = await asyncio.to_thread(
+                    require_foreign_spec_ceiling, self._agent, self._work_dir
+                )
+            except ForeignSpecCeilingUnverified as exc:
+                raise AcpError(str(exc)) from exc
             # The agents-tree seal is a launcher rule, and a spawn delegated to
             # kiro-cli's internal sandbox never sees the launcher — so on those
             # paths a workspace overlapping the agents directory is the one way
@@ -8482,6 +8499,13 @@ class AcpClient:
         try:
             await asyncio.to_thread(require_unchanged_derived_spec, self._derived_spec_snapshot)
         except DerivedSpecStale as exc:
+            raise AcpError(str(exc)) from exc
+        # Same closure for the foreign-ceiling bracket: kiro-cli has read its
+        # agent spec by now, so a write landing before this point is caught here
+        # and one landing after cannot change what it already loaded.
+        try:
+            await asyncio.to_thread(require_unchanged_foreign_spec, self._foreign_spec_snapshot)
+        except ForeignSpecCeilingUnverified as exc:
             raise AcpError(str(exc)) from exc
 
         # 2. Try session/load if we have a resume ID and kiro-cli supports it

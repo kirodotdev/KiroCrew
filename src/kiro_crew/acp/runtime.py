@@ -1447,6 +1447,7 @@ class AcpRuntime:
         # the bracket. ``None`` until a spawn takes it, and ``None`` for every agent
         # that mirrors no other spec.
         self._derived_spec_snapshot: Any = None
+        self._foreign_spec_snapshot: Any = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -1976,6 +1977,23 @@ class AcpRuntime:
             )
         except DerivedSpecStale as exc:
             raise AcpRuntimeError(str(exc)) from exc
+        # Sibling bracket, same ownership rule: the foreign-ceiling gate returns
+        # the snapshot the post-handshake check compares against, so the runtime
+        # runs it here beside the freshness gate. Only for a host that reads its
+        # spec from disk at spawn (``verifies_agent_activation`` — the ``--agent``
+        # hosts): a wire host consumes an in-process projection whose gate runs
+        # where the projection is built, with the verified bytes handed to it
+        # directly. Scoped to the work dir because the disk-reading host honors
+        # project shadows.
+        if self._harness.verifies_agent_activation:
+            from kiro_crew.agent import ForeignSpecCeilingUnverified, require_foreign_spec_ceiling
+
+            try:
+                self._foreign_spec_snapshot = await asyncio.to_thread(
+                    require_foreign_spec_ceiling, self._agent, self._work_dir
+                )
+            except ForeignSpecCeilingUnverified as exc:
+                raise AcpRuntimeError(str(exc)) from exc
         self._kas_host_auth = plan.host_auth
         self._native_launch_sources = dict(plan.native_context_documents)
         return plan
@@ -2498,9 +2516,16 @@ class AcpRuntime:
             # PID-file entries and the protected-PID shield, then re-raises -- because
             # a session that may have loaded an unverified spec must not survive, and
             # leaving the process behind would be a worse outcome than the stale spec.
-            from kiro_crew.agent import require_unchanged_derived_spec
+            from kiro_crew.agent import (
+                require_unchanged_derived_spec,
+                require_unchanged_foreign_spec,
+            )
 
             await asyncio.to_thread(require_unchanged_derived_spec, self._derived_spec_snapshot)
+            # Same closure for the foreign-ceiling bracket: kiro-cli has read the
+            # spec, so a write landing before this point is caught here and one
+            # landing after cannot change what it already loaded.
+            await asyncio.to_thread(require_unchanged_foreign_spec, self._foreign_spec_snapshot)
             self._initialized = True
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
             # INSIDE the guard, which is what makes a cancelled scan safe. The
@@ -4441,9 +4466,14 @@ class AcpRuntime:
 
         A ``set_mode`` naming an agent activates that agent's spec, and the spec it
         activates needs the same bracket the spawn's does. Neither other gate reaches
-        here: the spawn gate is keyed to ``self._agent``, so a SHARED runtime spawned
-        as one agent and switched to another on this line passes no gate, and a host
-        that builds no in-process tool surface never runs ``session_mcp``'s gate.
+        here: the spawn gates are keyed to ``self._agent``, so a SHARED runtime spawned
+        as one agent and switched to another on this line passes no spawn gate, and a
+        host that builds no in-process tool surface never runs ``session_mcp``'s gate.
+        The disk path below therefore runs BOTH per-agent gates on *mode_agent*: the
+        derived-spec freshness gate, and the foreign-ceiling gate
+        (:func:`kiro_crew.agent.require_foreign_spec_ceiling`) — a kept foreign owned
+        spec activated here would otherwise reach the host with pre-authorized grants
+        this instance's governance ceiling has never judged.
 
         WHERE the spec is consumed differs by host, and that decides which snapshot the
         post-check may use -- exactly ONE per consumed load:
@@ -4469,13 +4499,28 @@ class AcpRuntime:
         """
         from kiro_crew.agent import (
             DerivedSpecStale,
+            ForeignSpecCeilingUnverified,
+            require_foreign_spec_ceiling,
             require_fresh_derived_spec,
             require_unchanged_derived_spec,
+            require_unchanged_foreign_spec,
         )
 
+        foreign_snapshot = None
         if wire_registered:
             mode_snapshot = payload_snapshot
         else:
+            # Consumed from disk at set_mode, so BOTH per-agent gates run here on
+            # the agent actually being activated. The ceiling gate first: it
+            # judges the grants themselves, and a spec that fails it must not be
+            # snapshotted as "fresh" by the gate that follows.
+            try:
+                foreign_snapshot = await asyncio.to_thread(
+                    require_foreign_spec_ceiling, mode_agent, self._work_dir
+                )
+            except ForeignSpecCeilingUnverified as exc:
+                await self.terminate_session(session_id)
+                raise AcpRuntimeError(str(exc)) from exc
             try:
                 mode_snapshot = await asyncio.to_thread(
                     require_fresh_derived_spec, mode_agent, self._work_dir
@@ -4499,6 +4544,11 @@ class AcpRuntime:
         try:
             await asyncio.to_thread(require_unchanged_derived_spec, mode_snapshot)
         except DerivedSpecStale as exc:
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(str(exc)) from exc
+        try:
+            await asyncio.to_thread(require_unchanged_foreign_spec, foreign_snapshot)
+        except ForeignSpecCeilingUnverified as exc:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(str(exc)) from exc
 

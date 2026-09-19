@@ -1912,6 +1912,11 @@ def test_a_re_derive_during_the_hosts_own_pre_spawn_work_does_not_kill_the_sessi
     edited["mcpServers"]["builder-mcp"] = {"command": "builder", "args": ["--v2"]}
 
     class _EditingHarness:
+        # The real harness protocol answers whether the spawn reads the agent
+        # spec from disk (--agent); the runtime's foreign-ceiling gate branches
+        # on it. False keeps this test about the derived bracket alone.
+        verifies_agent_activation = False
+
         async def resolve_spawn(self, ctx):
             # Any legitimate host-side edit that lands while the plan is being resolved:
             # it rewrites the default spec and re-derives the mirror from it.
@@ -2848,6 +2853,71 @@ def test_the_bracketed_helper_orders_gate_send_and_check_by_consumption_point():
         raise AssertionError(f"{target} not found")
 
     assert _at("wire_registered") < _at("METHOD_SET_MODE") < _at("require_unchanged_derived_spec")
+
+
+def test_the_bracketed_helper_gates_the_foreign_ceiling_on_the_disk_path():
+    """The disk-consumption branch verifies *mode_agent* against THIS instance's
+    governance ceiling before the send, and a refusal terminates the session.
+
+    A ``set_mode`` naming an agent consumes that agent's spec from disk on hosts
+    with ``wire_registered=False``, so a shared runtime spawned as one agent and
+    switched to another would otherwise activate a kept FOREIGN spec whose
+    pre-authorized grants no spawn gate has seen — the exact bypass
+    ``require_foreign_spec_ceiling`` fails closed on. The wire branch carries no
+    such call: its payload is verified where it is built, and a second gate for
+    one consumed load is the defect the sibling test above pins.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from kiro_crew.acp import runtime as runtime_mod
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(runtime_mod.AcpRuntime._activate_mode_bracketed))
+    )
+    fn = tree.body[0]
+    body = [s for s in fn.body if not isinstance(s, (ast.Import, ast.ImportFrom, ast.Expr))]
+
+    def _names(stmts):
+        return {n.id for s in stmts for n in ast.walk(s) if isinstance(n, ast.Name)}
+
+    split = [s for s in body if isinstance(s, ast.If) and "wire_registered" in _names([s.test])]
+    assert len(split) == 1
+    wire, own = split[0].body, split[0].orelse
+    assert "require_foreign_spec_ceiling" not in _names(
+        wire
+    ), "the wire payload is verified where it is built, not re-judged at activation"
+    assert "require_foreign_spec_ceiling" in _names(
+        own
+    ), "the disk path must verify mode_agent against this instance's ceiling"
+    assert "mode_agent" in _names(own), "the gate must judge the agent being activated"
+
+    # The gate runs BEFORE the send, and its refusal terminates the session the
+    # way every other bracket failure does.
+    def _at(target):
+        for i, s in enumerate(body):
+            if target in _names([s]):
+                return i
+        raise AssertionError(f"{target} not found")
+
+    assert _at("require_foreign_spec_ceiling") < _at("METHOD_SET_MODE")
+    assert _at("METHOD_SET_MODE") < _at(
+        "require_unchanged_foreign_spec"
+    ), "the foreign bracket must close after the host consumed the spec"
+    handlers = [
+        h
+        for s in own
+        if isinstance(s, ast.Try)
+        for h in s.handlers
+        if isinstance(h.type, ast.Name) and h.type.id == "ForeignSpecCeilingUnverified"
+    ]
+    assert handlers, "a ceiling refusal must be caught (and terminate the session)"
+    assert any(
+        isinstance(n, ast.Attribute) and n.attr == "terminate_session"
+        for h in handlers
+        for n in ast.walk(h)
+    ), "a session that may have activated an unverified spec must not survive"
 
 
 def test_a_revocation_between_the_payload_build_and_activation_is_caught(tmp_path, monkeypatch):

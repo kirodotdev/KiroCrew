@@ -106,6 +106,13 @@ class KiroHarness(MembershipHarness):
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
 
+        # The foreign-ceiling gate is deliberately NOT here either, for the same
+        # reason as the freshness gate above: it returns a snapshot the
+        # POST-handshake check must compare against, so both ends of that
+        # bracket belong to the object that drives the handshake — AcpRuntime
+        # runs it beside the freshness gate, as the last verification before
+        # the process is created.
+
         overlap = await asyncio.to_thread(
             sandbox_mod.delegated_workspace_exposes_agents_dir, ctx.work_dir
         )

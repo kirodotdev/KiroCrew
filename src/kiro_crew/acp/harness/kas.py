@@ -156,6 +156,19 @@ class KasHarness(MembershipHarness):
 
         def _build() -> tuple[list[dict[str, Any]], Any]:
             agent_mod.require_fork_governance(agent, work_dir)
+            # Sibling hazard, same seam: a declined shared agent home keeps a
+            # foreign spec whose pre-authorized grants were filtered under
+            # another instance's ceiling; verify them against ours. Deliberately
+            # UNSCOPED (None, not work_dir), like the injection lookup below:
+            # KAS projects the user-level spec from ``paths.kiro_agents_dir()``
+            # alone, so a same-name project spec never displaces it here — a
+            # shadow-aware gate would stand aside for a shadow this host does
+            # not honor and project the foreign grants unjudged. The returned
+            # snapshot carries the bytes the gate verified, and the projection
+            # below hands out exactly those: KAS consumes in-process, so binding
+            # the projection to the snapshot closes the gate-to-consumption
+            # window outright instead of detecting it after the fact.
+            foreign_snap = agent_mod.require_foreign_spec_ceiling(agent, None)
             try:
                 agent_mod.ensure_agent_materialized(agent)
             except Exception:
@@ -183,8 +196,25 @@ class KasHarness(MembershipHarness):
             spec = (
                 snapshot.spec
                 if snapshot is not None and snapshot.spec is not None
-                else kas_agents_mod.load_agent_spec(agents_dir, agent)
+                else (
+                    foreign_snap.spec
+                    if foreign_snap is not None
+                    else kas_agents_mod.load_agent_spec(agents_dir, agent)
+                )
             )
+            # When the foreign-ceiling gate verified bytes, the projection must
+            # hand out THOSE bytes. The derived snapshot's spec is a separate
+            # observation of the same file: agreement proves both reads saw one
+            # generation; disagreement means a write landed between them, and
+            # the bytes about to be projected were never judged — fail closed.
+            if foreign_snap is not None and spec is not foreign_snap.spec:
+                if spec != foreign_snap.spec:
+                    raise agent_mod.ForeignSpecCeilingUnverified(
+                        f"the shared agent spec {foreign_snap.path} changed between "
+                        "the ceiling verification and the projection read, so the "
+                        "spec about to be projected carries grants this instance's "
+                        "governance ceiling never judged; refusing the session"
+                    )
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
