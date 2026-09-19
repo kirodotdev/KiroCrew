@@ -165,19 +165,31 @@ def install_impl(monkeypatch):
 
 @pytest.fixture
 def log_home(tmp_path, monkeypatch):
-    """Point the log at *tmp_path* and return a reader for the rows written."""
+    """Isolate disk writes and read the real rows built for the writer, in order.
+
+    These assertions pin row CONTENT, not best-effort delivery. ``asyncio.run``
+    joins a started append, but cannot recover a job cancelled before its executor
+    starts it, or a row dropped when the pinned open spends the append deadline.
+    Waiting for the file would wait for a row that may never land. Observe the
+    real ``build_row`` result on the loop, before either budget can drop it; keep
+    both production budgets and the append itself intact. Disk landing belongs
+    to ``test_decisions_log.TestAppend`` and ``test_platform_log_append``; append
+    ordering and off-loop execution keep their own assertions below.
+    """
     directory = tmp_path / "decisions"
     monkeypatch.setattr(log_mod, "log_dir", lambda: directory)
+    built_rows: list[dict] = []
+    real_build_row = log_mod.build_row
+
+    def _record_row(**kwargs):
+        row = real_build_row(**kwargs)
+        built_rows.append(row)
+        return row
+
+    monkeypatch.setattr(log_mod, "build_row", _record_row)
 
     def _rows():
-        if not directory.exists():
-            return []
-        out = []
-        for path in sorted(directory.glob("decisions-*.jsonl")):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    out.append(json.loads(line))
-        return out
+        return list(built_rows)
 
     return _rows
 

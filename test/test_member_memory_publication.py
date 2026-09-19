@@ -26,6 +26,16 @@ from kiro_crew.memory_stores import (
     require_member_memory_store,
 )
 
+#: Ceiling on one handshake with the publication worker, in either direction.
+#: A lost-run guard, never the barrier: every wait below returns the moment its
+#: event is set, so only a worker that never arrives pays this. Generous because
+#: the worker's step before the handshake is a REAL allocation -- a SQLite
+#: database created, initialised and fsynced under ``tmp_path`` -- and on a
+#: loaded Windows CI worker that alone takes several seconds. Kept under
+#: pytest's per-test timeout so a genuinely lost handshake still fails as this
+#: assertion, not as a killed worker.
+_HANDSHAKE_CEILING_SECS = 60.0
+
 
 @pytest.fixture
 def owner_gateway(monkeypatch):
@@ -112,7 +122,7 @@ async def _wait_for_publication_worker(task, entered):
     ready = asyncio.create_task(entered.wait())
     try:
         settled, _ = await asyncio.wait(
-            {task, ready}, timeout=5.0, return_when=asyncio.FIRST_COMPLETED
+            {task, ready}, timeout=_HANDSHAKE_CEILING_SECS, return_when=asyncio.FIRST_COMPLETED
         )
         if task in settled:
             response = task.result()
@@ -144,14 +154,14 @@ async def test_cancelled_dashboard_request_drains_worker_before_observing_public
         (_named_store_dir(store) / "evidence.txt").write_bytes(b"retained allocation")
         if phase == "provision":
             loop.call_soon_threadsafe(entered.set)
-            assert release.wait(5), "test did not release allocation worker"
+            assert release.wait(_HANDSHAKE_CEILING_SECS), "test did not release allocation worker"
         return store
 
     def publish(*args, **kwargs):
         original_publish(*args, **kwargs)
         if phase == "published":
             loop.call_soon_threadsafe(entered.set)
-            assert release.wait(5), "test did not release publication worker"
+            assert release.wait(_HANDSHAKE_CEILING_SECS), "test did not release publication worker"
 
     monkeypatch.setattr(handlers, "provision_member_memory", provision)
     monkeypatch.setattr(handlers, "persist_member_config", publish)
