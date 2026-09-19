@@ -280,14 +280,165 @@ doing so, and would erase the one fact a reader wants from that log: this sessio
 died with work in flight. A reader sees `closed_at` and the open turn together and
 can tell exactly what happened. Only `turn/completed` closes a turn.
 
-## 6. Deliberately not here
+## 6. The session tree -- the one fold across logs
+
+Every fold above reads its own unit's file and nothing else (FR-4). The session
+tree (`crew_log/tree.py`) is the one reader that looks across logs, and it is a
+different kind of thing on purpose: the `session_create` edge is recorded on the
+CHILD (`crew-log-core.md` section 5), so "which session opened which" is not in
+any one log. It is a fold over the collection, the shape dsh's `flattenLineage`
+takes over its per-session `parentSession` header field: the record lives on the
+child, the tree is a pure function over all the records, and an orphan or a cycle
+degrades to root rather than to an error.
+
+**What is read.** For every unit directory under the session root
+(`store.unit_dirs`), the HEADER and the FIRST ENTRY of the oldest surviving
+segment (`store.oldest_segment`, `store.read_head`) -- one bounded read per log
+however long the session ran. That is enough: the emitter writes `parent` from a
+process-local mint witness that exists before the child's first turn or never, so
+the entry that created the log carries the parent whenever any entry does, and a
+re-attach in the same process can only repeat it. A unit is refused the way
+`unit_header_slot` refuses one -- a linked entry, a non-session header, a header
+whose id does not fold back to its directory name -- and a header with no entry
+behind it yet (the create landed, the announce has not) yields nothing and is
+read again next scan rather than cached.
+
+**The fold** (`fold_tree`, pure; input order does not matter):
+
+| Case | Node |
+|---|---|
+| no record of the slot carries `parent` | root, `parent: None` |
+| some record carries `parent` and a log with that slot exists | the edge is followed: the child nests under the creator |
+| the cited slot has no log of its own (orphan) | root; `parent` kept as the citation |
+| the edges close a cycle, or a slot cites itself | every member is marked `cycle: True` and nests nowhere; a slot hanging off a member keeps its edge to it |
+| two records of one slot disagree | the OLDEST log's word stands (`createdAt`, then id); a slot that carries a `parent` at all is one `session_create` minted (`chat-<N>-<ts>`: a monotonic counter plus the unix second, the counter reseeded past every restored key at boot), so such a key is never a dead session's recycled one, and the oldest word is the creation's own |
+| a record with no slot in its header | dropped -- it has no place in a slot-keyed tree |
+
+A record without `parent` never retracts one: create -> re-attach (with parent)
+-> gateway restart -> re-attach (no parent, the witness is gone) folds to the
+parent the first log recorded, and so does a slot whose later logs were opened
+after a restart. The tree is keyed by slot and reads `parent.slot` only:
+`parent.sid` on the entry is the creator's ACP session id at the moment of
+creation, an audit citation for a reader of the logs themselves (`crew-log-core.md`
+section 5), and a slot outlives its ACP session, so it is not what a live row
+nests on. Nothing reads it today; a reader that shows a session's own log would.
+
+**The cache, and its bound.** `SessionTree` keeps one head per unit directory,
+validated per scan against the segment path and its `(st_dev, st_ino)`. No mtime:
+the store never rewrites a written line, so the two lines a scan reads are
+immutable for as long as the segment exists, and an mtime key would re-read a live
+session's log on every append. An untouched unit costs one `stat`; a segment that
+is gone (retention, removal) or replaced (a new inode under the same name) is
+re-read; a unit that yields nothing is dropped from the cache. A read that fails
+outright (an `OSError` after the `stat` succeeded: a moment's I/O fault, or a unit
+retention removed between the two calls) is no verdict on the bytes, so nothing is
+cached for it: the next scan reads the unit again, or finds it gone and evicts it.
+A cached failure would hide that session's creator until the segment rolled or
+the process restarted.
+
+A scan ADMITS at most `TREE_UNIT_CAP` (4096) units, and the cap cuts EVERY loop
+of the scan, not only what it retains: the live sessions' logs are probed first
+(the sampler names them by ACP session id, `store.unit_dir_for`, one `stat`
+each, through `islice(preferred, cap)` so absent ids cost no more than the cap
+in probes); the store's listing (`store.unit_dirs`, in the directory's own
+order, excluding what is already admitted) fills the rest of the cap and stops
+one candidate past it; the cache holds one head per admitted unit; and every
+string a head retains is bounded at admission (`MAX_ACP_SESSION_ID_LEN` for the
+id, `MAX_SHORT_STRING` for the slot keys; an oversize value refuses the unit
+rather than truncating to a key that matches nothing). What lies past the cap is
+neither walked, read, cached nor counted -- counting it would mean walking the
+population, which is the cost the bound refuses -- and THAT something lies past
+it lands in `SessionTree.over_cap`, reported on every payload as
+`totals.lineage_over_cap` beside `totals.lineage_cap` (the constant, so the
+page can say "4,096+"). The Sessions table's footer shows that as an ordinary
+stat, "Stored session logs", not in the page's warn colour, only while it is
+true: it removes no row from the page, so it is information about the store, and
+its label names logs on disk because the strip already counts sessions, task
+sessions and session procs, and a fifth "session" figure would read as a fifth
+live count. Its hint names the cap itself ("more than 4,096 exist", the value
+interpolated from `totals.lineage_cap`), since the bubble opens away from the
+stat it explains, and leads with what it means (old logs are piling up), says
+what it can cost the page (below), names where its remedy is typed ("in a
+terminal run:"),
+and what to do (the `kirocrew config set` command for the retention setting,
+named as the one switch that also expires the transcripts the Archive page
+lists, since `store.sweep_expired` runs off the same value), stating no default,
+since the default lives in `config/sections.py` and prose restating it would go
+stale silently. Because the live logs go first, what the cap leaves unread is
+closed sessions' logs, and a live row nests on one of those in exactly one
+case: a slot that outlived a gateway restart, whose current log was opened
+without a `parent` (the witness is gone) and whose creator is named only by its
+older, closed log -- a unit that competes in directory order like any other and
+can fall past the cap. Such a row folds as a root while the store is over the
+cap, which is why the hint says a session restarted since it was opened may show
+as top-level instead of under its opener, rather than that nothing on the page is
+affected. The hint also says what the retention command removes and keeps, since
+a reader who fears losing transcripts will not run it: only closed sessions' logs
+and the old saved transcripts (the rotated archives) older than the days set go; running sessions
+and anything newer stay (`store.sweep_expired` removes only a unit whose close is
+terminal; `history._cleanup_old_archives` deletes only rotated archive files). The
+Storage screen's age sweep is not the remedy for this pile: it moves transcripts
+and kiro-cli replay logs to the Trash and never touches a crew-log unit, so a hint
+that sent the reader there would promise a shrink that does not happen. Every
+other live row folds, over the cap or not -- with one bound: the preferred set
+is capped too, so a gateway running more live logged sessions than the cap
+loses lineage on the rows past it. A unit that fell past the cap because the
+population changed is evicted like a removed one. What a poll costs at the cap,
+measured on a local disk with 4,096 units: the cold first scan (one root
+listing, one listing and one head read per unit) took 376 ms; a warm scan (the
+root listing, one listing and one `stat` per unit, every head from the cache)
+took 90-120 ms, and the fold on top of it is within that. The sampler runs the
+scan on the executor beside its other filesystem work, and the page polls every
+5 s, so a store at the cap costs about 2% of one core while the Sessions tab is
+open and nothing while it is not. The cap is far above any population retention leaves; a
+store that reaches it usually has retention disabled, though a store with more
+than that many unexpired logs reaches it too. `test_crew_log_tree.py` measures
+the invariant rather than reading it off the code: a scan handed ten times the
+cap in absent ids makes exactly the cap's worth of probes, a store three times
+the cap is examined for cap + 1 candidates, and the cache never exceeds the cap.
+
+The scan is blocking and runs where the sampler's other filesystem work runs, on
+the subprocess executor, never on the event loop. A scan that raises is logged and
+reported as an empty tree: the tree decorates the pages that show it, and a store
+fault must not take them down.
+
+**The wire.** Each session row of `GET /api/sessions/memory` carries `parent`:
+`null` for a session nobody created, otherwise `{slot, key}` -- the cited creator
+slot, and `key` the creator's LIVE session key when the creator is running and the
+edge can be followed (`null` for a creator that is not running, a node on a cycle,
+or a citation pointing at the row itself). The join from a log's slot to a live
+row is by slot key alone: a dashboard row's key is `dashboard:{slot.key}` and its
+log -- and any child citing it -- carries the bare `slot.key`. `totals` carries
+`lineage_over_cap` and `lineage_cap` (above); the sampler hands the tree the live
+rows' ACP session ids (`runtime_pids` carries each as `sid`, bounded by
+`MAX_ACP_SESSION_ID_LEN` at retention) so those logs are read first. The Memory column's hint says each row is its own runtime's figure, a parent's figure does not include the rows nested under it, and a group's header row under Group by is the one row that does total (TanStack's sum aggregation on the grouped column, which is the base table's behaviour), so the reader is not left to guess which bold rows sum. A task row carries a muted "task" marker before its name: once created sessions nest too, indent alone no longer says which kind an indented row is, and the kind otherwise showed only on hover (a session's name underlines, a task's does not). A folded session's count is the visible text "M MB in N hidden rows", unit included and the memory bound to the rows in the words (beside the parent's own Memory cell a bare "N rows, M MB" left the reader unsure which figure was whose): it counts sessions and tasks, where the footer's "nested" counts sessions only, and a bare numeral beside that reads as either; the memory is the hidden rows' own figures summed, carried on the badge because a folded parent's figure is its own and without the roll-up beside it the fold reads as a family total (a row with no memory data contributes nothing, and a fold with none shows the count alone). The
+System page's Sessions table nests a session under `parent.key` exactly as it
+nests a task under its `parent`, to whatever depth the creating went, with a task
+under whichever session spawned it wherever that session sits; a created session
+whose creator is not running is a top-level row that still carries its citation.
+A row nested under its creator needs no further citation: its place in the tree
+is one, and the creator's expander names the relation ("Collapse sessions under
+{name}"). A created row that could NOT be nested (creator not running, a cycle)
+says who opened it as VISIBLE text under its name -- "Created by {creator} (not
+running, so shown top-level)", the creator's display name when it has a live row, else the slot the
+log cited; the parenthetical names the one reason a created row is top-level
+that real creation order can produce (a cycle is the other, and cannot arise
+from ``session_create``, which never lets a child create its own ancestor) --
+never as a native `title`: a keyboard or touch reader sees no tooltip, and this
+row has nothing else that says it. The table re-checks the edge it is handed --
+a key naming no row in the payload, or a chain returning to its own start --
+because a table must never fail to paint on a payload it did not produce.
+
+## 7. Deliberately not here
 
 - **Checkpoints on disk** (`projections/<key>.json`). State is kept in memory,
   keyed by session, and the shape is already the one a checkpoint file would
   carry, so persistence is additive.
 - **Crew-kind folds.** No crew writer exists.
 - **Subagent lineage and fork pointers.** A `subagent/spawned` entry's `ref` is
-  resolved on the page like any other citation; walking the tree is its own work.
+  resolved on the page like any other citation. The session tree (section 6)
+  folds the `session_create` edge only: a `spawn_run` subagent has no session
+  log of its own to record a parent on, and a fork stamps no creator.
 - **SPA rendering.** The frame shape is specified here so the client can follow.
 - **`turn/completed` carrying `attempt`.** It does not, so a fold cannot pair a
   completion with its start by field. The pairing is positional: a `turn/started`

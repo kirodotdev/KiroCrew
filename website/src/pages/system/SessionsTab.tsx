@@ -42,6 +42,7 @@ import {
   fmtTurns,
   fmtUptime,
   heatLevel,
+  rowName,
   type SessionRow,
 } from './sessionRows'
 
@@ -133,6 +134,21 @@ export default function SessionsTab({ planeStateRef }: Props) {
   const hostMb = totals?.host_mb ?? null
   const rows = useMemo(() => buildTree(sessions, tasks), [sessions, tasks])
   const maxima = useMemo(() => columnMaxima(rows), [rows])
+  // The creator's display name for a created session's citation, keyed by the
+  // full session key `parent.key` carries and by the bare slot key a crew log
+  // cites. A creator with no live row here is named by the slot the log cited.
+  const nameOf = useMemo(() => {
+    const byKey = new Map<string, string>()
+    for (const s of sessions) {
+      byKey.set(s.key, rowName(s))
+      if (s.slot_key) byKey.set(s.slot_key, rowName(s))
+    }
+    return byKey
+  }, [sessions])
+  const creatorOf = (r: SessionRow): string | null => {
+    if (r.kind !== 'session' || r.parent == null) return null
+    return (r.parent.key != null ? nameOf.get(r.parent.key) : undefined) ?? nameOf.get(r.parent.slot) ?? r.parent.slot
+  }
 
   const columns = useMemo(
     () => [
@@ -270,6 +286,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
   })
 
   const usedMb = totals?.rss_mb ?? 0
+  const topLevelSessions = rows.filter(r => r.kind === 'session').length
   const largestMb = sessions.reduce<number | null>(
     (m, s) => (s.rss_mb != null && (m == null || s.rss_mb > m) ? s.rss_mb : m),
     null,
@@ -490,70 +507,166 @@ export default function SessionsTab({ planeStateRef }: Props) {
                         key={cell.id}
                         className={
                           isName
-                            ? `px-3 py-1 text-left text-[12.5px] truncate ${
-                                row.depth > 0 ? 'pl-9 text-text' : 'text-text-strong font-medium'
+                            ? `relative px-3 py-1 text-left text-[12.5px] truncate ${
+                                row.depth > 0 ? 'text-text' : 'text-text-strong font-medium'
                               }`
                             : `px-3 py-1 ${NUM} ${heat}`
                         }
+                        // One step of indent per level. A session opened by a
+                        // session nests under it and that session's tasks nest
+                        // under IT, so the tree has no fixed depth and a
+                        // per-level class cannot draw it. 12px is the cell's own
+                        // `px-3`; each level adds 24px.
+                        {...(isName && row.depth > 0
+                          ? { style: { paddingLeft: `${12 + row.depth * 24}px` } }
+                          : {})}
                         {...(isName ? { title: grouped ? (groupLabel ?? '') : r.name } : {})}
                       >
+                        {/* One guide line per ancestor level, under that
+                            ancestor's expander (the chevron is 12px wide and
+                            ends where its row's text starts, so its centre is
+                            6px before that row's indent). Sorting orders each
+                            parent's children by the sorted column, so a shallow
+                            row can sit below a deeper one; with indent as the
+                            only cue that reads as deeper still. The lines say
+                            which ancestors a row has. Full cell height, so they
+                            run through the row padding and join up. */}
+                        {isName &&
+                          Array.from({ length: row.depth }, (_, level) => (
+                            <span
+                              key={level}
+                              aria-hidden="true"
+                              data-depth-guide={level}
+                              className="absolute top-0 bottom-0 border-l border-border pointer-events-none"
+                              style={{ left: `${6 + level * 24}px` }}
+                            />
+                          ))}
                         {isName ? (
-                          <>
-                            {row.getCanExpand() && (
-                              <IconButton
-                                aria-expanded={row.getIsExpanded()}
-                                aria-label={i18nT(
-                                  row.getIsExpanded()
-                                    ? 'pages.sessionsTab.collapse_tasks'
-                                    : 'pages.sessionsTab.expand_tasks',
-                                  { name: r.name },
-                                )}
-                                onClick={e => {
-                                  e.stopPropagation()
-                                  row.toggleExpanded()
-                                }}
-                                className="inline-block w-3 -ml-3 mr-0.5 p-0 align-middle text-muted hover:text-text"
-                              >
-                                {row.getIsExpanded() ? (
-                                  <ChevronDown size={12} aria-hidden="true" className="lucide-inline" />
-                                ) : (
-                                  <ChevronRight size={12} aria-hidden="true" className="lucide-inline" />
-                                )}
-                              </IconButton>
-                            )}
-                            {groupLabel != null ? (
-                              <span className="truncate">{groupLabel}</span>
-                            ) : href ? (
-                              <Btn
-                                type="button"
-                                onClick={e => {
-                                  e.stopPropagation()
-                                  navigate(href)
-                                }}
-                                // `Btn` is inline-flex, which does not shrink below
-                                // its content width, so without `min-w-0` the button
-                                // overflows the cell instead of ellipsizing. The
-                                // column now has a real declared width (columnDef
-                                // `size` + the <colgroup> above), which is what keeps
-                                // the name inside the cell the expander shares.
-                                className="border-transparent bg-transparent px-0 py-0 text-left text-inherit font-inherit hover:underline min-w-0 max-w-full"
-                              >
-                                <span className="truncate">{r.name}</span>
-                              </Btn>
-                            ) : (
-                              flexRender(cell.column.columnDef.cell, cell.getContext())
-                            )}
-                            {grouped && (
-                              <span className="ml-2 text-[10.5px] text-muted font-mono">
-                                {fmtNumber(row.subRows.length)}
+                          // Two lines. The first is a flex row so that, when the
+                          // cell is too narrow for everything, the NAME is what
+                          // shrinks and ellipsizes while the badges keep their
+                          // size. The second, only on a row that has something
+                          // to say about its lineage, gets the whole cell width
+                          // and wraps rather than truncates: a citation whose
+                          // tail is cut off names nobody, and naming the creator
+                          // is its only job.
+                          <span className="flex flex-col min-w-0">
+                            <span className="flex items-center min-w-0">
+                              {row.getCanExpand() && (
+                                <IconButton
+                                  aria-expanded={row.getIsExpanded()}
+                                  aria-label={i18nT(
+                                    row.subRows.some(sub => sub.original.kind === 'session')
+                                      ? row.getIsExpanded()
+                                        ? 'pages.sessionsTab.collapse_sessions'
+                                        : 'pages.sessionsTab.expand_sessions'
+                                      : row.getIsExpanded()
+                                        ? 'pages.sessionsTab.collapse_tasks'
+                                        : 'pages.sessionsTab.expand_tasks',
+                                    { name: r.name },
+                                  )}
+                                  onClick={e => {
+                                    e.stopPropagation()
+                                    row.toggleExpanded()
+                                  }}
+                                  className="shrink-0 w-3 -ml-3 mr-0.5 p-0 text-muted hover:text-text"
+                                >
+                                  {row.getIsExpanded() ? (
+                                    <ChevronDown size={12} aria-hidden="true" className="lucide-inline" />
+                                  ) : (
+                                    <ChevronRight size={12} aria-hidden="true" className="lucide-inline" />
+                                  )}
+                                </IconButton>
+                              )}
+                              {groupLabel != null ? (
+                                <span className="truncate min-w-0">{groupLabel}</span>
+                              ) : href ? (
+                                <Btn
+                                  type="button"
+                                  onClick={e => {
+                                    e.stopPropagation()
+                                    navigate(href)
+                                  }}
+                                  // `Btn` is inline-flex, which does not shrink below
+                                  // its content width, so without `min-w-0` the button
+                                  // overflows the cell instead of ellipsizing. The
+                                  // column has a real declared width (columnDef `size`
+                                  // + the <colgroup> above), which is what keeps the
+                                  // name inside the cell the expander shares.
+                                  className="border-transparent bg-transparent px-0 py-0 text-left text-inherit font-inherit hover:underline min-w-0 shrink"
+                                >
+                                  {/* The folded badge beside it can clip a long name in the
+                                      default column width; the full name rides on the clipped
+                                      span (the column is also resizable). */}
+                                  <span className="truncate" title={r.name}>{r.name}</span>
+                                </Btn>
+                              ) : (
+                                <span className="truncate min-w-0">
+                                  {/* A task's kind, said in the row: once created sessions
+                                      nest too, indent alone no longer says "task", and the
+                                      kind otherwise shows only on hover (a session's name
+                                      underlines, a task's does not). */}
+                                  {r.kind === 'task' && (
+                                    <span className="mr-1.5 text-[10px] uppercase tracking-[.06em] text-muted align-middle">
+                                      {i18nT('pages.sessionsTab.task_marker')}
+                                    </span>
+                                  )}
+                                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                </span>
+                              )}
+                              {/* A count beside a folded row too, not only a group:
+                                  the rows under it are hidden, not rolled up, and a
+                                  reader judging the parent's own figure should see
+                                  that N rows with figures of their own sit below. */}
+                              {grouped && (
+                                <span className="shrink-0 ml-2 text-[10.5px] text-muted font-mono">
+                                  {fmtNumber(row.subRows.length)}
+                                </span>
+                              )}
+                              {/* The folded count says what it is IN the text: it
+                                  counts every hidden descendant, sessions and tasks,
+                                  where the footer's "nested" counts sessions only
+                                  and the group count above counts direct children.
+                                  A bare numeral beside those reads as any of them,
+                                  and a unit that lives only in a title is one a
+                                  touch reader never sees. */}
+                              {!grouped && row.getCanExpand() && !row.getIsExpanded() && (() => {
+                                // The hidden rows' memory rides on the badge: a folded parent's
+                                // own figure is not a family total, and without the roll-up
+                                // beside it the fold reads as one.
+                                const hidden = row.getLeafRows()
+                                const rows = i18nT('pages.sessionsTab.hidden_rows', { count: hidden.length })
+                                const memory = hidden.reduce((sum, leaf) => sum + (leaf.original.rssMb ?? 0), 0)
+                                return (
+                                  <span className="shrink-0 ml-2 text-[10.5px] text-muted font-mono cursor-default whitespace-nowrap">
+                                    {memory > 0
+                                      ? i18nT('pages.sessionsTab.hidden_rows_memory', { rows, memory: fmtMb(memory) })
+                                      : rows}
+                                  </span>
+                                )
+                              })()}
+                              {r.shared && !grouped && (
+                                <span className="shrink-0 ml-1.5 text-[10px] px-1.5 rounded border border-warn/40 text-warn">
+                                  {i18nT('pages.sessionsTab.shared')}
+                                </span>
+                              )}
+                            </span>
+                            {/* A created row sitting under its creator needs no
+                                citation: its place in the tree is one, and the
+                                creator's expander names the relation. A created
+                                row that could not be nested (creator not running,
+                                a cycle) says who opened it here, as visible text
+                                and not a title: a keyboard or touch reader never
+                                sees a native tooltip, and this row has nothing
+                                else that says it. `nested` comes from buildTree,
+                                not from the row tree: under a fold a top-level
+                                row's parent row is a group row. */}
+                            {!grouped && creatorOf(r) != null && !r.nested && (
+                              <span className="block whitespace-normal break-words leading-tight text-[10.5px] text-muted cursor-default">
+                                {i18nT('pages.sessionsTab.created_by', { name: creatorOf(r) })}
                               </span>
                             )}
-                            {r.shared && !grouped && (
-                              <span className="ml-1.5 text-[10px] px-1.5 rounded border border-warn/40 text-warn align-[1px]">
-                                {i18nT('pages.sessionsTab.shared')}
-                              </span>
-                            )}
-                          </>
+                          </span>
                         ) : (
                           flexRender(cell.column.columnDef.cell, cell.getContext())
                         )}
@@ -576,9 +689,43 @@ export default function SessionsTab({ planeStateRef }: Props) {
         <FooterStat label={i18nT('pages.sessionsTab.footer_kirocrew_gb')} value={fmtGb(usedMb)} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_share_of_machine')} value={totals?.host_pct != null ? fmtPercent(totals.host_pct / 100, { maximumFractionDigits: 2 }) : '—'} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_largest_session_gb')} value={fmtGb(largestMb)} />
-        <FooterStat label={i18nT('pages.sessionsTab.footer_sessions')} value={fmtNumber(sessions.length)} />
+        {/* Nesting broke the old 1:1 between this count and the top-level rows a
+            reader can see, so when any session sits under another the value
+            also says how many are top-level. */}
+        <FooterStat
+          label={i18nT('pages.sessionsTab.footer_sessions')}
+          value={
+            topLevelSessions < sessions.length
+              ? i18nT('pages.sessionsTab.footer_sessions_nested', {
+                  total: fmtNumber(sessions.length),
+                  top: fmtNumber(topLevelSessions),
+                  // Named in the value, not only in the hint: beside "Task
+                  // sessions N" a bare "(M top-level)" reads as if the
+                  // difference were the tasks whenever the two numbers agree.
+                  nested: fmtNumber(sessions.length - topLevelSessions),
+                })
+              : fmtNumber(sessions.length)
+          }
+          {...(topLevelSessions < sessions.length
+            ? { hint: i18nT('pages.sessionsTab.footer_sessions_nested_hint', { tasks: fmtNumber(tasks.length) }) }
+            : {})}
+        />
         <FooterStat label={i18nT('pages.sessionsTab.footer_task_sessions')} value={fmtNumber(tasks.length)} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_session_procs')} value={fmtNumber(procTotal)} />
+        {/* The store holds more session logs than the backend's lineage scan
+            admits. What the stat says is that old logs are piling up, as a "N+"
+            and not a count (counting them would mean walking them all), under
+            a label that names logs on disk, since the strip already counts
+            sessions, task sessions and session procs; the hint names the cap
+            itself, because it opens away from the value it explains. Shown
+            only when there is something to say. */}
+        {totals?.lineage_over_cap === true && (
+          <FooterStat
+            label={i18nT('pages.sessionsTab.footer_lineage_over_cap')}
+            value={`${fmtNumber(totals.lineage_cap)}+`}
+            hint={i18nT('pages.sessionsTab.footer_lineage_over_cap_hint', { cap: fmtNumber(totals.lineage_cap) })}
+          />
+        )}
       </div>
       )}
       </div>
@@ -589,17 +736,36 @@ export default function SessionsTab({ planeStateRef }: Props) {
 /** Map column ids to their InfoTip i18n key. */
 function headerInfoTip(colId: string): string | null {
   switch (colId) {
+    // Nesting invites reading a parent's figure as a sum of the rows under
+    // it; the hint says each row is its own runtime's usage.
+    case 'rssMb': return 'pages.sessionsTab.memory_hint'
     case 'cpuCores': return 'pages.sessionsTab.cpu_cores_hint'
     case 'mcp': return 'pages.sessionsTab.mcp_stubs_hint'
     default: return null
   }
 }
 
-function FooterStat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+function FooterStat({
+  label,
+  value,
+  warn,
+  hint,
+}: {
+  label: string
+  value: string
+  warn?: boolean
+  /** The page's "?" hint (the column-header pattern), for a stat a reader cannot act on from its label alone. */
+  hint?: string
+}) {
+  // An inline-flex row: the hint's button is a flex box of its own, and inline
+  // text beside a block would break the stat over two lines.
   return (
-    <span className="text-[11px] text-muted pr-3.5 mr-3.5 border-r border-border last:border-r-0 last:mr-0 last:pr-0">
-      {label}
-      <span className={`ml-1.5 font-mono tabular-nums text-[12px] font-medium ${warn ? 'text-warn' : 'text-text-strong'}`}>
+    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted pr-3.5 mr-3.5 border-r border-border last:border-r-0 last:mr-0 last:pr-0">
+      <span>{label}</span>
+      {/* Above, not beside: the default placement opens to the right, over
+          the very value the hint explains. */}
+      {hint && <InfoTip text={hint} placement="top" />}
+      <span className={`font-mono tabular-nums text-[12px] font-medium ${warn ? 'text-warn' : 'text-text-strong'}`}>
         {value}
       </span>
     </span>

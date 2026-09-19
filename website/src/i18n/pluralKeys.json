@@ -185,6 +185,7 @@
   "pages.schedulePage.this_permanently_removes_the_selected_job",
   "pages.sessionStorage.age_option",
   "pages.sessionStorage.sweep_preview",
+  "pages.sessionsTab.hidden_rows",
   "pages.settings.aboutPanel.commits_ahead",
   "pages.settings.aboutPanel.commits_behind",
   "pages.settings.botChannelPanel.backfill_failed_all",

@@ -34,6 +34,7 @@ const session = (over: Partial<SessionPayloadRow> = {}): SessionPayloadRow => ({
   uptime_s: 60,
   credits: 5.2,
   turns: 3,
+  parent: null,
   ...over,
 })
 
@@ -287,6 +288,99 @@ describe('buildTree', () => {
     expect(topLevel).toContain('t-stale')
     // The matched one stays nested under its session, not promoted.
     expect(rows.find(r => r.id === 'dashboard:a')?.subRows?.map(r => r.id)).toEqual(['t-child'])
+  })
+
+  const createdBy = (key: string) => ({ slot: key.replace('dashboard:', ''), key })
+
+  it('nests a created session under its running creator, the way a task nests', () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:conductor', slot_key: 'conductor' }),
+        session({ key: 'dashboard:worker', slot_key: 'worker', parent: createdBy('dashboard:conductor') }),
+      ],
+      [],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:conductor'])
+    const [conductor] = rows
+    expect(conductor.subRows?.map(r => [r.kind, r.id])).toEqual([['session', 'dashboard:worker']])
+    // The child keeps its own destination and its citation.
+    expect(conductor.subRows?.[0].href).toBe('/chat?sid=worker')
+    expect(conductor.subRows?.[0].parent).toEqual(createdBy('dashboard:conductor'))
+    // The placement is recorded on the row itself, so a renderer under a fold
+    // (where the parent row is a group row) can still tell nested from orphan.
+    expect(conductor.subRows?.[0].nested).toBe(true)
+    expect(conductor.nested).toBe(false)
+  })
+
+  it("puts a nested session's tasks under that session, not under the root", () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:conductor' }),
+        session({ key: 'dashboard:worker', parent: createdBy('dashboard:conductor') }),
+      ],
+      [task({ id: 't-of-worker', parent: 'dashboard:worker' }), task({ id: 't-of-root', parent: 'dashboard:conductor' })],
+    )
+    const [conductor] = rows
+    const worker = conductor.subRows?.find(r => r.id === 'dashboard:worker')
+    expect(worker?.subRows?.map(r => r.id)).toEqual(['t-of-worker'])
+    expect(conductor.subRows?.filter(r => r.kind === 'task').map(r => r.id)).toEqual(['t-of-root'])
+  })
+
+  it('nests to whatever depth the creating went', () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:a' }),
+        session({ key: 'dashboard:b', parent: createdBy('dashboard:a') }),
+        session({ key: 'dashboard:c', parent: createdBy('dashboard:b') }),
+      ],
+      [],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:a'])
+    expect(rows[0].subRows?.[0].id).toBe('dashboard:b')
+    expect(rows[0].subRows?.[0].subRows?.[0].id).toBe('dashboard:c')
+  })
+
+  it('keeps a created session whose creator is not running as a top-level row with its citation', () => {
+    // The backend nulls `key` when the creator has no live row; the slot stays
+    // so the row can still say who opened it.
+    const orphan = session({
+      key: 'dashboard:worker',
+      parent: { slot: 'gone', key: null },
+    })
+    const rows = buildTree([orphan], [])
+    expect(rows.map(r => r.id)).toEqual(['dashboard:worker'])
+    expect(rows[0].nested).toBe(false)
+    expect(rows[0].parent?.slot).toBe('gone')
+    expect(rows[0].subRows).toBeUndefined()
+  })
+
+  it('does not follow a parent key that names no row in this payload', () => {
+    const rows = buildTree(
+      [session({ key: 'dashboard:worker', parent: createdBy('dashboard:not-here') })],
+      [],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:worker'])
+  })
+
+  it('never loops on a cycle: its members become roots, a hanger-on keeps its edge', () => {
+    // The backend already breaks cycles; this is the table refusing to fail to
+    // paint on a payload it did not produce.
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:a', parent: createdBy('dashboard:b') }),
+        session({ key: 'dashboard:b', parent: createdBy('dashboard:a') }),
+        session({ key: 'dashboard:c', parent: createdBy('dashboard:a') }),
+        session({ key: 'dashboard:self', parent: createdBy('dashboard:self') }),
+      ],
+      [],
+    )
+    expect(rows.map(r => r.id).sort()).toEqual(['dashboard:a', 'dashboard:b', 'dashboard:self'])
+    expect(rows.find(r => r.id === 'dashboard:a')?.subRows?.map(r => r.id)).toEqual(['dashboard:c'])
+  })
+
+  it('a session nobody created carries a null parent', () => {
+    const [row] = buildTree([session()], [])
+    expect(row.parent).toBeNull()
   })
 })
 

@@ -189,7 +189,6 @@ src/kiro_crew/dashboard/handlers_cloud.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
 src/kiro_crew/dashboard/routes/skills.py
-src/kiro_crew/dashboard/session_memory.py
 src/kiro_crew/dashboard/slowloris.py
 src/kiro_crew/dashboard/stale_asset_watchdog.py
 src/kiro_crew/dashboard/system_notices.py
@@ -858,8 +857,6 @@ test/test_session_grid.py
 test/test_session_keepalive.py
 test/test_session_map_locking.py
 test/test_session_map_migration.py
-test/test_session_memory.py
-test/test_session_more_coverage.py
 test/test_session_mtime_ordering.py
 test/test_session_pid_sig.py
 test/test_session_rss.py

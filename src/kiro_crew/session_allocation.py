@@ -26,6 +26,7 @@ from kiro_crew.metrics.sessions import (
     record_session_ended,
     record_session_started,
 )
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
@@ -36,6 +37,19 @@ else:
 
 
 ProviderFactory = Callable[..., LLMProvider]
+
+
+def _bounded_session_id(value: object) -> "str | None":
+    """*value* when it is a non-empty ACP session id within
+    ``MAX_ACP_SESSION_ID_LEN``, else ``None``.
+
+    The id comes from the backend, so it is bounded at the point of retention
+    rather than trusted: a runtime that hands back an oversize string gets no
+    id on the row, never a truncated one that would name a different unit.
+    """
+    if not isinstance(value, str) or not value or len(value) > MAX_ACP_SESSION_ID_LEN:
+        return None
+    return value
 
 
 class SessionClosingError(RuntimeError):
@@ -804,6 +818,12 @@ class SessionAllocationService:
                 {
                     "key": key,
                     "agent": session.agent,
+                    # The ACP session id, which is also the id of this session's
+                    # crew log unit; the Sessions table's lineage reader joins on
+                    # it. Backend-authored, so bounded here where it is retained
+                    # (the bound every other store of this id applies); an
+                    # oversize or empty value is carried as None, not truncated.
+                    "sid": _bounded_session_id(getattr(session.provider, "session_id", None)),
                     "pid": self._runtime_pid(runtime),
                     "owns_runtime": bool(getattr(client, "_owns_runtime", True)),
                     "created_at": session.created_at,
