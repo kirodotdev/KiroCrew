@@ -949,14 +949,29 @@ def script_run(monkeypatch, tmp_path):
     """Patch run_script_sandboxed's spawn chain; expose the recorded Popen call."""
     script = tmp_path / "job.py"
     script.write_text("def run(ctx): pass\n", newline="\n")
-    monkeypatch.setattr(cron_script, "resolve_script_path", lambda spec: (str(script), "run"))
+    # Records the keywords the launcher passes, so the stub cannot silently
+    # absorb a signature change: `resolved_kwargs` is asserted below.
+    resolved_kwargs: dict = {}
+
+    def _resolve(spec, **kw):
+        resolved_kwargs.clear()
+        resolved_kwargs.update(kw)
+        return (str(script), "run")
+
+    monkeypatch.setattr(cron_script, "resolve_script_path", _resolve)
     monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
     monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda port: "unit-secret")
     restricted: list[str] = []
     monkeypatch.setattr(cron_script.platform_compat, "restrict_to_owner", restricted.append)
     state = SimpleNamespace(
-        script=script, proc=None, argv=[], env={}, launcher_src="", restricted=restricted
+        script=script,
+        proc=None,
+        argv=[],
+        env={},
+        launcher_src="",
+        restricted=restricted,
+        resolved_kwargs=resolved_kwargs,
     )
 
     def _popen(argv, **kw):
@@ -971,6 +986,20 @@ def script_run(monkeypatch, tmp_path):
 
 
 class TestRunScriptSandboxed:
+    def test_the_launcher_resolves_a_persisted_spec_with_bundle_roots(self, script_run):
+        """The launcher re-resolves a spec that was ALREADY vetted and persisted.
+
+        An app cron's stored spec is an absolute path into the app's bundle, so
+        the launcher must opt into the bundle roots. Authoring paths (`cron_add`,
+        the CLI, the vault-grant sites) pass neither keyword and stay confined to
+        `crons/`; asserting the flag here is what keeps those two apart.
+        """
+        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+
+        run_script_sandboxed("spec:run", "job-roots", "the message")
+
+        assert script_run.resolved_kwargs == {"allow_bundle_roots": True}
+
     def test_the_dial_port_is_resolved_exactly_once(self, script_run, monkeypatch):
         # The credential write and the child's _KIROCREW_DIAL_PORT must come from
         # ONE resolution. Two calls are a TOCTOU: a --port auto gateway binding

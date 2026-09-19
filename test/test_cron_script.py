@@ -260,10 +260,13 @@ class TestCronSandboxUnavailableIsStructuredNotRaised:
         script = tmp_path / "job.py"
         script.write_text("def run(msg=''):\n    return {'status': 'ok'}\n")
         # resolve_script_path enforces an allowed root; point it at tmp_path so
-        # this test exercises the wrap_argv failure, not the path guard.
+        # this test exercises the wrap_argv failure, not the path guard. The stub
+        # accepts the launcher's keywords (`allow_bundle_roots`) rather than a
+        # bare spec, so a signature change fails at the real call site instead of
+        # inside the stub.
         monkeypatch.setattr(
             "kiro_crew.cron_script.resolve_script_path",
-            lambda spec: (str(script), "run"),
+            lambda spec, **_kw: (str(script), "run"),
         )
         result = run_script_sandboxed(f"{script}:run", "job-id", timeout=10)
         assert result["status"] == "error"
