@@ -27,6 +27,7 @@ from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     MARKER_CLOSERS,
     MARKER_OPENERS,
+    MARKER_PAIRS,
     MARKER_WRAPPERS,
     OPTIONS_RE_LINE,
     OPTIONS_RE_TRAILER,
@@ -81,6 +82,41 @@ class TestClosersNotOverlyBroad:
         match = OPTIONS_RE_LINE.search("[OPTIONS: a] | b\u3011")
         assert match is not None
         assert [s.strip() for s in match.group("labels").split("|")] == ["a]", "b"]
+
+
+class TestOpenerCloserPairs:
+    def test_openers_and_closers_are_paired_positionally(self):
+        """Each opener at index i pairs with the closer at the same index."""
+        from kiro_crew.constants import MARKER_OPENERS, MARKER_CLOSERS, MARKER_PAIRS
+
+        assert len(MARKER_OPENERS) == len(MARKER_CLOSERS)
+        assert list(zip(MARKER_OPENERS, MARKER_CLOSERS)) == list(MARKER_PAIRS)
+        # ASCII pairs
+        assert MARKER_PAIRS[0] == ("[", "]")
+        # CJK pairs
+        assert MARKER_PAIRS[1] == ("\u3010", "\u3011")  # 【 】
+        assert MARKER_PAIRS[2] == ("\uff3b", "\uff3d")  # ［ ］
+        assert MARKER_PAIRS[3] == ("\u3014", "\u3015")  # 〔 〕
+
+    def test_openers_are_not_accepted_as_closers(self):
+        """Openers alone should not close a marker."""
+        from kiro_crew.constants import MARKER_OPENERS, OPTIONS_RE_LINE
+
+        for opener in MARKER_OPENERS:
+            text = f"[OPTIONS: A | B{opener}"
+            assert (
+                OPTIONS_RE_LINE.search(text) is None
+            ), f"Opener {opener!r} incorrectly closed the marker"
+
+    def test_closers_are_not_accepted_as_openers(self):
+        """Closers alone should not open a marker."""
+        from kiro_crew.constants import MARKER_CLOSERS, OPTIONS_RE_LINE
+
+        for closer in MARKER_CLOSERS:
+            text = f"{closer}OPTIONS: A | B]"
+            assert (
+                OPTIONS_RE_LINE.search(text) is None
+            ), f"Closer {closer!r} incorrectly opened the marker"
 
 
 class TestStreamingAgreesWithTheRegexes:
