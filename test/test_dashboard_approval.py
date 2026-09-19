@@ -161,6 +161,9 @@ def _make_state(
     sessions.get_or_create = AsyncMock(return_value=(client, True, False))
     sessions.record_failure = AsyncMock()
     sessions.check_context_usage = MagicMock()
+    # Resolve-only, so it answers a PATH: an AsyncMock default would arm a MagicMock.
+    sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
+    sessions.note_project_change = AsyncMock()
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(
@@ -1941,6 +1944,12 @@ class TestPendingProjectReset:
 
     @pytest.mark.asyncio
     async def test_start_of_turn_resets_before_get_or_create(self, tmp_path):
+        """The deferred reset refuses on an ACTIVE TURN, never on a lifetime lease alone.
+
+        `refuse_only_on_active_turn` is part of the pinned call shape: a member holding only
+        its lifetime lease is idle, so the strict answer would refuse this reset forever and
+        the queued project change would never land.
+        """
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         slot = _make_slot()
         slot._pending_reset_history_key = "dashboard:chat-1-test"
@@ -1950,7 +1959,9 @@ class TestPendingProjectReset:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        state.sessions.reset.assert_any_await("dashboard:chat-1-test", skip_if_busy=True)
+        state.sessions.reset.assert_any_await(
+            "dashboard:chat-1-test", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         # reset() must appear before get_or_create() on the parent sessions mock.
         sess_calls = state.sessions.mock_calls
         reset_pos = next(i for i, c in enumerate(sess_calls) if c[0] == "reset")
@@ -1987,7 +1998,11 @@ class TestPendingProjectReset:
 
     @pytest.mark.asyncio
     async def test_end_of_turn_consumes_flag_set_mid_turn(self, tmp_path):
-        """Flag set mid-turn (by set_project MCP tool) is consumed in finally."""
+        """Flag set mid-turn (by set_project MCP tool) is consumed in finally.
+
+        `refuse_only_on_active_turn` rides the pinned shape for the same reason as the
+        start-of-turn case: the lease alone must not refuse a queued project change.
+        """
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         slot = _make_slot()
         state.sessions.reset = AsyncMock()
@@ -2001,7 +2016,9 @@ class TestPendingProjectReset:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        state.sessions.reset.assert_any_await("dashboard:chat-1-test", skip_if_busy=True)
+        state.sessions.reset.assert_any_await(
+            "dashboard:chat-1-test", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         assert slot._pending_reset_history_key is None
 
 

@@ -1869,7 +1869,9 @@ class TestConsumePendingReset:
 
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1", skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            "dashboard:chat-cov-1", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         assert slot._pending_reset_history_key is None
 
     @pytest.mark.asyncio
@@ -2112,7 +2114,9 @@ class TestConsumePendingReset:
 
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1", skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            "dashboard:chat-cov-1", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         state.sessions.discard_conversation.assert_awaited_once_with(
             "dashboard:chat-cov-1", replay=False, skip_if_busy=True
         )
@@ -2182,7 +2186,9 @@ class TestConsumePendingDiscardBoundary:
 
         torn_down = await chat_runner._consume_pending_reset(state, slot)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1", skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            "dashboard:chat-cov-1", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         assert torn_down is True
 
     @pytest.mark.asyncio
