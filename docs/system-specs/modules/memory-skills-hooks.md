@@ -3472,7 +3472,7 @@ so provider timeouts, the 1 MiB response cap, the SSRF denylist, and
 
 | Tool | Endpoint | Returns |
 |------|----------|---------|
-| `skill_discover(query, limit=10≤50, provider?)` | `GET /api/skills/-/discover` | Candidate list — id, name, description, provider, author, install count, and an `installed` flag resolved against the local catalog. Each entry carries a ready-to-paste `skill_fetch(...)` call so the `owner/repo/skill` id survives verbatim. Publisher-controlled fields are clamped per-entry and labelled untrusted in the **header**. |
+| `skill_discover(query, limit=10≤50, provider?)` | `GET /api/skills/-/discover` | Candidate list — id, name, description, provider, author, install count, and an `installed` flag resolved against the local catalog. Each entry carries a ready-to-paste `skill_fetch(...)` call so the `owner/repo/skill` id survives verbatim. Publisher-controlled fields are clamped per-entry and labelled untrusted in the **header**. The endpoint also returns one `provider_outcomes` row (`ok`, `timeout`, or `error`) per attempted provider, so the tool reports a total failure as an error and labels partial results incomplete rather than claiming a complete zero-match search. |
 | `skill_fetch(id, provider="skillsh")` | `GET /api/skills/-/discover/preview` | The skill's instruction file, usable immediately with **no install step**, capped at `_SKILL_FETCH_MAX_CHARS` (32 KiB) for the context budget, prefixed with an untrusted-content warning. |
 
 Both paths are on `server._MIXED_INTERNAL_API_PATHS` (the Skills page calls the
