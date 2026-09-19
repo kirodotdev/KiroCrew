@@ -859,7 +859,24 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # feature: the harness carries compaction internally, but its ACP surface rejects
 # commands outright and its ``session/update`` vocabulary has no compaction status.
 # A ``/compact`` prompt would reach it as ordinary text and strand the waiter.
-ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
+# codex IS a member, on a capture rather than on its documentation. codex-acp 1.11.0
+# driven over stdio advertises ``compact`` in its ``available_commands_update``
+# ("Summarize conversation to avoid hitting the context limit"), intercepts the
+# ``/compact`` prompt as that command, and answers the same ``session/prompt``
+# request once the compaction is done. The frames are a MARKED tool-call pair --
+# ``_meta.contextCompaction`` -- which ``_dispatch.parse_codex_compaction_update``
+# translates into the compaction status every consumer already reads, so the waiter
+# is satisfied from inside the turn rather than stranded after it.
+# What the capture also settles is the claim Crew was making while codex sat outside
+# this set. The refusal text says the backend "manages compaction automatically",
+# and codex's native auto-compaction is real but CONDITIONAL: with
+# ``model_auto_compact_token_limit`` set it fires on its own and emits the same
+# marked pair, and with the limit absent a session held at 50k tokens across three
+# turns compacted not once. So the promise was true only for an operator who had
+# configured it, and Crew's own threshold-driven compaction -- which reads this same
+# set through ``session_compaction._compact_unsupported_backend`` -- was declining
+# for everyone else. Membership is what stops a codex session growing unbounded.
+ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Backends that finish a manual ``/compact`` INSIDE the ``session/prompt`` turn,
 # so the turn's terminal frame is the done signal and there is no asynchronous
@@ -872,8 +889,12 @@ ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
 # "is a manual /compact offered at all". KAS is in neither. kiro-cli is in
 # ``ACP_BACKENDS_COMPACT`` but not here: it ACKs the prompt and then emits
 # ``_kiro.dev/compaction/status``, which is exactly the asynchronous result this
-# set says a non-member has. codex-acp is not a member either, so it keeps taking
-# the waiting arm it takes today.
+# set says a non-member has. codex-acp IS a member, and its evidence is the same
+# capture: the ``tool_call_update`` carrying ``status: "completed"`` and
+# ``_meta.contextCompaction`` arrives BEFORE the ``session/prompt`` response, and
+# that response is a plain ``stopReason: "end_turn"`` with no compaction status
+# following it. So the turn's terminal is the done signal, exactly as it is for
+# claude.
 #
 # Named as a set rather than spelled as an ``is_claude_backend`` check, because an
 # identity check hands the synchronous arm to every harness that is claude and
@@ -887,7 +908,7 @@ ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
 # together once it is.
 # deepseek holds that same position: absent from both, so no manual compaction is
 # offered for it and this set is never consulted for it.
-ACP_BACKENDS_INLINE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE})
+ACP_BACKENDS_INLINE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
 # inside Kiro Crew's seatbelt (kernel EPERM) — so ``sandbox.wrap_argv`` skips

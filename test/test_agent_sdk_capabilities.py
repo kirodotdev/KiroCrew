@@ -329,7 +329,7 @@ EXPECTED_CAPABILITIES = {
     "": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True),
-    "codex": (PROVIDER_ACP, "codex", True, True, False),
+    "codex": (PROVIDER_ACP, "codex", True, True, True),
     "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
 }
 

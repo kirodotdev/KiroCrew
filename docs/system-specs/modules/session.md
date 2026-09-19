@@ -614,7 +614,10 @@ send time.
   `/compact`: kiro-cli via a `/compact` **prompt** (`session/prompt` +
   `_kiro.dev/compaction/status` watch — never the string form of
   `_kiro.dev/commands/execute`, which kiro-cli 2.14.0 exits rc=0 on),
-  claude via SDK `/compact`. A backend OUTSIDE `ACP_BACKENDS_COMPACT` is
+  claude via SDK `/compact`, codex via the `compact` command its
+  `available_commands_update` advertises (the compaction is reported as a
+  `tool_call` pair marked `_meta.contextCompaction`, translated by
+  `_dispatch.parse_codex_compaction_update`). A backend OUTSIDE `ACP_BACKENDS_COMPACT` is
   declined instead (`"compact_unsupported"`, see the gate ladder below):
   KAS never answers the `/compact` prompt with a compaction status, so an
   ungated dispatch stranded the status wait for the whole budget WHILE

@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.metrics.events import CONTEXT_COMPACTIONS, emit_counter
 from kiro_crew.metrics.sessions import END_REASON_RECYCLED, record_session_ended
 
@@ -528,7 +529,23 @@ class CompactionCoordinator:
                         "failed",
                     ):
                         status = event.text
-                if status is None:
+                if status is None and not capabilities_of(session.provider).compacts_inline:
+                    # The asynchronous arm, and it is now asked for by capability
+                    # rather than taken by default. A backend that finishes the
+                    # compaction INSIDE the prompt turn has no second result
+                    # coming: the turn's terminal was the whole answer, so a turn
+                    # that ended without a status is a turn that did not compact.
+                    # Waiting anyway spends the entire result budget on a message
+                    # that cannot arrive -- while HOLDING this session's turn
+                    # semaphore, so every queued turn waits it out too -- and then
+                    # recycles the session regardless. Skipping lets the raise
+                    # below recycle immediately.
+                    #
+                    # Read as ``compacts_inline`` (``ACP_BACKENDS_INLINE_COMPACTION``)
+                    # and not as a backend name, so a harness that demonstrates
+                    # inline compaction is served by joining that set. The read is
+                    # fail-safe in the direction that matters: an unrecognized
+                    # provider shape answers False and keeps the wait it has today.
                     result_wait_used = self._deps.compact_result_wait_secs(
                         time.monotonic() - started
                     )

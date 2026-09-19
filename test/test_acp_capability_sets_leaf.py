@@ -172,7 +172,9 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # as kiro-cli). KAS is held out of sharing for a different reason again
     # -- until a keep-aware teardown lands -- so the same shape has two causes.
     assert ACP_BACKENDS_SESSION_SHARING == frozenset({ACP_BACKEND_KIRO})
-    assert ACP_BACKENDS_COMPACT == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
+    assert ACP_BACKENDS_COMPACT == frozenset(
+        {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+    )
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO})
     assert ACP_BACKENDS_STEER == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     assert ACP_BACKENDS_ACP_RUNTIME == frozenset(

@@ -774,6 +774,64 @@ def parse_claude_compaction_notice(chunk: str) -> tuple[str, str] | None:
     return None
 
 
+#: The key codex-acp stamps on ``_meta`` for a context-compaction frame, with a
+#: ``{"version": 1}`` payload. Its own name for the field, so a reader can match
+#: this literal against the adapter bundle.
+_CODEX_COMPACTION_META_KEY = "contextCompaction"
+
+
+def parse_codex_compaction_update(update: dict[str, Any]) -> str | None:
+    """Classify a codex-acp context-compaction frame, or ``None``.
+
+    Returns ``started`` or ``completed`` -- the same vocabulary kiro-cli's
+    ``_kiro.dev/compaction/status``, KAS's summarization kinds and the claude
+    notices already use -- so codex becomes the fourth producer of
+    ``EVENT_COMPACTION_STATUS`` and every consumer works with no per-surface
+    change.
+
+    codex-acp reports compaction as an ordinary ``tool_call`` pair rather than an
+    out-of-band notification, and unlike the claude adapter it stamps the pair:
+    ``_meta.contextCompaction`` is a MARKER, so this is a structural match rather
+    than a guess about prose. Captured off codex-acp 1.11.0 driven over stdio::
+
+        tool_call        kind=think  status=in_progress  title="Compact conversation"
+                         _meta={"contextCompaction": {"version": 1}}
+        tool_call_update             status=completed    title="Compact conversation"
+                         _meta={"contextCompaction": {"version": 1}}
+        session/prompt response -> {"stopReason": "end_turn"}
+
+    Matched on the marker and the FRAME KIND, never on the title -- the title is
+    display text the adapter is free to reword, and it is localized on some
+    clients.
+
+    Two arms rather than three, because there is no third frame to read:
+
+    * There is no ``failed`` status. A compaction that errors emits an
+      ``agent_message_chunk`` ("Error running remote compact task: ...") and then
+      the adapter's ``runCompact`` never resolves, so the ``session/prompt``
+      request itself is never answered (observed: a 240s wait with no response).
+      Synthesizing a ``failed`` from that text would be the prose guess this
+      marker exists to avoid, and the strand is a prompt-timeout problem rather
+      than a compaction-status one.
+    * A ``tool_call`` whose status is already ``completed`` is deliberately NOT a
+      terminal. That is the shape a past compaction takes when the adapter
+      REPLAYS a loaded session's history, and reading it as a live terminal would
+      reset the context counters against a window nobody just summarized.
+    """
+    kind = update.get("sessionUpdate")
+    if kind not in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE):
+        return None
+    meta = update.get("_meta")
+    if not isinstance(meta, dict) or _CODEX_COMPACTION_META_KEY not in meta:
+        return None
+    status = update.get("status")
+    if kind == UPDATE_TOOL_CALL and status == "in_progress":
+        return "started"
+    if kind == UPDATE_TOOL_CALL_UPDATE and status == "completed":
+        return "completed"
+    return None
+
+
 _ACP_SHELL_KIND = "execute"
 
 
@@ -2649,6 +2707,7 @@ __all__ = [
     "parse_prompt_token_usage",
     "parse_text_chunk",
     "parse_claude_compaction_notice",
+    "parse_codex_compaction_update",
     "make_unified_diff",
     "select_tool_title",
     "is_shell_kind",
