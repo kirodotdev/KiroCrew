@@ -41,6 +41,16 @@ from kiro_crew.acp.client import AcpClient, _resolve_spawn_env
 from kiro_crew.acp.runtime import AcpRuntime
 
 
+@pytest.fixture(autouse=True)
+def _fake_process_admission(monkeypatch):
+    # This file tests IO placement and lifecycle with fake subprocesses. Native
+    # pin/admission contracts are exercised by test_windows_cleanup_capacity.
+    async def create(factory):
+        return await factory()
+
+    monkeypatch.setattr(client_mod.platform_compat, "create_windows_cleanup_owned_process", create)
+
+
 async def _stop_stderr_drain(client: AcpClient) -> None:
     """Cancel and await the stderr-drain task a mocked _spawn started.
 
@@ -627,9 +637,10 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         monkeypatch.setattr(runtime_mod, "browser_session_env", lambda env: {})
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
     @pytest.mark.parametrize("raise_in", ["finish_suspended_spawn", "initialize", "cancel"])
     async def test_failed_spawn_unwinds_live_tree_and_tracking(
-        self, tmp_path, monkeypatch, raise_in
+        self, tmp_path, monkeypatch, raise_in, windows
     ) -> None:
         """Rejected spawns own the whole tree, even before PID tracking exists.
 
@@ -640,11 +651,13 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         from kiro_crew import platform_compat, session_pid
 
         root = 6100
-        # pid -> group: two generations of MCP descendants share the root's
-        # group; another runtime must be left alone by the cleanup.
-        groups = {root: root, root + 1: root, root + 2: root, 6200: 6200}
+        # Windows tree teardown follows parentage, not POSIX group membership.
+        # The grandchild has its own process group on that branch.
+        groups = {root: root, root + 1: root, root + 2: root + 2 if windows else root, 6200: 6200}
+        parents = {root: 6000, root + 1: root, root + 2: root + 1, 6200: 6000}
         initialized = asyncio.Event()
         requests = []
+        spawns = []
 
         class ReadPipe(asyncio.StreamReader):
             def __init__(self):
@@ -682,20 +695,47 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         process = Process()
         self._patch_prelude(monkeypatch, tmp_path, process)
 
+        async def fake_spawn(*args, **kwargs):
+            spawns.append(kwargs)
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
         def kill_tree(pid, sig):
             assert pid == root, "cleanup targeted another runtime"
             assert sig in (platform_compat.SIGTERM, platform_compat.SIGKILL)
-            for member, group in list(groups.items()):
-                if group == pid:
-                    del groups[member]
+            victims = {member for member, group in groups.items() if group == pid}
+            if windows:
+                victims = {pid}
+                while (
+                    children := {child for child, parent in parents.items() if parent in victims}
+                    - victims
+                ):
+                    victims.update(children)
+            for member in victims:
+                groups.pop(member, None)
 
         # A closed port, not a proxy: no fabricated PID can fall back to host
         # liveness, native signals, process enumeration or Windows job handles.
+        async def terminate_windows_tree(proc):
+            assert proc is process
+            kill_tree(proc.pid, platform_compat.SIGTERM)
+            await proc.wait()
+            session_pid.retire_windows_tree_tracking(proc.pid)
+            return True
+
+        async def with_fake_process(factory):
+            return await factory()
+
         backend = SimpleNamespace(
-            IS_POSIX=True,
-            CREATE_NEW_PROCESS_GROUP=0,
-            _SUBPROCESS_NO_WINDOW=0,
-            CREATE_SUSPENDED=0,
+            create_windows_cleanup_owned_process=with_fake_process,
+            finish_windows_cleanup_owned_spawn=with_fake_process,
+            IS_POSIX=not windows,
+            IS_WINDOWS=windows,
+            terminate_windows_asyncio_tree=terminate_windows_tree,
+            CREATE_NEW_PROCESS_GROUP=0x200 if windows else 0,
+            _SUBPROCESS_NO_WINDOW=0x08000000 if windows else 0,
+            CREATE_SUSPENDED=0x4 if windows else 0,
             SIGTERM=platform_compat.SIGTERM,
             SIGKILL=platform_compat.SIGKILL,
             get_process_start_id=lambda pid: f"start-{pid}" if pid in groups else None,
@@ -775,10 +815,17 @@ class TestRuntimeShieldSurvivesAFailedAppend:
                     assert caught.value is boom
                     assert runtime._reader_task is None and runtime._stderr_task is None
 
+                assert len(spawns) == 1
+                assert spawns[0]["start_new_session"] is (not windows)
+                assert spawns[0]["creationflags"] == (
+                    backend.CREATE_NEW_PROCESS_GROUP
+                    | backend._SUBPROCESS_NO_WINDOW
+                    | backend.CREATE_SUSPENDED
+                )
                 assert root not in groups, "failed spawn leaked its live root"
                 assert (
                     root + 1 not in groups and root + 2 not in groups
-                ), "failed spawn leaked same-group MCP descendants"
+                ), "failed spawn leaked MCP descendants"
                 assert groups == {6200: 6200}, "cleanup must preserve unrelated runtimes"
                 assert process.returncode is not None, "failed spawn never reaped its process"
                 assert runtime._process is None and runtime._dead

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp import runtime as rt
 
 
@@ -47,6 +48,58 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     return r
 
 
+class _StubbedPlatformCompat:
+    """The real ``platform_compat``, with only what a kill test must pin replaced.
+
+    These tests describe the POSIX-shaped teardown, so the module they run
+    against has to answer ``IS_WINDOWS`` False on a Windows host. Substituting a
+    hand-listed namespace for the module did that and paid for it twice: every
+    production read of an attribute nobody thought to list raised
+    ``AttributeError`` from inside the code under test, and the list went stale
+    the moment the teardown started reading one more thing (the root-identity
+    check). Delegating instead means only the pins are fiction.
+
+    Every destructive entry point is pinned to ``None`` rather than delegated, so
+    a test that forgets to stub one fails loudly on a call to ``None`` instead of
+    aiming a real terminate at a fabricated pid on the host running the suite.
+    Reads (``get_process_start_id``, ``pid_exists`` where a test sets it, the
+    signal constants) come from the real module. Assignment lands on the
+    instance, so ``monkeypatch.setattr(rt.platform_compat, ...)`` in a test wins
+    over both the pins and the delegation.
+    """
+
+    #: Anything that can signal, terminate or reap a process on this host.
+    _UNREACHABLE = (
+        "kill_process_tree",
+        "terminate_windows_asyncio_tree",
+        "create_windows_cleanup_owned_process",
+        "finish_windows_cleanup_owned_spawn",
+        "pid_exists",
+    )
+
+    def __init__(self) -> None:
+        self.IS_WINDOWS = False
+        for name in self._UNREACHABLE:
+            setattr(self, name, None)
+
+    def kill_process_tree_pinned(self, pid: int, expected_start_time: str, sig: int) -> bool:
+        """The POSIX half of the real function, spelled out rather than delegated.
+
+        The real one branches on ``platform_compat``'s OWN ``IS_WINDOWS``, which
+        this class cannot pin: on a Windows host it would take the owned-handle
+        drain and open a real process object for a pid these tests invented.
+        ``IS_WINDOWS`` False is already the premise here, and on that side the
+        real function is exactly ``kill_process_tree(pid, sig)`` -- so resolve it
+        through the instance, where the pin above (or a test's own stub) lives.
+        """
+        return self.kill_process_tree(pid, sig)
+
+    def __getattr__(self, name: str):
+        # Reached only for names not set on the instance, i.e. neither a pin nor
+        # a test's own override.
+        return getattr(platform_compat, name)
+
+
 @pytest.fixture(autouse=True)
 def _fast_kill_windows(monkeypatch):
     """Make the two escalation waits time out without waiting for a real clock.
@@ -57,6 +110,7 @@ def _fast_kill_windows(monkeypatch):
     not promise. Zero makes `wait_for` raise on its first check: same code path,
     reached deterministically with no sleeping.
     """
+    monkeypatch.setattr(rt, "platform_compat", _StubbedPlatformCompat())
     monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", 0)
     # The unreachable-teardown line asks the kernel whether the group still holds
     # anything. Several tests here pin `IS_POSIX` True to exercise the POSIX

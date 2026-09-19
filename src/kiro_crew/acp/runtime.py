@@ -2284,33 +2284,36 @@ class AcpRuntime:
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
-            self._process = await create_subprocess_limited(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._spawn_work_dir,
-                limit=_STDOUT_BUFFER_LIMIT,
-                # POSIX: setsid so kill() can killpg the whole tree. Windows:
-                # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
-                # makes the child tree taskkill /T-reapable (see platform_compat
-                # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
-                # window Windows would otherwise pop for this console child spawned
-                # from the windowless gateway (0 on POSIX, so no effect there).
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=(
-                    platform_compat.CREATE_NEW_PROCESS_GROUP
-                    | platform_compat._SUBPROCESS_NO_WINDOW
-                    | platform_compat.CREATE_SUSPENDED
+            self._process = await platform_compat.create_windows_cleanup_owned_process(
+                functools.partial(
+                    create_subprocess_limited,
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    # POSIX: setsid so kill() can killpg the whole tree. Windows:
+                    # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
+                    # makes the child tree taskkill /T-reapable (see platform_compat
+                    # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
+                    # window Windows would otherwise pop for this console child spawned
+                    # from the windowless gateway (0 on POSIX, so no effect there).
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=(
+                        platform_compat.CREATE_NEW_PROCESS_GROUP
+                        | platform_compat._SUBPROCESS_NO_WINDOW
+                        | platform_compat.CREATE_SUSPENDED
+                    ),
+                    # None off macOS, where nothing binds. When set, the child enters
+                    # the workspace through this verified descriptor instead of
+                    # resolving ``cwd``'s pathname, which a same-UID symlink retarget
+                    # could aim elsewhere in between; ``cwd`` stays the same directory
+                    # by name so the spawn keeps reporting a real path.
+                    chdir_fd=self._bound_workspace_fd,
+                    env=env,
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
                 ),
-                # None off macOS, where nothing binds. When set, the child enters
-                # the workspace through this verified descriptor instead of
-                # resolving ``cwd``'s pathname, which a same-UID symlink retarget
-                # could aim elsewhere in between; ``cwd`` stays the same directory
-                # by name so the spawn keeps reporting a real path.
-                chdir_fd=self._bound_workspace_fd,
-                env=env,
-                profile=RLIMIT_PROFILE_SESSION_HOST,
             )
         except BaseException:
             await self._discard_bound_workspace()
@@ -2349,11 +2352,16 @@ class AcpRuntime:
             # the same reason as in `AcpClient._spawn`: the Windows path reads config
             # and walks the process and thread tables, and this runtime's event loop
             # is serving every other session while it spawns.
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(),
-                functools.partial(
-                    finish_suspended_spawn, self._process, self._pid, label=f"{KIRO_CLI_BIN} acp"
-                ),
+            await platform_compat.finish_windows_cleanup_owned_spawn(
+                lambda: asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(
+                        finish_suspended_spawn,
+                        self._process,
+                        self._pid,
+                        label=f"{KIRO_CLI_BIN} acp",
+                    ),
+                )
             )
             self._spawn_monotonic = time.monotonic()
             self._last_activity = time.monotonic()
@@ -2743,8 +2751,15 @@ class AcpRuntime:
         on the group the SIGTERM did, never on a fresh runtime that took the
         root's number in between.
 
-        Windows has no process groups; ``kill_process_tree`` walks the tree with
-        ``taskkill /T`` there and a reaped root means the walk found nothing.
+        Windows has no process groups, so this ladder is the POSIX half of the
+        teardown and a Windows runtime does not reach it: ``_kill_inner`` drains
+        the tree through its owned handles first and returns. That drain is what
+        closes the reaped-root gap described above on Windows -- the descendants
+        are pinned when the tree is SPAWNED, so a root that dies before any of
+        them was recorded is still reachable, where ``kill_process_tree``'s
+        ``taskkill /T`` walk would find nothing to tear down. The vouched-group
+        path below is therefore guarded by ``IS_POSIX``, not merely
+        platform-agnostic code that happens to no-op.
         Every call is off-loop: ``taskkill`` is a blocking spawn, and the group
         walk reads ``/proc``.
         """
@@ -2766,13 +2781,17 @@ class AcpRuntime:
             assert recorded is not None  # implied by identity == "holds"
             try:
                 # PINNED, not merely checked. The tree kill is deferred to an
-                # executor and, on Windows, resolves this pid from a separate
-                # taskkill process -- by which time the handle that verified the
-                # identity is closed, so the root can exit and the number be
-                # recycled in between and taskkill /T would tear down whatever
-                # holds it now. kill_process_tree_pinned keeps the query handle
-                # open across the terminate, which is what makes the number still
-                # mean this process. POSIX delegates straight through, where
+                # executor, so the identity verified here has to stay pinned
+                # across that hop: a check that ends with its handle closed
+                # leaves the root free to exit and the number free to be
+                # recycled in between, and a kill that re-resolves the pid would
+                # then tear down whatever holds it now.
+                # kill_process_tree_pinned keeps the identity PINNED across the
+                # terminate, which is what makes the number still mean this
+                # process. On Windows it re-resolves nothing from the number at
+                # all: it drains the tree through process handles opened against
+                # this exact creation identity and held open until every member's
+                # exit is confirmed. POSIX delegates straight through, where
                 # os.killpg is issued in-process by this same interpreter.
                 pinned = await loop.run_in_executor(
                     subprocess_executor(),
@@ -2902,6 +2921,39 @@ class AcpRuntime:
                 await self._stderr_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        if self._process and platform_compat.IS_WINDOWS:
+            # The Windows completion of the same teardown ``_signal_tree`` drives
+            # on POSIX, and it runs INSTEAD of that ladder rather than inside it.
+            # Both close the one failure: a root that exits while its agent and
+            # MCP descendants keep running and holding their memory. They cannot
+            # share a seam, because the evidence arrives at different times. POSIX
+            # can name the survivors AFTER the fact -- the root was a session
+            # leader, so its pid is still the group id and a live member vouches
+            # for the group by an inherited token. Windows has no group and no
+            # such token, and a reaped root leaves ``taskkill /T`` nothing to
+            # walk, so the tree is instead pinned by handle when it is SPAWNED
+            # and drained from those handles here. That also makes the ladder
+            # below vestigial on Windows and not merely unused: the drain returns
+            # only once every member's exit is CONFIRMED, so there is no grace
+            # left to serve and no escalation owed. A drain that cannot confirm
+            # raises, keeping the pins and the tracking for maintenance to retry,
+            # which is why this must not be softened into a best-effort call.
+            process = self._process
+            pid = process.pid
+            try:
+                await platform_compat.terminate_windows_asyncio_tree(process)
+            except (OSError, asyncio.TimeoutError):
+                logger.warning(
+                    "AcpRuntime Windows tree cleanup incomplete for PID %s; retaining process",
+                    pid,
+                    exc_info=True,
+                )
+                raise
+            self._process = None
+            self._process_instance = ""
+            # Tracking was retired by the shared drain under the original pin.
+            return
 
         if self._process:
             pid = self._process.pid

@@ -2137,3 +2137,20 @@ the response CSP. §13 covers their token scoping;
 Writers: `website/src/components/AppHost.tsx`, `apps/manifest.py` (the manifest
 `entry` field), `apps/routes.py` (static UI serving),
 `dashboard/server.py` (the CSP allowances the CDN import map needs).
+
+
+## Windows stale-backend cleanup capacity
+
+Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.
+An unadmitted root at capacity is refused before opening/terminating it and keeps
+its PID-file row. An incomplete drain is not absence. A pending tree's record
+survives a later numeric root-death probe. A successful Windows exact-tree drain
+needs no second numeric-PID escalation.
+
+The cleanup state stores only a boolean requesting app tracking retirement, not
+an app object, callback or unbounded name. `retire_windows_app_tracking` removes
+only rows matching the pinned root PID and creation identity under the app PID-file
+lock, using a strict read and checked atomic write. Read/write failure retains the
+pin and capacity for ordinary maintenance retry; unrelated or newer identities
+survive. The manual-overflow contract and operator recovery procedure are in
+[platform-compat](../common/platform-compat.md#windows-session-tree-teardown).

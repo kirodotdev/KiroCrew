@@ -14,6 +14,20 @@ import pytest
 
 from kiro_crew import resource_status as rs
 
+
+async def _spawn_without_windows_cleanup_capture(factory):
+    """Run the spawn factory the way the POSIX branch of the seam does.
+
+    On Windows the client spawns through
+    ``platform_compat.create_windows_cleanup_owned_process``, which reserves a
+    cleanup slot and pins the real child's exact handles at creation. A mocked
+    spawn owns no real child, so there is nothing to pin, and the capture would
+    aim Win32 handle calls at a ``MagicMock``. The capacity contract has its own
+    tests; these two ask only what environment the spawn is handed.
+    """
+    return await factory()
+
+
 # ── compute_xdist_auto_workers ───────────────────────────────────────────────
 
 
@@ -165,6 +179,10 @@ async def test_spawn_env_carries_xdist_cap(tmp_path, monkeypatch) -> None:
         patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
         patch("kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)),
         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        patch(
+            "kiro_crew.platform_compat.create_windows_cleanup_owned_process",
+            side_effect=_spawn_without_windows_cleanup_capture,
+        ),
         patch("kiro_crew.session._track_pid"),
         patch("kiro_crew.session._track_session_pid"),
         _with_raw_config({}),
@@ -195,6 +213,10 @@ async def test_spawn_env_leaves_preset_xdist_cap_alone(tmp_path, monkeypatch) ->
         patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
         patch("kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)),
         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        patch(
+            "kiro_crew.platform_compat.create_windows_cleanup_owned_process",
+            side_effect=_spawn_without_windows_cleanup_capture,
+        ),
         patch("kiro_crew.session._track_pid"),
         patch("kiro_crew.session._track_session_pid"),
         _with_raw_config({"resource_limits": {"xdist_auto_cap": 9}}),

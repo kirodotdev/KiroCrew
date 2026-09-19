@@ -201,6 +201,16 @@ def _async_stub_for(real: Any, answer: Callable[[dict[str, Any]], Any]) -> Calla
     return _stub
 
 
+async def _windows_cleanup_passthrough(factory: Any) -> Any:
+    """Invoke the spawn factory without charging Windows cleanup capacity.
+
+    Mirrors the POSIX branch of ``create_windows_cleanup_owned_process``: the
+    factory runs, its child is returned, and no admission slot or handle pin is
+    taken. A captured launch owns no real child, so there is nothing to pin.
+    """
+    return await factory()
+
+
 #: Collaborators the capture answers with one of the call's OWN arguments, and which
 #: argument each answers with. Every one of them reads the host otherwise -- the two
 #: env resolvers and the pod home remap read config and the real environment, the pod
@@ -251,6 +261,19 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path) -> None:
     stack.extend(
         patch.object(client_mod, name, side_effect=_stub_for(getattr(client_mod, name), answer))
         for name, answer in _PASSTHROUGH_STUBS.items()
+    )
+    # The Windows cleanup admission is not a launch answer either: it charges a
+    # process-wide capacity slot and pins the REAL child's original handle. The
+    # MagicMock above has no handle to pin, and a failed pin is deliberately
+    # sticky (manual handling refuses every later start in this interpreter),
+    # so the admission hands the factory straight through instead of judging
+    # a fake child. The capacity contract has its own tests.
+    stack.append(
+        patch.object(
+            client_mod.platform_compat,
+            "create_windows_cleanup_owned_process",
+            side_effect=_windows_cleanup_passthrough,
+        )
     )
     stack.extend(
         patch.object(
@@ -454,6 +477,11 @@ def _capture_runtime_served(backend: str, tmp_path: Path, parent_env: dict) -> d
     stack.extend(
         [
             patch.object(runtime_mod, "create_subprocess_limited", side_effect=_factory),
+            patch.object(
+                runtime_mod.platform_compat,
+                "create_windows_cleanup_owned_process",
+                side_effect=_windows_cleanup_passthrough,
+            ),
             patch.object(runtime_mod, "_forward_ssh_auth_sock", return_value=False),
             patch.object(runtime_mod, "browser_session_env", return_value={}),
             patch.object(runtime_mod, "browser_socket_env", return_value={}),

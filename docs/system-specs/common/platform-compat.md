@@ -236,6 +236,172 @@ before it was ever observed/pinned remains unverifiable; a single numeric snapsh
 is not enough to recover that chain. The deterministic and self-owned native
 regressions are in `test/test_platform_compat.py`, `TestProcessDescendants`.
 
+## Windows session-tree teardown
+
+Windows physical ACP starts reserve cleanup bookkeeping atomically before the
+spawn await, across threads and event loops. Both transports use the same
+process-wide admission set: `_WINDOWS_CLEANUP_ROOT_LIMIT` is 64 physical trees,
+including starting, live, failed and manually quarantined trees. This is a separate
+internal cleanup limit, not a change to pool, RSS, Job or timeout configuration.
+A live tree keeps its reservation, so simultaneous failures cannot exhaust the
+space needed to retain already-admitted roots. A cancelled launch settles its
+spawn task and takes ownership of any returned child before attempting cleanup;
+only an empty failed-launch reservation or a verified retired tree is refunded.
+The suspended-resume worker also settles before cancellation initiates teardown.
+
+The Windows factory capture boundary is the successful native `CreateProcess`
+return, before CPython closes child-side pipe descriptors, publishes the Popen
+handle, closes the initial thread handle, registers the process wait, or connects
+async pipes. The cleanup reservation receives the exact native process handle
+there; CPython and cleanup then share one reference-counted `subprocess.Handle`.
+A post-creation exception publishes this owner for maintenance even without a
+returned asyncio `Process`. Pre-creation exceptions refund the empty reservation.
+The initial thread handle also has a per-call reference-counted owner so an early
+pipe-descriptor failure cannot skip its release.
+
+The reservation's exact handle is recorded before the tree's identity is read, and
+that read runs on `subprocess_executor()` rather than the starting loop. The read
+polls for an exit FILETIME the kernel publishes slightly after it reports the exit,
+so a child that dies the moment it resumes makes it wait tenths of a second — on a
+loop that is serving every other session. Recording the handle first is what makes
+the hop safe: a cancellation arriving during the read still leaves this exact child
+retained for maintenance instead of dropping it.
+
+This narrowly reuses CPython functions with per-call substituted global bindings;
+it does not replace asyncio/Popen globals or install methods on the live loop.
+Only the standard CPython Proactor subprocess implementation is admitted; a
+different loop implementation refuses before creation. The admission reads private
+CPython shapes, so it is version-coupled and the coupling is measured rather than
+assumed: the shipped predicate and its capture were exercised against a real child
+process on stock Windows CPython 3.12, 3.13 and 3.14 — every minor `requires-python
+= ">=3.12"` admits that exists to measure — and a non-Proactor loop was refused in
+the same run. `requires-python` carries no upper bound, so a later minor is
+unmeasured by construction: it either satisfies the predicate or refuses every
+tracked Windows start rather than capturing nothing silently, which is the intended
+direction of failure. Both refusals name the measured interpreters, so the remedy
+reaches the operator without this file; re-running that measurement is the gate for
+adopting a new minor, and the committed form of it is
+`test/test_runtime_cleanup_windows.py::test_native_admission_and_owner_shutdown_refund_after_verified_drain`,
+which spawns a real admitted tree through this capture on whichever interpreter is
+running. It runs on the Windows CI shards, so a minor that reshapes these internals
+turns the adoption question into a failing check rather than an archaeology exercise.
+POSIX and untracked
+Windows launches retain their original path. This is in-process ownership, not
+protection against gateway death, interpreter failure or resource exhaustion
+inside the native call/capture itself.
+
+`_WINDOWS_CLEANUP_IDENTITY_LIMIT` is 4096 exact objects per tree (root included),
+shared by retained handles, signalled identities and terminal-scan identities.
+This gives generous build/browser fan-out headroom while bounding retention per
+tree; the number of trees is separately bounded by the root reservation cap, so
+the aggregate follows from those two named limits rather than a figure recorded
+here that would drift when either constant moves. These are engineering
+bookkeeping ceilings, not measurements of maximum workload size. Discovery checks
+the retained/candidate union before opening new child handles. Its breadth-first
+candidate stores share that limit. Toolhelp's unrelated-host input is separately
+bounded at `_WINDOWS_CLEANUP_SNAPSHOT_LIMIT` (65536 entries) during enumeration,
+not after allocating the complete process table. Snapshot overflow is incomplete
+evidence, never an empty tree. Temporary unvalidated candidate handles are closed
+on discovery failure; previously owned root/intermediary pins remain retained.
+
+Any identity/snapshot overflow permanently marks the tree
+`manual-handling-required` in this gateway process. It keeps its pins and tracking,
+receives no automatic refund and is excluded from retries. A later shorter
+snapshot cannot clear the mark. New Windows physical starts are refused while
+any such mark exists; other already-admitted trees remain owned and can drain.
+The transition emits an error with the root PID and retained count. This is
+**bookkeeping quarantine, not OS isolation**: unobserved descendants may still
+run. No API, eviction rule or successful numeric PID probe clears the condition.
+Ordinary transient failures without overflow continue to retry automatically.
+
+Operator recovery is manual: preserve the diagnostics and tracking, stop creating
+new work, and use independently verified process ownership to account for and stop
+the affected workload, including descendants not represented by the retained
+pins. Do not kill a process merely because it reused a logged PID. If complete
+ownership/absence cannot be established, a planned host reboot is the reliable
+way to end surviving processes (save unrelated work first). Restart the gateway
+only after that independent cleanup or host restart. A gateway restart alone
+neither terminates all descendants nor proves they are gone; it loses this
+process-local quarantine and its pins. Deleting tracking files is not recovery.
+
+ACP runtime and direct-client teardown retain the original asyncio process
+object and drain it through `terminate_windows_asyncio_tree`. The Windows
+`kill_process_tree_pinned` path uses the same `terminate_windows_process_tree_owned`
+operation after confirming the recorded creation identity. Neither path relies
+on a still-running root PID or a successful `taskkill` return code.
+
+The bounded worker discovers descendants through exact handles, terminates each
+verified object and scans each parent again after confirmed exit. A successful
+pass closes every acquired handle. A failed pass from an owning caller transfers
+the original root and every already observed intermediary handle into
+process-local pending state keyed by the exact root incarnation; it retains no
+provider or client object. Repeated transfers deduplicate and close only the
+redundant root handle. The existing off-loop
+`session_pid.cleanup_orphaned_session_roots` maintenance entry advances a finite,
+fair snapshot of that state before its ordinary PID-file orphan scan; a tree
+already draining on another caller is skipped with a non-blocking lock and
+rotated behind its peers, so one busy entry cannot hold up the sweep (caller-
+initiated cleanup keeps its blocking serialization). A denied
+tree remains retained and visible and moves behind its peers; only an
+exact-handle-verified complete drain retires the state. On completion, a
+synchronous maintenance callback retires the session layer's PID-file records
+and protected-PID shield WHILE the state lock is held and the exact root handle
+still pins the incarnation, BEFORE any handle is closed — so a recycled pid
+cannot register fresh tracking between the close and the untrack. The handles are
+closed only after that callback succeeds; a transient callback/write failure
+leaves the state un-retired with its handles open, so its receipt survives for
+the next tick rather than being lost, and an in-flight duplicate owner that has
+already completed the same state contributes no second retirement. This is
+same-process retry continuity, not crash recovery: the
+maintenance path never reconstructs a missing original handle or gains cleanup
+authority from a PID, a PID-file entry, or a successful `TerminateProcess`
+return. Phase-one periodic PID identification remains non-destructive.
+
+Caller cancellation is delivered after its current cleanup attempt settles.
+Unknown identity/ancestry, denied access or a non-draining tree is a failure, not
+an empty tree; ACP retains the original process and PID tracking when the owning
+call does not complete, while the transferred exact handles remain independently
+retryable after provider/client references are dropped.
+
+This does not reconstruct an intermediary that exited before any available
+handle observed it, and the completeness a successful drain asserts is therefore
+scoped to the members it retains: the pinned root plus every descendant some
+snapshot reached through a still-certifiable chain. An ancestry chain that IS
+observed but cannot be certified raises rather than certifying a subset — that
+much is a refusal, never permission to signal numeric PIDs. A live grandchild
+whose only edge to the root ran through an intermediary that exited before the
+first scan is a different case and must not be read as covered by that refusal:
+Toolhelp reports its parent as a vanished PID, so no walk from the root reaches
+it, the drain confirms the exits it can see and reports success, and that
+residue falls to the PID-file orphan sweep exactly as it did before this
+change. Pinning at spawn closes the window for the ROOT, which is the reaped-root
+case this fix exists for; it does not pin an intermediary nobody has seen yet. POSIX teardown and Windows resource Job limits are
+unchanged. Native small-process regressions live in
+`test/test_runtime_cleanup_windows.py`; deterministic timing/error contracts
+live in `test/test_windows_tree_reap.py`.
+
+Reading a handle's identity has two callers with different needs, and the split
+is load-bearing. A drain must certify that a member exited, so it asks for the
+exit bound and accepts a short poll while the kernel publishes the exit
+`FILETIME`. `get_process_start_id` answers a narrower question — which process
+object a PID names — and publishes itself as non-blocking and safe to call
+directly from the event loop, so its Windows arm asks for the creation half
+alone: no liveness wait, no poll, and no sleep on a coroutine's thread. The
+creation `FILETIME` is the whole identity, so answering without the exit half
+costs the caller nothing.
+
+Teardown deliberately does not keep a Job handle and call `TerminateJobObject`
+instead of draining exact handles. The Job that `apply_job_limits` creates is
+anonymous and is closed before that function returns, so there is no handle to
+retain and no name to reopen; `KILL_ON_JOB_CLOSE` is left unset on purpose,
+because setting it would tie an agent tree's LIFETIME to a resource ceiling's
+handle. That ceiling is also fail-soft by published contract — a missing Job must
+not fail a spawn, and four Win32 call sites log and continue — so making
+reclamation depend on it would either turn every ceiling failure into a refused
+start or leave exactly the degraded host with no reclamation at all. A Job also
+enforces by REFUSING new members rather than killing existing ones, so a
+saturated Job is a state the gateway must survive, not a teardown primitive.
+
 ## Pod lifetime Job primitives
 
 `pod._windows_job.PodJob` owns pod-specific named Windows Job handles. Creation

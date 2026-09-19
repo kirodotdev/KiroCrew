@@ -7745,26 +7745,29 @@ class AcpClient:
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
-            self._process = await create_subprocess_limited(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._spawn_work_dir,
-                limit=_STDOUT_BUFFER_LIMIT,
-                env=env,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=(
-                    platform_compat.CREATE_NEW_PROCESS_GROUP
-                    | platform_compat._SUBPROCESS_NO_WINDOW
-                    | platform_compat.CREATE_SUSPENDED
+            self._process = await platform_compat.create_windows_cleanup_owned_process(
+                functools.partial(
+                    create_subprocess_limited,
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    env=env,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=(
+                        platform_compat.CREATE_NEW_PROCESS_GROUP
+                        | platform_compat._SUBPROCESS_NO_WINDOW
+                        | platform_compat.CREATE_SUSPENDED
+                    ),
+                    # None off macOS, where nothing binds. When set, the child enters
+                    # the workspace through this verified descriptor instead of
+                    # resolving ``cwd``'s pathname, which a same-UID symlink retarget
+                    # could aim elsewhere in between.
+                    chdir_fd=self._bound_workspace_fd,
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
                 ),
-                # None off macOS, where nothing binds. When set, the child enters
-                # the workspace through this verified descriptor instead of
-                # resolving ``cwd``'s pathname, which a same-UID symlink retarget
-                # could aim elsewhere in between.
-                chdir_fd=self._bound_workspace_fd,
-                profile=RLIMIT_PROFILE_SESSION_HOST,
             )
         except BaseException:
             await self._discard_bound_workspace()
@@ -7800,11 +7803,13 @@ class AcpClient:
             # and thread tables (see the note on finish_suspended_spawn); the child
             # is frozen until it returns, so this is the one await the spawn cannot
             # skip.
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(),
-                functools.partial(
-                    finish_suspended_spawn, self._process, self._pid, label=_spawn_label
-                ),
+            await platform_compat.finish_windows_cleanup_owned_spawn(
+                lambda: asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(
+                        finish_suspended_spawn, self._process, self._pid, label=_spawn_label
+                    ),
+                )
             )
             # Identity for the recycle guards that later decide whether this pid
             # may be signalled. ``get_process_start_id`` is in-process on every
@@ -7980,6 +7985,11 @@ class AcpClient:
         Args:
             force: If True, kill immediately (used during shutdown).
         """
+        if self._process and platform_compat.IS_WINDOWS:
+            self._windows_tree_cleanup_failed = True
+            await platform_compat.terminate_windows_asyncio_tree(self._process)
+            self._windows_tree_cleanup_failed = False
+            return
         if not self._process or self._process.returncode is not None:
             return
         pid = self._pid
@@ -8211,6 +8221,17 @@ class AcpClient:
 
     def _reset_state(self) -> None:
         """Reset all session state (call after process is dead)."""
+        cleanup = getattr(self._process, "_windows_cleanup_state", None)
+        if platform_compat.IS_WINDOWS and isinstance(
+            cleanup, platform_compat._PendingWindowsTreeCleanup
+        ):
+            if not cleanup.retired:
+                self._windows_tree_cleanup_failed = True
+        if getattr(self, "_windows_tree_cleanup_failed", False) is True:
+            logger.warning(
+                "Retaining Windows client PID %s after incomplete tree cleanup", self._pid
+            )
+            return
         if self._process:
             for pipe in (self._process.stdin, self._process.stdout, self._process.stderr):
                 if pipe:
@@ -8253,7 +8274,7 @@ class AcpClient:
         self._mcp_ref_spec = None
         self._spec_denied_tools = frozenset()
         # Save PIDs before clearing state — needed for untracking
-        saved_pid = self._pid
+        saved_pid = None if platform_compat.IS_WINDOWS else self._pid
         saved_child_pids = self._child_pids
         self._process = None
         self._pid = None
@@ -8787,6 +8808,16 @@ class AcpClient:
         Re-creating the directory later could not repair a live child anyway:
         a process's cwd is bound to the inode, not the path.
         """
+        if (
+            platform_compat.IS_WINDOWS
+            and self._process
+            and (
+                self._process.returncode is not None
+                or getattr(self, "_windows_tree_cleanup_failed", False) is True
+            )
+        ):
+            await self._kill_process(force=True)
+            self._reset_state()
         if not self._work_dir_ready:
             await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
             self._work_dir_ready = True

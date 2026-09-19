@@ -2623,6 +2623,16 @@ its own change; it is stated here rather than narrowed, because a better name ma
 reach it. The basename split handles `\` as well as `/` regardless, so a Windows-shaped
 argv0 in a command line that DOES get read is not carried whole into an exact-name test.
 
+Windows synchronous provider fallback, including `_proc` and `_active_proc`
+shapes, uses the same exact-tree cleanup admission as ACP teardown. Capacity
+refusal preserves the root/tracking and never falls back to root-only signalling.
+`retire_windows_tree_tracking` checks both PID-file writers and removes the
+protected-PID shield only while the cleanup owner still pins the incarnation.
+A failed writer retains the receipt and its reservation for maintenance. Numeric
+root absence does not retire a pending tree's session record. Manual overflow
+is permanent for this gateway process; see the cleanup bounds and recovery
+procedure in [platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
+
 All process liveness/kill/PID-file-lock operations in `session.py` and
 `session_pid.py` go through `kiro_crew.platform_compat` so KiroCrew runs natively on
 Windows as well as macOS/Linux. The critical correctness reason is that

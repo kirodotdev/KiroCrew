@@ -12175,6 +12175,7 @@ async def create_subprocess_limited(
     *argv: str,
     profile: str = RLIMIT_PROFILE_TOOL,
     chdir_fd: int | None = None,
+    windows_cleanup_owner: platform_compat._PendingWindowsTreeCleanup | None = None,
     **kwargs: Any,
 ) -> asyncio.subprocess.Process:
     """``asyncio.create_subprocess_exec`` with resource limits applied post-exec.
@@ -12243,6 +12244,10 @@ async def create_subprocess_limited(
         # No shim (Windows, a no-op profile, or a truncated install): keep
         # whatever policy the profile carries on the legacy fork path. Dropping
         # the caps silently would be worse than the fork hazard.
+        if platform_compat.IS_WINDOWS and windows_cleanup_owner is not None:
+            return await platform_compat._create_windows_subprocess_owned(
+                windows_cleanup_owner, *argv, preexec_fn=_preexec_for_profile(profile), **kwargs
+            )
         return await asyncio.create_subprocess_exec(
             *argv, preexec_fn=_preexec_for_profile(profile), **kwargs
         )

@@ -5119,7 +5119,8 @@ class TestReapDefensiveBranches:
     def test_a_pid_that_exits_before_the_signal_is_dropped(
         self, matched_orphan: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _gone(_pid: int, _expected: str, _sig: int) -> bool:
+
+        def _gone(_pid: int, _expected: str, _sig: int, **kwargs: Any) -> bool:
             raise ProcessLookupError
 
         # Patched at the PINNED entry point, which is what the reap calls now.
@@ -5127,7 +5128,12 @@ class TestReapDefensiveBranches:
         # work in front of it and make the case host-dependent.
         monkeypatch.setattr(bmod.platform_compat, "kill_process_tree_pinned", _gone)
         assert bmod._reap_stale_app_backends() == 0
-        assert bmod._read_pidfile() == {}
+        if bmod.platform_compat.IS_WINDOWS:
+            assert bmod._read_pidfile() == {
+                "app": {"pid": 4321, "start_time": "ST-1", "port": 9100}
+            }, "a Windows drain exception does not prove the descendant tree absent"
+        else:
+            assert bmod._read_pidfile() == {}
 
     def test_the_reap_survives_an_audit_sink_failure_on_both_signals(
         self, matched_orphan: None, monkeypatch: pytest.MonkeyPatch
@@ -5140,18 +5146,19 @@ class TestReapDefensiveBranches:
         monkeypatch.setattr(
             bmod.platform_compat,
             "kill_process_tree_pinned",
-            lambda _pid, _expected, sig: bool(signals.append(sig)) or True,
+            lambda _pid, _expected, sig, **kwargs: bool(signals.append(sig)) or True,
         )
         assert bmod._reap_stale_app_backends() == 1
-        assert signals == [
-            bmod.platform_compat.SIGTERM,
-            bmod.platform_compat.SIGKILL,
-        ]
+        expected = [bmod.platform_compat.SIGTERM]
+        if not bmod.platform_compat.IS_WINDOWS:
+            expected.append(bmod.platform_compat.SIGKILL)
+        assert signals == expected
 
     def test_a_pid_that_exits_before_the_escalation_is_not_an_error(
         self, matched_orphan: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _kill(_pid: int, _expected: str, sig: int) -> bool:
+
+        def _kill(_pid: int, _expected: str, sig: int, **kwargs: Any) -> bool:
             if sig == bmod.platform_compat.SIGKILL:
                 raise ProcessLookupError
             return True

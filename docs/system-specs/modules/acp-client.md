@@ -975,9 +975,25 @@ kiro can return a `-32603` error that is an *advisory* that it substituted a dif
 
 ## Process Management
 
+Windows physical spawn uses `create_windows_cleanup_owned_process` in both ACP
+transports. It reserves separate cleanup capacity before calling the subprocess
+factory, pins the original child before resume, and retains only exact handles
+and scalar bookkeeping outside the provider. Cancellation settles the factory
+and the suspended-resume worker before teardown; a returned child cannot be
+refunded as a failed empty launch. Cleanup retires mandatory tracking under the
+root pin before returning capacity. Client reset refuses an unretired cleanup
+reservation, even if the root has exited. The process-local limits, permanent
+manual-overflow quarantine and operator recovery procedure are owned by
+[platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
+The factory accepts `windows_cleanup_owner` from that reservation and records the
+native handle at `CreateProcess` return, before fallible CPython transport setup.
+An exception without a returned `Process` therefore still retains a created child.
+Cancellation settles both creation and suspended-resume work before returning.
+POSIX spawn/cancellation semantics and resource Job settings are unchanged.
+
 Subprocess lifecycle:
 
-- Spawned with process-tree isolation for clean teardown, dispatched per-platform in `_spawn()`: **POSIX** sets `start_new_session=True` (group leader via `setsid`) so cleanup can `killpg`; **Windows** sets `creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP` (no `setsid`/process groups; an inherited Ctrl-C can't reach the gateway). Both flags are passed explicitly (never via `**dict` unpack, which breaks mypy's Popen overload resolution). Teardown in `_kill_process()` awaits `platform_compat.kill_process_tree_async(pid, SIGTERM)` then `SIGKILL` — `os.killpg(os.getpgid(pid), …)` on POSIX (inline, non-blocking), `taskkill /T /F` on Windows offloaded to `kiro_crew.executors.subprocess_executor` so the event loop is never blocked for the `taskkill.exe` spawn. The escaped-child sweep (`_kill_escaped_children`, which raw-`os.kill`s descendants that reparented out of the killed group) is **POSIX-only** — a no-op on Windows, where `taskkill /T` already walked the whole tree and `signal.SIGKILL`/`os.kill(pid,0)` are unavailable/unsafe. The `/proc`+`pgrep`+`ps` child-enumeration helpers (`_direct_children`, `_get_start_time`, `_read_basename`) short-circuit on Windows (return `[]`/`None`) since they only feed that POSIX sweep. `_resolve_ssh_auth_sock()` (called in the spawn prelude) is also a no-op on Windows — its non-darwin branch calls `os.getuid()`, absent on win32, and Windows OpenSSH uses a named pipe with no `SSH_AUTH_SOCK` to repair.
+- Spawned with process-tree isolation for clean teardown, dispatched per-platform in `_spawn()`: **POSIX** sets `start_new_session=True` (group leader via `setsid`) so cleanup can `killpg`; **Windows** sets `creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP` (no `setsid`/process groups; an inherited Ctrl-C can't reach the gateway). Both flags are passed explicitly (never via `**dict` unpack, which breaks mypy's Popen overload resolution). Teardown in `_kill_process()` is dispatched per-platform too. **Windows** returns through the owned-handle drain described above and never reaches the signal ladder: `terminate_windows_asyncio_tree` tears the tree down from handles pinned at spawn, so a `taskkill /T` walk that a reaped root leaves empty is not what the teardown depends on. **POSIX** awaits `platform_compat.kill_process_tree_async(pid, SIGTERM)` then `SIGKILL` — `os.killpg(os.getpgid(pid), …)` inline and non-blocking. The Windows `taskkill /T /F` shim in `kill_process_tree_async` remains for callers that hold only a pid, offloaded to `kiro_crew.executors.subprocess_executor` so the event loop is never blocked for the `taskkill.exe` spawn. The escaped-child sweep (`_kill_escaped_children`, which raw-`os.kill`s descendants that reparented out of the killed group) is **POSIX-only** — a no-op on Windows, where the owned-handle drain has already confirmed each retained member's exit before `_kill_process` returns (the drain, not a `taskkill /T` walk, is what the Windows teardown depends on; that shim is only for callers holding a bare pid) and `signal.SIGKILL`/`os.kill(pid,0)` are unavailable/unsafe. The `/proc`+`pgrep`+`ps` child-enumeration helpers (`_direct_children`, `_get_start_time`, `_read_basename`) short-circuit on Windows (return `[]`/`None`) since they only feed that POSIX sweep. `_resolve_ssh_auth_sock()` (called in the spawn prelude) is also a no-op on Windows — its non-darwin branch calls `os.getuid()`, absent on win32, and Windows OpenSSH uses a named pipe with no `SSH_AUTH_SOCK` to repair.
 - **Off-loop PID inspection**: the PID-recycling/ownership helpers that shell out on macOS — `_get_start_time` / `_read_basename` (`ps`), `_get_child_pids` → `_direct_children` (`pgrep`), the `_capture_child_records` batch wrapper, and the `_kill_escaped_children` sweep — MUST run via `run_in_executor(subprocess_executor(), ...)`, never directly on the event loop. The PID-file tracking writes — `_track_pid`, `_track_session_pid`, `_track_child_pids` in `AcpClient._spawn()`, and `_track_child_pids` plus the `_untrack_child_pids` prune in `AcpRuntime._snapshot_descendants()` / `_prune_dead_descendants()` (the latter reached through `asyncio.to_thread`) — carry the same obligation: each takes an exclusive file lock and does a read-modify-append under it, and `ensure_ready()` awaits `_spawn()` from the loop on every cold start, so an on-loop tracker serializes concurrent spawns behind one file lock with the waiter holding the loop. The subprocess spawn (fork/exec) can block, and on a wedged child the loop would freeze (the macOS wedge class). `subprocess_executor` is a *dedicated* bounded pool (distinct from the `maintenance_executor` orphan sweep) so a wedged scan/close cannot starve the recovery sweep. The `ps` and `pgrep` calls each carry a 2s timeout so no offloaded scan occupies a pool worker indefinitely.
 - **Windows exe-casing normalization** (`_normalize_exe_casing`, applied to the kiro / claude-agent-acp / claude-code resolver results): `shutil.which` builds the resolved name's extension from `PATHEXT`, which lists `.EXE` upper-case, so it returns e.g. `…\kiro-cli.EXE` even though the on-disk file is `kiro-cli.exe`. A case-sensitive multiplexer shim spawned as `kiro-cli.EXE` fails to dispatch, exits instantly, and the ACP pipe breaks (`AcpProcessDied`) → the dashboard shows **"session stuck"** on the first chat turn. `os.path.realpath()` restores the true directory-entry casing. No-op on POSIX (case-sensitive FS). Runnability is checked via `platform_compat.is_executable_file()` (POSIX execute bit; on Windows the X-bit is meaningless so a known runnable extension is required instead), so a bare `.js` adapter entry is correctly treated as **not** directly runnable on Windows and gets wrapped with `node`.
 - **Sandbox ownership**: `_spawn()` calls `sandbox.wrap_argv()` to wrap the command with platform-native isolation (Linux: two-stage `unshare -rm` → `unshare -U` bind-mounts + UID drop; macOS: `sandbox-exec` Seatbelt profile). On Windows, where Kiro Crew has no native OS wrapper, an explicitly classified official Kiro backend delegates to Kiro CLI's built-in sandbox; every other backend retains the no-backend fail-closed policy. The parent passes a fully scrubbed child environment on every platform, which is the enforcement point for raw Windows delegation. Configurable via `sandbox_mode` constructor param (`"auto"` default, `"off"` to disable). See `docs/system-specs/modules/security.md`.
@@ -1327,8 +1343,9 @@ the escalation is the only thing still owed.  A further cancel arriving while
 that shielded pass is awaited raises at the await and leaves it running
 unawaited — `shield` bounds one cancellation, it does not confer immunity. Any other `OSError` (a denied signal)
 is final: the root is there and may not be signalled, so its group is not
-guessed at. The vouching read is Linux-only (the environ read is), so macOS and
-Windows keep the missed reap rather than gain a wrong kill — and say so: a
+guessed at. The vouching read is Linux-only (the environ read is), so macOS
+keeps the missed reap rather than gain a wrong kill (Windows closes it by handle,
+below) — and say so: a
 teardown that could resolve neither path logs one WARNING naming the root pid,
 the signal and which of the three identity verdicts it got, so the leak is
 visible in the field instead of reading as a teardown that worked. The verdict
@@ -1336,7 +1353,28 @@ is deliberately three-valued: only a read that happened and disagreed may
 describe the root as no longer ours, while an unrecorded or unreadable identity
 refuses just as firmly but reports itself as unmeasured.
 
-`AcpClient._kill_process` keeps the same reaped-root window, and it is known and
+**The Windows half of that reaped root is closed, by different evidence.** The
+vouching read above is Linux-only (the environ read is), so macOS keeps the
+missed reap rather than gain a wrong kill. Windows does not reach that ladder at
+all: it has neither a process group to signal nor an inherited token to vouch
+with, and `taskkill /T` on a reaped root walks nothing — so instead of naming the
+survivors after the fact, it pins them BEFORE the fact. `AcpRuntime._kill_inner`
+and `AcpClient._kill_process` both return through
+`platform_compat.terminate_windows_asyncio_tree`, draining the tree from handles
+opened at spawn against exact creation identities and held across the root's own
+exit. That is why a Windows drain may not be softened to best-effort: it is the
+only path, where POSIX still has the vouched group behind it. A drain that cannot
+confirm the exit of every member it retains raises, keeping the pins and the
+tracking for maintenance to retry, and a reservation left unretired blocks client
+reset rather than reporting a teardown that worked. What that set does NOT
+include is a descendant whose sole ancestry edge vanished before any snapshot saw
+it; that residue stays with the orphan sweep and is bounded the same way it was
+before this change. The capacity bound this retention needs,
+and the manual-handling state an unbounded tree lands in, are owned by
+[platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
+
+`AcpClient._kill_process` keeps the same reaped-root window **on POSIX**, and
+there it is known and
 deferred, not closed here. The client holds no spawn of its own and therefore no
 `KIROCREW_SPAWN_INSTANCE`, so the vouched group path refuses for it by
 construction; reaching its tree needs the client to mint and carry an
@@ -1344,7 +1382,8 @@ incarnation token at spawn time, which is a change to the client's own spawn
 path. What it has instead is the descendant snapshot it takes at spawn, which
 covers every client root that dies after its first scan; the uncovered case is a
 client root that dies before it, and the cost there is the same bounded leak the
-orphan sweep reports.
+orphan sweep reports. On Windows the client needs neither the token nor the scan:
+its spawn is owned, so the drain reaches a root that died before any scan ran.
 
 **An ownerless server→client request is answered ONCE, at connection level.**
 An inbound frame carrying an `id` **and** a `method` but no `params.sessionId`

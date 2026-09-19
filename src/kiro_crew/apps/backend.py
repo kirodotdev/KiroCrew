@@ -4591,6 +4591,34 @@ def _forget_app_pid_if(app_name: str, pid: int, start_time: str | None) -> None:
         logger.debug("Could not conditionally forget app pid for %s: %s", app_name, exc)
 
 
+def retire_windows_app_tracking(pid: int, creation: int) -> None:
+    """Retire only this incarnation's app rows, while its cleanup pin is held.
+
+    This mandatory writer does not use the best-effort readers/writers: an
+    unreadable file or failed atomic write must leave the cleanup receipt owed.
+    No app name or caller callback is retained by the cleanup registry.
+    """
+    with _pidfile_lock:
+        try:
+            with open(_pidfile_path(), encoding="utf-8") as stream:
+                data = json.load(stream)
+        except FileNotFoundError:
+            return
+        if not isinstance(data, dict):
+            raise OSError("Windows app tracking file is malformed")
+        remove = [
+            name
+            for name, entry in data.items()
+            if isinstance(entry, dict)
+            and entry.get("pid") == pid
+            and entry.get("start_time") == str(creation)
+        ]
+        if remove:
+            for name in remove:
+                del data[name]
+            atomic_write(_pidfile_path(), json.dumps(data), fsync=True)
+
+
 def _reap_stale_app_backends() -> int:
     """Reap app backends left running by a prior gateway generation.
 
@@ -4626,6 +4654,10 @@ def _reap_stale_app_backends() -> int:
         if pid <= 0:
             handled[app_name] = entry
             continue
+        if platform_compat.windows_tree_cleanup_pending(pid, entry.get("start_time")):
+            # Maintenance owns the pins and mandatory metadata retirement. Even
+            # a dead root cannot retire an unresolved descendant tree's record.
+            continue
         # NEVER raw ``os.kill(pid, 0)`` — that TERMINATES the process on Windows.
         # ``pid_liveness`` returns DEAD/ALIVE/UNSIGNALABLE (uid-owned-by-other on
         # POSIX; unknown errno also maps to UNSIGNALABLE). Preserve the original
@@ -4658,9 +4690,20 @@ def _reap_stale_app_backends() -> int:
             # unconfirmed-start_time branch above does. POSIX delegates straight
             # through and is unchanged.
             signalled = platform_compat.kill_process_tree_pinned(
-                pid, recorded_st, platform_compat.SIGTERM
+                pid,
+                recorded_st,
+                platform_compat.SIGTERM,
+                **({"app_tracking": True} if platform_compat.IS_WINDOWS else {}),
             )
+        except platform_compat.WindowsCleanupCapacityError:
+            logger.warning(
+                "Windows cleanup capacity refused stale backend %s; keeping tracking", app_name
+            )
+            continue
         except (ProcessLookupError, OSError):
+            if platform_compat.IS_WINDOWS:
+                # A failed exact-handle drain is not proof of absence.
+                continue
             handled[app_name] = entry  # gone between the probe and the signal
             continue
         if not signalled:
@@ -4706,6 +4749,10 @@ def _reap_stale_app_backends() -> int:
             # Same pinning as the SIGTERM path, and it matters more here: this is
             # the destructive escalation, and the grace window above is exactly
             # the interval in which the pid can be recycled.
+            if platform_compat.IS_WINDOWS:
+                # The first exact-handle call already drained the whole tree.
+                # Never re-open a numeric PID for a Windows escalation.
+                continue
             if not platform_compat.kill_process_tree_pinned(
                 pid, recorded_st, platform_compat.SIGKILL
             ):
@@ -4730,7 +4777,11 @@ def _reap_stale_app_backends() -> int:
     with _pidfile_lock:
         current = _read_pidfile()
         for app_name, handled_entry in handled.items():
-            if current.get(app_name) == handled_entry:
+            if current.get(
+                app_name
+            ) == handled_entry and not platform_compat.windows_tree_cleanup_pending(
+                handled_entry.get("pid"), handled_entry.get("start_time")
+            ):
                 current.pop(app_name, None)
         _write_pidfile(current)
     if reaped:

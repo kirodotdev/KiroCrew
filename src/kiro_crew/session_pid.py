@@ -681,6 +681,44 @@ def _kill_pid_tree(pid: int) -> tuple[int, bool]:
     return killed, root_killed
 
 
+def _windows_pending_pid_entry(line: str) -> bool:
+    """Pending exact pins prevent every PID-file sweep from retiring the record."""
+    if not platform_compat.IS_WINDOWS:
+        return False
+    parts = line.strip().split(":")
+    try:
+        pid = int(parts[1] if len(parts) in (2, 3) else parts[0])
+    except ValueError:
+        return False
+    token = parts[2] if len(parts) == 3 else None
+    return platform_compat.windows_tree_cleanup_pending(pid, token)
+
+
+def _windows_pending_child_entry(line: str) -> bool:
+    """The same rule for the tracked-child file, whose rows have a different shape.
+
+    ``kiro_pids.txt`` rows are ``child_pid:parent_pid[:child-start-id]``, so the
+    positions invert the session file's ``gw:pid[:start-id]``: the pid this row is
+    ABOUT is first and the optional identity belongs to that child, never to the
+    parent. Both ends are therefore asked by pid alone -- a pin is keyed by the
+    root it owns, so a child's own identity cannot match one, and the parent's
+    identity is not recorded here to match with.
+
+    Either end being an unretired root retains the row: the parent because the
+    drain still owns the tree this child belongs to, the child because a nested
+    runtime is itself a root. Retention is bounded by the reservation budget,
+    and an unretired pin is what a restart needs to find these identities at all.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    parts = line.strip().split(":")
+    try:
+        ends = [int(parts[0])] if len(parts) == 1 else [int(parts[0]), int(parts[1])]
+    except (ValueError, IndexError):
+        return False
+    return any(platform_compat.windows_tree_cleanup_pending(pid, None) for pid in ends)
+
+
 def _write_back_pid_file(killed_or_dead: set[str]) -> None:
     """Remove *killed_or_dead* entries from the session PID file.
 
@@ -696,7 +734,10 @@ def _write_back_pid_file(killed_or_dead: set[str]) -> None:
         if path.exists():
             current = path.read_text(encoding="utf-8").splitlines()
             keep = [
-                entry for entry in current if entry.strip() and entry.strip() not in killed_or_dead
+                entry
+                for entry in current
+                if entry.strip()
+                and (entry.strip() not in killed_or_dead or _windows_pending_pid_entry(entry))
             ]
             _rewrite_pid_file(path, ("\n".join(keep) + "\n") if keep else "")
 
@@ -758,6 +799,8 @@ def _sweep_pid_entries(
                     continue
                 if should_skip_bare(pid):
                     continue
+            if _windows_pending_pid_entry(stripped):
+                continue
             # Probe liveness, three-way (os.kill(pid, 0) would *terminate* on
             # Windows, so route through platform_compat). DEAD -> prune;
             # UNSIGNALABLE (POSIX EPERM: alive but owned by another user) -> LEAVE
@@ -1869,14 +1912,8 @@ def _sync_kill_provider(provider: object) -> None:
             # is what normally covers the tree), so refusing the root refuses
             # the whole kill rather than narrowing it.
             return
-        # /T so the descendant tree goes with it: Windows has no process group
-        # to signal, and the agent runtime's launcher, chat subprocess and MCP
-        # stub children are the bulk of what has to die. kill_process_tree
-        # raises ProcessLookupError / PermissionError / OSError on a non-zero
-        # taskkill rc (same shape POSIX uses). A /T refusal (a protected
-        # descendant, transient access-denied) still leaves the root to reap, so
-        # fall back to the pid-scoped /F rather than returning with the runtime
-        # alive.
+        # Every Windows shape uses exact-tree cleanup and the same capacity
+        # admission. Refusal preserves the whole tree; no root-only fallback.
         try:
             if pid_from_client:
                 # PINNED: the query handle that verified this identity is held
@@ -1898,41 +1935,21 @@ def _sync_kill_provider(provider: object) -> None:
                     )
                     return
             else:
-                # The _proc / _active_proc shape: this process owns the child's
-                # own handle, which is itself what reserves the pid, so there is
-                # nothing to pin and no recorded id to pin against.
-                platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
+                # An owned Popen still participates in the same cleanup budget.
+                # Its handle pins the source while the identity is read; an
+                # unreadable identity is not permission for a numeric fallback.
+                start = platform_compat.get_process_start_id(pid)
+                if start is None or not platform_compat.kill_process_tree_pinned(
+                    pid, start, platform_compat.SIGKILL
+                ):
+                    return
         except (ProcessLookupError, PermissionError, OSError) as exc:
-            logger.debug(
-                "_sync_kill_provider: taskkill /T did not terminate PID %d (%s)",
+            logger.warning(
+                "_sync_kill_provider: Windows tree cleanup incomplete for PID %d (%s)",
                 pid,
                 exc,
             )
-            try:
-                # The fallback carries the SAME pin as the tree kill above: the
-                # /T refusal means the provider may already be exiting, which is
-                # exactly when its pid becomes reusable, so an un-pinned kill here
-                # would undo the guarantee the pinned tree kill just gave.
-                if pid_from_client:
-                    assert recorded_start is not None  # implied by root_verified
-                    if not platform_compat.kill_pid_pinned(
-                        pid, recorded_start, platform_compat.SIGKILL
-                    ):
-                        logger.warning(
-                            "_sync_kill_provider: NOT killing pid %d -- identity could "
-                            "not be pinned for the fallback kill",
-                            pid,
-                        )
-                        return
-                else:
-                    platform_compat.kill_pid(pid, platform_compat.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError) as pid_exc:
-                logger.debug(
-                    "_sync_kill_provider: taskkill did not terminate PID %d (%s)",
-                    pid,
-                    pid_exc,
-                )
-                return
+            return
         logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
         return
     # Resolved once, while the root is alive. The root's zombie is then held
@@ -2070,6 +2087,10 @@ def _cleanup_orphaned_mcp_servers() -> int:
     Zero false positives: we only kill PIDs we tracked, only when the
     specific parent session that spawned them is confirmed dead, and never
     when the start identity proves the PID was recycled.
+
+    A row whose own pid or whose parent is a Windows tree holding an unretired
+    cleanup pin is left untouched, kill and prune alike: that drain owns the
+    tree, and this file is where the identities it still needs are recorded.
     """
     path = _pid_file_path()
     if not path.exists():
@@ -2090,6 +2111,14 @@ def _cleanup_orphaned_mcp_servers() -> int:
         for line in lines:
             stripped = line.strip()
             if not stripped:
+                continue
+            if _windows_pending_child_entry(stripped):
+                # An unretired pin owns this tree, so the drain -- not this
+                # sweep -- decides when it is gone. Every arm below ends in
+                # retiring the row, including the arms that reach it after a
+                # kill that RAISED, and this file is the only record that
+                # survives the process, so retiring one here would strand a
+                # live descendant with nothing left to name it.
                 continue
             if ":" not in stripped:
                 # Bare PID (sandbox root). Prune if dead.
@@ -2389,8 +2418,20 @@ def _prune_stale_session_token_files(ttl_secs: float = _SESSION_TOKEN_TTL_SECS) 
     return removed
 
 
+def retire_windows_tree_tracking(root_pid: int) -> None:
+    """Retire tracking under the cleanup owner's exact root pin, or fail closed."""
+    if not _untrack_pid(root_pid) or not _untrack_session_pid(root_pid):
+        raise OSError("Windows tree tracking retirement did not complete")
+    unregister_protected_pid(root_pid)
+
+
 def cleanup_orphaned_session_roots() -> int:
-    """Kill session root PIDs whose owning gateway is confirmed dead.
+    """Advance failed exact-handle drains, then reap dead-gateway PID records.
+
+    On Windows, process-local cleanup state is attempted first. It owns exact
+    root and intermediary handles transferred by failed runtime/client teardown;
+    this pass never reconstructs that authority from a PID. The ordinary
+    ``kiro_session_pids.txt`` crash-orphan sweep then keeps its existing rules.
 
     Reads ``kiro_session_pids.txt`` entries (format
     ``<gateway_pid>:<child_pid>[:<start_token>]``), checks if the gateway PID is
@@ -2402,23 +2443,29 @@ def cleanup_orphaned_session_roots() -> int:
     matches settles identity well enough to skip the weaker PPid reparent test. A
     token-less entry is judged by the argv gate plus that PPid test.
 
-    Called periodically from ``session.py``'s ``_cleanup_loop`` to reap
-    kiro-cli processes left behind by crashed gateway instances.
-
-    Returns the number of orphaned processes killed.
+    Called periodically from ``session.py``'s ``_cleanup_loop``. Returns the
+    number of exact-handle trees completed plus orphaned processes killed.
     """
+
+    # The drain calls ``retire_windows_tree_tracking`` itself, under the
+    # pending-state lock and while the exact root handle still pins this
+    # incarnation, so the reuse window is already closed for every caller and
+    # this sweep adds no retirement of its own. A second retirement here would be
+    # a second chance to fail a write that has already succeeded, holding a fully
+    # drained tree's handles for another tick.
+    completed_roots = platform_compat.retry_pending_windows_process_trees()
+    killed = len(completed_roots)
     path = _session_pid_file_path()
     if not path.exists():
-        return 0
+        return killed
 
     with _session_pid_file_lock():
         lines = path.read_text(encoding="utf-8").splitlines()
 
     if not lines:
-        return 0
+        return killed
 
     my_gw_pid = os.getpid()
-    killed = 0
     entries_to_remove: set[str] = set()
 
     for line in lines:
@@ -2463,6 +2510,9 @@ def cleanup_orphaned_session_roots() -> int:
             continue  # can't determine — skip
         # gw_liveness == PID_DEAD — orphan candidate
 
+        # Gateway is dead. A process-local pending tree still owns its tracking.
+        if platform_compat.windows_tree_cleanup_pending(child_pid, recorded_token):
+            continue
         # Gateway is dead. Check if the child PID is still alive.
         child_liveness = platform_compat.pid_liveness(child_pid)
         if child_liveness == platform_compat.PID_DEAD:
@@ -2560,7 +2610,8 @@ def cleanup_orphaned_session_roots() -> int:
 
     if killed:
         logger.info(
-            "cleanup_orphaned_session_roots: killed %d orphaned session root processes",
+            "cleanup_orphaned_session_roots: settled %d session roots "
+            "(completed exact-handle tree drains plus orphan kills)",
             killed,
         )
 
@@ -2702,35 +2753,36 @@ def _untrack_child_pids(pids: Mapping[int, object]) -> None:
         _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
-def _untrack_pid(pid: int) -> None:
-    """Remove a PID from the tracking file."""
+def _untrack_pid(pid: int) -> bool:
+    """Remove a PID, reporting whether its tracking file was updated."""
     with _pid_file_lock():
         path = _pid_file_path()
         if not path.exists():
-            return
+            return True
         lines = path.read_text(encoding="utf-8").splitlines()
         lines = [ln for ln in lines if ln.strip() != str(pid)]
-        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
+        return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
-def _untrack_session_pid(pid: int) -> None:
+def _untrack_session_pid(pid: int) -> bool:
     """Remove this gateway's ``<gw_pid>:<pid>`` entry from the session PID
     tracking file.  Called on clean provider shutdown so the periodic
     orphan sweep doesn't race against legitimate still-running kiro-cli
     processes whose in-memory session entry has transiently gone away
-    (e.g. during compaction/reset/replace)."""
+    (e.g. during compaction/reset/replace). Return whether the write succeeded.
+    """
     prefix = f"{os.getpid()}:{pid}"
     with _session_pid_file_lock():
         path = _session_pid_file_path()
         if not path.exists():
-            return
+            return True
         lines = path.read_text(encoding="utf-8").splitlines()
         # Match both the legacy ``gw:pid`` form and the token-bearing
         # ``gw:pid:token`` form (see _track_session_pid).
         lines = [
             ln for ln in lines if ln.strip() != prefix and not ln.strip().startswith(prefix + ":")
         ]
-        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
+        return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
 # ── Sweep-protected PIDs ──────────────────────────────────────────────────

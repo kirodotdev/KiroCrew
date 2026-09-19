@@ -2480,3 +2480,17 @@ Why this leg needs them most: Slack is the broadest-audience surface (a tracked 
 **Denials are refusals, not skips.** Both answer `403` with a machine-readable `code`, so the MCP tool surfaces "Slack upload failed" rather than reporting success for a file that never left. This differs deliberately from the channel leg, where "cannot deliver here" is the common case and a skip is correct.
 
 **A skip is still REPORTED, on BOTH legs.** "Correct" is not "silent": each leg answers its own "cannot deliver here" as `{"ok": true, "skipped": "<reason>"}` — the channel leg over a closed vocabulary (`no_session`, `no_channel_destination`, `restricted_session`, `channel_upload_unsupported:<type>`) plus `delivered: false`, the Slack leg from `no_slack` and from the same destination oracle — and `file_send`, the only caller of either endpoint, renders that reason via `_describe_channel_skip` / `_describe_slack_skip`. Dropping it made the tool answer a bare `File sent:` for a file that reached only the dashboard, indistinguishable from a delivery, so a caller that chose the wrong tool had nothing to correct against; that is the same false-success hazard the Slack rung above closes by refusing, arriving through the skip path instead. Fixing one leg and leaving its sibling would leave the identical three-state read one branch away, so both are wired. Two branch rules carry security weight rather than ergonomics: the channel leg's `no_channel_destination` names the route that DOES work (an inline `![alt](/abs/path)` reference, which the renderer's extraction path uploads from the session's working directory), while `restricted_session` names **no** alternative — `uploads_restricted` is the predicate that extraction path shares, so the inline route is equally refused there and suggesting it would read as advice for routing around a privacy ceiling. `channel_upload_unsupported` names no route for a neighbouring reason: it fires for every channel with no document verb wired, a set spanning both `files_outbound` capabilities, and the reason string cannot tell them apart — so it reports that the channel has no upload path and leaves the channel type in the reason for a caller that wants to look further. The per-channel roster is deliberately written down in ONE place, `_describe_channel_skip`'s docstring, so a channel flipping the flag invalidates a single site. The Slack leg names no remedy at all, having no alternative route to offer. An unrecognized reason is reported verbatim, so a code added later degrades to visible rather than to silence. `test/test_file_send_skip_reason.py` pins each branch.
+
+
+### Windows ACP creation-time cleanup ownership
+
+`create_subprocess_limited(windows_cleanup_owner=...)` uses the reserved ACP
+owner only on Windows. Its per-call CPython Proactor adapter records the exact
+process handle at native `CreateProcess` return, before parent pipe-descriptor
+cleanup, Popen publication, process-wait registration or async pipe setup. Thus
+failure before an asyncio `Process` is returned cannot refund a surviving child.
+No asyncio/Popen global or live event-loop method is replaced; unrelated launches
+keep the existing factory. The adapter does not change argv, environment scrub,
+sandbox policy, suspended flags, resource Job settings or POSIX semantics.
+Cleanup bounds, borrowed-handle lifetime and the supported-transport limitation
+are specified in [platform-compat](../common/platform-compat.md#windows-session-tree-teardown).

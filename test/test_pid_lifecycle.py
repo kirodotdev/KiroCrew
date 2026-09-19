@@ -2012,6 +2012,51 @@ _PROVIDER_ROOT = (
 )
 
 
+@pytest.mark.parametrize("drain_error", [False, True], ids=["identity-refused", "drain-failed"])
+def test_sync_windows_tree_refusal_never_falls_back_to_root_only(
+    monkeypatch: pytest.MonkeyPatch, drain_error: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed tree drain keeps its scope; killing only the root is not cleanup."""
+    from kiro_crew.session_pid import _sync_kill_provider
+
+    pid, start = 4321, "recorded-creation"
+    provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
+    provider._client = MagicMock(spec=["_pid", "_child_pids", "_start_time"])
+    provider._client._pid = pid
+    provider._client._start_time = start
+    provider._client._child_pids = {}
+    provider._proc = provider._active_proc = None
+    tree_calls: list[tuple[int, str, int]] = []
+
+    def refused_tree(pid: int, expected: str, sig: int) -> bool:
+        tree_calls.append((pid, expected, sig))
+        if drain_error:
+            raise OSError("exact tree cleanup refused")
+        return False
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_compat, "get_process_start_id", lambda candidate: start)
+    monkeypatch.setattr(platform_compat, "kill_process_tree_pinned", refused_tree)
+    pinned_root_kill = Mock(return_value=True)
+    plain_root_kill = Mock(return_value=True)
+    unpinned_tree_kill = Mock(return_value=True)
+    monkeypatch.setattr(platform_compat, "kill_pid_pinned", pinned_root_kill)
+    monkeypatch.setattr(platform_compat, "kill_pid", plain_root_kill)
+    monkeypatch.setattr(platform_compat, "kill_process_tree", unpinned_tree_kill)
+
+    with caplog.at_level(logging.WARNING):
+        _sync_kill_provider(provider)
+
+    assert tree_calls == [(pid, start, platform_compat.SIGKILL)]
+    pinned_root_kill.assert_not_called()
+    plain_root_kill.assert_not_called()
+    unpinned_tree_kill.assert_not_called()
+    assert provider._client._pid == pid
+    assert provider._client._start_time == start
+    assert caplog.records, "an incomplete tree cleanup must be reported"
+    assert not any("killed PID" in record.getMessage() for record in caplog.records)
+
+
 @_POSIX_ONLY
 class TestSyncKillProviderTree:
     """The sync kill must reap the provider's whole tree, not just its root.
@@ -2648,45 +2693,6 @@ class TestSyncKillProviderTree:
             self._reap([root.pid, gc_pid, stray.pid])
             root.wait(timeout=10)
             stray.wait(timeout=10)
-
-    def test_windows_fallback_kill_keeps_the_identity_pin(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The /T-refused fallback is pinned too, not a plain pid kill.
-
-        A `/T` refusal means the provider may already be exiting, which is exactly
-        when its pid becomes reusable -- so dropping the pin for the fallback would
-        undo the guarantee the pinned tree kill just gave, one process wide.
-        """
-        from kiro_crew.session_pid import _sync_kill_provider
-
-        pinned_pid_calls: list[tuple[int, str, int]] = []
-        plain_pid_calls: list[tuple[int, int]] = []
-
-        def refusing_tree_kill(pid: int, expected: str, sig: int) -> bool:
-            raise OSError("taskkill /T refused")
-
-        monkeypatch.setattr("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True)
-        monkeypatch.setattr(
-            "kiro_crew.session_pid.platform_compat.kill_process_tree_pinned", refusing_tree_kill
-        )
-        monkeypatch.setattr(
-            "kiro_crew.session_pid.platform_compat.kill_pid_pinned",
-            lambda pid, expected, sig: (pinned_pid_calls.append((pid, expected, sig)), True)[1],
-        )
-        monkeypatch.setattr(
-            "kiro_crew.session_pid.platform_compat.kill_pid",
-            lambda pid, sig: plain_pid_calls.append((pid, sig)),
-        )
-
-        provider = self._provider(os.getpid())
-        provider._client._start_time = platform_compat.get_process_start_id(os.getpid())
-
-        _sync_kill_provider(provider)
-
-        assert pinned_pid_calls, "the fallback must use the identity-pinned pid kill"
-        assert pinned_pid_calls[0][1] == provider._client._start_time
-        assert plain_pid_calls == [], f"fell back to an unpinned kill: {plain_pid_calls}"
 
     def test_walked_pid_is_dropped_when_it_leaves_the_tree_before_capture(
         self, monkeypatch: pytest.MonkeyPatch

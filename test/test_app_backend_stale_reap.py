@@ -80,8 +80,9 @@ def test_a_host_without_ps_still_records_a_reapable_identity(pidfile, monkeypatc
         lambda _pid: backend_mod.platform_compat.PID_ALIVE,
     )
     monkeypatch.setattr(
-        backend_mod.platform_compat, "kill_process_tree_pinned",
-        lambda pid, expected, sig: bool(killed.append((pid, expected, sig))) or True,
+        backend_mod.platform_compat,
+        "kill_process_tree_pinned",
+        lambda pid, expected, sig, **kwargs: bool(killed.append((pid, expected, sig))) or True,
     )
     monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: False)
     monkeypatch.setattr(backend_mod, "sel", lambda: None)
@@ -400,7 +401,7 @@ def test_reap_hands_the_recorded_identity_to_the_pinned_kill(pidfile):
     backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
     alive = {"v": True}
 
-    def fake_pinned(pid, expected, sig):
+    def fake_pinned(pid, expected, sig, **kwargs):
         alive["v"] = False  # the terminate took effect
         return True
 

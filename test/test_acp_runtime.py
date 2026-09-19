@@ -1859,7 +1859,7 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
         return work_dir, None
 
     monkeypatch.setattr(runtime_mod, "bind_voice_safe_agent_workspace_async", _unbound_workspace)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", stop_spawn)
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", stop_spawn)
 
     runtime = AcpRuntime(work_dir=tmp_path / "workspace")
     with pytest.raises(_StopSpawn):
@@ -2041,6 +2041,9 @@ def _neuter_kill_side_effects(monkeypatch, proc):
 
     proc.wait = AsyncMock(return_value=0)
     monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rt_mod.platform_compat, "terminate_windows_asyncio_tree", AsyncMock(return_value=True)
+    )
     monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
     monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: None)
     monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: None)
@@ -5367,22 +5370,29 @@ class TestAcpRuntimePidTracking:
 
         calls: dict[str, list[int]] = {"pid": [], "session": []}
         import kiro_crew.acp.runtime as rt_mod
+        import kiro_crew.session_pid as pid_mod
 
-        # runtime.py imports these at module top (from kiro_crew.session_pid
-        # import _untrack_pid, _untrack_session_pid), so kill() resolves them in
-        # the runtime namespace — patch WHERE USED, not the source module.
-        monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: calls["pid"].append(p))
-        monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: calls["session"].append(p))
-        # os.killpg / getpgid on the fake PID would raise — the kill() body
-        # already guards those with OSError/ProcessLookupError, so let them fire.
-        #
-        # kill() only untracks once pid_exists() confirms the process is GONE, so
-        # stub that decision instead of betting the fake PID is absent from the
-        # host's process table. It is not a safe bet: Windows recycles PIDs from a
-        # small space, and on a CI runner spawning subprocesses across xdist
-        # workers 4242 was intermittently a REAL live process -- kill() then took
-        # the survivor branch and this asserted `[] == [4242]`.
-        monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
+        def untrack(kind, pid):
+            calls[kind].append(pid)
+            return True
+
+        if rt_mod.platform_compat.IS_WINDOWS:
+            # Windows retires metadata inside the owned drain, under its pin.
+            # Keep that path real and replace only the kernel-facing operations.
+            pc = rt_mod.platform_compat
+            monkeypatch.setattr(pc, "_WINDOWS_TREE_ADMISSIONS", set())
+            monkeypatch.setattr(pc, "_PENDING_WINDOWS_TREE_CLEANUPS", {})
+            monkeypatch.setattr(pc, "duplicate_asyncio_process_handle", lambda p: 5151)
+            monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda h: (4242, 77, 88))
+            monkeypatch.setattr(pc, "_drain_windows_process_tree", lambda state: True)
+            monkeypatch.setattr(pc, "close_process_handle", lambda h: None)
+            monkeypatch.setattr(pid_mod, "_untrack_pid", lambda p: untrack("pid", p))
+            monkeypatch.setattr(pid_mod, "_untrack_session_pid", lambda p: untrack("session", p))
+        else:
+            monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: untrack("pid", p))
+            monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: untrack("session", p))
+            monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
+            monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a: None)
 
         await rt.kill()
 
@@ -5407,8 +5417,19 @@ class TestAcpRuntimePidTracking:
         monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: calls["pid"].append(p))
         monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: calls["session"].append(p))
         monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: True)
+        monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a: None)
+        monkeypatch.setattr(
+            rt_mod.platform_compat,
+            "terminate_windows_asyncio_tree",
+            AsyncMock(side_effect=OSError("fixture tree still alive")),
+        )
 
-        await rt.kill()
+        if rt_mod.platform_compat.IS_WINDOWS:
+            with pytest.raises(OSError, match="fixture tree still alive"):
+                await rt.kill()
+            assert rt._process is proc
+        else:
+            await rt.kill()
 
         assert calls["pid"] == []
         assert calls["session"] == []
@@ -7844,7 +7865,7 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
     monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
     monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", _fake_exec)
 
     rt = AcpRuntime(sandbox_mode="auto")  # default tier
     with pytest.raises(_StopSpawn):
@@ -7902,7 +7923,7 @@ async def test_runtime_spawn_names_its_own_browser_session(monkeypatch):
     monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
     monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
     monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", _fake_exec)
 
     names = []
     for _ in range(2):
