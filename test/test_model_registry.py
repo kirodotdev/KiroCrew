@@ -110,8 +110,14 @@ class TestModelRegistry:
         assert mr.model_window("qwen3-coder-next") == 256_000
         assert mr.model_window("qwen3-coder-480b") == 256_000
         assert mr.model_window("glm-4.7-flash") == 128_000
-        for m in ("deepseek-3.2", "minimax-m2.5", "glm-5", "gpt-5.6-terra",
-                  "qwen3-coder-next", "glm-4.7-flash"):
+        for m in (
+            "deepseek-3.2",
+            "minimax-m2.5",
+            "glm-5",
+            "gpt-5.6-terra",
+            "qwen3-coder-next",
+            "glm-4.7-flash",
+        ):
             assert mr.has_known_window(m) is True
             assert mr.window_source(m) == "supplementary"
 
@@ -145,7 +151,9 @@ class TestModelRegistry:
         try:
             mr._KIRO_WINDOWS.clear()
             assert mr.model_window("auto") == 200_000  # stale registry literal
-            assert mr.model_window("unlisted-model-zzz") is None  # neither registry nor supplementary
+            assert (
+                mr.model_window("unlisted-model-zzz") is None
+            )  # neither registry nor supplementary
             # refresh does the in-memory update synchronously and returns True
             # when the cache changed (signalling the async caller to persist).
             changed = mr.refresh_kiro_windows(
@@ -162,7 +170,10 @@ class TestModelRegistry:
             assert mr.model_window("unlisted-model-zzz") == 272000
             assert mr.model_window("bad") is None  # 0 not cached
             # A no-op refresh (same data) returns False — no persist needed.
-            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is False
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}])
+                is False
+            )
             # persist is a separate step (offloaded to an executor by the caller).
             mr.persist_kiro_windows()
             assert (tmp_path / "model_windows.json").is_file()  # persisted
@@ -223,8 +234,7 @@ class TestModelRegistry:
     def test_fable_5_canonical_round_trip(self):
         # Fable 5 entry: canonical -> provider id -> canonical.
         assert (
-            mr.to_provider_id("fable-5-1m", "claude_code")
-            == "global.anthropic.claude-fable-5[1m]"
+            mr.to_provider_id("fable-5-1m", "claude_code") == "global.anthropic.claude-fable-5[1m]"
         )
         assert (
             mr.from_provider_id("global.anthropic.claude-fable-5[1m]", "claude_code")
@@ -374,10 +384,10 @@ class TestAcpProviderIds:
         # index still folds them for claude-agent-acp dropdown dedup/downgrade.
         cases = {
             # kiro id            acp canonical    window   cc fold (downgrade)
-            "claude-haiku-4.5":  ("haiku-4.5",    200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4.5": ("sonnet-4.5",   200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4":   ("sonnet-4",     200_000, "sonnet-4.6-1m"),
-            "claude-opus-4.6":   ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
+            "claude-haiku-4.5": ("haiku-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4.5": ("sonnet-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4": ("sonnet-4", 200_000, "sonnet-4.6-1m"),
+            "claude-opus-4.6": ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
         }
         for kiro_id, (acp_canon, win, cc_canon) in cases.items():
             assert mr.from_provider_id(kiro_id, "acp") == acp_canon, kiro_id
@@ -590,6 +600,25 @@ class TestAdvertisedModelCache:
         served = "global.anthropic.claude-opus-4-8[1m]"
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": [served]})
         assert mr.resolve_wire_model_id(served, "claude_code") == served
+
+    def test_wire_id_folds_stored_id_onto_bare_advertised_alias(self, monkeypatch):
+        # An adapter can advertise the registry's own bare alias ("fable")
+        # instead of the dotted provider id ("global.anthropic.claude-fable-5
+        # [1m]") a session has stored. The normalized-key compare alone can't
+        # bridge that — the two strings share no normalized key — so the fold
+        # must also try the stored id's canonical registry entry (and its
+        # aliases/provider id) against the advertised set.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["default", "opus", "fable", "sonnet"]}
+        )
+        assert (
+            mr.resolve_wire_model_id("global.anthropic.claude-fable-5[1m]", "claude_code")
+            == "fable"
+        )
+        assert (
+            mr.resolve_wire_model_id("global.anthropic.claude-opus-4-8[1m]", "claude_code")
+            == "opus"
+        )
 
     def test_to_provider_id_unknown_still_passes_through(self, monkeypatch):
         # Guard: the pure translation is unchanged — folding lives in
