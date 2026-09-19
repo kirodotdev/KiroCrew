@@ -1448,6 +1448,17 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   .ft-block-reveal{animation:none}
 }
 
+/* ── Prompt-optimize overlay ──
+   Frosted scrim shown over the composer while a prompt is being optimized.
+   Tints with --card + backdrop-blur so the input frosts underneath instead of
+   being hidden behind an opaque grey slab, and picks up the accent so it reads
+   as a first-class app surface in every theme (light/dark/monokai/custom). */
+.optimize-overlay{background:color-mix(in srgb,var(--card) 62%,transparent);animation:ft-fade .25s ease-out both}
+.optimize-overlay-pill{background:color-mix(in srgb,var(--accent) 12%,var(--card));border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);box-shadow:0 8px 24px var(--accent-glow),0 1px 3px rgba(0,0,0,.12)}
+@media (prefers-reduced-motion:reduce){
+  .optimize-overlay{animation:none}
+}
+
 /* ── Per-char streaming reveal ──
    `.ft-word` spans are injected by rehypeStreamingReveal around each character
    of the streaming EDGE, each carrying `--ft-o` = an opacity derived from that
