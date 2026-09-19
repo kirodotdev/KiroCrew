@@ -651,11 +651,15 @@ async def test_the_fork_does_not_mutate_the_shared_message_cache(tmp_path, monke
     # and Windows for exactly that reason.
     #
     # The WARM path (~:4609-4612) is lock-free and unconditional: it returns the
-    # cached list by identity whenever the stored mtime and generation both still
-    # match. Publishing the entry here makes that hit deterministic, which is what
-    # puts the fork on the shared-object path it is being tested against.
+    # cached list by identity whenever the stored identity and generation both
+    # still match. Publishing the entry here makes that hit deterministic, which
+    # is what puts the fork on the shared-object path it is being tested against.
     cached_obj = list(log.read_messages_chained(key))
-    log._msg_cache[key] = (log._path(key).stat().st_mtime, log._cache_gen(key), cached_obj)
+    log._msg_cache[key] = (
+        log._cache_identity(log._path(key).stat()),
+        log._cache_gen(key),
+        cached_obj,
+    )
     # FIXTURE GUARD: the hit is live, so a reader really is handed THIS object.
     assert log.read_messages_chained(key) is cached_obj, (
         "fixture failed to establish a cache hit: a read did not return the entry "

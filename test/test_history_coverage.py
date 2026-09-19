@@ -561,9 +561,9 @@ class TestListSessions:
     def test_metadata_cache_hit_is_used(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
         _write(tmp_path / "s1.jsonl", _jsonl({"_type": "metadata"}))
-        mtime = (tmp_path / "s1.jsonl").stat().st_mtime
+        identity = log._cache_identity((tmp_path / "s1.jsonl").stat())
         log._meta_cache["s1"] = (
-            mtime,
+            identity,
             log._cache_gen("s1"),
             {
                 "_type": "metadata",
@@ -600,9 +600,9 @@ class TestListSessions:
     def test_message_cache_supplies_title_fallback(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
         _write(tmp_path / "s1.jsonl", _jsonl({"_type": "metadata"}))
-        mtime = (tmp_path / "s1.jsonl").stat().st_mtime
+        identity = log._cache_identity((tmp_path / "s1.jsonl").stat())
         log._msg_cache["s1"] = (
-            mtime,
+            identity,
             log._cache_gen("s1"),
             [
                 {"role": "assistant", "content": "skip"},
