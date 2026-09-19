@@ -43,3 +43,64 @@ Disabled and unsampled paths do not write logs. A candidate menu that cannot be 
 The Decisions card reads and writes the keystone through `GET`/`PUT /api/decisions/consent`, not localStorage and not the config route, and reads the sampling share from the config GET. It prints the configured endpoint ("Sent to") beside the switch so consent is to an address, and a body-weight notice when consent stands for a different address than the config now names. It carries no `configKey`, because it writes no config path; `test_settingref_schema_fixture.py` pins that `decisions.enabled` is absent from the schema and the card. The backend editable-field validation accepts the bounded integer bucket only; sensitive provider credentials remain masked in GET output. The card prints the sampling share in both switch states, phrased as a fact about the on state, because the shipped default of 100 means every session and consent must see that before the switch is flipped. A backend exposing only legacy `preview` is unsupported, not an enabled gateway; that state fades the card, including the egress note, and names Settings › Releases as the fix. A literal `configKey` is required so the settings extractor connects the control to the schema.
 
 Tests cover strict opt-in and legacy non-migration; sampling; Jev success, malformed replies and failure; credential refusal; log shape; real PATCH/GET behavior; actual skill-selection consumption and fallback from an executor thread; negative triggers and cap limits; frontend field support, writes, refused writes and generated key parity. These are local/loopback tests. Live provider verification requires a real key and separate consent to send test data.
+
+## 7. The decision strip's record and feedback
+
+The transcript's receipt for one `skills.select` decision travels as `decisions_strip`
+on the assistant row that ends the turn -- at the row's top level on a live websocket
+frame, and under `meta` on a row reloaded from history, the same split `kind` has.
+Absent means the turn was not decided by this seam, and the strip draws nothing.
+
+This block IS the contract between the gateway that stamps the record and
+`website/src/pages/chat/decisionRecord.ts`, which reads it. The reader's fail-safe
+is to draw nothing, which is byte-identical to a healthy release that stamps no
+record at all -- so a field renamed on one side would make the strip silently
+vanish rather than fail. `website/src/test/decisionStripContract.test.ts` parses
+the fenced record below out of this file and asserts the reader accepts it, so a
+change here without the matching reader change is a red test on the frontend side.
+
+```json
+{
+  "turn_id": "turn-4f2a9c",
+  "point": "skills.select",
+  "baseline": ["brazil", "crux-code-reviews"],
+  "jev": ["brazil"],
+  "p": 0.81,
+  "tokens_saved": 3240,
+  "candidates": 42,
+  "batches": 3,
+  "history_chars": 1840,
+  "truncated": 2,
+  "dropped": [{ "key": "tst", "p": 0.12 }],
+  "error": null
+}
+```
+
+`baseline` is what the word-overlap rule would have loaded and `jev` is the validated
+choice, both as skill keys. Agreement is NOT a field: the strip derives it from the two
+lists, because a flag that disagreed with the names beside it could only put a check mark
+over a real divergence, so promising one would invite a producer to stamp a value whose
+only use is to be wrong. A timestamp is not a field either -- the assistant row the record
+rides on carries its own. `p` is the probability for the chosen option, a finite
+number in 0..1 or `null`; anything else prints no number. `tokens_saved`, `candidates`,
+`batches`, `history_chars` and `truncated` are whole counts, and a negative or
+unparsable one reads as 0. `dropped` names answers the gate refused with the score each
+arrived with. `error` is the failure category when the decision failed, `null` otherwise.
+Nothing here carries message text, candidate descriptions or a provider key -- the same
+bound section 5 puts on the log.
+
+A key the reader does not know is IGNORED, not refused: a producer may stamp extra fields
+(a later addition, or an internal one) and the strip renders from the keys above regardless.
+So the contract is a floor on what must be present, not a ceiling on what may be sent.
+
+The strip is drawn whenever the row carries this record, and the consent switch is not
+consulted. A stamped record is history that already happened and already sits on the
+machine, so drawing it sends nothing; consent governs whether a FUTURE turn may ask Jev.
+Gating the receipt on the current switch would mean an owner who tried the preview and
+turned it off loses the record of which past replies were Jev-picked.
+
+`POST /api/decisions/feedback` records one reader's verdict: `{"turn_id": str, "side":
+"jev" | "baseline", "verdict": "right" | "wrong" | null}`. `side` says which of the two
+lists is being rated, so the word-overlap rule can be called the better pick. `verdict`
+is nullable because pressing a lit thumb again retracts an earlier answer, and a
+retraction is a recorded event rather than an absent one.

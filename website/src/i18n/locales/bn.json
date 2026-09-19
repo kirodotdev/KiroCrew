@@ -10188,6 +10188,32 @@
         "copy_text_failed": "কপি করা যায়নি",
         "copy_text_unavailable": "এখানে ক্লিপবোর্ড ব্লক করা আছে। তোমার পোস্টের লেখাটা সিলেক্ট করা আছে — Ctrl+C / ⌘C চাপো। কার্ডের যে লেখা তুমি বদলেছ, সেটা কার্ড থেকেই কপি করো।",
         "export_failed": "শেয়ার কার্ড তৈরি করা যায়নি"
+      },
+      "decisionStrip": {
+        "agreed": "দুজনেই একই স্কিল বেছে নিয়েছে",
+        "agreed_named": "Jev ও শব্দ মিলকরণ: {{names}}",
+        "agreed_short": "একই বাছাই",
+        "baseline_label": "শব্দ মিলকরণ",
+        "baseline_named": "শব্দ মিলকরণ: {{names}}",
+        "batches_label": "বাছাইয়ের রাউন্ড",
+        "candidates_label": "দেওয়া স্কিল",
+        "confidence_title": "Jev নিজের উত্তরে কতটা নিশ্চিত, 0 থেকে 1",
+        "dropped_label": "বাতিল",
+        "error_title": "সিদ্ধান্ত ব্যর্থ হয়েছে",
+        "feedback_failed": "সংরক্ষণ করা গেল না",
+        "history_chars_label": "পাঠানো প্রসঙ্গ (অক্ষর)",
+        "jev_label": "Jev",
+        "jev_named": "Jev: {{names}}",
+        "no_skills": "কোনো স্কিল নয়",
+        "point_skills_select": "স্কিল",
+        "rate_baseline": "শব্দ মিলকরণ",
+        "rate_jev": "Jev",
+        "rate_right_baseline": "শব্দ মিলকরণ সঠিক স্কিল বেছেছে",
+        "rate_right_jev": "Jev সঠিক স্কিল বেছেছে",
+        "rate_wrong_baseline": "শব্দ মিলকরণ ভুল স্কিল বেছেছে",
+        "rate_wrong_jev": "Jev ভুল স্কিল বেছেছে",
+        "saved_tokens": "{{tokens}} টোকেন সাশ্রয়",
+        "truncated_label": "তালিকা থেকে বাদ দেওয়া স্কিল"
       }
     },
     "chatPage": {
