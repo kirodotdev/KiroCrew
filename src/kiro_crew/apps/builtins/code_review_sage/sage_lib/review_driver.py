@@ -1017,20 +1017,105 @@ def _draft_confirmed(link: str, payload: dict) -> str:
         except Exception:
             return ""
         want = sorted(
-            (str(c.get("path") or ""), int(c.get("line") or 0),
-             _confirm_text(c.get("body")))
+            (str(c.get("path") or ""), _confirm_text(c.get("body")),
+             int(c.get("line") or 0))
             for c in (payload.get("comments") or []))
-        # `line` reads null on a comment GitHub considers outdated, where the
-        # position survives as `original_line`. Accepting that fallback avoids a
-        # false negative without loosening identity: path, body and the review's
-        # commit still have to match.
+        # GitHub resolves `line` and `side` only when a review is submitted;
+        # every inline comment of a PENDING review reads null for both and
+        # carries only a diff `position`, and an outdated comment keeps its
+        # anchor in `original_line`. An unresolved line is therefore checked
+        # through the position instead: the pull request's diff says which
+        # position the payload's (path, line) occupies, and the comment has to
+        # sit there. Path, body, comment count and the review's commit still
+        # have to match, so a stale draft with the same words on other lines
+        # stays unconfirmed either way.
         got = sorted(
-            (str(c.get("path") or ""),
-             int(c.get("line") or c.get("original_line") or 0),
-             _confirm_text(c.get("body")))
-            for c in comments)
-        return str(rid) if want == got else ""
+            ((str(c.get("path") or ""), _confirm_text(c.get("body")),
+              _resolved_line(c), c.get("position"))
+             for c in comments),
+            key=lambda t: (t[0], t[1], -1 if t[2] is None else t[2]))
+        if len(want) != len(got):
+            return ""
+        positions: dict[str, dict[int, int]] | None = None
+        for (w_path, w_body, w_line), (g_path, g_body, g_line, g_pos) in zip(
+                want, got):
+            if w_path != g_path or w_body != g_body:
+                return ""
+            if g_line is not None:
+                if g_line != w_line:
+                    return ""
+                continue
+            if positions is None:
+                positions = _diff_positions(host, owner, repo, number,
+                                            expected_commit)
+                if positions is None:
+                    return ""    # diff unreadable or for another head -> unprovable
+            if g_pos is None or positions.get(w_path, {}).get(w_line) != int(g_pos):
+                return ""
+        return str(rid)
     return ""
+
+
+def _resolved_line(comment: dict) -> int | None:
+    """The line GitHub has resolved for a review comment, or None while the
+    review is PENDING and only the diff position exists."""
+    for key in ("line", "original_line"):
+        value = comment.get(key)
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _diff_positions(host, owner: str, repo: str, number: str | int,
+                    commit: str) -> dict[str, dict[int, int]] | None:
+    """Map each changed file to {new-file line: diff position} for the pull
+    request at `commit`, or None when that diff cannot be read.
+
+    A review comment's `position` counts lines down from the file's first `@@`
+    header, through later hunk headers and unchanged lines alike, which is the
+    layout of the `patch` field on `GET /pulls/{n}/files`. That endpoint serves
+    the diff of the pull request's CURRENT head, so the head is read before AND
+    after the files read and the map is refused unless both reads name
+    `commit`: a push that lands while a draft is being posted, or between the
+    two reads, would otherwise place the payload's lines in a diff the draft
+    was never anchored to. A file whose patch is withheld (binary, or too
+    large) maps to nothing, so a comment on it cannot be confirmed by position.
+    """
+    def head_sha() -> str:
+        pulls = discovery.run_gh_json(
+            f"repos/{owner}/{repo}/pulls/{number}", host=host)
+        return str(((pulls[0] if pulls else {}).get("head") or {}).get("sha") or "")
+
+    try:
+        if head_sha() != commit:
+            return None
+        files = discovery.run_gh_json(
+            f"repos/{owner}/{repo}/pulls/{number}/files", jq=".[]",
+            paginate=True, host=host)
+        if head_sha() != commit:
+            return None
+    except Exception:
+        return None
+    return {str(f.get("filename") or ""): _patch_positions(str(f.get("patch") or ""))
+            for f in files}
+
+
+def _patch_positions(patch: str) -> dict[int, int]:
+    """{new-file line: diff position} for one file's unified diff."""
+    positions: dict[int, int] = {}
+    new_line = 0
+    for position, text in enumerate(patch.split("\n")):
+        if text.startswith("@@"):
+            match = re.search(r"\+(\d+)", text)
+            new_line = int(match.group(1)) if match else 0
+            continue
+        if text.startswith("\\"):
+            continue        # "\ No newline at end of file"
+        if text.startswith("-"):
+            continue
+        positions[new_line] = position
+        new_line += 1
+    return positions
 
 
 def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,

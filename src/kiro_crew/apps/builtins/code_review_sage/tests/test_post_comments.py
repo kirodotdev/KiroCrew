@@ -886,19 +886,38 @@ class TestDraftConfirmed(unittest.TestCase):
             ],
         }
 
-    def _stub(self, reviews, comments):
-        """Answer the two `gh api` reads `_draft_confirmed` makes."""
+    def _stub(self, reviews, comments, files=None, head="abc123"):
+        """Answer the `gh api` reads `_draft_confirmed` makes: reviews, one
+        review's comments, and (for a PENDING draft) the pull request itself
+        and its files."""
         def run_gh_json(path, jq=None, *, paginate=False, host=None):
-            return comments if "/comments" in path else reviews
+            if "/comments" in path:
+                return comments
+            if path.endswith("/files"):
+                if files is None:
+                    raise AssertionError("files read not expected here")
+                return files
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": head}}]
+            return reviews
         return run_gh_json
 
     def _review(self, body="[code-review-sage] summary", commit="abc123"):
         return [{"id": 7, "state": "PENDING", "body": body, "commit_id": commit}]
 
-    def _confirm(self, reviews, comments, payload=None):
+    # One hunk starting at new line 1 with no removed lines, so new line N
+    # sits at diff position N.
+    PATCH = "@@ -1,5 +1,6 @@\n a\n b\n c\n+widened\n e\n f"
+
+    def _files(self, patch=PATCH, filename="src/a.py"):
+        return [{"filename": filename, "patch": patch}]
+
+    def _confirm(self, reviews, comments, payload=None, files=None,
+                 head="abc123"):
         from sage_lib import discovery
         with unittest.mock.patch.object(
-                discovery, "run_gh_json", self._stub(reviews, comments)):
+                discovery, "run_gh_json",
+                self._stub(reviews, comments, files, head)):
             return D._draft_confirmed(self.LINK, payload or self._payload())
 
     def test_confirms_the_draft_that_was_sent(self):
@@ -926,6 +945,114 @@ class TestDraftConfirmed(unittest.TestCase):
         """Where a comment lands is part of what the review says."""
         got = [{"path": "src/a.py", "line": 9, "body": "widens scope"}]
         self.assertFalse(self._confirm(self._review(), got))
+
+    def test_confirms_a_pending_draft_whose_lines_are_still_unresolved(self):
+        """GitHub resolves `line` and `side` only once a review is submitted;
+        a PENDING review's comments carry null for both and only a diff
+        `position`. The anchor is then checked through the pull request's
+        diff: the payload's (path, line) occupies one position, and the
+        comment has to sit there."""
+        got = [{"path": "src/a.py", "line": None, "original_line": None,
+                "side": None, "position": 4, "original_position": 4,
+                "body": "widens scope"}]
+        self.assertEqual(
+            self._confirm(self._review(), got, files=self._files()), "7")
+
+    def test_pending_shape_refuses_a_stale_draft_anchored_elsewhere(self):
+        """Same words, same commit, different position: a draft the poster
+        failed to replace, not the one just sent."""
+        got = [{"path": "src/a.py", "line": None, "original_line": None,
+                "position": 2, "body": "widens scope"}]
+        self.assertFalse(self._confirm(self._review(), got, files=self._files()))
+        no_position = [{"path": "src/a.py", "line": None, "original_line": None,
+                        "position": None, "body": "widens scope"}]
+        self.assertFalse(
+            self._confirm(self._review(), no_position, files=self._files()))
+
+    def test_pending_shape_refuses_when_the_diff_cannot_place_the_anchor(self):
+        """No patch for the file (binary or too large), or a diff read that
+        fails, leaves the anchor unprovable, so the draft stays unconfirmed."""
+        got = [{"path": "src/a.py", "line": None, "original_line": None,
+                "position": 4, "body": "widens scope"}]
+        withheld = [{"filename": "src/a.py", "patch": None}]
+        self.assertFalse(self._confirm(self._review(), got, files=withheld))
+        from sage_lib import discovery
+
+        def failing(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/files"):
+                raise RuntimeError("gh timed out")
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": "abc123"}}]
+            return got if "/comments" in path else self._review()
+        with unittest.mock.patch.object(discovery, "run_gh_json", failing):
+            self.assertFalse(D._draft_confirmed(self.LINK, self._payload()))
+
+    def test_pending_shape_refuses_when_the_head_moved_during_posting(self):
+        """`/files` serves the CURRENT head's diff. A push that lands while the
+        draft is being posted would place the payload's lines in a diff the
+        draft is not anchored to, so a head other than the draft's commit
+        leaves the anchors unprovable."""
+        got = [{"path": "src/a.py", "line": None, "original_line": None,
+                "position": 4, "body": "widens scope"}]
+        self.assertFalse(self._confirm(self._review(), got, files=self._files(),
+                                       head="def456"))
+        self.assertFalse(self._confirm(self._review(), got, files=self._files(),
+                                       head=""))
+
+    def test_pending_shape_refuses_a_push_between_the_head_and_files_reads(self):
+        """The head is checked again after `/files` is read, so a push that
+        lands between the two reads is caught: the diff that came back is the
+        new head's, and the anchors cannot be trusted."""
+        got = [{"path": "src/a.py", "line": None, "original_line": None,
+                "position": 4, "body": "widens scope"}]
+        heads = iter(["abc123", "def456"])
+        files = self._files()
+
+        def run_gh_json(path, jq=None, *, paginate=False, host=None):
+            if "/comments" in path:
+                return got
+            if path.endswith("/files"):
+                return files
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": next(heads)}}]
+            return self._review()
+        from sage_lib import discovery
+        with unittest.mock.patch.object(discovery, "run_gh_json", run_gh_json):
+            self.assertFalse(D._draft_confirmed(self.LINK, self._payload()))
+
+    def test_pending_shape_still_refuses_a_different_path_or_body(self):
+        """Position checking widens nothing else: path and body still identify."""
+        other_path = [{"path": "src/b.py", "line": None, "original_line": None,
+                       "position": 4, "body": "widens scope"}]
+        other_body = [{"path": "src/a.py", "line": None, "original_line": None,
+                       "position": 4, "body": "a different finding"}]
+        files = self._files()
+        self.assertFalse(self._confirm(self._review(), other_path, files=files))
+        self.assertFalse(self._confirm(self._review(), other_body, files=files))
+
+    def test_pending_shape_refuses_a_missing_or_extra_comment(self):
+        payload = self._payload()
+        payload["comments"].append(
+            {"path": "src/c.py", "line": 12, "side": "RIGHT", "body": "second"})
+        one = [{"path": "src/a.py", "line": None, "original_line": None,
+                "position": 4, "body": "widens scope"}]
+        files = self._files()
+        self.assertFalse(
+            self._confirm(self._review(), one, payload=payload, files=files))
+        extra = one + [{"path": "src/c.py", "line": None, "original_line": None,
+                        "position": 9, "body": "second"},
+                       {"path": "src/d.py", "line": None, "original_line": None,
+                        "position": 1, "body": "third"}]
+        self.assertFalse(
+            self._confirm(self._review(), extra, payload=payload, files=files))
+
+    def test_patch_positions_follow_githubs_counting(self):
+        """Position counts every line below the first `@@`, including later
+        hunk headers and removed lines, and maps only lines the new file has."""
+        patch = ("@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
+                 "@@ -10,2 +10,3 @@\n j\n+K\n k\n\\ No newline at end of file")
+        got = D._patch_positions(patch)
+        self.assertEqual(got, {1: 1, 2: 3, 3: 4, 10: 6, 11: 7, 12: 8})
 
     def test_refuses_a_matching_body_anchored_to_another_revision(self):
         """Right words about the wrong code is not the review that was sent."""
