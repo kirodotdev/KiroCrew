@@ -121,6 +121,10 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     last_fire_ts: loop.lastFireAt,
     next_due_ts: loop.nextDueAt ?? 0,
     ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
+    // The overwrite guard reads THESE: dropping them here left it inert on the only
+    // production mount, so a redacted goal was overwritten with no confirm and no 409.
+    ...(loop.messageFingerprint !== undefined ? { message_fingerprint: loop.messageFingerprint } : {}),
+    ...(loop.messageRedacted !== undefined ? { message_redacted: loop.messageRedacted } : {}),
   }
 }
 
