@@ -74,12 +74,28 @@ class TestPlatformDetection:
             mock_sys.platform = "darwin"
             assert current_platform() == Platform.LAUNCHD
 
+    def test_windows_with_a_trusted_schtasks_returns_schtasks(self):
+        with patch("kiro_crew.service.common.sys") as mock_sys, patch(
+            "kiro_crew.platform_compat.trusted_system_bin",
+            return_value=r"C:\WINDOWS\system32\schtasks.exe",
+        ):
+            mock_sys.platform = "win32"
+            assert current_platform() == Platform.SCHTASKS
+
+    def test_windows_without_a_trusted_schtasks_returns_unsupported(self):
+        """PATH must not be able to decide that this host supports services."""
+        with patch("kiro_crew.service.common.sys") as mock_sys, patch(
+            "kiro_crew.platform_compat.trusted_system_bin", return_value=None
+        ), patch("kiro_crew.service.common.shutil.which", return_value="/tmp/evil/schtasks.exe"):
+            mock_sys.platform = "win32"
+            assert current_platform() == Platform.UNSUPPORTED
+
     def test_unknown_platform_returns_unsupported(self):
         with patch("kiro_crew.service.common.sys") as mock_sys, patch(
             "kiro_crew.service.common.shutil.which",
             return_value="/usr/bin/anything",
         ):
-            mock_sys.platform = "win32"
+            mock_sys.platform = "sunos5"
             assert current_platform() == Platform.UNSUPPORTED
 
 
@@ -4714,3 +4730,93 @@ class TestAppArmorLauncherUninstall:
 
         assert calls == [("rm", "-f", str(path))]
         assert outcome.changed is True
+
+
+class TestSchtasksControllerDegradesInsteadOfCrashing:
+    """windows.* raises where linux.* and macos.* cannot.
+
+    linux.stop() and macos.stop() never raise, so the CLI verbs that call
+    these have no handler of their own. A refusal or a timeout escaping here
+    reaches the operator as a traceback and skips the foreground fallback,
+    which is the one path that still works when the service manager is the
+    broken thing.
+    """
+
+    def test_stop_service_degrades_when_the_scheduler_refuses(self):
+        from kiro_crew.service import controller
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(
+                svc_windows, "stop", side_effect=svc_windows.ServiceInstallError("denied")
+            ),
+        ):
+            assert controller.stop_service() is False
+
+    def test_restart_service_degrades_when_the_scheduler_refuses(self):
+        from kiro_crew.service import controller
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(
+                svc_windows, "is_installed", side_effect=svc_windows.ServiceInstallError("timeout")
+            ),
+        ):
+            assert controller.restart_service() is False
+
+    def test_service_status_reports_instead_of_crashing(self, capsys):
+        from kiro_crew.service import controller
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(
+                svc_windows, "status", side_effect=svc_windows.ServiceInstallError("did not answer")
+            ),
+        ):
+            assert controller.service_status() == 1
+        assert "did not answer" in capsys.readouterr().err
+
+    def test_a_stop_that_did_not_reach_the_gateway_is_not_claimed(self):
+        """Registration is not ownership: an installed task and a foreground
+        gateway coexist, and /End refuses silently in that case."""
+        from kiro_crew.service import controller
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "stop"),
+            patch.object(svc_windows, "is_active", return_value=True),
+        ):
+            assert controller.stop_service() is False
+
+    def test_a_stop_that_did_reach_it_is_claimed(self):
+        from kiro_crew.service import controller
+        from kiro_crew.service import windows as svc_windows
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SCHTASKS,
+            ),
+            patch.object(svc_windows, "is_installed", return_value=True),
+            patch.object(svc_windows, "stop"),
+            patch.object(svc_windows, "is_active", return_value=False),
+        ):
+            assert controller.stop_service() is True

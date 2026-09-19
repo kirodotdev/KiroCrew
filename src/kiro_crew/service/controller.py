@@ -8,11 +8,12 @@ directly. This keeps the dispatch logic in one place and makes the
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
 
-from kiro_crew.service import linux, macos
+from kiro_crew.service import linux, macos, windows
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
     Platform,
@@ -20,6 +21,8 @@ from kiro_crew.service.common import (
     headless_auth_warning,
     restart_command_hint,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _print_headless_auth_warning() -> None:
@@ -148,6 +151,24 @@ def install_service() -> int:
         print(f"   Logs:   tail -f {macos.STDOUT_LOG}")
         print("   Remove: kirocrew service uninstall")
         return 0
+    if plat == Platform.SCHTASKS:
+        try:
+            definition = windows.install()
+            # Registering a logon-triggered task does not run it, so a fresh
+            # install would otherwise leave the operator without a gateway
+            # until they next signed in.
+            windows.start()
+        except windows.ServiceInstallError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        print("✅ kirocrew service installed and started.")
+        print(f"   task: {windows.TASK_NAME}")
+        print(f"   definition: {definition}")
+        _print_headless_auth_warning()
+        print()
+        print("   Status: kirocrew service status")
+        print("   Remove: kirocrew service uninstall")
+        return 0
     _unsupported_message()
     return 2
 
@@ -176,6 +197,20 @@ def uninstall_service() -> int:
         macos.uninstall()
         print("✅ kirocrew service stopped and removed.")
         return 0
+    if plat == Platform.SCHTASKS:
+        try:
+            # Stop first: /Delete removes the registration but does not end a
+            # running instance, which would leave an unsupervised gateway.
+            # Only when there is a task to stop: stop() refuses a failed
+            # /Change /DISABLE, and /DISABLE on an absent task is one.
+            if windows.is_installed():
+                windows.stop()
+            windows.uninstall()
+        except windows.ServiceInstallError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        print("✅ kirocrew service stopped and removed.")
+        return 0
     _unsupported_message()
     return 2
 
@@ -189,6 +224,17 @@ def service_status() -> int:
     if plat == Platform.LAUNCHD:
         print(macos.status())
         return 0 if macos.is_active() else 1
+    if plat == Platform.SCHTASKS:
+        # status() asks the scheduler, which can refuse or not answer. A
+        # status verb is the one an operator runs precisely when something is
+        # wrong, so it reports the problem and exits non-zero rather than
+        # handing them a traceback.
+        try:
+            print(windows.status())
+        except windows.ServiceInstallError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        return 0 if windows.is_active() else 1
     _unsupported_message()
     return 2
 
@@ -249,6 +295,16 @@ def is_service_active() -> bool:
         return linux.is_active()
     if plat == Platform.LAUNCHD:
         return macos.is_active()
+    if plat == Platform.SCHTASKS:
+        try:
+            installed = windows.is_installed()
+        except windows.ServiceInstallError:
+            # Could not ask the scheduler. The port still answers the question
+            # the caller is actually asking -- is a gateway serving -- and
+            # answering it without the scheduler is better than reporting no
+            # service and starting a second one beside the first.
+            return windows.is_active()
+        return installed and windows.is_active()
     return False
 
 
@@ -264,6 +320,32 @@ def stop_service() -> bool:
         if macos.is_active():
             macos.stop()
             return True
+        return False
+    if plat == Platform.SCHTASKS:
+        # INSTALLATION, not liveness. On systemd and launchd is_active() asks
+        # the service manager, so False means stopped. Here the trigger repeats
+        # every minute, so False can simply mean "between runs" -- and a stop
+        # that skipped the disable would be undone within the minute while the
+        # operator believes the gateway is down. is_active() is also a port
+        # probe, which answers for a gateway this task never started.
+        #
+        # False, not a traceback, when Task Scheduler refuses or does not
+        # answer. linux.stop() and macos.stop() cannot raise, so this caller
+        # has no handler: the exception would escape `kirocrew stop` instead of
+        # falling through to its foreground fallback, which is the one path
+        # that still works when the service manager is the thing that is broken.
+        try:
+            if windows.is_installed():
+                windows.stop()
+                # Registration is not ownership. An installed-but-disabled
+                # task and a gateway the operator started in the foreground
+                # coexist happily, and /End refuses silently in that case, so
+                # claiming the stop here would report a gateway down while it
+                # keeps serving. If the port still answers, this stop did not
+                # reach it and the caller's foreground fallback is what will.
+                return not windows.is_active()
+        except windows.ServiceInstallError as exc:
+            logger.warning("Task Scheduler could not stop the gateway: %s", exc)
         return False
     return False
 
@@ -284,6 +366,17 @@ def restart_service() -> bool:
     if plat == Platform.LAUNCHD:
         if macos.is_active():
             return macos.restart()
+        return False
+    if plat == Platform.SCHTASKS:
+        # Same gate as stop_service, and for the same reason: a task caught
+        # between runs is not a task that needs no restart. Returning False
+        # here sends the caller to its foreground fallback, which is also
+        # where a refusal or a timeout belongs -- see stop_service.
+        try:
+            if windows.is_installed():
+                return windows.restart()
+        except windows.ServiceInstallError as exc:
+            logger.warning("Task Scheduler could not restart the gateway: %s", exc)
         return False
     return False
 
@@ -314,6 +407,22 @@ def manual_restart_hint() -> str:
             f"launchctl bootout gui/{uid}/{LAUNCHD_LABEL}; "
             f'launchctl bootstrap gui/{uid} "{macos.PLIST_PATH}"'
         )
+    if plat == Platform.SCHTASKS:
+        # NOT a bare `/Run`: that is the call windows.restart() just made and
+        # got refused. Ending the instance first is the outside-process
+        # recovery, and `&` rather than `&&` so an `/End` refused because
+        # nothing is running still proceeds to the `/Run`.
+        #
+        # The ABSOLUTE path, quoted. This string is printed for an operator to
+        # paste into cmd.exe, which resolves a bare name from the current
+        # directory first -- so a `schtasks.exe` the agent dropped in whatever
+        # directory the operator happens to be in would run as them, on our
+        # own instruction. schtasks_bin() resolves through the trusted-system
+        # path table instead.
+        exe = windows.schtasks_bin()
+        if exe is None:
+            return "kirocrew gateway"
+        return f'"{exe}" /End /TN "{windows.TASK_NAME}" & "{exe}" /Run /TN "{windows.TASK_NAME}"'
     # No platform service manager exists here, so there is no service to have
     # refused the restart; kept total for safety rather than reachability.
     return "kirocrew gateway"
