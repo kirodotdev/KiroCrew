@@ -13,8 +13,20 @@ from typing import Any
 import pytest
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.design_critique import register_routes
 from kiro_crew.apps.builtins.design_critique.backend import routes
+
+if platform_compat.IS_WINDOWS:
+    import _winapi
+
+    # Resolved at runtime, not as a typed attribute: typeshed guards CreateJunction
+    # behind sys.platform == "win32", so a direct reference is an attr-defined error
+    # when mypy checks this in-package test file on Linux. Same shape as
+    # platform_compat's own `getattr(os.path, "isjunction", None)`.
+    _create_junction = getattr(_winapi, "CreateJunction", None)
+else:  # pragma: no cover - junctions exist on Windows only
+    _create_junction = None
 
 
 def test_register_routes_mounts_the_three_endpoints() -> None:
@@ -1183,6 +1195,64 @@ def test_served_signature_ignores_what_the_server_will_not_serve(tmp_path) -> No
     _bump(outside / "extra.js")
     behind = routes._served_signature(build)
     assert behind is not None and behind.digest == sig.digest
+
+
+def _make_dir_link(link: Path, target: Path) -> None:
+    # A directory SYMLINK needs SeCreateSymbolicLinkPrivilege on Windows (WinError
+    # 1314 unelevated), which is why the test above can only skip there. A junction
+    # needs no privilege and is the reparse point a real build tree would carry, so
+    # the Windows half of this contract stays exercised instead of being skipped.
+    #
+    # A junction, never "a junction OR a symlink": os.symlink SUCCEEDS on a runner
+    # with Developer Mode on, and a symlink is the shape os.path.islink already
+    # refused. Degrading to it would turn the Windows red-before green for the
+    # wrong reason.
+    if platform_compat.IS_WINDOWS:
+        assert _create_junction is not None, "_winapi.CreateJunction missing on Windows"
+        _create_junction(str(target), str(link))
+        return
+    link.symlink_to(target, target_is_directory=True)
+
+
+def test_served_signature_refuses_a_junctioned_directory(tmp_path) -> None:
+    # capture-build.mjs's Dirent test reports a junction as a symbolic link, so it
+    # walks nothing behind one and the preview server serves nothing from it. The
+    # token has to agree, and `os.path.islink` cannot make it agree: it calls a
+    # junction a plain directory, so the walk descended and signed bytes that are
+    # not served. Windows is the only platform with junctions and the only one where
+    # the symlink test above can be skipped for want of a privilege.
+    build = tmp_path / "dist"
+    _build_tree(build)
+    sig = routes._served_signature(build)
+    assert sig is not None
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "extra.js").write_text("x", encoding="utf-8")
+    _make_dir_link(build / "vendor", outside)
+
+    # Guard the guard: on Windows the link must really be the shape `os.path.islink`
+    # misreads. Without this the test could pass on a plain directory and prove
+    # nothing about the fix.
+    if platform_compat.IS_WINDOWS:
+        assert not os.path.islink(build / "vendor")
+        assert os.path.isdir(build / "vendor")
+    assert platform_compat.is_link_or_junction(build / "vendor")
+
+    # Only the DIGEST can hold still across the link's creation: that writes a new
+    # entry into dist/, and newest_mtime_ns reads directory mtimes on purpose.
+    linked = routes._served_signature(build)
+    assert linked is not None and linked.digest == sig.digest
+
+    # A change BEHIND the link moves neither field. Rewriting a file leaves its
+    # parent directory's mtime alone, so newest_mtime_ns is pinned exactly here —
+    # it feeds the discover-time mid-capture check, which an unserved tree must not
+    # be able to trip.
+    (outside / "extra.js").write_text("changed-and-longer", encoding="utf-8")
+    _bump(outside / "extra.js")
+    behind = routes._served_signature(build)
+    assert behind is not None and behind.digest == sig.digest
+    assert behind.newest_mtime_ns == linked.newest_mtime_ns
 
 
 def test_probe_build_dir_rejects_a_path_outside_the_project(tmp_path) -> None:
