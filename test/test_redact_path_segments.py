@@ -319,3 +319,14 @@ class TestLocalPathRootAnchors:
         # The anchor is ``/local/home`` specifically, not a bare ``/local`` --
         # a directory like ``/localstack`` must not be swept up.
         assert redaction_mod.redact_local_paths("/localstack/data")[0] == "/localstack/data"
+
+
+def test_forward_slash_windows_paths_redact_without_treating_uri_schemes_as_drives() -> None:
+    """C:/ is a Windows path; x:// and https:// remain URLs, not drives."""
+    red, notes = redaction_mod.redact_local_paths("edited C:/Users/Alice/project/x.py just now")
+    assert red == "edited [redacted-path] just now"
+    assert notes
+    assert redaction_mod.redact_local_paths("x://host/path")[0] == "x://host/path"
+    assert redaction_mod.redact_local_paths("https://api.github.com/repos/x")[0] == (
+        "https://api.github.com/repos/x"
+    )

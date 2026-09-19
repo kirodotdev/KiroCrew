@@ -1097,10 +1097,19 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
 # refuse to start mid-token so a URL is never mistaken for a path -- without the
 # lookbehinds, ``https://api.github.com/repos/x`` matches twice (``s:/`` as a drive
 # letter, ``/repos`` as a root) and the URL is destroyed.
+#
+# The drive-letter branch accepts BOTH separators: ``C:\`` and ``C:/`` name the
+# same file on Windows, and tools that normalise separators (Git Bash, Python's
+# pathlib/posixpath, Node, MSYS) routinely print the forward-slash spelling, so
+# matching only ``C:\`` left ``C:/Users/<login>/...`` -- the login and host
+# layout -- unredacted wherever this shared scrub runs. The forward-slash form
+# carries a ``(?!/)`` guard so a one-letter URI scheme (``x://host``) is never
+# mistaken for a drive; longer schemes (``https:``) are already refused by the
+# ``(?<![A-Za-z])`` lookbehind on the drive letter itself.
 _LOCAL_PATH_RE = re.compile(
     r"(?:"
     r"(?<![\w:/])/(?:local/home|home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
-    r"|(?<![A-Za-z])[A-Za-z]:\\"
+    r"|(?<![A-Za-z])[A-Za-z]:(?:\\|/(?!/))"
     r")"
     r"[^\s'\"<>|]*"
 )
