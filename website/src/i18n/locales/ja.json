@@ -8141,7 +8141,8 @@
       "project_directory_path": "プロジェクトディレクトリパス",
       "select": "選択",
       "workspace_name": "ワークスペース名",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "再試行"
     },
     "settingRef": {
       "envVarAriaLabel": "環境変数 {{key}}",

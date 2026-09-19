@@ -8141,7 +8141,8 @@
       "project_directory_path": "项目目录路径",
       "select": "选择",
       "workspace_name": "工作区名称",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "重试"
     },
     "settingRef": {
       "envVarAriaLabel": "环境变量 {{key}}",
