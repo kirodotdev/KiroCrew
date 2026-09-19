@@ -710,33 +710,61 @@ def resolve_selected_backend(value: object) -> str:
 # docs/system-specs/modules/harness-parity.md.
 
 # Backends whose single process can host N concurrent ACP sessions (AcpRuntime
-# demux) AND can persist a SHARED subagent session across teardown. KAS runs on
-# AcpRuntime (multi-session), but its teardown maps to _kiro/session/delete,
-# which removes the persisted session — so a shared subagent would strand
-# spawn_continue (conversation_gone). KAS therefore opts in only once a
-# keep-aware teardown lands (native subagent work); until then its subagents get
-# dedicated sessions. claude-agent-acp runs through AcpClient (one process per
+# demux) AND whose shared subagent session can be CONTINUED after the conversation
+# that spawned it ends. claude-agent-acp runs through AcpClient (one process per
 # session) and is not a member.
 #
-# codex-acp is NOT a member, and it is the case worth reading closely, because it
-# fails the test on BOTH halves for the same reason KAS fails the second. One
-# adapter process does serve N sessions. But its teardown is a ``session/close``
-# request, which EVICTS the addressed session -- measured, and the property
-# ``ACP_BACKENDS_SESSION_EVICTION`` records -- so a shared subagent session would
-# not survive the teardown of the conversation that spawned it. That is KAS's
-# position exactly: a disposing teardown verb and no keep-aware variant of it.
+# What survives is the PERSISTED THREAD, never a resident session. Teardown closes:
+# a subagent session left alive on the shared process after its parent ends is a
+# memory leak, and on codex an expensive one -- each resident session carries the MCP
+# fleet ``codex`` starts from its own config, measured at roughly 44 processes and
+# 2751 MB for one session. So a member's teardown disposes the in-memory session, and
+# ``spawn_continue`` re-reaches the conversation by loading the record the host kept.
+# Membership therefore asks one question: after this backend's teardown verb, can a
+# ``session/load`` still restore the thread?
 #
-# The second half is on CREW's side. The shared-subagent path persists the
-# provider label ``PROVIDER_LABEL_DEFAULT``, and ``SessionMap`` reads that label
-# as kiro-cli and prunes the entry when the flat kiro transcript it implies is
-# absent -- so ``spawn_continue`` on a codex subagent answers
-# ``conversation_gone``. Membership would therefore advertise the one capability
-# it exists to grant while breaking it on the ordinary path.
+# kiro-cli answers yes with a transcript Crew holds under ``<kiro home>/sessions/cli``
+# that ``_kiro.dev/session/terminate`` leaves on disk.
 #
-# The KAS precedent is followed rather than re-argued: on the runtime, out of
-# this set until the missing pieces land -- a keep-aware teardown, and a provider
-# label the continuation path can read. Until then its subagents get dedicated
-# sessions, which is the working behaviour rather than a degraded one.
+# codex-acp answers yes with a thread ``codex`` persists under ``CODEX_HOME``, and
+# the answer is MEASURED rather than argued -- codex-acp 1.11.0 against codex
+# 0.154.0, one real adapter:
+#
+#   * ``session/close`` (a request) evicts: the sessionId stops answering. That is
+#     the same fact ``ACP_BACKENDS_SESSION_EVICTION`` records, and it is unchanged.
+#   * ``session/load`` on that closed id SUCCEEDS, replays the conversation, and the
+#     session then answers a question about the first turn.
+#   * the same load succeeds from a RESTARTED adapter process over the same
+#     ``CODEX_HOME`` -- the shape a continuation actually takes, since the runtime
+#     that served the subagent is usually gone by then. Token accounting confirms
+#     the context came from the thread rather than the prompt: the recall turn spent
+#     330 input tokens against 9786 cached-read.
+#   * ``session/delete`` archives the thread and a load then refuses, so release has
+#     a verb that genuinely disposes.
+#
+# ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` is what carries that restore: codex
+# resolves a load from the sessionId alone, with no Crew-side transcript to check.
+# What is measured where, because the halves have different reach.
+# ``test_real_codex_acp_session_close_evicts`` carries the ``real_adapter`` marker, so
+# the contract lane runs it on a pinned adapter and an adapter bump that stops
+# ``session/close`` evicting goes red there. The RESTORE half has no such lane cover:
+# ``session/load`` on a thread the lane's fabricated credential created is refused --
+# "no rollout found for thread id", measured -- because a session that never ran a real
+# turn has nothing to reload, so the property cannot be asserted without a credential.
+# ``test_real_codex_acp_load_after_close_restores`` is where it IS asserted, and that
+# test is opt-in: it prompts, so it runs only where a host sets
+# ``KIROCREW_LIVE_CODEX_PROMPT_TESTS`` and holds a codex credential, never in CI.
+# So an adapter bump does not re-measure the restore this membership rests on, and a
+# release that made ``close`` destroy the record would reach the field before any lane
+# went red. Re-measuring it is a credentialled run of that opt-in test, which
+# ``test/real_adapter_gate.py`` names as part of a codex-acp bump.
+#
+# KAS answers NO, and that is the whole of its exclusion: its teardown maps to
+# ``_kiro/session/delete``, which REMOVES the persisted record, so there is nothing
+# for a load to restore and a shared subagent would strand ``spawn_continue`` on
+# ``conversation_gone``. A different gap from anything codex had, owned by whoever
+# gives KAS a non-destroying teardown; until then its subagents get dedicated
+# sessions, which is working behaviour rather than a degraded one.
 #
 # opencode is not a member: one binary serves one session over its own stdio pipe,
 # so there is no second session to share.
@@ -750,7 +778,7 @@ def resolve_selected_backend(value: object) -> str:
 # demux Crew has -- see ``ACP_BACKENDS_ACP_RUNTIME`` -- so Crew opens one process per
 # session and there is no shared session to persist. A harness capability Crew cannot
 # reach is recorded here rather than claimed.
-ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
+ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 
 # Backends that can load an enrolled member's full saved agent spec at spawn.
 # Separate from session sharing and per-session dispatch (harness-parity H6):

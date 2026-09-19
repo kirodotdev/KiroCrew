@@ -12,15 +12,15 @@ codex actually has. A real codex-acp cannot stand in for this here: ``session/ne
 answers ``-32000 Authentication required`` without an OpenAI login, so a live adapter
 can only be taken as far as ``initialize``.
 
-The second half pins the TRANSPORT and the three sets that answer differently about
-this host. codex is served by ``AcpRuntime``; it is in ``ACP_BACKENDS_SESSION_EVICTION``
-because its teardown is a ``session/close`` request that disposes the session
-(measured), which is what admits it to the high-churn background path and warm
-pooled reuse; and it is OUT of ``ACP_BACKENDS_SESSION_SHARING``, because that same
-disposing teardown would take a shared subagent session down with its parent and
-because the shared-subagent path cannot resolve a codex continuation. Three sets,
-three answers, each read from its own table, so the half exists to stop any one of
-them drifting on its own.
+The second half pins the TRANSPORT and the three sets that answer about this host.
+codex is served by ``AcpRuntime``; it is in ``ACP_BACKENDS_SESSION_EVICTION`` because
+its teardown is a ``session/close`` request that disposes the session (measured),
+which is what admits it to the high-churn background path and warm pooled reuse; and
+it is IN ``ACP_BACKENDS_SESSION_SHARING``, because the thread ``codex`` persists
+outlives that close and a ``session/load`` restores it. Two of those three read the
+same teardown verb and reach different conclusions from it, which is exactly why each
+is its own table -- the eviction claim is about the live session leaving the process,
+the sharing claim is about the record staying behind.
 
 The seam-level contract every harness answers is in
 ``test_acp_harness_contract.py``; codex is parametrised into it. What is here is what
@@ -974,40 +974,49 @@ class TestCodexIsServedByTheSharedRuntime:
 class TestOneFactReadThreeWays:
     """The teardown Crew sends codex disposes the session. Three sets act on that."""
 
-    def test_it_does_not_share_sessions_though_it_multiplexes(self):
-        """Out on both halves, and pinned so neither half is mistaken for the whole.
+    def test_it_shares_sessions_on_the_persisted_thread_not_a_resident_one(self, adapter):
+        """In, and pinned so the REASON cannot be misread as a resident session.
 
-        One adapter process does serve N sessions, which is the half a reader would
-        add membership back on. The other two facts refuse it. The teardown is a
-        ``session/close`` request that EVICTS -- so a shared subagent session would
-        not survive the teardown of the conversation that spawned it, which is KAS's
-        position exactly (a disposing verb, no keep-aware variant). And the
-        continuation cannot resolve: the shared-subagent path persists a provider
-        label ``SessionMap`` reads as kiro-cli, so ``spawn_continue`` on a codex
-        subagent answers ``conversation_gone``. Membership would advertise exactly
-        the capability it exists to grant and break it on the ordinary path.
+        Three facts together. One adapter process serves N sessions, so a subagent
+        can have one on its parent's runtime. The teardown still EVICTS -- a shared
+        subagent session is closed like any other, because one left resident would
+        hold its own MCP fleet on a runtime nobody is using. And the thread codex
+        persisted survives that close, so ``spawn_continue`` reaches the conversation
+        with a ``session/load`` rather than by finding the session still there --
+        which is why membership in ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` is the
+        companion claim, asserted here so a reader cannot conclude that sharing means
+        keeping.
         """
-        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_SESSION_SHARING
-        assert _build_provider(ACP_BACKEND_CODEX).is_session_sharing_eligible is False
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
+        assert _build_provider(ACP_BACKEND_CODEX).is_session_sharing_eligible is True
+        # Membership does NOT soften the teardown: the verb is the disposing one.
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_EVICTION
+        assert adapter.teardown == TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
+        # And the restore is resolved from the sessionId alone, with no Crew-side
+        # transcript -- the property that makes a closed session continuable.
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 
-    def test_running_on_the_shared_runtime_did_not_grant_sharing(self):
+    def test_running_on_the_shared_runtime_does_not_by_itself_grant_sharing(self):
         """The superset relation must not be read as an implication.
 
-        ``ACP_BACKENDS_ACP_RUNTIME`` is a superset of the sharing set, so a harness
-        can be in the first and out of the second -- which is the whole point of
-        their being two sets. KAS is the standing precedent and codex is the second
-        instance, so the relation is asserted rather than assumed.
+        codex belongs to both sets, so KAS is the member that separates them, and it
+        is asserted here rather than left to the sharing set's comment: a harness runs
+        on the runtime and is still refused sharing when its teardown removes the
+        record a continuation would load.
         """
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
-        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_SESSION_SHARING
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_SHARING
+        assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
+        assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
         assert ACP_BACKENDS_SESSION_SHARING < ACP_BACKENDS_ACP_RUNTIME
 
     def test_it_is_in_the_eviction_set_because_its_teardown_evicts(self):
-        """Sharing and eviction are separate claims with separate owners.
+        """Eviction is the harness's own property, and it is unchanged by sharing.
 
-        Sharing is denied on Crew's side. Eviction is the harness's own
-        property, and ``session/close`` evicts -- measured -- so codex is a member.
-        The two sets answering differently is the point of having two.
+        ``session/close`` evicts -- measured -- so codex is a member, and joining the
+        sharing set did not make the verb gentler. A reader who assumes a shared
+        subagent must stay resident would drop codex from here; the two memberships
+        standing together is what says otherwise.
         """
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_EVICTION
         assert ACP_BACKENDS_SESSION_EVICTION == frozenset(

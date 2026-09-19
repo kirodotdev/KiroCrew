@@ -14,24 +14,26 @@ Node processes and N app-servers for N sessions; ``AcpRuntime`` pays one.
 
 **What a harness earns, and what it does not.** ``AcpProvider`` builds its own
 ``AcpRuntime`` per chat, so being runnable on the runtime does not by itself put two
-chats on one process: which hosts multiplex N sessions onto one runtime is
-``ACP_BACKENDS_SESSION_SHARING``, and codex is NOT a member. So one codex runtime
-carries one foreground session, and the process count matches the ``AcpClient``
-path. Running here at all is the prerequisite, not the saving.
+chats on one process. Which hosts put a SUBAGENT's session on the parent's runtime is
+``ACP_BACKENDS_SESSION_SHARING``, and codex is a member: a foreground chat still owns
+its own runtime, and its subagents ride on that one rather than paying a Node process
+and an app-server each.
 
-What is missing for sharing is on Crew's side -- the shared-subagent path persists
-a provider label the continuation lookup reads as kiro-cli, so ``spawn_continue`` on
-a codex subagent answers ``conversation_gone``. Until that label is one the path can
-read, dedicated subagent sessions are the working behaviour.
+Sharing here does not mean a session that outlives its parent. Teardown still sends
+``session/close`` and the session still leaves the process -- a resident subagent
+session would hold its own MCP fleet on a runtime nobody is using. What a later
+``spawn_continue`` addresses is the thread ``codex`` persisted under ``CODEX_HOME``,
+restored with ``session/load``; ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` is the set
+that says codex resolves such a load from the sessionId alone.
 
-Eviction is a separate question with a separate answer. The teardown Crew sends is
-``session/close``, and it evicts: after it the sessionId stops answering, so a
-session Crew drops actually leaves the process. That is what admits codex to
-``ACP_BACKENDS_SESSION_EVICTION``, and through it to every path that creates and
-destroys sessions on a shared process -- the high-churn background handles
-(``session._bg_runtime_backends``), warm pooled reuse, the entitlement probe. One
-teardown verb answers for all of them, which is the point of declaring it on the
-harness rather than gating each caller.
+Eviction is a separate question with a separate answer, and the answer did not
+change. The teardown Crew sends is ``session/close``, and it evicts: after it the
+sessionId stops answering, so a session Crew drops actually leaves the process. That
+is what admits codex to ``ACP_BACKENDS_SESSION_EVICTION``, and through it to every
+path that creates and destroys sessions on a shared process -- the high-churn
+background handles (``session._bg_runtime_backends``), warm pooled reuse, the
+entitlement probe. One teardown verb answers for all of them, which is the point of
+declaring it on the harness rather than gating each caller.
 
 **One thing is global on a shared process, and a caller has to know it.**
 ``providers/set`` restarts the ``codex app-server`` child and then re-resumes every
@@ -476,9 +478,22 @@ class CodexHarness(MembershipHarness):
         resident under it. Sending the verb that
         evicts is what closes all of those at once.
 
-        Evict, not delete: the Codex thread's own record survives, the same shape as
-        kiro-cli's ``terminate``. ``session/delete`` would archive the thread on the
-        Codex side and is not what a caller dropping a session means.
+        Evict, not delete, and the difference is what makes a codex subagent
+        continuable. The Codex thread's own record survives under ``CODEX_HOME``, the
+        same shape as kiro-cli's ``terminate`` leaving its transcript on disk --
+        measured on the same run as the eviction above: a ``session/load`` on the
+        CLOSED id succeeds, replays the conversation and then answers a question about
+        the first turn, and it succeeds the same way from a RESTARTED adapter process
+        over the same ``CODEX_HOME`` (330 input tokens against 9786 cached-read, so
+        the context came from the thread and not from the prompt). That is what
+        ``ACP_BACKENDS_SESSION_SHARING`` membership rests on, and why no keep-alive
+        variant of this verb is needed: a shared subagent's session is closed at
+        teardown like any other and its conversation is reached again by loading it.
+
+        ``session/delete`` would ARCHIVE the thread -- measured too: a load afterwards
+        refuses with ``session ... is archived``. So it is the verb a release means,
+        never the verb dropping a session means, and sending it here would take the
+        continuation away.
 
         **A REQUEST, and that is not cosmetic.** Measured on the same run: the
         adapter answers ``session/close`` with ``{}``, and sent as a NOTIFICATION it

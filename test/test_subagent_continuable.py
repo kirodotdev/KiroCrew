@@ -3566,3 +3566,90 @@ class TestRestrictedRunStateLifetime:
             assert persistence.read_run_memory_mode("released") == "temporary"
         else:
             assert persistence.read_state("released") is None
+
+
+class TestSharedBindIdentityLabel:
+    """The shared-bind identity write names the backend that served the session.
+
+    ``_bind_shared_handle_impl`` publishes and persists a cleanup identity before any
+    cancellable await, so the value it writes is what a run cancelled in that window
+    leaves behind. A constant here can be correct for exactly one of the backends this
+    path can serve, so it is read from the provider.
+
+    That record is not what a continuation reads: ``_run_inner_impl`` re-captures the
+    label from the same provider right after session acquisition, and that value is
+    what reaches ``state.json``, so a run that completes was always labelled
+    correctly. What the record routes is session-file CLEANUP. With kiro's label on
+    another host's session, ``_cleanup_session_files_sync`` takes the kiro branch,
+    unlinks a path that was never going to exist and returns success -- where the real
+    label returns False, "no cleanup route for this provider", and the prune keeps its
+    retry metadata instead of deleting the run folder over a cleanup that did nothing.
+    """
+
+    async def _bound(self, backend: str):  # type: ignore[no-untyped-def]
+        """Drive the real bind against a provider whose backend is *backend*.
+
+        The provider is a REAL ``AcpSessionProvider``, built the way the bind builds
+        one, because ``provider_label`` resolves it by ``isinstance``: a bare
+        ``MagicMock`` answers the default label for every backend, which is precisely
+        the failure this test exists to catch. The backend is carried by the runtime,
+        which is where the provider reads it from in production too.
+        """
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.subagent_manager.run import RunEventCoordinator
+        from kiro_crew.subagent_persistence import _live_cleanup_identities
+
+        manager = _manager()
+        info = SubagentInfo(id=f"bind{len(backend)}", task="t")
+        handle = MagicMock()
+        handle.session_id = "sid-bound"
+        # A real mode, not a MagicMock attribute: the bind assigns
+        # ``provider.memory_mode``, whose setter folds it with the handle's own
+        # through ``stricter_memory_mode`` and refuses anything outside
+        # ``MEMORY_MODES``. Spelled as this file's other handle doubles spell it.
+        handle.memory_mode = "persistent"
+        runtime = MagicMock()
+        runtime.pid = None
+        runtime.acp_backend = backend
+        provider = AcpSessionProvider(handle, runtime, session_key="subagent:bind")
+
+        remembered = AsyncMock()
+        with (
+            patch.object(RunEventCoordinator, "_remember_identity_off_loop", remembered),
+            # ``run.py``'s ``*_impl`` bodies resolve their globals through
+            # ``kiro_crew.subagent``, so that is where the name has to be replaced.
+            patch("kiro_crew.subagent.AcpSessionProvider", lambda *a, **k: provider),
+        ):
+            await manager._run_events._bind_shared_handle_impl(
+                info, "subagent:bind", runtime, handle
+            )
+        live = [
+            record
+            for record in (_live_cleanup_identities(info.id) or [])
+            if record.get("session_id") == "sid-bound"
+        ]
+        return info, live, remembered
+
+    @pytest.mark.asyncio
+    async def test_a_codex_shared_session_is_labelled_codex(self) -> None:
+        from kiro_crew.acp.types import ACP_BACKEND_CODEX, PROVIDER_LABEL_CODEX
+
+        info, live, remembered = await self._bound(ACP_BACKEND_CODEX)
+        assert info._session_provider == PROVIDER_LABEL_CODEX
+        assert live and live[0].get("provider") == PROVIDER_LABEL_CODEX, (
+            "the live cleanup identity still claims another provider for a codex "
+            f"session: {live!r}"
+        )
+        assert remembered.await_args is not None
+        assert remembered.await_args.kwargs["provider"] == PROVIDER_LABEL_CODEX
+
+    @pytest.mark.asyncio
+    async def test_a_kiro_shared_session_is_still_labelled_kiro(self) -> None:
+        """Not a swap. ``ACP_BACKEND_KIRO`` IS the empty string, so a truthiness test
+        on the backend would have sent kiro itself down the wrong branch -- the same
+        trap this file's sibling PR fell into once."""
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO, PROVIDER_LABEL_DEFAULT
+
+        info, live, _ = await self._bound(ACP_BACKEND_KIRO)
+        assert info._session_provider == PROVIDER_LABEL_DEFAULT
+        assert live and live[0].get("provider") == PROVIDER_LABEL_DEFAULT

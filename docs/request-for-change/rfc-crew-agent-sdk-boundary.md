@@ -389,17 +389,20 @@ host contract and declaration.
   on the wire for the frontend to read. A capability the backend knows and the UI
   re-derives by string compare is the §2.3 defect one layer further out, where no
   Python-side gate can see it.
-- **Its sessions get an empty MCP array.** `_codex_session_mcp_servers()`
-  (`acp/client.py`) returns `[]`, so **nothing is projected** onto a codex
-  session — not a reduced set, and not Crew's own control plane. The only entries
-  it can carry are the shared MCP gateway's broker stubs, appended for every
-  backend alike and empty when that gateway is off, so with the gateway off the
-  session has no tools at all.
-  `providers/mirrors/`'s `NO_MIRROR` entry states this outright and calls it "a
-  real user-visible state". It is §2.6's `_session_mcp_servers() -> []` row
-  returning on a *selectable* provider, after the core had closed that hole for
-  CC — which is the evidence that a neutral-return override is a hole in the
-  contract and not a one-off.
+- **Its sessions got an empty MCP array — since closed.** As this section was
+  written, `_codex_session_mcp_servers()` (`acp/client.py`) returned `[]`, so
+  **nothing was projected** onto a codex session — not a reduced set, and not Crew's
+  own control plane; with the shared MCP gateway off, the session had no tools at
+  all. That was §2.6's `_session_mcp_servers() -> []` row returning on a *selectable*
+  provider, after the core had closed the same hole for CC, which is the evidence
+  that a neutral-return override is a hole in the contract and not a one-off. The
+  hole is closed and the evidence stands: codex has a mirror
+  (`providers/mirrors/codex.py`), the runtime applies its session projection on the
+  `AcpRuntime` path, and `CodexHarness.session_mcp_servers` narrows the projected
+  array to what the adapter advertises — so the array a codex session mounts is now
+  built rather than defaulted. The method named above no longer exists; the argument
+  for a DECLARED extension point rather than an override does, which is what §7's
+  `mcp_servers` row carries.
 
 The enforcement that was missing is landing with this revision: the host-contract
 spec gains a Codex column and a parity test in the same PR as this document. The
@@ -410,12 +413,16 @@ build offered — and each used that as the *justification* for supplying nothin
 `acp_backends.py`'s comment on the id, `AcpClient._codex_session_mcp_servers`'s
 docstring, the "dormant seam" comment on the `_is_codex` spawn branch, and the
 `NO_MIRROR` rationale string in `providers/mirrors/registry.py`. A reader who
-believes any of them concludes the empty MCP array costs nobody anything. `main`
+believed any of them concluded the empty MCP array cost nobody anything. `main`
 rewrote the two comments in #8905 before this revision landed, together with the
 same retracted claim about the CC branch in `docs/system-specs/modules/providers.md`;
-this revision corrects the remaining two, and goes one step further on both — the
+this revision corrected the remaining two, and went one step further on both — the
 docstring and the rationale also inferred "nothing is mounted" from "nothing is
-projected", which the shared MCP gateway's pooled stubs make false.
+projected", which the shared MCP gateway's pooled stubs make false. All four are now
+moot rather than merely corrected: the method and the `_is_codex` spawn branch were
+both deleted when codex moved onto the shared runtime, and `NO_MIRROR` gave way to a
+real mirror. What survives is the lesson the passage was written for — a bucket left
+silent should fail a test — and that is what §12.4 turns into code.
 
 ## 3. Goals
 
@@ -813,7 +820,7 @@ that silence is not an answer and nothing was enforcing it.
 | 2 Session persistence | A foreign transcript store keyed by an encoded `realpath(cwd)`, a path-less `session/load`, in-band synchronous `/compact`, one session per process | CC |
 | 3 Identity and auth | Its own sign-in and its own credential command; a host logout must **not** retire its children | CC |
 | 4 Sandbox | No internal sandbox, so Crew's own wrap must stay — the one membership set that fails *open* | CC |
-| 5 MCP server injection | Reads no file; servers must ride `session/new` **and** `session/load`, in a different shape. Codex: nothing is projected — `_codex_session_mcp_servers()` returns `[]`, so a session mounts zero tools (§2.7) | CC, Codex |
+| 5 MCP server injection | Reads no file; servers must ride `session/new` **and** `session/load`, in a different shape. Codex: the same, and answered — its mirror projects the spec onto both verbs and `CodexHarness.session_mcp_servers` narrows the array to the transports the adapter advertises (§2.7 records the state before that landed) | CC, Codex |
 | 6 Usage, billing, credits | Dollars per token instead of host credits | CC |
 | 7 Security and permission parity | A native permission engine upstream of and invisible to the host gate; a different option vocabulary with a real `reject`; auto mode as a per-session file. Codex: asks only under an applied `("mode", "read-only")` config option, with a residual read gap ACP v1 cannot close | CC and KAS, Codex |
 | 8 Auxiliary runtimes | A second native binary the adapter's own SDK will not find | CC |
@@ -1041,8 +1048,10 @@ moving the key onto each driver waits for PR 4, where the drivers get an owner.
 It also lands the two promoted host-contract contracts: a declared per-session
 `mcp_servers` extension point on `SessionRequest`, replacing the
 `_session_mcp_servers()` override hole (the core now implements that method for
-CC, so what PR 3 removes is the untyped override seam, not the behaviour — and
-`_codex_session_mcp_servers()` returning `[]` is the same hole still open, §2.7),
+CC, so what PR 3 removes is the untyped override seam, not the behaviour — codex's
+instance of the same hole, §2.7, has since been closed by its mirror rather than by
+this extension point, which leaves the seam's cost argument intact and its last
+neutral-return caller gone),
 and `writes_own_transcripts` + `AgentSupervisor.cleanup_session` as the declared
 home of transcript ownership.
 

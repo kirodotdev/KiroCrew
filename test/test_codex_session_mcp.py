@@ -2656,3 +2656,388 @@ def test_the_tripwire_is_wired_into_the_handles_update_branch():
 
     body = inspect.getsource(AcpSessionHandle._dispatch_events)
     assert "self._tripwire_spec_disabled_tool(" in body
+
+
+_LOAD_DRIVER = r"""
+import json, os, queue, subprocess, sys, threading, time
+
+root, entry, node = sys.argv[1:4]
+work = os.path.join(root, "work")
+env = dict(os.environ)
+env["CODEX_HOME"] = os.path.join(root, "codex_home")
+env["AWS_CONFIG_FILE"] = os.path.join(root, "aws", "config")
+env["AWS_SHARED_CREDENTIALS_FILE"] = os.path.join(root, "aws", "creds")
+env["NO_BROWSER"] = "1"
+# A wrapped codex build writes telemetry into TMPDIR. Point it inside the temp
+# root so the measurement leaves nothing behind for the residue reporter to find.
+env["TMPDIR"] = os.path.join(root, "tmp")
+os.makedirs(env["TMPDIR"], exist_ok=True)
+SECRET = "quibbleflum"
+
+
+def reap(p):
+    for step in (p.terminate, p.kill):
+        try:
+            step()
+            p.communicate(timeout=15)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+        except Exception:
+            return
+
+
+class Conn:
+    def __init__(self):
+        self.p = subprocess.Popen(
+            [node, entry], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, cwd=work, env=env, text=True, bufsize=1,
+        )
+        self.q = queue.Queue()
+        self.notes = []
+        self.n = 0
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        for line in self.p.stdout:
+            self.q.put(line)
+        self.q.put(None)
+
+    def send(self, method, params):
+        self.n += 1
+        self.p.stdin.write(json.dumps(
+            {"jsonrpc": "2.0", "id": self.n, "method": method, "params": params}) + "\n")
+        self.p.stdin.flush()
+        return self.n
+
+    def wait(self, rid, timeout=180):
+        deadline = time.time() + timeout
+        while True:
+            budget = deadline - time.time()
+            if budget <= 0:
+                return {"_timeout": True}
+            try:
+                line = self.q.get(timeout=budget)
+            except queue.Empty:
+                return {"_timeout": True}
+            if line is None:
+                return {"_eof": True}
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") == rid:
+                return msg
+            if msg.get("method"):
+                if "id" in msg:
+                    # A request from the agent: answer fail-closed so nothing hangs.
+                    self.p.stdin.write(json.dumps({
+                        "jsonrpc": "2.0", "id": msg["id"],
+                        "result": {"outcome": {"outcome": "cancelled"}}}) + "\n")
+                    self.p.stdin.flush()
+                else:
+                    self.notes.append(msg)
+
+    def call(self, method, params, timeout=180):
+        return self.wait(self.send(method, params), timeout=timeout)
+
+    def alive(self, sid):
+        r = self.call("session/set_config_option",
+                      {"sessionId": sid, "configId": "mode", "value": "read-only"}, 60)
+        return "result" in r
+
+    def replay(self):
+        out = []
+        for note in self.notes:
+            upd = (note.get("params") or {}).get("update") or {}
+            if upd.get("sessionUpdate") in ("agent_message_chunk", "user_message_chunk"):
+                c = upd.get("content") or {}
+                if isinstance(c, dict) and c.get("type") == "text":
+                    out.append(c.get("text") or "")
+        return "".join(out)
+
+    def prompt(self, sid, text):
+        self.notes = []
+        r = self.call("session/prompt",
+                      {"sessionId": sid, "prompt": [{"type": "text", "text": text}]}, 300)
+        res = r.get("result") or {}
+        return {"stop": res.get("stopReason"), "error": r.get("error"),
+                "usage": res.get("usage"), "text": self.replay()[:200]}
+
+
+out = {}
+sid = None
+c1 = Conn()
+try:
+    c1.call("initialize", {"protocolVersion": 1, "clientCapabilities": {"fs": {}}}, 120)
+    new = c1.call("session/new", {"cwd": work, "mcpServers": []})
+    out["new_error"] = new.get("error")
+    sid = (new.get("result") or {}).get("sessionId")
+    if sid:
+        out["plant"] = c1.prompt(
+            sid, "Remember this word for later: %s. Reply with exactly OK." % SECRET)
+        out["close_error"] = c1.call("session/close", {"sessionId": sid}, 60).get("error")
+        out["alive_after_close"] = c1.alive(sid)
+        c1.notes = []
+        load = c1.call("session/load", {"sessionId": sid, "cwd": work, "mcpServers": []})
+        out["same_load_ok"] = "result" in load
+        out["same_load_error"] = load.get("error")
+        if "result" in load:
+            out["same_recall"] = c1.prompt(
+                sid, "What word did I ask you to remember? Reply with only that word.")
+finally:
+    reap(c1.p)
+
+if sid:
+    c2 = Conn()
+    try:
+        c2.call("initialize", {"protocolVersion": 1, "clientCapabilities": {"fs": {}}}, 120)
+        c2.notes = []
+        load = c2.call("session/load", {"sessionId": sid, "cwd": work, "mcpServers": []})
+        out["fresh_load_ok"] = "result" in load
+        out["fresh_load_error"] = load.get("error")
+        if "result" in load:
+            out["fresh_recall"] = c2.prompt(
+                sid, "What word did I ask you to remember? Reply with only that word.")
+        out["delete_error"] = c2.call("session/delete", {"sessionId": sid}, 120).get("error")
+        after = c2.call("session/load", {"sessionId": sid, "cwd": work, "mcpServers": []})
+        out["load_after_delete_ok"] = "result" in after
+        out["load_after_delete_error"] = after.get("error")
+    finally:
+        reap(c2.p)
+
+print(json.dumps(out))
+"""
+
+
+def _provider_config_only(config_toml: str) -> str:
+    """Keep only provider settings needed by the live Codex test.
+
+    The allowlist keeps selected top-level scalar keys and whole
+    ``[model_providers...]`` tables. A denylist has an open spelling axis: each new
+    TOML spelling can reopen it and let an operator-configured process start.
+    """
+    allowed_top_level_keys = {
+        "model_provider",
+        "forced_login_method",
+        "model",
+        "model_reasoning_effort",
+        "chatgpt_base_url",
+        "check_for_update_on_startup",
+    }
+    out: list[str] = []
+    at_top_level = True
+    in_provider_table = False
+    for line in config_toml.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("["):
+            at_top_level = False
+            if stripped.startswith("[["):
+                header = None
+            else:
+                end = stripped.find("]", 1)
+                header = stripped[1:end].strip() if end != -1 else None
+            in_provider_table = header == "model_providers" or (
+                header is not None and header.startswith("model_providers.")
+            )
+            if in_provider_table:
+                out.append(line)
+            continue
+        if in_provider_table:
+            out.append(line)
+            continue
+        if at_top_level:
+            key, separator, _value = stripped.partition("=")
+            if separator and key.strip() in allowed_top_level_keys:
+                out.append(line)
+    return "".join(out)
+
+
+def test_provider_config_only_excludes_process_configuration():
+    config = """\
+model_provider = "custom"
+forced_login_method = "chatgpt"
+model = "example-model"
+model_reasoning_effort = "low"
+chatgpt_base_url = "https://example.invalid"
+check_for_update_on_startup = false
+mcp_servers = { evil = { command = "/bin/sh" } }
+mcp_servers.evil2 = { command = "/bin/sh" }
+notify = ["/bin/sh"]
+
+[model_providers.custom]
+name = "Custom"
+wire_api = "responses"
+
+[mcp_servers.builder]
+command = "/bin/sh"
+
+[hooks]
+command = "/bin/sh"
+"""
+
+    filtered = _provider_config_only(config)
+
+    assert "mcp_servers" not in filtered
+    assert "hooks" not in filtered
+    assert "notify" not in filtered
+    for provider_setting in (
+        'model_provider = "custom"',
+        'forced_login_method = "chatgpt"',
+        'model = "example-model"',
+        'model_reasoning_effort = "low"',
+        'chatgpt_base_url = "https://example.invalid"',
+        "check_for_update_on_startup = false",
+        "[model_providers.custom]",
+        'name = "Custom"',
+        'wire_api = "responses"',
+    ):
+        assert provider_setting in filtered
+
+
+@pytest.mark.skipif(
+    os.environ.get("KIROCREW_LIVE_CODEX_PROMPT_TESTS") != "1",
+    reason=("spends real model tokens; set KIROCREW_LIVE_CODEX_PROMPT_TESTS=1 to opt in"),
+)
+def test_real_codex_acp_load_after_close_restores():
+    """ANTI-DRIFT GUARD for codex's membership in ``ACP_BACKENDS_SESSION_SHARING``.
+
+    The sibling above measures that ``session/close`` makes the sessionId stop
+    answering. That alone would argue codex OUT of sharing, and for a while it did.
+    This measures the other half of the same verb: the Codex thread's own record
+    SURVIVES the close, so ``session/load`` restores the conversation and a shared
+    subagent stays continuable after the runtime that served it is gone.
+
+    Three claims, each one the sharing set's comment makes:
+
+    1. After a close, ``session/load`` on the SAME id succeeds and the session then
+       answers a question only the first turn could have taught it.
+    2. The same load succeeds from a RESTARTED adapter process over the same
+       ``CODEX_HOME``. This is the shape ``spawn_continue`` actually takes -- the
+       parent's runtime is usually dead by then -- and it is the claim that cannot be
+       inferred from the first, because a same-process load could have been served
+       from adapter memory.
+    3. ``session/delete`` ARCHIVES the thread and a load afterwards refuses. Release
+       therefore has a verb that genuinely disposes, and ``close`` is demonstrably
+       not it.
+
+    Unlike its sibling this test PROMPTS, so it needs a codex build whose credential
+    this host actually holds. The spend opt-in below is the ONE gate that decides
+    whether it runs; every other precondition -- codex-acp, node, ``CODEX_PATH``, a
+    resolvable provider, a prompt that completes -- is a FAILURE past that gate,
+    because the opt-in is a declaration that this host can run it. None of them may
+    be a ``skipif``: ``test_real_adapter_gate.py`` forbids one on ``_ENTRY`` in a
+    guarded file, on the ground that a skipif cannot fail and so restores exactly
+    the silence the lane removes.
+
+    It deliberately does NOT carry ``@pytest.mark.real_adapter``, and adding one would
+    turn the contract lane red rather than widen its coverage. That lane installs
+    adapters from a pinned manifest and then asserts on its own junit report that no
+    SELECTED case was skipped; it has no model credential and does not set the spend
+    opt-in below, so a marked case here would be selected and then skip, which is the
+    exact shape that assertion exists to refuse. The lane's floor counts the contracts
+    it can actually measure, and this one is not among them. What covers this file in
+    CI is ``test_provider_config_only_excludes_process_configuration``, which carries
+    no marker and no skip.
+
+    ``CODEX_PATH`` is configuration, not consent to spend model tokens, so prompting
+    also requires the dedicated opt-in. This is the only test in this file that sends
+    ``session/prompt``; the other two live tests handshake and inspect session state
+    without a model call, so they carry no such gate.
+    """
+    if _ENTRY is None:
+        pytest.fail(
+            "codex-acp is not installed, and KIROCREW_LIVE_CODEX_PROMPT_TESTS=1: the "
+            "opt-in declares this host can prompt a real codex. Install it with: "
+            f"npm i -g @agentclientprotocol/codex-acp@{MEASURED_CODEX_ACP_VERSION}"
+        )
+    if shutil.which("node") is None:
+        pytest.fail("node is not on PATH, so the codex-acp entrypoint cannot run")
+    if not os.environ.get("CODEX_PATH"):
+        pytest.fail(
+            "CODEX_PATH is unset, so there is no codex build to prompt; unset "
+            "KIROCREW_LIVE_CODEX_PROMPT_TESTS on a host that cannot prompt one"
+        )
+
+    ambient = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")) / "config.toml"
+    if not ambient.is_file():
+        pytest.fail(
+            f"no codex config.toml at {ambient} to resolve a provider from, so this "
+            "opt-in test cannot prompt; unset KIROCREW_LIVE_CODEX_PROMPT_TESTS on a "
+            "host without a configured codex"
+        )
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
+        root = Path(w)
+        (root / "work").mkdir()
+        (root / "codex_home").mkdir()
+        (root / "aws").mkdir()
+        (root / "codex_home" / "config.toml").write_text(
+            _provider_config_only(ambient.read_text(encoding="utf-8")), encoding="utf-8"
+        )
+        driver = root / "drive_load.py"
+        driver.write_text(_LOAD_DRIVER, encoding="utf-8")
+        result = _run_driver_reaping_group(
+            [sys.executable, str(driver), str(root), str(_ENTRY), shutil.which("node") or "node"],
+            timeout=900,
+        )
+        context = (
+            f"driver exit: {result.returncode}\n"
+            f"stdout: {result.stdout[-3000:]}\nstderr: {result.stderr[-3000:]}"
+        )
+        try:
+            m = json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            pytest.fail("the codex-acp load driver produced no measurement\n" + context)
+
+        # ``KIROCREW_LIVE_CODEX_PROMPT_TESTS=1`` is a DECLARATION that this host has
+        # a working credentialled codex, the way ``KIROCREW_E2E_REQUIRE=1`` is used in
+        # ``real_adapter_gate``. Under a declaration an absent precondition is a
+        # failure rather than a skip: a host that cannot meet it unsets the opt-in,
+        # and a run that reports success having measured nothing is what the
+        # no-silent-skip rule exists to refuse.
+        if m.get("new_error"):
+            pytest.fail(
+                f"codex-acp refused session/new on this host: {m['new_error']!r}\n{context}"
+            )
+        plant = m.get("plant") or {}
+        if plant.get("error") or plant.get("stop") != "end_turn":
+            pytest.fail(f"the planting prompt did not complete on this host: {plant!r}\n{context}")
+
+        # The close still evicts -- restated here so this test fails rather than
+        # silently measuring a load on a session that never left.
+        assert m["close_error"] is None, f"session/close was refused\n{context}"
+        assert not m["alive_after_close"], (
+            "session/close no longer evicts, so this test is measuring a live session "
+            "rather than a restored one\n" + context
+        )
+
+        # 1. the record survived the close, on the same process.
+        assert m["same_load_ok"], (
+            "session/load on a CLOSED sessionId failed, so codex's close disposes the "
+            "record as well as the session -- codex must leave "
+            f"ACP_BACKENDS_SESSION_SHARING: {m.get('same_load_error')!r}\n" + context
+        )
+        same = m.get("same_recall") or {}
+        assert "quibbleflum" in (same.get("text") or "").lower(), (
+            "the restored session could not recall the first turn, so the load "
+            f"returned a session without its context: {same!r}\n" + context
+        )
+
+        # 2. and across an adapter RESTART, which is the continuation's real shape.
+        assert m["fresh_load_ok"], (
+            "session/load from a FRESH adapter process failed, so a codex subagent "
+            "stops being continuable once its runtime is recycled -- which is the "
+            f"ordinary case: {m.get('fresh_load_error')!r}\n" + context
+        )
+        fresh = m.get("fresh_recall") or {}
+        assert "quibbleflum" in (fresh.get("text") or "").lower(), (
+            f"the reopened thread lost its context across the restart: {fresh!r}\n" + context
+        )
+
+        # 3. delete is the disposing verb, so release has one and close is not it.
+        assert m["delete_error"] is None, f"session/delete was refused\n{context}"
+        assert not m["load_after_delete_ok"], (
+            "session/load succeeded after session/delete, so delete no longer disposes "
+            "the thread and release has no verb that does\n" + context
+        )

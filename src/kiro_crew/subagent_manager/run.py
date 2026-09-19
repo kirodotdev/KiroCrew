@@ -35,7 +35,6 @@ if TYPE_CHECKING:
         FALLBACK_CANDIDATE_ATTEMPTS,
         FALLBACK_STORY_ATTR,
         HOOK_EVENT_POST_TOOL_USE,
-        PROVIDER_LABEL_DEFAULT,
         STOP_CLASS_CANCELLED,
         STOP_RECOVERY_MAX_RETRIES,
         TOOL_AUTO_APPROVE,
@@ -977,10 +976,19 @@ class RunEventCoordinator(ManagerComponent):
         # deletion on both arms), so any completed run is continuable while
         # its files survive. keep=True / continuation runs additionally take
         # the dedicated arm: their resume path is the proven dashboard
-        # expire-and-session/load lifecycle, which owns its process. Whether a
-        # SHARED-runtime sid is loadable is the open Phase 0 question — until
-        # proven, a continue on a shared-arm run relies on the fail-closed
-        # resume guard below rather than a spawn-time guarantee.
+        # expire-and-session/load lifecycle, which owns its process.
+        #
+        # A SHARED-runtime sid IS loadable, on every backend in
+        # ``ACP_BACKENDS_SESSION_SHARING``. Teardown disposes the in-memory session on
+        # both arms -- a resident subagent session would hold its MCP fleet on a
+        # runtime nobody is using -- and what a later ``spawn_continue`` addresses is
+        # the record the host kept: kiro-cli's transcript under
+        # ``<kiro home>/sessions/cli``, or the thread ``codex`` persists under
+        # ``CODEX_HOME``. Both are driven end to end with the shared session's runtime
+        # process dead before the continuation runs. The fail-closed resume guard
+        # below still applies, because a record can be pruned or released between the
+        # two runs; it is one of two things standing between a shared-arm run and its
+        # follow-up rather than the only one.
         if info.keep:
             self._manager._sessions.mark_continuable(session_key)
             self._manager._conversations[session_key] = time.time()
@@ -2889,7 +2897,28 @@ class RunEventCoordinator(ManagerComponent):
         # Capture cleanup identity before persistence or later setup can fail,
         # otherwise the live handle becomes an untracked ghost.
         cleanup_session_id = str(handle.session_id or "")
-        cleanup_provider = PROVIDER_LABEL_DEFAULT
+        # The backend that actually served this session, read from the provider
+        # rather than fixed at kiro's label -- this path creates a session on
+        # whatever backend the parent runs, so a constant here can only be right
+        # for one of them.
+        #
+        # This is NOT what the continuation reads. ``_run_inner_impl`` re-captures
+        # the label from the same provider immediately after session acquisition,
+        # and that value is what reaches ``state.json`` and the corrected identity
+        # record -- so a run that gets that far was always labelled correctly, on
+        # every backend. What this write owns is the window BEFORE that re-capture:
+        # a run cancelled in it leaves the identity record claiming kiro for a
+        # session some other host holds, and the tombstone prune then takes
+        # ``_cleanup_session_files_sync``'s kiro branch, unlinks a path that was
+        # never going to exist, and reports cleanup SUCCEEDED -- where the label it
+        # should have carried reports "no cleanup route for this provider" and keeps
+        # the retry metadata. Fail-closed is the behaviour that constant was quietly
+        # spending.
+        #
+        # ``_provider_label_of`` resolves it through ``PROVIDER_LABEL_BY_BACKEND``,
+        # so a harness added later is one table row rather than one more branch here
+        # (harness-parity H13).
+        cleanup_provider = self._manager._provider_label_of(provider)
         setattr(info, "_session_id", cleanup_session_id)
         setattr(info, "_session_provider", cleanup_provider)
         self._publish_identity(

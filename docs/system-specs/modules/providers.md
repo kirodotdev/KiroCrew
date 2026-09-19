@@ -549,13 +549,30 @@ Nothing sends `providers/set` per session, and nothing should start.
 a capability granted by the absence of one backend is inherited by every backend
 added later. It is what `SessionManager.is_session_sharing_eligible()` consults
 to decide whether a parent session can host multiplexed subagent sessions. Kiro
-is the only member. Codex is deliberately out, on two counts. The teardown Crew
-sends it is a `session/close` request that evicts the session, so a shared
-subagent session would not survive the teardown of the conversation that spawned
-it — KAS's position exactly, a disposing verb with no keep-aware variant. And the
-shared-subagent path persists a provider label `SessionMap` reads as kiro-cli, so
-`spawn_continue` on a codex subagent answers `conversation_gone`. KAS sits in the
-same position — on the runtime, out of this set until a keep-aware teardown lands —
-and codex follows that precedent rather than re-arguing it. The invariants governing what an
+and codex are the members.
+
+Membership is about the PERSISTED THREAD, not about a session that stays alive.
+Teardown still sends the disposing verb on both members — a subagent session left
+resident on the shared process after its parent ends would hold its own MCP fleet
+on a runtime nobody is using — and `spawn_continue` re-reaches the conversation by
+loading the record the host kept: kiro-cli's transcript under
+`<kiro home>/sessions/cli`, or the thread `codex` persists under `CODEX_HOME`. So
+the question membership answers is: after this backend's teardown verb, can a
+`session/load` still restore the thread?
+
+Codex answers yes, measured on codex-acp 1.11.0 against codex 0.154.0:
+`session/close` evicts (the sessionId stops answering), a `session/load` on that
+closed id succeeds and the session then answers a question about the first turn,
+and the same load succeeds from a RESTARTED adapter process over the same
+`CODEX_HOME` — which is the shape a continuation actually takes, since the runtime
+that served the subagent is usually gone. `session/delete` archives the thread and
+a load afterwards refuses, so release has a verb that genuinely disposes and
+`close` is not it. `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` is what carries the
+restore: codex resolves a load from the sessionId alone.
+
+KAS answers no, and that is the whole of its exclusion: `_kiro/session/delete`
+REMOVES the persisted record, so there is nothing for a load to restore and a
+shared subagent would strand `spawn_continue` on `conversation_gone`. A different
+gap, owned by whoever gives KAS a non-destroying teardown. The invariants governing what an
 added harness may and may not change are in
 [harness-parity.md](harness-parity.md).

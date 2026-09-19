@@ -255,12 +255,13 @@ def test_session_sharing_is_opt_in() -> None:
     # claude-agent-acp runs one process per session (AcpClient), so it cannot
     # host a multiplexed subagent session however the call site is written.
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_SESSION_SHARING
-    # codex is the case this ratchet exists for: it IS on the shared runtime and
-    # its adapter WOULD hold a shared session, so nothing about the transport
-    # excludes it -- only the continuation, which resolves a codex subagent's
-    # persisted provider label as kiro-cli and answers conversation_gone. A
-    # capability inferred from "runs on AcpRuntime" would have granted it.
-    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_SESSION_SHARING
+    # KAS is the case this ratchet exists for: it IS on the shared runtime and its
+    # engine WOULD hold a shared session, so nothing about the transport excludes it
+    # -- only its teardown, ``_kiro/session/delete``, which removes the record a
+    # continuation would load. A capability inferred from "runs on AcpRuntime" would
+    # have granted it.
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
+    assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
 
 
 def test_member_capabilities_are_opt_in() -> None:
