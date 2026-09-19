@@ -1701,6 +1701,8 @@ class AcpProvider(LLMProvider):
             tool_output_digest=e.tool_output_digest,
             tool_output_bytes=e.tool_output_bytes,
             tool_final=e.tool_final,
+            # Dropping this clears the task panel and records an empty plan/updated.
+            todo=e.todo,
             # Forwarded beside `tool_final` because it is NOT derivable from it:
             # `tool_final` is true only for a completed call, so a consumer that
             # needs to know a tool FAILED has this field or nothing. Dropping it

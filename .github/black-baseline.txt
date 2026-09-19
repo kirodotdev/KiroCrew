@@ -973,7 +973,6 @@ test/test_theme_install.py
 test/test_thread_parent_context.py
 test/test_title_refresh.py
 test/test_to_dict_board_fields.py
-test/test_todo_list_surface.py
 test/test_toolbox_migration.py
 test/test_trusted_apps_api.py
 test/test_turn_duration_hooks.py

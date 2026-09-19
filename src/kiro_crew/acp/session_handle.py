@@ -114,6 +114,7 @@ from kiro_crew.acp.types import (
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
+    EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
@@ -934,6 +935,9 @@ class AcpSessionHandle:
         # so the permission event can rebuild mcp__<server>__<tool> for per-tool
         # governance in the app-own-server auto-approve.
         self._tool_call_tool_name: dict[str, str] = {}
+        # Parent-scoped cache keys populated by tagged native-child tool calls.
+        # Cleared per turn beside the sibling per-call caches below.
+        self._native_child_tool_call_ids: set[str] = set()
         # Server names for which a mid-session MCP OAuth banner was already
         # emitted, so we don't spam duplicates. Discarded on the matching
         # server_initialized / server_init_failure so a later token-expiry
@@ -1219,6 +1223,7 @@ class AcpSessionHandle:
         self._tool_call_diff_path.clear()
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
+        self._native_child_tool_call_ids.clear()
         self._permission_options.clear()
         # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
         # each turn): otherwise a completed sub-agent from a prior turn stays in
@@ -4786,6 +4791,10 @@ class AcpSessionHandle:
                     return kas_sub_events
                 _child_prefix = self._build_child_tool_activity_prefix(update)
                 if _child_prefix:
+                    child_tool_call_id = _child_prefix[0].tool_call_id
+                    self._native_child_tool_call_ids.add(
+                        scoped_tool_cache_key(self._session_id, child_tool_call_id)
+                    )
                     # Child nested tool: run the shared parser for its cache
                     # SIDE EFFECTS ONLY — the trusted _tool_call_is_shell signal
                     # + redacted input that a later permission/result reads — but
@@ -4826,7 +4835,22 @@ class AcpSessionHandle:
             tool_name_cache=self._tool_call_tool_name,
             cache_scope=self._session_id,
         )
+        filtered_events: list[AcpEvent] = []
         for ev in events:
+            if ev.kind == EVENT_TODO_UPDATE and ev.tool_call_id:
+                # Ownership is a standing fact about the call id, not a token to
+                # spend: one tool_call can be followed by SEVERAL
+                # tool_call_update frames (the captured corpus in
+                # test/fixtures/acp_frames/kiro/session.jsonl has two for one
+                # call), so consuming the entry on the first snapshot would let
+                # a second result frame for the same child call through. The
+                # per-turn clear beside the sibling per-call caches is what
+                # bounds the set.
+                if scoped_tool_cache_key(self._session_id, ev.tool_call_id) in (
+                    self._native_child_tool_call_ids
+                ):
+                    continue
+            filtered_events.append(ev)
             if ev.kind == EVENT_TEXT_CHUNK:
                 self.last_prompt_stats.text_chunks += 1
                 self._stale_eligible = True
@@ -4901,6 +4925,7 @@ class AcpSessionHandle:
                 # result -- including one that merely quotes a marker inside a
                 # long document -- leaves it None. Never a security input.
                 self.last_infra_error = classify_infra_error(ev.tool_output)
+        events = filtered_events
         status_event = self._structured_status_event(msg, params, update)
         if status_event is not None:
             events.append(status_event)

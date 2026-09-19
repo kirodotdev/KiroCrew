@@ -222,6 +222,17 @@ class TestToLlmEventFieldPropagation:
         assert ev.diff_old_text is None
         assert ev.diff_path == ""
 
+    def test_to_llm_event_preserves_todo_snapshot(self):
+        """Dropping todo clears the task panel and records an empty plan update."""
+        todo = {
+            "description": "Repair provider boundary",
+            "tasks": [{"id": "1", "text": "forward snapshot", "completed": False}],
+        }
+
+        out = AcpProvider._to_llm_event(AcpEvent(kind="todo_update", todo=todo))
+
+        assert out.todo == todo
+
     @pytest.mark.asyncio
     async def test_stream_propagates_tool_final_and_subagent_fields(self):
         provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
@@ -291,12 +302,7 @@ class TestToLlmEventFieldParity:
 
     # Fields that are intentionally NOT forwarded through _to_llm_event.
     # Each entry must document why it is excluded.
-    _INTENTIONALLY_DROPPED: set[str] = {
-        # ``todo`` is consumed directly by the dashboard websocket handler
-        # (EVENT_TODO_UPDATE) and never needs to survive the LLMProvider
-        # stream interface — chat_runner does not inspect it.
-        "todo",
-    }
+    _INTENTIONALLY_DROPPED: set[str] = set()
 
     @staticmethod
     def _distinguishable(field: "dataclasses.Field") -> object | None:

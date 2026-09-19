@@ -2245,7 +2245,11 @@ def _todo_payload(raw_output: Any) -> dict[str, Any] | None:
     return None
 
 
-def parse_todo_snapshot(update: dict[str, Any]) -> dict[str, Any] | None:
+def parse_todo_snapshot(
+    update: dict[str, Any],
+    tool_name_cache: dict[str, str] | None = None,
+    cache_scope: str = "",
+) -> dict[str, Any] | None:
     """Normalise a ``todo_list`` tool result into a UI-ready snapshot.
 
     Returns ``{description, tasks: [{id, text, completed}]}`` or None when this
@@ -2256,10 +2260,32 @@ def parse_todo_snapshot(update: dict[str, Any]) -> dict[str, Any] | None:
     An empty ``tasks`` list is a MEANINGFUL result (the agent cleared its list),
     so it returns a snapshot with zero tasks rather than None. Only a genuine
     non-match or unparseable payload yields None.
+
+    ``tool_name_cache`` / ``cache_scope`` are the caller's own per-tool caches,
+    passed the way :func:`_build_tool_refinement_event` takes them, and they are
+    what identifies the call: see the fallback below.
     """
     if not isinstance(update, dict):
         return None
-    if _kiro_tool_name(update) != KIRO_TOOL_TODO_LIST:
+    # kiro-cli puts ``_meta`` on the ``tool_call`` frame ALONE. The result frame
+    # this parses carries none (captured in test/fixtures/acp_frames/kiro/
+    # session.jsonl), so asking THAT frame for its identity answers "" and the
+    # snapshot is dropped on every live call, taking the task panel and the crew
+    # log's plan/updated entry with it. So fall back to the name the preceding
+    # tool_call frame cached under this call id, the same recovery
+    # build_permission_event makes for the permission frame, which carries no
+    # _meta for the same reason.
+    #
+    # A frame that DOES assert an identity is believed as it stands: the cache
+    # only answers for a frame that asserts nothing. Read under
+    # scoped_tool_cache_key because these entries are origin-bound, so a
+    # backend-internal child replaying a parent's id reads nothing.
+    tool_name = _kiro_tool_name(update)
+    if not tool_name and tool_name_cache is not None:
+        call_id = update.get("toolCallId") or ""
+        if isinstance(call_id, str) and call_id:
+            tool_name = tool_name_cache.get(scoped_tool_cache_key(cache_scope, call_id)) or ""
+    if tool_name != KIRO_TOOL_TODO_LIST:
         return None
     payload = _todo_payload(update.get("rawOutput"))
     if payload is None:
@@ -2478,10 +2504,17 @@ def parse_session_update(
             events.append(refine)
         # A todo_list result carries the agent's whole task list. Emit it as an
         # ADDITIONAL event rather than swallowing the update — the tool call
-        # itself must still render in the transcript like any other.
-        todo = parse_todo_snapshot(update)
+        # itself must still render in the transcript like any other. The name
+        # cache is what identifies it: this frame carries no _meta of its own.
+        todo = parse_todo_snapshot(update, tool_name_cache, cache_scope=cache_scope)
         if todo is not None:
-            events.append(AcpEvent(kind=EVENT_TODO_UPDATE, todo=todo))
+            events.append(
+                AcpEvent(
+                    kind=EVENT_TODO_UPDATE,
+                    tool_call_id=str(update.get("toolCallId") or ""),
+                    todo=todo,
+                )
+            )
         return events
     return events
 

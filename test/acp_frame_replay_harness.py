@@ -295,7 +295,9 @@ def _replay(
                 entry["usage"] = list(parse_usage_update(update))
                 entry["usage_cost"] = parse_usage_cost(update)
             if discriminant == "tool_call_update":
-                todo = parse_todo_snapshot(update)
+                todo = parse_todo_snapshot(
+                    update, caches["tool_name_cache"], cache_scope=caches["cache_scope"]
+                )
                 if todo is not None:
                     entry["todo"] = todo
         elif action == "steer":
