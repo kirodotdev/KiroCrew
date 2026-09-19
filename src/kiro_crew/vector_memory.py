@@ -189,6 +189,45 @@ def _json_value_equal(a: str, b: str) -> bool:
         return False
 
 
+def _is_degenerate_value(value: object) -> bool:
+    """True when a DECODED value carries nothing: ``None``, or blank text.
+
+    The decoded half of :func:`_is_degenerate_value_json`, for the paths that
+    already hold the value rather than its stored text. Both spellings answer
+    one question, so a value refused as absent at the write gate is the same
+    value every other rule treats as absent.
+    """
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _is_degenerate_value_json(value_json: str) -> bool:
+    """True when a stored JSON text carries no value at all.
+
+    The envelope alone measures the wrong representation: a whitespace-only
+    string persists as ``'"  "'``, which is neither empty nor a member of
+    :data:`_EMPTY_VALUE_JSON`, so it reads as a value and then displaces one.
+    Decoding is limited to a JSON string envelope: a number, bool, array or
+    object never decodes to blank text, so none of those is ever parsed here.
+
+    One predicate serves both the write gate and the conflict rule on purpose:
+    a value the gate refuses to accept must also be a value the conflict rule
+    lets an automated writer replace, or the two disagree about what "no value"
+    means and a row that slipped in earlier stays frozen.
+    """
+    vj = value_json.strip()
+    if not vj or vj in _EMPTY_VALUE_JSON:
+        return True
+    if not vj.startswith('"'):
+        return False
+    try:
+        decoded = json.loads(vj)
+    except (TypeError, ValueError, RecursionError):
+        # Unparseable text is not provably degenerate, and the encoding and size
+        # gates that follow own that case; reporting it empty names a wrong cause.
+        return False
+    return _is_degenerate_value(decoded)
+
+
 MAX_MEMORY_SEARCH_QUERY = 2000
 
 
@@ -2198,8 +2237,11 @@ class VectorMemoryStore:
         # refusing a Korean/Chinese/Cyrillic value at roughly one sixth of
         # the real byte budget and quoting an inflated count in the error.
         vj = value_json if value_json is not None else json.dumps(value, ensure_ascii=False)
-        if not vj.strip() or vj.strip() in _EMPTY_VALUE_JSON:
-            return SemanticRejectCode.VALUE_EMPTY, "Value must not be null or empty"
+        if _is_degenerate_value_json(vj):
+            return (
+                SemanticRejectCode.VALUE_EMPTY,
+                "Value must not be null, empty, or only whitespace",
+            )
         # A lesson mapping is size-gated on its CONTENT (the legacy-equivalent
         # "<rule><sep><negative>" rendering), not the JSON envelope: the
         # envelope's ~50-70 bytes of keys would otherwise shrink the accepted
@@ -2733,7 +2775,17 @@ class VectorMemoryStore:
                     reason = None
                     old_conf = existing["confidence"]
                     if source != "user_explicit":
-                        if existing["source"] == "user_explicit":
+                        if _is_degenerate_value_json(existing["value_json"]):
+                            # Neither precedence rule has content to protect here, and
+                            # refusing is what makes such a row permanent: the automated
+                            # writer this branch turns away is the only writer that would
+                            # ever repair it.
+                            logger.info(
+                                "Semantic repair: replacing degenerate value for %r from %s",
+                                key,
+                                source,
+                            )
+                        elif existing["source"] == "user_explicit":
                             reason = "Existing entry set by user cannot be overwritten by automated source"
                         elif confidence <= old_conf and abs(confidence - old_conf) >= 0.1:
                             reason = f"Existing entry has higher confidence ({old_conf:.2f} vs {confidence:.2f})"
@@ -2995,7 +3047,18 @@ class VectorMemoryStore:
                 old_text = json.loads(old_val) if isinstance(old_val, str) else str(old_val)
             except (json.JSONDecodeError, TypeError):
                 old_text = str(old_val)
-            if isinstance(old_text, str) and len(old_text) >= 3:
+            # A blank old value names no topic, and the V1 heuristic embeds
+            # "<key suffix>: <old value>": a blank one degenerates to the bare key
+            # suffix and soft-deletes every episode merely ON that subject, above
+            # cosine 0.7. The length guard cannot catch it -- "   " is three
+            # characters of nothing -- and this is exactly the value the repair
+            # above exists to replace, so the repair would pay for itself in
+            # silently tombstoned episodes.
+            if (
+                isinstance(old_text, str)
+                and len(old_text) >= 3
+                and not _is_degenerate_value(old_text)
+            ):
                 try:
                     self._retire_stale_episodic(key, old_text)
                 except Exception:
