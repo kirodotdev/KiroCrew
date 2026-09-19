@@ -230,7 +230,9 @@ async def test_a_recovery_path_persists_a_glued_option_marker_reflowed(tmp_path)
     await _run_chat(state, slot, "do the thing")
 
     stored = [m["content"] for m in slot.messages if m.get("role") == "assistant"]
-    assert stored == ["Pick.\n[OPTIONS: A | B]\nAnytime."]
+    from kiro_crew.constants import GLUED_FOOTER_TEXT_LABEL
+
+    assert stored == [f"Pick.\n[OPTIONS: A | B]\n{GLUED_FOOTER_TEXT_LABEL}\nAnytime."]
 
 
 @pytest.mark.asyncio

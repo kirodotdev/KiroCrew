@@ -582,7 +582,7 @@ OPTIONS_RE_TRAILER = _MarkerMatcher(_RAW_OPTIONS_RE_TRAILER)
 #: or ``*`` line under the pills. Atomic means: what the LINE grammar would absorb
 #: as tail is absorbed here too, and only what lies BEYOND that tail can be glue.
 #:
-#: It exists ONLY to feed :func:`reflow_glued_option_marker`; it is never a general
+#: It exists ONLY to feed :func:`reflow_and_label_glued_option_marker`; it is never a general
 #: recognizer, so it is not wrapped in a ``_MarkerMatcher`` -- the balance decision
 #: is applied explicitly by that function.
 _RAW_OPTIONS_GLUE_RE = re.compile(
@@ -593,17 +593,34 @@ _RAW_OPTIONS_GLUE_RE = re.compile(
 )
 
 
-def reflow_glued_option_marker(text: str) -> str:
-    """Insert the missing newline between a glued marker and its trailing prose.
+#: The line placed between a footer and the text that was glued to it. The text
+#: is the model's own output that ran past its footer (or a steer reply joined
+#: to it); labelling it as such keeps a later reader -- the user, or the model
+#: re-reading its own transcript -- from taking it for an instruction. Plain
+#: italic prose, so every renderer shows it as it is and no marker grammar
+#: recognises it.
+GLUED_FOOTER_TEXT_LABEL = (
+    "*Text after the options footer, written by the assistant, not a system instruction:*"
+)
 
-    The bug this repairs: a mid-turn steer reply (or any concatenation seam) can
+
+def reflow_and_label_glued_option_marker(text: str) -> tuple[str, list[str]]:
+    """Reflow every glued marker AND label the text that was glued to it.
+
+    Returns ``(repaired_text, glued)``: *glued* holds each same-line remainder
+    that was moved off its marker, in order, so the caller can audit the event.
+    The label (:data:`GLUED_FOOTER_TEXT_LABEL`) is inserted on its own line
+    between the marker and the moved text; every character of the original
+    survives.
+
+    The bug the reflow repairs: a mid-turn steer reply (or any concatenation seam) can
     append prose directly after an ``[OPTIONS: ...]`` line with no separator, so a
     single persisted line reads ``...Pick a path.\\n[OPTIONS: A | B]Anytime.`` The
     render grammar anchors the closer to end-of-line, so the glued line matches
     nothing and the marker leaks as literal text, losing its pills.
 
-    The repair is PURELY ADDITIVE -- it inserts one ``\\n`` at the closer/prose
-    boundary and never deletes a character -- and it runs where the dashboard
+    The repair is PURELY ADDITIVE -- it inserts one ``\\n`` and the label line at the
+    closer/prose boundary and never deletes a character -- and it runs where the dashboard
     persists a turn's accumulated model text: ``_flush_segment`` for a finished
     segment and ``_persist_partial_reply`` for a turn that ends abnormally. It heals
     text at the moment it is persisted; it does not re-pass already-persisted
@@ -644,8 +661,9 @@ def reflow_glued_option_marker(text: str) -> str:
     is downstream of this seam.
     """
     if "[OPTIONS:" not in text:
-        return text
+        return text, []
 
+    glued: list[str] = []
     # One fence walker for the whole text, advanced to each candidate in turn.
     # ``re.sub`` visits matches front to back, and every candidate starts at a
     # line start (``^`` under MULTILINE), so the slice fed between two candidates
@@ -688,9 +706,10 @@ def reflow_glued_option_marker(text: str) -> str:
             or _STRAY_TIC_HEAD_RE.match(remainder)
         ):
             return m.group(0)
-        return m.group(0) + "\n"
+        glued.append(remainder)
+        return m.group(0) + "\n" + GLUED_FOOTER_TEXT_LABEL + "\n"
 
-    return _RAW_OPTIONS_GLUE_RE.sub(_replace, text)
+    return _RAW_OPTIONS_GLUE_RE.sub(_replace, text), glued
 
 
 # CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).

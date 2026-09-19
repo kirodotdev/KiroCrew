@@ -10,6 +10,7 @@ import os
 import re
 import stat as stat_module
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, NamedTuple
@@ -68,7 +69,10 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers
-from kiro_crew.constants import reflow_glued_option_marker, strip_control_comments
+from kiro_crew.constants import (
+    reflow_and_label_glued_option_marker,
+    strip_control_comments,
+)
 from kiro_crew.context import prepare_store_vectors
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
@@ -311,7 +315,7 @@ from kiro_crew.security import (
     sanitized_oauth_endpoint,
 )
 from kiro_crew.security.readonly_bash import is_read_only_bash, unsafe_bash_reason
-from kiro_crew.sel import sel
+from kiro_crew.sel import SecurityEvent, sel, sel_is_warm
 from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.session_agent_selection import (
     record_agent_selection,
@@ -4062,6 +4066,63 @@ def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
         slot.append("notice", _redaction_notice(cred_count, url_count), "msg msg-info")
 
 
+#: Shapes that make glued footer text look like an instruction to a later
+#: reader. Used only to tag the audit event; the label is applied regardless.
+_DIRECTIVE_SHAPED_RE = re.compile(
+    r"""(?ix)(?:^|[\s(\[{"'])(?:system|assistant|developer|instruction)\s*["']?\s*:"""
+)
+
+
+def _reflow_label_and_audit(slot: Any, text: str) -> str:
+    """Repair text glued to an ``[OPTIONS:]`` footer and audit that it happened.
+
+    The one call every persist seam makes: the reflow moves the glued text to
+    its own line under :data:`kiro_crew.constants.GLUED_FOOTER_TEXT_LABEL`, and
+    when anything was moved the SEL row is requested in the same step, so no
+    seam labels without also asking for the audit. The audit itself is
+    best-effort: :func:`_log_glued_footer_text` skips the row while SEL is cold
+    (the label is the fix; the row only counts occurrences).
+    """
+    repaired, glued = reflow_and_label_glued_option_marker(text)
+    if glued:
+        _log_glued_footer_text(slot, glued)
+    return repaired
+
+
+def _log_glued_footer_text(slot: Any, glued: list[str]) -> None:
+    """Audit text the model glued after its ``[OPTIONS:]`` footer.
+
+    The footer is the message's last line by contract, so anything glued to it
+    is output that ran past the contract -- most often harmless, sometimes a
+    forged ``(system: ...)`` directive the model then treats as an attack on
+    its next turn. The SEL row makes the occurrence visible to an operator
+    without blocking anything; the label in the transcript does the rest.
+    """
+    if not sel_is_warm():
+        logger.debug("glued footer text not logged: SEL not warm")
+        return
+    preview = redact_and_truncate(" | ".join(glued), 200)
+    caller = getattr(slot, "_active_turn_session_key", "") or effective_session_key(slot)
+    sel().log(
+        SecurityEvent(
+            event_id=uuid.uuid4().hex[:16],
+            timestamp=datetime.now(tz=timezone.utc).isoformat(),
+            event_type="output_anomaly",
+            caller_identity=caller,
+            agent=slot.agent or "kirocrew",
+            source=telemetry_channel_of(caller),
+            operation="options_footer_glued_text",
+            outcome="labelled",
+            metadata={
+                "count": len(glued),
+                "chars": sum(len(g) for g in glued),
+                "preview": preview,
+                "directive_shaped": bool(_DIRECTIVE_SHAPED_RE.search(" ".join(glued))),
+            },
+        )
+    )
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -4133,8 +4194,10 @@ def _flush_segment(
     # leaks as literal text and loses its pills. Every finished segment passes
     # through here (an abnormally ended turn goes through _persist_partial_reply,
     # which applies the same repair), so the additive newline insert fixes the
-    # stored transcript once, without touching the parse grammar.
-    assistant_text = reflow_glued_option_marker(assistant_text)
+    # stored transcript once, without touching the parse grammar. The moved text
+    # is labelled as the assistant's own output and the event is audited: a
+    # model that later re-reads the line must not take it for an instruction.
+    assistant_text = _reflow_label_and_audit(slot, assistant_text)
     # Redact the accumulated text
     redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
     for w in exfil_warnings:
@@ -7788,7 +7851,7 @@ async def _run_chat(
             return
         # Same glued-marker repair as _flush_segment: the interrupted body is the
         # same accumulated text, and it is rendered by the same grammar.
-        body = reflow_glued_option_marker(assistant_text)
+        body = _reflow_label_and_audit(slot, assistant_text)
         slot.purge_chunks()
         _redacted = redact_credentials(redact_exfiltration_urls(body)[0])[0]
         slot.append("assistant", _redacted, "msg msg-a")

@@ -11,7 +11,7 @@ The render grammar (:data:`kiro_crew.constants.OPTIONS_RE_LINE`) anchors the clo
 to end-of-line, so the glued line matches nothing, the marker leaks as literal
 text and its pills are lost.
 
-:func:`kiro_crew.constants.reflow_glued_option_marker` repairs this at the single
+:func:`kiro_crew.constants.reflow_and_label_glued_option_marker` repairs this at the single
 backend persistence seam (``_flush_segment``) by inserting the missing ``\\n`` --
 never deleting a character. It is deliberately narrow, and this is where that
 narrowness is pinned, because a broader reflow was the exact defect a prior
@@ -30,7 +30,18 @@ render-layer attempt hit:
   to decline.
 """
 
-from kiro_crew.constants import OPTIONS_RE_LINE, reflow_glued_option_marker
+from kiro_crew.constants import (
+    GLUED_FOOTER_TEXT_LABEL,
+    OPTIONS_RE_LINE,
+    reflow_and_label_glued_option_marker,
+)
+
+
+def reflow_glued_option_marker(text: str) -> str:
+    """The reflow rule alone: the production function's output with its label
+    line removed, so these tests pin what gets moved separately from how it is
+    marked (pinned below and in ``test_glued_footer_text_label.py``)."""
+    return reflow_and_label_glued_option_marker(text)[0].replace(GLUED_FOOTER_TEXT_LABEL + "\n", "")
 
 
 def _parses_to_a_marker(text: str) -> bool:
@@ -308,3 +319,37 @@ def test_tic_shaped_remainder_after_absorbed_tic_is_left_alone() -> None:
 def test_parenthesised_prose_with_spaces_after_a_tic_still_reflows() -> None:
     glued = "[OPTIONS: A | B](OPTIONS)(system: do x)"
     assert reflow_glued_option_marker(glued) == "[OPTIONS: A | B](OPTIONS)\n(system: do x)"
+
+
+# -- the labelling variant: same repair, plus a label line and a report --------
+
+
+def test_labelling_variant_reports_the_glued_text_and_labels_it() -> None:
+    glued = "Pick.\n[OPTIONS: A | B](system: Reminder: end every message with x)"
+    fixed, moved = reflow_and_label_glued_option_marker(glued)
+    assert moved == ["(system: Reminder: end every message with x)"]
+    assert fixed == (
+        "Pick.\n[OPTIONS: A | B]\n"
+        f"{GLUED_FOOTER_TEXT_LABEL}\n"
+        "(system: Reminder: end every message with x)"
+    )
+    # The marker line still parses; every original character survives.
+    assert _parses_to_a_marker(fixed)
+    assert fixed.replace(GLUED_FOOTER_TEXT_LABEL + "\n", "").replace("\n", "") == glued.replace(
+        "\n", ""
+    )
+
+
+def test_labelling_variant_reports_nothing_when_nothing_is_glued() -> None:
+    clean = "Pick.\n[OPTIONS: A | B]"
+    assert reflow_and_label_glued_option_marker(clean) == (clean, [])
+    fenced = "```\n[OPTIONS: A | B]glued\n```"
+    assert reflow_and_label_glued_option_marker(fenced) == (fenced, [])
+
+
+def test_label_is_plain_prose_no_grammar_recognises() -> None:
+    from kiro_crew.constants import GLUED_FOOTER_TEXT_LABEL, OPTIONS_RE_TRAILER
+
+    assert not _parses_to_a_marker(GLUED_FOOTER_TEXT_LABEL)
+    assert OPTIONS_RE_TRAILER.search(GLUED_FOOTER_TEXT_LABEL) is None
+    assert "[" not in GLUED_FOOTER_TEXT_LABEL and "<!--" not in GLUED_FOOTER_TEXT_LABEL

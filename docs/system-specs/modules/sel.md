@@ -28,13 +28,13 @@ Each entry records:
 |-------|-------------|
 | `event_id` | Unique 16-char hex identifier |
 | `timestamp` | ISO 8601 UTC |
-| `event_type` | `tool_invocation`, `api_access`, `config_bounds_clamped`, `governance_decision`, `governance_degraded` |
+| `event_type` | `tool_invocation`, `api_access`, `config_bounds_clamped`, `governance_decision`, `governance_degraded`, `output_anomaly` (the model's own output needed a repair at persist time; the row records the occurrence, nothing is blocked) |
 | `caller_identity` | Session key (e.g. `dashboard:abc`, `cron:xyz`, `subagent:123`). API-access events from mixed-internal endpoints that validate `X-Internal-Caller` (the chat folder writes) carry the internal caller's declared **component name** here — e.g. `kirocrew-dashboard`, or `unknown-internal` for an authenticated internal caller that declared no recognized name (a defined, warned state, not log corruption); `source` stays in the interface vocabulary (`mcp`) for those events |
 | `agent` | Agent name (`kirocrew`, custom agent name) |
 | `source` | Interface: `slack`, `dashboard`, `cli`, `cron`, `subagent`, `taskrunner`, `mcp`, `background`, `acp` (ACP-transport events, e.g. `tool_interrupted`), `token_auth` / `refresh_tokens` (dashboard auth), `host` (the `_host` sentinel — an in-process host action like app activation / workspace admission), `unknown` (empty/unrecognized session key, which must NOT be mis-tagged `slack`). This is a closed interface vocabulary — component attribution does not extend it; see `caller` below |
-| `operation` | Tool name or `METHOD /api/path` |
+| `operation` | Tool name or `METHOD /api/path`; for `output_anomaly`, the repair that ran (`options_footer_glued_text`: text the model wrote on the line of its own `[OPTIONS:]` footer was moved to its own line and labelled as the assistant's) |
 | `tool_kind` | Tool category (`execute_bash`, `fs_write`, `mcp_core`, `mcp_cron`, etc.) |
-| `outcome` | `invoked`, `auto_approved`, `auto_approve_declined` (a name-based auto-approve was withheld by the name-grant check and the request took the surface's normal path — see `name_grant.log_decline`), `approved`, `rejected`, `denied`, `completed`, `failed`, `clamped`, `degraded` (a governance chokepoint failed OPEN), `one_shot_completed` (a one-shot cron consumed by its own completion — an automated removal, not an operator delete) |
+| `outcome` | `invoked`, `auto_approved`, `auto_approve_declined` (a name-based auto-approve was withheld by the name-grant check and the request took the surface's normal path — see `name_grant.log_decline`), `approved`, `rejected`, `denied`, `completed`, `failed`, `clamped`, `degraded` (a governance chokepoint failed OPEN), `one_shot_completed` (a one-shot cron consumed by its own completion — an automated removal, not an operator delete), `labelled` (an `output_anomaly` whose text was kept verbatim and marked as the assistant's own) |
 | `resources` | Affected resources summary (redacted, then truncated to 500 chars — see `metadata`) |
 | `downstream_service` | MCP server name if applicable (`kirocrew-core`, `kirocrew-cron`, `internal-mcp`) |
 | `request_id` | ACP permission request ID |
@@ -119,6 +119,7 @@ Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 |---------|---------------|--------|
 | Slack handler | `tool_call` (invoked/denied), `permission_request` (all outcomes) | `slack/handler.py` |
 | Dashboard chat | `tool_call` (invoked), `permission_request` (all outcomes) | `dashboard/chat.py` |
+| Chat persist seams | `output_anomaly` / `options_footer_glued_text` (`outcome=labelled`, `source` from the turn's session key, `metadata` `{count, chars, preview (redacted, 200 chars), directive_shaped}`) when a persisted turn carried text glued to its own `[OPTIONS:]` footer; skipped while SEL is cold so the first open never runs on the event loop | `dashboard/chat_runner.py` (`_log_glued_footer_text`) |
 | TaskRunner | Permission requests during decomposition and step execution | `taskrunner.py` |
 | Subagent | Permission requests during subagent execution | `subagent.py` |
 | Background tasks | Permission requests via `_resolve_permission()` | `llm_helpers.py` |
