@@ -293,6 +293,11 @@ dashboard_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
 | `plan()` API | `"text"`, `"spec"`, `"file"` | ✅ |
 | Cron job | must pass `source="cron"` | ❌ (filtered out) |
 
+The status response derives its top-level `running` flag from the runs that remain
+visible after this source filter (and, where active, the caller's private-memory
+boundary). Hidden cron work therefore cannot make an otherwise idle result set report
+that one of its returned projects is running.
+
 ### Decomposer Selection
 
 `run()` picks the decomposer from the spec's suffix, not from the caller. A spec whose
