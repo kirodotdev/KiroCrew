@@ -76,6 +76,16 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('hooks table — row actions', () => {
+  it('the lane event pill carries the board-column gloss the picker shows', async () => {
+    hooksPayload = { hooks: [{ ...HOOK, event: 'SessionLaneChanged' }] }
+    renderPage()
+    const row = await findRow()
+    // Base copy uses "lane" for the AUTOMATIC columns this event never fires on, so the bare
+    // wire value reads as its own opposite. Visible text: a title reaches no keyboard or touch.
+    expect(row.getByTestId('lane-pill-gloss')).toHaveTextContent('board column')
+    expect(row.getByText('SessionLaneChanged')).not.toHaveAttribute('title')
+  })
+
   it('the row holds Test, Delete, and the ⋯ trigger; Edit is in the overflow', async () => {
     renderPage()
     const row = await findRow()
