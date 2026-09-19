@@ -424,6 +424,7 @@ def test_the_ownership_registry_is_the_documented_partition():
         "subagent",
         "plan",
         "write",
+        "ledger",
     }
 
 
@@ -459,6 +460,7 @@ SESSION_VOCABULARY: tuple[str, ...] = (
     "subagent/completed",
     "subagent/failed",
     "write/dropped",
+    "ledger/recorded",
 )
 
 

@@ -98,7 +98,7 @@ class _SessionMapPort(Protocol):
     #: Read-only, and used ONLY to withhold a claim: a destroy asks whether any
     #: other key still maps the session id it just unmapped, and records a
     #: non-terminal teardown reason when one does.
-    def find_key_by_sid(self, session_id: str) -> str | None: ...
+    def find_key_by_sid(self, session_id: str, *, exclude: str = "") -> str | None: ...
 
     def set(
         self,

@@ -134,6 +134,16 @@ CANONICAL: dict[str, dict] = {
     },
     "model/selected": {"model": "claude-fallback", "source": "fallback", "turn": 3},
     "compaction/applied": {"pct_before": 82.0, "pct_after": 41.0, "freed_pct": 41.0},
+    "ledger/recorded": {
+        "slot": "dashboard:3",
+        "goal": "land the projection change",
+        "phase": "implementation",
+        "next": "regenerate the reference tables",
+        "tried": {"approach": "stored document", "rejected_because": "cannot survive compaction"},
+        "artifacts": {"worktree": "/w/proj", "branch": "feat/x", "pr": "123"},
+        "event": "folded the ledger over the crew log",
+        "event_kind": "phase",
+    },
 }
 
 
@@ -154,7 +164,7 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The registry declares the types that HAVE a writer. A type nothing writes
     # would declare a shape no site produces, and the first emitter to land would
     # have to satisfy a contract written without it.
-    assert len(SESSION_ENTRY_TYPES) == 20
+    assert len(SESSION_ENTRY_TYPES) == 21
     # Nine types the vocabulary owns that nothing writes, and six more whose
     # emitters are not wired on this base. Declaring either kind would state a
     # shape no writer produces, and the first emitter to land would have to satisfy
@@ -197,7 +207,8 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
     # vocabulary that arrives from a provider, the gateway's teardown reasons or a
     # subagent runtime would turn "the upstream set grew" into a lost entry.
     #
-    # The two actor sets are the only ones a producing site clamps. A type with no
+    # The two actor sets and the ledger's event_kind are the only ones a producing
+    # site clamps. A type with no
     # producing site cannot qualify, however small its spec vocabulary looks: there
     # is no code enforcing the set, so the first resolver to report a value outside
     # it would have the entry refused rather than recorded.
@@ -210,6 +221,7 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
     assert closed == {
         ("turn/started", "actor"),
         ("turn/refused", "actor"),
+        ("ledger/recorded", "event_kind"),
     }
     emitted = set(_types_with_a_producing_site())
     assert {spec_type for spec_type, _ in closed} <= emitted

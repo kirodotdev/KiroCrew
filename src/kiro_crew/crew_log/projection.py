@@ -1,4 +1,4 @@
-"""Folds over ONE session's crew log -- the session side panel's five views.
+"""Folds over a session's CREW LOG -- the side panel's five views, and the ledger.
 
 A projection folds one crew log and carries that log's ``seq`` as its version
 (RFC FR-5), so a reader that holds a projection at seq N and reads the entries
@@ -35,8 +35,18 @@ ownership, and a reader inventing the same fact in memory would make two readers
 of one file disagree.
 
 This module reads its own unit's file and nothing else (FR-4: no fold reads more
-than its own crew log). Resolving a ``ref`` is the PAGE path's work, in the routes
-that serve a person a citation to follow.
+than its own crew log) -- with ONE stated exception, and it is stated because a
+reader has to know which kind of fold it is holding. The ``ledger`` fold is keyed
+by SLOT, and a slot owns one ACP session id at a time rather than for its whole
+life, so the record it answers for is spread over a unit per id the slot ran
+under. It therefore joins those units (:func:`fold_slot`), which is a wider read
+than the five panel folds make and is why it is not one of them: the growth push
+and the side panel address a session, and a slot-wide value pushed under one
+session's id would report a partial answer as the whole one. The units it joins
+are still exactly one slot's own, so nothing here reads across slots.
+
+Resolving a ``ref`` is the PAGE path's work, in the routes that serve a person a
+citation to follow.
 """
 
 from __future__ import annotations
@@ -46,21 +56,43 @@ import json
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.crew_log.entry_types import SESSION_ENTRY_TYPES
 from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
-from kiro_crew.crew_log.store import CrewLog, unit_header_created_at
+from kiro_crew.crew_log.store import (
+    CrewLog,
+    session_units_for_slot,
+    unit_header_created_at,
+)
 
 if TYPE_CHECKING:
     # Type-only: the savepoint module imports this one, so a runtime import here
     # would close the cycle the function-local imports below exist to avoid.
     from kiro_crew.crew_log.checkpoint import PrefixWitness
 
+# The ledger fold reads a record whose semantics -- which phases end a workstream,
+# which event kinds exist, how much of each field is kept -- belong to the ledger
+# subsystem. They are imported rather than restated so one owner sets them, the
+# same direction ``store`` already takes for the store-name fold.
+from kiro_crew.session_ledger import _FOLD_NAME as LEDGER_FOLD_NAME
+from kiro_crew.session_ledger import _MAX_ARTIFACT_KEY as LEDGER_ARTIFACT_KEY_LIMIT
+from kiro_crew.session_ledger import _MAX_ARTIFACTS as LEDGER_ARTIFACT_LIMIT
+from kiro_crew.session_ledger import _MAX_EVENTS as LEDGER_EVENT_LIMIT
+from kiro_crew.session_ledger import _MAX_PHASE as LEDGER_PHASE_LIMIT
+from kiro_crew.session_ledger import _MAX_TEXT as LEDGER_TEXT_LIMIT
+from kiro_crew.session_ledger import _MAX_TRIED as LEDGER_TRIED_LIMIT
+from kiro_crew.session_ledger import EVENT_KINDS as LEDGER_EVENT_KINDS
+from kiro_crew.session_ledger import LEDGER_ENTRY_TYPE
+from kiro_crew.session_ledger import SCHEMA_VERSION as LEDGER_SCHEMA_VERSION
+from kiro_crew.session_ledger import TERMINAL_PHASES as LEDGER_TERMINAL_PHASES
+
 logger = logging.getLogger(__name__)
 
-#: The session side panel's projections, in the RFC section 5 order.
+#: The session side panel's projections, in the RFC section 5 order. These fold ONE
+#: session's crew log and are the set the growth push sends.
 PROJECTION_NAMES: Final[tuple[str, ...]] = (
     "status",
     "usage",
@@ -68,6 +100,18 @@ PROJECTION_NAMES: Final[tuple[str, ...]] = (
     "tools",
     "approvals",
 )
+
+#: Projections keyed by a SLOT instead of by one crew log. A slot owns one ACP
+#: session id at a time, so a fact that belongs to the slot for its whole life --
+#: its work ledger -- is spread over a unit per id it ran under, and answering for
+#: it means joining them (:func:`fold_slot`). Kept out of
+#: :data:`PROJECTION_NAMES` for that reason: the growth push and the side panel
+#: address a session, and pushing a slot-wide value under one session's id would
+#: report a partial answer as the whole one.
+SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = ("ledger",)
+
+#: Every fold this module registers, in registry order.
+FOLD_NAMES: Final[tuple[str, ...]] = PROJECTION_NAMES + SLOT_PROJECTION_NAMES
 
 #: The types these folds can interpret, handed to ``iter_from(known=...)`` so an
 #: entry from a newer writer stops the fold instead of skewing it. The set is the
@@ -267,7 +311,7 @@ def require_name(name: str) -> str:
     """*name* if it is a projection this module folds, else raise ``bad_data``."""
     if name not in _FOLDS:
         raise CrewLogError(
-            f"unknown projection {name!r}; expected one of {list(PROJECTION_NAMES)}",
+            f"unknown projection {name!r}; expected one of {list(FOLD_NAMES)}",
             code=CODE_BAD_DATA,
             field="name",
         )
@@ -1365,6 +1409,232 @@ def _approvals_render(state: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# ledger
+# --------------------------------------------------------------------------- #
+
+
+def _ledger_iso(stamp_ms: int) -> str:
+    """An entry's epoch-millisecond ``time`` as the record's local ISO spelling.
+
+    The envelope already carries when each update happened, so the record's
+    timestamps are DERIVED from it rather than written into the entry -- one clock,
+    and no way for an entry to claim a time the log disagrees with.
+
+    A value outside the range a ``datetime`` can hold answers ``""``, the same thing
+    an absent stamp answers. ``fromtimestamp`` raises ``OverflowError`` or ``OSError``
+    on one, and this reads bytes a reader does not control: a damaged or planted
+    ``time`` would otherwise turn every read of that slot into a crash, permanently,
+    since the line stays on disk and nothing rewrites it. Losing one stamp costs a
+    reader a display value; raising costs it the whole record.
+    """
+    try:
+        return datetime.fromtimestamp(stamp_ms / 1000).astimezone().isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _ledger_field(value: Any, limit: int = LEDGER_TEXT_LIMIT) -> str:
+    """*value* as a clamped string, or ``""``. The fold's own shape gate.
+
+    The writer clamps too, but these bytes come off a file a reader does not
+    control, so the length is re-applied here: a planted or damaged line is exactly
+    the input that ignores the writer's rule, and every field below is RETAINED in
+    a state a nudge turn carries.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value[:limit]
+
+
+def _ledger_start() -> dict[str, Any]:
+    return {
+        "goal": "",
+        "phase": "",
+        "next": "",
+        "tried": [],
+        "artifacts": {},
+        "events": [],
+        "created_at": "",
+        "last_progress_at": "",
+        "finished_at": "",
+    }
+
+
+def _ledger_step(state: dict[str, Any], entry: Entry) -> None:
+    if entry.type != LEDGER_ENTRY_TYPE:
+        return
+    data = entry.data
+    stamp = _ledger_iso(entry.time)
+    if not state["created_at"]:
+        state["created_at"] = stamp
+    # An ABSENT field means unchanged, which is what lets a partial update be one
+    # entry; only a present one is applied. ``isinstance`` rather than truthiness,
+    # so a caller clearing a field to "" is applied rather than ignored.
+    if isinstance(data.get("goal"), str):
+        state["goal"] = _ledger_field(data["goal"])
+    if isinstance(data.get("phase"), str):
+        state["phase"] = _ledger_field(data["phase"], LEDGER_PHASE_LIMIT)
+        # Re-derived on every phase write rather than latched: a workstream that
+        # leaves a terminal phase is in flight again, and a stale ``finished_at``
+        # would keep the snapshot suppressed for a session that resumed.
+        state["finished_at"] = stamp if state["phase"] in LEDGER_TERMINAL_PHASES else ""
+    if isinstance(data.get("next"), str):
+        state["next"] = _ledger_field(data["next"])
+    tried = data.get("tried")
+    if isinstance(tried, Mapping) and isinstance(tried.get("approach"), str):
+        rows: list[dict[str, str]] = state["tried"]
+        rows.append(
+            {
+                "approach": _ledger_field(tried["approach"]),
+                "rejected_because": _ledger_field(tried.get("rejected_because")),
+                "at": stamp,
+            }
+        )
+        # Bounded like every other fold state here: the oldest rejected approach
+        # ages out so a long workstream cannot grow the record without limit.
+        if len(rows) > LEDGER_TRIED_LIMIT:
+            del rows[: len(rows) - LEDGER_TRIED_LIMIT]
+    artifacts = data.get("artifacts")
+    if isinstance(artifacts, Mapping):
+        merged: dict[str, str] = state["artifacts"]
+        for key, value in artifacts.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            folded = _ledger_field(key, LEDGER_ARTIFACT_KEY_LIMIT)
+            # Popped before reassigning: a plain update keeps the key's ORIGINAL
+            # insertion position, so updating the oldest pointer on a full map would
+            # leave it first in line for the age-out below -- dropping the very
+            # artifact this entry just set.
+            merged.pop(folded, None)
+            merged[folded] = _ledger_field(value)
+        while len(merged) > LEDGER_ARTIFACT_LIMIT:
+            merged.pop(next(iter(merged)))
+    event = data.get("event")
+    if isinstance(event, str) and event.strip():
+        kind = data.get("event_kind")
+        # The kind is a FILTER over the text, not the fact, so an unrecognized one
+        # degrades to ``note`` rather than discarding the event. A phase that moved
+        # without a recognized kind cannot reach the file at all: the writer refuses
+        # it, so nothing here has to reconstruct that rule.
+        if not (isinstance(kind, str) and kind in LEDGER_EVENT_KINDS):
+            kind = "note"
+        events: list[dict[str, str]] = state["events"]
+        events.append({"ts": stamp, "kind": kind, "text": _ledger_field(event.strip())})
+        if len(events) > LEDGER_EVENT_LIMIT:
+            del events[: len(events) - LEDGER_EVENT_LIMIT]
+    state["last_progress_at"] = stamp
+
+
+def _ledger_render(state: dict[str, Any]) -> dict[str, Any]:
+    """The state RECORD, in the shape every reader of the ledger already expects.
+
+    Deliberately the same ten keys the ledger's document carried when it was a file
+    of its own, so the MCP tool, the route and the injected snapshot did not have to
+    learn a new shape to stop being a second copy of the truth. ``schema`` describes
+    the RECORD, which is unchanged; where the record lives is not something a
+    consumer of it branches on.
+    """
+    return {
+        "schema": LEDGER_SCHEMA_VERSION,
+        "goal": state["goal"],
+        "phase": state["phase"],
+        "next": state["next"],
+        "tried": [dict(row) for row in state["tried"]],
+        "artifacts": dict(state["artifacts"]),
+        "events": [dict(row) for row in state["events"]],
+        "created_at": state["created_at"],
+        "last_progress_at": state["last_progress_at"],
+        "finished_at": state["finished_at"],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Reading a slot's folds
+# --------------------------------------------------------------------------- #
+
+
+def fold_slot_checkpoint(name: str, unit_ids: Sequence[str]) -> Checkpoint:
+    """*name* folded over every crew log of one slot, OLDEST UNIT FIRST.
+
+    The slot-keyed read. ``unit_ids`` comes from
+    :func:`~kiro_crew.crew_log.store.session_units_for_slot`, which orders them by
+    creation, and a unit with no crew log is skipped rather than refused -- a slot
+    whose oldest unit was collected by retention still folds the ones it has.
+
+    A ``seq`` is comparable only WITHIN one file, so the guard :func:`advance`
+    applies is RE-BASED per unit: the state carries forward across units while the
+    seq restarts at each one. Without that, the second unit's entries would all sit
+    at or below the first unit's seq and be refused as a re-fold -- the collision
+    ``advance`` exists to name, arriving here for a legitimate reason.
+
+    The returned ``last_seq`` is the last entry folded from the NEWEST unit, which
+    is the only figure a later read of the same slot can compare against; it is 0
+    when that unit contributed nothing. It is deliberately not a sum across files:
+    that would be a number no file carries, and a reader could not truncate
+    against it.
+
+    A CHECKPOINT rather than a rendered value, because the writer needs one: it
+    advances this state over the entry it is appending to answer with the record
+    that entry produces, so the answer comes out of this same fold instead of a
+    second implementation of the same update rules.
+    """
+    fold_spec = _FOLDS[require_name(name)]
+    state = fold_spec.start()
+    reached = 0
+    for unit_id in unit_ids:
+        handle = open_session_log(unit_id)
+        if handle is None:
+            continue
+        grown = advance(
+            Checkpoint(name=name, last_seq=0, state=state),
+            handle.iter_from(1, known=KNOWN_TYPES),
+        )
+        state = grown.state
+        reached = grown.last_seq
+    return Checkpoint(name=name, last_seq=reached, state=state)
+
+
+def fold_slot(name: str, unit_ids: Sequence[str]) -> Projection:
+    """:func:`fold_slot_checkpoint` rendered -- the value a slot-keyed reader is served."""
+    return projection_of(fold_slot_checkpoint(name, unit_ids))
+
+
+def read_slot_projection(slot: str, name: str) -> Projection:
+    """One slot-keyed projection for *slot*, folded over every unit it ran under.
+
+    The units come from the fold's OWNER, not from a raw store listing. For the ledger
+    that owner drops the units a permanent delete excluded and puts the recorded order
+    ahead of the header clock, and a raw listing here would serve a different answer
+    from the one every other reader gets -- including a deleted conversation's goal and
+    phase on a recycled slot key. A fold whose owner has no such rule falls through to
+    the store listing, which is what it would have used anyway.
+    """
+    return fold_slot(require_name(name), _slot_units_for_fold(slot, name))
+
+
+def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
+    """The units *name* is folded over for *slot*, as that fold's owner defines them."""
+    if name == LEDGER_FOLD_NAME:
+        from kiro_crew import session_ledger
+
+        return session_ledger.crew_log_units(slot)
+    return session_units_for_slot(slot)
+
+
+def slot_of_session(session_id: str) -> str:
+    """The slot *session_id*'s crew log belongs to, or ``""`` when unprovable.
+
+    The bridge a SESSION-addressed caller needs to reach a slot-keyed fold. The
+    header is the answer rather than a session mapping: it is written once inside
+    the fenced tree and never rewritten, so it cannot be made to name another
+    conversation's slot by anything that can write the mapping file.
+    """
+    from kiro_crew.crew_log.store import unit_header_slot
+
+    return unit_header_slot(KIND_SESSION, session_id) or ""
+
+
+# --------------------------------------------------------------------------- #
 
 
 def _as_int(value: Any) -> int:
@@ -1467,12 +1737,12 @@ _FOLDS: Final[dict[str, _Fold]] = {
     "timeline": _Fold("timeline", _timeline_start, _timeline_step, _timeline_render),
     "tools": _Fold("tools", _tools_start, _tools_step, _tools_render),
     "approvals": _Fold("approvals", _approvals_start, _approvals_step, _approvals_render),
+    "ledger": _Fold("ledger", _ledger_start, _ledger_step, _ledger_render),
 }
 
-if tuple(_FOLDS) != PROJECTION_NAMES:  # pragma: no cover - import-time consistency
+if tuple(_FOLDS) != FOLD_NAMES:  # pragma: no cover - import-time consistency
     raise RuntimeError(
-        "the fold registry and PROJECTION_NAMES disagree: "
-        f"{tuple(_FOLDS)} against {PROJECTION_NAMES}"
+        "the fold registry and FOLD_NAMES disagree: " f"{tuple(_FOLDS)} against {FOLD_NAMES}"
     )
 
 

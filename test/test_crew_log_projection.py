@@ -833,7 +833,7 @@ def test_known_types_is_the_declared_session_vocabulary():
 
 
 def test_the_fold_registry_and_the_public_name_list_agree():
-    assert tuple(crew_log._FOLDS) == crew_log.PROJECTION_NAMES
+    assert tuple(crew_log._FOLDS) == crew_log.FOLD_NAMES
 
 
 def test_a_ref_on_a_session_entry_is_left_to_the_page_path():

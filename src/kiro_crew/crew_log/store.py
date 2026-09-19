@@ -519,12 +519,33 @@ def _unit_header_object(kind: str, unit_id: str) -> "dict[str, Any] | None":
         if is_link(named):
             return None
         directory = crew_log_dir(kind, unit_id)
+    except (CrewLogError, OSError):
+        return None
+    return _proved_header(directory)
+
+
+def _proved_header(directory: Path) -> "dict[str, Any] | None":
+    """*directory*'s header, but only when the header's own id folds back to it.
+
+    The half of :func:`unit_header_slot` that a caller which reached a store by
+    PATH can use -- the slot scan walks the kind root and never learns an id until
+    it reads one. Every reason to refuse is the same: a linked directory (it names
+    somewhere else), a store with no segment, an unreadable or unparseable header,
+    or a header whose ``id`` does not fold to this directory's name, which would
+    make this store answer for a different unit.
+
+    ``None`` is "cannot prove", never "no such field", so a caller that needs a
+    value refuses rather than guessing. Read-only: it takes no lease.
+    """
+    try:
+        if is_link(directory):
+            return None
         segments = [
             (first, child)
             for child in directory.iterdir()
             if (first := _segment_first_seq(child)) is not None
         ]
-    except (CrewLogError, OSError):
+    except OSError:
         return None
     if not segments:
         return None
@@ -551,6 +572,118 @@ def unit_header_slot(kind: str, unit_id: str) -> "str | None":
         return None
     slot = parsed.get("slot")
     return slot if isinstance(slot, str) and slot else None
+
+
+#: The cached slot map, the root identity it was built from, and the children that
+#: scan could NOT prove. Replaced WHOLE, so a reader loads one reference and sees
+#: either the old triple or the new one; two threads racing rebuild it twice, which
+#: costs a scan and cannot produce a wrong answer. ``None`` means nothing is cached.
+_slot_index: "tuple[tuple[Any, ...], dict[str, tuple[str, ...]], tuple[str, ...]] | None" = None
+
+
+def _slot_root_fingerprint(root: Path, names: "list[str]") -> "tuple[Any, ...]":
+    """What must be unchanged for a cached slot map to still be current.
+
+    A unit's slot NEVER changes -- the header is written once and never rewritten
+    -- so the only thing that can invalidate the map is a unit appearing or
+    disappearing, and both rename an entry in this directory.
+
+    The NAMES are in the key, not just how many there are. A count plus an mtime
+    cannot tell one set of children from another: a purge and a create landing inside
+    one mtime granularity tick leave the count equal and the mtime unmoved, and the
+    replacement unit's record would then stay invisible for as long as the directory
+    sat still. The names are already read to do the scan, so carrying them costs the
+    comparison and nothing else. The root's device and inode are in the key too, so a
+    different data home (a pod, a test) never reads another one's map.
+    """
+    try:
+        stat = root.stat()
+    except OSError:
+        return (str(root), None, None, tuple(names))
+    return (str(root), stat.st_dev, stat.st_ino, stat.st_mtime_ns, tuple(names))
+
+
+def session_units_for_slot(slot: str) -> "tuple[str, ...]":
+    """Every session crew log whose HEADER names *slot*, oldest unit first.
+
+    The slot-keyed read path. A slot owns one ACP session id AT A TIME rather than
+    for its whole life -- a reset, an agent or model switch and a provider swap all
+    cold-start a new id -- so one slot's history is spread across a unit per id it
+    ran under, and a fold that answers for the SLOT has to join them. The header is
+    what says which slot a unit belongs to: written once at create, never
+    rewritten, and inside the fenced tree, so it does not move when a mapping does.
+    A unit whose header cannot be PROVED to be its own is left out rather than
+    attributed to a slot it may not belong to (see :func:`_proved_header`).
+
+    Ordered by the header's ``createdAt``, then by unit id so a tie is stable.
+    That is the order the units were opened in, and therefore the order their
+    entries happened in -- a fold applies a later update over an earlier one, so
+    reversing it would let a retired session's state win over the live one.
+
+    The per-unit header reads are CACHED against the root's identity, so a reader
+    that folds on every loop cycle pays one scan per change to the set of units
+    rather than one per read.
+    """
+    if not slot:
+        return ()
+    global _slot_index
+    try:
+        root = _checked_crew_log_root(KIND_SESSION)
+        names = sorted(child.name for child in root.iterdir())
+    except (CrewLogError, OSError):
+        return ()
+    fingerprint = _slot_root_fingerprint(root, names)
+    cached = _slot_index
+    if cached is not None and cached[0] == fingerprint and not _any_now_provable(root, cached[2]):
+        return cached[1].get(slot, ())
+    rows: "dict[str, list[tuple[int, str]]]" = {}
+    unproven: list[str] = []
+    for name in names:
+        parsed = _proved_header(root / name)
+        if parsed is None:
+            # Kept, not forgotten. ``create`` makes the directory and PUBLISHES the
+            # header as a second step, so a scan landing inside that window sees a
+            # store with nothing to prove -- and the header then arrives INSIDE the
+            # directory, which does not touch the root's mtime or child count. The
+            # fingerprint alone would therefore stay valid over a map that is
+            # missing a real unit, and the miss would outlive the window until some
+            # unrelated child churn happened to invalidate it. Naming the
+            # unprovable children is what bounds that: a cache hit re-checks just
+            # those, which is nothing at all in the ordinary case.
+            unproven.append(name)
+            continue
+        unit_slot = parsed.get("slot")
+        unit_id = parsed.get("id")
+        if not isinstance(unit_slot, str) or not unit_slot or not isinstance(unit_id, str):
+            # Provable as a store but not attributable to a slot -- a session that
+            # never ran on one. It is not a pending unit and cannot become one: the
+            # header is written once. So it is not re-checked.
+            continue
+        created = parsed.get("createdAt")
+        # A header with no usable ``createdAt`` still belongs to the slot, and
+        # dropping it would silently lose that unit's updates. It sorts FIRST, the
+        # position that lets any dated unit's later state win over it.
+        order = created if isinstance(created, int) and not isinstance(created, bool) else 0
+        rows.setdefault(unit_slot, []).append((order, unit_id))
+    by_slot = {key: tuple(unit for _order, unit in sorted(found)) for key, found in rows.items()}
+    _slot_index = (fingerprint, by_slot, tuple(unproven))
+    return by_slot.get(slot, ())
+
+
+def _any_now_provable(root: Path, unproven: "tuple[str, ...]") -> bool:
+    """Whether any child the last scan could not prove has since become a unit.
+
+    The cache's second condition. The root fingerprint sees a child appear or
+    disappear; it does NOT see a header published inside a directory that already
+    existed, which is exactly what ``create`` does after its ``mkdir``. Re-checking
+    the named children closes that window with work proportional to how many were
+    unprovable -- normally none, so a cache hit stays a dictionary lookup.
+
+    A child that is permanently unprovable (a stray directory, a link) is re-checked
+    on every hit and never proves, which costs one header read per hit and is the
+    price of never serving a stale map.
+    """
+    return any(_proved_header(root / name) is not None for name in unproven)
 
 
 def unit_dir_for(kind: str, unit_id: str) -> "Path | None":

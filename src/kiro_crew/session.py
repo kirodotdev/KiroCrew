@@ -3025,8 +3025,8 @@ class SessionManager:
 
     # ── Additional session map helpers ──
 
-    def find_key_by_sid(self, sid: str) -> str | None:
-        return self._session_map.find_key_by_sid(sid)
+    def find_key_by_sid(self, sid: str, *, exclude: str = "") -> str | None:
+        return self._session_map.find_key_by_sid(sid, exclude=exclude)
 
     def reserve_generation(self, session_key: str) -> None:
         """Persist a generation floor before its first provider turn."""

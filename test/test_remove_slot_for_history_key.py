@@ -41,10 +41,15 @@ from kiro_crew.dashboard.handlers.sessions import (
     CRON_STORE_UNREADABLE_CODE,
     _capture_history_delete_claim,
     _delete_history_session,
+    _exclude_slot_units,
     _HistoryDeleteClaim,
     _resolve_history_delete_claim,
 )
 from kiro_crew.history import ConversationLog, HistoryLockTimeout
+
+
+class _LedgerExclusionError(RuntimeError):
+    """Stands in for ``session_ledger.LedgerExclusionError``."""
 
 
 def _make_state(slots: dict) -> MagicMock:
@@ -955,6 +960,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
             *,
             skip_pinned=False,
             exact_owner_keys=(),
+            exclude=None,
         ):
             # The seam itself: the add commits after the sweep has read the store
             # and before the unlink retires the key.
@@ -967,6 +973,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
                 claim,
                 skip_pinned=skip_pinned,
                 exact_owner_keys=exact_owner_keys,
+                exclude=exclude,
             )
 
         monkeypatch.setattr(sessions_module, "_delete_history_session", _add_then_delete)
@@ -1036,6 +1043,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
             *,
             skip_pinned=False,
             exact_owner_keys=(),
+            exclude=None,
         ):
             # The seam itself: the batch sweep has read the store; the unlink has
             # not yet retired this row. Same interleaving as the single delete.
@@ -1048,6 +1056,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
                 claim,
                 skip_pinned=skip_pinned,
                 exact_owner_keys=exact_owner_keys,
+                exclude=exclude,
             )
 
         monkeypatch.setattr(sessions_module, "_delete_history_session", _add_then_delete)
@@ -3576,3 +3585,60 @@ class TestSessionLedgerOnPermanentDelete:
         await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
 
         assert "dashboard_chat-1-100" not in state._slots
+
+
+class TestTheExclusionMustNotCatchASuccessorUnit:
+    """The listing is by RECYCLABLE slot key, so what it returns needs re-proving."""
+
+    def _claim(self) -> _HistoryDeleteClaim:
+        return _HistoryDeleteClaim(
+            registry_key="chat-1",
+            slot=None,
+            history_key="chat-1",
+            session_key="chat-1",
+            session_generation=1,
+            path_match_verified=True,
+            complete=True,
+            acp_session_id="acp-being-deleted",
+        )
+
+    def test_a_reset_during_the_listing_refuses_instead_of_excluding(self, monkeypatch):
+        """A successor's unit can enter the listing after the generation was proved.
+
+        The successor wrote it, which means it published its reservation on the slot key
+        first and so ADVANCED the generation -- a fact only a read taken AFTER the
+        listing can see. Refusing leaves the row deletable again; persisting would empty
+        the live successor's record for good.
+        """
+        state = _make_state({})
+        session_ledger = MagicMock()
+        session_ledger.LedgerExclusionError = _LedgerExclusionError
+
+        def listing_with_a_reset(slot_key: str):
+            # The reset lands here, between the first generation read and the ids being
+            # persisted: the successor is live and its unit is already on disk.
+            state.sessions.session_generation.return_value = 2
+            return ("acp-being-deleted", "acp-successor")
+
+        monkeypatch.setattr("kiro_crew.crew_log.store.session_units_for_slot", listing_with_a_reset)
+
+        with pytest.raises(_LedgerExclusionError):
+            _exclude_slot_units(state, session_ledger, self._claim())
+
+        session_ledger.exclude_units.assert_not_called()
+
+    def test_an_unchanged_generation_still_excludes_the_conversations_units(self, monkeypatch):
+        """The control: no reset, so the same listing is excluded as before."""
+        state = _make_state({})
+        session_ledger = MagicMock()
+        session_ledger.LedgerExclusionError = _LedgerExclusionError
+        monkeypatch.setattr(
+            "kiro_crew.crew_log.store.session_units_for_slot",
+            lambda slot_key: ("acp-being-deleted", "acp-earlier"),
+        )
+
+        _exclude_slot_units(state, session_ledger, self._claim())
+
+        session_ledger.exclude_units.assert_called_once_with(
+            "chat-1", ("acp-being-deleted", "acp-earlier")
+        )

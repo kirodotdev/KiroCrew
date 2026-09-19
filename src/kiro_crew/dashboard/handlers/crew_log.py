@@ -266,7 +266,15 @@ async def api_session_crew_log(request: web.Request) -> web.Response:
 
 
 async def api_session_crew_log_projection(request: web.Request) -> web.Response:
-    """GET /api/sessions/{id}/crew-log/projection/{name} -- one fold and its seq."""
+    """GET /api/sessions/{id}/crew-log/projection/{name} -- one fold and its seq.
+
+    Serves the slot-keyed folds (:data:`projection.SLOT_PROJECTION_NAMES`) from the
+    same route, addressed the same way. A caller holds a SESSION id, so the slot is
+    resolved from that session's own header and the fold then joins every unit the
+    slot ran under -- which is what makes the answer the slot's whole record rather
+    than the part of it that happened to land in this session. A session whose slot
+    cannot be proved gets the empty fold, never another slot's.
+    """
     denied = await require_owner_dashboard_request(request, "session_crew_log.projection")
     if denied is not None:
         return denied
@@ -281,7 +289,15 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
         return _bad_request(exc.message, "unknown_projection")
     unit_id, _ = _unit_id(request, session_id)
     try:
-        result = await asyncio.to_thread(projections.read_projection, unit_id, name)
+        if name in projections.SLOT_PROJECTION_NAMES:
+            # SLOT-keyed: this fold joins every unit the slot ran under, so it is
+            # addressed through the slot its resolved unit's HEADER names rather than
+            # folded from that one unit. Routed through the same resolution as the
+            # per-unit read above, so a caller holding a slot key reaches its own
+            # record either way.
+            result = await asyncio.to_thread(_read_slot_fold, unit_id, name)
+        else:
+            result = await asyncio.to_thread(projections.read_projection, unit_id, name)
     except CrewLogError as exc:
         return _crew_log_refusal(exc)
     # ``session_id`` is what the CALLER asked about, not the unit the fold read:
@@ -373,6 +389,17 @@ def _settle_writes() -> bool:
     from kiro_crew.crew_log import emit
 
     return emit.flush(timeout=_SETTLE_SECONDS)
+
+
+def _read_slot_fold(unit_id: str, name: str) -> Any:
+    """One slot-keyed fold for the slot *unit_id*'s header names. Blocking.
+
+    Takes the resolved UNIT id rather than the caller's spelling, because the slot is
+    read off that unit's own header -- a slot key handed straight to the header lookup
+    would miss and answer with the empty fold.
+    """
+    projections = _crew_log()
+    return projections.read_slot_projection(projections.slot_of_session(unit_id), name)
 
 
 def _crew_log_refusal(exc: "CrewLogError") -> web.Response:

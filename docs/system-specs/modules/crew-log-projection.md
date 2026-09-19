@@ -4,12 +4,23 @@
 
 A session's crew log is an append-only file (`crew-log-core.md`). Every view of it
 is a FOLD: `status`, `usage`, `timeline`, `tools` and `approvals` -- the session
-side panel of the RFC's section 5 table. This module is those five folds, the two
-read routes that serve them, and the frame that pushes a fold when the file grows.
+side panel of the RFC's section 5 table. This module is those five folds, the
+slot-keyed `ledger` fold, the two read routes that serve them, and the frame that
+pushes a fold when the file grows.
 
 The split it implements is RFC NFR-2: the backend folds and cuts pages, the
 frontend renders and pages and never folds. A client that folded the log would
 need the whole file to show one number.
+
+The five panel folds each read ONE session unit and are the set the growth push
+sends, so `PROJECTION_NAMES` holds those five. The `ledger` fold is keyed by a
+SLOT rather than by one unit: a slot owns one ACP session id at a time, so the
+work it accrues over its life is spread across a unit per id it ran under, and
+answering for it means joining them. `SLOT_PROJECTION_NAMES` holds `ledger` and
+is kept OUT of `PROJECTION_NAMES` for that reason -- the growth push and the side
+panel address a session, and pushing a slot-wide value under one session's id
+would report a partial answer as the whole one. `FOLD_NAMES` is the union of the
+two, and the import-time registry check compares a requested name against it.
 
 Scope: the SESSION kind. The crew-kind projections (`roster`, `activity`,
 `board`, `budget`, ...) are out of scope here because the crew kind has no writer
@@ -139,7 +150,11 @@ is strictly after the last, and each checkpoint takes only the part of a chunk i
 has not already consumed -- which is what lets one chunk serve five folds sitting
 at different seqs.
 
-## 3. The five projections
+## 3. The projections
+
+### The five panel folds
+
+Each reads ONE session unit, and these five are what the growth push sends.
 
 | projection | what it answers |
 |---|---|
@@ -149,12 +164,49 @@ at different seqs.
 | `tools` | Calls matched to completions by `call_id`: totals, per name, open calls, unmatched completions. An error is `status` in `refused`/`error`/`failed` OR `is_error` true -- two independent signals, and an absent `is_error` is not a claim that the call worked. |
 | `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. No emitter writes these types yet; the fold is against the declared shape. |
 
+### The slot-keyed ledger fold
+
+| projection | what it answers |
+|---|---|
+| `ledger` | The session work ledger's state record: goal, phase, resumable next step, rejected approaches, artifact pointers, and a bounded event tail. It interprets only `ledger/recorded` and renders the ten fields every reader of that record expects (`session-work-ledger.md`). |
+
+This fold is the module's ONE exception to FR-4, and it is stated rather than
+assumed, because a reader has to know which kind of fold it holds. A slot owns one
+ACP session id at a time rather than for its whole life, so the record it answers
+for is spread over a unit per id the slot ran under. `fold_slot_checkpoint` folds
+those units oldest first, RE-BASING the seq guard at each one: a seq is comparable
+only within one file, so the second unit's entries all sit at or below the first
+unit's seq, and `advance` would refuse the whole file as a re-fold. The state
+carries forward across the boundary while the seq restarts. `fold_slot` renders the
+result. The units it joins are still exactly one slot's own, so nothing reads across
+slots.
+
+`session_units_for_slot` supplies that list. It names the units whose HEADER can be
+PROVED to belong to the store holding it, ordered by the header's `createdAt` and
+then by unit id so a tie is stable -- which is the order the units were opened in,
+and therefore the order their entries happened in, so a later update wins over an
+earlier one. A caller that cannot tolerate a clock's ordering re-orders the list
+itself: the ledger's `crew_log_units` applies its own append-order log and drops the
+units a permanent delete excluded before folding, because a backward clock step
+would otherwise apply a retired session's goal over a later one's
+(`session-work-ledger.md`). `read_slot_projection` is the slot-keyed read, and
+`slot_of_session` resolves a session-addressed request to the slot recorded in that
+session's header: the header rather than a session mapping, because it is written
+once inside the fenced tree and cannot be made to name another conversation's slot.
+
+A reader that folds on every loop wake would re-walk the whole log each time, since
+the fold interprets only its own entry type but still reads every line to find it.
+So the ledger's caller keeps the checkpoint per slot and advances it over what
+arrived since, through this module's own `advance`. A changed unit list, a newest
+unit whose seq went backwards, or a cold cache each force a full rebuild, because
+each would otherwise be a wrong answer rather than a slow one.
+
 ## 4. Reads
 
 | route | answers |
 |---|---|
 | `GET /api/sessions/{id}/crew-log?from=&to=` | The entries in a seq range, oldest first, with every `ref` on the page resolved (FR-4). |
-| `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. |
+| `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. A name in `SLOT_PROJECTION_NAMES` is served from the same route: the slot is resolved from that session's own header first, and the fold then joins every unit the slot ran under. A session whose slot cannot be proved gets the empty fold, never another slot's. |
 | `GET /api/sessions/{id}/crew-log/projections` | Every fold, keyed by name, from ONE resolution and ONE pass over the unit, so a caller showing them together cannot be handed a mix from two units. Each fold keeps its own `seq`, which differs by design: an entry advances the folds it belongs to and leaves the rest. |
 
 **The BATCH read answers two things the folds cannot.** A fold says what it holds;

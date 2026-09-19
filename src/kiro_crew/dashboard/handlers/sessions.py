@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection
+from typing import TYPE_CHECKING, Any, Callable, Collection
 
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -1662,6 +1662,11 @@ CRON_STORE_UNREADABLE_CODE = "cron_store_unreadable"
 CRON_STORE_BUSY_CODE = "cron_store_busy"
 CRON_OWNERSHIP_UNKNOWN_CODE = "cron_ownership_unknown"
 
+#: Reported for a row whose ledger exclusions could not be written. The transcript is
+#: left alone: deleting it would leave its work state readable by the next session
+#: in the same slot, which is not recoverable by the person it happens to.
+LEDGER_EXCLUSION_UNWRITABLE_CODE = "ledger_exclusion_unwritable"
+
 
 class _OwnerKeyUnreadable(Exception):
     """A delete REFUSED because the exact cron owner key of the row cannot be read.
@@ -1755,6 +1760,15 @@ class _HistoryDeleteClaim:
     complete: bool
     slot_task: Any | None = None
     cron_owner_keys: frozenset[str] = frozenset()
+    #: Unit ids the locked transaction excluded from this slot's ledger. Recorded there
+    #: rather than by the caller because only the resolved claim PROVES which slot owns
+    #: this transcript: a provisional claim can name a stacked duplicate's slot, and
+    #: excluding on it would empty an unrelated LIVE session's record.
+    ledger_excluded_units: frozenset[str] = frozenset()
+    #: Whether that transaction TOMBSTONED the slot's legacy pre-projection document --
+    #: wrote the committed carry marker itself, rather than finding one already there.
+    #: Only the writer may take it back, so this travels with the claim to the rollback.
+    ledger_carry_tombstoned: bool = False
     #: The ACP session id behind *session_key*, read before the teardown that
     #: destroys the session it names. This is what identifies the session
     #: LEDGER, whose unit id is the ACP id rather than the slot key, and it is
@@ -2060,8 +2074,21 @@ def _delete_history_session(
     *,
     skip_pinned: bool = False,
     exact_owner_keys: Collection[str] = (),
+    # Returns a ``session_ledger.SlotExclusion``: the ids added AND whether the slot
+    # was tombstoned. Typed loosely for the same reason the module is imported inside
+    # the functions that use it -- this handler does not import the ledger at module
+    # scope, and the tests pass a stub in its place.
+    exclude: "Callable[[str], Any] | None" = None,
 ) -> tuple[bool | None, _HistoryDeleteClaim]:
-    """Bind slot and cron ownership, then unlink under one transcript lock."""
+    """Bind slot and cron ownership, then unlink under one transcript lock.
+
+    *exclude* records this slot's ledger units and answers the ids it added. It runs
+    INSIDE the lock and only once the claim is RESOLVED, because that is the first point
+    where the slot owning this transcript is proved: a provisional claim can name a
+    stacked duplicate's slot, and excluding on it empties an unrelated live session's
+    record. A refusal propagates, so nothing is unlinked when the exclusion cannot be
+    written.
+    """
     # ``delete_session`` re-enters one of these locks on the same worker thread.
     # Acquire every stable stem in deterministic order so canonical Slack restore
     # and a legacy-file delete cannot synchronize on different sidecars.
@@ -2093,6 +2120,18 @@ def _delete_history_session(
                 resolved_claim,
                 cron_owner_keys=frozenset(owner_keys),
             )
+            if (
+                exclude is not None
+                and resolved_claim.registry_key
+                and resolved_claim.complete
+                and resolved_claim.path_match_verified
+            ):
+                recorded = exclude(resolved_claim.registry_key)
+                resolved_claim = replace(
+                    resolved_claim,
+                    ledger_excluded_units=frozenset(recorded.added),
+                    ledger_carry_tombstoned=recorded.carry_tombstoned,
+                )
             if skip_pinned:
                 result = log.delete_session(key, skip_pinned=True)
             else:
@@ -2101,6 +2140,186 @@ def _delete_history_session(
         logger.warning("delete_session: lock timeout, not deleting key=%s", key)
         return False, claim
     return result, resolved_claim
+
+
+async def _unstrand_shared_ledger_unit(
+    state: DashboardState, session_ledger: Any, claim: _HistoryDeleteClaim
+) -> None:
+    """Undo the exclusion when ANOTHER retained key still runs this ACP session.
+
+    Two keys imported onto one ACP session share its crew-log unit. Deleting one of
+    them excludes that unit, but the delete preserves it for the survivor -- whose
+    ledger would then read empty for good, because the rollback for a delete that did
+    not happen never covers a delete that did. The exclusion belongs to the conversation
+    that went, so it comes back out when the session is still somebody's.
+    """
+    units = tuple(claim.ledger_excluded_units)
+    sid = claim.acp_session_id or ""
+    if not units or not sid or not claim.registry_key:
+        return
+    try:
+        # EXCLUDING the key this delete retired. Its own mapping can still be present
+        # here, and a lookup that returns it reads as "nobody else has this session",
+        # which is the answer that leaves the real survivor's record empty.
+        survivor = state.sessions.find_key_by_sid(sid, exclude=claim.session_key or "")
+    except Exception:
+        logger.warning(
+            "History delete: could not check whether %r still runs session %r; "
+            "its ledger exclusions stand",
+            claim.registry_key,
+            sid,
+            exc_info=True,
+        )
+        return
+    if not survivor:
+        return
+    logger.info(
+        "History delete: session %r is still run by %r, so slot %r's ledger exclusion "
+        "of its unit is taken back",
+        sid,
+        survivor,
+        claim.registry_key,
+    )
+    # The transcript IS gone here, so this is not a delete that did not happen: only the
+    # shared unit comes back out, and the slot's legacy document stays tombstoned.
+    await _rollback_ledger_exclusion(session_ledger, claim, restore_carry=False)
+
+
+async def _rollback_ledger_exclusion(
+    session_ledger: Any, claim: _HistoryDeleteClaim, *, restore_carry: bool
+) -> None:
+    """Take back what the locked transaction excluded, for a delete that did not happen.
+
+    Only the ids that transaction reported adding, so a concurrent delete of the same
+    slot keeps its own. Off-loop because the rewrite fsyncs under the slot's lock.
+
+    *restore_carry* has NO default, so every caller states which case it is. True where
+    the delete did not proceed: the session still exists, so the legacy document this
+    transaction tombstoned is still owed to it. False where the transcript IS gone and
+    only a shared unit comes back out -- a delete of this slot proceeded, and the
+    document may be the deleted conversation's, so the tombstone stands.
+
+    Runs when EITHER the ids or the tombstone need taking back. Gating it on the ids
+    alone would skip the whole rollback for a delete that recorded no units and
+    tombstoned the slot, which is the empty-unit delete.
+    """
+    units = tuple(claim.ledger_excluded_units)
+    lift = restore_carry and claim.ledger_carry_tombstoned
+    if not claim.registry_key or not (units or lift):
+        return
+    await asyncio.to_thread(
+        session_ledger.unexclude_units, claim.registry_key, units, restore_carry=lift
+    )
+
+
+def _ledger_rollback_refusal() -> web.Response:
+    """503 for a rollback that could not be written: the record reads empty until it is."""
+    return web.json_response(
+        {
+            "error": (
+                "This session was not deleted, but restoring its ledger record failed, so "
+                "the record reads empty. Try again."
+            ),
+            "code": "ledger_rollback_failed",
+        },
+        status=503,
+    )
+
+
+def _exclude_slot_units(
+    state: DashboardState, session_ledger: Any, claim: _HistoryDeleteClaim
+) -> Any:
+    """List the slot's crew-log units and exclude them; return what was RECORDED.
+
+    A ``session_ledger.SlotExclusion``: the ids this transaction added and whether it
+    tombstoned the slot's legacy document. Both are what a rollback may take back, and
+    neither is inferable afterwards, which is why they travel with the claim.
+
+    One thread hop for the whole transaction, because both halves block: the listing
+    walks the crew-log root and reads a header per unit, and the write fsyncs under the
+    slot's lock. Only the ids this call added come back, so a rollback cannot take away
+    an exclusion a concurrent delete of the same slot recorded.
+
+    A slot key is RECYCLED, and the listing is by slot key, so the units it returns are
+    not all this conversation's: a reset in the window before the delete gives the slot a
+    live successor whose unit lands under the same key. Two things keep the successor's
+    record out of it -- the captured session GENERATION must still be current, and the
+    unit the slot is serving on NOW is never excluded. The removal itself is fenced by
+    ACP session id and does not need this; the exclusion does, because its key is the
+    recyclable one.
+
+    BOTH are re-read AFTER the listing, immediately before the ids are persisted, because
+    either read taken before it cannot describe what the listing then returned. What makes
+    the second generation read sufficient rather than merely narrower: a successor's unit
+    is written by a session that published its reservation on the slot key first, and that
+    publication ADVANCES the generation -- so a unit new enough to be a successor's cannot
+    be in the listing without the generation having already moved by the time it is
+    re-read. The first read stays, to refuse a stale claim before doing the walk at all.
+    """
+    from kiro_crew.crew_log.store import session_units_for_slot
+
+    slot_key = claim.registry_key or ""
+
+    def prove_generation() -> None:
+        """Refuse unless the slot is still on the generation the claim captured."""
+        if not claim.session_key:
+            return
+        try:
+            if state.sessions.session_generation(claim.session_key) != claim.session_generation:
+                raise session_ledger.LedgerExclusionError(
+                    f"slot {slot_key!r} was reset before the delete; its units are a "
+                    "successor's and must not be excluded"
+                )
+        except session_ledger.LedgerExclusionError:
+            raise
+        except Exception as exc:
+            # Cannot prove the generation, so cannot prove which conversation the units
+            # belong to. Refusing leaves the row deletable again; excluding could empty a
+            # live successor's record for good.
+            raise session_ledger.LedgerExclusionError(
+                f"slot {slot_key!r}'s session generation is unreadable"
+            ) from exc
+
+    def live_unit() -> str:
+        """The unit the slot serves NOW, or ``""`` when that is this conversation's own.
+
+        The live unit is protected ONLY when it is not this conversation's. A slot still
+        serving the session being deleted reports that session as live, and skipping it
+        would leave the deleted conversation's own unit foldable -- the post-unlink stage
+        would then be the only thing excluding it, and a failure there has nothing left
+        to refuse. Anything else the slot is serving now belongs to a successor.
+        """
+        sid = _live_slot_sid(state, slot_key)
+        return "" if sid == (claim.acp_session_id or "") else sid
+
+    prove_generation()
+    protect = live_unit()
+    units = tuple(unit for unit in session_units_for_slot(slot_key) if unit != protect)
+    # Re-read, in this order: the live unit first, so a successor that has recorded but
+    # whose generation this thread has not observed yet is still dropped, then the
+    # generation as the LAST thing before the write.
+    protect_now = live_unit()
+    units = tuple(unit for unit in units if unit != protect_now)
+    prove_generation()
+    return session_ledger.exclude_units(slot_key, units)
+
+
+def _live_slot_sid(state: DashboardState, slot_key: str) -> str:
+    """The ACP session id the slot is serving on RIGHT NOW, or ``""``.
+
+    Read at exclusion time rather than taken from the claim, because the claim names the
+    conversation being deleted and this names whoever holds the slot key now.
+    """
+    from kiro_crew.crew_log.resolve import unit_for_session_key
+
+    try:
+        slot = state._slots.get(slot_key)
+        if slot is None:
+            return ""
+        return str(unit_for_session_key(state.sessions, effective_session_key(slot)) or "")
+    except Exception:
+        logger.debug("History delete: resolving the slot's live unit failed", exc_info=True)
+        return ""
 
 
 async def api_session_delete(request: web.Request) -> web.Response:
@@ -2119,6 +2338,16 @@ async def api_session_delete(request: web.Request) -> web.Response:
     except (CronStoreBusy, CronStoreUnreadable) as exc:
         return _cron_store_refusal(exc)
 
+    # The ledger exclusion is written BEFORE the unlink, and a failure REFUSES the
+    # delete with the row intact. It has to be this side of the unlink to be a
+    # precondition at all: the crew-log removal below runs after the transcript is
+    # already gone, so a failure there has nothing left to refuse, and the
+    # surviving units of this slot would stay foldable by the next session on the
+    # same recycled slot key. The claim's candidate slot is tied to this transcript
+    # by its filename stems; if the delete then does not proceed, the exclusion is
+    # rolled back, because those units belong to a session that still exists.
+    from kiro_crew import session_ledger
+
     # Resolve ambiguous slot ownership and read linked_session_key inside the
     # same canonical-plus-legacy lock set, before the unlink destroys either
     # piece of evidence. An unreadable owner claim refuses with the row intact.
@@ -2129,11 +2358,47 @@ async def api_session_delete(request: web.Request) -> web.Response:
             key,
             delete_claim,
             exact_owner_keys=swept.get(key, ()),
+            exclude=lambda _slot: _exclude_slot_units(state, session_ledger, delete_claim),
         )
     except _OwnerKeyUnreadable:
         return _cron_ownership_unknown_refusal(crons, swept.get(key, ()))
+    except session_ledger.LedgerExclusionError:
+        # Nothing was unlinked: the exclusion is written inside the same hold, before the
+        # delete, so a refusal leaves the row intact.
+        return web.json_response(
+            {
+                "error": (
+                    "This session's ledger exclusions could not be recorded, so it was "
+                    "not deleted. Deleting it now would leave its work state readable by "
+                    "the next session in the same slot."
+                ),
+                "code": LEDGER_EXCLUSION_UNWRITABLE_CODE,
+            },
+            status=409,
+        )
+
+    if not ok:
+        # Nothing was destroyed, so nothing may stay excluded: those units are a live
+        # session's own record. A rollback that cannot be written answers retryable
+        # rather than reporting a clean refusal over a record that now reads empty.
+        try:
+            await _rollback_ledger_exclusion(session_ledger, delete_claim, restore_carry=True)
+        except session_ledger.LedgerExclusionError:
+            return _ledger_rollback_refusal()
 
     if ok:
+        try:
+            await _unstrand_shared_ledger_unit(state, session_ledger, delete_claim)
+        except session_ledger.LedgerExclusionError:
+            # The row IS gone: this runs after the unlink, so the answer must not say the
+            # delete was refused. What is left is a surviving session whose record reads
+            # empty, which is reported for what it is.
+            logger.error(
+                "History delete: %s was deleted, but a session sharing its crew log unit "
+                "still has that unit excluded from its ledger record; restore it by hand "
+                "in the slot's control directory",
+                key,
+            )
         # Catch a job created after the strict pre-scan but before the unlink.
         # The row is already gone, so a failed second scan is loud but cannot
         # refuse; the pre-unlink owner claim still proceeds to cleanup.
@@ -2484,7 +2749,11 @@ def _remove_session_crew_log(
     try:
         from kiro_crew.crew_log import emit as crew_log_emit
         from kiro_crew.crew_log.schema import KIND_SESSION
-        from kiro_crew.crew_log.store import REMOVE_REMOVED, remove_unit, unit_header_slot
+        from kiro_crew.crew_log.store import (
+            REMOVE_REMOVED,
+            remove_unit,
+            unit_header_slot,
+        )
 
         # LET THE TEARDOWN ENTRY LAND FIRST, and not as a courtesy: until it does,
         # this removal cannot succeed at all. ``destroy`` -- the teardown checked
@@ -2512,6 +2781,20 @@ def _remove_session_crew_log(
             )
             return
 
+        # Every OTHER unit of this slot is excluded from the ledger fold before this
+        # one is removed. A slot accumulates one unit per reset, this funnel removes
+        # only the conversation's own, and the survivors stay readable -- so a fresh
+        # session on the same recycled slot key would fold them and read a deleted
+        # conversation's goal and phase. The slot's OTHER units are excluded before the
+        # transcript is unlinked, under the delete's own lock and against its captured
+        # generation; this stage runs after the unlink, where a rescan by the recyclable
+        # slot key could pick up a successor's unit and hide a live conversation's
+        # record for good. So only THIS conversation's unit is excluded here -- the one
+        # the header check above just proved belongs to the proved slot.
+        from kiro_crew import session_ledger
+
+        session_ledger.exclude_units(header_slot, (session_id,))
+
         # Accept-all guard, deliberately. The sweep's guard re-reads the crew log
         # because ITS reason is a property of the file -- an age it sampled outside
         # the lease. This caller's reason is not in the file at all: the session
@@ -2522,6 +2805,18 @@ def _remove_session_crew_log(
         # make the honest answer "not closed" and skip a crew log whose session is
         # gone.
         status = remove_unit(KIND_SESSION, session_id, guard=lambda _dir: True)
+    except session_ledger.LedgerExclusionError:
+        # The exclusion is what stops a later session on this recycled slot key from
+        # folding the units this delete leaves behind. Without it the removal is
+        # refused outright: the conversation stays visible and can be deleted again,
+        # whereas its state showing up in a stranger's session cannot be undone.
+        logger.error(
+            "History delete: refusing to remove the session's log for %s -- slot %r's "
+            "surviving units could not be excluded from its ledger record",
+            history_key,
+            header_slot,
+        )
+        return
     except Exception:
         logger.warning(
             "History delete: could not remove the session's log for %s",
@@ -2544,6 +2839,8 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
+
+    from kiro_crew import session_ledger
 
     log = state.conversation_log
     clearable, skipped, unreadable = await asyncio.to_thread(_clearable_history_keys, state, log)
@@ -2569,6 +2866,12 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
             continue
 
         delete_claim = _capture_history_delete_claim(state, key)
+        # Per ROW, the same precondition the single delete applies: the ledger
+        # exclusion is written before this row's transcript is unlinked, because a
+        # failure after the unlink has nothing left to refuse and would leave this
+        # slot's surviving units foldable by the next session on the recycled key. A
+        # row whose exclusion cannot be written is reported undeletable and its
+        # transcript is left alone; a row that then does not delete is rolled back.
         try:
             result, delete_claim = await asyncio.to_thread(
                 _delete_history_session,
@@ -2577,18 +2880,49 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
                 delete_claim,
                 skip_pinned=True,
                 exact_owner_keys=swept.get(key, ()),
+                exclude=lambda _slot: _exclude_slot_units(state, session_ledger, delete_claim),
             )
             if result is None:
                 skipped += 1
+                await _rollback_ledger_exclusion(session_ledger, delete_claim, restore_carry=True)
             elif result:
+                # Counted as CLEARED whatever the unstrand does: the transcript is gone,
+                # so calling the row undeletable would be false. A failure there leaves a
+                # sharing session's record excluded, which is logged for what it is.
+                try:
+                    await _unstrand_shared_ledger_unit(state, session_ledger, delete_claim)
+                except session_ledger.LedgerExclusionError:
+                    logger.error(
+                        "Bulk clear: %s was deleted, but a session sharing its crew log "
+                        "unit still has that unit excluded from its ledger record; restore "
+                        "it by hand in the slot's control directory",
+                        key,
+                    )
                 cleanup_claims.append((key, delete_claim))
                 count += 1
             else:
                 failed += 1
+                await _rollback_ledger_exclusion(session_ledger, delete_claim, restore_carry=True)
         except _OwnerKeyUnreadable:
             undeletable.append({"id": key, "code": CRON_OWNERSHIP_UNKNOWN_CODE})
+        except session_ledger.LedgerExclusionError:
+            # The exclusion or its rollback could not be written, so this row's transcript
+            # is left alone and the row says why. Nothing was unlinked: the exclusion runs
+            # inside the same hold, before the delete.
+            undeletable.append({"id": key, "code": LEDGER_EXCLUSION_UNWRITABLE_CODE})
         except Exception:
             failed += 1
+            # The rollback can fail too, and it must not turn one row's failure into the
+            # whole batch's: the remaining rows are still deletable.
+            try:
+                await _rollback_ledger_exclusion(session_ledger, delete_claim, restore_carry=True)
+            except session_ledger.LedgerExclusionError:
+                logger.error(
+                    "Bulk clear: %s was not deleted and its ledger exclusion could not be "
+                    "rolled back; that session's record reads empty until it is restored "
+                    "by hand in the slot's control directory",
+                    key,
+                )
             logger.warning("api_sessions_clear: delete raised for %s", key, exc_info=True)
 
     if cleanup_claims:

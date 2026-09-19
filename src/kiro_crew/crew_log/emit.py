@@ -4101,6 +4101,46 @@ def on_compaction_applied(
     )
 
 
+def on_ledger_recorded(session_id: str, data: dict[str, Any]) -> None:
+    """Append ONE ``ledger/recorded`` entry -- a session's own durable work state.
+
+    The write half of the session ledger. Every field the caller set rides on this
+    single entry, including the event that explains a phase change, so the rule
+    that a phase never moves without a logged reason is a property of one append
+    rather than of two writes that a crash can separate.
+
+    Queued through the same writer as every other entry, deliberately. The ledger
+    could not open the file itself: an append takes that unit's WRITE OWNERSHIP,
+    and while the emitter holds this session's handle a second handle in this
+    process is refused -- so a ledger that wrote around the emitter would fail for
+    exactly the sessions that are running. Going through the writer also keeps this
+    entry ordered against the turn it was recorded inside.
+
+    The caller is the one that establishes the session has a crew log to write to;
+    this is the ordinary ``_write``, so a session without one is a policy no-op
+    here and the refusal belongs where a user can be told about it.
+    """
+    _write(session_id, "ledger/recorded", data, src=_SRC_GATEWAY)
+
+
+def ledger_entry_fits(data: dict[str, Any]) -> bool:
+    """Whether *data* would fit one ``ledger/recorded`` entry.
+
+    Beside the write rather than inside it, because the two answers have different
+    owners. ``_write`` is a policy no-op for a session with no crew log and refuses an
+    oversized entry by COUNTING it -- both correct there, since it serves callers that
+    cannot act on either. The ledger's caller can act on this one: an entry over the
+    ceiling by construction can never land, so the record it would report as taken
+    never exists, and only that caller can turn the refusal into an answer a user sees.
+
+    It asks the same question the append will, through the same serializer with the
+    same entry type and src, so the two cannot disagree about what fits. Not a
+    reservation: a later entry does not make this one smaller, and nothing else
+    consumes the budget.
+    """
+    return _entry_line_fits("ledger/recorded", data, src=_SRC_GATEWAY)
+
+
 def on_session_closed(session_id: str, reason: str) -> None:
     """Record a session teardown and drop its cached state.
 

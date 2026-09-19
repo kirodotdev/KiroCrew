@@ -66,7 +66,7 @@ Two overlaps between the kinds are intentional and are not collisions. The `mess
 
 ### 4a. The session's log
 
-One session's own history: the ACP turn lifecycle, what was put in front of the model, and what the model did.
+One session's own history: the ACP turn lifecycle, what was put in front of the model, what the model did, and durable work-state updates.
 
 `src` is `gateway` or `acp`, and nothing else. Those are the two writers a session's entries come from -- the gateway around each turn, the ACP runtime for the measured path -- and a list wider than that is an authorization hole rather than a convenience, because `src` is what a reader attributes an entry to. A `patrol` or a guest crew has nothing to say inside one session's turn history. Adding a name is ADDITIVE: no reader validates `src`, so the list names the emitters that exist. `session:<id>` is spelled by no kind, because no emitter writes it.
 
@@ -238,6 +238,19 @@ and naming a guess is worse than naming nobody.
 | `compaction/applied` | `{turn, pct_before, pct_after, freed_pct}` | yes |
 | `plan/updated` | `{turn, items:[{id, text, state: done \| open}], total?}` — the session's own task list | yes |
 
+### Ledger
+
+| Type | `data` | Emitter |
+|---|---|---|
+| `ledger/recorded` | `{slot, goal?, phase?, next?, tried?:{approach, rejected_because?}, artifacts?, event?, event_kind?}` — one session-ledger update | yes |
+
+One entry per `session_ledger_record` call, carrying only the fields that call set;
+an absent field means unchanged. A phase and the event explaining it ride on the
+same entry, so no reader can observe a phase that moved without its reason. No
+`turn`: a slot records against its workstream rather than against whichever turn it
+happened to be inside, and the record is folded across every session unit of the
+slot (`session-work-ledger.md`).
+
 ### Background and children
 
 | Type | `data` | Emitter |
@@ -288,7 +301,7 @@ the slot that carries one, and never lets a log without one retract it.
 
 Every refusal is a `CrewLogError` carrying a stable `code`; the codes are API surface and are additive-only.
 
-**Ownership** answers whether a kind of unit has such events at all. `schema.TYPE_OWNERSHIP` maps kind to owned `type` domains -- crew: `member` `activity` `slot` `patrol` `message` `crew` `item` `memory`; session: `session` `turn` `step` `tool` `approval` `model` `compaction` `plan` `message` `request` `context` `background` `subagent` `write` -- and anything else is `event_type_not_owned`. It is prefix-based, so a new action under an owned domain needs no change: `crew/dispatch` and `crew/report` are owned by the `crew` domain the registry already lists. `message` appears in both registries, which is what ownership means: a crew forwards messages and a session records its own bodies, so both kinds have such events and neither name is a collision.
+**Ownership** answers whether a kind of unit has such events at all. `schema.TYPE_OWNERSHIP` maps kind to owned `type` domains -- crew: `member` `activity` `slot` `patrol` `message` `crew` `item` `memory`; session: `session` `turn` `step` `tool` `approval` `model` `compaction` `plan` `ledger` `message` `request` `context` `background` `subagent` `write` -- and anything else is `event_type_not_owned`. It is prefix-based, so a new action under an owned domain needs no change: `crew/dispatch` and `crew/report` are owned by the `crew` domain the registry already lists. `message` appears in both registries, which is what ownership means: a crew forwards messages and a session records its own bodies, so both kinds have such events and neither name is a collision.
 
 **Namespacing** answers whether an emitter may write it, and it is a rule about `src`. Two halves:
 
