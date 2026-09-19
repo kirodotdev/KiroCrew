@@ -230,6 +230,32 @@ const PROBE_REFRESH_MS = 30_000
  * one genuinely graded fact — how the harness is made to ask before running a tool
  * — arrives as the core's own five-mechanism enum and is rendered from it.
  *
+ * ## The MCP half, which a capability set cannot answer
+ *
+ * The lines above say what the harness can DO. They cannot say what happens to the
+ * user's own AGENT FILE on the way to it, and that is where these harnesses differ
+ * most: on one, switching a single tool off narrows that tool; on another it
+ * withholds the whole server, Crew's own control plane included. The permission
+ * mode a spec asks for is honoured on one and overridden on another. Hooks reach
+ * one and no other.
+ *
+ * Every one of those is a declared, defensible ruling that already existed in
+ * `providers/mirrors/registry.py` and reached no reader. The server projects it
+ * (`agent_sdk/backend_mcp_ability.py`) as a kind, a per-tool deny reach, and two
+ * lists of spec concerns — withheld, and no-channel-yet — and this file holds a
+ * label per KIND, per REACH and per CONCERN, never per agent.
+ *
+ * Two of its facts need no click. The KIND rides in the disclosure's own summary,
+ * because it decides whether the rest matters. And the whole-server tool-off cost
+ * renders OUTSIDE the disclosure beside the security notes, under the same rule they
+ * follow: it is the one fact here an operator meets by accident, since switching a
+ * tool off says nothing about servers until it removes one. The other two reaches
+ * stay inside, where reassurance belongs.
+ *
+ * It is ADVISORY: per-tool MCP deny is not a requirement on every agent, so the
+ * card's job is to say which form a reader is getting before a session runs, not to
+ * refuse the selection.
+ *
  * The status strip keeps its own job: it says whether this harness is live on this
  * machine, names what is absent, and prints the command that installs it. Those are
  * measurements this gateway took, not claims about capability.
@@ -753,6 +779,91 @@ export function AgentBackendTab() {
   }
 
   /**
+   * One label per MCP PROJECTION KIND — the core's own `ProjectionKind` values.
+   *
+   * Reads as a phrase rather than a sentence because it is interpolated into the
+   * disclosure's own summary, which is the one place it appears: the summary has to
+   * carry the headline fact so a reader who never opens the disclosure still has it.
+   *
+   * Keyed by kind and never by agent, for the reason every other label record here
+   * is: a harness declaring an existing kind needs no label of its own, and an
+   * agent an edition registered renders the same phrase with no edit here and no
+   * locale edit either.
+   */
+  const MCP_KIND_LABEL: Record<string, (name: string) => string> = {
+    // Named rather than "this agent", for the reason the deny phrases are: a blind
+    // reader met "agent" as the harness AND as the file it reads, and could not tell
+    // which sense a line used. The harness's display name cannot be either.
+    native: (name: string) => i18nT('pages.developer.agentBackendTab.mcp_native', { name }),
+    mirror: (name: string) => i18nT('pages.developer.agentBackendTab.mcp_mirror', { name }),
+    // These two say where the projection lives rather than what the harness does, so
+    // they carry no harness name to ground.
+    external: () => i18nT('pages.developer.agentBackendTab.mcp_external'),
+    'no-channel': (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_no_channel', { name }),
+    'broker-only': () => i18nT('pages.developer.agentBackendTab.mcp_broker_only'),
+  }
+
+  /**
+   * One label per per-tool DENY REACH — the core's own `PerToolDeny` values.
+   *
+   * What switching a single tool off actually costs on this agent, which is the
+   * question the reach exists to answer. Two of the three say "that tool"; the third
+   * says the whole server, and that one is why this is on the card at all: switching
+   * a tool off is an ordinary action that says nothing about servers, so an operator
+   * meets the difference by accident unless it is stated first.
+   *
+   * Per-tool MCP deny is not a requirement on every agent. This DECLARES which of
+   * the three a reader is getting; it does not refuse anything.
+   */
+  const MCP_DENY_LABEL: Record<string, (name: string) => string> = {
+    // Every entry takes the name and spends it: a deny line that named no agent read as a
+    // claim about MCP in general, so the reassuring variant and the costly one contradicted
+    // each other across two rows of the same list.
+    'settings-file': (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_deny_settings_file', { name }),
+    'per-call': (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_deny_per_call', { name }),
+    // Named rather than "this agent": a blind reader could not tell whether the
+    // several agents in this copy were the same kind of thing, and the harness's own
+    // display name is the one spelling that cannot be confused with the FILE.
+    'whole-server': (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_deny_whole_server', { name }),
+  }
+
+  /**
+   * One label per SPEC CONCERN — the thing in the user's agent file, not the agent.
+   *
+   * Same rule as the capability and note labels: keyed by the concern, so an id with
+   * no label here is SKIPPED rather than rendered raw. Which concerns reach a card at
+   * all is the SERVER's classification (`agent_sdk/backend_mcp_ability.py` records
+   * the reason per concern it leaves off), so this file cannot add one it thinks a
+   * reader wants.
+   */
+  const MCP_CONCERN_LABEL: Record<string, (name: string) => string> = {
+    mcp_servers: () => i18nT('pages.developer.agentBackendTab.mcp_concern_mcp_servers'),
+    tool_allowlist: () => i18nT('pages.developer.agentBackendTab.mcp_concern_tool_allowlist'),
+    denied_tools: () => i18nT('pages.developer.agentBackendTab.mcp_concern_denied_tools'),
+    auto_approve: (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_concern_auto_approve', { name }),
+    // Named rather than "this agent", under the same grounding rule the kind and deny
+    // phrases follow: the reader met agents inside agent config files and could not
+    // tell the two senses apart. A function per entry rather than a string, so the
+    // harness name is resolved when the row renders -- the record is declared above
+    // `nameOf`, and a value that read it eagerly would be a use-before-declaration.
+    permission_mode: (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_concern_permission_mode', { name }),
+    // Named, like the permission-mode line beside it: "your agent config file" and "this
+    // agent" in one sentence left a reader unable to tell whether the two senses of agent
+    // were the same thing, and the harness's own display name is the one spelling that
+    // cannot be read as the FILE.
+    model: (name: string) => i18nT('pages.developer.agentBackendTab.mcp_concern_model', { name }),
+    model_allowlist: (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_concern_model_allowlist', { name }),
+    hooks: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks'),
+  }
+
+  /**
    * A label for any listed id, known to this frontend or not.
    *
    * The fallback is the server's `policy_id`, which exists precisely to be a
@@ -800,6 +911,117 @@ export function AgentBackendTab() {
     const mechanism = probe(value)?.tool_approval
     return (mechanism && APPROVAL_LABEL[mechanism]) || ''
   }
+
+  /**
+   * How this agent receives the MCP servers your agent file declares, as a phrase.
+   *
+   * `''` when the payload named no kind — an older gateway, a 403, a query in
+   * flight, or an agent whose declaration this build does not carry — and the whole
+   * disclosure is then absent, like every other absent probe field. An agent
+   * onboarded without a declaration is the one case the server answers `''` for
+   * deliberately: saying nothing is right there, because guessing is the
+   * invisible-difference failure the declaration exists to stop.
+   */
+  const mcpKindLine = (value: string): string => {
+    const kind = probe(value)?.mcp?.projection
+    const label = kind ? MCP_KIND_LABEL[kind] : undefined
+    return label ? label(nameOf(value)) : ''
+  }
+
+  /** What switching one tool off costs here, or `''` where the agent declares no reach. */
+  const mcpDenyLine = (value: string): string => {
+    const reach = probe(value)?.mcp?.per_tool_deny
+    const label = reach ? MCP_DENY_LABEL[reach] : undefined
+    return label ? label(nameOf(value)) : ''
+  }
+
+  /**
+   * Whether a tool-off on this agent can cost a WHOLE server rather than the tool.
+   *
+   * The SERVER's classification, read off the payload rather than re-derived here.
+   * `agent_sdk/backend_mcp_ability.COSTS_WHOLE_SERVER` holds which reaches cost a
+   * whole server, beside the record of which concerns reach a card at all, and a
+   * completeness test holds it against the vocabulary — so a reach added to the core
+   * arrives already classified instead of rendering as ordinary until someone edits
+   * this file. It holds for two of the three today: `whole-server`, and the case that
+   * hid, `per-call`, which stays per tool on Crew's OWN servers and withholds any
+   * other server whole.
+   *
+   * `false` when the payload carried no flag — an older gateway, a 403, a query in
+   * flight — which renders the deny line inside the disclosure, where it sat before
+   * any of this. Compared against `true` rather than coerced, so a reach this
+   * frontend has no label for is never promoted on the strength of a truthy string.
+   */
+  const mcpCanCostWholeServer = (value: string): boolean =>
+    probe(value)?.mcp?.costs_whole_server === true
+
+  /**
+   * The reassurance that belongs BEHIND the disclosure on a costly reach, or `''`.
+   *
+   * A reach whose cost takes a whole server states that cost outside the disclosure,
+   * where a reader meets it without opening anything. Where the same reach spares SOME
+   * servers — `per-call` spares the ones Crew adds itself — that carve-out is a second
+   * sentence, and a warning with an exception folded into it is a paragraph a reader
+   * can only parse structurally. So the exception goes where the other reassuring
+   * variant already lives: inside, one click away, with room to name the server it is
+   * about.
+   *
+   * Keyed by reach and rendered only where a key exists, so a reach with no carve-out
+   * (`whole-server`) renders nothing rather than a hedge.
+   */
+  const mcpDenyDetail = (value: string): string => {
+    const reach = probe(value)?.mcp?.per_tool_deny
+    if (reach !== 'per-call') return ''
+    return i18nT('pages.developer.agentBackendTab.mcp_deny_per_call_detail', {
+      name: nameOf(value),
+    })
+  }
+
+  /**
+   * Whether the MCP disclosure has anything BEHIND it for this agent.
+   *
+   * A `<details>` that opens to nothing is a promise the card does not keep: a reader
+   * who takes the affordance gets an empty box and no answer about whether that means
+   * "nothing is withheld" or "this is broken". Every kind but `mirror` projects no
+   * per-concern ruling and declares no reach, so all three body blocks are false at
+   * once and the summary is the whole answer — rendered as a plain line instead, with
+   * no affordance to take.
+   *
+   * Reads the same three conditions the body renders, so the two cannot disagree.
+   */
+  const mcpHasDetail = (value: string): boolean =>
+    (!mcpCanCostWholeServer(value) && mcpDenyLine(value) !== '') ||
+    mcpDenyDetail(value) !== '' ||
+    mcpWithheld(value).length > 0 ||
+    mcpNoChannel(value).length > 0
+
+  /**
+   * One concern line: this frontend's phrase, or the SPEC's own key for the concern.
+   *
+   * A concern added to the core's vocabulary used to vanish here while `kirocrew
+   * doctor` named it, because an id with no entry in `MCP_CONCERN_LABEL` was filtered
+   * out. The kind and the reach already degrade to their declared value; this does the
+   * same with `spec_keys`, so the line says `permissions.defaultMode` — a word the
+   * reader can go and look for in their own file — instead of nothing at all.
+   *
+   * Untranslated in the fallback, deliberately: a spec key is the same string in every
+   * language, and a missing line is worse than an English one.
+   */
+  const mcpConcernLine = (value: string, id: string): string =>
+    MCP_CONCERN_LABEL[id]?.(nameOf(value)) ?? probe(value)?.mcp?.spec_keys?.[id] ?? id
+
+  /**
+   * The parts of your agent file this agent is not sent: a DECISION, with a reason
+   * recorded beside it in the core.
+   */
+  const mcpWithheld = (value: string) => probe(value)?.mcp?.withheld ?? []
+
+  /**
+   * The parts no channel carries YET: the agent has the capability and this
+   * transport cannot carry it. A separate list from the withholds because the two
+   * are different answers — one is settled, one is a gap with an address.
+   */
+  const mcpNoChannel = (value: string) => probe(value)?.mcp?.no_channel ?? []
 
   /**
    * The one status sentence a harness carries, derived rather than authored per agent.
@@ -1232,6 +1454,115 @@ export function AgentBackendTab() {
                 {NOTE_LABEL[id]}
               </p>
             ))}
+            {/* The MCP half renders BEFORE the tool-off cost below it, and the
+                order is the point: the cost line is the first place a reader meets
+                the word "MCP", and the summary is where it is explained. A gloss a
+                reader reaches only after the sentence that needed it arrived too
+                late. */}
+            {mcpKindLine(shown) && (
+              /* The other half of the card: the capability lines above say what this
+                 agent can DO, this says what happens to the user's own agent file on
+                 the way to it. Every line of it is projected on the server from the
+                 declaration `providers/mirrors/registry.py` already carried and
+                 nothing rendered -- the projection kind, the reach of a per-tool MCP
+                 restriction, and a disposition per spec concern.
+
+                 Behind a disclosure, with the headline fact IN the summary. The kind
+                 is the part that decides whether the rest matters, so it is readable
+                 without opening anything; the per-concern detail is what a reader
+                 goes looking for once they are choosing between two agents. Native
+                 `<details>` rather than a state hook, for the reason the operator
+                 notes below use one: keyboard reachable, searchable in the page and
+                 open on print, with no focus management of ours to get wrong.
+
+                 ADVISORY. Per-tool MCP deny is not a requirement on every agent --
+                 one with no per-call deny channel withholds the whole server instead
+                 -- and this is where that is stated BEFORE a session runs. Nothing
+                 here refuses a selection. */
+              mcpHasDetail(shown) ? (
+              <details className="mt-2 text-[11px] leading-relaxed">
+                <summary className="cursor-pointer text-muted">
+                  {i18nT('pages.developer.agentBackendTab.card_mcp_summary', {
+                    name: nameOf(shown),
+                    delivery: mcpKindLine(shown),
+                  })}
+                </summary>
+                {/* The reassuring reaches only -- the whole-server one is stated
+                    above, outside this disclosure, and repeating it here would say
+                    the same thing twice to a reader who opened the card. */}
+                {/* Indented as a block: flush with the paragraph OUTSIDE the
+                    disclosure, the reader could not see which lines the toggle owns, so
+                    closing it looked like losing something that was never in it. */}
+                <div className="pl-4">
+                {!mcpCanCostWholeServer(shown) && mcpDenyLine(shown) && (
+                  <p className="mt-1 mb-0 text-muted">{mcpDenyLine(shown)}</p>
+                )}
+                {/* The carve-out on a costly reach: the cost itself is stated above,
+                    outside, and this is the part that says which servers it spares. */}
+                {mcpDenyDetail(shown) && (
+                  <p className="mt-1 mb-0 text-muted">{mcpDenyDetail(shown)}</p>
+                )}
+                {mcpWithheld(shown).length > 0 && (
+                  <>
+                    <div className="mt-1.5 font-semibold text-muted">
+                      {i18nT('pages.developer.agentBackendTab.card_mcp_withheld', {
+                        name: nameOf(shown),
+                      })}
+                    </div>
+                    <ul className="mt-0.5 mb-0 list-disc pl-4 space-y-0.5 text-muted">
+                      {mcpWithheld(shown).map(id => (
+                        <li key={id}>{mcpConcernLine(shown, id)}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {mcpNoChannel(shown).length > 0 && (
+                  <>
+                    <div className="mt-1.5 font-semibold text-muted">
+                      {i18nT('pages.developer.agentBackendTab.card_mcp_no_channel')}
+                    </div>
+                    <ul className="mt-0.5 mb-0 list-disc pl-4 space-y-0.5 text-muted">
+                      {mcpNoChannel(shown).map(id => (
+                        <li key={id}>{mcpConcernLine(shown, id)}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                </div>
+              </details>
+              ) : (
+                /* Nothing behind it, so no affordance: the kind line is the whole
+                   answer for an agent that reads the spec itself, projects it
+                   elsewhere, or carries none of it. Same text, same place, minus a
+                   disclosure that would open on an empty box. */
+                <p className="mt-2 mb-0 text-[11px] leading-relaxed text-muted">
+                  {i18nT('pages.developer.agentBackendTab.card_mcp_summary', {
+                    name: nameOf(shown),
+                    delivery: mcpKindLine(shown),
+                  })}
+                </p>
+              )
+            )}
+
+            {/* The tool-off cost, when it is the whole server. Beside the security
+                notes rather than inside the MCP disclosure below, because this is the
+                one fact on that half an operator meets BY ACCIDENT: switching a tool
+                off is an ordinary action that says nothing about servers, and on this
+                agent it removes the server -- Kiro Crew's own control plane included,
+                which leaves such a session unable to report back at all. Weight, not
+                colour: a permanent property of the agent, not a problem awaiting a
+                fix, and legible to a reader who cannot tell two colours apart. */}
+            {mcpCanCostWholeServer(shown) && mcpDenyLine(shown) && (
+              <p className="mt-1 mb-0 text-[11px] leading-relaxed text-text-strong">
+                {/* The location stays PROSE rather than a link. The page it would
+                    point at hard-defaults its own sub-tab and reads no parameter, so a
+                    link whose text promises the MCP servers list would land the reader
+                    on a provider gallery instead -- worse than a path they can follow.
+                    Deep-linking that page is its own change; this sentence names the
+                    three levels it actually takes. */}
+                {mcpDenyLine(shown)}
+              </p>
+            )}
 
             {capabilityLines(shown).length > 0 && (
               /* Open, not collapsed. It was a `<details>` because up to fifteen lines
@@ -1275,6 +1606,7 @@ export function AgentBackendTab() {
                 </ul>
               </div>
             )}
+
 
             {noteLines(shown).length > 0 && (
               /* The one thing still behind a disclosure, and the only list that

@@ -97,6 +97,16 @@ preference:
   exactly that). The patch would land on an attribute nothing reads, and the card
   would answer from production membership while the test believed otherwise.
 
+The MCP half, which is a projection over another source
+-------------------------------------------------------
+One question an operator asks is not answerable from a membership set: what
+happens to their AGENT SPEC on the way to this harness. That is declared per
+backend in ``providers/mirrors`` -- the projection KIND, the reach of a per-tool
+MCP restriction, and a disposition per spec concern -- and
+:mod:`kiro_crew.agent_sdk.backend_mcp_ability` projects it. :func:`card_payload`
+carries it as its own key so the panel and ``kirocrew doctor`` read one card, while
+each projection stays a projection over ONE source.
+
 Why this is not ``SessionCapabilities``, and not in ``backends.py``
 ------------------------------------------------------------------
 :class:`~kiro_crew.agent_sdk.capabilities.SessionCapabilities` answers what one
@@ -119,6 +129,7 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, Mapping, Tuple
 
 from kiro_crew.agent_sdk import backends
+from kiro_crew.agent_sdk.backend_mcp_ability import ability_payload
 
 # ── Card line ids ──
 # Stable machine keys. The LABEL for each is the dashboard's, keyed off the id, so
@@ -512,4 +523,9 @@ def card_payload(backend: str) -> Dict[str, object]:
         # reader needs and a shipped gateway cannot withdraw.
         "tool_approval": card.tool_approval,
         "offered_by_build": card.offered_by_build,
+        # Its own GROUP rather than five more flat keys: the four answer one
+        # question together (how the agent spec reaches this harness), they come
+        # from one source, and a reader on an older gateway gets an absent object
+        # it can test once instead of four fields it has to test apart.
+        "mcp": ability_payload(backend),
     }
