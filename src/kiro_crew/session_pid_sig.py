@@ -397,6 +397,67 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     atomic_write(_sig_path(pid, cfg), _compute_sig(key, pid, body))
 
 
+def unpublish_session_pid(pid: int | str) -> bool:
+    """Retract a pid -> session-key mapping that provably names no live session.
+
+    The counterpart to :func:`publish_session_pid`, for a teardown that has
+    already proven its runtime is gone. It is the only per-pid retraction path:
+    ``_prune_stale_session_pid_files`` is reached solely from
+    ``cleanup_orphaned_sessions``, which ``session.py``'s module map records as
+    **startup + shutdown only**, so a gateway that keeps running holds every
+    mapping it publishes until it restarts. Measured on a Windows host: six
+    released sessions left twelve files behind within the hour, and two of those
+    pid numbers had already been recycled to unrelated live processes
+    (``cmd.exe``, an Office ``FileCoAuth.exe``) while still carrying a dashboard
+    slot's key.
+
+    That is the risk this closes, and it is why the sweep stays: a gateway that
+    dies without running a teardown is the case a hook cannot reach, so this is
+    an additional retraction path, never a replacement for the pass that bounds
+    accumulation.
+
+    Removal requires PROOF that the mapping does not describe a live session,
+    because the ``.txt`` is what ``mcp_caller`` resolves a tool call's identity
+    through -- deleting a live one costs that session its identity:
+
+    * the pid does not exist, or
+    * the mapping carries a start token and :func:`_pid_recycled` proves the
+      number names a different incarnation.
+
+    Anything else -- a live pid, an unreadable token, a legacy token-less
+    mapping whose pid still exists -- is retained. "Unknown" is never treated as
+    "dead", the same direction the sweep takes, so this can only ever remove a
+    file the sweep would also have removed.
+
+    Returns True when the mapping was removed.
+    """
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    cfg = config_dir()
+    txt = _txt_path(pid_int, cfg)
+    sig = _sig_path(pid_int, cfg)
+    if not txt.exists() and not sig.exists():
+        return False
+    if platform_compat.pid_exists(pid_int):
+        raw = _read_regular_nofollow(txt)
+        parsed = _parse_mapping_body(raw) if raw is not None else None
+        token = parsed[1] if parsed else None
+        if not token or not _pid_recycled(pid_int, token):
+            # Live, or identity unprovable -- leave the mapping alone.
+            return False
+    removed = False
+    for path in (txt, sig):
+        try:
+            if path.exists():
+                path.unlink(missing_ok=True)
+                removed = True
+        except OSError:
+            logger.debug("Could not retract session pid mapping: %s", path.name)
+    return removed
+
+
 # Upper bound for mapping-file reads. Session keys are short strings
 # (< a few hundred bytes) and the sidecar is a 64-char hex MAC; anything
 # larger is not a legitimate mapping file. Bounding the read means an

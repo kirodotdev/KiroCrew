@@ -1993,19 +1993,39 @@ def _untrack_session_pid(pid: int) -> None:
     tracking file.  Called on clean provider shutdown so the periodic
     orphan sweep doesn't race against legitimate still-running kiro-cli
     processes whose in-memory session entry has transiently gone away
-    (e.g. during compaction/reset/replace)."""
+    (e.g. during compaction/reset/replace).
+
+    Also retracts the pid's ``session_pid_<pid>`` mapping, which otherwise has
+    no per-pid retraction path (see
+    :func:`kiro_crew.session_pid_sig.unpublish_session_pid`). The retraction
+    proves the process is gone for itself rather than trusting this call site,
+    so a caller that untracks a pid whose process is still alive -- the
+    compaction/reset case above -- keeps its mapping.
+    """
     prefix = f"{os.getpid()}:{pid}"
     with _session_pid_file_lock():
         path = _session_pid_file_path()
-        if not path.exists():
-            return
-        lines = path.read_text(encoding="utf-8").splitlines()
-        # Match both the legacy ``gw:pid`` form and the token-bearing
-        # ``gw:pid:token`` form (see _track_session_pid).
-        lines = [
-            ln for ln in lines if ln.strip() != prefix and not ln.strip().startswith(prefix + ":")
-        ]
-        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
+        # An absent tracking file leaves nothing to rewrite, but the mapping
+        # retraction below is a different file and still owed -- so skip the
+        # rewrite rather than returning out of the function.
+        if path.exists():
+            lines = path.read_text(encoding="utf-8").splitlines()
+            # Match both the legacy ``gw:pid`` form and the token-bearing
+            # ``gw:pid:token`` form (see _track_session_pid).
+            lines = [
+                ln
+                for ln in lines
+                if ln.strip() != prefix and not ln.strip().startswith(prefix + ":")
+            ]
+            _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
+    # Outside the lock: this is filesystem + process-probe work, and it guards
+    # a different set of files than the one the lock serializes.
+    try:
+        from kiro_crew.session_pid_sig import unpublish_session_pid
+
+        unpublish_session_pid(pid)
+    except Exception:  # never let mapping hygiene break a teardown
+        logger.debug("session pid mapping retraction failed for %d", pid, exc_info=True)
 
 
 # ── Sweep-protected PIDs ──────────────────────────────────────────────────

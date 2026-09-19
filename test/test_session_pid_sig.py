@@ -690,3 +690,78 @@ class TestSigningHealth:
         assert "signing_health" not in inspect.getsource(
             token_auth.warm_auth_singletons
         )
+
+
+class TestUnpublish:
+    """``unpublish_session_pid`` retracts ONLY a mapping that provably names no
+    live session.
+
+    The motivation is measured rather than hypothetical. On a Windows host six
+    released sessions left twelve ``session_pid_*`` files behind inside an hour,
+    and two of those pid numbers had already been recycled to unrelated live
+    processes (a ``cmd.exe`` and an Office ``FileCoAuth.exe``) while still
+    carrying a dashboard slot's key. ``_prune_stale_session_pid_files`` is the
+    other retraction path and it is reached solely from
+    ``cleanup_orphaned_sessions`` -- startup + shutdown only -- so a gateway that
+    keeps running retracts nothing.
+
+    The direction of every decision below is the same as that sweep's: proof of
+    death removes, and "unknown" retains. The ``.txt`` is what ``mcp_caller``
+    resolves a tool call's caller identity through, so removing a live one would
+    cost that session its identity.
+    """
+
+    def test_removes_the_mapping_when_the_pid_is_gone(self, cfg):
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        assert (cfg / "session_pid_4242.txt").exists()
+        assert (cfg / "session_pid_4242.sig").exists()
+
+        with patch.object(platform_compat, "pid_exists", return_value=False):
+            assert session_pid_sig.unpublish_session_pid(4242) is True
+
+        assert not (cfg / "session_pid_4242.txt").exists()
+        assert not (cfg / "session_pid_4242.sig").exists()
+
+    def test_keeps_a_live_legacy_mapping(self, cfg):
+        """An absent recorded token is identity UNKNOWN, never read as dead."""
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)  # fixture: token None
+        with patch.object(platform_compat, "pid_exists", return_value=True):
+            assert session_pid_sig.unpublish_session_pid(4242) is False
+        assert (cfg / "session_pid_4242.txt").exists()
+
+    def test_keeps_a_live_mapping_whose_token_still_matches(self, cfg):
+        """Same pid, same incarnation: this is a session that is still serving."""
+        with patch.object(platform_compat, "get_process_start_id", return_value="tok-1"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+            with patch.object(platform_compat, "pid_exists", return_value=True):
+                assert session_pid_sig.unpublish_session_pid(4242) is False
+        assert (cfg / "session_pid_4242.txt").exists()
+
+    def test_removes_a_mapping_whose_pid_was_recycled(self, cfg):
+        """The measured case: the number is live, but it is a different process."""
+        with patch.object(platform_compat, "get_process_start_id", return_value="tok-1"):
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+
+        with (
+            patch.object(platform_compat, "pid_exists", return_value=True),
+            patch.object(platform_compat, "get_process_start_id", return_value="tok-2"),
+        ):
+            assert session_pid_sig.unpublish_session_pid(4242) is True
+
+        assert not (cfg / "session_pid_4242.txt").exists()
+        assert not (cfg / "session_pid_4242.sig").exists()
+
+    def test_an_absent_mapping_is_not_an_error(self, cfg):
+        with patch.object(platform_compat, "pid_exists", return_value=False):
+            assert session_pid_sig.unpublish_session_pid(4242) is False
+
+    def test_an_unparseable_pid_is_refused(self, cfg):
+        assert session_pid_sig.unpublish_session_pid("not-a-pid") is False
+
+    def test_a_dangling_sidecar_is_retracted_with_the_mapping(self, cfg):
+        """A ``.sig`` whose ``.txt`` is already gone still accumulates."""
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        (cfg / "session_pid_4242.txt").unlink()
+        with patch.object(platform_compat, "pid_exists", return_value=False):
+            assert session_pid_sig.unpublish_session_pid(4242) is True
+        assert not (cfg / "session_pid_4242.sig").exists()

@@ -5335,3 +5335,79 @@ class TestAcquiringAPidLockDoesNotTruncateTheLockFile:
             with platform_compat.file_lock(fd.fileno(), exclusive=True):
                 pass
         assert lock_path.read_bytes() == self.SEED
+
+
+class TestUntrackSessionPidRetractsTheMapping:
+    """The teardown that proved a runtime dead also retracts its pid mapping.
+
+    ``session_pid_<pid>.txt`` has one prune path and it runs from
+    ``cleanup_orphaned_sessions``, which ``session.py``'s module map records as
+    startup + shutdown only -- so without a per-pid retraction a gateway that
+    keeps running accumulates one mapping per released session indefinitely.
+    Measured on Windows: twelve files from six released sessions within the hour,
+    two of them naming pids already recycled to unrelated live processes.
+
+    ``pid_exists`` is pinned rather than inferred from a fake pid: these tests
+    must decide the same way on every platform, and ``platform_compat.pid_exists``
+    reaches for ``os.kill`` on POSIX but ``OpenProcess`` on Windows.
+    """
+
+    def test_a_dead_pid_loses_its_mapping(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.session_pid import _untrack_session_pid
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_pid_sig.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform_compat.pid_exists", lambda pid: False)
+
+        mapping = tmp_path / "session_pid_99999.txt"
+        mapping.write_text("dashboard:chat-1", encoding="utf-8")
+        session_pid_file.write_text(f"{os.getpid()}:99999\n")
+
+        _untrack_session_pid(99999)
+
+        assert not mapping.exists(), "a confirmed-dead runtime kept its mapping"
+        assert session_pid_file.read_text() == ""
+
+    def test_a_live_pid_keeps_its_mapping(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Untracking is not proof of death.
+
+        ``_untrack_session_pid`` is also called while a process is alive -- the
+        compaction/reset/replace path removes the sweep entry so the orphan sweep
+        cannot race a live runtime. The mapping must survive that, or a live
+        session loses the identity ``mcp_caller`` resolves its tool calls through.
+        """
+        from kiro_crew.session_pid import _untrack_session_pid
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_pid_sig.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform_compat.pid_exists", lambda pid: True)
+
+        mapping = tmp_path / "session_pid_99999.txt"
+        mapping.write_text("dashboard:chat-1", encoding="utf-8")
+        session_pid_file.write_text(f"{os.getpid()}:99999\n")
+
+        _untrack_session_pid(99999)
+
+        assert mapping.exists(), "untracking a LIVE runtime must not drop its mapping"
+        assert session_pid_file.read_text() == ""
+
+    def test_an_absent_tracking_file_still_retracts_the_mapping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two files are independent; neither one's absence excuses the other."""
+        from kiro_crew.session_pid import _untrack_session_pid
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_pid_sig.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform_compat.pid_exists", lambda pid: False)
+
+        mapping = tmp_path / "session_pid_99999.txt"
+        mapping.write_text("dashboard:chat-1", encoding="utf-8")
+
+        _untrack_session_pid(99999)
+
+        assert not mapping.exists()
