@@ -18,6 +18,11 @@ const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
+// display-preferences is no longer imported here — the display-prefs:get/set
+// IPC handlers were removed in the Fable First-Principles response (zero
+// consumers in website/src/). The View menu's Content Text Size feature
+// reaches changeFontSize directly from window-lifecycle.js's menu click
+// handler; ipc-registrar.js has no need for it.
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -381,6 +386,19 @@ function createIpcRegistrar({
       windows.chrome.setZoom(event.sender, factor));
     ipcMain.handle("zoom:step", (event, direction) =>
       windows.chrome.stepZoom(event.sender, direction));
+
+    // Content Text Size feature (renamed from "Font Size" in PR #10247's
+    // Fable First-Principles response — user-facing label speaks scope
+    // honestly, internal API keeps Chromium's `defaultFontSize` vocabulary).
+    // The View menu handler calls `changeFontSize(store, webContents, px)`
+    // directly in-process; there is no IPC channel for this feature because
+    // the SPA has no need to drive it (the ONE renderer that would need it
+    // — a Settings page control — doesn't exist and would ship with its
+    // own bridge when it does). The `display-prefs:get` + `display-prefs:set`
+    // handlers that existed on 16d827598 were deleted here: they had zero
+    // consumers in website/src/ and shipping scaffolding for a hypothetical
+    // future caller is YAGNI. The change is invisible to users — the menu
+    // ladder works identically because it never used IPC to begin with.
 
     // The window façade resolves every request from event.sender and keeps the
     // native panel/control-plane internals private to that owning window.
