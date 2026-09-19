@@ -8607,6 +8607,18 @@
       "label": "Änderungen erfordern Neustart",
       "tooltip": "Diese Einstellung kann sich nicht ändern, während {{productName}} läuft. Der gespeicherte Wert bleibt erhalten und gilt beim nächsten Neustart von {{productName}} (Einstellungen → Über, oder das Terminal, aus dem du es gestartet hast).",
       "schema_unavailable": "Es konnte nicht geprüft werden, ob diese Einstellung einen Neustart braucht."
+    },
+    "backendSelector": {
+      "default_backend": "Standard-Backend",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Backend-Liste",
+      "backend_list_unavailable": "Backend-Liste nicht verfügbar",
+      "no_backends_registered": "Keine Backends registriert",
+      "default": "Standard",
+      "unroutable_reason": "Nicht auswählbar: {{reason}}",
+      "invalid_reason": "Ungültig: {{reason}}",
+      "backend_serving": "KI-Backend, das diesen Chat bedient",
+      "backend_serving_pinned": "KI-Backend, das diesen Chat bedient – festgelegt bei Erstellung des Chats"
     }
   },
   "hooks": {
@@ -14760,6 +14772,16 @@
         "remove_confirm": "{{provider}}-OAuth-App entfernen? Client ID und gespeichertes Secret werden gelöscht, und {{provider}} kann sich erst wieder verbinden, wenn du sie erneut einträgst.",
         "remove_confirm_action": "OAuth-App entfernen",
         "cancel": "Abbrechen"
+      },
+      "backendsPanel": {
+        "ai_backends": "KI-Backends",
+        "backends_are_defined_in_config_and_need_a_restart": "Backends werden in harnesses.json definiert (schreibgeschützt); Änderungen erfordern einen Gateway-Neustart.",
+        "backend_list_unavailable": "Backend-Liste nicht verfügbar",
+        "no_backends_registered": "Keine Backends registriert",
+        "badge_selectable": "Auswählbar",
+        "badge_default": "Standard",
+        "badge_unroutable": "Nicht auswählbar",
+        "badge_invalid": "Ungültig"
       }
     },
     "settingsPage": {
@@ -15378,6 +15400,10 @@
       "connections": {
         "label": "OAuth-Apps",
         "description": "OAuth-Apps für Anbieter, die einen registrierten Client benötigen"
+      },
+      "backends": {
+        "label": "KI-Backends",
+        "description": "Die KI-Backends dieses Builds und was die Registry aus den vom Betreiber definierten gemacht hat"
       }
     },
     "secrets": {

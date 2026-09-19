@@ -5307,7 +5307,7 @@ async def _recover_app_agent_binding(
     return bindings
 
 
-def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
+def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
     """The slot bindings an eager handshake bakes into the session it registers.
 
     ONE definition, because two exist to be compared: ``_eager_spawn`` snapshots
@@ -5316,6 +5316,11 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
     either side is not a copy of this contract, it is a silent inversion of it —
     a field present here and missing there makes the comparison unequal on every
     call, so the guard removes the session it is supposed to keep.
+
+    ``acp_backend`` is a binding too: the speculative spawn passes it as
+    ``backend_override``, so a backend picked while the handshake runs (the
+    welcome-screen picker on a brand-new chat) would otherwise leave a session on
+    the OLD harness registered under the key for the first message to reuse.
     """
     return (
         slot.agent,
@@ -5323,6 +5328,7 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
         slot.project,
         slot.reasoning_effort,
         slot.memory_store,
+        slot.acp_backend,
     )
 
 
@@ -5664,6 +5670,7 @@ async def _spawn_admitted_prefetch(
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
+            backend_override=slot.acp_backend or None,
         )
     except SpeculativeResumeRefused:
         # Two sources: the entry gate (resumable key, resume not
@@ -8991,6 +8998,7 @@ async def _run_chat(
             # direct dashboard turn.
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            backend_override=slot.acp_backend or None,
         )
         _acquired = True
         # A fresh provider can still owe Kiro Crew history after its one-shot

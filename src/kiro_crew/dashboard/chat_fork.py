@@ -961,6 +961,11 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             raise
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
+    # Inherit the per-chat ACP backend pick too: a fork keeps the parent's
+    # harness the same way it keeps the parent's model (passed to
+    # get_or_create_slot above) and effort. Stamped after construction like the
+    # model pin's siblings here.
+    new_slot.acp_backend = slot.acp_backend
     # Inherit the active project directory so the fork keeps the parent's working
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.

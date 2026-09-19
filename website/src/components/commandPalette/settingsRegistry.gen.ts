@@ -31,6 +31,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Update channel"
   },
   {
+    "id": "backends.registered-backends",
+    "labelKey": "pages.settings.backendsPanel.ai_backends",
+    "tab": "backends",
+    "type": "select",
+    "occurrence": 1,
+    "label": "AI Backends",
+    "description": "Backends are defined in harnesses.json (write-protected); editing it needs a gateway restart."
+  },
+  {
     "id": "browser.attach-token",
     "labelKey": "pages.settings.browserPanel.token_label",
     "tab": "browser",

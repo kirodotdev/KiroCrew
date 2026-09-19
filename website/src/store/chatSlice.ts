@@ -3186,7 +3186,7 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; instanceId?: string; adoptRemoteSlot?: string } | string | undefined,
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; instanceId?: string; adoptRemoteSlot?: string; backend?: string } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -3217,6 +3217,10 @@ export const createSlot = createAsyncThunk<
     // (the peer that owns the key), which the backend refuses with
     // `400 adopt_needs_instance` rather than guessing an owner.
     const adoptRemoteSlot = typeof opts === 'string' ? undefined : opts?.adoptRemoteSlot
+    // Optional per-chat ACP backend pick for the NEW slot. `''`/absent leaves the
+    // slot at the inherit-the-global-default state; a non-empty value is validated
+    // server-side against the selectable set.
+    const backend = typeof opts === 'string' ? undefined : opts?.backend
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
     // do so before the user is able to type into it. Defaults to true — every
@@ -3235,7 +3239,7 @@ export const createSlot = createAsyncThunk<
     // and resolving a local default here would only race it.
     const memory_mode = requestedMemoryMode
       || (adoptRemoteSlot ? undefined : await configuredDefaultMemoryMode())
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, adoptRemoteSlot)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, adoptRemoteSlot, backend)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.

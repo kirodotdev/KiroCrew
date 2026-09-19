@@ -8723,6 +8723,18 @@
       "label": "modifications : redémarrage requis",
       "tooltip": "Ce réglage ne peut pas changer pendant que {{productName}} est en cours d'exécution. La valeur enregistrée est conservée et s'applique au prochain redémarrage de {{productName}} (Réglages → À propos, ou le terminal depuis lequel vous l'avez lancé).",
       "schema_unavailable": "Impossible de vérifier si ce réglage nécessite un redémarrage."
+    },
+    "backendSelector": {
+      "default_backend": "Backend par défaut",
+      "backend_name": "Backend : {{name}}",
+      "backend_list": "Liste des backends",
+      "backend_list_unavailable": "Liste des backends indisponible",
+      "no_backends_registered": "Aucun backend enregistré",
+      "default": "Par défaut",
+      "unroutable_reason": "Non sélectionnable : {{reason}}",
+      "invalid_reason": "Non valide : {{reason}}",
+      "backend_serving": "Backend d'IA au service de ce chat",
+      "backend_serving_pinned": "Backend d'IA au service de ce chat — fixé à la création du chat"
     }
   },
   "hooks": {
@@ -14945,6 +14957,16 @@
         "remove_confirm": "Supprimer l’app OAuth {{provider}} ? L’ID client et le secret enregistré sont effacés, et {{provider}} ne pourra plus se connecter tant que vous ne les aurez pas saisis à nouveau.",
         "remove_confirm_action": "Supprimer l’app OAuth",
         "cancel": "Annuler"
+      },
+      "backendsPanel": {
+        "ai_backends": "Backends d’IA",
+        "backends_are_defined_in_config_and_need_a_restart": "Les backends sont définis dans harnesses.json (protégé en écriture) ; toute modification nécessite un redémarrage de la passerelle.",
+        "backend_list_unavailable": "Liste des backends indisponible",
+        "no_backends_registered": "Aucun backend enregistré",
+        "badge_selectable": "Sélectionnable",
+        "badge_default": "Par défaut",
+        "badge_unroutable": "Non sélectionnable",
+        "badge_invalid": "Non valide"
       }
     },
     "settingsPage": {
@@ -15576,6 +15598,10 @@
       "connections": {
         "label": "Applications OAuth",
         "description": "Applications OAuth pour les fournisseurs qui exigent un client enregistré"
+      },
+      "backends": {
+        "label": "Backends d’IA",
+        "description": "Les backends d’IA proposés par cette version et ce que le registre a fait de ceux définis par l’opérateur"
       }
     },
     "secrets": {

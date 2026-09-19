@@ -1321,6 +1321,12 @@ def _rehydrate_slot_from_history(
                 )
         if meta.get("reasoning_effort"):
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+        if meta.get("acp_backend"):
+            # Restored verbatim; the value re-crosses resolve_selected_backend
+            # in the provider factory on the next get_or_create, so an unselectable
+            # backend degrades to kiro there rather than
+            # being scrubbed here.
+            slot.acp_backend = str(meta["acp_backend"])
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
@@ -1925,6 +1931,11 @@ def _apply_recent_session(
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
     if meta.get("reasoning_effort"):
         slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+    if meta.get("acp_backend"):
+        # Restored verbatim; re-crosses resolve_selected_backend in the
+        # provider factory on the next get_or_create (see the twin loader
+        # above), so an unselectable value degrades to kiro there.
+        slot.acp_backend = str(meta["acp_backend"])
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
@@ -3400,6 +3411,9 @@ def _save_slot_to_history(
                     # window, never a fresh read: a re-read here would be a
                     # second, unpaired observation of the queue.
                     "queued_prompts": queue_snapshot,
+                    # Per-chat ACP backend pick, mirroring ``model`` above:
+                    # slot-owned, cleared by absence, so written even when "".
+                    "acp_backend": slot.acp_backend or "",
                     # None means "follow the global threshold" and is the
                     # cleared value (rehydrate reads it with ``is not None``),
                     # so the override is CLEARABLE: written even when None,
@@ -3792,6 +3806,13 @@ def _save_slot_to_history(
             meta_line["model"] = slot.model
             if slot.reasoning_effort:
                 meta_line["reasoning_effort"] = slot.reasoning_effort
+            # Per-chat ACP backend pick. Written only when non-empty (the pin
+            # is the exception; "" is the inherit-global default and needs no
+            # row), matching how ``reasoning_effort`` above is written only when
+            # set. The empty-window merge mirror writes it unconditionally
+            # because that path rewrites the whole cleared field set.
+            if slot.acp_backend:
+                meta_line["acp_backend"] = slot.acp_backend
             # Unconditional, matching the empty-window merge mirror: None is
             # the cleared "follow the global" value, not an absent field.
             meta_line["autocompact_pct"] = slot.autocompact_pct

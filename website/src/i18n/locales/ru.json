@@ -8839,6 +8839,18 @@
       "label": "изменения требуют перезапуска",
       "tooltip": "Этот параметр нельзя изменить, пока {{productName}} работает. Сохранённое значение остаётся и применится при следующем перезапуске {{productName}} (Настройки → О программе или терминал, из которого вы его запустили).",
       "schema_unavailable": "Не удалось проверить, требует ли этот параметр перезапуска."
+    },
+    "backendSelector": {
+      "default_backend": "Бэкенд по умолчанию",
+      "backend_name": "Бэкенд: {{name}}",
+      "backend_list": "Список бэкендов",
+      "backend_list_unavailable": "Список бэкендов недоступен",
+      "no_backends_registered": "Нет зарегистрированных бэкендов",
+      "default": "По умолчанию",
+      "unroutable_reason": "Недоступно для выбора: {{reason}}",
+      "invalid_reason": "Недействительно: {{reason}}",
+      "backend_serving": "ИИ-бэкенд, обслуживающий этот чат",
+      "backend_serving_pinned": "ИИ-бэкенд, обслуживающий этот чат — задаётся при создании чата"
     }
   },
   "hooks": {
@@ -15129,6 +15141,16 @@
         "remove_confirm": "Удалить OAuth-приложение {{provider}}? Client ID и сохранённый секрет будут удалены, и {{provider}} не сможет подключиться, пока вы не введёте их снова.",
         "remove_confirm_action": "Удалить OAuth-приложение",
         "cancel": "Отмена"
+      },
+      "backendsPanel": {
+        "ai_backends": "ИИ-бэкенды",
+        "backends_are_defined_in_config_and_need_a_restart": "Бэкенды задаются в harnesses.json (защищён от записи); для изменения нужен перезапуск шлюза.",
+        "backend_list_unavailable": "Список бэкендов недоступен",
+        "no_backends_registered": "Нет зарегистрированных бэкендов",
+        "badge_selectable": "Доступен",
+        "badge_default": "По умолчанию",
+        "badge_unroutable": "Недоступен",
+        "badge_invalid": "Недействителен"
       }
     },
     "settingsPage": {
@@ -15773,6 +15795,10 @@
       "connections": {
         "label": "OAuth-приложения",
         "description": "Приложения OAuth для провайдеров, которым нужен зарегистрированный клиент"
+      },
+      "backends": {
+        "label": "ИИ-бэкенды",
+        "description": "ИИ-бэкенды этой сборки и то, что реестр сделал с заданными оператором"
       }
     },
     "secrets": {

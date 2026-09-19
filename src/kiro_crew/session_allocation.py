@@ -1488,6 +1488,17 @@ class SessionAllocationService:
             pool_decision = "bypass_cwd"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif extra_factory_kwargs.get("backend_override"):
+            # A pooled child was spawned with no backend override, so it runs
+            # the factory's DEFAULT backend — a different harness PROCESS
+            # entirely from a per-chat pick. A warm hit would silently hand the
+            # chat a session on the wrong harness (the same failure the member
+            # arm above guards against, and a stronger version of it than the
+            # model post-claim switch handles, since a backend cannot be swapped
+            # on a live process). Cold-starting through the factory is what
+            # makes the per-chat backend real. String check, as cheap as the
+            # arms above.
+            pool_decision = "bypass_backend"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run

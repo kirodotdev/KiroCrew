@@ -8723,6 +8723,18 @@
       "label": "le modifiche richiedono un riavvio",
       "tooltip": "Questa impostazione non può cambiare mentre {{productName}} è in esecuzione. Il valore salvato viene conservato e applicato al prossimo riavvio di {{productName}} (Impostazioni → Informazioni, oppure il terminale da cui lo hai avviato).",
       "schema_unavailable": "Impossibile verificare se questa impostazione richiede un riavvio."
+    },
+    "backendSelector": {
+      "default_backend": "Backend predefinito",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Elenco backend",
+      "backend_list_unavailable": "Elenco backend non disponibile",
+      "no_backends_registered": "Nessun backend registrato",
+      "default": "Predefinito",
+      "unroutable_reason": "Non selezionabile: {{reason}}",
+      "invalid_reason": "Non valido: {{reason}}",
+      "backend_serving": "Backend IA che serve questa chat",
+      "backend_serving_pinned": "Backend IA che serve questa chat — fissato alla creazione della chat"
     }
   },
   "hooks": {
@@ -14944,6 +14956,16 @@
         "remove_confirm": "Rimuovere l’app OAuth di {{provider}}? Client ID e secret salvato vengono eliminati e {{provider}} non potrà connettersi finché non li inserisci di nuovo.",
         "remove_confirm_action": "Rimuovi app OAuth",
         "cancel": "Annulla"
+      },
+      "backendsPanel": {
+        "ai_backends": "Backend IA",
+        "backends_are_defined_in_config_and_need_a_restart": "I backend sono definiti in harnesses.json (protetto da scrittura); modificarlo richiede il riavvio del gateway.",
+        "backend_list_unavailable": "Elenco backend non disponibile",
+        "no_backends_registered": "Nessun backend registrato",
+        "badge_selectable": "Selezionabile",
+        "badge_default": "Predefinito",
+        "badge_unroutable": "Non selezionabile",
+        "badge_invalid": "Non valido"
       }
     },
     "settingsPage": {
@@ -15575,6 +15597,10 @@
       "connections": {
         "label": "App OAuth",
         "description": "App OAuth per i provider che richiedono un client registrato"
+      },
+      "backends": {
+        "label": "Backend IA",
+        "description": "I backend IA offerti da questa build e cosa il registro ha fatto di quelli definiti dall’operatore"
       }
     },
     "secrets": {

@@ -8491,6 +8491,18 @@
       "label": "변경 시 다시 시작 필요",
       "tooltip": "이 설정은 {{productName}}이(가) 실행 중인 동안에는 변경할 수 없습니다. 저장된 값은 유지되며 {{productName}}을(를) 다음에 다시 시작할 때 적용됩니다(설정 → 정보, 또는 실행한 터미널에서).",
       "schema_unavailable": "이 설정에 다시 시작이 필요한지 확인할 수 없습니다."
+    },
+    "backendSelector": {
+      "default_backend": "기본 백엔드",
+      "backend_name": "백엔드: {{name}}",
+      "backend_list": "백엔드 목록",
+      "backend_list_unavailable": "백엔드 목록을 사용할 수 없음",
+      "no_backends_registered": "등록된 백엔드 없음",
+      "default": "기본값",
+      "unroutable_reason": "선택할 수 없음: {{reason}}",
+      "invalid_reason": "유효하지 않음: {{reason}}",
+      "backend_serving": "이 채팅을 처리하는 AI 백엔드",
+      "backend_serving_pinned": "이 채팅을 처리하는 AI 백엔드 — 채팅 생성 시 고정됩니다"
     }
   },
   "hooks": {
@@ -14576,6 +14588,16 @@
         "remove_confirm": "{{provider}} OAuth 앱을 제거하시겠습니까? 클라이언트 ID와 저장된 시크릿이 삭제되며, 다시 입력하기 전까지 {{provider}}은(는) 연결할 수 없습니다.",
         "remove_confirm_action": "OAuth 앱 제거",
         "cancel": "취소"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI 백엔드",
+        "backends_are_defined_in_config_and_need_a_restart": "백엔드는 harnesses.json(쓰기 보호됨)에 정의됩니다. 편집하려면 게이트웨이를 재시작해야 합니다.",
+        "backend_list_unavailable": "백엔드 목록을 사용할 수 없음",
+        "no_backends_registered": "등록된 백엔드 없음",
+        "badge_selectable": "선택 가능",
+        "badge_default": "기본값",
+        "badge_unroutable": "선택 불가",
+        "badge_invalid": "유효하지 않음"
       }
     },
     "settingsPage": {
@@ -15181,6 +15203,10 @@
       "connections": {
         "label": "OAuth 앱",
         "description": "등록된 클라이언트가 필요한 제공업체용 OAuth 앱"
+      },
+      "backends": {
+        "label": "AI 백엔드",
+        "description": "이 빌드가 제공하는 AI 백엔드와 운영자가 정의한 항목을 레지스트리가 어떻게 처리했는지"
       }
     },
     "secrets": {

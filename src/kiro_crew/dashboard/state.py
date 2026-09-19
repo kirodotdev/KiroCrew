@@ -2046,6 +2046,7 @@ class _ChatSlot:
         "title",
         "agent",
         "model",
+        "acp_backend",
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
@@ -2268,6 +2269,16 @@ class _ChatSlot:
         # notice rather than a per-turn repeat.
         self._welcomed_agent: str = ""
         self.model = model
+        # Persisted per-chat ACP backend pick. "" = inherit the global
+        # ``agent.acp_backend`` (the ordinary case). Mirrors ``model`` exactly:
+        # slot-owned, serialized with the slot, and re-sent into the provider
+        # factory as ``backend_override`` on every get_or_create so the chat's
+        # own harness choice wins over the configured default. Deliberately NOT
+        # a constructor keyword here — the create handler stamps it after
+        # construction, the same way the remote-execution binding is — so every
+        # other creation path (fork, channel, restore) is unaffected until it
+        # opts in by copying the field.
+        self.acp_backend: str = ""
         # Spawn-time withhold verdict for `model`, and the model id it was
         # computed for. Read through the `model_withheld` property, never these
         # two directly: the pairing is what makes the verdict self-invalidating

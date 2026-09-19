@@ -8607,6 +8607,18 @@
       "label": "बदलाव के लिए पुनः आरंभ ज़रूरी",
       "tooltip": "{{productName}} चलते समय यह सेटिंग बदली नहीं जा सकती। सहेजा गया मान बना रहता है और {{productName}} के अगले पुनः आरंभ पर लागू होगा (सेटिंग्स → परिचय, या वह टर्मिनल जहाँ से तुमने इसे चलाया)।",
       "schema_unavailable": "यह जाँच नहीं हो सकी कि इस सेटिंग के लिए पुनः आरंभ आवश्यक है या नहीं।"
+    },
+    "backendSelector": {
+      "default_backend": "डिफ़ॉल्ट बैकएंड",
+      "backend_name": "बैकएंड: {{name}}",
+      "backend_list": "बैकएंड सूची",
+      "backend_list_unavailable": "बैकएंड सूची अनुपलब्ध",
+      "no_backends_registered": "कोई बैकएंड पंजीकृत नहीं",
+      "default": "डिफ़ॉल्ट",
+      "unroutable_reason": "चयन योग्य नहीं: {{reason}}",
+      "invalid_reason": "अमान्य: {{reason}}",
+      "backend_serving": "इस चैट को चलाने वाला AI बैकएंड",
+      "backend_serving_pinned": "इस चैट को चलाने वाला AI बैकएंड — चैट बनाते समय तय किया गया"
     }
   },
   "hooks": {
@@ -14761,6 +14773,16 @@
         "remove_confirm": "{{provider}} का OAuth ऐप हटाना है? क्लाइंट ID और सेव किया गया secret मिट जाएँगे, और दोबारा भरने तक {{provider}} कनेक्ट नहीं हो पाएगा।",
         "remove_confirm_action": "OAuth ऐप हटाएँ",
         "cancel": "रद्द करो"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI बैकएंड",
+        "backends_are_defined_in_config_and_need_a_restart": "बैकएंड harnesses.json (राइट-प्रोटेक्टेड) में परिभाषित होते हैं; इसे संपादित करने के लिए गेटवे पुनरारंभ आवश्यक है।",
+        "backend_list_unavailable": "बैकएंड सूची अनुपलब्ध",
+        "no_backends_registered": "कोई बैकएंड पंजीकृत नहीं",
+        "badge_selectable": "चयन योग्य",
+        "badge_default": "डिफ़ॉल्ट",
+        "badge_unroutable": "चयन योग्य नहीं",
+        "badge_invalid": "अमान्य"
       }
     },
     "settingsPage": {
@@ -15379,6 +15401,10 @@
       "connections": {
         "label": "OAuth ऐप",
         "description": "ऐसे प्रोवाइडर के लिए OAuth ऐप जिन्हें रजिस्टर किया गया क्लाइंट चाहिए"
+      },
+      "backends": {
+        "label": "AI बैकएंड",
+        "description": "यह बिल्ड जो AI बैकएंड प्रदान करता है, और ऑपरेटर-परिभाषित बैकएंड के साथ रजिस्ट्री ने क्या किया"
       }
     },
     "secrets": {

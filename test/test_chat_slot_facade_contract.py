@@ -20,6 +20,9 @@ _TO_DICT_KEYS = (
     "agent",
     "effective_agent",
     "model",
+    # W3 (descriptor-harness): the slot's per-chat backend pick rides to_dict
+    # beside model — same facade contract, one new key.
+    "acp_backend",
     "model_withheld",
     "served_model",
     "reasoning_effort",

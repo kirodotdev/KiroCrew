@@ -8607,6 +8607,18 @@
       "label": "পরিবর্তনে পুনরায় চালু করা লাগে",
       "tooltip": "{{productName}} চলার সময় এই সেটিং পরিবর্তন করা যায় না। সংরক্ষিত মানটি রাখা হয় এবং {{productName}} পরের বার পুনরায় চালু হলে প্রয়োগ হবে (সেটিংস → সম্পর্কে, বা যে টার্মিনাল থেকে আপনি এটি চালু করেছেন)।",
       "schema_unavailable": "এই সেটিংয়ের জন্য পুনরায় চালু করা দরকার কি না তা পরীক্ষা করা যায়নি।"
+    },
+    "backendSelector": {
+      "default_backend": "ডিফল্ট ব্যাকএন্ড",
+      "backend_name": "ব্যাকএন্ড: {{name}}",
+      "backend_list": "ব্যাকএন্ড তালিকা",
+      "backend_list_unavailable": "ব্যাকএন্ড তালিকা অনুপলব্ধ",
+      "no_backends_registered": "কোনো ব্যাকএন্ড নিবন্ধিত নেই",
+      "default": "ডিফল্ট",
+      "unroutable_reason": "নির্বাচনযোগ্য নয়: {{reason}}",
+      "invalid_reason": "অবৈধ: {{reason}}",
+      "backend_serving": "এই চ্যাট পরিচালনাকারী AI ব্যাকএন্ড",
+      "backend_serving_pinned": "এই চ্যাট পরিচালনাকারী AI ব্যাকএন্ড — চ্যাট তৈরির সময় নির্ধারিত"
     }
   },
   "hooks": {
@@ -14761,6 +14773,16 @@
         "remove_confirm": "{{provider}}-এর OAuth অ্যাপ সরাবেন? client ID ও সংরক্ষিত secret মুছে যাবে, এবং আবার না দেওয়া পর্যন্ত {{provider}} সংযোগ করতে পারবে না।",
         "remove_confirm_action": "OAuth অ্যাপ সরান",
         "cancel": "বাতিল"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI ব্যাকএন্ড",
+        "backends_are_defined_in_config_and_need_a_restart": "ব্যাকএন্ডগুলি harnesses.json-এ (রাইট-প্রোটেক্টেড) সংজ্ঞায়িত; এটি সম্পাদনা করতে গেটওয়ে পুনরায় চালু করা প্রয়োজন।",
+        "backend_list_unavailable": "ব্যাকএন্ড তালিকা অনুপলব্ধ",
+        "no_backends_registered": "কোনো ব্যাকএন্ড নিবন্ধিত নেই",
+        "badge_selectable": "নির্বাচনযোগ্য",
+        "badge_default": "ডিফল্ট",
+        "badge_unroutable": "নির্বাচনযোগ্য নয়",
+        "badge_invalid": "অবৈধ"
       }
     },
     "settingsPage": {
@@ -15379,6 +15401,10 @@
       "connections": {
         "label": "OAuth অ্যাপ",
         "description": "যে প্রোভাইডারদের নিবন্ধিত ক্লায়েন্ট দরকার তাদের জন্য OAuth অ্যাপ"
+      },
+      "backends": {
+        "label": "AI ব্যাকএন্ড",
+        "description": "এই বিল্ড যে AI ব্যাকএন্ডগুলি দেয়, এবং অপারেটর-সংজ্ঞায়িতগুলি নিয়ে রেজিস্ট্রি যা করেছে"
       }
     },
     "secrets": {

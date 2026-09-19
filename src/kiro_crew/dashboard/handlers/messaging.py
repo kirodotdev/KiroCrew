@@ -250,6 +250,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "cwd": body.get("cwd", ""),
                 "model": body.get("model", ""),
                 "reasoning_effort": body.get("reasoning_effort", ""),
+                "backend": body.get("backend", ""),
                 "include_memory": body.get("include_memory", True),
                 "include_lessons": body.get("include_lessons", True),
                 "include_project": body.get("include_project", True),
@@ -446,6 +447,7 @@ async def api_spawn(request: web.Request) -> web.Response:
             source="solo_gate",
             resources=f"{parent_session} reason={solo_reason}",
         )
+    acp_backend = cleaned.get("backend") or ""
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
     batch_id = str(body.get("batch_id", "") or "")[:32]
@@ -468,6 +470,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         cwd=cwd,
         model=model or None,
         reasoning_effort=reasoning_effort,
+        acp_backend=acp_backend,
         approval_mode=approval_mode or None,
         silent=silent,
         batch_id=batch_id,

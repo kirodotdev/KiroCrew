@@ -153,20 +153,61 @@ def select_provider_backend(
     session_key: str | None,
     member_backend: str,
     configured_default: str,
+    override_backend: str = "",
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: the member-DM auto-route, then the configured default. The
-    member arm goes through :func:`resolve_selected_backend` — the same
-    governance/selectability gate the persisted field crosses, so a denied or
-    unknown value degrades to kiro and the member thread runs as plain chat.
+    Precedence, highest tier first:
+
+    1. ``override_backend`` — an explicit per-chat pick (the dashboard slot's
+       own ``acp_backend``). It wins over both the member auto-route and the
+       configured default, exactly as a slot's ``model_override`` wins over the
+       agent's configured model in the factory. Empty means "not pinned", so
+       the lower tiers decide.
+    2. the member-DM auto-route.
+    3. the configured default.
+
+    Every non-empty tier goes through :func:`resolve_selected_backend` — the
+    same governance/selectability gate the persisted field crosses (H4: no
+    second selectability gate) — so a denied or unknown value degrades to kiro:
+    a member thread then runs as plain chat, and a per-chat pick of an
+    unselectable backend falls to the next tier's already-resolved answer
+    rather than crossing the gate a second time. The configured default is NOT
+    re-resolved here: it arrives from ``agent.acp_backend`` already coerced by
+    ``_normalize_acp_backend`` on the way out of ``config.json``, so re-gating
+    it would be the redundant second check H4 forbids.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
     harness-parity H3/H13 allow exactly one selection gate on the construction
     path, and this function is an input to that gate, not a second one.
     """
-    from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KIRO,
+        GOVERNANCE_FLOOR_BACKEND,
+        resolve_selected_backend,
+    )
+
+    if override_backend:
+        backend = resolve_selected_backend(override_backend)
+        if backend != GOVERNANCE_FLOOR_BACKEND or override_backend in (
+            GOVERNANCE_FLOOR_BACKEND,
+            ACP_BACKEND_KIRO,
+        ):
+            # A pick that resolves to a real (non-floor) backend, OR a pick of
+            # kiro itself, is honored directly. A pick that DEGRADED to the
+            # floor because it was unselectable is not treated as "the user
+            # asked for kiro"; it falls through to the member/default tiers so
+            # an unselectable override behaves like an absent one rather than
+            # silently forcing plain chat on a member thread that would
+            # otherwise route.
+            logger.info(
+                "session %s: per-chat acp_backend override %r resolved to %r",
+                session_key,
+                override_backend,
+                backend,
+            )
+            return backend
 
     if is_member_session_key(session_key):
         backend = resolve_selected_backend(member_backend)

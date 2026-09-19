@@ -333,6 +333,9 @@ describe('create-button caret menu', () => {
         // new session. Naming a key here would turn it into an adopt of somebody
         // else's existing session — the two paths differ only by this argument.
         undefined,
+        // `backend`: a crew-mint carries no per-chat backend pick, so the slot
+        // inherits the resolved default.
+        undefined,
       ),
     )
   })

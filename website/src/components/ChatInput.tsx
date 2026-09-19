@@ -1,6 +1,6 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Cpu, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
@@ -512,6 +512,13 @@ interface ChatInputProps {
    * gets it; a pinned chip has nothing to explain. */
   agentIsInheritedDefault?: boolean
   agentSource?: string
+  /** Bound-backend display name for the read-only shelf chip. Empty/absent
+   *  hides the chip. Read-only by design: the backend picker lives on the
+   *  welcome screen and the binding is immutable after creation, so the chip
+   *  must never look clickable. */
+  backendLabel?: string
+  /** Tooltip/aria text for the backend chip (pinned vs resolved-default variant). */
+  backendTitle?: string
   modelName?: string
   /**
    * True when `modelName` is the model an INHERITING slot actually runs on (the
@@ -911,6 +918,8 @@ function ChatInput({
   agentIsInheritedDefault,
   modelIsInheritedDefault,
   agentSource,
+  backendLabel,
+  backendTitle,
   modelName,
   onAgentClick,
   onModelClick,
@@ -4898,6 +4907,22 @@ function ChatInput({
               <Bot size={13} className="shrink-0 opacity-70" />
               {!shelfCompact && <span className="truncate max-w-[160px]">{agentLabel ?? agentName}</span>}
             </button>
+          )}
+          {!!backendLabel && (
+            /* Read-only backend chip: names the AI backend serving this chat.
+               A plain span, not a button — the binding is immutable after
+               creation (the picker lives on the welcome screen), so nothing
+               here may look clickable. Mirrors the agent chip's shelf styling
+               and the Cpu glyph the BackendSelector uses. */
+            <span
+              data-testid="chat-input-backend-chip"
+              className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md text-muted"
+              title={backendTitle || backendLabel}
+              aria-label={backendTitle || backendLabel}
+            >
+              <Cpu size={13} className="shrink-0 opacity-70" />
+              {!shelfCompact && <span className="truncate min-w-0 max-w-[160px]">{backendLabel}</span>}
+            </span>
           )}
           {onProjectClick && (
           /* Two sibling buttons inside one visual pill, NOT a nested button:

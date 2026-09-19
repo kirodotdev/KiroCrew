@@ -2191,9 +2191,31 @@ async def api_models(request: web.Request) -> web.Response:
     kiro-family backends read kiro-cli's ``--list-models`` catalog (narrowed to a
     live session's entitlement); claude and codex read what their adapter
     advertised, because neither accepts an id from that catalog.
+
+    An optional ``?backend=<id>`` re-keys the catalog to a per-chat pick instead
+    of the global ``agent.acp_backend``: the per-chat backend picker asks "what
+    models does THIS harness serve?" A supplied backend must be currently
+    selectable (the ``resolve_selected_backend`` gate — harness-parity H4), else
+    it is ignored and the configured backend answers, exactly as an unselectable
+    persisted value degrades. An absent/empty query keeps the configured
+    behaviour unchanged.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
+    requested_backend = request.query.get("backend", "")
+    if requested_backend:
+        from kiro_crew.acp_backends import resolve_selected_backend
+
+        # The single gate, reused: a selectable value is honored, anything else
+        # (unknown, denied, non-selectable) degrades to the configured backend
+        # rather than a second selectability check here (H4). Note kiro is "",
+        # so resolving TO kiro is indistinguishable from "not selectable" —
+        # both mean "answer with the kiro catalog", which is the same list the
+        # configured-default path already produces, so the collapse is
+        # harmless.
+        resolved = resolve_selected_backend(requested_backend)
+        if resolved == requested_backend:
+            backend = resolved
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(_cc_models(request, configured_default=cfg.agent.model))
     if backend == ACP_BACKEND_CODEX:

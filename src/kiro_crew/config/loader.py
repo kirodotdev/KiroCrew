@@ -5379,6 +5379,7 @@ class KiroCrewConfig:
             cwd: str | None = None,
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
+            backend_override: str | None = None,
             crew_agent: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
@@ -5458,14 +5459,17 @@ class KiroCrewConfig:
                         m or "auto",
                     )
             # Per-session backend selection — ONE call to the selection gate's
-            # per-session half (members.select_provider_backend: member-DM
-            # auto-route > configured default). The factory body carries no
-            # branching of its own, so the kiro construction path gains no
-            # second check (harness-parity H3/H13); resolve_selected_backend
-            # inside the helper applies the same governance/selectability gate
-            # as the persisted field, so a denied or unknown value degrades to
-            # kiro — the member thread then runs as plain chat and the mount
-            # step logs why.
+            # per-session half (members.select_provider_backend: per-chat
+            # override > member-DM auto-route > configured default). The factory
+            # body carries no branching of its own, so the kiro construction
+            # path gains no second check (harness-parity H3/H13);
+            # resolve_selected_backend inside the helper applies the same
+            # governance/selectability gate as the persisted field, so a denied
+            # or unknown value degrades to kiro — the member thread then runs as
+            # plain chat and the mount step logs why. ``backend_override`` is
+            # the dashboard slot's own ``acp_backend`` (see chat_runner), the
+            # exact analogue of ``model_override`` above; it is fed to the same
+            # single gate rather than branched on here.
             # circular import: members sits above config in the layering.
             from kiro_crew.members import select_provider_backend
 
@@ -5473,6 +5477,7 @@ class KiroCrewConfig:
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
+                override_backend=backend_override or "",
             )
             return AcpProvider(
                 work_dir=wdir,

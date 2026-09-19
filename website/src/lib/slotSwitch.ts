@@ -87,6 +87,8 @@ export interface SlotSwitchValueMap {
   project: string
   agent: AgentSwitchValue
   reasoning_effort: string
+  /** The stored per-chat ACP backend id ('' = inherit the global default). */
+  backend: string
 }
 
 export type SlotSwitchField = keyof SlotSwitchValueMap

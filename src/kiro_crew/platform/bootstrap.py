@@ -230,6 +230,26 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
 
     set_context(ctx)
 
+    # Load and register any OPERATOR-authored ACP backends (harnesses.json) now that
+    # the context is installed and BEFORE anything resolves ``agent.acp_backend``.
+    # The ordering is D4's constraint: ``resolve_selected_backend`` reads the
+    # selectable registry live (below, in the governance narrowing, and in every
+    # later ``KiroCrewConfig.load()``), so a persisted value naming an operator
+    # harness must be registered first or it silently degrades to kiro. This runs
+    # after ``set_context`` — the loader resolves ``harnesses.json`` under the crew
+    # home, which does not reach the platform context (H3 is about the CONFIG load
+    # path; this is a separate file read at boot, not inside ``KiroCrewConfig.load``).
+    # Best-effort like the registrations below: a file that cannot be read leaves the
+    # builtin harnesses serving, which is a startable deployment.
+    try:
+        from kiro_crew.acp.harness.operator_registry import (
+            load_and_register_operator_descriptors,
+        )
+
+        load_and_register_operator_descriptors()
+    except Exception:
+        logger.warning("operator harness registration failed; continuing", exc_info=True)
+
     # Register any edition-contributed ACP backends now that the context is
     # installed.  The Default ProviderRegistry.register_acp_backends() is a
     # no-op: the public edition's selectable set is the baseline in

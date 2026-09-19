@@ -992,6 +992,35 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The operator-authored HARNESS DESCRIPTORS (``harnesses.json`` directly under
+    # the crew home, beside config.json). It is the STRONGEST instance of the
+    # write-protection class, on the same footing as ``app-sources`` below: the
+    # protected file IS an execution grant rather than an input to a decision about
+    # one. Each descriptor names an ``executable`` and an ``argv`` template the
+    # gateway RESOLVES AND SPAWNS to serve a backend, so an agent that could write
+    # this file could plant an attacker-chosen ``executable``/``argv`` and have Kiro
+    # Crew's own trusted spawner run it — arbitrary code execution laundered through
+    # the product's backend launcher, and re-armed on every listing. Nothing
+    # downstream neutralizes it: unlike ``config.json``, whose inflated values the
+    # loader clamps at load time, a descriptor's command is simply spawned; the
+    # registry's validate pass costs a malformed row its listing but does nothing to
+    # a WELL-FORMED forgery pointing at an attacker binary.
+    #
+    # WRITE-protected, deliberately NOT read+write sensitive: the file holds no
+    # secret and is READ on every listing (the registry loads it to enumerate
+    # backends, and Settings reads it to render the inventory), so classifying it
+    # sensitive would break the feature. Only the agent's own file-edit tool is
+    # refused; Kiro Crew's own writer opens the path directly via ``atomic_write``
+    # and does not route through this gate, so operator edits keep working. The
+    # shell side sits on the same footing as ``config.json``'s — a command-text
+    # matcher matches no paths here (see ``is_sensitive_bash_command``); the OS
+    # sandbox holds the shell fence, and this leaf is sealed READ-ONLY there
+    # (``sandbox._CREW_READONLY_LEAVES`` plus the Linux absent-file pre-create in
+    # ``_CREW_PRECREATE_READONLY_FILE_LEAVES``).
+    f"{prefix}/harnesses.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The settings-seed PROVENANCE RECORD (``acp.seed_provenance``), the alias
     # record's twin one seam over: it is what authorizes Kiro Crew to OVERWRITE and
     # then DELETE ``<work_dir>/.claude/settings.local.json``. The ACP client seeds

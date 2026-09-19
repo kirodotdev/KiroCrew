@@ -1394,6 +1394,14 @@ class SubagentInfo:
     # Wins over the ``role_efforts['subagent']`` pin; ``""`` defers to it.
     # Like ``model``, a non-empty value forces the dedicated-process path.
     reasoning_effort: str = ""
+    # Per-spawn ACP backend override (spawn_run ``backend``). ``""`` inherits
+    # the parent's backend. Validated selectable at admission (gate.py). Like
+    # ``model``/``reasoning_effort`` a non-empty value forces the
+    # dedicated-process path: the parent's shared runtime runs on its own
+    # backend and cannot switch per session, so the override reaches the
+    # provider factory only on a fresh process. Delivered to the factory as
+    # ``backend_override`` in ``_run_inner``'s ``extra_kwargs``.
+    acp_backend: str = ""
     allowed_tools: list[str] = field(default_factory=list)
     bare: bool = False
     # Continuable conversations (spawn_run keep=True / spawn_continue):
@@ -2586,6 +2594,7 @@ class SubagentManager:
         _child_registration: bool = True,
         *,
         crew: str = "",
+        acp_backend: str = "",
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -2619,6 +2628,7 @@ class SubagentManager:
             _window_hint=_window_hint,
             _child_registration=_child_registration,
             crew=crew,
+            acp_backend=acp_backend,
         )
         assert not isinstance(result, PreparedSpawn)
         # ``ClaimPoint`` comes back ONLY for ``_stop_before_claim=True``, whose

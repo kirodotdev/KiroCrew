@@ -165,7 +165,10 @@ export interface ProviderAdapter {
   uninstallPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; error?: string }>
   updatePlugins(type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; output?: string; error?: string }>
 
-  fetchAvailableModels(): Promise<ModelInfo[]>
+  /** The model catalog. An optional `backend` re-keys it to a per-chat backend
+   *  pick (the composer's picker asks "what does THIS harness serve?"); omitted,
+   *  it answers for the configured global backend. */
+  fetchAvailableModels(backend?: string): Promise<ModelInfo[]>
   getContextWindow(model: string): number
   getDefaultModel(): string
   getPermissionModes(): PermissionMode[]

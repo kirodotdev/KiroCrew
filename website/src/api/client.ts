@@ -1371,6 +1371,39 @@ export interface AcpBackendProbe {
   offered_by_build?: boolean
 }
 
+/**
+ * One SELECTABLE backend from `GET /api/backends` — the per-chat picker's row.
+ *
+ * `id` is the wire id (`''` is kiro-cli, the empty-string default). `label` is a
+ * display name the server resolves (a descriptor's `display_name`, a builtin's
+ * static name, else the id) and is always non-empty, so a chip never renders
+ * blank. `is_global_default` marks the one row an unselected new chat lands on —
+ * the configured `agent.acp_backend` put through the single selectability gate.
+ */
+export interface BackendRow {
+  id: string
+  label: string
+  is_global_default: boolean
+}
+
+/** An operator descriptor that failed to parse/validate: never spellable, so it
+ *  can never be a session backend. Shown in Settings with what is wrong (one or
+ *  more `reasons`). */
+export interface BackendInvalidRow {
+  id: string
+  label: string
+  reasons: string[]
+}
+
+/** An operator descriptor that parsed cleanly and IS spellable but declared no
+ *  verified routing, so it is known-but-unselectable (D3). Shown with the single
+ *  `reason` it was refused selectability. */
+export interface BackendUnroutableRow {
+  id: string
+  label: string
+  reason: string
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -3324,7 +3357,14 @@ export const api = {
       body: form,
     }).then(j) as Promise<{ ok?: boolean; staged?: boolean; token?: string; error?: string }>
   },
-  models: () => fetch('/api/models').then(j),
+  /** The model catalog for a backend. With no argument it answers for the
+   *  configured global backend; an explicit id re-keys the catalog to that
+   *  per-chat pick (``?backend=``), so the composer's picker shows the models
+   *  THAT harness serves. A backend the gateway does not find selectable is
+   *  ignored server-side and the configured backend answers, exactly as an
+   *  unselectable persisted value degrades. */
+  models: (backend?: string) =>
+    fetch('/api/models' + (backend ? '?backend=' + encodeURIComponent(backend) : '')).then(j),
   effortLevels: (slot?: string) =>
     fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
   // Bounded HERE, not per initiator: react-query dedupes on the key, so the
@@ -3336,6 +3376,27 @@ export const api = {
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent }).then(j) as Promise<{ ok?: boolean; agent?: string; workspace?: string }>,
   chatSlotModel: (slot: string, model: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
+  /** The per-chat backend picker's SELECTION listing: every currently selectable
+   *  backend (id + display label + whether it is the global default an unselected
+   *  chat runs on), plus the operator-descriptor diagnostics D3 surfaces —
+   *  `invalid` (failed validation, id + reasons) and `unroutable` (spellable but
+   *  declared no verified routing, id + reason). All three are rendered, never
+   *  hidden: a selection surface shows the diagnostics so an operator sees WHY an
+   *  entry they wrote is not offered. Distinct from `acpBackends()`, which is the
+   *  owner-gated machine-readiness probe. */
+  backends: () =>
+    fetch('/api/backends').then(j) as Promise<{
+      backends?: BackendRow[]
+      invalid?: BackendInvalidRow[]
+      unroutable?: BackendUnroutableRow[]
+    }>,
+  /** Set (non-empty id) or clear (`''` = inherit the global default) this slot's
+   *  ACP backend. No live in-place switch exists — a backend is a distinct harness
+   *  PROCESS — so the server resets the session; 409 while a turn is in flight or a
+   *  parent has children attached, and a no-op (same value) returns without a
+   *  reset. */
+  chatSlotBackend: (slot: string, backend: string) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/backend', { backend }).then(j) as Promise<{ ok?: boolean; backend?: string; error?: string; code?: string }>,
   /** This slot's auto-compact threshold override (null = follows the global). */
   chatSlotAutocompact: (slot: string) =>
     fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; min: number; max: number }>,
@@ -3861,7 +3922,7 @@ export const api = {
    *  the `remote_already_bound` guard does not fire, and the peer's transcript is
    *  backfilled server-side. Requires `instance_id`; without it the backend
    *  answers `400 adopt_needs_instance`. */
-  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string, adopt_remote_slot?: string) => {
+  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string, adopt_remote_slot?: string, backend?: string) => {
     // ADOPT deliberately resolves NO default memory mode. The adopted slot carries
     // the PEER session's own `memory_mode` — that mode is the privacy boundary and
     // the session it belongs to already chose it — so sending this machine's
@@ -3884,6 +3945,10 @@ export const api = {
       ...(folder_id ? { folder_id } : {}),
       ...(instance_id ? { instance_id } : {}),
       ...(adopt_remote_slot ? { adopt_remote_slot } : {}),
+      // Optional per-chat backend pick, validated server-side against the same
+      // selectable set the picker read. Empty/omitted leaves the slot at the
+      // inherit-the-global-default state.
+      ...(backend ? { backend } : {}),
     }).then(j) as Promise<ChatSlot>
   },
   /** Inject silent background context into a slot — consumed on the next user

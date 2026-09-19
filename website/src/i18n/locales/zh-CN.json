@@ -8491,6 +8491,18 @@
       "label": "修改后需重启",
       "tooltip": "{{productName}} 运行期间无法更改此设置。已保存的值会保留，并在 {{productName}} 下次重启后应用（设置 → 关于，或启动它的终端）。",
       "schema_unavailable": "无法检查此设置是否需要重启。"
+    },
+    "backendSelector": {
+      "default_backend": "默认后端",
+      "backend_name": "后端：{{name}}",
+      "backend_list": "后端列表",
+      "backend_list_unavailable": "无法获取后端列表",
+      "no_backends_registered": "未注册任何后端",
+      "default": "默认",
+      "unroutable_reason": "不可选择：{{reason}}",
+      "invalid_reason": "无效：{{reason}}",
+      "backend_serving": "为此对话提供服务的 AI 后端",
+      "backend_serving_pinned": "为此对话提供服务的 AI 后端 — 在对话创建时固定"
     }
   },
   "hooks": {
@@ -14576,6 +14588,16 @@
         "remove_confirm": "移除 {{provider}} 的 OAuth 应用？客户端 ID 和已保存的密钥会被删除，重新填写之前 {{provider}} 无法连接。",
         "remove_confirm_action": "移除 OAuth 应用",
         "cancel": "取消"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI 后端",
+        "backends_are_defined_in_config_and_need_a_restart": "后端在 harnesses.json（写保护）中定义；编辑后需重启网关。",
+        "backend_list_unavailable": "无法获取后端列表",
+        "no_backends_registered": "未注册任何后端",
+        "badge_selectable": "可选",
+        "badge_default": "默认",
+        "badge_unroutable": "不可选",
+        "badge_invalid": "无效"
       }
     },
     "settingsPage": {
@@ -15181,6 +15203,10 @@
       "connections": {
         "label": "OAuth 应用",
         "description": "为需要预先注册客户端的提供方配置 OAuth 应用"
+      },
+      "backends": {
+        "label": "AI 后端",
+        "description": "此版本提供的 AI 后端，以及注册表对运营者定义项的处理结果"
       }
     },
     "secrets": {

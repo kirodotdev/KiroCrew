@@ -234,6 +234,11 @@ class SlotProjection:
             "agent": slot.agent,
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
+            # The per-chat ACP backend pick. "" = inherit the global
+            # ``agent.acp_backend``. Shipped so the frontend's backend selector
+            # can render the chat's own choice (Wave 4 consumes it); mirrors
+            # ``model`` as the display of a slot-owned pin.
+            "acp_backend": slot.acp_backend,
             # The backend's own withhold verdict for `model`: true = the account
             # cannot run the pin (this session is on the backend default), false
             # = it can, null = not known yet. Carried so the frontend reads the

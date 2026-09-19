@@ -16,6 +16,7 @@ from kiro_crew.dashboard.handlers.acp_backend_status import (
     api_acp_backend_recheck,
     api_acp_backend_status,
 )
+from kiro_crew.dashboard.handlers.backends_listing import api_backends
 from kiro_crew.dashboard.handlers.mcp_custom import (
     api_mcp_custom_add,
     api_mcp_custom_get,
@@ -45,6 +46,12 @@ def register(app: web.Application) -> None:
     # dropped first. A POST because it mutates spawn-path state: the GET above may
     # only report the divergence, which is what ``restart_required`` is for.
     app.router.add_post("/api/acp-backends/recheck", api_acp_backend_recheck)
+    # The per-chat backend picker's SELECTION listing: selectable ids + labels +
+    # which is the global default, plus the operator-descriptor diagnostics
+    # (invalid / unroutable) Settings shows. Distinct from /api/acp-backends,
+    # which is the owner-gated machine-readiness probe. Beside it because both
+    # answer a "which backend" question, from the same registry.
+    app.router.add_get("/api/backends", api_backends)
     app.router.add_get("/api/config/kirocrew", handlers.api_kirocrew_config)
     app.router.add_put("/api/config/kirocrew", handlers.api_kirocrew_config)
     app.router.add_patch("/api/config/kirocrew", handlers.api_kirocrew_config_patch)

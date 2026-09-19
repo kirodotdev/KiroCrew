@@ -8723,6 +8723,18 @@
       "label": "alterações exigem reinício",
       "tooltip": "Esta configuração não pode mudar enquanto o {{productName}} está em execução. O valor salvo é mantido e aplicado na próxima vez que o {{productName}} reiniciar (Configurações → Sobre, ou o terminal de onde você o iniciou).",
       "schema_unavailable": "Não foi possível verificar se esta configuração exige reinicialização."
+    },
+    "backendSelector": {
+      "default_backend": "Backend padrão",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Lista de backends",
+      "backend_list_unavailable": "Lista de backends indisponível",
+      "no_backends_registered": "Nenhum backend registrado",
+      "default": "Padrão",
+      "unroutable_reason": "Não selecionável: {{reason}}",
+      "invalid_reason": "Inválido: {{reason}}",
+      "backend_serving": "Backend de IA que atende este chat",
+      "backend_serving_pinned": "Backend de IA que atende este chat — fixado quando o chat foi criado"
     }
   },
   "hooks": {
@@ -14944,6 +14956,16 @@
         "remove_confirm": "Remover o app OAuth do {{provider}}? O client ID e o secret salvo são apagados, e o {{provider}} não consegue conectar até você inseri-los de novo.",
         "remove_confirm_action": "Remover app OAuth",
         "cancel": "Cancelar"
+      },
+      "backendsPanel": {
+        "ai_backends": "Backends de IA",
+        "backends_are_defined_in_config_and_need_a_restart": "Os backends são definidos em harnesses.json (protegido contra gravação); editá-lo exige reiniciar o gateway.",
+        "backend_list_unavailable": "Lista de backends indisponível",
+        "no_backends_registered": "Nenhum backend registrado",
+        "badge_selectable": "Selecionável",
+        "badge_default": "Padrão",
+        "badge_unroutable": "Não selecionável",
+        "badge_invalid": "Inválido"
       }
     },
     "settingsPage": {
@@ -15575,6 +15597,10 @@
       "connections": {
         "label": "Aplicativos OAuth",
         "description": "Apps OAuth para provedores que exigem um cliente registrado"
+      },
+      "backends": {
+        "label": "Backends de IA",
+        "description": "Os backends de IA que esta versão oferece e o que o registro fez com os definidos pelo operador"
       }
     },
     "secrets": {

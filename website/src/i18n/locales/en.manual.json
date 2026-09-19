@@ -3265,6 +3265,18 @@
     },
     "pierreEditorImpl": {
       "highlighting_unavailable_with_reason": "Syntax highlighting is unavailable until you reload. Content remains readable. Last failure: {{classification}} (generation {{generation}}, attempt {{attempt}}): {{reason}}"
+    },
+    "backendSelector": {
+      "default_backend": "Default backend",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Backend list",
+      "backend_list_unavailable": "Backend list unavailable",
+      "no_backends_registered": "No backends registered",
+      "default": "Default",
+      "unroutable_reason": "Not selectable: {{reason}}",
+      "invalid_reason": "Invalid: {{reason}}",
+      "backend_serving": "AI backend serving this chat",
+      "backend_serving_pinned": "AI backend serving this chat — fixed when the chat was created"
     }
   },
   "hooks": {
@@ -6376,6 +6388,16 @@
         "remove_confirm": "Remove the {{provider}} OAuth app? The client ID and the stored secret are deleted, and {{provider}} cannot connect until you enter them again.",
         "remove_confirm_action": "Remove OAuth app",
         "cancel": "Cancel"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI Backends",
+        "backends_are_defined_in_config_and_need_a_restart": "Backends are defined in harnesses.json (write-protected); editing it needs a gateway restart.",
+        "backend_list_unavailable": "Backend list unavailable",
+        "no_backends_registered": "No backends registered",
+        "badge_selectable": "Selectable",
+        "badge_default": "Default",
+        "badge_unroutable": "Not selectable",
+        "badge_invalid": "Invalid"
       }
     },
     "systemPage": {},
@@ -6598,6 +6620,10 @@
       "connections": {
         "label": "OAuth Apps",
         "description": "OAuth apps for providers that need a registered client"
+      },
+      "backends": {
+        "label": "AI Backends",
+        "description": "The AI backends this build offers, and what the registry made of operator-defined ones"
       }
     }
   },

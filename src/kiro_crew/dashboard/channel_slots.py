@@ -439,6 +439,11 @@ def surface_channel_session(
     slot._memory_assignment_from_history = True
     if meta.get("model"):
         slot.model = meta["model"]
+    if meta.get("acp_backend"):
+        # Mirror the model restore: the per-chat backend pick survives a
+        # channel-slot surface the same way the model does, and re-crosses
+        # resolve_selected_backend in the provider factory on next use.
+        slot.acp_backend = str(meta["acp_backend"])
     if meta.get("autocompact_pct") is not None:
         # Restore the per-session compaction threshold, mirroring the
         # persistence loaders: without this, a surfaced slot's field stays

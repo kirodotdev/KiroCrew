@@ -252,6 +252,7 @@ import WelcomeView from '../components/WelcomeView'
 import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
+import { useBackends, backendRow } from '../hooks/useBackends'
 import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
@@ -910,7 +911,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(effectiveAgents)
   const filteredAgents = filteredAgentsByName
-  const localModels = useAvailableModels()
+  // Re-key the model list on the active chat's backend pick: a per-chat backend
+  // is a distinct harness that serves its OWN model catalog, so the picker must
+  // ask "what does THIS harness serve?" rather than the configured global
+  // backend's list. Empty/absent `acp_backend` leaves it on the configured
+  // backend, unchanged from before the per-chat arm existed. A peer-bound session
+  // is substituted with the peer's roster below, so its local backend does not
+  // drive the list either.
+  const activeSlotBackend = slots.find(s => s.key === activeSlot)?.acp_backend || undefined
+  const localModels = useAvailableModels({ backend: activeSlotBackend })
+  // The bound backend's display name for the composer-shelf chip. Read from the
+  // same listing the picker reads (one cache entry, no extra fetch). An absent
+  // pick resolves to the listing's default row — what the session really runs
+  // on; while the listing is loading/errored show the neutral default-backend
+  // label rather than flashing a raw id; post-load an id missing from the
+  // listing falls back to the raw id.
+  const backendStateForChip = useBackends()
+  const backendRowForChip = backendRow(backendStateForChip, activeSlotBackend ?? '')
+  const backendChipLabel = backendRowForChip
+    ? (backendRowForChip.label || backendRowForChip.id)
+    : ((backendStateForChip.isLoading || backendStateForChip.isError)
+        ? i18nT('components.backendSelector.default_backend')
+        : (activeSlotBackend || i18nT('components.backendSelector.default_backend')))
+  const backendChipTitle = i18nT(
+    activeSlotBackend ? 'components.backendSelector.backend_serving_pinned' : 'components.backendSelector.backend_serving',
+  )
   // A peer-bound session's shelf must offer the PEER's rosters. Both hooks above
   // read THIS machine same-origin, so a remote session left on them would list
   // crews and models that do not exist over there — accepted by the picker, then
@@ -979,6 +1004,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const [pendingModel, _setPendingModel] = useState('')  // model for next new slot
   const pendingModelRef = useRef('')
   const setPendingModel = useCallback((v: string) => { pendingModelRef.current = v; _setPendingModel(v) }, [])
+  // Backend (ACP harness) for the NEXT new slot. Mirrors pendingModel: `''` means
+  // "inherit the configured default", and it is only set when the user explicitly
+  // picks one on the welcome surface. A ref alongside the state for the same
+  // reason pendingModel keeps one — the create path reads it synchronously at
+  // send time, where a state read could lag a pick made in the same tick.
+  const [pendingBackend, _setPendingBackend] = useState('')
+  const pendingBackendRef = useRef('')
+  const setPendingBackend = useCallback((v: string) => { pendingBackendRef.current = v; _setPendingBackend(v) }, [])
   const pendingProjectRef = useRef('')
   const setPendingProject = useCallback((v: string) => { pendingProjectRef.current = v }, [])
 
@@ -2476,7 +2509,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // paste blocks and attachments, surface the failure, and bail.
       let created: { key: string } | null = null
       try {
-        created = await dispatch(createSlot({ agent: pendingAgentRef.current || defaultAgent || undefined, model: pendingModelRef.current || undefined, mode: modeRef.current })).unwrap()
+        created = await dispatch(createSlot({ agent: pendingAgentRef.current || defaultAgent || undefined, model: pendingModelRef.current || undefined, backend: pendingBackendRef.current || undefined, mode: modeRef.current })).unwrap()
       } catch (e: unknown) {
         sendingRef.current = false
         if (isolated) {
@@ -2645,7 +2678,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         })
       }
     }
-    setPendingAgent(''); setPendingModel(''); setPendingProject('')
+    setPendingAgent(''); setPendingModel(''); setPendingBackend(''); setPendingProject('')
     // Build meta for persistence (knowledge, files, pastes)
     const meta: Record<string, unknown> = {}
     if (filePaths.length) meta.files = filePaths
@@ -3028,6 +3061,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // live on the drill-in page and keep the menu open on their own.
     // setPendingModel is a stable useState setter.
   }, [activeSlot, dispatch, setPendingModel])
+  // A backend pick from the welcome-screen picker. The welcome surface renders
+  // on an ALREADY-CREATED empty slot (the new-chat click made it), so parking
+  // the pick in `pendingBackend` alone would apply it to the NEXT slot created
+  // and leave THIS chat on the global default — the pick looked accepted (the
+  // trigger showed it) while the first message spawned kiro-cli. Mirror
+  // `switchModel`: without an active slot park it; with one, write it to the
+  // slot through the mutation endpoint. The endpoint resets the session (a
+  // backend is a distinct harness PROCESS), which is free on an empty slot.
+  // `pendingBackend` is still written so the trigger reflects the pick
+  // immediately and a follow-on creation from this surface inherits it.
+  const switchBackend = useCallback(async (backendId: string) => {
+    setPendingBackend(backendId)
+    if (!activeSlot) return
+    try {
+      await performSlotSwitch('backend', activeSlot, backendId,
+        async () => {
+          const r = await api.chatSlotBackend(activeSlot, backendId)
+          if (r && r.ok === false) throw new Error(r.error || 'backend switch refused')
+          return r?.backend ?? backendId
+        },
+        (value) => dispatch(updateSlot({ key: activeSlot, acp_backend: value })))
+    } catch (e) {
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+      // eslint-disable-next-line no-console -- surface switchBackend failures for debugging
+      console.error('switchBackend failed', e)
+    }
+  }, [activeSlot, dispatch, setPendingBackend])
   // A pick from the picker: a row click or Enter on the sole filtered match.
   // Closes the menu and, when the composer held focus at open time, hands
   // focus back to it (see `modelPickerReturnsFocusRef`). The picker's other
@@ -6901,7 +6961,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   newSlotMutation.mutate()
                   return
                 }
-                dispatch(createSlot({ agent: pendingAgent || defaultAgent || undefined, model: pendingModel || undefined, mode }))
+                dispatch(createSlot({ agent: pendingAgent || defaultAgent || undefined, model: pendingModel || undefined, backend: pendingBackend || undefined, mode }))
               }}
             >
               {i18nT('pages.chatPage.start_a_new_chat')}
@@ -7073,6 +7133,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   mode={currentSlot?.mode || mode}
                   setInput={setInput}
                   memoryMode={currentSlot?.memory_mode ?? 'persistent'}
+                  // The active slot's STORED pick is authoritative once a slot
+                  // exists (it survives switching between welcome-state chats);
+                  // the pending value only stands in before any slot is created.
+                  backend={activeSlot ? (currentSlot?.acp_backend ?? '') : pendingBackend}
+                  onSelectBackend={switchBackend}
                   onSwitchMode={async (newMode) => {
                     if (!activeSlot) return
                     // Create-first-then-delete: deleting the active slot first
@@ -7693,6 +7758,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               agentLabel={agentOrDefaultLabel(currentSlot?.agent, effectiveDefaultAgent)}
               agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
+              backendLabel={backendChipLabel}
+              backendTitle={backendChipTitle}
               modelName={shownModel}
               // The served default is shown exactly when the pin alone would
               // have read `auto`; that is the inherited case the marker names.

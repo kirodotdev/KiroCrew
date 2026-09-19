@@ -8491,6 +8491,18 @@
       "label": "変更には再起動が必要",
       "tooltip": "この設定は {{productName}} の実行中には変更できません。保存した値は保持され、次に {{productName}} を再起動したときに適用されます（設定 → バージョン情報、または起動したターミナルから）。",
       "schema_unavailable": "この設定に再起動が必要かどうかを確認できませんでした。"
+    },
+    "backendSelector": {
+      "default_backend": "既定のバックエンド",
+      "backend_name": "バックエンド: {{name}}",
+      "backend_list": "バックエンド一覧",
+      "backend_list_unavailable": "バックエンド一覧を取得できません",
+      "no_backends_registered": "登録されたバックエンドがありません",
+      "default": "既定",
+      "unroutable_reason": "選択できません: {{reason}}",
+      "invalid_reason": "無効: {{reason}}",
+      "backend_serving": "このチャットを処理する AI バックエンド",
+      "backend_serving_pinned": "このチャットを処理する AI バックエンド — チャット作成時に固定されます"
     }
   },
   "hooks": {
@@ -14576,6 +14588,16 @@
         "remove_confirm": "{{provider}} の OAuth アプリを削除しますか？クライアント ID と保存済みのシークレットが削除され、再入力するまで {{provider}} は接続できません。",
         "remove_confirm_action": "OAuth アプリを削除",
         "cancel": "キャンセル"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI バックエンド",
+        "backends_are_defined_in_config_and_need_a_restart": "バックエンドは harnesses.json（書き込み保護）で定義されます。編集にはゲートウェイの再起動が必要です。",
+        "backend_list_unavailable": "バックエンド一覧を取得できません",
+        "no_backends_registered": "登録されたバックエンドがありません",
+        "badge_selectable": "選択可能",
+        "badge_default": "既定",
+        "badge_unroutable": "選択不可",
+        "badge_invalid": "無効"
       }
     },
     "settingsPage": {
@@ -15181,6 +15203,10 @@
       "connections": {
         "label": "OAuth アプリ",
         "description": "登録済みクライアントが必要なプロバイダー向けの OAuth アプリ"
+      },
+      "backends": {
+        "label": "AI バックエンド",
+        "description": "このビルドが提供する AI バックエンドと、オペレーター定義のものをレジストリがどう扱ったか"
       }
     },
     "secrets": {
