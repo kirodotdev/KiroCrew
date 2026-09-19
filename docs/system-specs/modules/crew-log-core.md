@@ -21,6 +21,7 @@ A fact with no unit to belong to still has a home: a script cron, or gateway lif
 ```
 <data home>/crew-log/crews/<store name>/log.jsonl
 <data home>/crew-log/sessions/<store name>/log.jsonl
+<data home>/crew-log/members/<store name>/log.jsonl
 .lock                                                # sibling, per crew log
 .lease                                               # sibling, per crew log
 ```

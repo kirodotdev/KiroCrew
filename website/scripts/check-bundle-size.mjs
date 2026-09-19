@@ -76,13 +76,21 @@ export const CHUNK_BUDGETS = {
   // 0.15% headroom. Same recurrence as every note above: the ceiling drifted to
   // under 1% on accumulated catalog copy, so it now fails on the next feature
   // PR's ordinary strings rather than on the new library or surface it exists to
-  // catch. Attribution measured, not assumed: this branch adds 61 catalog lines
-  // x 13 languages for the tasks-capacity panel (49,821 B, 48.7 KB) and no
-  // module -- the chunk still holds the same 13 catalogs plus the entry, and no
-  // lazy import() boundary can move a catalog string out of `all`, which is why
-  // shrinking is not an option here. Back to the 5% convention over the
-  // measurement that includes this branch (11,930,130 B).
-  all: 12240 * KB, // measured 11650.5 KB on fix/gatewayd-overload-liveness 2026-09-16 (5.1% headroom)
+  // catch. Attribution measured, not assumed: the tasks-capacity branch adds 61
+  // catalog lines x 13 languages (49,821 B, 48.7 KB) and no module -- the chunk
+  // still holds the same 13 catalogs plus the entry, and no lazy import()
+  // boundary can move a catalog string out of `all`, which is why shrinking is
+  // not an option here. Back to the 5% convention over the measurement that
+  // includes that branch (11,930,130 B), which main set at 12240 KB.
+  // Re-measured 2026-09-16 on THIS branch, rebased onto that main: the
+  // append-only crew ledger with pluggable contributors adds its member
+  // event-log surface strings (activity feed, contributed cards,
+  // patrol/roster/wake copy) across all 13 catalogs on top of main's baseline,
+  // building the chunk at 11,993,817 B (11712.7 KB). Same recurrence, same remedy: no
+  // library reached the chunk (still the 14 catalog+entry modules), no lazy
+  // boundary can move a catalog string out of `all`, so the 5% convention is
+  // re-applied over the measurement that includes this branch.
+  all: 12300 * KB, // measured 11712.7 KB on this branch rebased 2026-09-16 (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

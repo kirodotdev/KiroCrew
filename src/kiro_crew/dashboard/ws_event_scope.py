@@ -266,6 +266,38 @@ _SUBAGENT_BATCH_ITEM_KEY = {
 }
 
 # ---------------------------------------------------------------------------
+# Owner-only event types: the dashboard USER receives them (dashboard-user
+# tokens bypass this gate entirely), but an app token never does. The
+# per-member event log's frames belong here — they carry the operator's crew
+# roster/activity/patrol state, which is not an app's business (the same
+# posture the whole ``handlers/members.py`` surface takes: app tokens are
+# denied outright). Classified here rather than left to the unknown-event
+# floor so the denial is INTENTIONAL and audited with its own reason instead
+# of reading as a misconfiguration, and so a future literal broadcast of one
+# of these names cannot silently start reaching app tokens.
+_OWNER_ONLY_EVENTS = frozenset({
+    "member_projection",   # types.WS_MEMBER_PROJECTION
+    "members_subscribed",  # types.WS_MEMBERS_SUBSCRIBED
+})
+
+#: Contribution-protocol frames (§3). Unlike every other entry in this module
+#: these are NOT fanned out by ``broadcast_ws``: ``dashboard.eventlog_ws``
+#: addresses each subscriber's own socket directly, because the delta channel is
+#: per subscription and per unit rather than per app. They are classified here
+#: anyway for two reasons -- the completeness guard must see every frame name
+#: this repo sends, and a future literal broadcast of one of these names must not
+#: fall through to the unknown-event floor and reach every app token.
+#:
+#: The gate is a contribution declaration, not an event declaration in
+#: ``permissions.events``: §2 says declaring ``contributions`` grants the frames,
+#: so requiring a second declaration would make a compliant manifest silently
+#: receive nothing.
+_EVENTLOG_CONTRIB_EVENTS = frozenset({
+    "eventlog_subscribed",
+    "eventlog_event",
+})
+
+# ---------------------------------------------------------------------------
 # Global event type → required declaration mapping
 # ---------------------------------------------------------------------------
 
@@ -435,6 +467,23 @@ def build_allowed_event_set(events_declared: list[str]) -> frozenset[str]:
 # Core filter: is this event allowed for this app token?
 # ---------------------------------------------------------------------------
 
+def _app_declares_contributions(app: str) -> bool:
+    """Whether *app* declared a log contribution. Deny-safe.
+
+    Deferred import: ``eventlog.grants`` pulls in the apps manager and the
+    members layer, and this module is imported by the WS hot path.
+    ``grants`` keeps its own short-TTL cache, so this is not a per-frame
+    manifest read.
+    """
+    try:
+        from kiro_crew.eventlog.grants import declares_contributions
+
+        return declares_contributions(app)
+    except Exception:
+        logger.debug("ws scope: contributions lookup failed for %r", app, exc_info=True)
+        return False
+
+
 def ws_event_allowed(
     event_type: str,
     data: dict[str, Any],
@@ -500,6 +549,25 @@ def _decide_ws_event(
     # does not reach them.
     if app_events_revoked(app):
         _audit_deny(app, event_type, "app_disabled")
+        return False
+
+    # Owner-only surfaces: the per-member event-log frames are the operator's
+    # crew state, never an app's. A dashboard user already bypassed this gate;
+    # an app token is denied with an explicit reason (not the unknown-event
+    # floor) so the decision reads as intentional in the audit trail.
+    if event_type in _OWNER_ONLY_EVENTS:
+        _audit_deny(app, event_type, "owner_only")
+        return False
+
+    # Contribution-protocol frames: gated on the app's own `contributions`
+    # declaration (§2), which is what grants them. Reached only if something
+    # broadcasts one of these names -- the hub writes to each subscriber's socket
+    # directly -- so a True here still delivers nothing to a socket that never
+    # subscribed, and a False is a real denial either way.
+    if event_type in _EVENTLOG_CONTRIB_EVENTS:
+        if _app_declares_contributions(app):
+            return True
+        _audit_deny(app, event_type, "contributions_not_declared")
         return False
 
     # ``slots`` is a full slot-list re-push.  The event itself is always

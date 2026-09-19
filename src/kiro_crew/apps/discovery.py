@@ -67,6 +67,15 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     if contrib_d:
         d["contributes"] = contrib_d
 
+    # The contribution-protocol declaration, and the same class of defect with a
+    # sharper edge: ``eventlog/grants.py`` reads this persisted snapshot, so a
+    # dropped block does not merely hide a feature -- every grant it would have
+    # carried denies instead, and a builtin contributor is refused
+    # ``app token not permitted for this endpoint`` on a declaration it did make.
+    contributions_d = manifest.contributions.to_dict()
+    if contributions_d:
+        d["contributions"] = contributions_d
+
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers
 

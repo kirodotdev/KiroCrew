@@ -1602,7 +1602,36 @@ def app_token_path_allowed(app_name: str, path: str) -> bool:
     # GET (read history) and DELETE, which app tokens must not reach.
     if path == "/api/notifications/push":
         return True
+    # Contribution protocol §2: declaring `contributions` grants these paths, with
+    # no separate `permissions.api` entry. Same shape as the push endpoint above --
+    # the grant is the PREFIX, and every handler under it re-derives authority from
+    # the same manifest declaration (which unit kind, which event type, which
+    # projection key), so reaching the prefix confers nothing over another app's
+    # namespace. Withheld entirely from an app that declared no contributions, so
+    # the surface does not exist for an app that never asked for it.
+    if path.startswith("/api/eventlog/") and _app_declares_contributions(app_name):
+        return True
     return any(_api_pattern_matches(p, path) for p in _app_api_allowlist(app_name))
+
+
+def _app_declares_contributions(app_name: str) -> bool:
+    """Whether *app_name*'s manifest declares any log contribution.
+
+    Function-local import for the same cycle reason as ``_app_api_allowlist``
+    above, and deny-safe: an unreadable manifest answers False, which sends the
+    caller to the ``permissions.api`` allowlist it would have needed anyway.
+    """
+    try:
+        from kiro_crew.eventlog.grants import declares_contributions
+
+        return declares_contributions(app_name)
+    except Exception:
+        logger.warning(
+            "app scope: could not read contributions for %r; denying by default",
+            app_name,
+            exc_info=True,
+        )
+        return False
 
 
 def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:

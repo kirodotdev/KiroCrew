@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { api, type MemberRosterRow } from './client'
+import { memberProjectionStore } from '../state/memberProjectionStore'
 import type { ErrorReport } from '../utils/errorReport'
 
 /**
@@ -29,8 +30,53 @@ const MEMBERS_ROSTER_STALE_MS = 30_000
 
 export const membersRosterQuery = {
   queryKey: MEMBERS_ROSTER_QUERY_KEY,
-  queryFn: (): Promise<MemberRosterRow[]> => api.members().then((r) => r.members),
+  // The mark is taken BEFORE the request goes out, and the reconcile runs here
+  // rather than in `select`, for two separate reasons. A contributed row written
+  // while this read is in flight is NEWER than its answer, so absence from that
+  // answer says nothing about it — a mark taken once the response has arrived
+  // already counts such a row as old and deletes it. And only a real fetch is
+  // authoritative: `select` also runs on a cache read, which cannot say a row is
+  // gone.
+  queryFn: async (): Promise<MemberRosterRow[]> => {
+    const mark = memberProjectionStore.mark()
+    const rows = (await api.members()).members
+    for (const row of rows) {
+      if (row.projections) {
+        memberProjectionStore.reconcileContributed(
+          row.slug,
+          Object.keys(row.projections.values),
+          mark,
+        )
+      }
+    }
+    return rows
+  },
   staleTime: MEMBERS_ROSTER_STALE_MS,
+  // Seed the per-member projection store from each row's baseline block BEFORE
+  // the page renders rows — `select` runs synchronously on the query result,
+  // so the first paint already reads pushed values via useMemberProjection.
+  // seed() applies at asOfSeq through the store's higher-seq-wins rule, so a
+  // live frame that raced ahead of this baseline keeps winning. Rows pass
+  // through unchanged.
+  select: (rows: MemberRosterRow[]): MemberRosterRow[] => {
+    for (const row of rows) {
+      if (row.projections) {
+        // `seqs` / `schemas` / `stateVersions` are present only for CONTRIBUTED
+        // rows: such a row's seq is the contributor's own fold position rather
+        // than this response's asOfSeq, and seeding it at asOfSeq would make
+        // higher-seq-wins drop the contributor's next live push.
+        memberProjectionStore.seed(
+          row.slug,
+          row.projections.values,
+          row.projections.asOfSeq,
+          row.projections.seqs,
+          row.projections.schemas,
+          row.projections.stateVersions,
+        )
+      }
+    }
+    return rows
+  },
 }
 
 /** Recent-activity pointers for one member's drawer. Keyed by the exact

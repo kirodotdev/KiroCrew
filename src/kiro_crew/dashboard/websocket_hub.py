@@ -388,6 +388,39 @@ class WebSocketHub:
             self._owner._owner_ws_clients.add(ws)
         self._serving_loop_provider()
 
+    async def send_members_subscribed(self, ws: web.WebSocketResponse) -> None:
+        """Send the one-shot ``members_subscribed`` frame to a NEW owner socket.
+
+        Carries ``{"lastSeqs": {slug: last_seq}}`` from the per-member event-log
+        service, so the client can drop any held member_projection frame whose
+        seq is newer than this baseline (a replay/stale-frame guard). Sent to
+        THIS socket alone, right after the connect-time snapshot and before any
+        later broadcast can reach it, so the baseline always precedes the frames
+        it bounds.
+
+        Owner-only: the caller must gate on a dashboard-user connection and skip
+        app-token connections (``member_projection`` / ``members_subscribed`` are
+        classified owner-only in ``ws_event_scope``). Best-effort — a serialize
+        or send fault is logged and swallowed so it never fails the connection.
+        """
+        try:
+            import asyncio
+
+            from kiro_crew.eventlog.service import get_service
+
+            # last_seqs() iterates and parses every uncached member log on first
+            # dashboard connect -- synchronous file I/O that would stall the serving
+            # loop. Offload it, matching the sibling _handle_eventlog_frame read.
+            last_seqs = await asyncio.to_thread(get_service().last_seqs)
+        except Exception:
+            self._log.debug("members_subscribed: last_seqs read failed", exc_info=True)
+            return
+        try:
+            msg = json.dumps({"type": "members_subscribed", "data": {"lastSeqs": last_seqs}})
+            await ws.send_str(msg)
+        except Exception:
+            self._log.debug("members_subscribed send failed", exc_info=True)
+
     def unregister_ws(self, ws: web.WebSocketResponse) -> None:
         remove = self._owner_method("_remove_ws", self._remove_ws)
         remove(ws)
