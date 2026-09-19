@@ -24,7 +24,11 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.constants import (
+    KIROCREW_SPAWN_INSTANCE_ENV,
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+)
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 
 logger = logging.getLogger(__name__)
@@ -996,6 +1000,236 @@ def _pgroup_has_member_besides(pgid: int, root_pid: int) -> bool:
         except (IndexError, ValueError):
             continue
     return False
+
+
+def group_vouching_available() -> bool:
+    """Whether the instance-vouched group read can reach a tree on this host.
+
+    The vouch reads ``/proc/<pid>/environ`` for the per-spawn incarnation token,
+    which exists on Linux alone. Everywhere else :func:`_marked_group_members`
+    answers ``{}`` and a teardown whose root identity is not proven reaches
+    NOTHING -- a bounded leak the orphan sweep reports, never a signal to a
+    stranger. Callers need to be able to SAY that, so the platform test lives
+    here once rather than being re-derived at each reader.
+    """
+    return sys.platform == "linux"
+
+
+def _marked_group_members(pgid: int, instance: str) -> dict[int, str | None]:
+    """Live members of process group *pgid* spawned as incarnation *instance*.
+
+    Returned as ``pid -> start id`` so a caller that signals the group twice can
+    prove on the second pass that it is still the SAME group: a pid and a start
+    instant name one process for good, where the group number alone does not
+    (see :func:`_signal_orphaned_runtime_group`).
+
+    *instance* is the per-spawn ``KIROCREW_SPAWN_INSTANCE`` the runtime put on
+    its root's environment, and a member counts only if it carries that exact
+    value. The generic ``KIROCREW_SPAWNED`` marker proves a group is SOME Kiro
+    Crew runtime's; it cannot prove it is this one's, because every runtime here
+    is a marked session leader and a root pid released to a fresh spawn names a
+    group that carries the marker just as well. The instance is what tells them
+    apart. An empty *instance* matches nothing.
+
+    The proof a teardown needs once the group's LEADER is gone. A leader spawned
+    with ``start_new_session=True`` names its group by its own pid, so the number
+    survives the leader -- but a bare number is what a recycled pid looks like
+    too, and ``killpg`` on it would take a stranger's tree. A member that carries
+    ``KIROCREW_SPAWNED`` in its exec-time environment is the positive identity
+    that a group is one Kiro Crew spawned; a detached survivor that merely
+    inherited the marker is excluded by the argv identity check, the same pair
+    the tracked sweep's systemd arm requires.
+
+    Linux only. The environ read is Linux-only and fail-closed everywhere else,
+    so the answer is ``{}`` on macOS and Windows and the caller signals nothing
+    -- a missed reap there, never a wrong kill. Zombies are skipped: they hold
+    no memory and cannot be signalled into exiting.
+    """
+    if not group_vouching_available() or pgid <= 1 or not instance:
+        return {}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return {}
+    members: dict[int, str | None] = {}
+    for entry in entries:
+        name = entry.name
+        if not name.isdigit():
+            continue
+        member = int(name)
+        try:
+            stat = (entry / "stat").read_text()
+        except (OSError, ValueError):
+            continue
+        rparen = stat.rfind(")")
+        if rparen < 0:
+            continue
+        fields = stat[rparen + 2 :].split()
+        try:
+            if int(fields[2]) != pgid or fields[0] == "Z":
+                continue
+        except (IndexError, ValueError):
+            continue
+        if (
+            _env_spawn_instance(member) == instance
+            and _env_has_kirocrew_marker(member)
+            and _tracked_child_has_runtime_identity(member)
+        ):
+            members[member] = _pid_start_token(member)
+    return members
+
+
+def _signal_pid_by_identity(pid: int, sig: int, start: str) -> bool:
+    """Signal *pid* only while it is still the process whose start id is *start*.
+
+    Returns True when the signal was delivered, False when the identity fails to
+    match, and raises the delivery error otherwise.
+
+    Re-reading the start id and then calling ``os.kill`` leaves a window between
+    the two: the number can be recycled in it, and the signal lands on whatever
+    holds it now. Narrowing that window cannot close it, because a pid is not a
+    handle -- it is a key the kernel may reissue. A pidfd IS a handle: it refers
+    to one process for as long as it is open, so once the identity is confirmed
+    AFTER opening it, ``pidfd_send_signal`` cannot reach a later occupant of the
+    number no matter how long the descriptor is held. The order is open, then
+    verify, then signal -- opening first is what makes the verification binding.
+
+    ``pidfd_open`` needs Linux 5.3 and this whole path is Linux-only, but a
+    kernel without it must still be reachable, so there the re-verified
+    ``os.kill`` stands: the same narrow window as before, never a wider one.
+    """
+    opener = getattr(os, "pidfd_open", None)
+    sender = getattr(signal, "pidfd_send_signal", None)
+    if opener is None or sender is None:
+        if platform_compat.get_process_start_id(pid) != start:
+            return False
+        os.kill(pid, sig)
+        return True
+    try:
+        fd = opener(pid)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # No descriptor, so no atomic path; fall back rather than skip the member.
+        if platform_compat.get_process_start_id(pid) != start:
+            return False
+        os.kill(pid, sig)
+        return True
+    try:
+        # AFTER the open: the descriptor already pins whichever process answered,
+        # so a match here proves the pinned process is the one that vouched.
+        if platform_compat.get_process_start_id(pid) != start:
+            return False
+        sender(fd, sig)
+        return True
+    finally:
+        os.close(fd)
+
+
+def _signal_orphaned_runtime_group(
+    pgid: int,
+    sig: int,
+    instance: str,
+    *,
+    expected: Mapping[int, str | None] | None = None,
+) -> dict[int, str | None]:
+    """Signal a runtime's group members after its leader has been reaped, if ours.
+
+    The kill path that signals a live tree is ``killpg(getpgid(root))``, and it
+    has a hole exactly where the leak lives: ``getpgid`` raises once the root has
+    exited, the caller reads that as "already dead", and the launcher, agent and
+    chat processes left in the group are never signalled. They reparent to init
+    holding their memory, and if the root died before any descendant was
+    recorded there is no tracking entry to find them by either.
+
+    So resolve the group from the contract instead of from the dead pid -- the
+    root was a session leader, so ``pgid == root pid`` -- and find its members
+    through :func:`_marked_group_members`, which vouches each one by *instance*:
+    the per-spawn token the runtime put on its root's environment, which its
+    whole tree inherited. Then signal THOSE MEMBERS, each re-verified by start id
+    at the instant of the signal -- not the group number. The number is the
+    reaped root's pid and can be handed to a fresh session leader at any moment,
+    including between the vouch and the signal; a member's pid plus its start
+    instant cannot be. No vouching member means no signal: declining to act
+    costs a leak the sweep still reports, where acting costs an unrelated
+    process. ``pgid`` is still refused for 0, 1 and our own group, since a
+    member listing keyed on one of those would be a listing of the wrong thing.
+
+    The instance is the incarnation pin, and it is what the generic marker
+    cannot supply. Every runtime here is a marked session leader, so a root pid
+    released and handed to a fresh spawn names a group that carries the marker
+    just as well -- and a signal aimed by the number and the marker alone would
+    terminate that fresh runtime's live session. A fresh spawn carries a
+    different instance, so it does not vouch for this one's group.
+
+    An escalation additionally passes the members the first pass vouched, as
+    *expected*, and signals only those of them still alive under the same start
+    id -- nothing found for the first time now: the instance proves the
+    incarnation, the start id proves the pass is looking at the same processes,
+    and a process that was not signalled on the first pass owes no escalation.
+
+    Returns the members actually signalled, ``pid -> start id`` -- the value a
+    caller hands back as *expected* -- or an empty map when nothing was. A
+    member that exited between the vouch and the signal, or whose identity no
+    longer reads as vouched, is skipped. A refused signal is logged and skipped:
+    a teardown must finish clearing its own state and pruning its PID entries
+    whatever the kernel answered, and a signal this process was refused is one
+    the periodic sweep retries on its own cadence.
+    """
+    if platform_compat.IS_WINDOWS or pgid <= 1 or pgid == os.getpgrp() or not instance:
+        return {}
+    members = _marked_group_members(pgid, instance)
+    if not members:
+        return {}
+    if expected is not None:
+        still_ours: dict[int, str | None] = {
+            p: start
+            for p, start in members.items()
+            if p in expected and start is not None and start == expected[p]
+        }
+        if not still_ours:
+            logger.info(
+                "_signal_orphaned_runtime_group: none of the %d member(s) vouched for "
+                "group %d are still alive; not re-signalling a group that may be a "
+                "newer runtime's",
+                len(expected),
+                pgid,
+            )
+            return {}
+        # The escalation's target set is the FIRST pass's, not a fresh census: a
+        # member found only now was not signalled then, owes no grace, and is
+        # exactly what a newer incarnation of the number would look like.
+        members = still_ours
+    # Signal the MEMBERS, each re-verified by start id at the instant of the
+    # signal, never the group number. ``killpg(pgid)`` is aimed at a number, and
+    # the number is the reaped root's pid, which the kernel can hand to a fresh
+    # session leader between the vouch above and the signal; a pid plus a start
+    # instant names one process for good, so a member whose identity still reads
+    # as vouched is the process that vouched. Highest pid first as a cheap
+    # leaf-first order, so a parent cannot fork a replacement while its own
+    # children are being signalled.
+    signalled: dict[int, str | None] = {}
+    for member in sorted(members, reverse=True):
+        start = members[member]
+        if start is None:
+            continue
+        try:
+            if not _signal_pid_by_identity(member, sig, start):
+                continue
+        except ProcessLookupError:
+            continue
+        except OSError:
+            logger.warning(
+                "_signal_orphaned_runtime_group: signal %d to pid %d (group %d) refused; "
+                "leaving it to the orphan sweep",
+                sig,
+                member,
+                pgid,
+                exc_info=True,
+            )
+            continue
+        signalled[member] = start
+    return signalled
 
 
 def _provider_tree_gone(
@@ -2591,6 +2825,29 @@ def _read_env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bo
     except OSError:
         return None
     return needle in environ.split(b"\x00")
+
+
+def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
+    """*pid*'s ``KIROCREW_SPAWN_INSTANCE``, or ``None`` when absent or unreadable.
+
+    Same read as :func:`_read_env_has_kirocrew_marker`, same Linux-only,
+    fail-closed posture. The value is the per-spawn token the runtime put on its
+    root's environment; every descendant inherits it, and a runtime spawned
+    later carries a different one -- which is the whole point of reading it.
+    """
+    if sys.platform != "linux" and proc_root is None:
+        return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    prefix = f"{KIROCREW_SPAWN_INSTANCE_ENV}=".encode()
+    try:
+        environ = (root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    for entry in environ.split(b"\x00"):
+        if entry.startswith(prefix):
+            value = entry[len(prefix) :]
+            return value.decode("ascii", "replace") if value else None
+    return None
 
 
 def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
