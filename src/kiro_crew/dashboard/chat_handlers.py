@@ -149,6 +149,7 @@ from kiro_crew.dashboard.slot_buffers import (
     persist_deferred_notes_sync,
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
+from kiro_crew.dashboard.snapshot_commit import close_in_flight
 from kiro_crew.dashboard.state import (
     DashboardState,
     SlotOrigin,
@@ -5840,11 +5841,14 @@ async def close_slot(
     pre_pop_check: Callable[[], None] | None = None,
 ) -> None:
     """Close a slot while releasing its admission fence on every aborted path."""
-    try:
-        await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
-    finally:
-        if state.get_slot(name) is slot:
-            slot.cancel_close()
+    # Published across the whole frame, restore included: a concurrent vocabulary delete
+    # must be able to strip this object while it is out of ``_slots``.
+    with close_in_flight(state, name, slot):
+        try:
+            await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
+        finally:
+            if state.get_slot(name) is slot:
+                slot.cancel_close()
 
 
 async def _close_slot(

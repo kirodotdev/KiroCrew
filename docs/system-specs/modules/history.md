@@ -684,6 +684,64 @@ no longer destroy older turns.
   generation. Reconsolidating a few already-processed messages is harmless and
   idempotent; dropping unprocessed ones is a persisted data-integrity failure.
 
+### Vocabulary deletes drive slot writes: commit, then sweep
+
+Deleting a folder or a tag is two durable writes in two stores that share no lock:
+the vocabulary row leaves `folders.json` / `tags.json`, and every slot still naming
+that id must lose it from its own session metadata. The ordering, and the shape of
+the cancellation protocol around it, live in `dashboard/snapshot_commit.py` and are
+shared by both vocabulary stores.
+
+- **Commit before sweep, never the reverse.** Clearing `folder_id` (or stripping the
+  tag) BEFORE the vocabulary write leaves a conversation durably unfiled when that
+  write then fails — the rollback is withheld by the same condition that withheld the
+  persist, so nothing puts the filing back. A failed commit therefore leaves every
+  slot untouched and not dirty, and no rollback closure is needed.
+- **A cancellation is not proof the removal landed.** `asyncio.to_thread` hands the
+  write to a worker that cannot be interrupted, so a cancelled handler's bytes still
+  reach disk — but a cancellation can equally arrive while awaiting the store lock,
+  before any write. The handlers tell the two apart with a PER-REQUEST confirmation:
+  the folder store's existing `on_committed` hook and the tag store's hook of the same
+  name on `_commit_tags_snapshot`, both of which fire under the store lock only after
+  the persist confirms, and are skipped for a no-op or rolled-back transaction. An
+  unfired hook refuses — it re-raises without sweeping — because unfiling against an
+  unprovable removal is the unrecoverable direction. There is deliberately no
+  store-wide "committed vocabulary" set: the question is always about one request's
+  own write, and a shared set would answer a different one.
+- **The sweep runs to completion even when the handler is going away**, via
+  `sweep_to_completion_despite_cancellation`. The work owed after a durable mutation —
+  the slot writes, the slots push, and the operation's single audit line — would
+  otherwise be skipped by a cancellation arriving in the gap between the two halves,
+  leaving the row gone and slot metadata still naming it. Cancellations are captured
+  and re-raised in a fixed order, commit before sweep.
+- **Each forced slot save is pinned to the transcript AND the slot name** it was
+  authorized against, with `expected_history_key` and `expected_slot_name`. The sweep
+  force-saves, so without the name pin a close that COMPLETED during the vocabulary
+  write is still in the pre-commit capture and its metadata line is rewritten without
+  `closed`, which resurfaces the tab (absent means cleared for a slot-owned field). The
+  name pin refuses exactly that case, because the popped object is no longer what
+  `_slots` holds under its name — while a close whose save FAILED is restored under the
+  same name, so the strip still persists for it. The transcript pin cannot substitute:
+  a close does not move routing, so the history key is identical either way.
+- **A close already in flight is published, because the capture cannot see it.** The
+  pre-commit capture reads `state._slots`, so it reaches a slot a concurrent close pops
+  DURING the delete but not one popped BEFORE it — and a close whose save then fails
+  restores the same object still naming the deleted id, which the periodic flush makes
+  durable with no later pass able to reach it. `close_slot` therefore wraps its whole
+  frame, restore included, in `close_in_flight`, and both sweeps iterate that registry
+  alongside `state._slots`. The registry is keyed by object identity rather than by slot
+  name, because a same-key recreate can put a replacement on the name while the original
+  is still closing. It is partitioned per dashboard state, and held weakly, so a delete on
+  one state can never sweep a slot owned by another sharing the process, and a discarded
+  state's entry is collected with it. The in-memory strip is what matters here: the
+  durable save is refused by the name pin above while the object is out of the map, and
+  the restore then puts back an object already stripped.
+- **Scope beyond the two deletes.** Because the shield-and-drain protocol lives in the
+  commit helper both stores call, every tag create and update and every folder edit now
+  holds its store lock until a cancelled disk write finishes, rather than returning
+  while the worker is still writing. That is the point: releasing the lock early lets a
+  later mutation lose to the older in-flight write.
+
 ## Session Archive (`history.py`, `history_rewrite.py`)
 
 Lines that ARE intentionally dropped (rotation, compaction, history edits) are

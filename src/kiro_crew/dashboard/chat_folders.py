@@ -18,6 +18,11 @@ from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_i
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.snapshot_commit import (
+    VocabularyDeleteCancellations,
+    slots_with_a_close_in_flight,
+    sweep_to_completion_despite_cancellation,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
     KNOWN_INTERNAL_CALLERS,
@@ -1581,84 +1586,17 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
             },
             status=403,
         )
-    # Unfile the folder's slots first, then commit the folder removal. If that
-    # commit fails, put the slots back: otherwise the delete half-lands —
-    # conversations persistently unfiled while the folder they came from is
-    # still there. Restoring is order-neutral, which matters because either
-    # ordering leaves a partial-commit window on its own (folder-first strands a
-    # dangling folder_id; slots-first strands unfiled conversations), and only
-    # undoing the half that did land closes both.
-    unfiled: list[tuple[Any, str]] = []
-    for slot in state._slots.values():
-        if slot.folder_id == fid:
-            unfiled.append((slot, slot.folder_id))
-            # Pin the write to the transcript this iteration's membership
-            # check covered: the save awaits inside the loop, so a rebind can
-            # land mid-persist and the save would otherwise resolve its
-            # target from the moved routing at write time. No await between
-            # this capture and the unfile below.
-            authorized_history_key = slot_history_key(slot)
-            slot.folder_id = ""
-            if not await save_slot_off_loop(
-                state, slot, force=True, expected_history_key=authorized_history_key
-            ):
-                # Refused without writing (session permanently deleted or
-                # rebound mid-persist). The in-memory unfile stands — the
-                # folder is being removed — so mark dirty and let the
-                # periodic flush persist wherever the slot now routes; a
-                # dangling folder_id left on the old transcript is ignored
-                # on the next load.
-                slot._dirty = True
-                logger.warning(
-                    "folder delete: unfile save refused for %s "
-                    "(session deleted or rebound); marked dirty for "
-                    "periodic-flush retry",
-                    getattr(slot, "key", "?"),
-                )
+    # Unfiling before the commit leaves a conversation durably unfiled on a failed
+    # write: the close's rollback is withheld by the same test that withheld its persist.
 
-    async def _restore_unfiled() -> None:
-        for slot, previous in unfiled:
-            # Only put back a slot that is STILL unfiled. Between the unfile
-            # above and this rollback the user can move that conversation
-            # somewhere else, and their move is the newer intent — restoring
-            # `previous` unconditionally would discard it and, worse, file the
-            # slot back into the folder this request was trying to delete.
-            if slot.folder_id:
-                continue
-            # Same pin as the unfile: no await between this capture and the
-            # restore below, so the rollback write cannot land on a
-            # transcript this slot was rebound to mid-restore.
-            authorized_history_key = slot_history_key(slot)
-            slot.folder_id = previous
-            try:
-                applied = await save_slot_off_loop(
-                    state,
-                    slot,
-                    force=True,
-                    expected_history_key=authorized_history_key,
-                )
-            except Exception:
-                # Best-effort restore; a slot left unfiled renders at the top
-                # level, which the sidebar handles, so keep restoring the rest.
-                logger.warning(
-                    "folder delete rollback: could not restore slot %s to folder %s",
-                    slot.key,
-                    previous,
-                    exc_info=True,
-                )
-            else:
-                if not applied:
-                    # Refused without writing (session deleted or rebound).
-                    # Keep the restored live field and mark dirty so the
-                    # periodic flush persists it wherever the slot now routes.
-                    slot._dirty = True
-                    logger.warning(
-                        "folder delete rollback: restore save refused for %s "
-                        "(session deleted or rebound); marked dirty for "
-                        "periodic-flush retry",
-                        getattr(slot, "key", "?"),
-                    )
-        state.push_slots_update()
+    # Reaches the two slots the post-commit sweep cannot see: one a concurrent close pops
+    # DURING this delete, one it popped BEFORE this line. Either way a failed save puts it
+    # back still naming fid. Read-only, so safe pre-commit.
+    closing: list[tuple[Any, str, str]] = [
+        (s, slot_history_key(s), name)
+        for name, s in [*state._slots.items(), *slots_with_a_close_in_flight(state)]
+        if s.folder_id == fid
+    ]
 
     def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
         for f in folders:
@@ -1669,11 +1607,79 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         folders[:] = [f for f in folders if f["id"] != fid]
         return True, None
 
-    try:
-        await state.mutate_folders(_remove)
-    except Exception:
-        await _restore_unfiled()
-        raise
+    # CAPTURED, NOT PROPAGATED, then CONFIRMED. A cancellation here does not prove the
+    # removal landed: it can arrive while awaiting the store lock, before any write.
+    cancels = VocabularyDeleteCancellations()
+    committed = False
+
+    def _confirm_committed() -> None:
+        nonlocal committed
+        committed = True
+
+    with cancels.capturing_commit():
+        await state.mutate_folders(_remove, on_committed=_confirm_committed)
+    if cancels.commit is not None and not committed:
+        # ``state._folders`` reads deleted either way, so the hook firing is what proves
+        # the write landed. It runs under the store lock after the persist confirms, and
+        # is skipped for a no-op or rolled-back transaction, so an unfired hook refuses
+        # rather than unfile against an unprovable removal.
+        raise cancels.commit
+    # Two passes: pass one clears with no yield point, pass two awaits. Awaiting while
+    # iterating ``_slots`` raises RuntimeError the moment a tab closes concurrently.
+    cleared: list[tuple[Any, str, str]] = []
+    # A slot in both lists is visited twice harmlessly: the first visit blanks folder_id,
+    # so the second takes the ``continue``.
+    for slot, key_at_capture, slot_name in [
+        *closing,
+        *((s, None, name) for name, s in list(state._slots.items())),
+    ]:
+        if slot.folder_id != fid:
+            continue
+        # Cleared unconditionally but persisted only on an identity match: an in-memory
+        # clear writes nothing, so it cannot erase a persisted ``closed=True``.
+        slot.folder_id = ""
+        # Read after the blank, in this await-free pass, so the baseline is atomic with it.
+        live_key = slot_history_key(slot)
+        # The pre-commit key wins when we have one: it names the transcript the id is on.
+        cleared.append((slot, key_at_capture or live_key, slot_name))
+
+    async def _persist_cleared_and_publish() -> None:
+        for slot, pinned_key, slot_name in cleared:
+            try:
+                applied = await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    expected_history_key=pinned_key,
+                    expected_slot_name=slot_name,
+                )
+            except Exception:
+                slot._dirty = True
+                logger.warning(
+                    "folder delete: unfile persist failed for %s; "
+                    "marked dirty for periodic-flush retry",
+                    getattr(slot, "key", "?"),
+                    exc_info=True,
+                )
+            else:
+                if not applied:
+                    # Refused without writing (session deleted or rebound mid-persist).
+                    # The folder is gone, so the in-memory unfile stands; flush retries it.
+                    slot._dirty = True
+                    logger.warning(
+                        "folder delete: unfile save refused for %s "
+                        "(session deleted or rebound); marked dirty for "
+                        "periodic-flush retry",
+                        getattr(slot, "key", "?"),
+                    )
+        # Inside the shielded unit so other clients still learn of the delete even when
+        # this handler is going away.
+        state.push_slots_update()
+
+    # CAPTURED, not propagated, for the same reason as the tag side: the helper drains the
+    # sweep and then RE-RAISES, which would skip the only audit emission below.
+    with cancels.capturing_sweep():
+        await sweep_to_completion_despite_cancellation(_persist_cleared_and_publish())
     # Pop the epoch only after the removal is confirmed persisted. Popping
     # inside the callback would be a module-level side effect that survives a
     # failed store write: the folder would still exist while its epoch read 0
@@ -1692,7 +1698,8 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
     if pending is not None and not pending.done():
         pending.cancel()
-    state.push_slots_update()
+    # AUDIT BEFORE THE RE-RAISE: this is the only SEL emission for the operation and the
+    # removal is already durable by here, so re-raising first loses the record entirely.
     source, caller = _audit_origin(request)
     sel().log_api_access(
         caller=caller,
@@ -1701,6 +1708,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         source=source,
         resources=fid,
     )
+    cancels.reraise_in_order()
     return web.json_response({"ok": True})
 
 
