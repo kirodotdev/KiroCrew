@@ -9579,7 +9579,11 @@
         "search_files": "ファイルを検索",
         "searching": "検索中…",
         "showing_first_matches": "最初の {{shown}} 件の一致を表示しています",
-        "unable_to_list_folder": "フォルダーを一覧表示できません"
+        "unable_to_list_folder": "フォルダーを一覧表示できません",
+        "listing_timed_out": "フォルダーの一覧表示がタイムアウトしました",
+        "search_denied": "このフォルダーへのアクセスが拒否されました",
+        "search_root_missing": "フォルダーが見つかりません",
+        "search_timed_out": "検索がタイムアウトしました"
       },
       "knowledgePicker": {
         "cancel": "キャンセル",

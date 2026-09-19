@@ -9713,7 +9713,11 @@
         "search_files": "Dateien suchen",
         "searching": "Suche…",
         "showing_first_matches": "Die ersten {{shown}} Treffer werden angezeigt",
-        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
+        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden",
+        "listing_timed_out": "Zeitüberschreitung beim Auflisten des Ordners",
+        "search_denied": "Kein Zugriff auf diesen Ordner",
+        "search_root_missing": "Ordner nicht gefunden",
+        "search_timed_out": "Zeitüberschreitung bei der Suche"
       },
       "knowledgePicker": {
         "cancel": "Abbrechen",

@@ -9579,7 +9579,11 @@
         "search_files": "搜索文件",
         "searching": "正在搜索…",
         "showing_first_matches": "显示前 {{shown}} 个匹配项",
-        "unable_to_list_folder": "无法列出目录内容"
+        "unable_to_list_folder": "无法列出目录内容",
+        "listing_timed_out": "文件夹列表超时",
+        "search_denied": "无权访问该文件夹",
+        "search_root_missing": "未找到文件夹",
+        "search_timed_out": "搜索超时"
       },
       "knowledgePicker": {
         "cancel": "取消",

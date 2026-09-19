@@ -4263,12 +4263,19 @@ async def api_file_search(request: web.Request) -> web.Response:
             return _probe_busy_response(resource=project, operation="file_search", caller=caller)
         if is_sensitive_path(project):
             _sel().log_api_access(caller=caller, operation="file_search", outcome="denied", resources=project, error="sensitive path")
-            return web.json_response({"error": "Access denied"}, status=403)
+            return web.json_response(
+                {"error": "Access denied", "code": "access_denied"}, status=403
+            )
         if project_is_dir:
             search_roots.append(project)
         else:
             return web.json_response(
-                {"results": [], "error": "Project directory not found"}, status=404
+                {
+                    "results": [],
+                    "error": "Project directory not found",
+                    "code": "project_not_found",
+                },
+                status=404,
             )
     elif ws_name:
         from kiro_crew.config.loader import workspace_dir_for  # noqa: F811
@@ -5889,7 +5896,7 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
         return web.json_response({"error": "Not a directory", "path": base}, status=400)
     if is_sensitive_path(base):
         _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="denied", resources=base, error="sensitive path")
-        return web.json_response({"error": "Access denied"}, status=403)
+        return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim"}
     try:
         dirs = await _run_path_probe(_browse_dirs_sync, base, skip, transfer=True)
@@ -6158,7 +6165,7 @@ async def api_browse_files(request: web.Request) -> web.Response:
         return web.json_response({"error": "Not a directory", "path": base}, status=400)
     if is_sensitive_path(base):
         _sel().log_api_access(caller=caller, operation="browse_files", outcome="denied", resources=base, error="sensitive path")
-        return web.json_response({"error": "Access denied"}, status=403)
+        return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim", "build", "dist", ".next"}
     try:
         dirs, files = await _run_path_probe(_browse_files_sync, base, skip, transfer=True)
