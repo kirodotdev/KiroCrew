@@ -83,6 +83,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.testing.harness import _terminate_process_group
 
 pytestmark = pytest.mark.skipif(
@@ -112,6 +113,31 @@ def _kiro_internal_settings_path() -> Path:
     from kiro_crew import sandbox
 
     return Path(os.path.expanduser(sandbox._KIRO_INTERNAL_SETTINGS_PATH))
+
+
+def _read_config_json(config_path: Path) -> dict:
+    """Parse ``config.json``, outlasting the gateway's own boot write of it.
+
+    The gateway writes this file while it boots, through
+    ``config.loader.write_config_atomically``, which stages a temp file and
+    publishes it with ``os.replace``. On Windows a reader that opens the
+    destination inside that rename window loses: the open fails with
+    ``PermissionError`` (``WinError 32``) even though both the writer and the
+    reader are correct. POSIX permits the same read, which is why the loss is a
+    win32 host property and shows up only on the Windows lanes.
+
+    The read therefore goes through ``atomic_write.read_bytes_with_retry`` -- the
+    read-side twin of the retry the writer's own ``os.replace`` already carries --
+    rather than ``Path.read_text``, which spends its single attempt inside that
+    window and raises. Only ``PermissionError`` is retried, so a genuinely
+    unreadable or damaged file still fails the test instead of being slept over.
+
+    The retry belongs here rather than in the caller because the assertion this
+    read feeds is about the settings CONTENT: whether the unsandboxed-exec opt-in
+    is enabled. A transient sharing violation says nothing about that content, so
+    surfacing it as a failure reports a contract break that did not happen.
+    """
+    return json.loads(read_bytes_with_retry(config_path).decode("utf-8"))
 
 
 @pytest.fixture
@@ -581,7 +607,7 @@ class TestFreshWindowsGatewayDelegates:
         # fail for a reason unrelated to the contract.
         config_path = Path(gateway.home) / "config.json"
         if config_path.exists():
-            written = json.loads(config_path.read_text(encoding="utf-8"))
+            written = _read_config_json(config_path)
             agent_section = written.get("agent") or {}
             assert not agent_section.get("sandbox_allow_unsandboxed_exec", False)
             # The KIROCREW_KIRO_BIN seam only fires when the provider resolves to
