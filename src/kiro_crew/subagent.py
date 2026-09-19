@@ -70,8 +70,10 @@ from kiro_crew.effort import effort_settings_key, model_supports_effort
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
+    HOOK_EVENT_PRE_TOOL_USE,
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
+    _should_block_results,
     fire_tool_hooks,
     hook_gate_kwargs,
     identity_grant_covers_child,
@@ -3258,6 +3260,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     FALLBACK_STORY_ATTR,
     FallbackState,
     HOOK_EVENT_POST_TOOL_USE,
+    HOOK_EVENT_PRE_TOOL_USE,
     KiroCrewConfig,
     LLMEvent,
     LivenessOracle,
@@ -3277,6 +3280,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     _AGENT_NAME_RE,
     _agent_dir,
     _cleanup_session_files_sync,
+    _should_block_results,
     _subagents_dir,
     _ws_result_path,
     acp_error_is_transient,
