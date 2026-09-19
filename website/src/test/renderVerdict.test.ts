@@ -343,7 +343,7 @@ describe('CI supplies a base commit on both paths', () => {
     // A count, not a set: the point is that a gate ADDED to either workflow
     // cannot skip this file's `base.sha` assertion below by going unnoticed. Bump
     // it when a diff-scoped gate lands, and check the new wiring is in the loop.
-    expect(wirings).toHaveLength(11)
+    expect(wirings).toHaveLength(12)
   })
 
   it('still sees a wiring in each workflow it reads', () => {
