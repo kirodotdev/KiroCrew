@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Expand, Minimize, Smartphone, Monitor, Check, Crop, Play, Loader2, AlertTriangle, MoreHorizontal, MousePointerClick, Pencil, X, Plus } from 'lucide-react'
+import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Expand, Minimize, Smartphone, Monitor, Check, Crop, Play, Loader2, AlertTriangle, Info, MoreHorizontal, MousePointerClick, Pencil, X, Plus } from 'lucide-react'
 
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -1519,6 +1519,25 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     viewProbeKey,
   )
 
+  /**
+   * True exactly when the body renders the preview iframe — the one state in
+   * which a target that refuses to be framed leaves a blank rectangle and the
+   * panel says nothing about it.
+   *
+   * The conditions mirror the body's branch order (launcher, pending offer, no
+   * url, the two embed refusals, unreachable server, then the frame), and they
+   * are spelled here rather than re-derived at the use site so the hint below
+   * the URL bar cannot disagree with whether a frame is actually on screen. Each
+   * of those earlier branches already states what it is showing, and a line
+   * warning about a blank frame would contradict the card under it.
+   *
+   * Note the asymmetry with the liveness probe above, which is deliberate rather
+   * than an oversight: the probe ignores `launch` because a launcher flow leaves
+   * the previous target framed and its server worth polling, whereas the body
+   * replaces the frame with the launcher card, so the hint must not show.
+   */
+  const framing = !!url && !launch && !pending && !embedRefusal && !selfOrigin && !unreachable
+
   const iconBtn = 'flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text '
     + 'hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 '
     + 'disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted'
@@ -2088,6 +2107,59 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           </button>
         )}
       </form>
+
+      {/* Why a page can be blank here, said up front instead of detected after
+          the fact. No client-side signal separates a framed page from a refused
+          one: a cross-origin frame fires `load` for a document blocked by
+          X-Frame-Options or frame-ancestors just as it does for a healthy one,
+          and sooner (milliseconds, against seconds for a cold dev server), never
+          fires `error`, exposes no readable contentDocument even when healthy,
+          and reports an opaque zero-status resource timing entry. The only tell
+          is a console CSP violation, which a page cannot read and which
+          X-Frame-Options does not emit at all. So a timeout heuristic would fire
+          on slow servers and stay silent on refusals -- backwards -- and
+          `useSilentLoadWatch`, whose verdict is "load never arrived", cannot see
+          this case either.
+          One quiet line above the frame, never over it (the placement the
+          browser view's padlock hint uses), carrying the open-in-browser link
+          that is the actual way out. Only while a frame is really on screen, so
+          it never contradicts one of the explanatory cards below.
+          The copy describes a CLASS of pages ("Some pages ...") and makes no
+          claim about the frame on screen, because the line is unconditional: any
+          wording that points at "this preview" asks a reader whose page rendered
+          fine to evaluate a problem they do not have. A fact about the class is
+          true above a healthy frame and is the explanation the reader wants
+          above a blank one. It says "embedding", not "framed", to match the
+          vocabulary the sibling cards in this same panel already use.
+          Whether a line is a live warning about the reader's page or a note
+          that is always there is a fact about its PERSISTENCE, which no single
+          view of the panel shows, so two things say it. The glyph is Info and
+          deliberately NOT the AlertTriangle the explanatory cards use, since
+          those are stateful and this row is standing, and their warning mark
+          would say the opposite. The copy also opens with the word "Note:",
+          because a glyph carries a convention only to a reader who
+          already knows it, while an unlabelled line of muted text above a frame
+          reads as a warning that has not cleared. */}
+      {framing && (
+        <div
+          className="flex items-center gap-2 px-3 py-1 border-b border-border shrink-0 text-[11px] text-muted leading-snug"
+          data-testid="web-preview-frame-hint"
+        >
+          <Info size={11} className="shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1">
+            {i18nT('components.webPreviewPanel.some_pages_refuse_embedding_and_appear_blank')}
+          </span>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 shrink-0 text-muted hover:text-text transition-colors no-underline"
+          >
+            <ExternalLink size={11} aria-hidden />
+            <span>{i18nT('components.webPreviewPanel.open_in_browser')}</span>
+          </a>
+        </div>
+      )}
 
       {/* Body */}
       <div className="relative flex-1 min-h-0 bg-white">

@@ -30,6 +30,27 @@ Two consequences that have already cost real debugging time here:
 
 If a feature needs content to *appear* somewhere else, restyle the stable container — do not move the node.
 
+## The other rule: a refused frame is indistinguishable from a healthy one
+
+A cross-origin frame whose document was blocked by `X-Frame-Options` or CSP `frame-ancestors` is, from the embedding page, **not detectable**. It fires `load` exactly as a healthy frame does, and fires it *sooner*. Measured with the parent cross-origin to the target, which is the real configuration here (dashboard on one port, dev server on another):
+
+| target | Chromium `load` | Firefox `load` | `error` | readable `contentDocument` | resource timing |
+|---|---|---|---|---|---|
+| healthy page | 7 ms | 21 ms | never | no | status 0 |
+| `X-Frame-Options: DENY` | 4 ms | 127 ms | never | no | status 0 |
+| `X-Frame-Options: SAMEORIGIN` | 4 ms | 55 ms | never | no | status 0 |
+| CSP `frame-ancestors 'none'` | 4 ms | 56 ms | never | no | status 0 |
+| healthy but slow server (3 s) | 3008 ms | 3012 ms | never | no | status 0 |
+
+Comparing every field between a refused frame and a healthy one yields **no discriminating field, in either engine**. Two consequences:
+
+- **A load-timeout heuristic is inverted, not merely unreliable.** A refusal reports `load` in 4 ms against 3008 ms for a healthy cold dev server, so any threshold that catches the refusal also fires on a slow start. The false positive is worse than the blank frame it was meant to explain.
+- **`useSilentLoadWatch` cannot cover it.** Its verdict is "`load` never arrived", and here `load` always arrives.
+
+The only signal that separates the two is a console CSP violation, which a page cannot read, and which `X-Frame-Options` does not emit at all. A server-side frameability probe would answer it exactly, at the cost of an outbound-fetch endpoint and its SSRF surface.
+
+So `WebPreviewPanel.tsx` does not detect this state. It carries a standing note above every frame instead, and the note is worded and marked as a note rather than as a status, because it is shown over healthy previews too. Do not replace it with a timer.
+
 ## Adding a new panel tab kind
 
 Tab kinds live in `website/src/hooks/usePanelTabs.ts` (`ViewKind` / `TabKind`), and the body is dispatched in `website/src/pages/chat/SidePanel.tsx`. Two things to know before adding one:
