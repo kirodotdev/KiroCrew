@@ -1080,6 +1080,7 @@ def _pin_kill_and_reap_group_probe(_floor_monkeypatch):
     except Exception:  # pragma: no cover - a partial checkout must not break collection
         return
     monkeypatch.setattr(platform_compat, "_shares_own_process_group", lambda _pid: False)
+    monkeypatch.setattr(platform_compat, "_is_still_our_child", lambda _pid: True)
 
 
 @pytest.fixture(autouse=True)
