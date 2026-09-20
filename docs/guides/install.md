@@ -1060,6 +1060,32 @@ kirocrew doctor
 kirocrew gateway --port auto   # bind an OS-assigned port if 5476 is taken
 ```
 
+### Disk space: staged installers under scratch
+
+Each agent session runs with its scratch directory exported as `TMPDIR`, `TMP`,
+and `TEMP` (see [Relocating the scratch/runtime
+tree](#relocating-the-scratchruntime-tree-with-kirocrew_scratch_root)). When the
+default agent is `kiro-cli`, kiro-cli's own auto-updater stages its downloaded
+installer into that temporary directory before applying it. On a slow or
+metered disk this staged installer can be noticeable, and repeated update checks
+across many sessions add up.
+
+Kiro Crew does **not** disable kiro-cli's auto-updater on your behalf. That is a
+per-user choice about your own CLI, so nothing here silently changes it. If you
+want to stop the staged-installer downloads, turn the auto-updater off yourself:
+
+```bash
+kiro-cli settings app.disableAutoupdates true
+```
+
+You then update kiro-cli manually on your own schedule. To keep the staged
+installers (and the rest of the disposable scratch tree) off your system drive
+instead of disabling updates, relocate scratch onto another drive with
+`KIROCREW_SCRATCH_ROOT`; see [Relocating the scratch/runtime
+tree](#relocating-the-scratchruntime-tree-with-kirocrew_scratch_root). The
+scratch tree is disposable and reclaimed when its owning session ends, so its
+own residue does not accumulate across sessions.
+
 ## Uninstalling
 
 Uninstalling removes the Kiro Crew binary and its runtime but **preserves your

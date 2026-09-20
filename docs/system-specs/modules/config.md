@@ -191,6 +191,23 @@ eliminate, the one-way-door risk above; the release gate still stands.
 > `release-blocker`); the sign-off must be recorded there and the issue closed
 > before tagging the first release containing this change.
 
+**Staged-installer disk usage is the agent's, not Kiro Crew's.** Each spawned
+session runs with its scratch directory exported as `TMPDIR`/`TMP`/`TEMP`
+(`scratch_env()` in `agent_scratch.py`). The default `kiro-cli` agent's own
+auto-updater stages its downloaded installer into that temporary directory
+before applying it, so those bytes land under the scratch root. Kiro Crew writes
+no staged installer itself and does **not** disable the agent's auto-updater on
+the user's behalf: turning updates off is a per-user decision about their own
+CLI, surfaced in operator docs as the remedy `kiro-cli settings
+app.disableAutoupdates true` (see
+[install.md](../../guides/install.md#disk-space-staged-installers-under-scratch)),
+never set silently from here. Relocating the whole scratch tree with
+`KIROCREW_SCRATCH_ROOT` (above) moves those staged installers off the system
+drive without touching the agent's update policy. Reclaiming previously staged
+installer fragments (`.msi`/`.part`), reusing an already-staged installer, and
+re-download avoidance are the agent updater's own concern and live in the
+`kiro-cli` project, not here.
+
 **Paths are resolved per call, never captured at import.** Because
 `config_dir()` re-reads `$KIROCREW_HOME` on every call and the migration above
 is deliberately lazy, the resolved value is only correct at the moment it is
