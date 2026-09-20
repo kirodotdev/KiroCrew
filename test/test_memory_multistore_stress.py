@@ -179,11 +179,35 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
                 asyncio.create_task(operation(name, "backfill", 0), name=f"{name}/backfill/0")
             )
 
+        # Wait for the first job to reach the queue. The loop above creates a few
+        # hundred tasks, and this waits for the scheduler to run one of them far
+        # enough to enqueue, so a FIVE-second cap here bounded the scheduler rather
+        # than the work: a shard running the suite in a four-worker pool on a small
+        # runner loses that bet while a slower but less contended shard wins it.
+        #
+        # Still bounded, but the bound is a LOST-RUN CEILING and not a scheduling
+        # budget. Sixty seconds is twelve times the old cap and half this test's own
+        # `--timeout=120`, so a genuine "nothing ever enqueues" regression fails
+        # HERE with a message naming what it saw, instead of spinning until the
+        # per-test timeout kills the worker -- which under CI's
+        # `--max-worker-restart=0` takes the whole job rather than one test.
+        #
+        # Polled rather than waited on ``_jobs_changed``: the dispatch loop CLEARS
+        # that event, so it is a level that can be lowered between the enqueue and
+        # an observer, while ``qsize`` is the condition this test is about.
         async def wait_for_queue():
             while backend._jobs.qsize() == 0:
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.01)
 
-        await asyncio.wait_for(wait_for_queue(), 5)
+        try:
+            await asyncio.wait_for(wait_for_queue(), 60)
+        except TimeoutError:
+            finished = sum(1 for task in tasks if task.done())
+            raise AssertionError(
+                "no embed job reached the queue within 60s: "
+                f"{len(tasks)} operation task(s) created, {finished} already finished, "
+                f"queue depth {backend._jobs.qsize()}"
+            ) from None
         stats["queue_peak"] = max(stats["queue_peak"], backend._jobs.qsize())
         release.set()
         # Diagnostics only. This budget expires on a loaded shard from time to
