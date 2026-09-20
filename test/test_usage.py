@@ -1317,6 +1317,63 @@ class TestReadEffectiveModel:
     def test_reads_direct_model_attr(self):
         assert read_effective_model(_Inner("claude-sonnet-4.5")) == "claude-sonnet-4.5"
 
+    def test_prefers_the_public_served_model_accessor(self):
+        # `served_model` is the accessor providers/base.py declares so callers do
+        # not reach through internals, and on the ACP provider it is the only path
+        # that resolves a session left on the backend-selected DEFAULT model (via
+        # the session/new|load response's currentModelId). Probed first, matching
+        # llm_helpers.provider_active_model's own order.
+        src = type("P", (), {"served_model": "claude-opus-4.8"})()
+        assert read_effective_model(src) == "claude-opus-4.8"
+
+    def test_served_model_wins_over_a_private_attr_elsewhere_in_the_chain(self):
+        inner = _Inner("claude-haiku-4.5")
+        src = type("P", (), {"_client": inner, "served_model": "claude-opus-4.8"})()
+        assert read_effective_model(src) == "claude-opus-4.8"
+
+    def test_served_model_resolves_a_node_beyond_the_chain_cap(self):
+        # The model-bearing node sits past _wrapper_chain's 8-node cap, but the
+        # public accessor on the outermost provider delegates inward, so it is
+        # readable without walking there.
+        class _Wrapper:
+            def __init__(self, inner):
+                self._client = inner
+
+        node = _Inner("claude-haiku-4.5")
+        for _ in range(12):
+            node = _Wrapper(node)
+        capped = type("P", (), {"_client": node})()
+        assert read_effective_model(capped) == "", "precondition: the cap hides it"
+
+        class _Provider:
+            def __init__(self, inner):
+                self._client = inner
+
+            @property
+            def served_model(self):
+                return "claude-haiku-4.5"
+
+        assert read_effective_model(_Provider(node)) == "claude-haiku-4.5"
+
+    def test_a_blank_served_model_defers_to_the_private_attrs(self):
+        # The accessor answers "" for unknown/inconclusive, which must not shadow a
+        # resolved id further in.
+        inner = _Inner("claude-haiku-4.5")
+        src = type("P", (), {"_client": inner, "served_model": ""})()
+        assert read_effective_model(src) == "claude-haiku-4.5"
+
+    def test_an_auto_served_model_is_skipped_like_any_other_auto(self):
+        src = type("P", (), {"served_model": "auto"})()
+        assert read_effective_model(src) == ""
+
+    def test_a_raising_served_model_does_not_break_resolution(self):
+        class Boom:
+            @property
+            def served_model(self):
+                raise RuntimeError("boom")
+
+        assert read_effective_model(Boom()) == ""
+
     def test_skips_auto_sentinel(self):
         # "auto" means "backend chooses" — not a model, so not attribution data.
         assert read_effective_model(_Inner("auto")) == ""
