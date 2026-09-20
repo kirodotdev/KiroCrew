@@ -46,7 +46,10 @@ need no display and never call Bedrock.
 2. `boot.sh` starts Xvfb `:99` at 1600x1000, seeds a throwaway `KIROCREW_HOME`, starts
    the gateway with `KIROCREW_KIRO_BIN` pointed at
    `kiro_crew.testing.fake_acp_backend` (so chat replies without kiro-cli or a
-   login), reads the `KIROCREW_READY:{port, token}` line, opens Chromium
+   login; spawned as the KAS relay -- which is how crew-member DMs run by default --
+   the fake also reports every managed MCP server `connected`, since the KAS
+   harness holds a session's first prompt behind that readiness barrier), reads
+   the `KIROCREW_READY:{port, token}` line, opens Chromium
    (`--no-sandbox --test-type`, full-screen window, omnibox kept) at
    `http://127.0.0.1:<port>/?token=...`, focuses the window.
 3. `harness.py` navigates to each scenario's `start_url` through the omnibox (the
@@ -185,6 +188,15 @@ silently desynchronise the two. Each note is one chunk, so a scan of the folder 
 exactly three items -- the count that scenario asserts, and
 `test_scenarios_and_report.py` pins the note count and word length to it, so a note
 added without moving the scenario fails a unit test rather than a paid nightly run.
+
+That one boot also serves a failed scenario's retry: the harness runs attempt 2 against
+the same live gateway, with nothing re-seeded in between. A scenario must therefore
+hold on a target its own first attempt already touched -- more bubbles in the same
+thread, a toggle already flipped. One that changes persisted state (creates something,
+switches a store) and then expects the pre-change state cannot be retried: its second
+attempt meets a precondition that no longer holds and cannot reach a verdict. Write the
+steps and expectations so both attempts read the same, or keep the mutation out of the
+scenario.
 
 ### New-user friction: what confused the tester, beside the verdict
 

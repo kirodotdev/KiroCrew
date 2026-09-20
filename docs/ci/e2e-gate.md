@@ -77,7 +77,11 @@ order:
    `session/set_mode`, `session/set_model`, `session/prompt`) and switches
    behavior on bracket markers in the prompt (`[[TOOL]]`, `[[PERMISSION]]`,
    `[[GATED]]`, `[[SLOW]]`, `[[SLOW_NOACK]]`, `[[ERROR]]`), which is what makes
-   agent-driven specs deterministic offline.
+   agent-driven specs deterministic offline. Spawned as the KAS relay (the
+   `acp --agent-engine v3` argv, which is how crew-member DMs run by default) it
+   also reports every managed MCP server the session declared as `connected`
+   through `_kiro/mcp/status` / `_kiro/tools/didChange`, so the KAS harness's
+   readiness barrier releases the first prompt instead of timing out.
 3. Boots a real gateway with `spawn_feature_gateway(fixture="minimal",
    approval="reads")`, on an isolated temporary `KIROCREW_HOME` seeded
    atomically with gateway startup.

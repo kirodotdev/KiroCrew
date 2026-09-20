@@ -10,6 +10,19 @@ newline-delimited stdio) that ``kiro_crew.acp.client.AcpClient`` drives:
     session/set_model -> {}
     session/prompt    -> stream update(s), then {stopReason: "end_turn"}
 
+Spawned as the KAS relay (``acp --agent-engine v3 ...``, the argv
+``kiro_crew.acp.kas_transport.build_kas_argv`` renders) it also reports every
+managed MCP server the host declared -- the session-level ``mcpServers`` array
+and the active ``_meta.kiro.customAgents`` entry's ``mcpServers`` block -- as
+``connected`` through ``_kiro/mcp/status`` plus ``_kiro/tools/didChange``,
+after ``session/new`` and again after ``session/set_mode``. The KAS harness
+holds the first prompt behind that readiness barrier, and a relay that never
+reports leaves every KAS-routed session (crew-member DMs by default) timing out
+before its first turn. Each entry carries ``_meta.kiro.resource.source.origin =
+client`` and a one-tool catalog, the two facts the barrier reads as "this
+session's own server is reachable". The plain kiro-cli spawn (no engine flag)
+sends none of this, exactly like kiro-cli v2.
+
 Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
 
 * Default text -> stream one ``agent_message_chunk`` (the canned reply).
@@ -124,6 +137,20 @@ ERROR_MESSAGE = "fake ACP backend: injected failure"
 _SESSION_IDS = itertools.count(1)
 _SESSION_ID = "fake-1"
 _SESSIONS: dict[str, tuple[list[dict[str, Any]], str]] = {}
+#: ``_meta.kiro.customAgents`` as each session/new declared them, by session id:
+#: the roster the relay reports readiness for is read from here on set_mode.
+_SESSION_AGENTS: dict[str, list[dict[str, Any]]] = {}
+# The KAS relay's engine flag (kas_transport.KAS_RELAY_ENGINE_FLAG; spelled here
+# so this module stays stdlib-only). Its presence in argv is what tells a KAS
+# spawn from a kiro-cli one, and only the KAS spawn reports MCP readiness.
+KAS_RELAY_FLAG = "--agent-engine"
+_KAS_RELAY = False
+#: The one tool every reported managed server advertises; a non-empty catalog on
+#: the connected entry is the readiness barrier's exposure evidence.
+MCP_CATALOG_TOOL = "ping"
+_MCP_CLIENT_ORIGIN = {
+    "kiro": {"resource": {"resourceType": "mcpServer", "source": {"origin": "client"}}}
+}
 _TOOL_CALL_ID = "fake-tool-1"
 # The agent-authored purpose line, carried as a reserved tool argument. kiro-cli
 # echoes it back in ``rawInput`` under EITHER spelling; the fake emits the
@@ -152,6 +179,67 @@ def _update(session_id: str, update: dict[str, Any]) -> None:
 
 def _error(req_id: Any, code: int = ERROR_CODE, message: str = ERROR_MESSAGE) -> None:
     _send({"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}})
+
+
+def _custom_agents(params: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = params.get("_meta")
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    agents = kiro.get("customAgents") if isinstance(kiro, dict) else None
+    return [a for a in agents if isinstance(a, dict)] if isinstance(agents, list) else []
+
+
+def _managed_server_names(session_id: str, mode_id: str | None) -> list[str]:
+    """Servers this session was declared with, in declaration order.
+
+    The session-level array first, then the ``mcpServers`` block of the agent
+    ``mode_id`` names (every declared agent when no mode is named yet, as after
+    session/new), deduplicated -- the same two declaration sites the host's
+    ``required_managed_servers`` reads.
+    """
+    servers, _cwd = _SESSIONS.get(session_id, ([], ""))
+    names: list[str] = []
+    for server in servers:
+        name = server.get("name") if isinstance(server, dict) else None
+        if isinstance(name, str) and name not in names:
+            names.append(name)
+    for agent in _SESSION_AGENTS.get(session_id, []):
+        if mode_id is not None and agent.get("id") != mode_id:
+            continue
+        block = agent.get("mcpServers")
+        if isinstance(block, dict):
+            names.extend(name for name in block if isinstance(name, str) and name not in names)
+    return names
+
+
+def _report_mcp_ready(session_id: str, mode_id: str | None = None) -> None:
+    """KAS wire: every managed server connected, catalogued, and this session's own."""
+    if not _KAS_RELAY:
+        return
+    names = _managed_server_names(session_id, mode_id)
+    _notify(
+        "_kiro/mcp/status",
+        {
+            "sessionId": session_id,
+            "servers": [
+                {
+                    "name": name,
+                    "status": "connected",
+                    "tools": [
+                        {"name": MCP_CATALOG_TOOL, "description": "probe", "disabled": False}
+                    ],
+                    "_meta": _MCP_CLIENT_ORIGIN,
+                }
+                for name in names
+            ],
+        },
+    )
+    _notify(
+        "_kiro/tools/didChange",
+        {
+            "sessionId": session_id,
+            "tags": [{"source": "mcp", "tag": f"@{name}/{MCP_CATALOG_TOOL}"} for name in names],
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -390,11 +478,25 @@ def _handle(msg: dict[str, Any]) -> None:
         _SESSION_ID = f"fake-{next(_SESSION_IDS)}"
         params = msg.get("params") or {}
         _SESSIONS[_SESSION_ID] = (params.get("mcpServers") or [], params.get("cwd") or "")
+        _SESSION_AGENTS[_SESSION_ID] = _custom_agents(params)
         _result(req_id, {"sessionId": _SESSION_ID})
-    elif method == "_kiro.dev/session/terminate":
+        _report_mcp_ready(_SESSION_ID)
+    elif method in ("_kiro.dev/session/terminate", "_kiro/session/delete"):
         params = msg.get("params") or {}
         _SESSIONS.pop(str(params.get("sessionId", "")), None)
+        _SESSION_AGENTS.pop(str(params.get("sessionId", "")), None)
         _result(req_id, {})
+    elif method == "session/set_mode":
+        # Reported again here, not only after session/new: the host counts every
+        # frame queued before its set_mode request as describing the pre-switch
+        # roster and skips that many, so the session/new report alone would
+        # never satisfy the barrier for the agent it switches to.
+        params = msg.get("params") or {}
+        _result(req_id, {})
+        mode_id = params.get("modeId")
+        _report_mcp_ready(
+            str(params.get("sessionId", "")), mode_id if isinstance(mode_id, str) else None
+        )
     elif method == "session/prompt":
         params = msg.get("params") or {}
         session_id = str(params.get("sessionId", ""))
@@ -471,7 +573,10 @@ def _pump_stdin() -> None:
 
 
 def main() -> None:
+    global _KAS_RELAY
+
     args = sys.argv[1:]
+    _KAS_RELAY = KAS_RELAY_FLAG in args
     if args == ["--version"]:
         print(FAKE_VERSION)
         return
