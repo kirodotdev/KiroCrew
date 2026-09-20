@@ -3012,13 +3012,16 @@ async def test_a_refused_or_unavailable_claim_releases_the_reservation(
     def _busy(*_a, **_k):
         raise _taskq.TaskStoreUnavailable("locked")
 
-    monkeypatch.setattr(store, "claim", _busy)
+    # Scoped for the same reason the taskq admission integration test is: a
+    # blanket ``monkeypatch.undo()`` here would also revert this module's
+    # ``healthy_host_memory`` pins and everything ``_app_manager`` patched, so
+    # the second dispatch below would read the runner's real free memory.
     params = {"task": "t", "parent_session_key": "web-1", "_preassigned_id": "r-unavailable"}
-    info = await mgr._dispatch_async(params)
-    assert info is not None and info.queued and not info.done
-    assert mgr._running_count == 0, "an unavailable claim gives the reserved slot back"
-    monkeypatch.undo()
-    monkeypatch.setattr(admission_mod.SpawnAdmissionCoordinator, "pump_off_loop", True)
+    with monkeypatch.context() as busy_claim:
+        busy_claim.setattr(store, "claim", _busy)
+        info = await mgr._dispatch_async(params)
+        assert info is not None and info.queued and not info.done
+        assert mgr._running_count == 0, "an unavailable claim gives the reserved slot back"
     store.cancel("r-cancelled", reason="user stop")
     info = await mgr._dispatch_async({**params, "_preassigned_id": "r-cancelled"})
     assert info is not None and info.done and info.user_stopped

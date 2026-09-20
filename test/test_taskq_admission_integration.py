@@ -214,31 +214,38 @@ async def test_memory_pressure_defers_instead_of_refusing(
     quiet, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mgr = await _manager()
-    monkeypatch.setattr(
-        subagent_mod,
-        "cached_admission_check",
-        lambda: resource_status.AdmissionDecision(
-            admitted=False,
-            posture=resource_status.POSTURE_CRITICAL,
-            available_gb=0.5,
-            reason="host memory critically low",
-        ),
-    )
-    with patch.object(SubagentManager, "_run", new=AsyncMock()):
-        info = mgr.spawn("later", parent_session_key="dash:1")
-    assert info is not None
-    assert info.queued is True and info.done is False and not info.error
-    store: TaskStore = mgr._taskq
-    row = store.get(info.id)
-    assert row.state == model.QUEUED
-    assert row.next_run_at is not None and row.next_run_at > store.now()
-    assert [e.kind for e in store.events(info.id)] == ["accepted", "deferred"]
-    assert info.id not in mgr._agents and mgr._running_count == 0
-    # not in the window either: it is not eligible yet
-    assert mgr._queue == []
-    assert mgr.queued_count_for("dash:1") == 1
+    # Scoped, NOT ``monkeypatch.setattr`` + ``monkeypatch.undo()``: pytest hands
+    # the test and ``healthy_host_memory`` the SAME ``monkeypatch`` instance, so
+    # a blanket undo also reverts the fixture's pins and the drain below then
+    # reads the runner's real free memory. On a macos-15 nightly shard that read
+    # 2.58 GB, under the 4.5 GB floor, so the pump deferred the row a second
+    # time and the STARTING assertion failed as ``'queued' == 'starting'``.
+    # Leaving this block restores the fixture's healthy readings, not the host's.
+    with monkeypatch.context() as pressure:
+        pressure.setattr(
+            subagent_mod,
+            "cached_admission_check",
+            lambda: resource_status.AdmissionDecision(
+                admitted=False,
+                posture=resource_status.POSTURE_CRITICAL,
+                available_gb=0.5,
+                reason="host memory critically low",
+            ),
+        )
+        with patch.object(SubagentManager, "_run", new=AsyncMock()):
+            info = mgr.spawn("later", parent_session_key="dash:1")
+        assert info is not None
+        assert info.queued is True and info.done is False and not info.error
+        store: TaskStore = mgr._taskq
+        row = store.get(info.id)
+        assert row.state == model.QUEUED
+        assert row.next_run_at is not None and row.next_run_at > store.now()
+        assert [e.kind for e in store.events(info.id)] == ["accepted", "deferred"]
+        assert info.id not in mgr._agents and mgr._running_count == 0
+        # not in the window either: it is not eligible yet
+        assert mgr._queue == []
+        assert mgr.queued_count_for("dash:1") == 1
     # pressure lifts and the clock passes: the pump starts it
-    monkeypatch.undo()
     store._clock = lambda: time.time() + 3600
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
         mgr._drain_queue()
