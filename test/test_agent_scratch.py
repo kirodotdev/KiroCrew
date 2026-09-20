@@ -126,7 +126,105 @@ class TestLivenessSweep:
 
     def test_allocation_records_a_provisional_owner(self, scratch_root: Path) -> None:
         path = sc.allocate_scratch("prov")
-        assert (path / sc.OWNER_FILENAME).read_text() == str(os.getpid())
+        raw = (path / sc.OWNER_FILENAME).read_text()
+        # The marker now pairs the pid with its start id (pid:start_id), or is
+        # a bare pid when the platform has no start-id primitive. Either way the
+        # pid is the field before the first ':'.
+        pid_text, _, start_text = raw.partition(":")
+        assert pid_text == str(os.getpid())
+        expected_start = sc.platform_compat.get_process_start_id(os.getpid())
+        if expected_start is None:
+            assert raw == str(os.getpid())
+        else:
+            assert start_text == expected_start
+            assert ":" not in start_text  # start id never contains a colon
+
+    def test_marker_records_pid_and_start_id_and_live_pair_is_kept(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        # A recorded (pid, start_id) whose pid is live AND whose current start
+        # id still matches keeps the dir, however idle. Force a known start id
+        # so the test does not depend on the host's start-id primitive.
+        monkeypatch.setattr(sc.platform_compat, "pgroup_exists", lambda _pid: True)
+        monkeypatch.setattr(sc.platform_compat, "get_process_start_id", lambda _pid: "START-A")
+        path = sc.allocate_scratch("livepair")
+        sc.record_owner(path, 4242)
+        assert (path / sc.OWNER_FILENAME).read_text() == "4242:START-A"
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 0
+        assert path.exists()
+
+    def test_recycled_pid_with_changed_start_id_is_reclaimed(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        # The core Windows fix: pgroup_exists degrades to pid_exists on
+        # non-POSIX, so a RECYCLED pid reads as alive to the bare-pid probe.
+        # The recorded start id no longer matches the pid's current start id,
+        # so the dead-idle dir is reclaimed. This test fails if the start-id
+        # comparison in _owner_is_alive is removed.
+        monkeypatch.setattr(sc.platform_compat, "get_process_start_id", lambda _pid: "START-OLD")
+        path = sc.allocate_scratch("recycled")
+        sc.record_owner(path, 4242)
+        assert (path / sc.OWNER_FILENAME).read_text() == "4242:START-OLD"
+        # The pid number now belongs to a DIFFERENT process: pid_exists/pgroup
+        # says alive, but its start id has changed.
+        monkeypatch.setattr(sc.platform_compat, "pgroup_exists", lambda _pid: True)
+        monkeypatch.setattr(sc.platform_compat, "get_process_start_id", lambda _pid: "START-NEW")
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 1
+        assert not path.exists()
+
+    def test_live_pid_with_unreadable_start_id_is_kept(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        # Fail-safe: a still-existing pid whose CURRENT start id cannot be read
+        # (None) reads as ALIVE, so an owner we merely cannot re-confirm never
+        # loses its tree.
+        monkeypatch.setattr(sc.platform_compat, "get_process_start_id", lambda _pid: "START-A")
+        path = sc.allocate_scratch("unreadable")
+        sc.record_owner(path, 4242)
+        monkeypatch.setattr(sc.platform_compat, "pgroup_exists", lambda _pid: True)
+        monkeypatch.setattr(sc.platform_compat, "get_process_start_id", lambda _pid: None)
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 0
+        assert path.exists()
+
+    def test_legacy_bare_pid_marker_live_owner_is_kept(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        # A marker written by an OLDER gateway is a bare pid with no ':'. It
+        # must parse to (pid, None) and be judged by the group probe alone, so
+        # an in-flight upgrade never reclaims a live legacy owner.
+        path = sc.allocate_scratch("legacylive")
+        (path / sc.OWNER_FILENAME).write_text("4242")  # bare pid, no start id
+        monkeypatch.setattr(sc.platform_compat, "pgroup_exists", lambda pid: pid == 4242)
+        # get_process_start_id must NOT be consulted on the legacy path; make it
+        # explode so a regression that reads it fails loudly.
+        monkeypatch.setattr(
+            sc.platform_compat,
+            "get_process_start_id",
+            lambda _pid: pytest.fail("legacy bare-pid marker must not consult start id"),
+        )
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 0
+        assert path.exists()
+
+    def test_legacy_bare_pid_marker_dead_owner_is_reclaimed(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        # The other half of backward compat: a legacy bare-pid marker whose pid
+        # is dead is still reclaimed by the group probe alone.
+        path = sc.allocate_scratch("legacydead")
+        (path / sc.OWNER_FILENAME).write_text("4242")
+        monkeypatch.setattr(sc.platform_compat, "pgroup_exists", lambda _pid: False)
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 1
+        assert not path.exists()
 
     def test_unowned_dir_is_never_deleted(self, scratch_root: Path) -> None:
         # Allocation writes a provisional owner atomically-with-creation, so
@@ -147,6 +245,17 @@ class TestLivenessSweep:
         removed = sc.sweep_dead_scratch()
 
         assert path.exists() and removed == 0
+
+    def test_garbled_pid_with_start_id_suffix_is_left_for_a_human(self, scratch_root: Path) -> None:
+        # The new parser splits on the first ':' before int()ing the pid, so a
+        # non-int pid is still garbled even when a start-id-shaped suffix is
+        # present: left for a human, never deleted.
+        path = sc.allocate_scratch("garbled2")
+        (path / sc.OWNER_FILENAME).write_text("not-a-pid:START-A")
+        self._age(path, 2 * sc._UNOWNED_GRACE_SECONDS)
+
+        assert sc.sweep_dead_scratch() == 0
+        assert path.exists()
 
     def test_missing_root_returns_zero(self, scratch_root: Path) -> None:
         assert sc.sweep_dead_scratch() == 0

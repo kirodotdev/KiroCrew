@@ -21,12 +21,27 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   sweep -- agent processes die many ways (clean shutdown, kill escalation,
   crash, gateway restart with survivors), and the positive liveness signal
   below covers every death path by construction.
-* The gateway sweeps hourly (first pass an hour after start -- never on the
-  boot path). A directory is removed only when its recorded owner's process
-  GROUP is dead AND the whole tree has been idle past the grace window; a
-  directory with a live owner is never touched (agent processes can outlive
-  a gateway restart), an ownerless directory is never deleted, and a garbled
-  owner file is left for a human.
+* The gateway sweeps hourly (first pass a short delay after boot -- deferred
+  off the synchronous boot path, but PROMPT rather than an hour in, so a
+  gateway that restarts more often than hourly still reclaims dead scratch).
+  A directory is removed only when its recorded owner's process GROUP is dead
+  AND the whole tree has been idle past the grace window; a directory with a
+  live owner is never touched (agent processes can outlive a gateway
+  restart), an ownerless directory is never deleted, and a garbled owner file
+  is left for a human.
+
+The owner marker pairs the owner PID with the owning process's START ID
+(:func:`platform_compat.get_process_start_id`), written as ``pid:start_id``
+on one line -- or a bare ``pid`` when the start id is unknown. Pairing exists
+to defeat PID recycling: :func:`platform_compat.pgroup_exists` degrades to a
+plain ``pid_exists`` on non-POSIX (Windows), so a recycled pid there reads as
+a live owner and its dead-but-recycled scratch dir is never reclaimed.
+Comparing the recorded start id against the pid's CURRENT start id tells the
+original owner from an impostor that merely inherited its number
+(:mod:`kiro_crew.session_pid` pairs a start id for the same reason). A
+pre-upgrade marker is a bare pid with no ``:``: it parses to identity-unknown
+and is judged by the legacy group probe alone, so an in-flight upgrade never
+reclaims a live dir.
 
 kiro-cli's own log rides along. The CLI writes ``kiro-log/kiro-chat.log`` (plus
 ``mcp.log`` / ``lsp.log`` beside it) under ``$XDG_RUNTIME_DIR`` when that is
@@ -206,7 +221,14 @@ def _write_owner_marker(directory: Path, pid: int) -> None:
         raise NotADirectoryError(f"agent scratch dir is not a directory: {directory.name}")
     marker = directory / OWNER_FILENAME
     _refuse_linked(marker, f"{OWNER_FILENAME} in {directory.name!r}")
-    atomic_write(marker, str(pid))
+    # Pair the pid with its START ID so a recycled pid does not read as the
+    # original owner (see the module docstring). ``get_process_start_id``
+    # guarantees the value never contains ``:``, so ``pid:start_id`` round-trips
+    # by splitting on the first colon; ``None`` (identity unknown) yields a bare
+    # ``pid``, which the sweep judges by the legacy group probe alone.
+    start_id = platform_compat.get_process_start_id(pid)
+    contents = str(pid) if start_id is None else f"{pid}:{start_id}"
+    atomic_write(marker, contents)
 
 
 def _discard_owner_marker(directory: Path) -> bool:
@@ -528,6 +550,39 @@ def _pgroup_alive(pid: int) -> bool:
     return platform_compat.pgroup_exists(pid)
 
 
+def _owner_is_alive(pid: int, recorded_start: str | None) -> bool:
+    """Whether the RECORDED owner -- this exact process, not a pid twin -- lives.
+
+    ``recorded_start is None`` is a pre-upgrade (bare-pid) marker or a marker
+    written where the start id was unknown: preserve today's behavior and judge
+    the pid by :func:`_pgroup_alive` alone, so an in-flight upgrade never
+    misjudges a marker an older gateway wrote.
+
+    With a recorded start id the owner reads as alive only when the pid's GROUP
+    is alive AND its CURRENT start id equals the recorded one. A recycled pid on
+    the non-POSIX path -- where :func:`platform_compat.pgroup_exists` degrades to
+    ``pid_exists`` and the number looks alive -- now presents a DIFFERENT start
+    id (or ``None``) and reads as dead, so its dead-idle scratch dir is
+    reclaimed. This is the core Windows fix.
+
+    Conservative direction, matching the sweep's "never delete on ambiguous
+    evidence" posture: an UNREADABLE current start id (``None``) for a pid whose
+    group is still alive reads as ALIVE. The pid exists, we simply cannot
+    re-confirm its identity, and refusing to delete a dir whose owner might be
+    live is the fail-safe answer.
+    """
+    if not _pgroup_alive(pid):
+        return False
+    if recorded_start is None:
+        return True
+    current_start = platform_compat.get_process_start_id(pid)
+    if current_start is None:
+        # The pid is alive but its identity cannot be re-read: fail safe and
+        # keep the dir rather than risk deleting a live owner's tree.
+        return True
+    return current_start == recorded_start
+
+
 def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """The newest mtime anywhere in *root*'s tree (lstat, symlinks never followed).
 
@@ -627,11 +682,22 @@ def sweep_dead_scratch(now: float | None = None) -> int:
             )
             continue
         try:
-            pid = int(marker.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            # Unowned or garbled: never delete on absence of evidence.
+            raw = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            # Unowned: never delete on absence of evidence.
             continue
-        if _pgroup_alive(pid):
+        # Parse ``pid:start_id`` -- split on the FIRST colon so the pid is the
+        # left field and the start id (which never contains ``:``) is the right.
+        # A bare pid (pre-upgrade marker) parses to (pid, None). A non-int pid
+        # is still 'garbled: left for a human', exactly as before.
+        pid_text, _, start_text = raw.partition(":")
+        recorded_start = start_text if start_text else None
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            # Garbled: never delete on absence of evidence.
+            continue
+        if _owner_is_alive(pid, recorded_start):
             continue
         shutil.rmtree(child, ignore_errors=True)
         removed += 1

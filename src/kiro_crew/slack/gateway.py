@@ -14555,6 +14555,15 @@ _SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
 _AGENTS_JANITOR_TASK: "asyncio.Task[None] | None" = None
 #: Strong ref for the liveness-keyed agent-scratch sweep loop.
 _AGENT_SCRATCH_SWEEP_TASK: "asyncio.Task[None] | None" = None
+#: Delay before the FIRST agent-scratch sweep pass. Deferred off the
+#: synchronous boot path (the sweep still runs via asyncio.to_thread), but a
+#: minute rather than a full hour: a gateway that restarts more often than
+#: hourly would otherwise never reach its first sweep and never reclaim dead
+#: scratch. Much smaller than the hourly cadence below, and small enough that
+#: reclamation is prompt without racing boot.
+_AGENT_SCRATCH_SWEEP_FIRST_DELAY_SECONDS = 60
+#: Steady-state cadence between agent-scratch sweeps after the first pass.
+_AGENT_SCRATCH_SWEEP_INTERVAL_SECONDS = 3600
 #: Strong ref for the kiro-cli log cap loop.
 _KIRO_CLI_LOG_CAP_TASK: "asyncio.Task[None] | None" = None
 
@@ -14658,30 +14667,38 @@ async def run_gateway(
 
         _AGENTS_JANITOR_TASK = asyncio.create_task(_run_agents_janitor(), name="agents-dir-janitor")
 
-    # ── Agent scratch sweep (fire-and-forget, boot + hourly) ──
+    # ── Agent scratch sweep (fire-and-forget, prompt-but-deferred + hourly) ──
     # Reclaim per-process agent scratch dirs whose owner process is dead
     # (see kiro_crew.agent_scratch). Liveness-keyed, never age-keyed, so a
     # long-lived session's in-flight work is never deleted under it -- and
     # because agent processes can OUTLIVE a gateway restart, the sweep checks
-    # each recorded owner pid instead of clearing wholesale at boot. Hourly
-    # repeats catch processes that die while the gateway stays up (no
-    # per-teardown hook: the positive liveness signal covers every death
-    # path by construction). Same containment posture as the janitor above:
-    # offloaded, fail-open, skipped in test_mode.
+    # each recorded owner pid instead of clearing wholesale at boot. The first
+    # pass runs a short delay after boot (_AGENT_SCRATCH_SWEEP_FIRST_DELAY_
+    # SECONDS) rather than a full hour in: a gateway that restarts more often
+    # than hourly would otherwise never reach its first sweep and dead scratch
+    # would accumulate forever. The sweep itself is offloaded via
+    # asyncio.to_thread, so its file-count-scaled work never lands on the
+    # synchronous boot path even though the first pass is prompt -- boot stays
+    # free of maintenance, the reclamation just no longer waits an hour.
+    # Hourly repeats thereafter catch processes that die while the gateway
+    # stays up (no per-teardown hook: the positive liveness signal covers
+    # every death path by construction). Same containment posture as the
+    # janitor above: offloaded, fail-open, skipped in test_mode.
     global _AGENT_SCRATCH_SWEEP_TASK
     if not test_mode:
 
         async def _run_agent_scratch_sweep() -> None:
+            # Prompt first pass, then the hourly cadence. Sleep-first still
+            # holds (nothing here is boot-urgent and scratch reclamation has
+            # no correctness deadline), the initial sleep is just short.
+            delay = _AGENT_SCRATCH_SWEEP_FIRST_DELAY_SECONDS
             while True:
-                # Sleep FIRST: gateway boot must not pick up file-count-scaled
-                # maintenance (no-new-work-on-gateway-boot-path); the first
-                # sweep runs an hour in, and nothing here is boot-urgent --
-                # scratch reclamation has no correctness deadline.
-                await asyncio.sleep(3600)
+                await asyncio.sleep(delay)
                 try:
                     await asyncio.to_thread(agent_scratch.sweep_dead_scratch)
                 except Exception:
                     logging.getLogger(__name__).debug("agent-scratch sweep failed", exc_info=True)
+                delay = _AGENT_SCRATCH_SWEEP_INTERVAL_SECONDS
 
         _AGENT_SCRATCH_SWEEP_TASK = asyncio.create_task(
             _run_agent_scratch_sweep(), name="agent-scratch-sweep"
