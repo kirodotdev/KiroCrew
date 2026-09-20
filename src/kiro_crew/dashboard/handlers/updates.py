@@ -2484,7 +2484,7 @@ async def _audit_update_event(
 
 
 async def _arm_packaged_app(request: web.Request) -> web.Response:
-    """Arm an update REQUEST for a packaged desktop install (dmg/appimage/deb/rpm).
+    """Arm an update REQUEST for a packaged desktop install (dmg/appimage/deb/rpm/nsis).
 
     Not a step-up. The managed-venv lane needs one because the gateway itself
     performs the apply, so something has to prove a human authorised it. On a

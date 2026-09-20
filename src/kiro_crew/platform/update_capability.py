@@ -90,7 +90,13 @@ EXTERNALLY_MANAGED_MESSAGES = {
 #: replaced by the app's updater handing a package to dpkg or rpm, and a wheel
 #: classification would offer this gateway's apply endpoint for a tree it cannot
 #: touch.
-_ELECTRON_DISTRIBUTIONS = frozenset({"dmg", "appimage", "deb", "rpm"})
+#:
+#: ``nsis`` is that same app on Windows, updated in-app by electron-updater's
+#: ``NsisUpdater``. It belongs here for a sharper reason than the others: the
+#: wheel branch's remediation is a POSIX ``curl … | sh`` line, and a Windows
+#: shell cannot run it at all, so a Windows desktop install landing there is
+#: handed a command that is not merely wrong but unrunnable.
+_ELECTRON_DISTRIBUTIONS = frozenset({"dmg", "appimage", "deb", "rpm", "nsis"})
 _CONTAINER_DISTRIBUTIONS = frozenset({"docker"})
 
 #: Every stamp whose updates are owned elsewhere. Public because the policy

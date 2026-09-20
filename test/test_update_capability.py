@@ -309,7 +309,7 @@ class TestRunningFromCheckout:
 
 
 class TestDeriveCapability:
-    @pytest.mark.parametrize("dist", ["dmg", "appimage"])
+    @pytest.mark.parametrize("dist", ["dmg", "appimage", "deb", "rpm", "nsis"])
     def test_desktop_defers_to_its_own_updater(self, dist):
         capability = derive_capability(install_root="", dist=dist)
         assert capability.managed_by == "electron"
@@ -318,6 +318,19 @@ class TestDeriveCapability:
         # The gateway's own apply endpoint is git-only, so it must not claim the
         # capability just because the surrounding app has it.
         assert capability.can_apply is False
+
+    def test_the_windows_desktop_is_not_offered_a_posix_installer(self):
+        """The Windows desktop stamp must stay out of the feed lane below.
+
+        That lane's remediation is a ``curl … | sh`` pipeline: no Windows shell
+        runs it, and the installer it fetches does not replace the app's bytes
+        either.
+        """
+        capability = derive_capability(install_root="", dist="nsis")
+        assert capability.remediation is None
+        # for_channel is where the wheel command is re-pinned; a deferring
+        # capability must not acquire one by passing through it.
+        assert capability.for_channel("nightly").remediation is None
 
     def test_container_is_supported_but_cannot_apply(self):
         capability = derive_capability(install_root="", dist="docker")
@@ -351,11 +364,12 @@ class TestDeriveCapability:
         assert "--proto '=https'" in command
         assert "--channel " in command
 
-    def test_a_desktop_stamp_wins_over_a_checkout(self, tmp_path):
+    @pytest.mark.parametrize("dist", ["dmg", "nsis"])
+    def test_a_desktop_stamp_wins_over_a_checkout(self, tmp_path, dist):
         # A bundle ships this backend inside itself; being pointed at a checkout
         # does not move ownership of its bytes to that checkout.
         _init_repo(tmp_path)
-        capability = derive_capability(install_root=str(tmp_path), dist="dmg")
+        capability = derive_capability(install_root=str(tmp_path), dist=dist)
         assert capability.managed_by == "electron"
 
     def test_install_root_defaults_to_the_project_env(self, tmp_path, monkeypatch):
@@ -536,3 +550,29 @@ class TestTheProbeDoesNotTrustPath:
         nested = checkout / "src" / "deep"
         nested.mkdir(parents=True)
         assert is_git_worktree(str(nested)) is False
+
+
+class TestExternallyManagedTablesAgree:
+    """The two tables keyed on the same stamps must not drift apart.
+
+    ``update_layout.detect_install_layout`` decides ``is_externally_managed`` by
+    membership in its own ``EXTERNALLY_MANAGED`` copy, so a stamp added to the
+    capability's classes and missed there is reported as a feed-checkable
+    install: the channel endpoint would accept a switch for an app that reads no
+    channel file, and the CLI would run the wheel updater against bytes it does
+    not own.
+    """
+
+    def test_every_managed_stamp_has_guidance(self):
+        from kiro_crew.platform.update_capability import EXTERNALLY_MANAGED_STAMPS
+        from kiro_crew.platform.update_layout import EXTERNALLY_MANAGED
+
+        assert set(EXTERNALLY_MANAGED) == set(EXTERNALLY_MANAGED_STAMPS)
+
+    def test_the_windows_guidance_names_the_app_updater(self):
+        from kiro_crew.platform.update_layout import EXTERNALLY_MANAGED
+
+        guidance = EXTERNALLY_MANAGED["nsis"]
+        assert "desktop app's built-in updater" in guidance
+        # It must not send a Windows user to a shell installer.
+        assert "curl" not in guidance and " sh" not in guidance

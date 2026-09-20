@@ -1339,6 +1339,7 @@ value.
 | Wheel | `.github/workflows/build-wheel.yml`, before `python -m build` | `wheel` |
 | macOS desktop | `packaging/build-desktop.sh` → `build_backend` | `dmg` |
 | Linux desktop | `packaging/build-desktop.sh` → `build_backend` | `appimage` |
+| Windows desktop | `packaging/build-desktop.sh` → `build_backend` | `nsis` |
 | Container | `docker/Dockerfile`, after the wheel install | `docker` |
 | Git checkout | nothing | `source` |
 
@@ -1353,10 +1354,11 @@ Two non-obvious constraints:
   the wheel channel. It overwrites the module rather than setting the env var,
   because the baked value outranks the env var by design.
 - The value is derived from the electron-builder **target**, not the host OS
-  (`mac.target: dmg`, `linux.target: AppImage`). A Linux host also builds wheels,
-  so branching on the host would mislabel them. Windows ships an NSIS
-  installer, which has no value in `KNOWN_DISTRIBUTIONS`, and reports `source`
-  until one is added to both the frozenset and the stamping script.
+  (`mac.target: dmg`, `linux.target: AppImage`, `win.target: nsis`). A Linux host
+  also builds wheels, so branching on the host would mislabel them. The stamp is
+  read by more than the beacon: `platform/update_capability.py` keys the
+  externally-managed classes on it, so a desktop artifact that carries the wrong
+  value is offered the CLI release feed and the wheel installer command.
 
 The three tests that execute `stamp-distribution.sh` skip when bash cannot run
 it, probed by actually invoking the script rather than by `shutil.which("bash")`:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import http.client
 import importlib
 import json
+import re
 import socket
 import ssl
 import subprocess
@@ -350,6 +351,58 @@ class TestDistributionStamp:
         """A committed stamp would mislabel every other build's beacon."""
         root = Path(__file__).resolve().parents[1]
         assert "src/kiro_crew/_build_info.py" in (root / ".gitignore").read_text()
+
+
+class TestDesktopStampPerOS:
+    """``packaging/build-desktop.sh`` must stamp a desktop value on every OS.
+
+    Source-level, so it runs on Windows CI too, where bash is unavailable.
+
+    The stamp is not only a beacon field: ``platform/update_capability.py`` keys
+    the externally-managed classes on it, so a desktop artifact stamped with a
+    feed-checkable value is offered the CLI release feed and the POSIX
+    ``curl … | sh`` installer command instead of the app's own updater.
+    """
+
+    _SCRIPT = Path(__file__).resolve().parents[1] / "packaging" / "build-desktop.sh"
+
+    def _os_stamps(self) -> dict[str, str]:
+        """``{OS branch: stamped value}`` read out of the shipped script."""
+        text = self._SCRIPT.read_text(encoding="utf-8")
+        block = re.search(
+            r'case "\$OS" in\n((?:\s*\S+\)\s*KC_DISTRIBUTION="[^"]+"\s*;;\n)+)\s*esac',
+            text,
+        )
+        assert block, "no KC_DISTRIBUTION case found in packaging/build-desktop.sh"
+        found = dict(
+            re.findall(r'(\S+)\)\s*KC_DISTRIBUTION="([^"]+)"', block.group(1))
+        )
+        assert found, "KC_DISTRIBUTION case matched no branches"
+        return found
+
+    def test_every_branch_stamps_a_known_distribution(self):
+        for branch, dist in self._os_stamps().items():
+            assert dist in beacon.KNOWN_DISTRIBUTIONS, (
+                f"{branch}) stamps {dist!r}, which the clamp rejects — "
+                "the artifact would silently report 'source'"
+            )
+
+    def test_every_branch_stamps_an_externally_managed_value(self):
+        """The script only ever packages the desktop app, on every OS.
+
+        A branch stamping a feed-checkable value is the defect, not a variant:
+        the artifact then advertises an update path that cannot replace its
+        bytes.
+        """
+        from kiro_crew.platform.update_capability import EXTERNALLY_MANAGED_STAMPS
+
+        for branch, dist in self._os_stamps().items():
+            assert dist in EXTERNALLY_MANAGED_STAMPS, (
+                f"{branch}) stamps {dist!r}, which is not externally managed"
+            )
+
+    def test_the_windows_branch_stamps_nsis(self):
+        assert self._os_stamps().get("windows") == "nsis"
 
 
 class TestVersionClamp:

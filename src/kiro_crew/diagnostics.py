@@ -868,6 +868,7 @@ _INSTALL_OPTIONS = {
     "appimage": "Desktop app",
     "deb": "Desktop app (deb)",
     "rpm": "Desktop app (rpm)",
+    "nsis": "Desktop app",
     "wheel": "pip / pipx",
     "docker": "Docker",
     "source": "From source",

@@ -1,8 +1,8 @@
 """An agent's request that a packaged desktop install be updated.
 
-A packaged install (``dmg``/``appimage``/``deb``/``rpm``) is updated by the
-desktop app's own updater, and the only thing that can start that install is a
-human click in Settings › About inside the app. This module records that a
+A packaged install (``dmg``/``appimage``/``deb``/``rpm``/``nsis``) is updated by
+the desktop app's own updater, and the only thing that can start that install is
+a human click in Settings › About inside the app. This module records that a
 request was MADE, so that click can be offered with context — which version,
 who asked, when — and nothing more.
 

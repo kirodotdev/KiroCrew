@@ -11881,7 +11881,7 @@ class GatewayOrchestrator:
                 #     command in `remediation`) -> the installer can apply it, so
                 #     a floor does drive it; a floor above the newest build
                 #     notifies instead of reinstalling the same bytes forever.
-                #   * externally managed (dmg/appimage/deb/rpm/docker: no
+                #   * externally managed (dmg/appimage/deb/rpm/nsis/docker: no
                 #     `can_apply` and no command) -> its own updater owns this; the
                 #     backend must not drive a git reset on a non-git tree nor show
                 #     an inapplicable CLI-update badge.
@@ -11940,7 +11940,7 @@ class GatewayOrchestrator:
                     return
                 # Everything below cannot apply here, so the operator has to act.
                 # Two of the three cases light the badge; the third deliberately
-                # does not, because a dmg/appimage/deb/rpm/docker install cannot
+                # does not, because a dmg/appimage/deb/rpm/nsis/docker install cannot
                 # act on a CLI-update badge and its own updater owns the upgrade.
                 #
                 # Where the badge IS lit, `check_status` and `error_code` are left

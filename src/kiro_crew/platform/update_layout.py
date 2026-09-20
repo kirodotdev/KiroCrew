@@ -28,9 +28,10 @@ RELEASE_CHANNELS = ("stable", "insider", "nightly")
 #: to the copy shown for them. Built from the capability module's table so the
 #: CLI and the dashboard cannot show different words for the same state.
 #:
-#: The Linux packages add the package manager that receives the new bytes, which
-#: is the one detail a .deb or .rpm user needs and the shared sentence cannot
-#: carry. The sentence itself still has one source.
+#: The packaged shapes whose updater hands the bytes to a second installer name
+#: it: dpkg, rpm, or the NSIS installer. That is the one detail a .deb, .rpm or
+#: Windows user needs and the shared sentence cannot carry. The sentence itself
+#: still has one source.
 _APP_MANAGED = EXTERNALLY_MANAGED_MESSAGES[UNAVAILABLE_MANAGED_BY_APP]
 
 
@@ -47,6 +48,7 @@ EXTERNALLY_MANAGED = {
     "appimage": _APP_MANAGED,
     "deb": _app_managed_via("dpkg", ".deb"),
     "rpm": _app_managed_via("rpm", ".rpm"),
+    "nsis": _app_managed_via("the NSIS installer", "Setup .exe"),
     "docker": EXTERNALLY_MANAGED_MESSAGES[UNAVAILABLE_MANAGED_BY_IMAGE],
 }
 
@@ -54,7 +56,7 @@ EXTERNALLY_MANAGED = {
 class InstallLayout(NamedTuple):
     """Describes how this Kiro Crew instance was installed."""
 
-    kind: str  # "git", "wheel", "dmg", "appimage", "deb", "rpm", "docker", or "source"
+    kind: str  # "git", "wheel", "dmg", "appimage", "deb", "rpm", "nsis", "docker", or "source"
     proj: str  # KIROCREW_PROJECT_DIR value (may be empty for non-git)
     is_git: bool
     is_externally_managed: bool

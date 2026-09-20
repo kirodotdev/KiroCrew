@@ -164,9 +164,16 @@ _CI_ENV_VARS = (
 #
 # "source" is the git-clone path and the correct answer for an unstamped tree,
 # so it is the default rather than an "unknown" bucket.
+#
+# ``nsis`` is the Windows desktop app, named after the electron-builder target
+# that produces it. It is a value of its own rather than folded into another
+# desktop stamp because the stamp is also how `update_capability` decides who
+# owns replacing an install's bytes: without it a Windows desktop install
+# answers "source", which routes it to the CLI release feed and offers a POSIX
+# installer command it can neither run nor be updated by.
 DIST_ENV = "KIROCREW_DISTRIBUTION"
 KNOWN_DISTRIBUTIONS = frozenset(
-    {"dmg", "appimage", "deb", "rpm", "wheel", "source", "docker"}
+    {"dmg", "appimage", "deb", "rpm", "nsis", "wheel", "source", "docker"}
 )
 DEFAULT_DISTRIBUTION = "source"
 
