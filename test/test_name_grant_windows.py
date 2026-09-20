@@ -600,6 +600,61 @@ class TestBuiltinsPrecedeThePath:
         for name in ("iex", "icm", "saps", "start", "ii", "foreach", "%", "where", "?"):
             assert name not in name_grant._WINDOWS_INERT_BUILTINS
 
+    #: Names whose `-Property`/`-GroupBy` argument PowerShell evaluates as a
+    #: calculated property, measured on 5.1 with object input: the block runs
+    #: once per input object, so the argument -- which the agent writes -- can
+    #: start any process.
+    CALCULATED_PROPERTY_NAMES = (
+        "select",
+        "select-object",
+        "sort",
+        "sort-object",
+        "group",
+        "group-object",
+        "compare",
+        "diff",
+        "compare-object",
+        "fl",
+        "ft",
+        "fw",
+        "format-list",
+        "format-table",
+        "format-wide",
+        "format-custom",
+    )
+
+    @pytest.mark.parametrize("name", CALCULATED_PROPERTY_NAMES)
+    def test_a_calculated_property_taker_is_never_inert(self, name):
+        # A script block in ANY parameter disqualifies a name, not only in the
+        # pipeline position `where`/`foreach` use.
+        assert name not in name_grant._WINDOWS_INERT_BUILTINS, name
+
+    @pytest.mark.parametrize("name", CALCULATED_PROPERTY_NAMES)
+    def test_a_calculated_property_taker_is_refused(self, win, name):
+        # The command the block would run is never named to this check, so an
+        # inert verdict here is an unwitnessed process launch. `select` is
+        # refused one branch earlier -- it is also a POSIX shell keyword, so the
+        # walk fails closed before the Windows tables are consulted -- which is
+        # why the accepted set is both fail-closed codes rather than one.
+        _, user_dir, _ = win
+        _file(user_dir, f"{name}.exe")
+        command = f"{name} -InputObject x -Property {{ Start-Process notepad }}"
+        refusal = name_grant.name_grant_refusal(command)
+        assert refusal is not None, name
+        assert refusal.code in (
+            name_grant.BUILTIN_SHADOWS,
+            name_grant.UNTOKENIZABLE,
+        ), (name, refusal.code)
+        assert not name_grant._PINS
+
+    @pytest.mark.parametrize("name", ["measure", "measure-object", "gm", "get-member"])
+    def test_a_string_typed_property_taker_stays_inert(self, win, name):
+        # `measure-object` types `-Property` as `String[]`, so a block is
+        # coerced to its source text and never evaluated (measured: zero
+        # evaluations). Refusing it would cost a prompt for nothing.
+        assert name in name_grant._WINDOWS_INERT_BUILTINS, name
+        assert name_grant.name_grant_refusal(f"{name} -Property {{ 1 }}") is None, name
+
     @pytest.mark.parametrize("name", ["cfs", "get-verb"])
     def test_a_builtin_for_an_autoloadable_command_still_refuses(self, win, name):
         # An alias (`cfs` -> ConvertFrom-String) and a session function
@@ -662,6 +717,42 @@ class TestBuiltinsPrecedeThePath:
             assert refusal.code == name_grant.RELATIVE_PATH, (
                 f"{name} reaches the search-path walk and is in no built-in table "
                 f"(refused as {refusal.code}, which is not a spelling refusal)"
+            )
+
+    @pytest.mark.skipif(not platform_compat.IS_WINDOWS, reason="enumerates the live shell")
+    def test_the_shell_agrees_the_names_kept_inert_cannot_take_a_block(self, win):
+        # THE DERIVATION CHECK for the other half of the table: which names
+        # STAY. Membership is not the property that decides it -- a calculated
+        # property is possible only where the parameter is typed loosely enough
+        # to accept a script block, so ask the shell for the TYPE instead of
+        # trusting a measurement written down once. A shell that widens
+        # `-Property` from a string to a property expression turns this red,
+        # rather than leaving a green pin on the exact hole this table closes.
+        names = sorted(name_grant._WINDOWS_INERT_BUILTINS)
+        listed = ", ".join(f"'{name}'" for name in names)
+        script = (
+            f"foreach ($n in @({listed})) {{ "
+            "$c = Get-Command $n -ErrorAction SilentlyContinue; "
+            "if (-not $c -or -not $c.Parameters) { continue } "
+            "foreach ($p in @('Property', 'GroupBy', 'ExpandProperty')) { "
+            "if ($c.Parameters.ContainsKey($p)) { "
+            '"$n`t$p`t" + $c.Parameters[$p].ParameterType.FullName } } }'
+        )
+        completed = subprocess.run(
+            [*name_grant.MODELLED_WINDOWS_SHELL, "-Command", script],
+            capture_output=True,
+            timeout=120,
+            **UTF8_TEXT,
+        )
+        assert completed.returncode == 0, completed.stderr
+        rows = [line.split("\t") for line in completed.stdout.splitlines() if line.strip()]
+        # The inert set does keep property takers (`measure-object`), so an
+        # empty read means the query failed rather than that the set is clean.
+        assert rows, f"the shell reported no property-taking parameter at all: {completed.stdout!r}"
+        for name, parameter, kind in rows:
+            assert kind in ("System.String", "System.String[]"), (
+                f"{name} -{parameter} is typed {kind}, which accepts a script block, "
+                f"so {name} cannot stay in the inert set"
             )
 
 

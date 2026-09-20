@@ -1136,6 +1136,20 @@ MODELLED_WINDOWS_SHELL: tuple[str, ...] = ("powershell", "-NoProfile", "-NonInte
 #: standard: `where`/`foreach`/`%` take script blocks and are absent; `ri`,
 #: `rni`, `ni`, `si` reach the `alias:` and `function:` drives and are absent;
 #: `more`, `help` and `man` pipe through an external pager and are absent.
+#:
+#: Taking a script block in ANY parameter is disqualifying, not just in the
+#: pipeline position `where`/`foreach` use. A calculated property is a script
+#: block PowerShell evaluates once per input object, so `sort`, `select`,
+#: `group`, `compare` and the whole `format-*` family run whatever their
+#: `-Property` or `-GroupBy` argument contains and are absent for the same
+#: reason. Measured on 5.1 with object input (scalar input makes the format
+#: engine ignore `-Property`, which hides this): the block runs 2-3 times per
+#: two-object pipeline for each of them, while `measure-object` types
+#: `-Property` as `String[]`, so it coerces the block to its source text and
+#: never evaluates it -- it stays. A name is judged as a whole command, so
+#: `select` is absent even though its `-ExpandProperty` is `String`-typed: the
+#: same command's `-Property` evaluates, and the check sees the name, not which
+#: parameter a given line happens to use.
 _WINDOWS_INERT_BUILTINS = frozenset(
     {
         "cat",
@@ -1160,26 +1174,10 @@ _WINDOWS_INERT_BUILTINS = frozenset(
         "write",
         "write-output",
         "write-host",
-        "select",
-        "select-object",
-        "sort",
-        "sort-object",
         "measure",
         "measure-object",
-        "group",
-        "group-object",
-        "compare",
-        "diff",
-        "compare-object",
         "gm",
         "get-member",
-        "fl",
-        "ft",
-        "fw",
-        "format-list",
-        "format-table",
-        "format-wide",
-        "format-custom",
         "oh",
         "out-host",
         "out-string",
