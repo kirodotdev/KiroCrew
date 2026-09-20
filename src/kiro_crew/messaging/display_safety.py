@@ -112,6 +112,102 @@ def canonicalize_display(text: str) -> str:
     return _strip_format_chars(out)
 
 
+def joins_to_a_credential(head: str, tail: str, redactor: Callable[[str], str]) -> bool:
+    """Would a reader shown *head* and then *tail* see a key neither half holds?
+
+    A cap that cuts text into two messages is applied to the RAW string, while the
+    reader sees the CANONICAL rendering of each piece. So a credential the model
+    split with markup can be severed by the cut: each piece is scrubbed on its own
+    and matches nothing, and the reader's client renders the markup away and
+    rejoins the halves on screen.
+
+    This answers the question directly rather than guessing which characters could
+    hide such a split. Each side is put through the same redaction the sender will
+    actually apply (:func:`redact_for_display`), then reduced to what the platform
+    SHOWS (:func:`canonicalize_display`), and the result of putting the two sides
+    together is scanned.
+
+    Soundness, which is the whole point: ``redact_for_display`` already emits the
+    canonical form whenever canonicalising reveals something the literal form hid,
+    so ``redactor(canonicalize_display(redact_for_display(x)[0]))`` is a fixed
+    point for any single string ``x``. Whatever this scan finds is therefore
+    produced by putting the two sides together and by nothing else. No character
+    class, no window and no
+    anchor list: a search window built from a hand-written set of characters cannot
+    be closed, because the next character the set does not know about is one more
+    place a split can hide -- the walk that finds the window's edge stops there, the
+    check runs on a span the credential's prefix was never inside, and it passes
+    vacuously.
+
+    BOTH readings a reader can produce are scanned, because neither one contains
+    the other:
+
+    * **canonicalise the join** models a COPY of both messages, and a client
+      lenient about where one message ends. It is the wider reading for runs of
+      delimiters, which concatenation can only extend: ``AKIA**`` beside
+      ``**REST`` is a run only once the halves sit together.
+    * **canonicalise each side, then join** models the screen -- two messages
+      rendered separately, read one after the other. This is the wider reading
+      wherever canonicalising DROPS text rather than just deleting delimiters,
+      which is exactly what a link does to its target. A cut one character inside
+      ``[l](https://x/AKIA`` + ``REST)`` completes the link only in the join,
+      where the url then collapses to the label and the key vanishes from the
+      scan -- while on screen each half is an unfinished link whose url stays
+      visible, and the reader reads straight through it.
+
+    So the join alone would pass a cut through a credential in a url, and the
+    per-side reading alone would miss a credential split by markup at the
+    boundary. Either reading finding something is enough to refuse the cut, and
+    ``test_display_split_safety.py`` pins one shape per reading.
+    """
+    head_safe = redact_for_display(head, redactor)[0]
+    tail_safe = redact_for_display(tail, redactor)[0]
+    readings = (
+        canonicalize_display(head_safe + tail_safe),
+        canonicalize_display(head_safe) + canonicalize_display(tail_safe),
+    )
+    return any(redactor(reading) != reading for reading in readings)
+
+
+def safe_split_offset(text: str, limit: int, redactor: Callable[[str], str]) -> int:
+    """The largest SAMPLED offset at or below *limit* that severs no credential.
+
+    Not the largest safe offset: the candidates are sampled, so a safe offset
+    between two samples is passed over. Those characters are not lost, only
+    deferred to the next delivery.
+
+    Used by a renderer whose message cap forces *text* into two deliveries: cut
+    here and :func:`joins_to_a_credential` is false, so the reader cannot rejoin a
+    key across the boundary.
+
+    Candidates step back EXPONENTIALLY (``limit``, then 1, 2, 4, 8 ... characters
+    before it), for a cost bound: the nearest safe boundary is not needed, only a
+    safe one, and stepping past it merely defers a few more characters to the next
+    delivery. A linear walk would be O(*limit*) redaction passes over
+    attacker-influenced text on every frame; this is O(log *limit*), and the common
+    case -- prose, where any cut is safe -- costs one pass, or none at all when
+    *text* already fits.
+
+    ``0`` means every SAMPLED candidate was unsafe -- one matched region covers all
+    of them. A safe offset between two samples may still exist; the search does not
+    look for it, because the answer it needs is only "is there a safe cut I can take
+    now". Callers treat ``0`` as "deliver nothing yet", which is always available to
+    them: text withheld now is text the next delivery carries.
+    """
+    if limit <= 0:
+        return 0
+    if limit >= len(text):
+        # Nothing is severed, so there is no boundary to check.
+        return len(text)
+    offset, step = limit, 0
+    while offset > 0:
+        if not joins_to_a_credential(text[:offset], text[offset:], redactor):
+            return offset
+        step = 1 if step == 0 else step * 2
+        offset = limit - step
+    return 0
+
+
 def redact_for_display(text: str, redactor: Callable[[str], str]) -> tuple[str, bool]:
     """Redact *text* against what the platform will DISPLAY, not just the bytes.
 

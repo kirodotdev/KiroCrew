@@ -28,7 +28,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.messaging.renderer import Renderer, format_overflow, split_options_trailer
+from kiro_crew.messaging.display_safety import safe_split_offset
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    _default_redactor,
+    format_overflow,
+    split_options_trailer,
+)
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS, new_stream_id
@@ -643,13 +649,19 @@ class WeComRenderer(Renderer):
             return
         footer = f"🔧 正在运行：{self._tool}…" if self._tool else ""
         cap = self.capabilities.max_message_chars
-        if cap > 0 and footer:
-            # The footer is transient decoration; the answer is the payload, so
-            # the budget is spent on the answer and the footer only rides along
-            # when it fits beside it.
-            body = body[: max(0, cap - len(footer) - 2)]
-        elif cap > 0:
-            body = body[:cap]
+        if cap > 0:
+            # The footer is transient decoration; the answer is the payload, so the
+            # budget is spent on the answer and the footer only rides along when it
+            # fits beside it.
+            room = max(0, cap - len(footer) - 2) if footer else cap
+            # Cut where the READER cannot rejoin the halves, rather than at whatever raw
+            # character the budget happens to land on. The cap is applied to RAW text
+            # while the reader sees the CANONICAL rendering of each piece, so a key the
+            # model split with markup is severed by a blind cut: each piece is scrubbed
+            # on its own and matches nothing, and the reader's client renders the markup
+            # away and rejoins the halves on screen. Nothing after this offset has been
+            # delivered, so the next frame of this bubble carries the remainder.
+            body = body[: safe_split_offset(body, room, _default_redactor)]
         # Progress is recorded from the RAW slice, before any table conversion: the
         # offsets index ``text()``, and a converted string has a different length.
         sent_abs = self._carried + len(body)

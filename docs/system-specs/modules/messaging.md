@@ -3071,6 +3071,27 @@ string. Identity today (`table_mode="off"`), which is why the ordering is pinned
 test that fakes a length-changing transform: the two orderings are indistinguishable
 until the policy changes, and then the failure is silent.
 
+**A streaming cut may not sever a credential the reader's client will rejoin.** The cap
+is applied to the RAW answer, while the reader sees the CANONICAL rendering of each
+bubble, so a transformation that happens after the scan can reassemble what the scan saw
+as broken: neither `AKIA**` nor `**REST` matches a credential pattern as written, and
+neither does `[AKIA](https://x)` beside `REST`, yet the platform renders the markup away
+and shows an intact key. Each bubble is scrubbed on its own and matches nothing, so the
+per-message redaction cannot see it. `_push` therefore picks the boundary with
+`safe_split_offset` instead of cutting at whatever raw character the budget lands on.
+Nothing after that offset has been delivered, so the next frame of the bubble carries the
+remainder and the answer is not truncated.
+
+`safe_split_offset` asks the question directly rather than guessing which characters could
+hide a split. `joins_to_a_credential` puts each side through the same redaction the sender
+will apply and then reduces both to what the platform SHOWS, and it reads the pair BOTH
+ways, because neither reading contains the other: canonicalising the concatenation is
+wider for a run of delimiters, which concatenation can only extend, while canonicalising
+each side first is wider wherever canonicalising DROPS text, which is what a link does to
+its target. A character class or a fixed search window cannot be closed here -- the next
+character the set does not know about is one more place a split can hide, and the check
+then runs on a span the credential was never inside and passes vacuously.
+
 **Reply length is denominated in BYTES.** `stream.content` and
 `markdown.content` are capped at 20480 UTF-8 bytes, so the transport declares
 `max_message_chars = WECOM_MAX_REPLY_BYTES // 4` (`WECOM_SAFE_REPLY_CHARS`) and
