@@ -35,6 +35,7 @@ from kiro_crew.dashboard.token_auth import (
     _b64url_decode,
     required_peer_key_unverified,
 )
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.messaging.privacy_mode import hydrate as _hydrate_conv_flags
@@ -42,7 +43,7 @@ from kiro_crew.messaging.privacy_mode import is_incognito as is_thread_incognito
 from kiro_crew.messaging.privacy_mode import is_temporary as is_thread_temporary
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
-from kiro_crew.skills import skills_dir
+from kiro_crew.skills import _trusted_skill_roots, skills_dir
 
 if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
@@ -1454,6 +1455,95 @@ def _warn_skills_outside_roots(package_skills: list[dict[str, Any]]) -> None:
 SKILL_TREE_MAX_ENTRIES = 500
 SKILL_FILE_MAX_BYTES = 1_048_576  # 1 MiB
 
+# The ONE key prefix whose leaf skill directory may be a symlink pointing
+# anywhere. Editions install ``~/.kiro/skills/<name>`` as a link to their own
+# tree (AIM ``--local`` and friends), so refusing it there would 404 a shape
+# people actually run. Under every other prefix a leaf that resolves outside its
+# root is admitted only when it lands in an app skill provider root (see
+# :func:`_leaf_is_contained`), because an unconstrained leaf link is a
+# whole-filesystem read primitive: ``<project>/.kiro/skills/x -> /etc`` would
+# serve /etc through the tree and file endpoints. ``is_sensitive_path`` is no
+# backstop for that — it is a $HOME-anchored credential denylist, not a
+# containment check.
+LEAF_SYMLINK_PREFIX = "kiro-user/"
+
+
+def _path_at_or_under(path: Path, root: Path) -> bool:
+    """Whether *path* IS *root* or sits under it. Both must be resolved."""
+    return path == root or root in path.parents
+
+
+def _declared_app_skill_dirs(resolved: Path) -> list[Path]:
+    """The skill directories the app OWNING *resolved* declares, resolved.
+
+    ``apps.bridges._register_skills`` links ``app_root / p`` for each ``p`` in
+    that app's ``manifest.skills``, so this is the exact set of targets a skills
+    link can legitimately have. Read through ``bridges._registration_source``,
+    which for a shipped builtin is the immutable package copy rather than
+    mutable installed metadata. Empty — admitting nothing — when *resolved* names
+    no app, the app declares no skills, or its manifest cannot be read.
+    """
+    app_name = ""
+    for root in _trusted_skill_roots():
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        parts = rel.parts
+        # ``<data home>/apps/<app>/…`` and the package's
+        # ``<kiro_crew>/apps/builtins/<app>/…``.
+        if parts[:2] == ("apps", "builtins") and len(parts) > 2:
+            app_name = parts[2]
+        elif parts:
+            app_name = parts[0]
+        if app_name:
+            break
+    if not app_name:
+        return []
+    try:
+        from kiro_crew.apps import bridges  # deferred: heavy import chain
+
+        manifest, app_root = bridges._registration_source(app_name)
+    except Exception:  # noqa: BLE001 — an unreadable app admits nothing
+        logger.debug("app skill sources unavailable for %r", app_name, exc_info=True)
+        return []
+    if manifest is None:
+        return []
+    out: list[Path] = []
+    for declared in getattr(manifest, "skills", []) or []:
+        try:
+            out.append((app_root / str(declared)).resolve(strict=True))
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+def _leaf_is_contained(resolved: Path, root_resolved: Path, prefix_allows_link: bool) -> bool:
+    """Whether a RESOLVED skill directory may be served under its root.
+
+    Inside the root is always fine. Outside it, two sources are legitimate and
+    nothing else is:
+
+    * the prefix in :data:`LEAF_SYMLINK_PREFIX`, where an edition installs
+      ``~/.kiro/skills/<name>`` as a link into its own tree;
+    * a directory an app DECLARES as a skill — ``apps.bridges._register_skills``
+      links each one into the kirocrew skills root (namespaced AND flat) with the
+      target in the app's own tree, so those land outside the root by
+      construction.
+
+    The declared directories, NOT the app's root: an app tree also holds that
+    app's data, tokens and rendered configs, and ``<root>/x -> <app>/data`` must
+    not serve them. Taking the set from the manifest the bridge registers from is
+    what keeps the browse side from admitting more than the bridge links.
+    """
+    if _path_at_or_under(resolved, root_resolved):
+        return True
+    if prefix_allows_link:
+        return True
+    return any(
+        _path_at_or_under(resolved, declared) for declared in _declared_app_skill_dirs(resolved)
+    )
+
 
 def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "") -> Path | None:
     """Return the absolute skill directory for *name*, or None.
@@ -1471,10 +1561,14 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     guessing could read the wrong checkout.
 
     The returned path is always under one of the allowed roots — paths
-    that try to escape via ``..`` or symlinks are rejected.
+    that try to escape via ``..`` or symlinks are rejected. The single
+    exception is a ``kiro-user/`` leaf symlink; see
+    :data:`LEAF_SYMLINK_PREFIX`.
     """
     if not name or ".." in name or name.startswith("/"):
         return None
+    # Only the edition-install prefix may resolve to a leaf outside its root.
+    allow_leaf_symlink = name.startswith(LEAF_SYMLINK_PREFIX)
     if name.startswith("kiro-user/"):
         rel = name[len("kiro-user/") :]
         root = Path.home() / ".kiro" / "skills"
@@ -1515,6 +1609,16 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
         # (consistent with the kirocrew/kiro branches below).
         if is_sensitive_path(str(resolved)):
             return None
+        # Leaf containment, as the shared block below applies it to every other
+        # prefix: the resolved skill directory must sit at or under one of the
+        # package roots it was searched in. This branch returns early, so the
+        # check belongs here too — an edition packager can plant
+        # ``<edition-root>/x -> /outside`` exactly like any other root, and
+        # ``package/`` carries no leaf-symlink allowance. An unresolvable root
+        # contains nothing, so a leaf found only through one fails closed.
+        package_roots = _resolved_set(_edition_package_roots(canonical))
+        if not any(_path_at_or_under(resolved, r) for r in package_roots):
+            return None
         return resolved
     else:
         # ``kirocrew`` skills live under the active config home, which honors
@@ -1554,23 +1658,33 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
         return None
     try:
         resolved = candidate.resolve(strict=True)
-    except OSError:
+    except (OSError, RuntimeError):
+        # ``RuntimeError`` is what a symlink loop raises on some CPythons, and a
+        # standing loop is already filtered by ``is_dir()`` above — so what
+        # reaches here is a leaf that BECAME one after that check. Either way the
+        # skill is refused; this function answers a request and must not turn an
+        # unresolvable name into a 500.
         return None
     # Containment + symlink policy.  Skills can be nested under category
-    # directories (``utils/multi-badger`` → ``<root>/utils/multi-badger``),
-    # and a skill directory itself may be a symlink (an edition may install
-    # symlink ``~/.kiro/skills/<name>`` to ``~/.agents/skills/<name>``).  We
-    # therefore require the candidate's *parent* directory to resolve to a
-    # location at or under the trusted root — which permits the leaf to be a
-    # symlink while still rejecting a symlinked *intermediate* directory that
-    # would let ``a/b`` escape the tree.  The resolved target is then checked
-    # against the sensitive-path list as a final guard.
+    # directories (``utils/multi-badger`` → ``<root>/utils/multi-badger``), so
+    # the candidate's *parent* must resolve to a location at or under the
+    # trusted root — that is what rejects a symlinked *intermediate* directory
+    # which would let ``a/b`` escape the tree.
+    #
+    # The LEAF is held to the same rule, with the two documented exceptions in
+    # :func:`_leaf_is_contained` — the edition-install prefix, and an app skill
+    # provider root. Otherwise a parent-only check is an escape, so the resolved
+    # target itself must be inside the root. That target is finally checked
+    # against the sensitive-path list, which narrows the exceptions but does not
+    # bound them.
     try:
         parent_resolved = candidate.parent.resolve(strict=True)
         root_resolved = root.resolve(strict=True)
-    except OSError:
+    except (OSError, RuntimeError):
         return None
-    if parent_resolved != root_resolved and root_resolved not in parent_resolved.parents:
+    if not _path_at_or_under(parent_resolved, root_resolved):
+        return None
+    if not _leaf_is_contained(resolved, root_resolved, allow_leaf_symlink):
         return None
     if is_sensitive_path(str(resolved)):
         return None
@@ -1629,15 +1743,19 @@ def _collect_skills_under(
     prefix: str,
     out: dict[str, Path],
     depth: int,
+    allow_leaf_symlink: bool = False,
 ) -> None:
     """Add every ``<dir>/SKILL.md`` at or under *directory* to *out*.
 
-    Containment mirrors :func:`_resolve_skill_root`: a candidate's *parent* must
-    resolve at or under the trusted root, which permits the skill directory
-    itself to be a symlink (an edition may install a skill by symlinking
-    ``~/.kiro/skills/<name>`` to elsewhere) while still rejecting a symlinked
-    *intermediate* directory that would let ``a/b`` escape the tree. Sensitive
-    paths are rejected before and after symlink resolution.
+    Containment mirrors :func:`_resolve_skill_root` through the same
+    :func:`_leaf_is_contained` predicate, because a key this walk offers must be
+    one that function accepts: a candidate's *parent* must resolve at or under
+    the trusted root, and so must the candidate itself unless the prefix is
+    :data:`LEAF_SYMLINK_PREFIX` or the target is an app skill provider root.
+    Without that agreement an escaping leaf would be enumerated as a phantom key
+    the resolver refuses, and its ``skill://`` URI would name a file outside the
+    root.
+    Sensitive paths are rejected before and after symlink resolution.
     """
     if depth <= 0:
         return
@@ -1652,22 +1770,31 @@ def _collect_skills_under(
             continue
         try:
             parent_resolved = entry.parent.resolve(strict=True)
-        except OSError:
+            entry_resolved = entry.resolve(strict=True)
+        except (OSError, RuntimeError):
+            # A symlink loop raises RuntimeError on some CPythons and OSError on
+            # others, and this walk answers a request: an entry whose identity
+            # cannot be established is skipped like any other uncontainable one,
+            # never propagated as a 500 (matching :func:`_resolved_set`).
             continue
-        if parent_resolved != root_resolved and root_resolved not in parent_resolved.parents:
+        if not _path_at_or_under(parent_resolved, root_resolved):
+            continue
+        if not _leaf_is_contained(entry_resolved, root_resolved, allow_leaf_symlink):
             continue
         skill_md = entry / "SKILL.md"
         if skill_md.is_file():
             try:
                 target = skill_md.resolve(strict=True)
-            except OSError:
+            except (OSError, RuntimeError):
                 continue
             if is_sensitive_path(str(target)):
                 continue
             # First root wins, matching _skill_key_roots precedence.
             out.setdefault(prefix + entry.relative_to(root).as_posix(), skill_md)
         else:
-            _collect_skills_under(entry, root, root_resolved, prefix, out, depth - 1)
+            _collect_skills_under(
+                entry, root, root_resolved, prefix, out, depth - 1, allow_leaf_symlink
+            )
 
 
 def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dict[str, Path]:
@@ -1699,7 +1826,15 @@ def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dic
             root_resolved = root.resolve(strict=True)
         except OSError:
             continue
-        _collect_skills_under(root, root, root_resolved, prefix, catalog, _SKILL_NEST_DEPTH)
+        _collect_skills_under(
+            root,
+            root,
+            root_resolved,
+            prefix,
+            catalog,
+            _SKILL_NEST_DEPTH,
+            prefix == LEAF_SYMLINK_PREFIX,
+        )
     return catalog
 
 
@@ -1899,6 +2034,17 @@ def list_skill_tree(skill_root: Path) -> list[dict[str, Any]]:
     Each entry: ``{path: relative-from-root, type: "file"|"dir", size: int}``.
     Sensitive paths are filtered out.  Symlinks are resolved; entries whose
     real path escapes *skill_root* are omitted.
+
+    *skill_root* is the root :func:`_resolve_skill_root` admitted, and this walk
+    addresses it by name — so a root REPLACED after that admission is enumerated
+    as whatever its name then denotes. Holding the root's identity across the
+    walk needs the traversal itself to run relative to a descriptor, which is a
+    second mechanism with its own platform fallback (no ``O_DIRECTORY`` on
+    Windows) and its own listing semantics. This function therefore carries the
+    same exposure as the rest of the by-name filesystem surface, and the
+    guarantee that bytes never leave the root lives where bytes are read:
+    :func:`read_skill_file` opens through a descriptor and holds its admission
+    root literally.
     """
     out: list[dict[str, Any]] = []
     for dirpath, dirnames, filenames in os.walk(skill_root, followlinks=False):
@@ -1939,6 +2085,23 @@ def read_skill_file(skill_root: Path, rel_path: str) -> tuple[str, str | None]:
 
     Returns ``(content, error)``.  ``error`` is non-empty when access is
     denied, the file is too big, or it doesn't exist.
+
+    *skill_root* must be a root a caller already admitted —
+    :func:`_resolve_skill_root` returns a resolved path, and that path is what
+    bounds the read. Resolving the root again HERE cannot serve as the bound: a
+    skill directory replaced between admission and this call resolves to the
+    replacement's target, so the bound would be computed from the swap.
+
+    The path checks below choose WHICH file to serve; the bytes then come from
+    ``hooks.safe_read_file_bytes_nolink`` with ``within_root``, so containment
+    is enforced on the descriptor actually opened rather than on a path resolved
+    earlier. Re-opening by name instead leaves a check-to-use window — an
+    ancestor directory swapped for a symlink after the check escapes the root —
+    and no hardlink guard at all, since ``resolve()`` does not follow a
+    hardlink, so a link to a file outside the root satisfies the containment
+    check above. The helper opens without following the final component, then
+    validates the opened inode: hardlinked (``st_nlink > 1``), non-regular, or
+    escaping paths are refused.
     """
     if not rel_path or ".." in rel_path.split("/") or rel_path.startswith("/"):
         return "", "invalid path"
@@ -1960,9 +2123,32 @@ def read_skill_file(skill_root: Path, rel_path: str) -> tuple[str, str | None]:
     if size > SKILL_FILE_MAX_BYTES:
         return "", f"file too large ({size} bytes; cap {SKILL_FILE_MAX_BYTES})"
     try:
-        return resolved.read_text(encoding="utf-8", errors="replace"), None
-    except OSError:
-        return "", "read failed"
+        data = safe_read_file_bytes_nolink(
+            str(target),
+            # The ADMITTED root, and kept literally: neither this function nor
+            # the helper may resolve it again. Both re-resolutions authorize a
+            # replacement — ``skill_resolved`` is computed after the admission,
+            # and the helper's own ``realpath`` runs later still — so an fd under
+            # the swapped target would satisfy containment against a root
+            # derived from the swap.
+            within_root=str(skill_root),
+            max_bytes=SKILL_FILE_MAX_BYTES,
+            within_root_is_canonical=True,
+        )
+    except FileTooLargeError:
+        # The file grew past the cap between the stat above and the read.
+        return "", f"file too large (cap {SKILL_FILE_MAX_BYTES})"
+    if data is None:
+        # One message for every descriptor-level refusal (escape, hardlink,
+        # non-regular, unreadable): the caller is a browse endpoint, and naming
+        # which guard fired would describe the filesystem to the client.
+        return "", "access denied"
+    # Universal newlines, because the descriptor read is a BINARY one and the
+    # contract this serves is text: a CRLF skill file has to render as the same
+    # content on every platform, and the viewer receiving \r\n on Windows alone
+    # is a difference nothing downstream asked for.
+    text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n"), None
 
 
 def _read_session_key(request: "Any") -> str:

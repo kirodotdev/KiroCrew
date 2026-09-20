@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -580,6 +581,19 @@ class TestReadSkillFile:
         content, err = read_skill_file(skill, "SKILL.md")
         assert err is None
         assert content == "hello\n"
+
+    def test_crlf_and_cr_are_served_as_newlines(self, fake_home):
+        """The read is binary; the contract is text.
+
+        A skill file written on Windows carries CRLF, and the viewer must get
+        the same content it gets for the same file on any other host.
+        """
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_bytes(b"first\r\nsecond\rthird\n")
+        content, err = read_skill_file(skill, "SKILL.md")
+        assert err is None
+        assert content == "first\nsecond\nthird\n"
 
     def test_rejects_path_traversal(self, fake_home):
         skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
@@ -1377,3 +1391,460 @@ class TestPackageSkillDetailReadsThroughTheGate:
 
         assert (await api_skill_detail(self._request("package/aliased"))).status == 200
         assert read_threads and loop_thread not in read_threads
+
+
+# ── A symlinked skill leaf must not escape the skills root ──
+
+
+class TestSymlinkedSkillLeafContainment:
+    """Only ``kiro-user/`` carries the leaf-symlink allowance.
+
+    Containment on ``candidate.parent`` alone lets ``<root>/anything -> /etc``
+    resolve to ``/etc``, and the tree/file endpoints then enumerate and serve
+    that directory. The allowance exists for editions that install
+    ``~/.kiro/skills/<name>`` as a link, which is the ``kiro-user/`` prefix and
+    nothing else; every other prefix requires the RESOLVED leaf to sit at or
+    under its own root.
+    """
+
+    @staticmethod
+    def _outside(tmp_path: Path) -> Path:
+        """A skill-shaped directory that lives outside every skills root."""
+        outside = tmp_path / "outside-tree"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "SKILL.md").write_text("---\nname: x\n---\nsecret", encoding="utf-8")
+        (outside / "passwd").write_text("root:x:0:0:", encoding="utf-8")
+        return outside
+
+    def test_kirocrew_leaf_symlink_escape_refused(self, fake_home, tmp_path):
+        """Default (kirocrew) prefix: the leaf may not point out of the root."""
+        outside = self._outside(tmp_path)
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        skills_root.mkdir(parents=True)
+        (skills_root / "anything").symlink_to(outside, target_is_directory=True)
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("anything", state) is None
+
+    def test_kiro_workspace_leaf_symlink_escape_refused(self, fake_home, tmp_path):
+        """The project-scoped prefix from the report: no escape, keyed or not."""
+        outside = self._outside(tmp_path)
+        proj = tmp_path / "proj"
+        skills_root = proj / ".kiro" / "skills"
+        skills_root.mkdir(parents=True)
+        (skills_root / "anything").symlink_to(outside, target_is_directory=True)
+
+        state = MagicMock(_slots={"slot-a": MagicMock(project=str(proj))})
+        assert _resolve_skill_root("kiro-workspace/anything", state, "slot-a") is None
+        assert _resolve_skill_root("kiro-workspace/anything", state) is None
+
+    def test_edition_root_leaf_symlink_escape_refused(self, fake_home, tmp_path, monkeypatch):
+        """An edition skill root is a plain root here — no leaf allowance."""
+        from kiro_crew.dashboard.handlers import _shared
+
+        outside = self._outside(tmp_path)
+        edition_root = tmp_path / "edition" / "skills"
+        edition_root.mkdir(parents=True)
+        (edition_root / "anything").symlink_to(outside, target_is_directory=True)
+        monkeypatch.setattr(_shared, "_edition_skill_roots", lambda: [edition_root])
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("anything", state) is None
+
+    def test_extra_path_root_leaf_symlink_escape_refused(self, fake_home, tmp_path, monkeypatch):
+        """Same for a user-configured ``skills.extra_paths`` root."""
+        from kiro_crew.dashboard.handlers import _shared
+
+        outside = self._outside(tmp_path)
+        extra_root = tmp_path / "extra" / "skills"
+        extra_root.mkdir(parents=True)
+        (extra_root / "anything").symlink_to(outside, target_is_directory=True)
+        cfg = MagicMock()
+        cfg.load.return_value.skills.extra_paths = [str(extra_root)]
+        monkeypatch.setattr(_shared, "KiroCrewConfig", cfg)
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("anything", state) is None
+
+    def test_package_prefix_leaf_symlink_escape_refused(self, fake_home, tmp_path, monkeypatch):
+        """``package/`` has its own early return, and no leaf allowance.
+
+        An edition packager can plant ``<edition-root>/x -> /outside`` exactly
+        like any other root, so the same containment applies before the branch
+        returns.
+        """
+        from kiro_crew.dashboard.handlers import _shared
+
+        outside = self._outside(tmp_path)
+        pkg_root = tmp_path / "edition-pkgs"
+        (pkg_root / "pkg").mkdir(parents=True)
+        (pkg_root / "pkg" / "escaping").symlink_to(outside, target_is_directory=True)
+        monkeypatch.setattr(_shared, "_edition_skill_roots", lambda: [pkg_root])
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("package/pkg/escaping", state) is None
+        assert _resolve_skill_root("package/escaping", state) is None
+
+    def test_package_prefix_contained_skill_still_resolves(self, fake_home, tmp_path, monkeypatch):
+        """The edition-package path itself keeps working."""
+        from kiro_crew.dashboard.handlers import _shared
+
+        pkg_root = tmp_path / "edition-pkgs"
+        skill = pkg_root / "pkg" / "real"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: real\n---\nbody", encoding="utf-8")
+        monkeypatch.setattr(_shared, "_edition_skill_roots", lambda: [pkg_root])
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("package/pkg/real", state) == skill.resolve()
+        assert _resolve_skill_root("package/real", state) == skill.resolve()
+
+    def test_app_registered_leaf_links_still_resolve(self, fake_home, monkeypatch):
+        """``apps.bridges._register_skills`` installs exactly this shape.
+
+        An app ships its skills in its own tree and the bridge symlinks each one
+        into the kirocrew skills root twice — flat and namespaced — so both
+        resolve outside that root by construction. They are admitted because the
+        app DECLARES that directory as a skill, read from the same manifest the
+        bridge registers from.
+        """
+        from kiro_crew.apps import bridges
+
+        app_root = fake_home / ".kiro" / "crew" / "apps" / "demo-app"
+        app_skill = app_root / "skills" / "appy"
+        app_skill.mkdir(parents=True)
+        (app_skill / "SKILL.md").write_text("---\nname: appy\n---\nbody", encoding="utf-8")
+        monkeypatch.setattr(
+            bridges,
+            "_registration_source",
+            lambda name: (SimpleNamespace(skills=["skills/appy"]), app_root),
+        )
+
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        (skills_root / "demo-app").mkdir(parents=True)
+        (skills_root / "appy").symlink_to(app_skill, target_is_directory=True)
+        (skills_root / "demo-app" / "appy").symlink_to(app_skill, target_is_directory=True)
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("appy", state) == app_skill.resolve()
+        assert _resolve_skill_root("demo-app/appy", state) == app_skill.resolve()
+        catalog = enumerate_skill_catalog(state)
+        assert "appy" in catalog and "demo-app/appy" in catalog
+
+    def test_a_link_into_an_apps_private_files_is_refused(self, fake_home, monkeypatch):
+        """The exception is the DECLARED skill directories, not the app root.
+
+        An app tree also holds that app's data, tokens and rendered configs, so
+        admitting the root would turn a planted link into a reader for them.
+        """
+        from kiro_crew.apps import bridges
+
+        app_root = fake_home / ".kiro" / "crew" / "apps" / "demo-app"
+        declared = app_root / "skills" / "appy"
+        declared.mkdir(parents=True)
+        (declared / "SKILL.md").write_text("---\nname: appy\n---\nbody", encoding="utf-8")
+        (app_root / "data").mkdir()
+        (app_root / "data" / "SKILL.md").write_text("---\nname: d\n---\nsecret", encoding="utf-8")
+        (app_root / "credentials").mkdir()
+        (app_root / "credentials" / "SKILL.md").write_text("---\nname: c\n---\nk", encoding="utf-8")
+
+        monkeypatch.setattr(
+            bridges,
+            "_registration_source",
+            lambda name: (SimpleNamespace(skills=["skills/appy"]), app_root),
+        )
+
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        skills_root.mkdir(parents=True)
+        (skills_root / "appy").symlink_to(declared, target_is_directory=True)
+        (skills_root / "peek-data").symlink_to(app_root / "data", target_is_directory=True)
+        (skills_root / "peek-creds").symlink_to(app_root / "credentials", target_is_directory=True)
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("appy", state) == declared.resolve()
+        assert _resolve_skill_root("peek-data", state) is None
+        assert _resolve_skill_root("peek-creds", state) is None
+        catalog = enumerate_skill_catalog(state)
+        assert "appy" in catalog
+        assert "peek-data" not in catalog and "peek-creds" not in catalog
+
+    def test_a_leaf_link_outside_every_provider_root_is_still_refused(self, fake_home, tmp_path):
+        """The allowance is the provider roots, not "outside is fine now"."""
+        outside = self._outside(tmp_path)
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        skills_root.mkdir(parents=True)
+        (skills_root / "not-an-app").symlink_to(outside, target_is_directory=True)
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("not-an-app", state) is None
+        assert "not-an-app" not in enumerate_skill_catalog(state)
+
+    def test_kiro_user_leaf_symlink_still_allowed(self, fake_home, tmp_path):
+        """The edition install shape keeps working — this is the exception."""
+        target = tmp_path / "agents-tree" / "skills" / "linked"
+        target.mkdir(parents=True)
+        (target / "SKILL.md").write_text("---\nname: linked\n---\nbody", encoding="utf-8")
+        kiro_skills = fake_home / ".kiro" / "skills"
+        kiro_skills.mkdir(parents=True)
+        (kiro_skills / "linked").symlink_to(target, target_is_directory=True)
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("kiro-user/linked", state) == target.resolve()
+
+    def test_leaf_symlink_inside_the_root_still_resolves(self, fake_home):
+        """Containment, not a symlink ban: a link to a sibling skill is fine."""
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        real = _write_skill(skills_root, "real-skill")
+        (skills_root / "alias").symlink_to(real, target_is_directory=True)
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("alias", state) == real.resolve()
+
+    def test_a_standing_symlink_loop_is_simply_absent(self, fake_home):
+        """A loop that is already there never reaches a resolve: ``is_dir()``
+        is False for it, so it is skipped with every other non-directory."""
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        skills_root.mkdir(parents=True)
+        _write_skill(skills_root, "real-skill")
+        loop = skills_root / "loop"
+        loop.symlink_to(skills_root / "loop-b", target_is_directory=True)
+        (skills_root / "loop-b").symlink_to(loop, target_is_directory=True)
+
+        state = MagicMock(_slots={})
+        catalog = enumerate_skill_catalog(state)
+        assert "real-skill" in catalog
+        assert "loop" not in catalog and "loop-b" not in catalog
+        assert _resolve_skill_root("loop", state) is None
+
+    def test_a_leaf_that_becomes_a_loop_is_refused_not_raised(self, fake_home, monkeypatch):
+        """The reachable case is the RACE: a directory that turns into a loop
+        after ``is_dir()`` said yes, so the resolve is what meets it.
+
+        ``Path.resolve`` answers a loop with ``RuntimeError`` — not ``OSError``
+        — on CPython, and both of these surfaces answer an HTTP request, so the
+        entry is refused rather than propagated as a 500. The stub raises for
+        exactly one path and delegates every other resolve to the real one.
+        """
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        _write_skill(skills_root, "real-skill")
+        racing = _write_skill(skills_root, "racing-skill")
+
+        real_resolve = Path.resolve
+
+        def _loop_for_one(self: Path, *args, **kwargs):
+            if self == racing:
+                raise RuntimeError(f"Symlink loop from {str(self)!r}")
+            return real_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", _loop_for_one)
+
+        state = MagicMock(_slots={})
+        catalog = enumerate_skill_catalog(state)
+        assert "real-skill" in catalog
+        assert "racing-skill" not in catalog
+        assert _resolve_skill_root("racing-skill", state) is None
+        assert _resolve_skill_root("real-skill", state) == real_resolve(skills_root / "real-skill")
+
+    def test_catalog_does_not_offer_an_escaping_leaf(self, fake_home, tmp_path):
+        """Enumeration and resolution must agree, so the catalog drops it too.
+
+        An enumerated key the resolver refuses is a phantom entry in the
+        agent-template editor — and its ``skill://`` URI would name a file
+        outside the root.
+        """
+        outside = self._outside(tmp_path)
+        proj = tmp_path / "proj"
+        ws_root = proj / ".kiro" / "skills"
+        ws_root.mkdir(parents=True)
+        (ws_root / "anything").symlink_to(outside, target_is_directory=True)
+        # kiro-user keeps its allowance, so its linked skill stays enumerated.
+        user_target = tmp_path / "linked-user"
+        user_target.mkdir()
+        (user_target / "SKILL.md").write_text("---\nname: u\n---\nb", encoding="utf-8")
+        user_root = fake_home / ".kiro" / "skills"
+        user_root.mkdir(parents=True)
+        (user_root / "linked").symlink_to(user_target, target_is_directory=True)
+
+        state = MagicMock(_slots={"slot-a": MagicMock(project=str(proj))})
+        catalog = enumerate_skill_catalog(state, "slot-a")
+        assert "kiro-workspace/anything" not in catalog
+        assert "kiro-user/linked" in catalog
+
+    @pytest.mark.asyncio
+    async def test_tree_endpoint_refuses_an_escaping_workspace_leaf(self, fake_home, tmp_path):
+        """The reported threat path, end to end: 404 instead of 500 entries."""
+        outside = self._outside(tmp_path)
+        proj = tmp_path / "proj"
+        ws_root = proj / ".kiro" / "skills"
+        ws_root.mkdir(parents=True)
+        (ws_root / "anything").symlink_to(outside, target_is_directory=True)
+
+        state = MagicMock(
+            _slots={"slot-a": MagicMock(project=str(proj), _app="")},
+            context_builder=None,
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            tree = await client.get(
+                "/api/skills/kiro-workspace/anything/-/tree",
+                headers={"X-Session-Key": "slot-a"},
+            )
+            assert tree.status == 404
+            f = await client.get(
+                "/api/skills/kiro-workspace/anything/-/file?path=passwd",
+                headers={"X-Session-Key": "slot-a"},
+            )
+            assert f.status == 404
+
+
+class TestSkillFileIsReadThroughAPinnedDescriptor:
+    """``read_skill_file`` validates the inode it actually reads.
+
+    Resolving the path, checking containment, then re-opening by name with
+    ``Path.read_text`` leaves a check-to-use window and no hardlink guard at
+    all, so the bytes come from a descriptor-pinned read instead.
+    """
+
+    def test_hardlinked_file_inside_a_skill_is_refused(self, fake_home, tmp_path):
+        """``resolve()`` does not follow a hardlink, so a path-only containment
+        check passes while the read serves a file from outside the root."""
+        import os
+
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET", encoding="utf-8")
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
+        skill.mkdir(parents=True)
+        os.link(secret, skill / "notes.txt")
+
+        content, err = read_skill_file(skill, "notes.txt")
+        assert err == "access denied"
+        assert "TOP SECRET" not in content
+
+    def test_a_directory_swapped_for_a_symlink_after_the_check_is_refused(
+        self, fake_home, tmp_path, monkeypatch
+    ):
+        """Deterministic check-to-use race: the swap happens inside the
+        sensitive-path guard, i.e. after containment was verified and before
+        the bytes are read."""
+        from kiro_crew.dashboard.handlers import _shared
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "file.txt").write_text("TOP SECRET", encoding="utf-8")
+
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
+        (skill / "sub").mkdir(parents=True)
+        (skill / "sub" / "file.txt").write_text("harmless", encoding="utf-8")
+
+        real_guard = _shared.is_sensitive_path
+        swapped: list[str] = []
+
+        def _swap_then_check(path: str) -> bool:
+            if not swapped:
+                swapped.append(path)
+                (skill / "sub" / "file.txt").unlink()
+                (skill / "sub").rmdir()
+                (skill / "sub").symlink_to(outside, target_is_directory=True)
+            return real_guard(path)
+
+        monkeypatch.setattr(_shared, "is_sensitive_path", _swap_then_check)
+
+        content, err = read_skill_file(skill, "sub/file.txt")
+        assert swapped, "the guard hook never ran — the race was not exercised"
+        assert err == "access denied"
+        assert "TOP SECRET" not in content
+
+    def test_a_leaf_swapped_for_a_link_before_the_read_is_refused(self, fake_home, tmp_path):
+        """The bound is the root that was ADMITTED, not one resolved later.
+
+        Resolving the root inside the read would compute the bound from the
+        replacement, so an fd under the link's target would satisfy it.
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("TOP SECRET", encoding="utf-8")
+
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        admitted = skills_root / "demo"
+        admitted.mkdir(parents=True)
+        (admitted / "SKILL.md").write_text("harmless", encoding="utf-8")
+
+        # The endpoint resolves first, then reads; the swap lands in between.
+        state = MagicMock(_slots={})
+        root = _resolve_skill_root("demo", state)
+        assert root == admitted.resolve()
+        (admitted / "SKILL.md").unlink()
+        admitted.rmdir()
+        admitted.symlink_to(outside, target_is_directory=True)
+
+        content, err = read_skill_file(root, "SKILL.md")
+        assert err == "access denied"
+        assert "TOP SECRET" not in content
+
+    def test_a_symlinked_file_inside_the_root_still_reads(self, fake_home):
+        """No regression: an in-root link is content, not an escape."""
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
+        (skill / "docs").mkdir(parents=True)
+        (skill / "docs" / "real.md").write_text("hello\n", encoding="utf-8")
+        (skill / "SKILL.md").symlink_to(skill / "docs" / "real.md")
+
+        content, err = read_skill_file(skill, "SKILL.md")
+        assert err is None
+        assert content == "hello\n"
+
+
+class TestTheAdmittedSkillRootCannotBeRedefined:
+    """A resolved root is an admission, and the name it came from is not.
+
+    ``read_skill_file`` addresses the root by name after the resolver admitted
+    it, so replacing that directory with a symlink would otherwise redefine what
+    "inside the root" means: the reader re-``realpath``s its ``within_root``
+    unless it is told the root is already canonical.
+    """
+
+    @staticmethod
+    def _skill_with_a_sibling_target(fake_home: Path, tmp_path: Path) -> tuple[Path, Path]:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("TOP SECRET", encoding="utf-8")
+        (outside / "extra.txt").write_text("TOP SECRET", encoding="utf-8")
+
+        skill = fake_home / ".kiro" / "crew" / "skills" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("harmless", encoding="utf-8")
+        return skill, outside
+
+    @staticmethod
+    def _swap_on_first_guard_call(monkeypatch, skill: Path, outside: Path) -> list[str]:
+        """Swap the skill ROOT for a link to *outside* inside the guard hook.
+
+        ``is_sensitive_path`` runs after the root was admitted and before the
+        bytes are read / the entries are returned, which makes the swap land in
+        the window under test without depending on timing.
+        """
+        from kiro_crew.dashboard.handlers import _shared
+
+        real_guard = _shared.is_sensitive_path
+        swapped: list[str] = []
+
+        def _swap_then_check(path: str) -> bool:
+            if not swapped:
+                swapped.append(path)
+                for child in skill.iterdir():
+                    child.unlink()
+                skill.rmdir()
+                skill.symlink_to(outside, target_is_directory=True)
+            return real_guard(path)
+
+        monkeypatch.setattr(_shared, "is_sensitive_path", _swap_then_check)
+        return swapped
+
+    def test_a_root_swapped_for_a_link_is_refused_by_the_read(
+        self, fake_home, tmp_path, monkeypatch
+    ):
+        skill, outside = self._skill_with_a_sibling_target(fake_home, tmp_path)
+        swapped = self._swap_on_first_guard_call(monkeypatch, skill, outside)
+
+        content, err = read_skill_file(skill, "SKILL.md")
+        assert swapped, "the guard hook never ran — the swap window was not exercised"
+        assert err == "access denied"
+        assert "TOP SECRET" not in content
