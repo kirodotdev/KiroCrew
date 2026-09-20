@@ -10171,15 +10171,17 @@
         "agreed_short": "같은 선택",
         "baseline_label": "단어 매칭",
         "baseline_named": "단어 매칭: {{names}}",
-        "batches_label": "선택 라운드 수",
         "candidates_label": "제시한 스킬",
+        "confidence_latency_title": "Jev가 자기 답에 대해 갖는 확신도, 0에서 1까지, 그리고 답이 오기까지 걸린 시간",
         "confidence_title": "Jev가 자기 답에 대해 갖는 확신도, 0에서 1까지",
         "dropped_label": "거부됨",
         "error_title": "결정 실패",
         "feedback_failed": "저장하지 못했습니다",
-        "history_chars_label": "보낸 컨텍스트(글자 수)",
         "jev_label": "Jev",
         "jev_named": "Jev: {{names}}",
+        "latency_label": "Jev 응답 시간",
+        "latency_title": "Jev가 답하기까지 걸린 시간",
+        "latency_value": "{{ms}} ms",
         "no_skills": "스킬 없음",
         "point_skills_select": "스킬",
         "rate_baseline": "단어 매칭",
@@ -10189,7 +10191,9 @@
         "rate_wrong_baseline": "단어 매칭이 스킬을 잘못 골랐다",
         "rate_wrong_jev": "Jev가 스킬을 잘못 골랐다",
         "saved_tokens": "{{tokens}} 토큰 절약",
-        "truncated_label": "후보에서 빠진 스킬"
+        "sent_history": "기록 {{chars}}자",
+        "sent_label": "Jev에 보냄",
+        "sent_message": "메시지 {{chars}}자"
       }
     },
     "chatPage": {

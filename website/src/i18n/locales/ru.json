@@ -10600,15 +10600,17 @@
         "agreed_short": "выбор совпал",
         "baseline_label": "Совпадение слов",
         "baseline_named": "совпадение слов: {{names}}",
-        "batches_label": "Раундов выбора",
         "candidates_label": "Предложено навыков",
+        "confidence_latency_title": "Насколько Jev уверен в своём ответе, от 0 до 1, и сколько времени занял ответ",
         "confidence_title": "Насколько Jev уверен в своём ответе, от 0 до 1",
         "dropped_label": "Отклонено",
         "error_title": "Решение не удалось",
         "feedback_failed": "Не удалось сохранить",
-        "history_chars_label": "Отправленный контекст (символов)",
         "jev_label": "Jev",
         "jev_named": "Jev: {{names}}",
+        "latency_label": "Задержка Jev",
+        "latency_title": "Сколько времени Jev отвечал",
+        "latency_value": "{{ms}} ms",
         "no_skills": "без навыков",
         "point_skills_select": "навыки",
         "rate_baseline": "Совпадение слов",
@@ -10618,7 +10620,9 @@
         "rate_wrong_baseline": "Совпадение слов выбрало неверные навыки",
         "rate_wrong_jev": "Jev выбрал неверные навыки",
         "saved_tokens": "сэкономлено токенов: {{tokens}}",
-        "truncated_label": "Навыки, убранные из предложенных"
+        "sent_history": "история {{chars}} символов",
+        "sent_label": "Отправлено в Jev",
+        "sent_message": "сообщение {{chars}} символов"
       }
     },
     "chatPage": {

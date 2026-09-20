@@ -46,9 +46,9 @@ const WIRE = {
   p: 0.81,
   tokens_saved: 3200,
   candidates: 42,
-  batches: 3,
+  message_chars: 96,
   history_chars: 1800,
-  truncated: 2,
+  latency_ms: 197,
   dropped: [{ key: 'tst', p: 0.12 }],
   error: null,
 }
@@ -83,9 +83,9 @@ describe('readDecisionStrip', () => {
       p: 0.81,
       tokensSaved: 3200,
       candidates: 42,
-      batches: 3,
+      messageChars: 96,
       historyChars: 1800,
-      truncated: 2,
+      latencyMs: 197,
       dropped: [{ key: 'tst', p: 0.12 }],
       error: null,
     })
@@ -126,9 +126,23 @@ describe('readDecisionStrip', () => {
 
   it('floors every count and refuses a negative or non-numeric one', () => {
     const r = readDecisionStrip({
-      ...WIRE, tokens_saved: 12.7, candidates: -3, batches: '4', history_chars: Number.NaN, truncated: 1.9,
+      ...WIRE, tokens_saved: 12.7, candidates: -3, message_chars: '4', history_chars: Number.NaN, latency_ms: 1.9,
     })
-    expect(r).toMatchObject({ tokensSaved: 12, candidates: 0, batches: 0, historyChars: 0, truncated: 1 })
+    expect(r).toMatchObject({ tokensSaved: 12, candidates: 0, messageChars: 0, historyChars: 0, latencyMs: 1 })
+  })
+
+  it('reads the two egress counts and the latency the row already carries', () => {
+    // `latency_ms` is a CORE log field: the record published to the strip is the
+    // log row itself, so the strip reads the same spelling the log writes rather
+    // than a duplicate the point would have to stamp.
+    const r = readDecisionStrip(WIRE)!
+    expect(r.messageChars).toBe(96)
+    expect(r.historyChars).toBe(1800)
+    expect(r.latencyMs).toBe(197)
+    // A record from a gateway that stamps neither still renders, at 0.
+    const bare = readDecisionStrip({ ...WIRE, message_chars: undefined, latency_ms: undefined })!
+    expect(bare.messageChars).toBe(0)
+    expect(bare.latencyMs).toBe(0)
   })
 
   it('refuses a record whose skill lists it cannot read whole', () => {
@@ -228,7 +242,7 @@ describe('DecisionStrip', () => {
     expect(strip).toHaveAttribute('data-expanded', 'false')
     expect(strip.textContent).toContain('word match: brazil, crux-code-reviews')
     expect(strip.textContent).toContain('Jev: brazil')
-    expect(screen.getByTestId('decision-strip-confidence').textContent).toBe('(0.81)')
+    expect(screen.getByTestId('decision-strip-scores').textContent).toBe('(0.81, 197 ms)')
     expect(screen.getByTestId('decision-strip-saved').textContent).toContain('3.2K')
     // Collapsed means collapsed: the question's own shape is not on the line.
     expect(strip.textContent).not.toContain('42')
@@ -258,9 +272,36 @@ describe('DecisionStrip', () => {
 
   it('omits the score and the saving when the record carries neither', () => {
     consent(ON)
-    render(<DecisionStrip record={readDecisionStrip({ ...WIRE, p: null, tokens_saved: 0 })!} />)
-    expect(screen.queryByTestId('decision-strip-confidence')).toBeNull()
+    const bare = readDecisionStrip({ ...WIRE, p: null, tokens_saved: 0, latency_ms: 0 })!
+    render(<DecisionStrip record={bare} />)
+    expect(screen.queryByTestId('decision-strip-scores')).toBeNull()
     expect(screen.queryByTestId('decision-strip-saved')).toBeNull()
+  })
+
+  it('keeps the parenthetical for whichever of the two measurements arrived', () => {
+    // One span, so the two numbers about the same answer stay together on a line
+    // that truncates. Either one alone is still worth printing, and the legend
+    // has to name what is actually in there rather than a number that is not.
+    consent(ON)
+    render(<DecisionStrip record={readDecisionStrip({ ...WIRE, p: null })!} />)
+    const only = screen.getByTestId('decision-strip-scores')
+    expect(only.textContent).toBe('(197 ms)')
+    expect(only).toHaveAttribute('title', 'How long Jev took to answer')
+    cleanup()
+
+    render(<DecisionStrip record={readDecisionStrip({ ...WIRE, latency_ms: 0 })!} />)
+    const score = screen.getByTestId('decision-strip-scores')
+    expect(score.textContent).toBe('(0.81)')
+    expect(score).toHaveAttribute('title', "Jev's confidence in its own answer, from 0 to 1")
+  })
+
+  it('names both measurements in the legend when the parenthetical holds both', () => {
+    consent(ON)
+    render(<DecisionStrip record={record} />)
+    expect(screen.getByTestId('decision-strip-scores')).toHaveAttribute(
+      'title',
+      "Jev's confidence in its own answer, from 0 to 1, and how long the answer took",
+    )
   })
 
   it('opens the question’s own shape, the refusals and the second thumbs pair', () => {
@@ -399,17 +440,53 @@ describe('DecisionStrip', () => {
     render(<DecisionStrip record={record} />)
     fireEvent.click(screen.getByTestId('decision-strip-toggle'))
     const strip = screen.getByTestId('decision-strip')
-    // "Batches" and "Left out" drew blanks in a read-aloud: neither says what
-    // the number beside it counts.
-    expect(strip.textContent).not.toContain('Batches')
-    expect(strip.textContent).not.toContain('Left out')
-    expect(strip.textContent).toContain('Selection rounds')
-    expect(strip.textContent).toContain('Skills cut from the offer')
-    // "History characters" drew "no idea, honestly" in a read-aloud. The rename
-    // has to keep the UNIT the old label carried, or the number becomes
-    // "1,840 of what?" — which is how the first attempt at this regressed.
-    expect(strip.textContent).not.toContain('History characters')
-    expect(strip.textContent).toContain('Context sent (characters)')
+    // Each label names WHO the number is about and WHAT it counts. "Batches",
+    // "Left out" and "History characters" each drew a blank in a read-aloud.
+    for (const mechanism of ['Batches', 'Left out', 'History characters']) {
+      expect(strip.textContent).not.toContain(mechanism)
+    }
+    expect(strip.textContent).toContain('Skills offered')
+    expect(strip.textContent).toContain('Sent to Jev')
+    expect(strip.textContent).toContain('Jev latency')
+  })
+
+  it('carries no row whose number is the same on every turn', () => {
+    // The menu is asked in ONE question and the shipped history budget is 0, so
+    // both of these printed 0 forever. A row a reader cannot act on is worse
+    // than no row: it teaches them the card is noise.
+    consent(ON)
+    render(<DecisionStrip record={record} />)
+    fireEvent.click(screen.getByTestId('decision-strip-toggle'))
+    const strip = screen.getByTestId('decision-strip')
+    expect(strip.textContent).not.toContain('Selection rounds')
+    expect(strip.textContent).not.toContain('Skills cut from the offer')
+  })
+
+  it('prints the whole egress on one row: the message excerpt and the history', () => {
+    // The row a reader opens this card for. The old single history count read 0
+    // on every turn at the shipped budget while the message that DID leave went
+    // unnamed, which is the row the owner called confusing.
+    consent(ON)
+    render(<DecisionStrip record={record} />)
+    fireEvent.click(screen.getByTestId('decision-strip-toggle'))
+    const strip = screen.getByTestId('decision-strip')
+    expect(strip.textContent).toContain('message 96 chars')
+    expect(strip.textContent).toContain('history 1,800 chars')
+  })
+
+  it('prints the latency on the expanded card and omits it when there is none', () => {
+    consent(ON)
+    render(<DecisionStrip record={record} />)
+    fireEvent.click(screen.getByTestId('decision-strip-toggle'))
+    expect(screen.getByTestId('decision-strip').textContent).toContain('Jev latency')
+    expect(screen.getByTestId('decision-strip').textContent).toContain('197 ms')
+    cleanup()
+
+    // A record with no latency prints no latency row rather than "0 ms", which
+    // would read as an answer that arrived instantly.
+    render(<DecisionStrip record={readDecisionStrip({ ...WIRE, latency_ms: 0 })!} />)
+    fireEvent.click(screen.getByTestId('decision-strip-toggle'))
+    expect(screen.getByTestId('decision-strip').textContent).not.toContain('Jev latency')
   })
 
   it('spells the saving in a word the product uses elsewhere', () => {

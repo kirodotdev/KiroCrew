@@ -60,12 +60,12 @@ export interface DecisionStripRecord {
   tokensSaved: number
   /** Skills the gate offered Jev to choose from. */
   candidates: number
-  /** How many batches those candidates were offered in. */
-  batches: number
+  /** Characters of the message excerpt the question sent. */
+  messageChars: number
   /** Characters of conversation history the question carried. */
   historyChars: number
-  /** Candidates dropped to fit the question inside its budget. */
-  truncated: number
+  /** Milliseconds between asking Jev and its answer. */
+  latencyMs: number
   /** Answers the gate refused, each with the score it came with. */
   dropped: DecisionStripDropped[]
   /** Why the decision failed, or `null` when it did not. */
@@ -168,9 +168,9 @@ export function readDecisionStrip(raw: unknown): DecisionStripRecord | null {
     p,
     tokensSaved: asCount(root.tokens_saved),
     candidates: asCount(root.candidates),
-    batches: asCount(root.batches),
+    messageChars: asCount(root.message_chars),
     historyChars: asCount(root.history_chars),
-    truncated: asCount(root.truncated),
+    latencyMs: asCount(root.latency_ms),
     dropped,
     error,
   }

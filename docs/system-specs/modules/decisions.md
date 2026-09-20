@@ -91,15 +91,17 @@ This block IS the contract between the gateway that stamps the record and `websi
   "p": 0.81,
   "tokens_saved": 3240,
   "candidates": 42,
-  "batches": 3,
+  "message_chars": 96,
   "history_chars": 1840,
-  "truncated": 2,
+  "latency_ms": 197,
   "dropped": [{ "key": "tst", "p": 0.12 }],
   "error": null
 }
 ```
 
-`baseline` is what the word-overlap rule would have loaded and `jev` is the validated choice, both as skill keys. Agreement is NOT a field: the strip derives it from the two lists, because a flag that disagreed with the names beside it could only put a check mark over a real divergence, so promising one would invite a producer to stamp a value whose only use is to be wrong. A timestamp is not a field either -- the assistant row the record rides on carries its own. `p` is the probability for the chosen option, a finite number in 0..1 or `null`; anything else prints no number. `tokens_saved`, `candidates`, `batches`, `history_chars` and `truncated` are whole counts, and a negative or unparsable one reads as 0. `dropped` names answers the gate refused with the score each arrived with. `error` is the failure category when the decision failed, `null` otherwise. Nothing here carries message text, candidate descriptions or a provider key -- the same bound section 5 puts on the log.
+`baseline` is what the word-overlap rule would have loaded and `jev` is the validated choice, both as skill keys. Agreement is NOT a field: the strip derives it from the two lists, because a flag that disagreed with the names beside it could only put a check mark over a real divergence, so promising one would invite a producer to stamp a value whose only use is to be wrong. A timestamp is not a field either -- the assistant row the record rides on carries its own. `p` is the probability for the chosen option, a finite number in 0..1 or `null`; anything else prints no number. `tokens_saved`, `candidates`, `message_chars`, `history_chars` and `latency_ms` are whole counts, and a negative or unparsable one reads as 0. `message_chars` and `history_chars` are the two halves of the question's egress, each measured on the string that was actually sent -- `message_chars` after the excerpt cap, so it is what left and not what the owner typed. `latency_ms` is one of the six core log fields rather than a field of the point's own, and it rides to the strip because the record IS the log row. The strip prints it as `Jev latency` on the expanded card and inside the collapsed parenthetical beside the score. `dropped` names answers the gate refused with the score each arrived with. `error` is the failure category when the decision failed, `null` otherwise. Nothing here carries message text, candidate descriptions or a provider key -- the same bound section 5 puts on the log; `message_chars` is a length, and a length is not the text.
+
+A count that is the same on every turn is not on the record. There is no batch count -- the menu is asked in ONE question (section 4) -- and no history-clip count: clipping is a fact about the transcript READ, which the call row carries, and a strip row for it printed 0 on every turn at the shipped history budget of 0 while saying nothing a reader could act on.
 
 A key the reader does not know is IGNORED, not refused: a producer may stamp extra fields (a later addition, or an internal one) and the strip renders from the keys above regardless. So the contract is a floor on what must be present, not a ceiling on what may be sent.
 

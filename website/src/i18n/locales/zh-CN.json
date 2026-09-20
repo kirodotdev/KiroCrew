@@ -10171,15 +10171,17 @@
         "agreed_short": "选择相同",
         "baseline_label": "词语匹配",
         "baseline_named": "词语匹配：{{names}}",
-        "batches_label": "选择轮数",
         "candidates_label": "候选技能",
+        "confidence_latency_title": "Jev 对自己答案的把握，取值 0 到 1，以及回答用了多久",
         "confidence_title": "Jev 对自己答案的把握，取值 0 到 1",
         "dropped_label": "已拒绝",
         "error_title": "决策失败",
         "feedback_failed": "没能保存",
-        "history_chars_label": "发送的上下文（字符数）",
         "jev_label": "Jev",
         "jev_named": "Jev：{{names}}",
+        "latency_label": "Jev 用时",
+        "latency_title": "Jev 回答用了多久",
+        "latency_value": "{{ms}} ms",
         "no_skills": "没有技能",
         "point_skills_select": "技能",
         "rate_baseline": "词语匹配",
@@ -10189,7 +10191,9 @@
         "rate_wrong_baseline": "词语匹配选错了技能",
         "rate_wrong_jev": "Jev 选错了技能",
         "saved_tokens": "省下 {{tokens}} 个 token",
-        "truncated_label": "因空间不足未纳入的技能"
+        "sent_history": "历史 {{chars}} 字符",
+        "sent_label": "发送给 Jev",
+        "sent_message": "消息 {{chars}} 字符"
       }
     },
     "chatPage": {

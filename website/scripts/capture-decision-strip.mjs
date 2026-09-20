@@ -45,15 +45,15 @@ const DISAGREED = {
   turn_id: 'turn-4f2a9c',
   ts: '2026-09-19T07:04:11Z',
   point: 'skills.select',
+  latency_ms: 197,
   baseline: ['brazil', 'crux-code-reviews'],
   jev: ['brazil'],
   agree: false,
   p: 0.81,
   tokens_saved: 3240,
   candidates: 42,
-  batches: 3,
+  message_chars: 96,
   history_chars: 1840,
-  truncated: 2,
   dropped: [{ key: 'tst', p: 0.12 }],
   error: null,
 }
@@ -67,7 +67,7 @@ const AGREED = {
   agree: true,
   p: 0.94,
   tokens_saved: 0,
-  truncated: 0,
+  latency_ms: 142,
   dropped: [],
 }
 

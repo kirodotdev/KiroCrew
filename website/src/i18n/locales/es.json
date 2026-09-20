@@ -10457,15 +10457,17 @@
         "agreed_short": "misma elección",
         "baseline_label": "Coincidencia de palabras",
         "baseline_named": "coincidencia de palabras: {{names}}",
-        "batches_label": "Rondas de selección",
         "candidates_label": "Habilidades ofrecidas",
+        "confidence_latency_title": "Confianza de Jev en su propia respuesta, de 0 a 1, y cuánto tardó la respuesta",
         "confidence_title": "Confianza de Jev en su propia respuesta, de 0 a 1",
         "dropped_label": "Rechazadas",
         "error_title": "La decisión falló",
         "feedback_failed": "No se pudo guardar",
-        "history_chars_label": "Contexto enviado (caracteres)",
         "jev_label": "Jev",
         "jev_named": "Jev: {{names}}",
+        "latency_label": "Latencia de Jev",
+        "latency_title": "Cuánto tardó Jev en responder",
+        "latency_value": "{{ms}} ms",
         "no_skills": "ninguna habilidad",
         "point_skills_select": "habilidades",
         "rate_baseline": "Coincidencia de palabras",
@@ -10475,7 +10477,9 @@
         "rate_wrong_baseline": "La coincidencia de palabras eligió las habilidades equivocadas",
         "rate_wrong_jev": "Jev eligió las habilidades equivocadas",
         "saved_tokens": "{{tokens}} tokens ahorrados",
-        "truncated_label": "Habilidades excluidas de la oferta"
+        "sent_history": "historial {{chars}} caracteres",
+        "sent_label": "Enviado a Jev",
+        "sent_message": "mensaje {{chars}} caracteres"
       }
     },
     "chatPage": {

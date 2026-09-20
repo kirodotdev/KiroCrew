@@ -10457,15 +10457,17 @@
         "agreed_short": "mesma escolha",
         "baseline_label": "Correspondência de palavras",
         "baseline_named": "correspondência de palavras: {{names}}",
-        "batches_label": "Rodadas de seleção",
         "candidates_label": "Habilidades oferecidas",
+        "confidence_latency_title": "Confiança do Jev na própria resposta, de 0 a 1, e quanto tempo a resposta levou",
         "confidence_title": "Confiança do Jev na própria resposta, de 0 a 1",
         "dropped_label": "Recusadas",
         "error_title": "A decisão falhou",
         "feedback_failed": "Não foi possível salvar",
-        "history_chars_label": "Contexto enviado (caracteres)",
         "jev_label": "Jev",
         "jev_named": "Jev: {{names}}",
+        "latency_label": "Latência do Jev",
+        "latency_title": "Quanto tempo o Jev levou para responder",
+        "latency_value": "{{ms}} ms",
         "no_skills": "nenhuma habilidade",
         "point_skills_select": "habilidades",
         "rate_baseline": "Correspondência de palavras",
@@ -10475,7 +10477,9 @@
         "rate_wrong_baseline": "A correspondência de palavras escolheu as habilidades erradas",
         "rate_wrong_jev": "O Jev escolheu as habilidades erradas",
         "saved_tokens": "{{tokens}} tokens economizados",
-        "truncated_label": "Habilidades retiradas da oferta"
+        "sent_history": "histórico {{chars}} caracteres",
+        "sent_label": "Enviado ao Jev",
+        "sent_message": "mensagem {{chars}} caracteres"
       }
     },
     "chatPage": {

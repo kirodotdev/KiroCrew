@@ -10457,15 +10457,17 @@
         "agreed_short": "même choix",
         "baseline_label": "Correspondance de mots",
         "baseline_named": "correspondance de mots : {{names}}",
-        "batches_label": "Tours de sélection",
         "candidates_label": "Compétences proposées",
+        "confidence_latency_title": "Confiance de Jev dans sa propre réponse, de 0 à 1, et temps mis pour répondre",
         "confidence_title": "Confiance de Jev dans sa propre réponse, de 0 à 1",
         "dropped_label": "Refusées",
         "error_title": "Décision échouée",
         "feedback_failed": "Enregistrement impossible",
-        "history_chars_label": "Contexte envoyé (caractères)",
         "jev_label": "Jev",
         "jev_named": "Jev : {{names}}",
+        "latency_label": "Latence de Jev",
+        "latency_title": "Temps mis par Jev pour répondre",
+        "latency_value": "{{ms}} ms",
         "no_skills": "aucune compétence",
         "point_skills_select": "compétences",
         "rate_baseline": "Correspondance de mots",
@@ -10475,7 +10477,9 @@
         "rate_wrong_baseline": "La correspondance de mots a choisi les mauvaises compétences",
         "rate_wrong_jev": "Jev a choisi les mauvaises compétences",
         "saved_tokens": "{{tokens}} jetons économisés",
-        "truncated_label": "Compétences retirées de la proposition"
+        "sent_history": "historique {{chars}} caractères",
+        "sent_label": "Envoyé à Jev",
+        "sent_message": "message {{chars}} caractères"
       }
     },
     "chatPage": {

@@ -10314,15 +10314,17 @@
         "agreed_short": "एक ही पसंद",
         "baseline_label": "शब्द मिलान",
         "baseline_named": "शब्द मिलान: {{names}}",
-        "batches_label": "चयन के दौर",
         "candidates_label": "दी गई स्किल",
+        "confidence_latency_title": "Jev को अपने ही उत्तर पर कितना भरोसा है, 0 से 1 तक, और उत्तर आने में कितना समय लगा",
         "confidence_title": "Jev को अपने ही उत्तर पर कितना भरोसा है, 0 से 1 तक",
         "dropped_label": "अस्वीकृत",
         "error_title": "निर्णय विफल रहा",
         "feedback_failed": "सहेजा नहीं जा सका",
-        "history_chars_label": "भेजा गया संदर्भ (अक्षर)",
         "jev_label": "Jev",
         "jev_named": "Jev: {{names}}",
+        "latency_label": "Jev का समय",
+        "latency_title": "Jev को उत्तर देने में कितना समय लगा",
+        "latency_value": "{{ms}} ms",
         "no_skills": "कोई स्किल नहीं",
         "point_skills_select": "स्किल",
         "rate_baseline": "शब्द मिलान",
@@ -10332,7 +10334,9 @@
         "rate_wrong_baseline": "शब्द मिलान ने गलत स्किल चुनीं",
         "rate_wrong_jev": "Jev ने गलत स्किल चुनीं",
         "saved_tokens": "{{tokens}} टोकन बचाए",
-        "truncated_label": "सूची से हटाई गई स्किल"
+        "sent_history": "इतिहास {{chars}} अक्षर",
+        "sent_label": "Jev को भेजा गया",
+        "sent_message": "संदेश {{chars}} अक्षर"
       }
     },
     "chatPage": {

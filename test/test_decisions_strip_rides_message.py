@@ -46,9 +46,9 @@ STRIP = {
     "p": 0.91,
     "tokens_saved": 3100,
     "candidates": 42,
-    "batches": 1,
+    "message_chars": 96,
     "history_chars": 9000,
-    "truncated": 0,
+    "latency_ms": 197,
     "error": None,
 }
 

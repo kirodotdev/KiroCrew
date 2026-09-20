@@ -10171,15 +10171,17 @@
         "agreed_short": "同じ選択",
         "baseline_label": "単語マッチング",
         "baseline_named": "単語マッチング: {{names}}",
-        "batches_label": "選択ラウンド数",
         "candidates_label": "提示したスキル",
+        "confidence_latency_title": "Jev 自身の答えへの確信度（0 から 1）と、答えが返るまでの時間",
         "confidence_title": "Jev 自身の答えへの確信度（0 から 1）",
         "dropped_label": "却下",
         "error_title": "判断に失敗しました",
         "feedback_failed": "保存できませんでした",
-        "history_chars_label": "送信したコンテキスト（文字数）",
         "jev_label": "Jev",
         "jev_named": "Jev: {{names}}",
+        "latency_label": "Jev の応答時間",
+        "latency_title": "Jev が答えるまでにかかった時間",
+        "latency_value": "{{ms}} ms",
         "no_skills": "スキルなし",
         "point_skills_select": "スキル",
         "rate_baseline": "単語マッチング",
@@ -10189,7 +10191,9 @@
         "rate_wrong_baseline": "単語マッチングのスキル選択は間違っていた",
         "rate_wrong_jev": "Jev のスキル選択は間違っていた",
         "saved_tokens": "{{tokens}} トークン節約",
-        "truncated_label": "候補から外したスキル"
+        "sent_history": "履歴 {{chars}} 文字",
+        "sent_label": "Jev に送信",
+        "sent_message": "メッセージ {{chars}} 文字"
       }
     },
     "chatPage": {

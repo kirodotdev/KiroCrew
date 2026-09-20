@@ -10314,15 +10314,17 @@
         "agreed_short": "gleiche Auswahl",
         "baseline_label": "Wortabgleich",
         "baseline_named": "Wortabgleich: {{names}}",
-        "batches_label": "Auswahlrunden",
         "candidates_label": "Angebotene Skills",
+        "confidence_latency_title": "Wie sicher Jev bei der eigenen Antwort ist, von 0 bis 1, und wie lange die Antwort gedauert hat",
         "confidence_title": "Wie sicher Jev bei der eigenen Antwort ist, von 0 bis 1",
         "dropped_label": "Abgelehnt",
         "error_title": "Entscheidung fehlgeschlagen",
         "feedback_failed": "Konnte nicht gespeichert werden",
-        "history_chars_label": "Gesendeter Kontext (Zeichen)",
         "jev_label": "Jev",
         "jev_named": "Jev: {{names}}",
+        "latency_label": "Jev-Antwortzeit",
+        "latency_title": "Wie lange Jev für die Antwort gebraucht hat",
+        "latency_value": "{{ms}} ms",
         "no_skills": "keine Skills",
         "point_skills_select": "Skills",
         "rate_baseline": "Wortabgleich",
@@ -10332,7 +10334,9 @@
         "rate_wrong_baseline": "Der Wortabgleich hat die falschen Skills gewählt",
         "rate_wrong_jev": "Jev hat die falschen Skills gewählt",
         "saved_tokens": "{{tokens}} Tokens gespart",
-        "truncated_label": "Aus dem Angebot gestrichene Skills"
+        "sent_history": "Verlauf {{chars}} Zeichen",
+        "sent_label": "An Jev gesendet",
+        "sent_message": "Nachricht {{chars}} Zeichen"
       }
     },
     "chatPage": {
