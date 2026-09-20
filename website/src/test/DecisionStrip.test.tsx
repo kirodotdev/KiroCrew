@@ -128,7 +128,26 @@ describe('readDecisionStrip', () => {
     const r = readDecisionStrip({
       ...WIRE, tokens_saved: 12.7, candidates: -3, message_chars: '4', history_chars: Number.NaN, latency_ms: 1.9,
     })
-    expect(r).toMatchObject({ tokensSaved: 12, candidates: 0, messageChars: 0, historyChars: 0, latencyMs: 1 })
+    // `message_chars` is the exception and reads `null`, not 0 — see below.
+    expect(r).toMatchObject({ tokensSaved: 12, candidates: 0, messageChars: null, historyChars: 0, latencyMs: 1 })
+  })
+
+  it('reads an unstated message length as null, never as zero characters sent', () => {
+    // 0 is not a credible measurement of this one: a turn that reached the
+    // selector had text. Folding "the record did not say" into "the record said
+    // zero" would print a false egress receipt over every record stamped before
+    // the field existed — the same always-zero row this strip removed.
+    for (const bad of [undefined, null, -1, Number.NaN, '96', {}]) {
+      expect(readDecisionStrip({ ...WIRE, message_chars: bad })!.messageChars).toBeNull()
+    }
+    expect(readDecisionStrip({ ...WIRE, message_chars: 0 })!.messageChars).toBe(0)
+  })
+
+  it('keeps a history of zero as the measurement it is', () => {
+    // The opposite call on the field beside it: "no history was reachable" is a
+    // real observation the spec names, so 0 here must stay a number and not
+    // become an absence.
+    expect(readDecisionStrip({ ...WIRE, history_chars: 0 })!.historyChars).toBe(0)
   })
 
   it('reads the two egress counts and the latency the row already carries', () => {
@@ -141,7 +160,7 @@ describe('readDecisionStrip', () => {
     expect(r.latencyMs).toBe(197)
     // A record from a gateway that stamps neither still renders, at 0.
     const bare = readDecisionStrip({ ...WIRE, message_chars: undefined, latency_ms: undefined })!
-    expect(bare.messageChars).toBe(0)
+    expect(bare.messageChars).toBeNull()
     expect(bare.latencyMs).toBe(0)
   })
 
@@ -472,6 +491,40 @@ describe('DecisionStrip', () => {
     const strip = screen.getByTestId('decision-strip')
     expect(strip.textContent).toContain('message 96 chars')
     expect(strip.textContent).toContain('history 1,800 chars')
+    // The JOIN, not just the two halves: asserting each substring separately
+    // passes under any separator, so a hardcoded one could return unnoticed.
+    // `fmtList` owns it, for the same reason the collapsed parenthetical does —
+    // what goes between two list items is a locale's decision.
+    expect(strip.textContent).toContain('message 96 chars, history 1,800 chars')
+    expect(strip.textContent).not.toContain('message 96 chars \u00B7')
+  })
+
+  it('draws no egress row for a record that never stated the message length', () => {
+    // A record from before the field existed. Printing "message 0 chars ·
+    // history 0 chars" would assert that nothing left the machine on a turn that
+    // sent an excerpt, which is worse than the row it replaced: the old one was
+    // uninformative, this one would be wrong.
+    consent(ON)
+    render(<DecisionStrip record={readDecisionStrip({ ...WIRE, message_chars: undefined })!} />)
+    fireEvent.click(screen.getByTestId('decision-strip-toggle'))
+    const strip = screen.getByTestId('decision-strip')
+    expect(strip.textContent).not.toContain('Sent to Jev')
+    expect(strip.textContent).not.toContain('message 0 chars')
+    // The rest of the card is unaffected: an old record still says who picked
+    // what, which is the claim the strip exists to make.
+    expect(strip.textContent).toContain('Skills offered')
+    expect(strip.textContent).toContain('Word match')
+  })
+
+  it('still draws the egress row when the history half is a real zero', () => {
+    // The shipped history budget is 0, so this is the COMMON record, not an edge
+    // case — gating the row on the wrong field would hide it on every turn.
+    consent(ON)
+    render(<DecisionStrip record={readDecisionStrip({ ...WIRE, history_chars: 0 })!} />)
+    fireEvent.click(screen.getByTestId('decision-strip-toggle'))
+    const strip = screen.getByTestId('decision-strip')
+    expect(strip.textContent).toContain('message 96 chars')
+    expect(strip.textContent).toContain('history 0 chars')
   })
 
   it('prints the latency on the expanded card and omits it when there is none', () => {

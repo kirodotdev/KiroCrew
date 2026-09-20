@@ -962,8 +962,16 @@ def test_the_outcome_row_carries_both_arms(bg_loop, enabled, log_home, monkeypat
     # a second number to reconcile.
     assert isinstance(row["latency_ms"], int) and row["latency_ms"] >= 0
     assert isinstance(row["turn_id"], str) and row["turn_id"]
-    assert '"message"' not in json.dumps(row), "no conversation text in a row"
-    assert isinstance(row["message_chars"], int), "a length is not the text"
+    # The leak ratchet stays BROAD. `message_chars` is a length, so it is removed
+    # by exact key BEFORE the check rather than by loosening the pattern to fit
+    # it: a narrowed pattern would admit a `message_text` field carrying the
+    # conversation itself, which is the one thing this assertion exists to catch.
+    assert isinstance(row["message_chars"], int), "a length, and only a length"
+    without_length = {key: value for key, value in row.items() if key != "message_chars"}
+    assert "message" not in json.dumps(without_length), "no conversation text in a row"
+    # The ratchet's own teeth, so masking by key cannot quietly become masking by
+    # pattern: anything else naming a message still fails the same check.
+    assert "message" in json.dumps({**without_length, "message_text": "review this code"})
 
 
 def test_agreement_is_recorded_as_a_turn_that_saved_nothing(

@@ -179,8 +179,9 @@ const DecisionStrip = memo(function DecisionStrip({
     : null
   // Both numbers describe the answer, so they share one parenthetical rather
   // than each taking a segment of a line that already truncates. Joined with
-  // `fmtList` because the separator between two list items is a locale's
-  // decision, not this file's.
+  // `fmtList`, as is the egress row below: the separator between two list items
+  // is a locale's decision, not this file's, and the two joins are the same
+  // shape -- a short list of measurements read as one value.
   const scores = [record.p !== null ? confidence(record.p) : null, latency].filter(
     (part): part is string => part !== null,
   )
@@ -282,14 +283,24 @@ const DecisionStrip = memo(function DecisionStrip({
           {/* ONE row for the egress, because the two halves are one fact: the
               message excerpt and the prior turns are everything the question
               sends. Naming only the history would leave the number at 0 at the
-              shipped budget while the message that did leave went unmentioned. */}
-          <Detail
-            label={i18nT('pages.chat.decisionStrip.sent_label')}
-            value={[
-              i18nT('pages.chat.decisionStrip.sent_message', { chars: fmtNumber(record.messageChars) }),
-              i18nT('pages.chat.decisionStrip.sent_history', { chars: fmtNumber(record.historyChars) }),
-            ].join(' \u00B7 ')}
-          />
+              shipped budget while the message that did leave went unmentioned.
+
+              Drawn only for a record that states the message length, the same
+              way the latency row below is. A record without it is one whose
+              producer did not measure the excerpt, and "message 0 chars" over a
+              question that carried one is the false receipt this row replaced. */}
+          {record.messageChars !== null && (
+            <Detail
+              label={i18nT('pages.chat.decisionStrip.sent_label')}
+              value={fmtList(
+                [
+                  i18nT('pages.chat.decisionStrip.sent_message', { chars: fmtNumber(record.messageChars) }),
+                  i18nT('pages.chat.decisionStrip.sent_history', { chars: fmtNumber(record.historyChars) }),
+                ],
+                { type: 'unit' },
+              )}
+            />
+          )}
           {latency !== null && (
             <Detail label={i18nT('pages.chat.decisionStrip.latency_label')} value={latency} />
           )}

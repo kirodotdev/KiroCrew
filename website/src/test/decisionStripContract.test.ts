@@ -106,7 +106,9 @@ describe('the record fixture in the decisions spec', () => {
     // printing 0 at the shipped budget while a message did leave.
     expect(readDecisionStrip(fixture)!.messageChars).toBe(96)
     expect(readDecisionStrip(fixture)!.historyChars).toBe(1840)
-    expect(readDecisionStrip({ ...fixture, message_chars: undefined })!.messageChars).toBe(0)
+    // Absent reads as `null`, not 0: the spec's floor-to-zero rule covers the
+    // counts a reader may take at face value, and an unstated egress is not one.
+    expect(readDecisionStrip({ ...fixture, message_chars: undefined })!.messageChars).toBeNull()
   })
 
   it('carries the latency under the core log field name, since the record IS the row', () => {
@@ -142,14 +144,17 @@ describe('the record fixture in the decisions spec', () => {
   })
 
   it('carries no message text, description or key — the bound the log section sets', () => {
-    const serialized = JSON.stringify(fixture).toLowerCase()
-    for (const forbidden of ['api_key', 'secret', 'prompt', 'description', 'content']) {
+    // `message_chars` is a LENGTH, so it is dropped by exact key before the
+    // check. The forbidden list itself stays broad — narrowing `message` to
+    // `"message"` so the new field fits would admit a `message_text` carrying the
+    // conversation, which is the leak this asserts against.
+    const { message_chars: _length, ...withoutLength } = fixture
+    const serialized = JSON.stringify(withoutLength).toLowerCase()
+    for (const forbidden of ['api_key', 'secret', 'prompt', 'message', 'description', 'content']) {
       expect(serialized, `the fixture leaks ${forbidden}`).not.toContain(forbidden)
     }
-    // A LENGTH is not the text, so `message_chars` is allowed where a `message`
-    // field is not. Matched with the quotes so the narrower key cannot smuggle
-    // the wider one back in.
-    expect(serialized, 'the fixture leaks the message itself').not.toContain('"message"')
+    // The teeth: masking is by key, so anything else naming a message still fails.
+    expect(JSON.stringify({ ...withoutLength, message_text: 'hi' })).toContain('message')
     expect(Object.keys(fixture)).toContain('message_chars')
     expect(typeof fixture.message_chars).toBe('number')
   })
