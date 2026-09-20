@@ -395,6 +395,14 @@ export interface BrowserViewData {
   url: string | null
   port: number | null
   reason: string | null
+  /** Dashboard-origin relay path (`/browser-view/<token>/`) to FRAME the view
+   * through — same origin as the dashboard, so it works over an SSH forward or
+   * tunnel with no second port. The embedded per-instance capability token is
+   * the relay's auth (the panel frames it in an opaque-origin sandbox that
+   * sends no cookies). Null unless running; absent entirely from an older
+   * gateway, in which case the panel falls back to framing the absolute
+   * loopback `url`. */
+  path?: string | null
 }
 
 /** Answer of POST /api/browser/open: the Browser panel's address bar on the

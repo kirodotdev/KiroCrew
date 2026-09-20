@@ -709,6 +709,29 @@ def test_cli_local_secret_endpoints_are_in_bypass_exact() -> None:
     assert not missing, f"CLI local-secret endpoints missing from _BYPASS_EXACT: {missing}"
 
 
+# -- Property 8a-bis: every browser-view relay route form bypasses the gate --
+#
+# The relay authenticates with the capability token in the PATH (its iframe is
+# an opaque-origin sandbox that carries no cookies), and answers a UNIFORM 404
+# for tokenless and wrong-token requests alike. Both registered route forms
+# must therefore reach the handler: the tokened form via the /browser-view/
+# prefix entry, and the bare form via its own _BYPASS_EXACT entry — without
+# the latter, the middleware 403s the bare path and hands an unauthenticated
+# prober a response that stands out from the uniform 404s.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/browser-view", "/browser-view/", "/browser-view/tok/x.html"])
+async def test_browser_view_relay_routes_bypass_auth(path: str) -> None:
+    mw = token_auth_middleware()
+    req = _make_request(path=path)  # no token, no cookie
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200, (
+        f"{path} was denied by the auth middleware; the relay handler must "
+        f"answer every route form itself (uniform 404 without a valid token)."
+    )
+
+
 # -- Property 8b: /api/apps/* still requires auth (security boundary) --
 
 

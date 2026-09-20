@@ -734,6 +734,88 @@ describe('WebPreviewPanel — Playwright CLI browser view', () => {
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
+  it('prefers the same-origin relay path over the loopback URL when the gateway offers one', async () => {
+    // `path` rides the dashboard's own origin, so it is what makes the view
+    // reachable from a remote browser (SSH forward, tunnel) — the absolute
+    // loopback URL stays only as the older-gateway fallback. The path embeds
+    // the relay's capability token; the panel treats it as opaque.
+    getBrowserView.mockResolvedValue({ ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' })
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
+    // jsdom absolutizes a relative src against the page origin; the pathname is
+    // the contract.
+    expect(new URL(frame.src).pathname).toBe('/browser-view/capAbc123xyz_-0/')
+    expect(new URL(frame.src).origin).toBe(window.location.origin)
+  })
+
+  it('frames the view WITHOUT allow-same-origin, so it cannot reach dashboard state', async () => {
+    // The relay serves the view SPA on the dashboard's own origin; the opaque
+    // origin (no allow-same-origin) is what keeps that content — or anything
+    // squatting the relay's loopback target port — away from the parent DOM
+    // and the cookie-authed APIs.
+    getBrowserView.mockResolvedValue({ ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' })
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
+    const sandbox = frame.getAttribute('sandbox') ?? ''
+    expect(sandbox).toContain('allow-scripts')
+    expect(sandbox).not.toContain('allow-same-origin')
+    // Popup parity with the direct path: allowed, but WITHOUT the escape
+    // variant — a popup inherits the sandbox (opaque origin included), so
+    // parity costs no isolation.
+    expect(sandbox).toContain('allow-popups')
+    expect(sandbox).not.toContain('allow-popups-to-escape-sandbox')
+  })
+
+  it('keeps allow-same-origin for the direct-URL fallback, which never gets the relay shim', async () => {
+    // Older gateway, no relay `path`: the frame loads the loopback URL
+    // directly. That is already a FOREIGN origin (allow-same-origin grants
+    // only itself, not the dashboard), and only relayed documents carry the
+    // localStorage shim — an opaque-origin direct frame crashes the view
+    // SPA's boot on its bare storage access.
+    getBrowserView.mockResolvedValue(RUNNING)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
+    expect(frame.src).toBe('http://127.0.0.1:45613/')
+    const sandbox = frame.getAttribute('sandbox') ?? ''
+    expect(sandbox).toContain('allow-same-origin')
+    expect(sandbox).toContain('allow-scripts')
+  })
+
+  it('refuses a malformed relay path and falls back to the reported URL', async () => {
+    // A protocol-relative value ('//host') would navigate off-origin if framed;
+    // the shape check drops it and the loopback URL is used instead.
+    getBrowserView.mockResolvedValue({ ...RUNNING, path: '//evil.example/x' })
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
+    expect(frame.src).toBe('http://127.0.0.1:45613/')
+  })
+
+  it('never fires the liveness probe against a relay path — only the direct fallback', async () => {
+    // The relay is same-origin, so its health is the dashboard's own — and a
+    // no-cors probe against it would answer opaque (telling us nothing) while
+    // costing the relay's per-request ownership proofs every 5 seconds for
+    // every open panel. The probe exists for the DIRECT loopback fallback,
+    // whose reachability genuinely differs from this browser's point of view.
+    getBrowserView.mockResolvedValue({ ...RUNNING, path: '/browser-view/capAbc123xyz_-0/' })
+    const relayRender = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await screen.findByTitle('Live browser session')
+    const relayProbes = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map(c => String(c[0]))
+      .filter(u => u.includes('/browser-view'))
+    expect(relayProbes).toEqual([])
+    relayRender.unmount()
+
+    // Positive control, proving this harness detects the probe when it IS
+    // enabled: the direct-URL fallback (old gateway, no `path`) still probes.
+    getBrowserView.mockResolvedValue(RUNNING)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-2" />)
+    await screen.findByTitle('Live browser session')
+    const directProbes = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map(c => String(c[0]))
+      .filter(u => u.startsWith('http://127.0.0.1:45613'))
+    expect(directProbes.length).toBeGreaterThan(0)
+  })
+
   it('layers nothing over the frame, so the CLI keeps its remote input', async () => {
     // The CLI dashboard's own mouse/keyboard input IS the control surface. A
     // scrim or hint bar over the frame would swallow exactly those events, so

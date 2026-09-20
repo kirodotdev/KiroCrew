@@ -205,6 +205,23 @@ function annotateFailureText(res: AnnotateResult): string {
 const COMMON_PORTS = [3000, 5173, 8080, 4321, 8000]
 /** iframe sandbox — permissive enough for real apps + HMR, but still a sandbox. */
 const SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads'
+/** Browser-view iframe sandbox for the RELAY PATH ONLY — deliberately WITHOUT
+ * `allow-same-origin`. The relay serves the view SPA on the dashboard's OWN
+ * origin, so granting the frame a real origin would let that content (or
+ * anything squatting the relay's loopback target port) reach the parent DOM
+ * and drive the dashboard's cookie-authed APIs. The opaque origin — reinforced
+ * server-side by the relay's CSP `sandbox` stamp — keeps the view exactly as
+ * isolated as its old loopback origin was. An opaque origin sends no cookies,
+ * which is why the relay path embeds its own capability token.
+ * `allow-popups` matches the direct path: without
+ * `allow-popups-to-escape-sandbox` a popup INHERITS these flags — opaque
+ * origin included — so parity costs no isolation (the view SPA has no popup
+ * affordance today; this keeps one added later from no-op'ing only via relay).
+ * The direct-URL fallback (older gateway, no relay `path`) keeps the plain
+ * SANDBOX instead: it is already a foreign loopback origin, and only relayed
+ * documents get the storage shim — sandboxing the direct frame opaque would
+ * crash the view SPA's boot on its bare localStorage access. */
+const VIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals allow-downloads'
 
 /** Preview viewport presets. `w`/`h` absent = responsive desktop (fill panel);
  *  present = a fixed device-sized frame (mobile/tablet). */
@@ -745,20 +762,46 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // driven. There is no per-frame push to subscribe to any more: the view is a
   // process with a URL, so the panel polls its status and frames the URL.
   const view = useBrowserView(active)
-  // Validate the server-reported URL before it becomes an iframe `src`. The
-  // contract promises `http://127.0.0.1:<port>/`, and `normalizeUrl` rejects
-  // anything that is not http(s) — so a malformed or hostile value degrades to
-  // the explanatory state instead of being navigated.
+  // Validate the server-reported target before it becomes an iframe `src`.
   //
-  // Deliberately NOT run through `isolatePreviewHost`: that swaps a loopback host
-  // matching the dashboard's onto the other alias, and the CLI binds ONE
-  // interface (`--host 127.0.0.1`). Swapping `127.0.0.1` to `localhost` can
-  // resolve to `::1`, where nothing is listening — the exact IPv6 trap the
-  // explicit bind exists to avoid. The view's URL is used verbatim.
+  // Preferred: the gateway's same-origin relay `path`
+  // (`/browser-view/<token>/`). A relative path rides whatever origin delivers
+  // the dashboard itself — an SSH forward, a tunnel — so the view is reachable
+  // remotely with no pinned port and no second forward. The embedded
+  // capability token is the relay's auth (the frame below is an opaque-origin
+  // sandbox that sends no cookies). The shape check (single leading slash)
+  // keeps a malformed or hostile value from becoming a protocol-relative
+  // (`//host`) navigation.
+  //
+  // Fallback: the absolute `url` from an older gateway that predates the relay.
+  // The contract promises `http://127.0.0.1:<port>/`, and `normalizeUrl`
+  // rejects anything that is not http(s) — so a malformed or hostile value
+  // degrades to the explanatory state instead of being navigated.
+  //
+  // The fallback is deliberately NOT run through `isolatePreviewHost`: that
+  // swaps a loopback host matching the dashboard's onto the other alias, and
+  // the CLI binds ONE interface (`--host 127.0.0.1`). Swapping `127.0.0.1` to
+  // `localhost` can resolve to `::1`, where nothing is listening — the exact
+  // IPv6 trap the explicit bind exists to avoid. The view's URL is used
+  // verbatim.
   const viewUrl = useMemo(
-    () => (view.data?.url ? normalizeUrl(view.data.url) : null),
-    [view.data?.url],
+    () => {
+      const relayPath = view.data?.path
+      if (typeof relayPath === 'string' && relayPath.startsWith('/') && !relayPath.startsWith('//')) {
+        return relayPath
+      }
+      return view.data?.url ? normalizeUrl(view.data.url) : null
+    },
+    [view.data?.path, view.data?.url],
   )
+  // Which sandbox the view frame needs tracks HOW the URL was resolved. A relay
+  // path is same-origin (relative, guaranteed above to start with a single '/'),
+  // so it must be framed WITHOUT `allow-same-origin`; the direct loopback URL
+  // (older gateway, no `path`) is a foreign origin where `allow-same-origin`
+  // grants only that origin — and it MUST keep real storage access, because the
+  // relay's localStorage shim is injected only into relayed documents, so an
+  // opaque-origin direct frame crashes the view SPA's boot.
+  const viewIsRelay = !!viewUrl && viewUrl.startsWith('/')
   const viewRunning = view.data?.status === 'running' && !!viewUrl
   // Whether the browser view OWNS the panel. Null = follow the view itself (it
   // takes over as soon as it is running, which is how the old frame mirror
@@ -1505,17 +1548,22 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     reloadKey,
   )
 
-  // Liveness of the framed CLI view, from THIS browser's point of view. The view
-  // is served on the gateway host's loopback, so from a browser on another
-  // machine (a laptop reaching a remote gateway over an SSH tunnel) the frame is
-  // dead unless `dashboard.browser_view_port` is pinned and that port forwarded
-  // too. The gateway's status says "running" either way — it is reachable from
-  // where IT stands — so the panel has to find out for itself and explain the
-  // pin + forward instead of showing the browser's own error page in the frame.
+  // Liveness of the framed CLI view, from THIS browser's point of view — for
+  // the DIRECT-URL fallback only. That URL is served on the gateway host's
+  // loopback, so from a browser on another machine (a laptop reaching a remote
+  // gateway over an SSH tunnel) the frame is dead unless
+  // `dashboard.browser_view_port` is pinned and that port forwarded too. The
+  // gateway's status says "running" either way — it is reachable from where IT
+  // stands — so the panel has to find out for itself and explain the pin +
+  // forward instead of showing the browser's own error page in the frame.
   // Same probe as the dev server's, and CSP admits it (loopback connect-src).
+  // The relay path NEVER gets this probe: it is same-origin, so its health is
+  // the dashboard's own — and a no-cors probe against it would tell us nothing
+  // (the response is opaque) while costing the relay's per-request ownership
+  // proofs every 5 seconds for every open panel.
   const viewUnreachable = useLivenessProbe(
     viewUrl || '',
-    !!viewUrl && viewRunning && showBrowserView && active,
+    !!viewUrl && !viewIsRelay && viewRunning && showBrowserView && active,
     viewProbeKey,
   )
 
@@ -1705,7 +1753,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             src={viewUrl as string}
             title={i18nT('components.webPreviewPanel.live_browser_session')}
             className="absolute inset-0 w-full h-full border-0 bg-bg-elevated"
-            sandbox={SANDBOX}
+            sandbox={viewIsRelay ? VIEW_SANDBOX : SANDBOX}
           />
         ) : view.data?.status === 'stopped' ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">

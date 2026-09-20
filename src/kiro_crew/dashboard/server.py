@@ -1840,6 +1840,16 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/browser/engine", handlers.api_browser_engine_install)
     app.router.add_get("/api/browser/view", handlers.api_browser_view_get)
     app.router.add_post("/api/browser/view/start", handlers.api_browser_view_start)
+    # Same-origin relay for the CLI browser view: the panel frames this path
+    # instead of the raw loopback URL, so the live view is reachable wherever
+    # the dashboard is (SSH forward, tunnel) with no second forwarded port.
+    # HTTP and WebSocket both. Authenticated by the per-instance capability
+    # token embedded in the path (NOT the session cookie: the panel frames it
+    # in an opaque-origin sandbox that sends none) — the prefix is on
+    # token_auth's bypass list and the handler enforces the token itself. See
+    # handlers/browser_view_relay.py for the rewrites and the full posture.
+    app.router.add_get("/browser-view", handlers.api_browser_view_relay)
+    app.router.add_get("/browser-view/{tail:.*}", handlers.api_browser_view_relay)
     # The Browser panel's address bar on the non-native transport: opens an
     # owner-typed URL in the gateway host's Playwright CLI browser and shows it
     # through the view above. Owner-only (cookie/token) and deliberately NOT on
@@ -3548,6 +3558,10 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
         task.add_done_callback(state._background_tasks.discard)
 
     async def _browser_view_shutdown(app_: web.Application) -> None:
+        try:
+            await handlers.close_relay_client(app_)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("browser view relay client close failed during shutdown", exc_info=True)
         try:
             await asyncio.to_thread(browser_cli_launcher.close_all)
         except Exception:  # noqa: BLE001 - shutdown must not raise

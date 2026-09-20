@@ -815,12 +815,28 @@ skipped that check, is a rejected request and renders the same sentence through
 `ErrorNotice`. Only the newest
 launch on a slot may paint: every launch takes a sequence number, a slot change
 bumps it, and a late answer from an older launch (a mistyped address that fails
-after the corrected one succeeded, or a slot the user left) paints nothing. The view URL is
-loopback on the GATEWAY host, so from a browser on another machine it is dead
-unless `dashboard.browser_view_port` is pinned and forwarded: the panel probes it
-with the same no-cors liveness check it uses for a dev server and, on two
-strikes, replaces the frame with an `ErrorNotice` naming the URL and the setting
-rather than showing the browser's own connection-refused page.
+after the corrected one succeeded, or a slot the user left) paints nothing. The
+panel frames the view through the **same-origin relay** whenever the gateway
+publishes one: `/api/browser/view` answers a root-relative `path`
+(`/browser-view/<token>/`), the panel prefers it over the direct `url`, and the
+frame is served through the dashboard's own port — so a remote or tunneled
+dashboard reaches the view through the one forward it already has, with no
+extra configuration. The direct loopback `url` remains as the fallback for an
+old gateway whose payload carries no `path`: that URL is loopback on the
+GATEWAY host, dead from a browser on another machine unless
+`dashboard.browser_view_port` is pinned and that port forwarded — the panel
+probes it with the same no-cors liveness check it uses for a dev server and, on
+two strikes, replaces the frame with an `ErrorNotice` naming the URL and the
+setting rather than showing the browser's own connection-refused page. (The
+relay path never gets that probe: it is same-origin, so its health is the
+dashboard's own.) The relay rewrites the view SPA's root-absolute references
+and its `?ws=` socket parameter to stay under the tokened prefix; those
+rewrites are pinned to the current playwright-cli bundle shape (double-quoted
+`src`/`href` attributes, `url(/…)` in CSS, the `'/' + ws` socket-URL
+construction), so **after a playwright-cli upgrade, open the Browser panel once
+on a remote dashboard and confirm the view boots through the relay** — an
+upstream bundle-shape change would silently restore the direct-URL breakage
+this path exists to fix.
 
 ### Security
 
@@ -828,6 +844,7 @@ rather than showing the browser's own connection-refused page.
 |---------|----------------|
 | Capability availability | Vetted absolute launcher identity only: `<data-home>/playwright-cli` first, then fixed system locations whose direct launcher, Node and package-entry hierarchies the gateway user cannot write. The managed prefix is on the sensitive-path floor and `_CREW_READONLY_LEAVES`, so agent file tools cannot read or replace it and every agent sandbox can execute but not modify it. Linux precreation requires the launcher leaf itself to be a real directory before and after the create race; a resolving symlink is refused because a bind mount would follow its target and leave the name replaceable. PATH, `~/.local/bin`, project and workspace candidates are ignored. On every OS gateway-owned calls use an attributed direct pair: managed `gateway-node`/`node.exe` plus contained `playwright-cli.js`, or a fixed-system Node and package entry whose complete hierarchies are non-writable. POSIX shebangs, PATH Node, and Windows batch files never receive gateway request data. See [Capability model](#capability-model) for why availability is not approval |
 | Dashboard exposure | `show` is bound to `127.0.0.1`; `0.0.0.0` is never passed, because the served view carries remote input |
+| Browser view relay (`/browser-view/…`) | The one token-auth bypass that proxies foreign content. Auth is a per-instance capability token in the path: minted fresh at every view-server start, disclosed only through the cookie-authed owner-gated `/api/browser/view` payload, constant-time-compared against a lock-free snapshot BEFORE the supervisor lock or its OS-level ownership probes are touched — an invalid candidate can never contend either, and the probes themselves run outside the lock on a consistent snapshot. Every unauthenticated miss answers a uniform 404; a caller already holding the current token that lands in a start window (supervisor lock held past the bounded wait) gets a retryable 503 instead — safe to distinguish precisely because only token holders can reach it. Every allow/deny is SEL-audited. Ownership is re-proved after each upstream connection is established, before any byte or frame goes downstream, closing the proof→connect race (a dead child's freed port cannot be inherited by a squatter; a restarted view's new port marks held connections stale). Every relayed non-script response is stamped with the CSP `sandbox` + `nosniff` (+ `Access-Control-Allow-Origin: *` — the token gates access, CORS only gates readability), and the panel frames it in an opaque-origin sandbox, so relayed content never runs with the dashboard origin's ambient authority |
 | Address bar launcher (`POST /api/browser/open`) | Owner-only (cookie/token), on no internal-path list, and the handler refuses an internal-secret caller outright, so an agent cannot use it to skip the shell approval ladder. The URL is re-validated (`http`/`https`, host, and no secret-bearing userinfo, query, or fragment — argv is world-readable) before it is the one free argv element; the session name is derived hex; no sandbox flag is ever added and no config written — the operator's `PLAYWRIGHT_MCP_CONFIG` is inherited as-is. Only sessions this gateway opened are closed at shutdown, never `close-all`/`kill-all`. **Accepted residual:** a token carried in the URL *path* still reaches argv for the life of the CLI process; paths stay allowed because refusing them refuses most ordinary pages. The residual closes when the CLI takes the URL outside argv — #9854 tracks that switch and its version floor |
 | Native `browser` MCP tool | The tool is always advertised but re-checks the vetted CLI availability and `capabilities.browse` governance at call time. It dispatches one enum-bounded operation to the calling slot's Electron panel through internal-secret-only routes. `dashboard.use_builtin_browser=false`, an unresolved session, a missing panel, HTTP 404/503, or a transport miss returns CLI fallback guidance; governance denial never falls back. `navigate` accepts only public HTTP(S) targets as described above. Arguments are scalar or lists of scalars, result text is credential/exfiltration-URL redacted and capped, and screenshot data is not inlined into the model response. **Accepted residual:** the lenient session resolver can map a subagent process to its parent slot, so a subagent tool call may drive the parent's native panel; this stays same-user/same-machine and public-navigation-only |
 | Agent reach into a `panel-` session | **Accepted residual.** A `panel-` browser can hold logins the human typed into it, and an agent drives the same CLI through its shell. What separates the populations is structural but not an enforcement boundary: an agent process runs under its own generated `PWTEST_DAEMON_SESSION_DIR`/`PWTEST_SOCKETS_DIR` namespace (see [Generated session reachability](#generated-session-reachability)), so a bare `playwright-cli -s=panel-… goto` from an agent shell resolves no session and its `list` does not show one; reaching the human's browser takes a command that also names the CLI's default registry and the gateway's socket root, both readable by a same-user process. The control on that command is the ordinary shell approval ladder, exactly as for every other `playwright-cli` invocation; the reserved prefix and the `web-browse` skill's rule are the conventions on top. An enforced isolation would be a per-population credential on the daemon socket, which the CLI does not offer |

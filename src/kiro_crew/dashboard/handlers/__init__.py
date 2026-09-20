@@ -103,6 +103,12 @@ from kiro_crew.dashboard.handlers.appearances import (  # noqa: E402, F401
     api_appearances_petdex_fetch,
 )
 
+# ── Browser view same-origin relay (handlers/browser_view_relay.py) ──
+from kiro_crew.dashboard.handlers.browser_view_relay import (  # noqa: E402, F401
+    api_browser_view_relay,
+    close_relay_client,
+)
+
 # ── Connections OAuth relay (handlers/connections.py) ──
 from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_cancel,
