@@ -3734,8 +3734,23 @@ async def _retire_sessions_on_identity_change(state: Any) -> None:
     try:
         changed, live = await service.identity_changed_since_sessions()
         if not changed:
-            return
-        retired, complete = await sessions.retire_kiro_identity_sessions()
+            # An INCOMPLETE sweep is its own trigger, independent of the baseline.
+            # The baseline advances only on a complete sweep, so after an A->B
+            # sweep left a busy session behind, a switch BACK to A compares equal
+            # to it and would return here -- while the successors that registered
+            # under B keep serving turns on B's credential, silently and with no
+            # auth failure to report it.
+            #
+            # Retry until a sweep COMPLETES, which is the only thing that clears
+            # the pending fingerprint. Comparing it to the live one instead would
+            # abandon the retry: this very trigger sweeps with `fingerprint=live`
+            # while the baseline equals live, so the pending fingerprint it then
+            # records IS the live one, and an equality test would send every later
+            # turn back here with holders still to retire.
+            pending = getattr(sessions, "pending_identity_sweep_fingerprint", "")
+            if not pending:
+                return
+        retired, complete = await sessions.retire_kiro_identity_sessions(fingerprint=live)
         # Advance THIS consumer's baseline ONLY on a complete sweep AND a real
         # identity. Anything left running -- a busy session, a child that would not
         # shut down, a start still in flight -- is still holding the previous

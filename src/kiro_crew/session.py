@@ -1387,6 +1387,18 @@ class SessionManager:
         self._lifecycle_state_boundary().identity_sweep_lock = value
 
     @property
+    def pending_identity_sweep_fingerprint(self) -> str:
+        """The account a sweep is still trying to retire sessions FOR, or ``""``.
+
+        Non-empty exactly while an identity sweep stayed incomplete, and cleared
+        the moment one completes. Read-only on purpose: the lifecycle service
+        owns every write, and a consumer needs this only to answer "is a change
+        still outstanding", which the reconciled baseline alone cannot say --
+        that baseline deliberately does not advance on an incomplete sweep.
+        """
+        return self._lifecycle_state_boundary().identity_sweep_fingerprint
+
+    @property
     def _recycling(self) -> dict[str, "_Session"]:
         return self._lifecycle_state_boundary().recycling  # type: ignore[return-value]
 
@@ -2374,6 +2386,9 @@ class SessionManager:
         session = self._sessions.get(folded)
         if session is None or not session.provider_switch_replay:
             return False
+        if session.retire_on_identity_change:
+            session.provider_switch_replay = False
+            return True
         if not _is_acp_provider(session.provider):
             session.provider_switch_replay = False
             return True
@@ -2541,13 +2556,17 @@ class SessionManager:
         """Retire a session while preserving its resumable mapping."""
         await self._lifecycle_boundary().remove(key)
 
-    async def retire_kiro_identity_sessions(self) -> tuple[list[str], bool]:
+    async def retire_kiro_identity_sessions(self, fingerprint: str = "") -> tuple[list[str], bool]:
         """Retire idle processes that loaded a superseded Kiro identity."""
-        return await self._lifecycle_boundary().retire_kiro_identity_sessions()
+        return await self._lifecycle_boundary().retire_kiro_identity_sessions(fingerprint)
 
     async def _retire_kiro_warm_pool(self) -> bool:
         """Delegate pooled-provider retirement after identity change."""
         return await self._pool._retire_kiro_warm_pool()
+
+    def _mark_identity_epoch(self) -> None:
+        """Disqualify already-pooled providers from claims after an account change."""
+        self._pool.mark_identity_epoch()
 
     async def _retire_kiro_subagent_runtimes(self) -> bool:
         """Retire idle companion runtimes that use Kiro's identity store."""

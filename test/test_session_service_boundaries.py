@@ -239,7 +239,11 @@ async def test_identity_retirement_preserves_map_and_drops_transient_state(
     assert "key" in manager._compact_pending_verdict
     assert "key" not in manager._suppress_replay
     assert "key" not in manager._origin_links
-    manager._session_map.clear_sid.assert_not_called()
+    # The pointer to the previous account's native conversation goes, because
+    # the account that minted it is not the account that would reload it. The
+    # ENTRY itself is what "preserves map" means: `delete` is still not called,
+    # so the mapping survives to carry the successor's own sid.
+    manager._session_map.clear_sid.assert_called_once_with("key")
     manager._session_map.delete.assert_not_called()
     provider.shutdown.assert_awaited_once()
 

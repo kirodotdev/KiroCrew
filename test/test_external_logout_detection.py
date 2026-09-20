@@ -12,7 +12,9 @@ import asyncio
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -612,8 +614,10 @@ class _FakeSemaphore:
 
 
 class _FakeProvider:
-    def __init__(self, backend: str) -> None:
+    def __init__(self, backend: str, *, sid: str = "") -> None:
         self.backend = backend
+        self.client = SimpleNamespace(_session_id=sid, backend=backend)
+        self.cwd = ""
         self.shutdown_calls = 0
 
     @property
@@ -630,6 +634,20 @@ class _FakeProvider:
 
     async def shutdown(self) -> None:
         self.shutdown_calls += 1
+
+
+class _DeadProvider(_FakeProvider):
+    """A provider whose child has already exited.
+
+    Drives the dead-provider removal branch in ``_get_or_create_impl``, the one
+    path that pops a session without going through ``_evict_stale_session``.
+    """
+
+    def is_process_alive(self) -> bool:
+        return False
+
+    def is_alive(self) -> bool:
+        return False
 
 
 class _FakeRuntime:
@@ -1007,7 +1025,7 @@ class TestLatchNarrowingPolicy:
             self._complete = complete
             self.calls = 0
 
-        async def retire_kiro_identity_sessions(self):
+        async def retire_kiro_identity_sessions(self, fingerprint: str = ""):
             self.calls += 1
             return ([], self._complete)
 
@@ -1132,6 +1150,109 @@ class TestLatchNarrowingPolicy:
         assert service._session_identity is None
 
 
+class TestReturnToBaselineAfterIncompleteSweep:
+    """A switch BACK to the reconciled account must still retire interim holders.
+
+    The baseline advances only on a COMPLETE sweep. So after an A->B sweep left a
+    busy session behind, returning to A compares equal to the baseline and the
+    identity check would see no change -- while successors that registered under B
+    keep answering on B's credential, with no auth failure to report it.
+    """
+
+    class _State:
+        def __init__(self, service: object, sessions: object) -> None:
+            self.kiro_prerequisite_service = service
+            self.sessions = sessions
+
+    class _Sessions:
+        """Mirrors the lifecycle service's pending-fingerprint bookkeeping."""
+
+        def __init__(self, complete: bool = True) -> None:
+            self._complete = complete
+            self.calls = 0
+            self.swept_with: list[str] = []
+            self.pending_identity_sweep_fingerprint = ""
+
+        async def retire_kiro_identity_sessions(self, fingerprint: str = ""):
+            self.calls += 1
+            self.swept_with.append(fingerprint)
+            # Kept while a sweep stays incomplete; cleared the moment one completes.
+            self.pending_identity_sweep_fingerprint = "" if self._complete else fingerprint
+            return ([], self._complete)
+
+    @pytest.mark.asyncio
+    async def test_returning_to_the_baseline_account_still_sweeps(self, tmp_path: Path) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        _write_store(db)
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        fp_a = await service.current_identity_fingerprint()
+        service._stamp_probe(fp_a)
+        # Children already match A.
+        service.note_sessions_reconciled(fp_a)
+
+        # A -> B, and the sweep cannot finish (a busy session survives it).
+        _write_store(db, start_url="https://personal.awsapps.com/start")
+        sessions = self._Sessions(complete=False)
+        state = self._State(service, sessions)
+        await chat_runner._retire_sessions_on_identity_change(state)
+        assert sessions.calls == 1
+        # Incomplete, so the baseline stayed at A while B is outstanding.
+        assert service._session_identity == fp_a
+        pending_b = sessions.pending_identity_sweep_fingerprint
+        assert pending_b and pending_b != fp_a
+
+        # Back to A. The baseline now MATCHES the live account, so the identity
+        # predicate reports no change -- the B successors are reachable only
+        # through the outstanding sweep.
+        _write_store(db)
+        assert (await service.identity_changed_since_sessions())[0] is False
+
+        await chat_runner._retire_sessions_on_identity_change(state)
+        assert sessions.calls == 2, "the B holders were left serving under B"
+        # The retry is captured afresh under the account now in use, not B's.
+        assert sessions.swept_with[-1] != pending_b
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_sweep_retries_even_for_the_live_account(
+        self, tmp_path: Path
+    ) -> None:
+        """Completion is the stop condition, not a fingerprint match.
+
+        This trigger sweeps with the LIVE fingerprint while the baseline equals it,
+        so the pending fingerprint an incomplete one records is the live account's.
+        Stopping on that equality would abandon the retry with holders still to
+        retire; only a sweep that COMPLETES clears the pending fingerprint.
+        """
+
+        from kiro_crew.dashboard import chat_runner
+
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        _write_store(db)
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        fp_a = await service.current_identity_fingerprint()
+        service._stamp_probe(fp_a)
+        service.note_sessions_reconciled(fp_a)
+
+        # An outstanding sweep FOR the live account, still incomplete.
+        sessions = self._Sessions(complete=False)
+        sessions.pending_identity_sweep_fingerprint = fp_a
+        state = self._State(service, sessions)
+
+        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state)
+        assert sessions.calls == 2, "an incomplete sweep stopped retrying"
+
+        # A sweep that completes clears the pending fingerprint, which stops it.
+        sessions._complete = True
+        await chat_runner._retire_sessions_on_identity_change(state)
+        assert sessions.calls == 3
+        assert sessions.pending_identity_sweep_fingerprint == ""
+        await chat_runner._retire_sessions_on_identity_change(state)
+        assert sessions.calls == 3, "it kept sweeping after completion"
+
+
 class TestRetirementCoverage:
     """Every holder of a kiro child must be reachable by retirement."""
 
@@ -1143,6 +1264,21 @@ class TestRetirementCoverage:
         # pool_size 0 so construction never pre-spawns; the pool is populated
         # explicitly by the test that cares about it.
         return SessionManager(KiroCrewConfig())
+
+    @staticmethod
+    def _stored_sid(smap, key: str) -> str:
+        """Read the stored sid WITHOUT ``get``'s transcript-file check.
+
+        ``SessionMap.get`` stats ``<sid>.json`` and prunes an entry whose
+        transcript is missing, which would answer "no pointer" for a reason this
+        test is not about. The question here is only whether the retirement
+        dropped the pointer, so read the entry.
+        """
+
+        from kiro_crew.session_map import canonical_key
+
+        entry = smap._session_map._data.get(canonical_key(key)) or {}
+        return entry.get("sid", "")
 
     @staticmethod
     def _session(provider: object, *, busy: bool = False):
@@ -1636,3 +1772,587 @@ class TestRetirementCoverage:
         await task
 
         assert observed, "the drain never ran"
+
+    @pytest.mark.asyncio
+    async def test_a_retired_session_loses_its_native_conversation_pointer(self) -> None:
+        """The successor must not ``session/load`` the previous account's history.
+
+        An extended-thinking model's stored thinking blocks carry a provider
+        signature bound to the conversation they were minted in. Reload one under
+        a different account and the provider rejects the whole request with
+        "Invalid `signature` in `thinking` block ... bound to a different
+        conversation", and it repeats on every later turn because the cold start
+        keeps resuming the same sid. Clearing the pointer is what makes the
+        replacement child start a NEW native conversation.
+        """
+
+        smap = self._manager()
+        kiro = _FakeProvider("")
+        claude = _FakeProvider("claude")
+        smap._sessions["kiro-key"] = self._session(kiro)
+        smap._sessions["claude-key"] = self._session(claude)
+        smap._session_map.set("kiro-key", "sid-old-account")
+        smap._session_map.set("claude-key", "sid-untouched")
+
+        retired, complete = await smap.retire_kiro_identity_sessions()
+
+        assert retired == ["kiro-key"]
+        assert complete is True
+        assert self._stored_sid(smap, "kiro-key") == ""
+        # Only the pointer is dropped: the conversation stays recoverable.
+        assert smap._session_map.get_discarded_sid("kiro-key") == "sid-old-account"
+        # A provider that does not read the kiro identity store is untouched.
+        assert self._stored_sid(smap, "claude-key") == "sid-untouched"
+
+    @pytest.mark.asyncio
+    async def test_a_busy_session_loses_its_pointer_during_the_sweep(self) -> None:
+        """The running child keeps its in-process sid, but the map drops it now."""
+
+        smap = self._manager()
+        busy = _FakeProvider("")
+        session = self._session(busy, busy=True)
+        smap._sessions["busy"] = session
+        smap._session_map.set("busy", "sid-old-account")
+
+        retired, complete = await smap.retire_kiro_identity_sessions()
+
+        assert retired == []
+        assert complete is False
+        assert session.retire_on_identity_change is True
+        assert self._stored_sid(smap, "busy") == ""
+        assert smap._session_map.get_discarded_sid("busy") == "sid-old-account"
+        assert "busy" in smap._sessions
+        assert busy.shutdown_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_sweep_retires_the_successor_too(self) -> None:
+        """A retry retires every Kiro session, successors included.
+
+        Registration order cannot say which account a session authenticated
+        under: a cold start that began before the switch registers after it, so
+        sparing "whatever registered later" hands the old account a session the
+        sweep was asked to retire. Retiring the successor costs it a fresh native
+        conversation; its previous pointer stays recoverable.
+        """
+
+        smap = self._manager()
+        old = _FakeProvider("")
+        old_session = self._session(old, busy=True)
+        smap._sessions["shared"] = old_session
+        smap._advance_session_generation("shared")
+        smap._session_map.set("shared", "sid-old-account")
+
+        _, complete = await smap.retire_kiro_identity_sessions("fp-b")
+        assert complete is False
+        assert self._stored_sid(smap, "shared") == ""
+        assert smap._session_map.get_discarded_sid("shared") == "sid-old-account"
+
+        old_session.semaphore.release()
+        await smap._evict_stale_session("shared", old_session)
+        successor = self._session(_FakeProvider("", sid="sid-new-account"))
+        smap._sessions["shared"] = successor
+        smap._advance_session_generation("shared")
+        smap._session_map.set("shared", "sid-new-account")
+
+        retired, complete = await smap.retire_kiro_identity_sessions("fp-b")
+
+        assert retired == ["shared"]
+        assert complete is True
+        assert "shared" not in smap._sessions
+        assert self._stored_sid(smap, "shared") == ""
+        assert smap._session_map.get_discarded_sid("shared") == "sid-new-account"
+
+    @pytest.mark.asyncio
+    async def test_retry_sweep_still_clears_a_marked_busy_holder(self) -> None:
+        """A busy holder keeps its mark and loses its pointer on every retry."""
+
+        smap = self._manager()
+        old = _FakeProvider("")
+        old_session = self._session(old, busy=True)
+        smap._sessions["shared"] = old_session
+        smap._advance_session_generation("shared")
+        smap._session_map.set("shared", "sid-old-account")
+
+        _, complete = await smap.retire_kiro_identity_sessions("fp-b")
+        assert complete is False
+
+        # Model the marked generation trying to republish before the retry.
+        smap._session_map.set("shared", "sid-old-account")
+        _, complete = await smap.retire_kiro_identity_sessions("fp-b")
+
+        assert complete is False
+        assert old_session.retire_on_identity_change is True
+        assert self._stored_sid(smap, "shared") == ""
+        assert smap._session_map.get_discarded_sid("shared") == "sid-old-account"
+
+    @pytest.mark.asyncio
+    async def test_complete_sweep_releases_the_pending_marker(self) -> None:
+        """A completed sweep clears the marker, so a later change is not a retry."""
+
+        smap = self._manager()
+        first = self._session(_FakeProvider(""))
+        smap._sessions["shared"] = first
+        smap._advance_session_generation("shared")
+        smap._session_map.set("shared", "sid-first-account")
+
+        _, complete = await smap.retire_kiro_identity_sessions("fp-b")
+        assert complete is True
+
+        second = self._session(_FakeProvider(""))
+        smap._sessions["shared"] = second
+        smap._advance_session_generation("shared")
+        smap._session_map.set("shared", "sid-second-account")
+
+        retired, complete = await smap.retire_kiro_identity_sessions("fp-c")
+
+        assert retired == ["shared"]
+        assert complete is True
+        assert self._stored_sid(smap, "shared") == ""
+        assert smap._session_map.get_discarded_sid("shared") == "sid-second-account"
+
+    @pytest.mark.asyncio
+    async def test_a_second_switch_during_an_incomplete_sweep_retires_the_successor(
+        self,
+    ) -> None:
+        """A -> B with a busy A-session, then B -> C before it goes idle.
+
+        The consumer baseline is still A, so the sweep re-fires. The successor
+        registered under B holds a B-account conversation that account C would
+        reject exactly like the original bug, so it is retired rather than spared
+        for having registered later.
+        """
+
+        smap = self._manager()
+        busy_a = self._session(_FakeProvider(""), busy=True)
+        smap._sessions["busy"] = busy_a
+        smap._advance_session_generation("busy")
+        smap._session_map.set("busy", "sid-account-a")
+        smap._sessions["shared"] = self._session(_FakeProvider(""))
+        smap._advance_session_generation("shared")
+        smap._session_map.set("shared", "sid-account-a")
+
+        retired, complete = await smap.retire_kiro_identity_sessions("fp-b")
+        assert retired == ["shared"]
+        assert complete is False
+
+        successor_b = self._session(_FakeProvider("", sid="sid-account-b"))
+        smap._sessions["shared"] = successor_b
+        smap._advance_session_generation("shared")
+        smap._session_map.set("shared", "sid-account-b")
+
+        retired, complete = await smap.retire_kiro_identity_sessions("fp-c")
+
+        assert retired == ["shared"]
+        assert complete is False
+        assert "shared" not in smap._sessions
+        assert self._stored_sid(smap, "shared") == ""
+        assert smap._session_map.get_discarded_sid("shared") == "sid-account-b"
+        assert busy_a.retire_on_identity_change is True
+        assert self._stored_sid(smap, "busy") == ""
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_back_to_the_baseline_retires_the_interim_holders(self) -> None:
+        """A -> B incomplete, back to A, then a genuine A -> B.
+
+        The return to A is itself swept, because an outstanding change is its own
+        trigger and the reconciled baseline says nothing about it. A session
+        started under A in between therefore loses its A-account pointer at the
+        later genuine A -> B, instead of surviving as something the sweep decided
+        was already on the new account.
+        """
+
+        smap = self._manager()
+        busy_a = self._session(_FakeProvider(""), busy=True)
+        smap._sessions["busy"] = busy_a
+        smap._advance_session_generation("busy")
+        smap._session_map.set("busy", "sid-account-a")
+
+        # A -> B, left incomplete by the busy A-session: fence armed for B.
+        _, complete = await smap.retire_kiro_identity_sessions("fp-b")
+        assert complete is False
+
+        # Back to A. The consumer baseline never advanced, so this fires only
+        # because an outstanding sweep is a trigger in its own right.
+        await smap.retire_kiro_identity_sessions("fp-a")
+
+        # A session started under A AFTER that return.
+        later = self._session(_FakeProvider("", sid="sid-account-a"))
+        smap._sessions["later"] = later
+        smap._advance_session_generation("later")
+        smap._session_map.set("later", "sid-account-a")
+
+        # The genuine A -> B. `later` holds an A conversation and must lose it.
+        retired, _ = await smap.retire_kiro_identity_sessions("fp-b")
+
+        assert "later" in retired, "an A-account holder escaped the sweep"
+        assert self._stored_sid(smap, "later") == ""
+        assert smap._session_map.get_discarded_sid("later") == "sid-account-a"
+
+    @pytest.mark.asyncio
+    async def test_an_older_sweep_does_not_retire_a_newer_sweeps_fence(self) -> None:
+        """A -> B whose shutdowns straddle a B -> C sweep.
+
+        The shutdown loop runs outside ``identity_sweep_lock``, so a second
+        account change can acquire that lock and recapture the fence while the
+        first sweep is still awaiting a child's exit. The first sweep's own work
+        succeeded while the pending change belongs to C: clearing the fence
+        would drop the successor generations C recorded, and reporting complete
+        would let the caller reconcile its baseline with C's busy holder still
+        serving turns on B's credential -- and with no pending fingerprint left
+        for the next turn to retry from.
+        """
+
+        released = asyncio.Event()
+        entered = asyncio.Event()
+
+        class _SlowProvider(_FakeProvider):
+            async def shutdown(self) -> None:
+                self.shutdown_calls += 1
+                entered.set()
+                await released.wait()
+
+        smap = self._manager()
+        smap._sessions["doomed"] = self._session(_SlowProvider(""))
+        smap._advance_session_generation("doomed")
+        smap._session_map.set("doomed", "sid-account-a")
+
+        first = asyncio.create_task(smap.retire_kiro_identity_sessions("fp-b"))
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+        # A busy successor registers under B while that shutdown is pending, then
+        # the account moves on to C.
+        busy_b = self._session(_SlowProvider(""), busy=True)
+        smap._sessions["busy"] = busy_b
+        smap._advance_session_generation("busy")
+        smap._session_map.set("busy", "sid-account-b")
+
+        _, second_complete = await smap.retire_kiro_identity_sessions("fp-c")
+        assert second_complete is False
+        assert smap.pending_identity_sweep_fingerprint == "fp-c"
+
+        released.set()
+        retired, first_complete = await asyncio.wait_for(first, timeout=5.0)
+
+        assert retired == ["doomed"]
+        assert first_complete is False, "an older sweep claimed a newer change was handled"
+        assert smap.pending_identity_sweep_fingerprint == "fp-c"
+        assert busy_b.retire_on_identity_change is True
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_stale_eviction_keeps_the_conversation(self) -> None:
+        """Only an identity change invalidates the sid.
+
+        A dead or unresponsive provider is replaced under the SAME account, where
+        resuming the native conversation is the behaviour that preserves it.
+        """
+
+        smap = self._manager()
+        dead = _FakeProvider("")
+        session = self._session(dead)
+        smap._sessions["stale"] = session
+        smap._session_map.set("stale", "sid-same-account")
+
+        await smap._evict_stale_session("stale", session)
+
+        assert self._stored_sid(smap, "stale") == "sid-same-account"
+        assert smap._session_map.get_discarded_sid("stale") == ""
+
+    @pytest.mark.asyncio
+    async def test_a_marked_session_whose_process_died_first_still_loses_its_pointer(
+        self,
+    ) -> None:
+        """A child that dies after the sweep cannot restore its old pointer."""
+
+        smap = self._manager()
+        dead = _DeadProvider("")
+        session = self._session(dead, busy=True)
+        smap._sessions["marked"] = session
+        smap._session_map.set("marked", "sid-old-account")
+
+        retired, complete = await smap.retire_kiro_identity_sessions()
+
+        assert retired == []
+        assert complete is False
+        assert session.retire_on_identity_change is True
+        assert self._stored_sid(smap, "marked") == ""
+
+        # No factory: the cold start after the removal raises, which keeps this
+        # test on the removal itself rather than on provider construction.
+        smap._provider_factory = None
+        with pytest.raises(RuntimeError, match="No provider factory"):
+            await smap.get_or_create("marked")
+
+        assert "marked" not in smap._sessions
+        assert self._stored_sid(smap, "marked") == ""
+        assert smap._session_map.get_discarded_sid("marked") == "sid-old-account"
+
+    @pytest.mark.asyncio
+    async def test_an_unmarked_dead_session_keeps_its_conversation(self) -> None:
+        """A dead provider outside the changed identity store keeps its pointer."""
+
+        smap = self._manager()
+        dead = _DeadProvider("claude")
+        smap._sessions["stale"] = self._session(dead)
+        smap._session_map.set("stale", "sid-same-account")
+
+        retired, complete = await smap.retire_kiro_identity_sessions()
+
+        assert retired == []
+        assert complete is True
+        assert self._stored_sid(smap, "stale") == "sid-same-account"
+
+        smap._provider_factory = None
+        with pytest.raises(RuntimeError, match="No provider factory"):
+            await smap.get_or_create("stale")
+
+        assert self._stored_sid(smap, "stale") == "sid-same-account"
+        assert smap._session_map.get_discarded_sid("stale") == ""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_skips_marked_sid_but_persists_unmarked_sid(self, monkeypatch) -> None:
+        """Shutdown must not undo the sweep's old-account pointer clear."""
+
+        smap = self._manager()
+        marked = _FakeProvider("", sid="sid-old-account")
+        marked_session = self._session(marked, busy=True)
+        smap._sessions["marked"] = marked_session
+        smap._session_map.set("marked", "sid-old-account")
+
+        await smap.retire_kiro_identity_sessions()
+        assert marked_session.retire_on_identity_change is True
+        assert self._stored_sid(smap, "marked") == ""
+
+        unmarked = _FakeProvider("", sid="sid-current-account")
+        smap._sessions["unmarked"] = self._session(unmarked)
+        monkeypatch.setattr("kiro_crew.session._load_acp_provider_type", lambda: _FakeProvider)
+
+        await smap.close_all()
+
+        assert self._stored_sid(smap, "marked") == ""
+        assert smap._session_map.get_discarded_sid("marked") == "sid-old-account"
+        assert self._stored_sid(smap, "unmarked") == "sid-current-account"
+
+    def test_marked_replay_settlement_consumes_lease_without_republishing_sid(self) -> None:
+        """A landed replay cannot restore the identity sweep's discarded sid."""
+
+        from kiro_crew.providers.acp import AcpProvider
+
+        smap = self._manager()
+        provider = object.__new__(AcpProvider)
+        provider._client = SimpleNamespace(
+            _session_id="sid-old-account-replayed",
+            _work_dir="/old-workspace",
+            backend="kiro",
+        )
+        session = self._session(provider)
+        session.provider_switch_replay = True
+        session.retire_on_identity_change = True
+        smap._sessions["marked"] = session
+        smap._session_map.set("marked", "sid-old-account")
+        smap._session_map.clear_sid("marked")
+
+        assert smap.commit_provider_switch_replay_sid("marked") is True
+        assert session.provider_switch_replay is False
+        assert self._stored_sid(smap, "marked") == ""
+        assert smap._session_map.get_discarded_sid("marked") == "sid-old-account"
+
+    def test_every_sid_writer_is_registration_or_identity_fenced(self) -> None:
+        """A future non-registration writer must respect the identity marker."""
+
+        import ast
+
+        source_root = Path(__file__).parents[1] / "src" / "kiro_crew"
+        registration_paths = {
+            ("session_allocation.py", "seed_conversation"),
+            ("session_allocation.py", "_get_or_create_impl"),
+        }
+        writers: list[str] = []
+        offenders: list[str] = []
+
+        def is_session_map_set(node: ast.AST) -> bool:
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "set"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "_session_map"
+            )
+
+        def has_prior_identity_guard(
+            call: ast.Call,
+            parents: dict[ast.AST, ast.AST],
+        ) -> bool:
+            child: ast.AST = call
+            while child in parents:
+                parent = parents[child]
+                for _, value in ast.iter_fields(parent):
+                    if not isinstance(value, list) or child not in value:
+                        continue
+                    for sibling in value[: value.index(child)]:
+                        if not isinstance(sibling, ast.If):
+                            continue
+                        tests_identity_marker = (
+                            isinstance(sibling.test, ast.Attribute)
+                            and sibling.test.attr == "retire_on_identity_change"
+                        )
+                        exits_writer_path = bool(sibling.body) and isinstance(
+                            sibling.body[-1], (ast.Continue, ast.Return)
+                        )
+                        if tests_identity_marker and exits_writer_path:
+                            return True
+                child = parent
+            return False
+
+        for path in sorted(source_root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            parents = {
+                child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+            }
+            for call in (node for node in ast.walk(tree) if is_session_map_set(node)):
+                assert isinstance(call, ast.Call)
+                function: ast.AST = call
+                while function in parents and not isinstance(
+                    function, (ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    function = parents[function]
+                function_name = getattr(function, "name", "<module>")
+                relative_path = path.relative_to(source_root).as_posix()
+                location = f"{relative_path}:{call.lineno}:{function_name}"
+                writers.append(location)
+                if (relative_path, function_name) in registration_paths:
+                    continue
+                if not has_prior_identity_guard(call, parents):
+                    offenders.append(location)
+
+        assert len(writers) >= 7, f"session-map writer scan found only {writers}"
+        assert (
+            not offenders
+        ), "session-map sid writer lacks a retire_on_identity_change fence: " + ", ".join(offenders)
+
+
+class TestWarmPoolIdentityFence:
+    """A pooled process that authenticated as the previous account is unusable.
+
+    Pool claims take no cold-start permit, so the sweep's permit barrier cannot
+    hold one back, and the pool teardown cannot run inside that barrier without
+    deadlocking on the fill lock. The claim-time age check is the fence.
+    """
+
+    @staticmethod
+    def _manager():
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+
+        return SessionManager(KiroCrewConfig())
+
+    @staticmethod
+    def _record_discards(smap) -> list:
+        discarded: list = []
+
+        async def _discard(provider, context: str) -> None:
+            discarded.append((provider, context))
+
+        smap._discard_pool_provider = _discard  # type: ignore[method-assign]
+        smap._schedule_replenish = lambda: None  # type: ignore[method-assign]
+        return discarded
+
+    @pytest.mark.asyncio
+    async def test_a_provider_queued_before_the_switch_is_discarded_not_claimed(self) -> None:
+        smap = self._manager()
+        discarded = self._record_discards(smap)
+        stale = _FakeProvider("")
+        smap._warm_pool.put_nowait((stale, time.monotonic()))
+
+        # The sweep stamps the pool before any key becomes claimable.
+        smap._mark_identity_epoch()
+
+        assert await smap._drain_and_claim(None) is None
+        assert [p for p, _ in discarded] == [stale]
+
+    @pytest.mark.asyncio
+    async def test_a_pool_start_spanning_the_switch_is_discarded(self) -> None:
+        """The enqueue timestamp records when startup began, not when it ended."""
+
+        smap = self._manager()
+        discarded = self._record_discards(smap)
+        started = asyncio.Event()
+        finish_start = asyncio.Event()
+
+        class _StraddlingProvider(_FakeProvider):
+            async def start(self) -> None:
+                started.set()
+                await finish_start.wait()
+
+        provider = _StraddlingProvider("")
+        smap._pool._pool_size = 1
+        smap._provider_factory = lambda *args, **kwargs: provider
+
+        fill = asyncio.create_task(smap._fill_warm_pool())
+        await started.wait()
+        smap._mark_identity_epoch()
+        finish_start.set()
+        await fill
+
+        assert await smap._drain_and_claim(None) is None
+        assert [item for item, _ in discarded] == [provider]
+
+    @pytest.mark.asyncio
+    async def test_a_provider_spawned_after_the_switch_is_still_claimable(self) -> None:
+        """The fence is an age check, not a pool-wide off switch.
+
+        The replenish that follows a sweep spawns under the NEW account, and
+        refusing those would leave the pool permanently useless.
+        """
+
+        smap = self._manager()
+        discarded = self._record_discards(smap)
+        smap._mark_identity_epoch()
+        fresh = _FakeProvider("")
+        # Strictly after the epoch: the stamp is taken before this spawn.
+        smap._warm_pool.put_nowait((fresh, smap._pool._pool_identity_epoch + 0.001))
+
+        assert await smap._drain_and_claim(None) is fresh
+        assert discarded == []
+
+    @pytest.mark.asyncio
+    async def test_a_provider_on_another_identity_store_is_not_fenced(self) -> None:
+        """Only providers that read the Kiro identity store are affected."""
+
+        smap = self._manager()
+        discarded = self._record_discards(smap)
+        other = _FakeProvider("claude")
+        assert other.uses_kiro_identity_store is False
+        smap._warm_pool.put_nowait((other, time.monotonic()))
+
+        smap._mark_identity_epoch()
+
+        assert await smap._drain_and_claim(None) is other
+        assert discarded == []
+
+    @pytest.mark.asyncio
+    async def test_an_untouched_pool_claims_normally(self) -> None:
+        """With no sweep having run there is no epoch, so nothing is fenced."""
+
+        smap = self._manager()
+        discarded = self._record_discards(smap)
+        provider = _FakeProvider("")
+        smap._warm_pool.put_nowait((provider, time.monotonic()))
+
+        assert smap._pool._pool_identity_epoch == 0.0
+        assert await smap._drain_and_claim(None) is provider
+        assert discarded == []
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_stamps_the_pool_even_when_it_retires_nothing(self) -> None:
+        """The stamp is the sweep's first act, not a consequence of a retirement.
+
+        A sweep that finds no session to pop still has a pool full of previous
+        account processes, and the claim path is what must learn about it.
+        """
+
+        smap = self._manager()
+        retired, complete = await smap.retire_kiro_identity_sessions()
+
+        assert retired == []
+        assert complete is True
+        assert smap._pool._pool_identity_epoch > 0.0
