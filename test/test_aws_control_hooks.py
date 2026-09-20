@@ -461,3 +461,70 @@ class TestStartupShutdown:
             assert hooks._task is None
 
         _run(_drive())
+
+
+class TestNightlyOutcomeIsToldApart:
+    """A nightly that sent nothing must not be recorded as a push.
+
+    ``run_snapshot_backup`` now returns a record whose ``uploaded`` is False when the
+    source tree has not changed since the archive already in the drive. The audit trail
+    and the log line are where an operator actually reads what happened, so recording
+    that run as ``succeeded`` with "backup pushed: <key>" would make a night on which no
+    bytes left indistinguishable from an ordinary upload -- against a key that really is
+    in the drive, so nothing downstream looks wrong either.
+
+    Both directions, because an outcome field that always reports one value is not
+    telling anything apart.
+    """
+
+    @staticmethod
+    def _drive(record: dict):
+        """Run one nightly with every precondition satisfied, returning the audit mock."""
+        with (
+            mock.patch.object(
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
+            ),
+            mock.patch.object(
+                hooks.aws_consent,
+                "probe_identity",
+                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
+            ),
+            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
+            mock.patch.object(
+                hooks.storage_mod, "find_drive", return_value="kirocrew-drive-abc123def456"
+            ),
+            mock.patch.object(hooks.backup_mod, "run_snapshot_backup", return_value=record),
+            mock.patch.object(hooks, "_audit") as audit,
+        ):
+            _run(hooks._run_once())
+        return audit
+
+    def test_an_unchanged_night_is_audited_as_unchanged_not_succeeded(self):
+        audit = self._drive(
+            {"key": "snapshots/x.tar.gz", "uploaded": False, "bytes": 10, "tree": "t1"}
+        )
+        outcomes = [c.args[2] for c in audit.call_args_list]
+        assert "unchanged" in outcomes
+        assert "succeeded" not in outcomes
+        # The key is still named: it is the archive the drive holds for this kind, which
+        # is what makes the record useful rather than merely honest.
+        keys = [c.args[1] for c in audit.call_args_list]
+        assert "snapshots/x.tar.gz" in keys
+
+    def test_a_real_upload_is_still_audited_as_succeeded(self):
+        audit = self._drive({"key": "snapshots/x.tar.gz", "uploaded": True, "bytes": 10})
+        outcomes = [c.args[2] for c in audit.call_args_list]
+        assert "succeeded" in outcomes
+        assert "unchanged" not in outcomes
+
+    def test_a_record_without_the_field_is_treated_as_a_push(self):
+        # A record from a path that does not set `uploaded` at all must keep the old
+        # meaning rather than silently becoming "unchanged" -- the branch tests
+        # `is False`, so only an explicit skip takes the new wording.
+        audit = self._drive({"key": "snapshots/x.tar.gz"})
+        outcomes = [c.args[2] for c in audit.call_args_list]
+        assert "succeeded" in outcomes
+        assert "unchanged" not in outcomes

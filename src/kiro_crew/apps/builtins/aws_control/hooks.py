@@ -174,8 +174,20 @@ async def _run_once() -> None:
                 caller=backup_mod.CALLER_SCHEDULED,
             )
         )
-        _audit("backup_nightly", str(record.get("key", "")), "succeeded")
-        logger.info("aws-control nightly backup pushed: %s", record.get("key", ""))
+        if record.get("uploaded") is False:
+            # A run that found the tree unchanged sent nothing, so recording it as a
+            # push would put a SEL entry and a log line against a key no bytes reached
+            # tonight -- indistinguishable, to whoever reads the audit trail, from an
+            # ordinary upload. The key is still named because it is the archive this
+            # run stood on: it is what the drive still holds for this kind.
+            _audit("backup_nightly", str(record.get("key", "")), "unchanged")
+            logger.info(
+                "aws-control nightly backup: tree unchanged since %s, nothing uploaded",
+                record.get("key", ""),
+            )
+        else:
+            _audit("backup_nightly", str(record.get("key", "")), "succeeded")
+            logger.info("aws-control nightly backup pushed: %s", record.get("key", ""))
     except asyncio.CancelledError:
         _audit("backup_nightly", "backup/snapshots", "cancelled")
         raise

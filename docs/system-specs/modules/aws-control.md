@@ -441,6 +441,70 @@ locally; it does not restore it into live gateway state.
 `test_aws_control_app.py::TestRound22Hardening.test_restore_refuses_a_symlinked_destination`
 pins the staged restore safety boundary.
 
+Both runs build their archive and then decide whether to send it.
+`backup._tree_fingerprint` digests one row per archive member -- path, kind, permission
+mode, size and a content hash -- in sorted path order, read from the packed payload.
+The comparison is over that entry set rather than the archive's bytes because a
+`tar.gz` embeds per-entry
+mtimes and a gzip stamp, so two runs over an identical tree produce different bytes and
+an archive-level comparison reports "changed" every night. Reading it from the payload
+rather than by a second walk of the source also means it cannot disagree with what would
+actually be sent, and that a redaction switch changes the fingerprint.
+
+Two normalizations are part of the digest's definition, each measured against the real
+engine rather than assumed. `_VOLATILE_MANIFEST_FIELDS` drops `created_at` from
+`MANIFEST.json`, the one field `snapshot.py` rewrites on a rebuild of an unchanged tree;
+the member's other fields stay, because `purpose`, `staging` and `version` are not
+derivable from the file set. The snapshot bundle's root directory carries a timestamp, so
+snapshots pass `volatile_root=True` while the sessions archive passes `False` -- its
+`crew` and `cli` roots are meaningful. `test_aws_control_backup_unchanged.py::TestRealBundleAssumption`
+builds real bundles and pins that assumption, so a second volatile field turns CI red
+instead of the skip quietly never firing again.
+
+`backup._unchanged_baseline` decides the skip, and returns the matched run record rather
+than a boolean so a skip can carry the baseline's own key, fingerprint and version
+forward. It skips only when the previous archive is PROVEN still in the drive at its
+recorded key, its recorded length and its recorded version; every other branch uploads,
+including a moved tree, a missing object, an unanswerable `head-object`, an unreadable
+archive, and a version id that identifies no single version. `backup._is_provable_version_id`
+is that last rule: the empty string names nothing, and `"null"` is the id S3 gives every
+object written to a key while the bucket's versioning is SUSPENDED, where an overwrite
+replaces that version rather than adding one. Both the recorded id and the stored one run
+through it, so the skip never fires on an unversioned or suspended drive and those
+accounts keep uploading in full.
+
+The `head-object` that proves the baseline is a request on the operator's account, so it
+passes `backup._authorize_upload` under its own operation, `SEL_OP_BASELINE_PROBE`,
+distinct from the gate that guards bytes leaving. It is taken after the local checks, so a
+run that could not skip anyway spends no round trip discovering it.
+
+A run record persists `tree` (the fingerprint, which is what tomorrow compares against)
+and `uploaded`. A skip writes `uploaded: false`, keeps the matched run's key, fingerprint
+and version so the baseline survives, and takes a fresh `at` so `due_for_nightly` does not
+rebuild on the next wake. It writes that record only when `runs[kind]` is still the very
+record the baseline was read from, identified by its `(process, sequence)` pair, under the
+state lock. `sequence` is bumped on every run-record write and `process` carries the pid,
+so no two records an install writes share the pair; `_run_is_newer` already requires that
+same pairing, because a bare sequence counts one process's own writes and two processes can
+both sit at the same number. Neither `at` nor `key` can stand in for it and neither is
+compared: `datetime.now` resolves to the platform's clock tick, so two writes on a coarse
+clock share one `at` value, while a skip carries the matched run's own `key` and so cannot
+be told from a second skip by key. Windows CI produced both collisions at once and accepted
+a second skip against a baseline the first had already replaced. A record predating these
+fields carries neither, so the skip is refused and a full copy uploads -- the direction
+every other proof here fails toward, and the reason there is no fallback to `at` alone.
+`test_aws_control_backup_unchanged.py::TestRecordSkipCompareAndSet` pins each term with a
+case no other term can see, including the coarse-clock collision reproduced by hand; the
+two sequence type guards cover each other on a record with no sequence, so they are pinned
+as a pair. If the slot is absent or moved while the archive is
+being built, the skip is refused, the refusal leaves the newer record in place, and the
+run logs the reason before uploading the archive. `hooks._run_once` reads `uploaded` and
+reports and audits a skip as `unchanged` rather than as a push; a record without the field
+reads as a push. Neither the label publish nor the retention sweep runs on a successful
+skip. Labels follow a push, so a local rename reaches the drive on the next real upload
+rather than on a skip. An unchanged night cannot consume a keep slot or prune the archive
+the next skip depends on.
+
 Both push keys carry a timestamp, so nothing is overwritten and the drive would
 otherwise only grow. `backup._prune_remote_archives` runs as the LAST step of a
 successful push, and by default it retires nothing: retention is OFF unless this

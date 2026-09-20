@@ -11,9 +11,12 @@ Two backup kinds, one push path:
   session halves — ``<data home>/sessions/`` (transcripts + rotated
   archives) and ``<kiro home>/sessions/cli/`` (the CLI replay logs) — pushed
   to ``backup/sessions/<install>/<stamp>.tar.gz``. Whole-set, not per-session:
-  the "both halves move together" invariant is honoured by construction, and
-  the per-session incremental integration with the storage inventory is future
-  work.
+  the "both halves move together" invariant is honoured by construction, and a
+  run whose trees have not moved since the archive already in the drive uploads
+  nothing at all -- see "Unchanged runs upload nothing" below. Splitting the set
+  into per-session objects and sending only the changed ones is a different
+  feature and deliberately not this one: the RFC lists incremental and
+  deduplicating transfer among its non-goals.
 
 **One drive can be reached by several installs.** Discovery is by tag, so a
 second install finds the first one's bucket and writes to it by design — the
@@ -33,6 +36,19 @@ there, and the UI copy says exactly that.
 State (`<app data dir>/backup.json`): this install's identity, plus the last
 run per kind, the nightly toggle per account, and the per-account retention
 count. The nightly loop lives in the app's ``on_startup`` hook.
+
+**Unchanged runs upload nothing.** Every run builds its archive, then asks whether
+that archive carries anything the drive does not already hold; if not, it records a
+run saying so and sends no bytes. The comparison CANNOT be over archive bytes -- a
+``tar.gz`` embeds per-entry mtimes and a gzip stamp, so two runs over an identical
+tree produce different bytes and an archive-level check would report "changed" every
+night. It is taken over the entry set instead (path, kind, permission mode, size and
+content hash per member: ``_tree_fingerprint``), read from the packed payload so it
+cannot drift from what would actually be sent. A skip is refused unless the previous
+archive is PROVEN still in the drive at its recorded key and its recorded length,
+because a record proves only that this install once wrote that key -- retention
+deletes by design and a co-writer can overwrite a name. Every uncertain branch
+uploads. See ``_unchanged_baseline``, which lists them.
 
 **Retention runs after a successful push, never before it.** Both key shapes
 above carry a timestamp, so nothing is ever overwritten and an unbounded drive
@@ -450,6 +466,13 @@ RETENTION_KEEP_STATE_KEY = "retention_keep"
 SEL_OP_UPLOAD = "aws_control.backup_upload"
 SEL_OP_RETENTION = "aws_control.backup_retention"
 
+#: The unchanged-check's own probe of the previous archive. A separate operation name
+#: rather than reusing :data:`SEL_OP_UPLOAD`, because what it authorizes is different in
+#: kind: one non-mutating ``head-object`` on this install's own key, taken to decide
+#: whether an upload is needed at all. An audit reader who cannot tell that from a
+#: refused archive PUT cannot tell which decision was actually being made.
+SEL_OP_BASELINE_PROBE = "aws_control.backup_baseline_probe"
+
 #: An id for a process that could not persist one. See :func:`install_identity`.
 _fallback_identity: dict[str, str] = {}
 _fallback_lock = threading.Lock()
@@ -501,6 +524,162 @@ def _body_fingerprint(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+#: The snapshot bundle's metadata member, named relative to the bundle root.
+_SNAPSHOT_MANIFEST_NAME = "MANIFEST.json"
+
+#: Manifest fields that change on every build of an UNCHANGED tree, and so must not
+#: reach :func:`_tree_fingerprint`.
+#:
+#: Measured, not assumed: two bundles built from one untouched home differ in exactly
+#: one member (``MANIFEST.json``) and inside it in exactly one field (``created_at``)
+#: -- ``snapshot.py`` writes it as ``datetime.now(...)`` beside ``hostname``, ``user``
+#: and ``kirocrew_dir``, which are stable on an install and are therefore KEPT. The
+#: rest of the manifest is real signal and is compared: ``purpose``, ``staging``
+#: (pinned vs unpinned) and ``version`` are not derivable from the file set at all, so
+#: dropping the whole member -- the obvious shortcut -- would silently stop noticing a
+#: bundle that switched to an unpinned staging walk.
+#:
+#: This is an assumption about a module this one does not own, so a test pins the
+#: assumption itself rather than only the behaviour: it builds two bundles from one
+#: unchanged tree and asserts the fingerprints match. The day a second volatile field
+#: appears, that test goes red instead of the skip quietly never firing again.
+_VOLATILE_MANIFEST_FIELDS = ("created_at",)
+
+
+def _tree_fingerprint(archive: Path, *, volatile_root: bool) -> str:
+    """A digest of what an archive CARRIES, stable across two builds of one tree.
+
+    This is the value the unchanged-check compares, and it exists because
+    :func:`_body_fingerprint` cannot answer the question. A ``tar.gz`` embeds a
+    per-entry mtime and a gzip header stamp, so two runs over a byte-identical tree
+    produce different archive bytes -- measured, and pinned by a test. An
+    archive-level comparison therefore reports "changed" every single night and a skip
+    built on it could never fire.
+
+    So the digest is taken over the ENTRY SET instead: for every member, its path,
+    its kind, its permission mode, its size and a hash of its bytes, accumulated in
+    sorted path order. That is the per-entry source manifest the decision needs, read
+    from the packed copy.
+
+    Reading it from the packed copy rather than walking the source again is
+    deliberate, and it is the stronger of the two:
+
+    * It cannot drift. A second walk would have to re-derive WHICH paths each kind
+      packs -- knowledge that lives in ``snapshot.COMPONENTS`` and in
+      :func:`_add_tree` -- and the day the two disagreed, the manifest would answer
+      "unchanged" for a tree whose real content had moved. A backup that silently
+      stops backing up is a worse failure than a local rebuild.
+    * It sees redaction. The snapshot path may upload a redacted copy
+      (:func:`snapshot.prepare_redacted_copy`), so flipping that switch changes the
+      bytes that LEAVE while the source tree is untouched. Taken over the payload,
+      this notices; taken over the source, it would not.
+
+    ``mtime`` is deliberately NOT part of the digest even though a source manifest
+    conventionally carries it. It is not needed -- a content change moves the content
+    hash -- and it is actively harmful here: a restore, a ``touch``, or a checkout
+    bumps mtime without changing a byte, and the resulting "changed" verdict would
+    spend the full upload this check exists to avoid. (``MANIFEST.json``'s mtime is
+    also rewritten on every build, measured.)
+
+    *volatile_root* strips the first path segment from every member. The snapshot
+    bundle's root directory is named ``kirocrew-snapshot-<stamp>``, so it changes every
+    run and would defeat the comparison on its own; the bundle has exactly one root,
+    which ``snapshot._redacted_upload_copy`` already depends on and enforces. The
+    sessions archive is the opposite case -- its roots are ``crew`` and ``cli``, which
+    are meaningful -- so its caller passes ``False`` and nothing is stripped. Each
+    caller states what it knows about its own archive rather than this guessing from a
+    name pattern.
+
+    ``usedforsecurity`` is not passed: unlike :func:`_body_fingerprint` this is
+    SHA-256, which no hardened build refuses.
+
+    Returns ``""`` when the archive cannot be read as a ``tar.gz`` at all, and an empty
+    value never matches anything, so the run uploads. This function deliberately does
+    NOT turn an unreadable payload into a refusal: validating the archive is a separate
+    question from deciding whether to send it, and raising here would decide the first
+    one on the way past. An unreadable payload is pushed, exactly as a payload this
+    cannot read has to be; the skip is the only thing unavailable for it.
+    """
+    try:
+        entries = _archive_entries(archive, volatile_root=volatile_root)
+    except (tarfile.TarError, OSError) as exc:
+        logger.warning(
+            "aws-control: could not read %s to decide whether anything changed, so this "
+            "run uploads rather than skipping: %s",
+            archive.name,
+            exc,
+        )
+        return ""
+    rolling = hashlib.sha256()
+    for kind, name, mode, size, digest in sorted(entries, key=lambda row: (row[1], row[0])):
+        # NUL-delimited, and injective because no field can contain a NUL: tar stores
+        # member names NUL-terminated, kind is one of a fixed set of literals, and the
+        # mode, size and digest are octal, decimal and hex digits. So no two different
+        # entry sets serialize alike.
+        # Mode only splits otherwise-matching rows: it can trigger an extra upload,
+        # never a wrong skip.
+        # Tar member names are surrogate-escaped, and surrogatepass is total for every
+        # lone surrogate. A strict encode raises here, outside the guarded archive read,
+        # and crashes the run instead of falling back to upload.
+        rolling.update(
+            f"{kind}\0{name}\0{mode:o}\0{size}\0{digest}\0".encode("utf-8", "surrogatepass")
+        )
+    return rolling.hexdigest()
+
+
+def _archive_entries(archive: Path, *, volatile_root: bool) -> list[tuple[str, str, int, int, str]]:
+    """One ``(kind, path, permission mode, size, content digest)`` row per member."""
+    entries: list[tuple[str, str, int, int, str]] = []
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar:
+            name = member.name
+            if volatile_root:
+                # A member that IS the root directory normalizes to an empty name and
+                # carries nothing; dropping it keeps the digest about content.
+                rest = name.partition(KEY_SEP)[2]
+                if not rest:
+                    continue
+                name = rest
+            mode = stat.S_IMODE(member.mode)
+            if not member.isfile():
+                # Recorded by name, kind and mode. An empty directory is not visible
+                # in any file's path, so a tree that loses one is a change this would
+                # otherwise miss.
+                entries.append(("dir" if member.isdir() else "other", name, mode, 0, ""))
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                entries.append(("unreadable", name, mode, member.size, ""))
+                continue
+            if name == _SNAPSHOT_MANIFEST_NAME:
+                entries.append(("file", name, mode, 0, _manifest_digest(handle.read())))
+                continue
+            member_hash = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                member_hash.update(chunk)
+            entries.append(("file", name, mode, member.size, member_hash.hexdigest()))
+    return entries
+
+
+def _manifest_digest(raw: bytes) -> str:
+    """A digest of the snapshot manifest with its volatile fields dropped.
+
+    Falls back to hashing the raw bytes when the member is not the JSON object this
+    expects. That direction is the safe one: an unparseable manifest then reads as
+    "changed" and the run uploads, rather than a parse failure becoming a silent
+    match. See :data:`_VOLATILE_MANIFEST_FIELDS`.
+    """
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return hashlib.sha256(raw).hexdigest()
+    if not isinstance(parsed, dict):
+        return hashlib.sha256(raw).hexdigest()
+    stable = {k: v for k, v in parsed.items() if k not in _VOLATILE_MANIFEST_FIELDS}
+    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _default_label(install_id: str) -> str:
@@ -1012,16 +1191,39 @@ def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
     return runs
 
 
+_UNCONDITIONAL_RUN_WRITE = object()
+
+
 def _record_run(
-    account: str, kind: str, key: str, size: int, fingerprint: str = "", version: str = ""
+    account: str,
+    kind: str,
+    key: str,
+    size: int,
+    fingerprint: str = "",
+    version: str = "",
+    tree: str = "",
+    uploaded: bool = True,
 ) -> dict[str, Any]:
     with _run_lock:
-        return _record_run_locked(account, kind, key, size, fingerprint, version)
+        recorded = _record_run_locked(
+            account, kind, key, size, fingerprint, version, tree=tree, uploaded=uploaded
+        )
+    assert recorded is not None
+    return recorded
 
 
 def _record_run_locked(
-    account: str, kind: str, key: str, size: int, fingerprint: str, version: str = ""
-) -> dict[str, Any]:
+    account: str,
+    kind: str,
+    key: str,
+    size: int,
+    fingerprint: str,
+    version: str = "",
+    *,
+    tree: str = "",
+    uploaded: bool = True,
+    expected: object = _UNCONDITIONAL_RUN_WRITE,
+) -> Optional[dict[str, Any]]:
     global _run_sequence
     _run_sequence += 1
     record: dict[str, Any] = {
@@ -1039,20 +1241,75 @@ def _record_run_locked(
         # unversioned or the response named none, and retention then declines the
         # key rather than guessing.
         "version": version,
+        # What the archive CARRIED, as `_tree_fingerprint` computes it -- the value the
+        # next run compares to decide whether it has anything new to send. Empty on a
+        # record written before this field existed, and an empty value can never match,
+        # so an upgraded install re-uploads once rather than skipping on no evidence.
+        "tree": tree,
+        # Whether this run actually sent bytes. False is a run that found the tree
+        # unchanged and skipped: it carries the MATCHED run's key, fingerprint, version
+        # and tree, so the baseline survives for the next comparison, and it takes a
+        # fresh `at` so `due_for_nightly` does not rebuild the archive on every wake.
+        "uploaded": uploaded,
         # Provisional. The authoritative stamp is taken inside `mutate`, under the
         # sidecar lock -- see there. This value survives only on the path where the
         # READ fails, because `mutate` never runs then.
         "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds"),
     }
 
-    def mutate(state: dict[str, Any]) -> dict[str, Any]:
+    def mutate(state: dict[str, Any]) -> Optional[dict[str, Any]]:
         entry = _account_state(state, account)
         runs = entry.setdefault("runs", {})
         if not isinstance(runs, dict):
             # A corrupted non-dict `runs` must not crash AFTER the archive
             # already uploaded (500 + no ledger entry + duplicate on retry).
             runs = entry["runs"] = {}
-        _merge_uploads(entry, {key: fingerprint}, {key: version} if version else None)
+        if expected is not _UNCONDITIONAL_RUN_WRITE:
+            # The slot must still hold the RECORD this baseline was read from, and
+            # `(process, sequence)` is what establishes that: `sequence` is bumped on
+            # every write above and `process` carries the pid, so no two records this
+            # install writes share the pair. That pairing is the one `_run_is_newer`
+            # already uses, for the same reason -- a bare sequence counts one process's
+            # own writes, so two processes can both sit at the same number.
+            # Neither `at` nor `key` can stand in for it, which is why neither is
+            # compared here. `datetime.now` resolves to the platform's clock tick, so on
+            # a coarse one two writes land on the same microsecond value; and a skip
+            # copies the matched run's key, so the slot's key still matches after one.
+            # Windows CI produced exactly that pair of collisions and accepted a second
+            # skip against a baseline the first had already replaced. Comparing them
+            # alongside the pair was measured to add nothing: the pair already refuses
+            # every state either could catch, so no mutation of them is observable.
+            # A record written before these fields existed carries neither, so the type
+            # guards refuse and the caller uploads a full copy. That is deliberate and
+            # matches every other proof in this design; a fallback to comparing `at`
+            # alone would reopen the collision this closes. The two sequence type guards
+            # cover each other on that state, so dropping either one alone is not
+            # observable while dropping both accepts an absent sequence as identity --
+            # they are required as a pair, not individually.
+            current = runs.get(kind)
+            if not isinstance(expected, dict) or not isinstance(current, dict):
+                return None
+            want_process, want_sequence = expected.get("process"), expected.get("sequence")
+            if (
+                not isinstance(want_process, str)
+                or not want_process
+                or type(want_sequence) is not int
+                or type(current.get("sequence")) is not int
+                or current.get("process") != want_process
+                or current.get("sequence") != want_sequence
+            ):
+                return None
+        if uploaded:
+            # Only a real upload adds to the uploads/versions maps. Today this guard is
+            # DEFENSIVE rather than behavioural, and saying so is cheaper than leaving
+            # the next reader to discover it: a skip passes the matched run's own key,
+            # fingerprint and version, so merging them would rewrite identical values
+            # and a mutation that drops the guard changes nothing observable. It is here
+            # because that equality is a property of `_record_skip`, not of this
+            # function -- a later skip that carried any other key would otherwise write
+            # a map entry for an upload that never happened, and `uploaded_versions` is
+            # what retention reads before it erases object versions.
+            _merge_uploads(entry, {key: fingerprint}, {key: version} if version else None)
         # Keep the observed wall time, even on a coarse or backwards clock.
         # Local sequence, not timestamp precision, orders this process's runs.
         record["at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
@@ -1064,6 +1321,15 @@ def _record_run_locked(
     try:
         recorded = _locked_state_update(mutate)
     except OSError as exc:
+        if expected is not _UNCONDITIONAL_RUN_WRITE:
+            logger.info(
+                "aws-control: %s backup for %s could not recheck its recorded baseline "
+                "while the archive was being built, so it is uploading a full copy: %s",
+                kind,
+                account,
+                exc,
+            )
+            return None
         # Two things are true here and only one of them was handled before.
         #
         # (1) The archive is ALREADY in the bucket, so raising would 500 a
@@ -1088,11 +1354,16 @@ def _record_run_locked(
         stage = "could not be read" if isinstance(exc, _StateUnreadable) else "could not be written"
         _remember_unpersisted(account, kind, record)
         logger.error(
-            "aws-control: %s backup for %s uploaded, but its state file %s, so the run is "
+            "aws-control: %s backup for %s %s, but its state file %s, so the run is "
             "not on disk; holding it in memory for this process so the nightly loop does "
             "not re-upload the same archive: %s",
             kind,
             account,
+            # The two outcomes reach this branch for different reasons and send a reader
+            # somewhere different, so the line must not assert the upload happened: a
+            # skipped run sent nothing, and saying it uploaded would have an operator
+            # hunting a transfer that never occurred.
+            "uploaded" if uploaded else "found the tree unchanged and skipped the upload",
             stage,
             exc,
         )
@@ -2066,6 +2337,189 @@ def _publish_label(
         )
 
 
+def _is_provable_version_id(value: Any) -> bool:
+    """Whether *value* identifies ONE stored object version.
+
+    An empty id names nothing. The string ``"null"`` names something, but not one
+    thing: S3 gives that id to every object written to a key while the bucket's
+    versioning is SUSPENDED, and an overwrite there REPLACES that version rather than
+    adding one. So two different bodies at one key both report ``"null"``, and
+    comparing a recorded id against a stored one cannot tell them apart -- which is
+    exactly the question the comparison exists to answer.
+
+    Both sides of that comparison run through here, so neither can be proven alone.
+    """
+    return isinstance(value, str) and bool(value) and value != "null"
+
+
+def _unchanged_baseline(
+    account: str,
+    kind: str,
+    tree: str,
+    profile: str,
+    region: str,
+    bucket: str,
+    *,
+    caller: str,
+) -> Optional[dict[str, Any]]:
+    """The prior run this archive matches, or ``None`` when the upload must go ahead.
+
+    Returning the matched RECORD rather than a bool is what lets the caller record a
+    skip that carries the baseline's own key, body fingerprint and version, so the
+    baseline survives for tomorrow's comparison instead of being replaced by a run that
+    points at nothing.
+
+    Every branch that is not a proven match returns ``None``, which means UPLOAD. That
+    direction is the only safe one: a needless upload costs one archive, while a skip
+    taken on weak evidence means the operator's newest data is not off-host and nothing
+    says so. Concretely, all of these upload:
+
+    * No tree fingerprint for this run, or none recorded on the prior run -- an install
+      upgraded into this feature has no baseline, and unknown is not a pass. The same
+      rule the rest of this module applies to an empty body fingerprint.
+    * The fingerprints differ: the tree moved, which is the whole point.
+    * The prior run recorded no key, so there is nothing to prove.
+    * The recorded object is GONE. A record proves this install wrote the key once, not
+      that anything is there now -- and retention deletes by design, so a baseline
+      ageing out of the keep window is an ordinary occurrence, not an exotic one. A
+      skip against a deleted archive would leave the drive holding nothing for this
+      kind while every run reported success.
+    * The object at the recorded key is not the VERSION this install wrote. See below.
+    * Its length is not the length we uploaded either -- a second, independent reading
+      of the same question, kept because it costs nothing and does not depend on the
+      bucket being versioned.
+    * The HEAD could not be answered at all -- a throttle, a timeout, a credential
+      lapse, an owner-pin refusal. ``head_object_meta`` raises rather than folding those
+      into "absent", so this catches them and treats them as unproven.
+
+    **Identity is the VERSION, not the length.** One drive is reachable by several
+    installs by design, so a co-writer can overwrite a recorded key -- and an overwrite
+    that happens to match the recorded byte length would pass a length-only check. The
+    skip would then hold, uploads would stop while the tree was unchanged, and the
+    object a restore actually fetches would be the foreign one: ``restore_download``
+    reads the key's CURRENT version and names no version id, so its fingerprint check
+    refuses it as ``ORIGIN_UNVERIFIED`` and there is no automated path back to our
+    bytes. Silent stopped backups with no recovery is the outcome worth spending a
+    comparison to avoid, so the current version must be the one we recorded writing.
+    This is the same question :func:`_current_version_is_ours` answers for retention,
+    asked here of one key.
+
+    A consequence worth stating: on an UNVERSIONED bucket no version is recorded and
+    the HEAD names none, and on a SUSPENDED one both sides report ``"null"``, which
+    names a version slot rather than one version. Neither can be shown to be ours, so
+    the skip never fires there. That is deliberate and matches how retention already
+    reads a missing version -- absence is "do not touch" -- and the app creates its
+    drive with versioning on, so the cost falls on a bucket this product did not make.
+
+    **The probe is authorized.** The ``head-object`` is a request to a paid service on
+    the operator's account, and an archive build runs for minutes, so consent can be
+    withdrawn or the app disabled between the run starting and this point. The gate is
+    re-taken immediately before the HEAD under its own operation name
+    (:data:`SEL_OP_BASELINE_PROBE`), which leaves the pre-PUT re-check at the push
+    untouched: that one still guards the bytes leaving, and this one guards the metadata
+    read. Deliberately placed AFTER the local checks above, so a run that could not skip
+    anyway spends no round trip discovering it.
+    """
+    if not tree:
+        return None
+    last = last_runs(account).get(kind)
+    if not isinstance(last, dict):
+        return None
+    if not isinstance(last.get("tree"), str) or last.get("tree") != tree:
+        return None
+    key = last.get("key")
+    if not isinstance(key, str) or not key:
+        return None
+    try:
+        _authorize_upload(account, profile, region, caller=caller, operation=SEL_OP_BASELINE_PROBE)
+        meta = storage.head_object_meta(profile, region, bucket, "backup", key, account=account)
+    except (AWSError, OSError) as exc:
+        logger.info(
+            "aws-control: %s backup for %s could not confirm the previous archive is still "
+            "in the drive, so it is uploading rather than skipping: %s",
+            kind,
+            account,
+            exc,
+        )
+        return None
+    if meta is None:
+        logger.info(
+            "aws-control: %s backup for %s has an unchanged tree, but the archive it would "
+            "skip against is no longer in the drive, so it is uploading a full copy",
+            kind,
+            account,
+        )
+        return None
+    recorded_version = last.get("version")
+    stored_version = meta.get("VersionId")
+    if not _is_provable_version_id(recorded_version):
+        logger.info(
+            "aws-control: %s backup for %s has an unchanged tree, but no provable version "
+            "was recorded for the previous archive, so nothing shows the object now at "
+            "that key is the one this install wrote; uploading a full copy. A drive with "
+            "versioning off or suspended reports no usable version, so its nightly keeps "
+            "uploading in full and its stored size keeps growing",
+            kind,
+            account,
+        )
+        return None
+    if not _is_provable_version_id(stored_version) or stored_version != recorded_version:
+        logger.warning(
+            "aws-control: %s backup for %s has an unchanged tree, but the current version "
+            "at the recorded key is not the one this install wrote, so the object there is "
+            "not our archive; uploading a full copy",
+            kind,
+            account,
+        )
+        return None
+    recorded_size = last.get("bytes")
+    stored_size = meta.get("ContentLength")
+    if not isinstance(recorded_size, int) or not isinstance(stored_size, int):
+        return None
+    if recorded_size != stored_size:
+        logger.warning(
+            "aws-control: %s backup for %s has an unchanged tree, but the object at the "
+            "recorded key is %s bytes where this install uploaded %s, so it is not the "
+            "archive we wrote; uploading a full copy",
+            kind,
+            account,
+            stored_size,
+            recorded_size,
+        )
+        return None
+    return last
+
+
+def _record_skip(
+    account: str, kind: str, baseline: dict[str, Any], tree: str
+) -> Optional[dict[str, Any]]:
+    """Record a run that sent nothing, carrying the baseline it matched.
+
+    The stamp is FRESH, and that is load-bearing rather than cosmetic:
+    :func:`due_for_nightly` decides due-ness from ``at``, so a skip that left the old
+    stamp in place would read as due on the very next wake and rebuild the archive
+    every few minutes for as long as the tree stayed unchanged -- turning a saving into
+    a busy loop. Everything else is copied from the matched run so the next comparison
+    still has a key it can prove and a version retention can retire.
+
+    Returns ``None`` unless the run slot still holds the very record this baseline was
+    read from, identified by its ``(process, sequence)`` pair. The caller uploads
+    instead of replacing a concurrent run record with the stale baseline.
+    """
+    with _run_lock:
+        return _record_run_locked(
+            account,
+            kind,
+            str(baseline.get("key", "")),
+            int(baseline.get("bytes", 0) or 0),
+            str(baseline.get("fingerprint", "") or ""),
+            str(baseline.get("version", "") or ""),
+            tree=tree,
+            uploaded=False,
+            expected=baseline,
+        )
+
+
 def run_snapshot_backup(
     account: str, profile: str, region: str, bucket: str, *, caller: str
 ) -> dict[str, Any]:
@@ -2093,6 +2547,39 @@ def run_snapshot_backup(
         # redacted copy never outlives the push.
         redacted = snapshot.prepare_redacted_copy(archive, Path(tmp), list(snapshot.COMPONENTS))
         payload = redacted or archive
+        # Does this archive carry anything the drive does not already hold? Taken over
+        # the PAYLOAD, so it is the bytes that would actually leave that are compared --
+        # a redaction switch flipped since the last run changes those without the source
+        # tree moving, and this notices.
+        #
+        # Placed BEFORE `_authorize_upload` deliberately. The gate's contract is that it
+        # sits immediately before the PUT with nothing in between, so a decision that
+        # can end the run has to be taken on this side of it; and a run that is about to
+        # send nothing has no upload to authorize in the first place.
+        tree = _tree_fingerprint(payload, volatile_root=True)
+        baseline = _unchanged_baseline(
+            account, KIND_SNAPSHOT, tree, profile, region, bucket, caller=caller
+        )
+        if baseline is not None:
+            record = _record_skip(account, KIND_SNAPSHOT, baseline, tree)
+            if record is not None:
+                logger.info(
+                    "aws-control: snapshot backup for %s found the tree unchanged since the "
+                    "archive already in the drive, so it uploaded nothing",
+                    account,
+                )
+                # No label publish and no retention sweep. Both exist to follow a push:
+                # a local rename reaches the drive on the next real upload rather than
+                # on this skip, and retention retires copies by count -- running it here
+                # would let a stretch of unchanged nights walk the keep window down and
+                # delete the very archive the next skip has to prove is present.
+                return record
+            logger.info(
+                "aws-control: snapshot backup for %s could not record its skip because "
+                "the recorded baseline moved while the archive was being built, so it "
+                "is uploading a full copy",
+                account,
+            )
         # snapshot_main names by second-resolution timestamp; a racing pair
         # would collide on the key, so the pushed key carries its own
         # entropy (the _stamp shape) rather than trusting the file name.
@@ -2127,6 +2614,7 @@ def run_snapshot_backup(
             payload.stat().st_size,
             _body_fingerprint(payload),
             version,
+            tree=tree,
         )
         # After the archive and after the ledger write, and with its own
         # authorization: a caption must never delay or endanger the payload.
@@ -2317,6 +2805,30 @@ def run_sessions_backup(
             count += _add_tree(tar, cli_sessions, "cli")
         if count == 0:
             raise RuntimeError("no session files to archive")
+        # `volatile_root=False`: this archive's roots are `crew` and `cli`, which are
+        # meaningful and stable. Only the snapshot bundle carries a timestamped root.
+        tree = _tree_fingerprint(archive, volatile_root=False)
+        baseline = _unchanged_baseline(
+            account, KIND_SESSIONS, tree, profile, region, bucket, caller=caller
+        )
+        if baseline is not None:
+            record = _record_skip(account, KIND_SESSIONS, baseline, tree)
+            if record is not None:
+                logger.info(
+                    "aws-control: sessions backup for %s found both session trees unchanged "
+                    "since the archive already in the drive, so it uploaded nothing",
+                    account,
+                )
+                # As on the snapshot path, the label follows a push, so a local rename
+                # reaches the drive on the next real upload rather than on this skip.
+                # The retention sweep also stays on the path that pushed a new archive.
+                return record
+            logger.info(
+                "aws-control: sessions backup for %s could not record its skip because "
+                "the recorded baseline moved while the archive was being built, so it "
+                "is uploading a full copy",
+                account,
+            )
         key = f"{KIND_SUBPATHS[KIND_SESSIONS]}/{identity['id']}/{archive.name}"
         # The gate sits IMMEDIATELY before the archive PUT with nothing in
         # between -- no other network call, no second upload -- so the decision
@@ -2341,6 +2853,7 @@ def run_sessions_backup(
             archive.stat().st_size,
             _body_fingerprint(archive),
             version,
+            tree=tree,
         )
         # After the archive and after the ledger write, and with its own
         # authorization: a caption must never delay or endanger the payload.
