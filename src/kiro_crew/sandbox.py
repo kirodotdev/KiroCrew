@@ -6878,6 +6878,33 @@ def _build_seatbelt_profile(
         # Also deny hardlinking the protected file (see above).
         rules.append(f'(deny file-link (literal "{escaped}"))')
     extra_hidden_targets = list(dict.fromkeys(os.path.abspath(path) for path in extra_hidden_dirs))
+    # Private windows inside a CALLER's own extra-hidden tree, same primitive and
+    # same rule shape as the tier loop above. Both builders must agree about one
+    # spawn: ``_build_launcher_script`` extends ``hidden_dirs`` with
+    # ``extra_hidden_dirs`` BEFORE it computes ``_private_window_spellings``, so a
+    # window inside a caller's own mask is staged and re-bound there, and this
+    # builder computes its windows against the caller's targets as well as the
+    # TIER ones so the same window survives the blanket denies below. Without the
+    # caller's targets a window here is swallowed and the child loses read AND
+    # write on its own directory -- fail-closed, so it breaks the spawn rather
+    # than exposing anything, but it leaves the primitive enforced on one
+    # platform only for the one shape that needs it: a tree masked as a whole
+    # with the process's own state kept live inside it. That is the durable-data
+    # view an app-bundle cron script needs -- mask ``apps/`` so no sibling app's
+    # ``.app_secret`` is reachable, including one installed mid-run, and keep
+    # ``apps/<app>/data`` on its real inode at its real path so provisioned
+    # dependencies and logs survive the run.
+    #
+    # Window-first, like the tier loop: a window keeps the tree denied except the
+    # one directory, whereas the ``extra_visible_dirs`` check below cancels the
+    # tree's whole rule set. When a caller passes both for one tree the narrower
+    # answer wins, which is the refusal-leaning direction.
+    #
+    # Equality is refused by ``_private_window_spellings`` itself (a window equal
+    # to its mask would be a mask lift by another name), so every entry here is a
+    # PROPER descendant and the ``(literal …)`` denies emitted for the target
+    # cannot reach it.
+    extra_private_windows = _private_window_spellings(extra_private_dirs, extra_hidden_targets)
     # Read-only carve-outs inside an extra-hidden dir (the enforced adapter's
     # ``~/.aws/config``). READ only: the write and hardlink denies below stay
     # blanket over the subpath, exactly as the ``.ssh/known_hosts`` carve-out
@@ -6887,6 +6914,27 @@ def _build_seatbelt_profile(
     # ``extra_expose_abs`` was built above so the tier loop applies the same
     # carve-out when the tier itself already hides the parent (strict + .aws).
     for target in extra_hidden_targets:
+        windows = [w for w in extra_private_windows if w.startswith(target.rstrip("/") + "/")]
+        if windows:
+            # Deny the tree except the window, in every direction: the window is
+            # the process's own state, so it stays read-WRITE (a read-only
+            # window would fail the deps swap renames the view exists to keep
+            # working), while every sibling -- and anything installed into the
+            # tree after the profile was built -- stays denied.
+            window_exceptions = " ".join(
+                f"(require-not (subpath {json.dumps(w)}))" for w in windows
+            )
+            # An exposed file under the same tree keeps its READ carve-out; it
+            # gets no write or link exception, matching the blanket branch below.
+            carved_here = sorted(f for f in extra_expose_abs if f.startswith(target + os.sep))
+            read_exceptions = window_exceptions + "".join(
+                f" (require-not (literal {json.dumps(f)}))" for f in carved_here
+            )
+            subpath = f"(subpath {json.dumps(target)})"
+            rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
+            for operation in ("file-write*", "file-link"):
+                rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
+            continue
         if _hidden_path_contains_visible_path(target, extra_visible_dirs):
             continue
         escaped = target.replace('"', '\\"')
