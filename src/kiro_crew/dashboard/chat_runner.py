@@ -3575,6 +3575,7 @@ def _resolve_channel_target(
     *,
     principal: str | None = None,
     check_recipient: bool = True,
+    app: str = "",
 ) -> Any:
     """Resolve ``(link, transport)`` through the cross-surface send ladder.
 
@@ -3623,6 +3624,7 @@ def _resolve_channel_target(
             link.channel_type,
             session_key=session_key,
             tool_name="chat.channel_mirror",
+            app=app,
             # fail_closed=True: this is an EGRESS chokepoint on a network
             # surface, so a degraded governance evaluation must DENY rather than
             # degrade-to-permit. vet_and_audit forwards this to
