@@ -9,7 +9,11 @@ from functools import wraps
 from multiprocessing import get_context
 
 BLACK_VERSION = "26.3.1"
-MAX_WORKERS = 2
+# Retention, not concurrency, is what the measured cgroup OOM came from: a worker
+# retired after one file holds one file's tree, so its peak does not grow with the
+# pool. Raising this ceiling therefore buys wall time without reintroducing that
+# accumulation, and the per-worker ceiling below still bounds each child.
+MAX_WORKERS = 8
 # Per-process virtual address space, NOT a promise about whole-job cgroup RSS.
 MEMORY_BYTES = 2 * 1024**3
 

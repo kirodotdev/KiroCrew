@@ -441,13 +441,15 @@ Windows legs to those outputs without changing `matrix.os`, names, timeouts or
 artifact names. `backend-lint` uses large on the fleet. The formatter gate keeps
 Black's original native CLI and default worker selection when `RUNNER_ENVIRONMENT`
 is explicitly `github-hosted`; the CI step does not set `BLACK_NUM_WORKERS`.
-Fleet and local checks use `scripts/bounded_black.py`, with at most two workers
+Fleet and local checks use `scripts/bounded_black.py`, with at most eight workers
 regardless of the native pool size. `scripts/ci_black_diagnostics.py` runs the gate
 once, preserves its failure status and stderr, and records bounded cgroup readings
 and child peak RSS. Worker count alone does not bound retained formatting trees:
 [the env-only two-worker fleet run](https://github.com/kirodotdev/KiroCrew/actions/runs/35417525930/job/105829161045)
 reached its 15,032,385,536-byte cgroup limit and incremented `oom_kill` from zero
-to one before the recycling wrapper existed.
+to one before the recycling wrapper existed. Retirement after one file is what
+bounds retention, so a worker's own peak does not grow with the pool and the
+ceiling is set for wall time rather than for that accumulation.
 
 The wrapper adapts the pinned native Black CLI to one file per spawned worker.
 Native discovery, configuration, exclusions, caches and AST checks remain intact.
