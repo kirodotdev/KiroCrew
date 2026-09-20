@@ -48,37 +48,9 @@ const BACKDROP = "#0f1115";
 // subject really is the frame around a particular page.
 const BLANK_PAGE = `data:text/html,<body style="margin:0;background:${encodeURIComponent(BACKDROP)}"></body>`;
 
-const noop = () => {};
-
-/**
- * The dependency object buildMenuTemplate destructures. Named explicitly rather
- * than built from a key list, so adding a dependency to the template shows up
- * here as an obviously missing line instead of an undefined click handler.
- *
- * @param {boolean} isMac
- */
-function menuDeps(isMac) {
-  return {
-    isMac,
-    appName: "Kiro Crew",
-    openSettings: noop,
-    openAbout: noop,
-    reload: noop,
-    forceReload: noop,
-    toggleDevTools: noop,
-    zoomActualSize: noop,
-    zoomIn: noop,
-    zoomOut: noop,
-    alwaysOnTop: false,
-    toggleAlwaysOnTop: noop,
-    openNewSessionWindow: noop,
-    openNewConnectionWindow: noop,
-    renameCurrentWindow: noop,
-    promptRemoteHost: noop,
-    refreshToken: noop,
-    openConfigFile: noop,
-  };
-}
+// One copy of the inert dependency bag, shared with the test. See that module's
+// header for why it is not spelled out twice.
+const { menuDeps } = require(path.join(__dirname, "electron-shell-menu-deps.cjs"));
 
 // Which platform's menu to build. The harness runs on Linux, so `darwin` is the
 // only value that needs forcing: it lets a Linux run render the macOS menu
@@ -101,4 +73,12 @@ app.whenReady().then(async () => {
   if (!url) await win.loadURL(BLANK_PAGE);
   else if (/^[a-z][a-z0-9+.-]*:/i.test(url)) await win.loadURL(url);
   else await win.loadFile(path.resolve(url));
+
+  // Raise the window above anything else on the screen before it is photographed.
+  // The capture is cropped to this window's rectangle, so anything that could sit
+  // inside that rectangle would end up in the evidence; raising it means nothing
+  // can. On the harness's own Xvfb there is nothing else to begin with, which
+  // makes this the second of two bounds rather than the only one.
+  win.setAlwaysOnTop(true);
+  win.focus();
 });

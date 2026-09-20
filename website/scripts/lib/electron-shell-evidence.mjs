@@ -106,6 +106,96 @@ export function defaultCaptionExpectation(platform) {
 }
 
 /**
+ * Absolute path to an `Xvfb` binary, or an error naming what to install.
+ *
+ * The harness starts its OWN X server rather than drawing on whatever `DISPLAY`
+ * happens to be exported, and there is no flag to opt out of that. The reason is
+ * the evidence itself: the capture has to take a whole screen, because a menu
+ * popup is its own window, so the screen it takes must be one that holds nothing
+ * else. A developer's real desktop can hold anything. Hence the refusal here is
+ * the fail-closed half of that decision: no Xvfb means no run, never a fallback
+ * to an existing display.
+ *
+ * @param {string} [override] value of XVFB_BIN, if set
+ * @param {string} [pathEnv] value of PATH, split on ':'
+ * @returns {string}
+ */
+export function xvfbExecutable(override = process.env.XVFB_BIN, pathEnv = process.env.PATH || '') {
+  if (override) {
+    if (!existsSync(override)) throw new Error(`XVFB_BIN is set to ${override}, which does not exist`)
+    return override
+  }
+  const found = pathEnv
+    .split(':')
+    .filter(Boolean)
+    .map((dir) => join(dir, 'Xvfb'))
+    .find(existsSync)
+  if (!found) {
+    throw new Error(
+      'no Xvfb on PATH. The harness needs its own X server so the capture cannot contain\n' +
+        'anything but the harness window, and it will not shoot on an existing display instead.\n' +
+        'Install it (Debian/Ubuntu: xvfb, Fedora/Amazon Linux: xorg-x11-server-Xvfb), or point\n' +
+        'XVFB_BIN at a binary.',
+    )
+  }
+  return found
+}
+
+/**
+ * The display number Xvfb reported on its `-displayfd`.
+ *
+ * Xvfb binds a free number itself and writes it back, so this parses a fact rather
+ * than choosing one. That is the point: choosing a number from a filesystem probe
+ * is a check-then-act, and two concurrent runs can choose the same one.
+ *
+ * Garbage or an empty report is an error, never a default. A default here would be
+ * a guess about which screen the picture is of.
+ *
+ * @param {string} reported bytes read off the descriptor
+ * @returns {number}
+ */
+export function parseDisplayNumber(reported) {
+  const first = String(reported).split("\n")[0].trim()
+  if (!/^[0-9]+$/.test(first)) {
+    throw new Error(
+      'Xvfb reported no display number on -displayfd, so which screen the capture would be of is ' +
+        `unknown; refusing. It wrote ${JSON.stringify(String(reported).slice(0, 60))}`,
+    )
+  }
+  return Number(first)
+}
+
+/**
+ * The rectangle of a screen capture that holds one window, and nothing else.
+ *
+ * This is what keeps the evidence to the harness's own pixels. `desktopCapturer`
+ * can only capture a whole screen - a menu popup is its own window, so capturing
+ * the app window alone would omit the very thing under test - so the capture is
+ * narrowed afterwards to the window's own rectangle. Even on a shared display
+ * that leaves the PNG carrying no pixels from anything beside the harness.
+ *
+ * Coordinates are translated from screen space to image space and clamped to the
+ * image, because a window can be partly offscreen and the captured image can be a
+ * different pixel size from the display's DIP bounds.
+ *
+ * @param {{x:number,y:number,width:number,height:number}} displayBounds
+ * @param {{width:number,height:number}} imageSize
+ * @param {{x:number,y:number,width:number,height:number}} windowBounds
+ * @returns {{x:number,y:number,width:number,height:number}}
+ */
+export function cropRectForWindow(displayBounds, imageSize, windowBounds) {
+  const sx = displayBounds.width > 0 ? imageSize.width / displayBounds.width : 1
+  const sy = displayBounds.height > 0 ? imageSize.height / displayBounds.height : 1
+  const left = Math.round((windowBounds.x - displayBounds.x) * sx)
+  const top = Math.round((windowBounds.y - displayBounds.y) * sy)
+  const x = Math.max(0, Math.min(left, imageSize.width))
+  const y = Math.max(0, Math.min(top, imageSize.height))
+  const width = Math.max(1, Math.min(Math.round(windowBounds.width * sx) + (left - x), imageSize.width - x))
+  const height = Math.max(1, Math.min(Math.round(windowBounds.height * sy) + (top - y), imageSize.height - y))
+  return { x, y, width, height }
+}
+
+/**
  * Absolute path to the Electron binary, or an error naming the command that
  * installs it.
  *
