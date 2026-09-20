@@ -31,7 +31,7 @@ this spec states the target and that one states the present.
 |---|---|---|
 | Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch |
 | Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; the other adapters loop internally and no driver assembles a batch, and the `irq.Probe` path remains separate |
-| Observation | `partial` | the `Observation` type and the `Severity` vocabulary live in `irq.py`; `PrWatchProbe` in `probes/gh_pr.py` emits the keys; `monitoring/` reduces a subject to one fingerprint |
+| Observation | `partial` | the `MonitorCondition` type and the `MonitorSeverity` / `MonitorResetsOn` vocabulary live in `monitoring/models.py`, all four pull-request kinds derive their named conditions in `monitoring/pull_request.py`, and `monitoring/decision.py` masks, ages and resets per condition; `irq.py` keeps its own copy of the vocabulary while the cron driver lives, and a subject's fingerprint is still derived from the canonical facts rather than from the conditions |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the cron path |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
 | Driver | `implemented` | in-session timer in `autonudge.py`; out-of-session script cron in `babysit/scripts/pr_watch.py` |
@@ -51,18 +51,25 @@ remains the seven-value effect selector, but `decide_monitor` returns a
 that wrapper. The entries tuple is provider-neutral and plural, so adding more
 evidence no longer requires changing the return type.
 
-The live decision places exactly one `MonitorObservation` in that tuple, reduces
-the subject to one fingerprint, and lets `format_monitor_wake` compose operator
-text from `MonitorState.last_observation` and `wake_instructions`. That text is
+The live decision places exactly one `MonitorObservation` in that tuple, and that
+observation now carries the subject's **named conditions** alongside its
+fingerprint, so a subject is no longer reduced to one comparable value. The
+fingerprint remains the subject-level comparable that `last_fingerprint` and
+`last_wake_fingerprint` hold; the conditions are what the coalescing window
+masks, ages and resets. `format_monitor_wake` composes operator text from
+`MonitorState.last_observation` and `wake_instructions`. That text is
 kind-dispatched: `format_monitor_wake` takes the subject's `kind` from
 `MonitorState.kind` -- the authoritative armed record, not the provider-supplied
 canonical -- reads that kind's registry entry for its subject noun and field
 list, and renders those fields, so a non-pull-request kind reads as what it is.
 The return-type prerequisite is complete; the engine coalesces successive changes
-to that one subject over time and re-asserts an unresolved change on a re-alert
-interval, both through a window on `MonitorState`. Per-condition entries and the
-multi-signal fold across simultaneous conditions remain target work in layers 3
-and 4, since one fingerprint per subject has no second condition to fold.
+over time, re-asserts an unresolved condition on a re-alert interval, and folds
+simultaneous conditions of one subject into one wake, all through a window on
+`MonitorState` that carries one entry per condition. What remains target work is
+promoting the conditions from a field on the single observation to the verdict's
+own `entries` tuple, which requires splitting the subject-level fields off
+`MonitorObservation`, and deriving the fingerprint from the conditions rather
+than from the canonical facts.
 
 ### A probe boundary not typed to one implementation
 
@@ -117,23 +124,36 @@ to integrate with two contracts. The remaining target is one plugin shape that
 both drivers consume; the acceptance fixture below proves the structured half
 is provider-neutral, not that the two stacks are already one.
 
-### Retiring `irq.Probe` is gated on layer 3
+### Retiring `irq.Probe` is no longer gated on layer 3
 
-Retirement is downstream of layer 3, not of the coalescing window the pure
-decision engine gained. That window folds successive changes to one subject over
-time, which is not the mechanism the cron path depends on. What that path uses,
-and the shared engine cannot yet express, is already named in layers 3 and 4
-below: the urgency claim layer 3 and the kernel now both call `IMMEDIATE`, for a
-condition where waiting observes nothing further; and the
-per-entry `resets_on` distinction, which decides whether a new revision clears an
-entry or the entry outlives it. One fingerprint per subject can express neither.
-It has no per-entry identity to scope and no severity to raise, so an entry that
-must fire now cannot say so, and an entry that survives a force-push cannot be
-told from one the force-push resolved.
+Retirement was downstream of layer 3 rather than of the coalescing window the
+pure decision engine gained, because that window folds successive changes to one
+subject over time, which is not the mechanism the cron path depends on. What that
+path uses are the two claims named in layers 3 and 4 below: the urgency claim
+both sides call `IMMEDIATE`, for a condition where waiting observes nothing
+further; and the per-condition `resets_on` distinction, which decides whether a
+new revision clears a condition or the condition outlives it. One fingerprint per
+subject could express neither, having no per-condition identity to scope and no
+severity to raise.
 
-Deleting the old extension point before layer 3 lands would therefore delete
-those two behaviours rather than move them. Until then the two drivers keep two
-contracts, and an author adding a cron-path kind still subclasses `irq.Probe`.
+**The shared engine now expresses both.** `MonitorObservation` carries
+`conditions`, a tuple of `MonitorCondition`, and `decide_monitor` masks, ages and
+resets per condition: an `IMMEDIATE` condition bypasses the coalescing floor, and
+a head change drops the revision-scoped half of the dedupe memory while the
+sticky half survives. `test_monitor_conditions.py` pins both against the
+behaviour `test_irq.py` and `test_irq_port_baseline.py` pin on the cron path, each
+with the differential that the same position without the claim behaves the other
+way.
+
+Two things still stand between that and deleting the extension point, and neither
+is a missing behaviour. The cron kernel keeps its own copy of the vocabulary --
+`irq.Severity` and `irq.ResetsOn`, whose two key-space characters are a persisted
+encoding -- because moving it while the cron driver is live would rewrite the
+kernel's own storage format for no behavioural gain; the two copies cannot drift
+because `test_monitor_conditions.py` pins them member-for-member and pins the two
+key-space characters. And the cron path's plural batch assembly is a driver
+change, which is the consolidation's own step. Until that step an author adding a
+cron-path kind still subclasses `irq.Probe`.
 
 ## A monitor is a field, not a system
 
@@ -323,8 +343,32 @@ three-positional call rather than fail at it.
   the distinction `epoch_scoped` expressed as a boolean over the epoch.
 - **`brief`** is operator-facing text, delivered only if the entry wakes someone.
 
-A subject's fingerprint, where one is still needed, is **derived from** the
-entries. There is one source of truth, so the two cannot disagree.
+A subject's fingerprint, where one is still needed, is **not yet** derived from
+the entries. `monitoring/pull_request.py` derives both the conditions and the
+fingerprint from one canonical fact object, so the two cannot disagree about what
+the subject looks like, but they are two reducers over that object rather than one
+chain. Deriving the fingerprint from the conditions would drop the subject
+identity axis the fingerprint also carries -- head revision, state, target -- and
+would move `last_wake_fingerprint`, which the dashboard reads and the driver uses
+as a claim token across a wake. That belongs with the retirement step, not here.
+
+The structured engine's own copy of this layer is in `monitoring/models.py`:
+
+```
+MonitorCondition(key, severity=WAKE, brief="", resets_on=REVISION)
+```
+
+with `MonitorSeverity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`, and
+`MonitorResetsOn` carrying `REVISION` and `NEVER`. `MonitorObservation` carries a
+tuple of them, and an observation with none is read as one revision-scoped
+condition keyed by its fingerprint, so a probe that names no conditions is a legal
+shape rather than a migration debt. `TERMINAL` is part of the vocabulary and no
+branch reads it: the structured engine takes terminality from
+`MonitorObservationStatus`, which is a subject-level classification.
+
+The engine stores each condition under a dedupe key carrying one of two key-space
+characters, the same two the kernel uses, so a head change drops the
+revision-scoped half without asking a probe what any stored key meant.
 
 ### 4. Decision
 
@@ -763,7 +807,7 @@ of a subject, and a substrate whose subject is optional has no subject.
 
 | Pattern | Why it fails |
 |---|---|
-| One fingerprint per subject | cannot say which of several simultaneous conditions changed, and cannot coalesce sibling conditions into one wake; it does carry temporal coalescing and re-assertion of the single fingerprint over time |
+| One fingerprint per subject | cannot say which of several simultaneous conditions changed, and cannot fold sibling conditions into one wake. Both drivers now carry named conditions instead; the fingerprint survives only as the subject-level comparable a record holds |
 | Per-subject probe signature | cannot be batched later without changing every caller |
 | Subject knowledge in the decision layer | every new kind then needs a branch there, and the layer stops being testable in isolation |
 | Subject state in the state document | the document is a snapshot of delivery bookkeeping; a reader looking for subject state finds timestamps |

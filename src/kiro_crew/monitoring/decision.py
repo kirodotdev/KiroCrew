@@ -12,6 +12,7 @@ from kiro_crew.monitoring import models
 # and the retirement PREDICTION here has to refuse to spend it.
 from kiro_crew.monitoring.github_provider_errors import is_unattempted_probe
 from kiro_crew.monitoring.models import (
+    MONITOR_REVISION_KEY_SPACE,
     MONITOR_STATE_VERSION,
     MONITOR_STOP_AGENT_TURN_BUDGET,
     MONITOR_STOP_PROVIDER_ERROR_BUDGET,
@@ -23,9 +24,12 @@ from kiro_crew.monitoring.models import (
     MonitorObservation,
     MonitorObservationStatus,
     MonitorOutcome,
+    MonitorSeverity,
     MonitorState,
     MonitorVerdict,
     ProviderErrorKind,
+    monitor_condition_dedupe_key,
+    monitor_dedupe_key_resets_on_revision,
 )
 
 _RETRYABLE_PROVIDER_ERRORS = frozenset(
@@ -267,11 +271,19 @@ def _decide_effect(
         return MonitorDecision.STOP_BUDGET
     if observation.status is MonitorObservationStatus.PROVIDER_ERROR:
         return _provider_error_decision(state, observation, state.budgets)
+    # A new head retires revision-scoped memory whatever this tick reports, and
+    # that is why the reset sits ABOVE the status branch rather than inside the
+    # actionable path. A force-push is normally observed first as a PENDING tick:
+    # the new head's checks have been dispatched and none has finished. That tick
+    # records and returns, so a reset living in the actionable path never runs,
+    # and the old head's mask is still standing when the new head's first real
+    # failure arrives -- which the mask then suppresses for a whole re-alert
+    # interval, on the most ordinary path there is. A failed read cannot reach
+    # here claiming a head change: the model refuses that combination outright,
+    # so this position does not have to defend it.
+    if observation.head_changed:
+        _reset_revision_memory(state)
     if observation.status is MonitorObservationStatus.ACTIONABLE:
-        if _dedup_fingerprint(state, observation, now=now) == state.last_wake_fingerprint:
-            if observation.supplemental_provider_error is not None:
-                return _supplemental_provider_error_decision(state, state.budgets)
-            return MonitorDecision.NO_CHANGE
         return _coalesce_actionable(state, observation, now=now)
     # Any non-actionable outcome settles the subject, so no window stays open.
     _close_window(state, now=now)
@@ -288,35 +300,47 @@ def _decide_effect(
     return MonitorDecision.STOP_BLOCKED
 
 
-#: Fed to the actionable dedup comparison in place of a fingerprint whose
-#: re-alert period has elapsed. It cannot equal any provider fingerprint or the
-#: empty string, so the guard declines to suppress and re-assertion falls through
-#: to the coalescing path, which re-wakes and restamps the alert time.
-_REALERT_ELAPSED = "\x00realert-elapsed"
-
-
-def _dedup_fingerprint(
-    state: MonitorState,
+def _window_entries(
     observation: MonitorObservation,
-    *,
-    now: float,
-) -> str:
-    """The value the actionable dedup guard compares against last_wake_fingerprint.
+) -> tuple[tuple[str, MonitorSeverity], ...]:
+    """The dedupe keys and urgency claims this observation puts in the window.
 
-    Returns the raw fingerprint while its last alert is inside the re-alert
-    interval, so an unchanged actionable subject stays suppressed exactly as
-    before. Once the interval has elapsed the value differs, so the same guard,
-    on its own unchanged rule, stops suppressing and the subject re-asserts. The
-    period is measured from the last ALERT, not from when the state was first
-    seen: a wake restamps the alert time, so a genuine wake near a period
-    boundary does not trip a second wake one interval later.
+    A probe that names its conditions gets one entry per condition. A probe that
+    names none gets ONE revision-scoped entry keyed by the subject fingerprint,
+    which is precisely what a subject reduced to one fingerprint was before
+    conditions existed -- so a zero-condition adapter is a legal shape for the
+    substrate rather than a migration debt, and its behaviour does not move.
+
+    The key is built here rather than by constructing a synthetic
+    :class:`MonitorCondition`, because a fingerprint is not a semantic key: it
+    would have to pass the condition type's own key rules, and a kind whose
+    fingerprint is longer than that limit would raise inside a tick.
     """
-    fingerprint = observation.fingerprint
-    if fingerprint != state.last_wake_fingerprint:
-        return fingerprint
-    if _realert_ready(state, fingerprint, now=now):
-        return _REALERT_ELAPSED
-    return fingerprint
+    if observation.conditions:
+        return tuple(
+            (monitor_condition_dedupe_key(condition), condition.severity)
+            for condition in observation.conditions
+        )
+    return ((MONITOR_REVISION_KEY_SPACE + observation.fingerprint, MonitorSeverity.WAKE),)
+
+
+def _reset_revision_memory(state: MonitorState) -> None:
+    """Drop every revision-scoped window and mask, keeping the sticky half.
+
+    This is what a new head means: a condition belonging to the revision is
+    describing something that is gone, so its memory is worthless, while a
+    condition belonging to the SUBJECT survives -- a force-push does not make a
+    review comment new, and replaying every comment ever seen is the failure this
+    split exists to prevent.
+
+    Scoped by KEY SPACE rather than by the conditions in hand, deliberately. A
+    revision-scoped condition can go unreported for a tick and come back; keyed
+    off only what this tick reports, its mask would survive the reset and
+    suppress a real wake for the rest of the re-alert interval.
+    """
+    for record in (state.coalesce_windows, state.coalesce_alerted):
+        for key in [key for key in record if monitor_dedupe_key_resets_on_revision(key)]:
+            record.pop(key, None)
 
 
 def _coalesce_actionable(
@@ -325,59 +349,108 @@ def _coalesce_actionable(
     *,
     now: float,
 ) -> MonitorDecision:
-    """Decide one actionable change through the coalescing window.
+    """Decide one actionable tick through the per-condition coalescing window.
 
-    The first actionable change wakes immediately and opens the window. A
-    structured monitor's probe interval is user-set (15 to 86400 seconds,
+    Per-condition dedupe first: a condition inside its re-alert interval is
+    masked, and a tick whose every condition is masked has nothing to deliver.
+    That replaces the whole-subject comparison against ``last_wake_fingerprint``,
+    which could only ask whether the SUBJECT looked like the one last woken on,
+    and so could not tell a resolved condition from a surviving one.
+
+    Then the window. The first actionable change wakes immediately and opens it:
+    a structured monitor's probe interval is user-set (15 to 86400 seconds,
     default 300) and typically exceeds the floor, so holding the first change
-    for the floor adds a probe interval of latency at the default and groups
-    nothing -- two probes are already further apart than the floor. The floor
-    earns its keep only when the interval is materially shorter than it, so it
-    holds the SUBSEQUENT change: a second, different actionable fingerprint
-    arriving while the window is still open waits out the floor, which folds a
-    burst of rapid changes into one wake. A change already inside its re-alert
-    interval stays masked; a head change opens a fresh window because a new
-    commit is a different subject state.
-    """
-    _prune_alerted(state, now=now)
-    fingerprint = observation.fingerprint
+    adds an interval of latency and groups nothing. The floor earns its keep on
+    the SUBSEQUENT change, which waits it out, folding a burst into one wake. The
+    age is measured from the OLDEST open window, so no condition is held longer
+    than the floor counted from its own arrival.
 
-    if not _realert_ready(state, fingerprint, now=now):
+    An ``IMMEDIATE`` condition bypasses that floor, because waiting observes
+    nothing further: a conflicted pull request dispatches no checks, so the
+    pending count the floor is waiting on never drains. It bypasses the floor
+    only -- the mask above still applies, so a persisting urgent condition wakes
+    once per re-alert interval rather than on every tick.
+    """
+    entries = _window_entries(observation)
+    # Read BEFORE the prune: a condition whose mask has just elapsed is exactly
+    # the one the prune drops, so asking afterwards cannot tell a condition that
+    # already woke from one that has only ever been held.
+    alerted_before = {key for key, _ in entries if key in state.coalesce_alerted}
+    _prune_alerted(state, now=now)
+    unmasked = [(key, sev) for key, sev in entries if _realert_ready(state, key, now=now)]
+    if not unmasked:
+        # Every condition is inside its re-alert interval, so this wake could
+        # tell the owner nothing the last one did not.
+        if observation.supplemental_provider_error is not None:
+            return _supplemental_provider_error_decision(state, state.budgets)
         return MonitorDecision.NO_CHANGE
 
-    # Past the re-alert mask. A fingerprint that already owns the open window is
-    # an unresolved change re-asserting on its interval: re-wake so it is
-    # re-reported rather than told once. The caller stamps the alert time.
-    if state.coalesce_fingerprint == fingerprint and not observation.head_changed:
-        state.coalesce_opened_at = now
-        return MonitorDecision.WAKE_ACTIONABLE
+    window_was_open = bool(state.coalesce_windows)
+    # A condition that already woke and whose mask has since elapsed is an
+    # unresolved change re-asserting on its interval: re-report it rather than
+    # telling the owner once. A condition merely HELD in the window has never
+    # woken, so it is not re-asserting and the floor still applies to it.
+    reasserting = any(key in alerted_before for key, _ in unmasked)
+    immediate = any(sev is MonitorSeverity.IMMEDIATE for _, sev in unmasked)
+    for key, _ in unmasked:
+        state.coalesce_windows.setdefault(key, now)
 
-    window_open = bool(state.coalesce_fingerprint) and not observation.head_changed
-    if not window_open:
-        # First actionable change (or the first after a head change): wake now
-        # and open the window so a rapid follow-up change is what the floor holds.
-        state.coalesce_fingerprint = fingerprint
-        state.coalesce_opened_at = now
-        return MonitorDecision.WAKE_ACTIONABLE
-
-    age = now - state.coalesce_opened_at
-    # A follow-up change wakes once the window has aged past the floor; before
-    # that it is recorded and held, folding a burst into one wake.
-    if age >= models.DEFAULT_MONITOR_COALESCE_SECS:
-        state.coalesce_fingerprint = fingerprint
-        state.coalesce_opened_at = now
-        return MonitorDecision.WAKE_ACTIONABLE
+    if immediate or reasserting or not window_was_open:
+        return _wake(state, unmasked, now=now)
+    oldest = min(state.coalesce_windows.values())
+    if now - oldest >= models.DEFAULT_MONITOR_COALESCE_SECS:
+        return _wake(state, unmasked, now=now)
     # A follow-up change still inside the floor: record it and keep waiting.
     return MonitorDecision.RECORD_ONLY
 
 
-def _realert_ready(state: MonitorState, fingerprint: str, *, now: float) -> bool:
-    """Whether *fingerprint* may wake again, given the re-alert interval.
+def _wake(
+    state: MonitorState,
+    unmasked: list[tuple[str, MonitorSeverity]],
+    *,
+    now: float,
+) -> MonitorDecision:
+    """Deliver the unmasked conditions and re-open the window on them alone.
+
+    The window that remains IS the set of conditions this wake delivers, which is
+    what :func:`stamp_monitor_alerted` reads to decide what to mask. Re-opening
+    at *now* rather than clearing is what keeps a rapid follow-up folded: an
+    empty window would read as a first change and wake again at once.
+
+    A masked condition's window is dropped here rather than carried, because its
+    own age is measured from the wake that masked it, and a window left standing
+    from that wake would satisfy the floor for every later condition until it
+    aged out.
+    """
+    state.coalesce_windows.clear()
+    for key, _ in unmasked:
+        state.coalesce_windows[key] = now
+    return MonitorDecision.WAKE_ACTIONABLE
+
+
+def stamp_monitor_alerted(state: MonitorState, *, now: float) -> None:
+    """Record that a wake was DECIDED for the conditions it delivers.
+
+    Called by whichever driver persists the staged state, next to the write, so
+    the stamp cannot outlive it: the re-alert interval is measured from here and
+    :func:`decide_monitor` only READS the map.
+
+    The conditions to mask are exactly the window :func:`_wake` left open, so
+    there is no second list of them for this to disagree with. Masking the whole
+    tick's conditions instead would extend the mask on a condition this wake did
+    not deliver, silencing it for a full interval it never earned.
+    """
+    for key in state.coalesce_windows:
+        state.coalesce_alerted[key] = now
+
+
+def _realert_ready(state: MonitorState, key: str, *, now: float) -> bool:
+    """Whether the condition under *key* may wake again, given the interval.
 
     A future timestamp reads as stale rather than as permanent suppression, so a
-    clock rollback cannot silence the subject forever.
+    clock rollback cannot silence a condition forever.
     """
-    last = state.coalesce_alerted.get(fingerprint)
+    last = state.coalesce_alerted.get(key)
     if not isinstance(last, (int, float)):
         return True
     elapsed = now - float(last)
@@ -385,27 +458,34 @@ def _realert_ready(state: MonitorState, fingerprint: str, *, now: float) -> bool
 
 
 def _close_window(state: MonitorState, *, now: float) -> None:
-    """Close any open window and prune the re-alert map.
+    """Close every open window and prune the re-alert map.
 
     The prune is unconditional because the re-alert map lives on a durable
     per-loop record: an entry past its interval suppresses nothing, so dropping
     it frees state that otherwise grows across every restart.
     """
-    state.coalesce_fingerprint = ""
-    state.coalesce_opened_at = 0.0
+    state.coalesce_windows.clear()
     _prune_alerted(state, now=now)
 
 
 def _prune_alerted(state: MonitorState, *, now: float) -> None:
-    """Drop re-alert entries older than the interval, or with an unusable time."""
+    """Drop window and re-alert entries past the interval, or with a bad time.
+
+    Both maps are bounded by the same interval. A window older than the interval
+    cannot change any decision -- it is far past the floor, so the next actionable
+    tick wakes whether the entry is there or not -- and dropping it is what keeps
+    a subject whose conditions churn from accumulating one window per distinct
+    condition it ever reported.
+    """
     realert_secs = models.DEFAULT_MONITOR_REALERT_SECS
-    stale = [
-        fingerprint
-        for fingerprint, last in state.coalesce_alerted.items()
-        if not isinstance(last, (int, float)) or now - float(last) >= realert_secs
-    ]
-    for fingerprint in stale:
-        state.coalesce_alerted.pop(fingerprint, None)
+    for record in (state.coalesce_alerted, state.coalesce_windows):
+        stale = [
+            key
+            for key, last in record.items()
+            if not isinstance(last, (int, float)) or now - float(last) >= realert_secs
+        ]
+        for key in stale:
+            record.pop(key, None)
 
 
 def terminal_decision_for_outcome(outcome: MonitorOutcome | None) -> MonitorDecision | None:

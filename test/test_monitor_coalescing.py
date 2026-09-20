@@ -22,6 +22,7 @@ from kiro_crew.monitoring.decision import decide_monitor
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_COALESCE_SECS,
     DEFAULT_MONITOR_REALERT_SECS,
+    MONITOR_REVISION_KEY_SPACE,
     MonitorBudgets,
     MonitorDecision,
     MonitorObservation,
@@ -32,6 +33,16 @@ from kiro_crew.monitoring.models import (
 
 _FLOOR = DEFAULT_MONITOR_COALESCE_SECS
 _REALERT = DEFAULT_MONITOR_REALERT_SECS
+
+
+def _revision(key: str) -> str:
+    """The dedupe key a subject naming no conditions of its own is kept under.
+
+    Its one synthesized condition is revision-scoped and keyed by the subject
+    fingerprint, so every window and mask entry in this module carries the
+    revision key space.
+    """
+    return MONITOR_REVISION_KEY_SPACE + key
 
 
 def _state(**overrides) -> MonitorState:
@@ -67,8 +78,7 @@ def test_the_first_actionable_change_wakes_at_once():
     """
     state = _state()
     assert _decide(state, _actionable("red:a"), now=100.0) is MonitorDecision.WAKE_ACTIONABLE
-    assert state.coalesce_fingerprint == "red:a"
-    assert state.coalesce_opened_at == 100.0
+    assert state.coalesce_windows == {_revision("red:a"): 100.0}
 
 
 def test_a_rapid_follow_up_change_folds_into_one_wake():
@@ -106,8 +116,9 @@ def test_a_head_change_opens_a_fresh_window_and_wakes_now():
     assert _decide(state, _actionable("red:c", head_changed=True), now=2.0) is (
         MonitorDecision.WAKE_ACTIONABLE
     )
-    assert state.coalesce_fingerprint == "red:c"
-    assert state.coalesce_opened_at == 2.0
+    # The head change dropped both earlier revision-scoped windows, so the new
+    # head's condition is the only thing left waiting.
+    assert state.coalesce_windows == {_revision("red:c"): 2.0}
 
 
 def test_the_same_change_re_wakes_only_on_the_re_alert_interval():
@@ -122,7 +133,7 @@ def test_the_same_change_re_wakes_only_on_the_re_alert_interval():
     assert _decide(state, _actionable("red:a"), now=0.0) is MonitorDecision.WAKE_ACTIONABLE
     # The caller records the wake it was handed.
     state.last_wake_fingerprint = "red:a"
-    state.coalesce_alerted["red:a"] = 0.0
+    state.coalesce_alerted[_revision("red:a")] = 0.0
 
     # Inside the interval: masked.
     assert _decide(state, _actionable("red:a"), now=_REALERT * 0.5) is MonitorDecision.NO_CHANGE
@@ -138,7 +149,7 @@ def test_a_future_re_alert_timestamp_reads_as_stale():
     A clock rollback (or corrupt state) can leave a future timestamp; reading it
     as stale rather than fresh keeps it from silencing the subject permanently.
     """
-    state = _state(coalesce_alerted={"red:a": 10_000.0})
+    state = _state(coalesce_alerted={_revision("red:a"): 10_000.0})
     assert _decide(state, _actionable("red:a"), now=100.0) is MonitorDecision.WAKE_ACTIONABLE
 
 
@@ -160,8 +171,8 @@ def test_a_record_without_the_window_fields_loads_as_an_unopened_window():
     """A persisted record written before the window fields loads as no window.
 
     The loader takes the dataclass default for any absent field, so an old
-    record shows an empty ``coalesce_fingerprint`` -- not a window opened at time
-    zero -- and its first actionable change wakes at once like any first change.
+    record shows an empty window map -- not a window opened at time zero -- and
+    its first actionable change wakes at once like any first change.
     """
     raw = {
         "kind": "github_pull_request",
@@ -170,27 +181,47 @@ def test_a_record_without_the_window_fields_loads_as_an_unopened_window():
         "created_ts": 0.0,
     }
     state = monitor_state_from_dict(raw)
-    assert state.coalesce_fingerprint == ""
-    assert state.coalesce_opened_at == 0.0
+    assert state.coalesce_windows == {}
     assert state.coalesce_alerted == {}
     assert _decide(state, _actionable("red:a"), now=100.0) is MonitorDecision.WAKE_ACTIONABLE
 
 
-def test_a_non_string_coalesce_fingerprint_is_refused():
-    """A wrong-typed window fingerprint is rejected at construction.
+def test_the_retired_window_scalars_are_dropped_rather_than_carried():
+    """A record holding the two scalars this version retired loses them.
+
+    ``extra_fields`` is reserved for fields a NEWER version owns, and it is
+    written back on every persist. Carrying a retired field there would keep two
+    spellings of the coalescing window in the record forever, so the loader drops
+    them and the window loads unopened.
+    """
+    raw = {
+        "kind": "github_pull_request",
+        "target": "owner/repo/pull/1",
+        "objective": "review_ready",
+        "created_ts": 0.0,
+        "coalesce_fingerprint": "red:a",
+        "coalesce_opened_at": 100.0,
+    }
+    state = monitor_state_from_dict(raw)
+    assert state.extra_fields == {}
+    assert state.coalesce_windows == {}
+
+
+def test_a_non_dict_coalesce_windows_is_refused():
+    """A wrong-typed window map is rejected at construction.
 
     Absent is legal and loads as an unopened window; present-but-wrong is not,
-    because a decision reads the field and a malformed value would raise deep in
-    a tick rather than at the boundary.
+    because a decision reads and mutates the field and a malformed value would
+    raise deep in a tick rather than at the boundary.
     """
-    with pytest.raises(ValueError, match="coalesce_fingerprint"):
-        _state(coalesce_fingerprint=["not", "a", "string"])
+    with pytest.raises(ValueError, match="coalesce_windows"):
+        _state(coalesce_windows=["not", "a", "map"])
 
 
-def test_a_non_numeric_coalesce_opened_at_is_refused():
+def test_a_non_numeric_coalesce_window_time_is_refused():
     """A wrong-typed window open time is rejected at construction."""
-    with pytest.raises(ValueError, match="coalesce_opened_at"):
-        _state(coalesce_opened_at="not-a-number")
+    with pytest.raises(ValueError, match="coalesce_windows"):
+        _state(coalesce_windows={_revision("red:a"): "not-a-number"})
 
 
 def test_a_non_dict_coalesce_alerted_is_refused():
@@ -220,9 +251,8 @@ def test_re_assertion_changes_only_what_the_dedup_guard_compares(monkeypatch):
     # Post-wake state the caller leaves behind.
     state = _state(
         last_wake_fingerprint="red:a",
-        coalesce_fingerprint="red:a",
-        coalesce_opened_at=1_000.0,
-        coalesce_alerted={"red:a": 1_000.0},
+        coalesce_windows={_revision("red:a"): 1_000.0},
+        coalesce_alerted={_revision("red:a"): 1_000.0},
     )
 
     # Inside the period: masked on the guard's own terms.
@@ -257,7 +287,7 @@ def test_a_pre_upgrade_record_seeds_the_alert_time_from_its_last_wake():
         "last_completed_at": 5_000.0,
     }
     seeded = monitor_state_from_dict(woke)
-    assert seeded.coalesce_alerted == {"red:a": 5_000.0}
+    assert seeded.coalesce_alerted == {_revision("red:a"): 5_000.0}
 
     # Absent wake record: nothing to seed from, loads as an unopened window.
     fresh = {
@@ -271,3 +301,26 @@ def test_a_pre_upgrade_record_seeds_the_alert_time_from_its_last_wake():
     # Present, empty map: a live monitor, left exactly as stored.
     empty = dict(woke, coalesce_alerted={})
     assert monitor_state_from_dict(empty).coalesce_alerted == {}
+
+
+def test_a_persisted_pre_space_alert_map_is_adopted_into_the_revision_space():
+    """A stored key carrying no key space still masks the condition it names.
+
+    A bare key names a whole-subject fingerprint, which is exactly what the
+    revision space holds, so the loader reads it as a revision-space key. Read
+    literally instead, such a key matches nothing this version computes, and an
+    armed monitor wakes a second time for a condition it has already reported.
+    """
+    raw = {
+        "kind": "github_pull_request",
+        "target": "owner/repo/pull/1",
+        "objective": "review_ready",
+        "created_ts": 0.0,
+        "coalesce_alerted": {"red:a": 1_000.0},
+    }
+    state = monitor_state_from_dict(raw)
+    assert state.coalesce_alerted == {_revision("red:a"): 1_000.0}
+    # And the mask is live: the same subject stays suppressed inside the interval.
+    assert _decide(state, _actionable("red:a"), now=1_000.0 + _REALERT * 0.5) is (
+        MonitorDecision.NO_CHANGE
+    )
