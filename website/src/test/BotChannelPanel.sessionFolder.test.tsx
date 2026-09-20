@@ -6,12 +6,14 @@ import { DiscordPanel } from '../pages/settings/DiscordPanel'
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   saveConfig: vi.fn(),
+  backfill: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
   api: {
     getDiscordConfig: mocks.getConfig,
     saveDiscordConfig: mocks.saveConfig,
+    backfillChannelFolder: mocks.backfill,
   },
 }))
 
@@ -159,26 +161,23 @@ describe('filing existing conversations (#2661)', () => {
   it('names the channel the backend keys on, not the display name', async () => {
     // BotChannelPanel serves four channels, so the namespace has to arrive from
     // the spec. Sending the display name would reach no config section at all.
+    // Asserted on the client seam rather than on a stubbed global fetch: the
+    // request goes through api.backfillChannelFolder so that a lapsed session
+    // gets the shared re-auth handling (#12127), and the display name here is
+    // 'Team chat', so passing it instead of the namespace still fails.
     mocks.getConfig.mockResolvedValue(config('Team chat'))
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: () =>
-        Promise.resolve({
-          folder_name: 'Team chat',
-          moved: [],
-          reason: '',
-          remaining: 0,
-          failed: 0,
-        }),
+    mocks.backfill.mockResolvedValue({
+      folder_name: 'Team chat',
+      moved: [],
+      reason: '',
+      remaining: 0,
+      failed: 0,
     })
-    vi.stubGlobal('fetch', fetchMock)
     renderPanel()
 
     fireEvent.click(await screen.findByRole('button', { name: /File existing sessions/i }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ namespace: 'discord' })
-    vi.unstubAllGlobals()
+    await waitFor(() => expect(mocks.backfill).toHaveBeenCalledTimes(1))
+    expect(mocks.backfill).toHaveBeenCalledWith('discord')
   })
 })
