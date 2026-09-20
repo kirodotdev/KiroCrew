@@ -2036,13 +2036,34 @@ def _death_records(caplog):
 
 def _neuter_kill_side_effects(monkeypatch, proc):
     """Keep kill() away from the host: never signal the fake PID (4242 could be
-    a real process), never touch the PID-tracking files."""
+    a real process), never touch the PID-tracking files.
+
+    The Windows drain stand-in awaits ``process.wait()`` because the real
+    ``terminate_windows_asyncio_tree`` does, and that await is what populates
+    ``returncode``. A stand-in returning without it hands the Windows branch a
+    process whose status is unreadable, so every assertion about the post-reap
+    exit status would read the unreaped placeholder on that platform alone --
+    the double disagreeing with the code rather than the code being wrong.
+
+    That await carries the real one's BOUND as well, off the same constant: a
+    child that never exits makes the real drain raise rather than wait forever,
+    so a stand-in awaiting without the bound turns a test whose child never
+    exits into a hang instead of a failure.
+    """
     import kiro_crew.acp.runtime as rt_mod
 
     proc.wait = AsyncMock(return_value=0)
+
+    async def _drain_windows_tree(process):
+        await asyncio.wait_for(
+            process.wait(),
+            timeout=rt_mod.platform_compat._WINDOWS_TREE_REAP_TIMEOUT_SECS,
+        )
+        return True
+
     monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a, **k: None)
     monkeypatch.setattr(
-        rt_mod.platform_compat, "terminate_windows_asyncio_tree", AsyncMock(return_value=True)
+        rt_mod.platform_compat, "terminate_windows_asyncio_tree", _drain_windows_tree
     )
     monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
     monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: None)
@@ -2333,6 +2354,69 @@ async def test_reap_amendment_leaves_the_reason_untouched(caplog, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_windows_branch_amends_the_summary_too(caplog, monkeypatch):
+    """The Windows teardown runs INSTEAD of the POSIX ladder and returns from
+    ``_kill_inner`` on its own, so it has to record the reap itself. Pinned with
+    the platform forced rather than left to the Windows shards, because a branch
+    only one CI lane reaches is a branch whose loss is invisible everywhere else
+    -- and the status it carries outlives the log, riding ``AcpProcessDied`` into
+    a turn's error and a cron's ``last_error``."""
+    import logging
+
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", True)
+
+    async def _wait():
+        proc.returncode = 1  # a Win32 exit code, never a negative signal
+        return proc.returncode
+
+    proc.wait = _wait
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(expected=True, reason="warm mint teardown")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert "[returncode=1]" in summary
+    assert "<not reaped>" not in summary
+    assert "returncode=None" not in summary
+    reaped = _reap_records(caplog)
+    assert [r.levelname for r in reaped] == ["INFO"]
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_windows_drain_leaves_the_placeholder(caplog, monkeypatch):
+    """A drain that cannot confirm every member's exit RAISES and keeps the
+    process pinned for maintenance to retry. The status is then genuinely
+    unknown, so the placeholder must survive: amending it from a handle whose
+    tree was never drained would state an exit this runtime cannot vouch for."""
+    import logging
+
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", True)
+
+    async def _drain_fails(process):
+        raise OSError("Windows tree tracking retirement did not complete")
+
+    monkeypatch.setattr(rt_mod.platform_compat, "terminate_windows_asyncio_tree", _drain_fails)
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        with pytest.raises(OSError):
+            await rt.kill(reason="warm mint teardown")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert "[returncode=<not reaped>]" in summary
+    assert _reap_records(caplog) == []
+
+
+@pytest.mark.asyncio
 async def test_no_amendment_when_the_status_was_already_known(caplog, monkeypatch):
     """A process that exited on its own is marked WITH its code, so nothing is
     owed after the reap — not even when the stderr tail happens to carry the
@@ -2358,11 +2442,19 @@ async def test_no_amendment_when_the_status_was_already_known(caplog, monkeypatc
 async def test_kill_keeps_the_label_when_no_status_ever_arrives(caplog, monkeypatch):
     """Both waits can time out (a child wedged in uninterruptible sleep), and
     the status is then still unknown. ``<not reaped>`` must stay: nothing may
-    claim a code that was never observed."""
+    claim a code that was never observed.
+
+    The two waits are the POSIX ladder's, so the platform is forced to it: on
+    Windows that ladder never runs, and this child is exactly the one whose
+    drain raises instead of returning -- a different contract, pinned by
+    ``test_an_unconfirmed_windows_drain_leaves_the_placeholder``."""
     import logging
+
+    import kiro_crew.acp.runtime as rt_mod
 
     rt, _, proc = _make_runtime()
     _neuter_kill_side_effects(monkeypatch, proc)
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", False)
     # The signal delivery itself is covered by the tree-kill tests; this one is
     # about what the summary says when the reap window closes empty.
     monkeypatch.setattr(rt, "_signal_tree", AsyncMock(return_value={}))

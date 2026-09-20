@@ -1568,3 +1568,28 @@ in a TTL branch or a dead-provider branch — stays WARNING. Note the default
 `agent.log_level` is WARNING, so expected teardowns are absent from
 `gateway.log` unless the operator raises verbosity; that silence is the point
 of the split (issue #4052).
+
+**The death line is written before the signal, so its exit status is filled in
+afterwards — on BOTH teardown branches.** A kill marks the death while the child
+is still running, so the retained summary carries `[returncode=<not reaped>]`
+rather than a bare `returncode=None`. `_note_reaped_after_kill` replaces the
+placeholder once the reap has completed and the handle is still held, and logs one
+line at the death's own severity. It is called from the POSIX ladder AND from the
+Windows owned-handle drain, which returns from `_kill_inner` on its own and so
+cannot inherit the ladder's call — a status recorded on one platform only is a
+gap the other platform's operator pays for, since the summary outlives the log and
+rides `AcpProcessDied` into a turn's error and a cron's `last_error`. The
+amendment is silent when the status is still unknown: a POSIX pair of timed-out
+waits, or a Windows drain that raised because it could not confirm every member's
+exit, both leave `<not reaped>` standing, which is then true.
+
+Pinned on every platform rather than on the Windows shards alone
+(`test_the_windows_branch_amends_the_summary_too`,
+`test_an_unconfirmed_windows_drain_leaves_the_placeholder` in
+`test/test_acp_runtime.py`, which force the branch through
+`platform_compat.IS_WINDOWS`): a branch one CI lane reaches is a branch whose loss
+is invisible in every other lane. The shared kill test double drains the Windows
+tree by awaiting `process.wait()` for the same reason the real
+`terminate_windows_asyncio_tree` does — that await is what populates `returncode`,
+so a double returning without it would report the placeholder on Windows and hide
+the amendment behind its own unfaithfulness.

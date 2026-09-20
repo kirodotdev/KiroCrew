@@ -2961,6 +2961,13 @@ class AcpRuntime:
                     exc_info=True,
                 )
                 raise
+            # Before the handle is dropped, and on this branch rather than at the
+            # ladder's own amendment below: the death line was written pre-signal
+            # and says returncode=<not reaped>, and the drain above returns only
+            # once every member's exit is CONFIRMED, so the status is knowable at
+            # exactly this point. The drain's failure path raises instead, keeping
+            # the placeholder true for a tree it could not confirm.
+            self._note_reaped_after_kill(process.returncode)
             self._process = None
             self._process_instance = ""
             # Tracking was retired by the shared drain under the original pin.
