@@ -11,6 +11,32 @@ from typing import Any, Protocol
 
 from aiohttp import web
 
+#: Socket flag: this client is between its ``members_subscribed`` read and the
+#: frame's arrival. ``_send_ws_all`` withholds ``member_projection`` while it is
+#: set, because the baseline is a ceiling the client truncates against and a
+#: projection applied before it would be dropped by that truncate.
+MEMBERS_BASELINE_PENDING = "_members_baseline_pending"
+
+#: Socket store: the ``member_projection`` payloads withheld while the baseline
+#: was pending, keyed by ``(slug, key)`` and flushed in insertion order once the
+#: baseline is on the wire. Withholding alone LOSES the value: ``lastSeqs`` is
+#: read BEFORE the withheld append, so the baseline does not carry it and the
+#: client stays stale until that key next changes. Keying by identity is what
+#: bounds the store without losing anything -- a projection is last-write-wins
+#: per ``(slug, key)``, so a superseded payload is not worth keeping.
+MEMBERS_BASELINE_HELD = "_members_baseline_held"
+
+#: Hard cap on distinct held identities per socket. Reaching it means something
+#: is wrong with the assumption above (identities are bounded by members x keys),
+#: so the socket is closed instead of being handed a partial replay: it
+#: reconnects and gets a whole fresh baseline.
+MEMBERS_BASELINE_HELD_MAX = 512
+
+#: Marker placed in the held store when the cap is reached. A distinct sentinel
+#: rather than a second socket key: the store is cleared and re-created in
+#: several places, and a flag living elsewhere would survive one of them.
+_HELD_OVERFLOW = "_held_overflow"
+
 
 class WebSocketHubOwner(Protocol):
     """The mutable facade-owned state the hub operates on.
@@ -251,6 +277,10 @@ class WebSocketHub:
         """Send one typed frame through the per-client authorization chokepoint."""
         dead: list[web.WebSocketResponse] = []
         skip_owners = msg_type == "slots"
+        # A socket still awaiting its members_subscribed baseline must not be
+        # handed a projection first: it would apply the value and then truncate it
+        # away against a ceiling read before the value existed.
+        gate_baseline = msg_type == "member_projection"
         owners = getattr(self._owner, "_owner_ws_clients", None) or set()
         client_allowed = self._owner_method("_ws_client_allowed", self._ws_client_allowed)
         serialize = self._owner_method("_serialize_for_client", self._serialize_for_client)
@@ -261,6 +291,25 @@ class WebSocketHub:
                 dead.append(ws)
                 continue
             if skip_owners and ws in owners:
+                continue
+            if gate_baseline and ws.get(MEMBERS_BASELINE_PENDING, False):
+                # HELD, not dropped: the baseline's lastSeqs were read before
+                # this append, so dropping the frame leaves the client stale
+                # until the key next changes. Authorize and serialize here, the
+                # same as delivery would, then queue the payload for the flush
+                # that follows the baseline.
+                if not client_allowed(ws, msg_type, data):
+                    continue
+                try:
+                    payload = serialize(ws, msg_type, data, msg)
+                except Exception:
+                    self._log.warning(
+                        "WS payload shaping failed for %s; keeping the client registered",
+                        msg_type,
+                        exc_info=True,
+                    )
+                    continue
+                self._hold_projection(ws, data, payload)
                 continue
             if not client_allowed(ws, msg_type, data):
                 continue
@@ -282,6 +331,62 @@ class WebSocketHub:
                 dead.append(ws)
         for ws in dead:
             remove(ws)
+
+    def _hold_projection(self, ws: web.WebSocketResponse, data: object, payload: str) -> None:
+        """Queue one withheld ``member_projection`` payload on *ws*.
+
+        Coalesced by ``(slug, key)``: the frame carries a whole value, so a later
+        payload for the same identity supersedes an earlier one and only the last
+        needs replaying. Over the cap the queue is abandoned and the socket is
+        marked for closure -- a partial replay would be a silent half-truth.
+        """
+        held = ws.get(MEMBERS_BASELINE_HELD)
+        if not isinstance(held, dict):
+            held = {}
+            ws[MEMBERS_BASELINE_HELD] = held
+        if isinstance(data, dict):
+            ident: object = (data.get("slug"), data.get("key"))
+        else:  # pragma: no cover - the frame's shape is fixed by types.py
+            ident = object()
+        if ident not in held and len(held) >= MEMBERS_BASELINE_HELD_MAX:
+            held.clear()
+            held[_HELD_OVERFLOW] = ""
+            return
+        if _HELD_OVERFLOW in held:
+            return
+        held[ident] = payload
+
+    async def _flush_held_projections(self, ws: web.WebSocketResponse) -> None:
+        """Send the payloads withheld during the baseline, oldest identity first.
+
+        Drains rather than iterating once: ``send_str`` yields, so a broadcast can
+        add a payload while this runs. The pending flag is cleared by the caller
+        only after this returns empty, so nothing races past the replay.
+        """
+        while True:
+            held = ws.get(MEMBERS_BASELINE_HELD)
+            if not isinstance(held, dict) or not held:
+                return
+            if _HELD_OVERFLOW in held:
+                ws[MEMBERS_BASELINE_HELD] = {}
+                self._log.warning(
+                    "members_subscribed: more than %d projections withheld; "
+                    "closing the socket so it re-baselines",
+                    MEMBERS_BASELINE_HELD_MAX,
+                )
+                try:
+                    await ws.close()
+                except Exception:
+                    self._log.debug("held-projection overflow close failed", exc_info=True)
+                return
+            ident = next(iter(held))
+            payload = held.pop(ident)
+            try:
+                await ws.send_str(payload)
+            except Exception:
+                self._log.debug("held projection replay failed", exc_info=True)
+                ws[MEMBERS_BASELINE_HELD] = {}
+                return
 
     def _send_ws_owners(self, msg: str) -> None:
         """Send a pre-serialized message only to owner-authenticated clients."""
@@ -387,6 +492,61 @@ class WebSocketHub:
         if owner:
             self._owner._owner_ws_clients.add(ws)
         self._serving_loop_provider()
+
+    async def send_members_subscribed(self, ws: web.WebSocketResponse) -> None:
+        """Send the one-shot ``members_subscribed`` frame to a NEW owner socket.
+
+        Carries ``{"lastSeqs": {slug: last_seq}}`` from the per-member event-log
+        service, so the client can drop any held member_projection frame whose
+        seq is newer than this baseline (a replay/stale-frame guard).
+
+        The socket is marked as AWAITING this baseline for the duration, and
+        ``_send_ws_all`` withholds ``member_projection`` from a socket in that
+        state. Without it a projection reaching the socket between the
+        ``last_seqs`` read and this send is applied by the client and then thrown
+        away by the truncate that follows -- live state it already had, lost. A
+        withheld frame is HELD, not discarded, and replayed once the baseline is
+        on the wire: ``last_seqs`` was read before that append, so the baseline
+        does NOT carry its seq and a discarded frame would leave the client stale
+        until the same key next changed.
+
+        Owner-only: the caller must gate on a dashboard-user connection and skip
+        app-token connections (``member_projection`` / ``members_subscribed`` are
+        classified owner-only in ``ws_event_scope``). Best-effort — a serialize
+        or send fault is logged and swallowed so it never fails the connection.
+        """
+        # Set BEFORE the read, cleared only once the frame is on the wire (or has
+        # failed): the window this closes starts at the read, not at the send.
+        ws[MEMBERS_BASELINE_PENDING] = True
+        try:
+            try:
+                from kiro_crew.eventlog.service import get_service
+
+                # last_seqs() iterates and parses every uncached member log on
+                # first dashboard connect -- synchronous file I/O that would stall
+                # the serving loop. Offload it, matching the sibling
+                # _handle_eventlog_frame read.
+                last_seqs = await asyncio.to_thread(get_service().last_seqs)
+            except Exception:
+                self._log.debug("members_subscribed: last_seqs read failed", exc_info=True)
+                return
+            try:
+                msg = json.dumps({"type": "members_subscribed", "data": {"lastSeqs": last_seqs}})
+                await ws.send_str(msg)
+            except Exception:
+                self._log.debug("members_subscribed send failed", exc_info=True)
+                return
+            # Only after the baseline is on the wire: a replayed payload carries a
+            # seq above the ceiling the client just installed, so it is applied as
+            # live rather than truncated away.
+            await self._flush_held_projections(ws)
+        finally:
+            # Cleared even when the baseline never arrived: withholding for the
+            # rest of the connection would be a worse failure than one truncate.
+            # Anything still held then is dropped with it -- there is no ceiling
+            # for the client to apply it against.
+            ws[MEMBERS_BASELINE_PENDING] = False
+            ws[MEMBERS_BASELINE_HELD] = {}
 
     def unregister_ws(self, ws: web.WebSocketResponse) -> None:
         remove = self._owner_method("_remove_ws", self._remove_ws)

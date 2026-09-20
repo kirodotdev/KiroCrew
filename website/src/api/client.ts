@@ -1,5 +1,6 @@
 import { installSessionExpiryHandler } from './sessionExpirySignal'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
+import type { ProjectionsBlock } from '../state/memberProjectionTypes'
 import type {
   AppContributor,
   ChatSlot,
@@ -2498,6 +2499,10 @@ export interface MemberRosterRow {
   source?: 'kirocrew' | 'builtin' | 'package' | string
   /** User's favourite mark; toggled via PUT /api/agents/{name}. */
   starred?: boolean
+  /** Baseline projections (roster/activity/wake/driving) at a known seq, fed
+   *  to the per-member projection store so the page renders from pushed
+   *  frames. Absent on an older gateway that predates the event log. */
+  projections?: ProjectionsBlock
   [extra: string]: unknown
 }
 
@@ -2510,6 +2515,24 @@ export interface MemberActivityEntry {
   ts: number
   via: 'chat' | 'select_crew' | string
   project?: string
+}
+
+/** One raw event of GET /api/members/{slug}/history — the append-only log the
+ *  projections are folded from. `data` is the event's payload, shape per
+ *  `type`; left untyped so a new event type is not a frontend break. */
+export interface MemberHistoryEvent {
+  type: string
+  seq: number
+  time: number
+  data: unknown
+}
+
+/** GET /api/members/{slug}/history — a page of the member's event log, newest
+ *  first, with the highest seq the server holds for paging with `before`. */
+export interface MemberHistoryPage {
+  slug: string
+  events: MemberHistoryEvent[]
+  lastSeq: number
 }
 
 /** WakaTime coding-stats payload (GET /api/wakatime/stats). When the
@@ -3392,6 +3415,20 @@ export const api = {
       capped: boolean
       entries: MemberActivityEntry[]
     }>,
+  // A member's raw event log, newest first — the source the projections are
+  // folded from. `before` pages older events by seq; `limit` bounds the page.
+  // Read on demand (a history/audit view), never polled.
+  memberHistory: (slug: string, opts?: { before?: number; limit?: number }) => {
+    // Built with URLSearchParams like every other query here: `.set(key, value)`
+    // keeps the param names out of string concatenation the i18n gate flags.
+    const q = new URLSearchParams()
+    if (opts?.before !== undefined) q.set('before', String(opts.before))
+    if (opts?.limit !== undefined) q.set('limit', String(opts.limit))
+    const qs = q.toString()
+    return fetch(
+      '/api/members/' + encodeURIComponent(slug) + '/history' + (qs ? '?' + qs : ''),
+    ).then(j) as Promise<MemberHistoryPage>
+  },
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

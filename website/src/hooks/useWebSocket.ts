@@ -24,8 +24,10 @@ import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
-import { forgetUnobservedMemberThreads } from '../api/membersQuery'
+import { MEMBERS_ROSTER_QUERY_KEY, forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { observedPaneSlots } from '../api/slotMessagesQuery'
+import { memberProjectionStore } from '../state/memberProjectionStore'
+import type { ProjectionSchema } from '../state/memberProjectionTypes'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
@@ -1737,6 +1739,41 @@ export function useWebSocket() {
           case 'slot_agent_switch': {
             // /agent command — refresh slot metadata to pick up new agent label
             dispatch(fetchSlots())
+            break
+          }
+          case 'member_projection': {
+            // One member's projected value moved. The server wraps every
+            // broadcast as { type, data }, so the fields ride under `data`.
+            // Apply only a well-formed frame: the store's higher-seq-wins drops
+            // a stale or replayed seq, but a missing slug/key/seq is a malformed
+            // frame that must not touch the store at all.
+            const pf = (data ?? {}) as { slug?: unknown; key?: unknown; seq?: unknown; value?: unknown; schema?: unknown }
+            if (typeof pf.slug === 'string' && pf.slug && typeof pf.key === 'string' && pf.key && typeof pf.seq === 'number') {
+              // `schema` rides a CONTRIBUTED row's frame and declares how to
+              // render it (contribution protocol §7). Absent on every built-in
+              // key and on a contributor's later folds, where the store keeps
+              // the rendering the key already has.
+              const schema = pf.schema && typeof pf.schema === 'object' ? (pf.schema as ProjectionSchema) : undefined
+              memberProjectionStore.apply(pf.slug, pf.key, pf.value, pf.seq, schema)
+            }
+            break
+          }
+          case 'members_subscribed': {
+            // Sent once per connection before any member_projection frame: the
+            // server's authoritative lastSeq per slug. Truncate held rows that
+            // ran ahead of it (a torn tail rolled back after a restart).
+            const seqs = ((data ?? {}) as { lastSeqs?: unknown }).lastSeqs
+            if (seqs && typeof seqs === 'object') {
+              memberProjectionStore.truncateAll(seqs as { [slug: string]: number })
+              // Truncation is per SLUG, so it cannot see a contributed KEY that
+              // was deleted while this client was disconnected: the deletion
+              // frame was missed, and the surviving row's seq is at or below the
+              // baseline, so nothing drops it and the card stays rendered until a
+              // reload. Refetching the roster replaces the held key set with the
+              // authoritative one, which is the only thing that knows a key is
+              // gone.
+              queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+            }
             break
           }
           case 'chat_message':

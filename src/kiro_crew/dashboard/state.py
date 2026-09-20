@@ -4500,6 +4500,42 @@ class DashboardState:
         from kiro_crew.dashboard.file_index import FileIndexRegistry
 
         self.file_indexes = FileIndexRegistry()
+        # Last-seen {slot_key -> driving member name} for member-driven slots,
+        # diffed on each slots broadcast to emit slot/opened + slot/closed to
+        # the per-member event log. Best-effort, additive.
+        self._member_driven_slots_seen: dict[str, str] = {}
+        # Slot keys whose open/close append is in flight. A transition is marked
+        # SEEN only once its append lands, so without this set every broadcast in
+        # the meantime would re-derive and re-queue the same write.
+        self._member_slot_emits_inflight: set[str] = set()
+        # Set when a transition was SKIPPED only because its slot's append was
+        # still in flight. Releasing the slot is not enough on its own: the skipped
+        # transition is re-derived by the NEXT slots broadcast, and if the slot set
+        # has stopped changing there is no next broadcast -- a close arriving while
+        # its own open was being written was then lost for good, leaving the
+        # durable log saying the slot is still open. _commit_slot_seen re-derives
+        # once the in-flight set drains, so the inverse is emitted without waiting
+        # for traffic that may never come.
+        self._member_slot_emits_recheck: bool = False
+        # Wire the per-member event log's broadcast sink. Lazy import + blanket
+        # guard: the service module is filled in concurrently and may raise.
+        try:
+            from kiro_crew.eventlog.service import get_service
+
+            get_service().attach_broadcast(self.broadcast_ws)
+        except Exception:
+            logger.debug("eventlog attach_broadcast failed", exc_info=True)
+        # Wire the contribution protocol's delta channel: every append is
+        # enqueued for the app sockets subscribed to that unit. Separate from the
+        # broadcast sink above -- that one carries WHOLE PROJECTED VALUES to
+        # dashboards, this one carries raw envelopes to contributors, and the two
+        # have opposite client rules (higher-seq-wins vs no-folding-across-a-gap).
+        try:
+            from kiro_crew.dashboard.eventlog_ws import attach_to_service
+
+            attach_to_service()
+        except Exception:
+            logger.debug("eventlog subscription hub attach failed", exc_info=True)
         # Runtime services share the gateway's policy, never a model-supplied mode.
         from kiro_crew.dashboard.handlers._shared import (
             live_session_memory_mode,
@@ -6035,6 +6071,66 @@ class DashboardState:
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
         self._broadcast(payload)
+        # Best-effort per-member event log: a message in a member DM thread.
+        try:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import MEMBER_MESSAGE
+
+            _mslug = eventlog_hooks.member_slug_for_slot(slot_key)
+            if _mslug is not None:
+                _raw_ts = msg.get("ts", "")
+                try:
+                    _ev_ts = float(_raw_ts)
+                except (TypeError, ValueError):
+                    _ev_ts = time.time()
+                # Same redaction chain the members roster uses, run before the
+                # length cap so a credential split by truncation cannot leak.
+                _prev = content if isinstance(content, str) else str(content or "")
+                _prev, _ = redact_exfiltration_urls(_prev)
+                _prev, _ = redact_credentials(_prev)
+                _prev = _prev[:140]
+
+                # Off the event loop: emit opens the member log and does a
+                # synchronous os.fsync append. This callback runs loop-side, so
+                # hand the write to a worker thread rather than stalling every
+                # gateway task on the fsync.
+                #
+                # Delivery of the message itself is NOT gated on this append: the
+                # chat surface has already shown it and a member-log fsync is not
+                # allowed to decide whether a message is delivered. What the
+                # append must not be is SILENT, so the future is inspected and a
+                # failure is logged as a warning naming the member — this log is
+                # the only durable record of the thread's message history, and an
+                # unreported loss is one nobody can go looking for.
+                def _emit_message() -> None:
+                    # The service directly, not eventlog_hooks.emit: that helper
+                    # swallows its own failures by contract, which would leave
+                    # the future below with nothing to report.
+                    from kiro_crew.eventlog.service import get_service
+
+                    _svc = get_service()
+                    _svc.ensure(_mslug, _mslug)
+                    _svc.append(_mslug, MEMBER_MESSAGE, {"ts": _ev_ts, "preview": _prev})
+
+                def _report(fut) -> None:
+                    exc = fut.exception()
+                    if exc is not None:
+                        logger.warning(
+                            "member/message event-log append failed for %r", _mslug, exc_info=exc
+                        )
+
+                try:
+                    _loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    _loop = None
+                if _loop is not None:
+                    _loop.run_in_executor(_member_log_executor(), _emit_message).add_done_callback(
+                        _report
+                    )
+                else:
+                    _emit_message()
+        except Exception:
+            logger.debug("member/message event-log hook failed", exc_info=True)
 
     # ── Folder persistence ──
 
@@ -7381,6 +7477,156 @@ class DashboardState:
                 )
             )
 
+        # Best-effort per-member event log: emit slot/opened and slot/closed
+        # for slots DRIVEN by a member (created_by is a member NAME), diffed
+        # against the last-seen set on this state object. Additive; never
+        # affects the broadcast above.
+        try:
+            from kiro_crew import eventlog_hooks
+
+            # The known-agent check must not read config.json here: this runs on
+            # the gateway serving loop, so it reads the off-loop alias snapshot
+            # (refreshed by every successful config load) instead of stat/read/
+            # parsing config synchronously and stalling every task.
+            from kiro_crew.config.loader import agent_alias_snapshot
+            from kiro_crew.eventlog.types import SLOT_CLOSED, SLOT_OPENED
+
+            agent_aliases, _default_alias, _snapshot_ready = agent_alias_snapshot()
+            current: dict[str, str] = {}
+            for _sk, _slot in list(self._slots.items()):
+                _cb = getattr(_slot, "_created_by", "")
+                if not _cb:
+                    continue
+                if _cb in agent_aliases:
+                    current[_sk] = _cb
+            prev = self._member_driven_slots_seen
+            if current != prev:
+                # emit fsyncs, so collect the transitions and offload the writes:
+                # _do_slots_broadcast runs on the gateway loop and a synchronous
+                # durability barrier per slot transition would stall every
+                # concurrent session. The member's ledger KEY is resolved in the
+                # worker too (it reads config for the persisted identity).
+                #
+                # Each transition is (slot_key, member, type, data) and is marked
+                # SEEN only once its append has landed -- see _commit_slot_seen.
+                # Marking the whole set seen up front, as this did, made a failed
+                # write permanent: the seen set is what suppresses a re-emit, so
+                # the transition was never retried and the log silently lost an
+                # open or close that nothing else records. A transition already
+                # in flight is skipped rather than queued twice.
+                _inflight = self._member_slot_emits_inflight
+                _emits: list[tuple[str, str, str, dict]] = []
+                for _sk, _member in current.items():
+                    if _sk not in prev:
+                        if _sk in _inflight:
+                            self._member_slot_emits_recheck = True
+                        else:
+                            _emits.append((_sk, _member, SLOT_OPENED, {"slot_key": _sk}))
+                for _sk, _member in prev.items():
+                    if _sk not in current:
+                        if _sk in _inflight:
+                            self._member_slot_emits_recheck = True
+                        else:
+                            _emits.append(
+                                (_sk, _member, SLOT_CLOSED, {"slot_key": _sk, "reason": "closed"})
+                            )
+                _inflight.update(sk for sk, _m, _t, _d in _emits)
+
+                def _emit_slots(events: list[tuple[str, str, str, dict]] = _emits) -> None:
+                    landed: list[tuple[str, str, str]] = []
+                    for _sk, _mem, _etype, _data in events:
+                        try:
+                            _slug = eventlog_hooks.ledger_slug(_mem)
+                            if _slug is None:
+                                continue
+                            # append(), not the swallowing emit(): a failure has
+                            # to be visible here or "seen" would be committed for
+                            # a write that did not happen.
+                            from kiro_crew.eventlog.service import get_service
+
+                            _svc = get_service()
+                            _svc.ensure(_slug, _mem)
+                            _svc.append(_slug, _etype, _data)
+                        except Exception:
+                            logger.warning(
+                                "slot event-log emit failed for %s (%s); it will be "
+                                "retried on the next slots broadcast",
+                                _sk,
+                                _etype,
+                                exc_info=True,
+                            )
+                            continue
+                        landed.append((_sk, _mem, _etype))
+                    self._commit_slot_seen(events, landed)
+
+                if _emits:
+                    try:
+                        import asyncio as _asyncio
+
+                        _asyncio.get_running_loop().run_in_executor(
+                            _member_log_executor(), _emit_slots
+                        )
+                    except RuntimeError:
+                        # No running loop: safe to run inline (stalls only here).
+                        _emit_slots()
+        except Exception:
+            logger.debug("slot open/close event-log hook failed", exc_info=True)
+
+    def _commit_slot_seen(
+        self,
+        attempted: list[tuple[str, str, str, dict]],
+        landed: list[tuple[str, str, str]],
+    ) -> None:
+        """Mark the slot transitions whose append COMMITTED as seen.
+
+        Called from the emit worker, so the mutation is hopped onto the serving
+        loop when there is one. Only the transitions in *landed* move the seen
+        set; the rest are simply released from the in-flight set, which is what
+        lets the next slots broadcast re-derive and retry them.
+        """
+
+        from kiro_crew.eventlog.types import SLOT_OPENED
+
+        def _apply() -> None:
+            seen = self._member_driven_slots_seen
+            done = {(sk, etype) for sk, _mem, etype in landed}
+            for _sk, _mem, _etype, _data in attempted:
+                self._member_slot_emits_inflight.discard(_sk)
+                if (_sk, _etype) not in done:
+                    continue
+                if _etype == SLOT_OPENED:
+                    seen[_sk] = _mem
+                else:
+                    seen.pop(_sk, None)
+            # A transition suppressed while this batch was in flight is owed an
+            # emit. Re-deriving here rather than waiting for the next broadcast is
+            # the whole point: a slot that closed during its own open's write
+            # produces no further slot change, so there IS no next broadcast and
+            # the close would never be written.
+            if self._member_slot_emits_recheck and not self._member_slot_emits_inflight:
+                self._member_slot_emits_recheck = False
+                try:
+                    self._do_slots_broadcast()
+                except Exception:
+                    logger.debug("slot transition recheck failed", exc_info=True)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            # Already on the loop that owns these dicts (the no-loop inline path
+            # in the caller): apply directly.
+            _apply()
+            return
+        loop = self.serving_loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(_apply)
+        else:
+            # No loop to hop to. The dicts have a single reader in that case, so
+            # applying here is as safe as it was to run the emit inline.
+            _apply()
+
     def push_slot_title(self, key: str, title: str, *, full: bool = True) -> None:
         """Push a targeted title update for a single slot.
 
@@ -7615,6 +7861,9 @@ class DashboardState:
     def register_ws(self, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
         _websocket_for(self).register_ws(ws, owner=owner)
 
+    async def send_members_subscribed(self, ws: web.WebSocketResponse) -> None:
+        await _websocket_for(self).send_members_subscribed(ws)
+
     def unregister_ws(self, ws: web.WebSocketResponse) -> None:
         _websocket_for(self).unregister_ws(ws)
 
@@ -7816,6 +8065,35 @@ def _notification_io_executor() -> concurrent.futures.ThreadPoolExecutor:
                     max_workers=1, thread_name_prefix="notif-io"
                 )
     return _notification_io_pool
+
+
+# One worker, for the same reason the notification pool has one: the per-member
+# event log is an ORDER-BEARING file, and the default executor has many threads.
+# Two appends for the same member handed to it race for the log's lock, so the
+# one submitted second can land first -- and a projection folded from that log
+# then regresses (an older message preview or an already-ended patrol wins).
+# Rapid messages and a patrol start/stop pair are exactly the traffic that hits
+# it. A single worker makes submission order the write order.
+_member_log_pool: concurrent.futures.ThreadPoolExecutor | None = None
+_member_log_pool_lock = threading.Lock()
+
+
+def _member_log_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Lazily create the single-worker executor for per-member log appends.
+
+    Creation is locked and double-checked for the reason spelled out on
+    ``_notification_io_executor``: an unlocked check-then-set lets two callers each
+    build a pool and proceed unserialised against each other, which is the one
+    guarantee this executor exists to give.
+    """
+    global _member_log_pool
+    if _member_log_pool is None:
+        with _member_log_pool_lock:
+            if _member_log_pool is None:
+                _member_log_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="member-log"
+                )
+    return _member_log_pool
 
 
 def _persist_notification(note: dict[str, str]) -> bool:

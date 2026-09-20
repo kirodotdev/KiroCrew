@@ -476,9 +476,7 @@ class TestUninstall:
         assert marker.exists(), "preserved data must be restored to data/"
         assert not (app_home / "apps" / ".test-app-data-tmp").exists()
 
-    def test_app_owned_names_sharing_the_deps_prefix_survive_uninstall(
-        self, tmp_path, app_home
-    ):
+    def test_app_owned_names_sharing_the_deps_prefix_survive_uninstall(self, tmp_path, app_home):
         """The sweep deletes only the gateway's own generated names: an
         app-owned entry that merely shares the .kirocrew-deps prefix (a
         user's backup dir) is preserved data, not a purge target."""
@@ -502,9 +500,7 @@ class TestUninstall:
             app_root / "data" / ".kirocrew-deps-staging-assets" / "art.bin"
         ).exists(), "app-owned staging-prefix data must survive"
 
-    def test_a_file_shaped_deps_artifact_is_purged_and_does_not_poison(
-        self, tmp_path, app_home
-    ):
+    def test_a_file_shaped_deps_artifact_is_purged_and_does_not_poison(self, tmp_path, app_home):
         """rmtree refuses non-directories, so a FILE written at a deps-tree
         name survives every uninstall and poisons the next quarantine
         rename. Shape-aware removal purges it - and a second
@@ -1158,9 +1154,7 @@ class TestInstalledApp:
             "deploy:local-segment@host.example:Owner/Repo.git",
         ],
     )
-    def test_write_boundary_preserves_non_uri_source_metadata(
-        self, app_home, coordinate: str
-    ):
+    def test_write_boundary_preserves_non_uri_source_metadata(self, app_home, coordinate: str):
         _write_installed(
             "metadata-app",
             InstalledApp(
@@ -1604,9 +1598,7 @@ class TestCopyAppTree:
         assert not (orphan / "leftover.bin").exists()
         assert (orphan / APP_MANIFEST_FILENAME).is_file()
 
-    def test_local_install_cannot_claim_a_repository_bound_grant(
-        self, tmp_path, app_home
-    ):
+    def test_local_install_cannot_claim_a_repository_bound_grant(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         reviewed = "https://clone.example.test/Owner/reviewed-app"
@@ -1630,9 +1622,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_external_registration_cannot_claim_a_repository_bound_grant(
-        self, app_home
-    ):
+    def test_external_registration_cannot_claim_a_repository_bound_grant(self, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         reviewed = "https://clone.example.test/Owner/reviewed-app"
@@ -1656,9 +1646,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_legacy_name_grant_cannot_install_repository_code(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_install_repository_code(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         (app_home / "config.json").write_text(
@@ -1677,9 +1665,7 @@ class TestCopyAppTree:
         assert "Secret" not in result.error
         assert get_app("test-app") is None
 
-    def test_legacy_name_grant_cannot_claim_fresh_local_install(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_claim_fresh_local_install(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         (app_home / "config.json").write_text(
@@ -1792,9 +1778,7 @@ class TestCopyAppTree:
         assert persisted is not None
         assert persisted.sourceUrl == reviewed
 
-    def test_registry_context_rechecks_binding_at_replacement_boundary(
-        self, tmp_path, app_home
-    ):
+    def test_registry_context_rechecks_binding_at_replacement_boundary(self, tmp_path, app_home):
         """A source changed after registry preflight cannot reach the copy step."""
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -1841,9 +1825,7 @@ class TestCopyAppTree:
         assert first == "https://example.test/owner/first"
         assert second == "https://example.test/owner/second"
 
-    def test_legacy_name_grant_cannot_update_to_repository_code(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_update_to_repository_code(self, tmp_path, app_home):
         from kiro_crew.apps.manager import update_app
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -1883,9 +1865,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_installed_legacy_local_grant_can_update_local_code(
-        self, tmp_path, app_home
-    ):
+    def test_installed_legacy_local_grant_can_update_local_code(self, tmp_path, app_home):
         from kiro_crew.apps.manager import update_app
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -2037,9 +2017,7 @@ class TestCopyAppTree:
         assert get_app("test-app")["sessionApprovalConsentPending"] is False
 
     def test_fresh_install_with_session_approval_requires_consent(self, tmp_path, app_home):
-        result = install_app(
-            _make_app_source(tmp_path, permissions={"sessionApproval": True})
-        )
+        result = install_app(_make_app_source(tmp_path, permissions={"sessionApproval": True}))
 
         assert result.ok, result.error
         assert result.notice == "session_approval_reconsent"
@@ -2056,9 +2034,7 @@ class TestCopyAppTree:
         # refresh that keeps it is not a new request.
         from kiro_crew.apps.manager import update_app
 
-        assert install_app(
-            _make_app_source(tmp_path, permissions={"sessionApproval": True})
-        ).ok
+        assert install_app(_make_app_source(tmp_path, permissions={"sessionApproval": True})).ok
         assert enable_app("test-app", session_approval_consent=True).ok
         v2 = _make_app_source(
             tmp_path / "v2",
@@ -2153,9 +2129,7 @@ class TestCopyAppTree:
         assert get_app("ext-keypad")["enabled"] is False
         assert get_app("ext-keypad")["sessionApprovalConsentPending"] is False
 
-    def test_failed_self_registration_widening_restores_metadata(
-        self, app_home, monkeypatch
-    ):
+    def test_failed_self_registration_widening_restores_metadata(self, app_home, monkeypatch):
         from kiro_crew.apps import manager as manager_mod
 
         assert register_external_app("ext-keypad", "1.0.0", "Keypad").ok
@@ -2198,9 +2172,7 @@ class TestCopyAppTree:
             "version": "1.0.0",
             "permissions": {"sessionApproval": True},
         }
-        assert register_external_app(
-            "ext-keypad", "1.0.0", "Keypad", manifest_data=manifest
-        ).ok
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad", manifest_data=manifest).ok
         original = _read_installed("ext-keypad")
         assert original is not None
         real_write = manager_mod._write_installed
@@ -2348,9 +2320,7 @@ def _ship_test_builtin(monkeypatch, root, manifest_data):
     shipped = root / "shipped-builtins"
     shipped_app = shipped / manifest_data["name"]
     shipped_app.mkdir(parents=True)
-    (shipped_app / "app.json").write_text(
-        json.dumps(manifest_data), encoding="utf-8"
-    )
+    (shipped_app / "app.json").write_text(json.dumps(manifest_data), encoding="utf-8")
     monkeypatch.setattr(execution, "_BUILTINS_DIR", shipped)
     return shipped_app
 
@@ -2437,9 +2407,7 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
 
         assert app_enabled_state("shape-probe") is None
 
-    def test_genuine_absence_stays_false_under_the_windows_error_class(
-        self, app_home, monkeypatch
-    ):
+    def test_genuine_absence_stays_false_under_the_windows_error_class(self, app_home, monkeypatch):
         """The control for the above: the shape check must not swallow real absence.
 
         Uninstall depends on this False, so a fix for the wrong-shape case that also
@@ -2665,9 +2633,7 @@ class TestBootSkillReconcile:
         assert "test-app/kept-skill" in registered
         # symlink on POSIX, directory junction on non-admin Windows.
         assert platform_compat.is_link_or_junction(skills_root / "test-app" / "kept-skill")
-        assert (
-            skills_root / "test-app" / "kept-skill"
-        ).resolve() == kept_skill.resolve()
+        assert (skills_root / "test-app" / "kept-skill").resolve() == kept_skill.resolve()
         # Stale skill symlinks removed
         assert not (app_skills_dir / "old-skill").exists()
         assert not (skills_root / "old-skill").exists()
@@ -3121,9 +3087,7 @@ class TestRegisterExternalPreservesServerProvenance:
         assert meta.sourceUrl == self._REPOSITORY
         assert meta.origin == "registry"
 
-    def test_allow_all_refresh_preserves_pin_and_pinned_resolver(
-        self, app_home, monkeypatch
-    ):
+    def test_allow_all_refresh_preserves_pin_and_pinned_resolver(self, app_home, monkeypatch):
         from kiro_crew.apps import registry
 
         self._seed_registry_app()
@@ -3152,9 +3116,7 @@ class TestRegisterExternalPreservesServerProvenance:
             "gitUrl": self._REPOSITORY,
             "_registry": self._REGISTRY,
         }
-        monkeypatch.setattr(
-            registry, "_registry_app_candidates", lambda name: [attacker, pinned]
-        )
+        monkeypatch.setattr(registry, "_registry_app_candidates", lambda name: [attacker, pinned])
 
         def _bare_name_lookup(name):
             raise AssertionError(f"bare-name lookup attempted for {name}")
@@ -3162,9 +3124,7 @@ class TestRegisterExternalPreservesServerProvenance:
         monkeypatch.setattr(registry, "get_registry_app", _bare_name_lookup)
         assert registry._resolve_install_entry("self-app") == (pinned, "")
 
-    def test_repository_bound_refresh_uses_existing_pin_and_rejects_rebind(
-        self, app_home
-    ):
+    def test_repository_bound_refresh_uses_existing_pin_and_rejects_rebind(self, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         self._seed_registry_app()
@@ -3232,3 +3192,49 @@ class TestRegisterExternalPreservesServerProvenance:
         assert meta.source == "C:/local/second"
         assert meta.sourceUrl == ""
         assert meta.origin == "external"
+
+
+class TestAnUpdateMovesTheGrantGeneration:
+    """A narrowed manifest must not keep serving the grants it dropped.
+
+    The scope caches key on the grant generation and have NO expiry, so nothing
+    but a generation change can dislodge them. revoke/unrevoke/invalidate move
+    it; a manifest replacement did not, which made the staleness unbounded
+    rather than merely long -- an app whose API access was removed by an update
+    kept it for the life of the process.
+    """
+
+    def test_an_update_that_narrows_api_access_moves_the_generation(self, tmp_path, app_home):
+        from kiro_crew.apps.manager import install_app, update_app
+        from kiro_crew.eventlog import grants
+
+        assert install_app(_make_app_source(tmp_path, permissions={"api": ["/api/wide/"]})).ok
+        before = grants.revocation_generation()
+
+        result = update_app(
+            _make_app_source(tmp_path / "v2", version="2.0.0", permissions={"api": []})
+        )
+
+        assert result.ok, result.error
+        assert grants.revocation_generation() != before, (
+            "the manifest was replaced but the generation did not move, so every "
+            "cache keyed on it still answers for the old manifest"
+        )
+
+    def test_the_allowlist_stops_returning_a_removed_prefix(self, tmp_path, app_home):
+        """The property the generation bump exists for, read through the cache."""
+        from kiro_crew.apps.manager import install_app, update_app
+        from kiro_crew.dashboard import token_auth
+
+        assert install_app(_make_app_source(tmp_path, permissions={"api": ["/api/wide/"]})).ok
+        # Warm it, so the assertion below is about cache invalidation and not
+        # about a cold read that never had a stale entry to serve.
+        assert "/api/wide/" in token_auth._app_api_allowlist("test-app")
+
+        assert update_app(
+            _make_app_source(tmp_path / "v2", version="2.0.0", permissions={"api": []})
+        ).ok
+
+        assert "/api/wide/" not in token_auth._app_api_allowlist(
+            "test-app"
+        ), "a removed api grant is still authorized from the warm cache"

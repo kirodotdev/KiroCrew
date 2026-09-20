@@ -4932,6 +4932,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             )
         # Captured BEFORE any mutation: what the effort chain reads today.
         effort_inputs_before = _effort_inputs(agent)
+        # Best-effort per-member event log: snapshot the config-derived roster
+        # fields before mutation so member/config can report which changed.
+        _ev_before = {
+            "kiro_agent": agent.kiro_agent,
+            "workspace": agent.workspace,
+            "memory_store": agent.memory_store,
+            "model": agent.model,
+            "source": agent.source,
+            "starred": bool(agent.starred),
+            "avatar": agent.avatar,
+        }
         changed: list[str] = []
         if "kiro_agent" in body:
             try:
@@ -5118,6 +5129,44 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             await _drained_to_thread(_commit_promoted_avatar, name, _avatar_pin)
         if _remove_files_after_save:
             await _drained_to_thread(_remove_avatar_files, name)
+        # Best-effort per-member event log: the save succeeded, so emit a
+        # config snapshot with the list of fields that actually changed.
+        try:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.dashboard.handlers.members import normalize_member_source
+            from kiro_crew.eventlog.types import MEMBER_CONFIG
+
+            _ev_after = {
+                "kiro_agent": agent.kiro_agent,
+                "workspace": agent.workspace,
+                "memory_store": agent.memory_store,
+                "model": agent.model,
+                # Bounded to the roster vocabulary, matching the roster row and
+                # ``_config_snapshot_for_agent`` — ``source`` is agent-writable
+                # free text, so a credential- or URL-shaped value must not reach
+                # the durable projection (which the drawer and WS ship) raw.
+                "source": normalize_member_source(agent.source),
+                "starred": bool(agent.starred),
+                "avatar": agent.avatar,
+            }
+            _ev_changed = [k for k, v in _ev_after.items() if v != _ev_before.get(k)]
+            # A save that touched none of the roster fields is not a fact worth
+            # recording: the projection would fold to the same value and emit
+            # nothing, leaving only a no-op line in the log.
+            if _ev_changed:
+                # Off the event loop: ``emit`` opens the member log and does a
+                # synchronous ``os.fsync`` append, which would otherwise stall
+                # every gateway task on this async handler. The KEY is resolved
+                # in the same worker — it reads the config to find the member's
+                # persisted identity, which is another read this loop must not do.
+                await asyncio.to_thread(
+                    eventlog_hooks.emit_for_member,
+                    name,
+                    MEMBER_CONFIG,
+                    {**_ev_after, "changed": _ev_changed},
+                )
+        except Exception:
+            logger.debug("member/config event-log hook failed", exc_info=True)
     # Compared, not merely "the body carried the field": the crew form sends
     # reasoning_effort on every save (that is what makes clearing a pin possible)
     # and refresh_defaults drains the warm pool, so refreshing on presence would

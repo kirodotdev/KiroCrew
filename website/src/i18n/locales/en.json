@@ -7086,6 +7086,8 @@
     "membersPage": {
       "agent_template": "Agent template",
       "configuration": "Configuration",
+      "contributed_empty": "Nothing to show yet",
+      "contributed_more": "+{{count}} more",
       "crew_summary": "Crew summary",
       "details": "Details",
       "edit_in_crew_manager": "Edit in crew manager",
@@ -7173,6 +7175,7 @@
       "patrol_stopped_cycle_cap": "Reached its wake limit.",
       "patrol_stopped_runtime_budget": "Reached its time budget.",
       "patrol_stopped_approval_stalled": "Stopped waiting for a tool approval in this conversation.",
+      "patrol_stopped_interrupted": "Interrupted by a restart.",
       "patrol_last_wake_ago": "Last wake {{when}}",
       "patrol_none": "No patrol scheduled.",
       "patrol_error": "Couldn't load this member's patrol status.",

@@ -5,6 +5,7 @@ import, so pod isolation and test isolation both keep working)::
 
     <data home>/crew-log/crews/<store name>/log.jsonl
     <data home>/crew-log/sessions/<store name>/log.jsonl
+    <data home>/crew-log/members/<store name>/log.jsonl
 
 ``<store name>`` is the readable-plus-digest fold of the unit id that
 ``session_ledger`` and ``work_ledger`` already use, and the raw id lives in the
@@ -85,6 +86,7 @@ from kiro_crew.crew_log.lease import acquire as acquire_lease
 from kiro_crew.crew_log.lease import release as release_lease
 from kiro_crew.crew_log.schema import (
     KIND_CREW,
+    KIND_MEMBER,
     KIND_SESSION,
     MAX_ENTRY_BYTES,
     Entry,
@@ -133,7 +135,11 @@ _LOCK_FILE = ".lock"
 _ROOT_LEAF = "crew-log"
 
 #: Directory under :data:`_ROOT_LEAF` that holds each kind's units.
-_ROOT_DIR: dict[str, str] = {KIND_CREW: "crews", KIND_SESSION: "sessions"}
+_ROOT_DIR: dict[str, str] = {
+    KIND_CREW: "crews",
+    KIND_SESSION: "sessions",
+    KIND_MEMBER: "members",
+}
 
 #: How much of the file's end a tail read covers. One maximum-size entry plus
 #: slack, so the newest complete line is inside the window even when it is the
@@ -166,6 +172,17 @@ def now_ms() -> int:
 # --------------------------------------------------------------------------- #
 # Paths
 # --------------------------------------------------------------------------- #
+
+
+def crew_log_tree_root() -> Path:
+    """The one fenced tree every crew log and its sidecars live under.
+
+    Both fences name this leaf and nothing else: the file-tool gate
+    (``security.paths``) and the sandbox mask (``sandbox._CREW_HIDDEN_LEAVES``).
+    Anything that is AUTHORITY for what a dashboard renders belongs beneath it,
+    so it inherits both without a third entry to keep in step.
+    """
+    return data_home() / _ROOT_LEAF
 
 
 def crew_log_root(kind: str) -> Path:
@@ -681,6 +698,56 @@ def read_head(path: Path) -> "tuple[dict[str, Any] | None, Entry | None, bool]":
         return header, None, False
     entry = None if parsed is None else Entry.from_dict(parsed)
     return header, entry, True
+
+
+def unit_ids(kind: str) -> list[str]:
+    """Every unit id of *kind* that proves its own identity, sorted.
+
+    The directory name is the readable-plus-digest fold and the fold is not
+    reversible, so the id cannot be read off the listing -- it comes from each
+    unit's HEADER, and only when that header's id folds back to the directory it
+    was found in. That is the same refusal :func:`unit_header_slot` makes, for the
+    same reason: a directory carrying another unit's id would otherwise be
+    enumerated as that other unit.
+
+    A directory that cannot be proved is SKIPPED rather than raising, because a
+    caller listing units wants the ones it can act on -- one unreadable unit must
+    not make the roster unlistable. An absent root is an empty list, not an error.
+    """
+    require_kind(kind)
+    try:
+        root = _checked_crew_log_root(kind)
+        children = sorted(root.iterdir())
+    except (CrewLogError, OSError):
+        return []
+    out: list[str] = []
+    for child in children:
+        try:
+            if is_link(child) or not child.is_dir():
+                continue
+            segments = [
+                (first, grandchild)
+                for grandchild in child.iterdir()
+                if (first := _segment_first_seq(grandchild)) is not None
+            ]
+            if not segments:
+                continue
+            segments.sort(key=lambda pair: pair[0])
+            raw_header = _read_header_line(segments[0][1])
+            if raw_header is None:
+                continue
+            parsed = _parses_to_object(raw_header)
+        except (OSError, ValueError):
+            continue
+        if not parsed:
+            continue
+        own_id = parsed.get("id")
+        if not isinstance(own_id, str) or not own_id:
+            continue
+        if _store_name(own_id) != child.name:
+            continue
+        out.append(own_id)
+    return sorted(out)
 
 
 def _remove_unit_contents(directory: Path) -> "tuple[int, int]":

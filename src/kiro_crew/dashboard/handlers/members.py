@@ -283,6 +283,83 @@ async def api_members(request: web.Request) -> web.Response:
         if stopped:
             row["last_message_stopped"] = True
 
+    # Per-member event-log projections + lazy config reconcile. Off-loop
+    # because ensure/append/snapshot are synchronous file IO (one fsync per
+    # append). Best-effort: a logging fault never breaks the roster, so a
+    # member whose log cannot be reconciled falls back to an empty projection
+    # rather than failing the endpoint. The config-derived row fields are
+    # sourced from the reconciled roster view — after reconcile they equal the
+    # live config, so a hand-edited config is corrected in the log AND the row
+    # stays byte-identical to what it would have carried straight from cfg.
+    agent_cfgs = {row["name"]: cfg.agents.get(row["name"]) for row in rows}
+
+    def _project_rows() -> dict[str, dict]:
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.contrib import get_store
+        from kiro_crew.eventlog.service import UNIT_KIND, get_service
+
+        svc = get_service()
+        store = get_store()
+        out: dict[str, dict] = {}
+        for row in rows:
+            slug = row["slug"]
+            try:
+                svc.ensure(slug, row["name"])
+                snap = svc.snapshot(slug)
+                values = snap.get("values", {}) if isinstance(snap, dict) else {}
+                agent_cfg = agent_cfgs.get(row["name"])
+                if agent_cfg is not None:
+                    eventlog_hooks.reconcile_member_config(
+                        slug, row["name"], agent_cfg, values.get("roster", {})
+                    )
+                    # Re-snapshot only when the reconcile appended (the roster
+                    # config fields would otherwise be stale for this response).
+                    snap = svc.snapshot(slug)
+                out[slug] = snap if isinstance(snap, dict) else {"asOfSeq": -1, "values": {}}
+            except Exception:
+                logger.debug("member projections failed for %r", slug, exc_info=True)
+                out[slug] = {"asOfSeq": -1, "values": {}}
+            # Contributed rows sit in the SAME `values` map as the built-in keys,
+            # so a client needs no second code path to receive them (contribution
+            # protocol §5). Their seqs go in a sibling `seqs` map because a
+            # contributed row's seq is its OWN fold position, not this response's
+            # `asOfSeq`: seeding one at `asOfSeq` would make the store's
+            # higher-seq-wins rule drop the contributor's next live push.
+            try:
+                external = store.values(UNIT_KIND, slug)
+            except Exception:
+                logger.debug("contributed projections failed for %r", slug, exc_info=True)
+                continue
+            if not external:
+                continue
+            block = out[slug]
+            block.setdefault("values", {})
+            seqs: dict[str, int] = block.setdefault("seqs", {})
+            schemas: dict[str, dict] = block.setdefault("schemas", {})
+            for key, ext in external.items():
+                if ext.seq < 0 and ext.value is None:
+                    # A schema published before the first fold: nothing to render.
+                    continue
+                block["values"][key] = ext.value
+                seqs[key] = ext.seq
+                if ext.schema is not None:
+                    schemas[key] = ext.schema
+            if not schemas:
+                block.pop("schemas", None)
+        return out
+
+    projections = await asyncio.to_thread(_project_rows)
+    # Same network-boundary redaction as the /history read and the projection
+    # WS push: a projection block carries agent-authored free-text (an activity
+    # record's `project`, message previews) and `svc.snapshot()` returns it raw,
+    # so the credential + exfiltration-URL chain has to run before it crosses to
+    # the browser or the roster list leaks what the sibling reads scrub.
+    from kiro_crew.eventlog.service import _redact_projection_value
+
+    for row in rows:
+        block = projections.get(row["slug"], {"asOfSeq": -1, "values": {}})
+        row["projections"] = _redact_projection_value(block)
+
     return web.json_response({"members": rows})
 
 
@@ -668,6 +745,19 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 },
                 status=500,
             )
+        # Record the binding in the member's append-only log. The trust-file
+        # write above is the security fence and stays authoritative; this is
+        # the durable projection input for the roster's slot_key. Best-effort
+        # and off-loop (ensure/append are synchronous file IO); a logging fault
+        # never fails a binding the fence already persisted.
+
+        def _emit_binding() -> None:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import MEMBER_BINDING
+
+            eventlog_hooks.emit(slug, member_name, MEMBER_BINDING, {"slot_key": slot.key})
+
+        await asyncio.to_thread(_emit_binding)
 
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
 
@@ -710,7 +800,38 @@ async def api_member_activity(request: web.Request) -> web.Response:
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
 
-    entries = await asyncio.to_thread(members_mod.read_activity, slug)
+    # Source the records from the member's append-only log: newest-first
+    # ACTIVITY_RECORD events, unwrapped to the record dict each carries. The
+    # rest of this handler (member filter, ts parse, sort, cap, day counts) is
+    # unchanged and runs on the same record dicts ``record_activity`` writes.
+    # Reversed to OLDEST-first so the ``idx`` tie-break below stays append
+    # order — the same order the former ``read_activity`` returned — which is
+    # what breaks same-second ties deterministically.
+    def _read_activity_records() -> list[dict]:
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import ACTIVITY_RECORD
+
+        svc = get_service()
+        # No pre-filter limit. A limit here counts events of EVERY type, and the
+        # ACTIVITY_RECORD filter runs after, so a member whose log holds more
+        # newer message or patrol events than the window shows an EMPTY drawer
+        # while `capped` below reports false -- the records are on disk, the
+        # window simply never reached them. The display cap still bounds the
+        # response; what it must not do is decide which events get to be seen.
+        #
+        # This is not an unbounded read: history() calls _ensure_loaded() and
+        # filters the in-memory event list, so every call holds the whole log
+        # regardless of limit. `limit` slices the result, it does not bound the
+        # load. Bounding the load itself belongs to the streaming fold in the
+        # event log, not here, where a limit only loses records it has already
+        # paid to read.
+        events = svc.history(slug, before=None, limit=None)
+        records = [
+            e.get("data") or {} for e in reversed(events) if e.get("type") == ACTIVITY_RECORD
+        ]
+        return [r for r in records if isinstance(r, dict)]
+
+    entries = await asyncio.to_thread(_read_activity_records)
 
     def _sanitize(text: str) -> str:
         # Same redaction chain the roster's message preview uses: a project
@@ -764,6 +885,91 @@ async def api_member_activity(request: web.Request) -> web.Response:
             "entries": [r[2] for r in rows[:_ACTIVITY_LIMIT]],
         }
     )
+
+
+async def api_member_history(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/history?before=<seq>&limit=<n> — raw event page.
+
+    A newest-first page of the member's append-only log envelopes, for a
+    debug/timeline view over the durable facts (config, binding, rules,
+    messages, activity, slot + patrol lifecycle). Same owner gating as
+    :func:`api_member_activity`: app tokens are denied with the existence-
+    hiding 404, dashboard callers pass through.
+
+    ``limit`` (query, optional) is clamped to 1..200 (default 50); a
+    non-integer or out-of-range value is refused with a coded 400. ``before``
+    (query, optional) pages older: only events with ``seq < before`` are
+    returned. Returns ``{"slug", "events": [...newest first...], "lastSeq"}``.
+    """
+    denied = await _deny_app_caller(request, "members.history")
+    if denied is not None:
+        return denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    raw_limit = request.query.get("limit", "")
+    if raw_limit == "":
+        limit = 50
+    else:
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            return web.json_response(
+                {"error": "limit must be an integer 1..200", "code": "invalid_limit"}, status=400
+            )
+        if limit < 1 or limit > 200:
+            return web.json_response(
+                {"error": "limit must be 1..200", "code": "invalid_limit"}, status=400
+            )
+    raw_before = request.query.get("before", "")
+    before: int | None = None
+    if raw_before != "":
+        try:
+            before = int(raw_before)
+        except ValueError:
+            return web.json_response(
+                {"error": "before must be an integer", "code": "invalid_before"}, status=400
+            )
+
+    def _read() -> tuple[list, int]:
+        from kiro_crew.eventlog.service import get_service
+
+        svc = get_service()
+        return svc.history(slug, before=before, limit=limit), svc.last_seq(slug)
+
+    events, last_seq = await asyncio.to_thread(_read)
+
+    # Same network-boundary redaction the sibling ``/activity`` route runs, but
+    # over the raw envelopes this timeline returns. An event's ``data`` carries
+    # operator-supplied free text -- ``project`` (an activity record's path, which
+    # can embed a credential or presigned URL), plus ``text`` (rules), ``preview``
+    # (a message), ``reason``, and any other string an activity record holds. The
+    # ``/activity`` route redacts the ``project``/text it surfaces; this response
+    # crosses the same boundary, so it must redact the same class of value or it
+    # leaks what its sibling protects. Redact every string in each event's
+    # ``data`` through the shared chain (order is trivial today -- nothing here
+    # truncates -- but the shared chain means a future cap cannot split a token
+    # past the patterns).
+    # The SHARED redactor, not a local copy: this one redacts dict KEYS as well
+    # as values, which is what a local values-only pass got wrong. A contributor
+    # granted `contributions.events` chooses its own `data` keys, so a
+    # credential- or exfiltration-URL-shaped KEY crossed to the browser here
+    # while the three sibling reads (the catch-up GET, the fold broadcast and the
+    # projection push) all scrubbed it. One function, one behaviour at every
+    # egress, and it is depth-bounded so a deep payload cannot make it raise.
+    from kiro_crew.eventlog.service import _redact_projection_value
+
+    redacted_events = []
+    for event in events:
+        if isinstance(event, dict) and isinstance(event.get("data"), dict):
+            event = {**event, "data": _redact_projection_value(event["data"])}
+        redacted_events.append(event)
+
+    return web.json_response({"slug": slug, "events": redacted_events, "lastSeq": last_seq})
 
 
 async def api_member_rules_get(request: web.Request) -> web.Response:
@@ -956,6 +1162,18 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "could not persist rules", "code": "rules_write_failed"}, status=500
         )
+
+    # Record the rules change in the member's append-only log. The trust-file
+    # write above is the security fence and stays authoritative; this is the
+    # durable event so the log reflects the current rules text. Best-effort and
+    # off-loop; a logging fault never fails a save the fence already persisted.
+    def _emit_rules() -> None:
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import MEMBER_RULES
+
+        eventlog_hooks.emit(slug, member, MEMBER_RULES, {"text": rules})
+
+    await asyncio.to_thread(_emit_rules)
 
     # Same audit posture as the GET: a successful boundary WRITE is the event
     # an owner most needs a trace of — it is the moment the member's safety

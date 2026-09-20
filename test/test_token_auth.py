@@ -4073,3 +4073,63 @@ async def test_no_refresh_link_expires_a_refresh_cookie_the_browser_already_had(
     # Present in the response, but as an EXPIRY (max-age=0) — not left alone.
     assert stale in resp.cookies
     assert int(resp.cookies[stale]["max-age"]) == 0
+
+
+class TestWarmRechecksAfterItsHop:
+    """A lifecycle event during the hop must not hand the manifest read back.
+
+    Both scope caches key on the grant generation, and an app update or a revoke
+    advances it -- which makes them cold again. If that lands while the warm hop
+    is in flight, warming once and returning leaves the sync scope check to read
+    the manifest on the event loop, the exact I/O this function moves off it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_generation_bump_during_the_hop_is_re_resolved(self, monkeypatch):
+        from kiro_crew.dashboard import token_auth
+
+        cold_reads: list[int] = []
+        resolves: list[int] = []
+
+        def fake_cold(app_name: str) -> bool:
+            cold_reads.append(1)
+            # Cold, then cold again (the bump landed during the hop), then warm.
+            return len(cold_reads) <= 2
+
+        monkeypatch.setattr(token_auth, "_app_scope_is_cold", fake_cold)
+        monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda app: resolves.append(1) or ())
+
+        await token_auth.warm_app_scope("some-app")
+
+        assert len(resolves) >= 2, (
+            "the warm resolved once and returned while the caches were cold again, "
+            f"so the sync read happens on the loop: {len(resolves)} resolve(s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_warm_cache_costs_no_hop(self, monkeypatch):
+        """The fast path is unchanged: no executor hop when nothing is cold."""
+        from kiro_crew.dashboard import token_auth
+
+        resolves: list[int] = []
+        monkeypatch.setattr(token_auth, "_app_scope_is_cold", lambda app: False)
+        monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda app: resolves.append(1) or ())
+
+        await token_auth.warm_app_scope("some-app")
+
+        assert resolves == [], "a warm cache still paid for an executor hop"
+
+    @pytest.mark.asyncio
+    async def test_a_generation_that_never_settles_is_bounded(self, monkeypatch):
+        """Churn must not hold the request open: the attempts are capped."""
+        from kiro_crew.dashboard import token_auth
+
+        resolves: list[int] = []
+        monkeypatch.setattr(token_auth, "_app_scope_is_cold", lambda app: True)
+        monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda app: resolves.append(1) or ())
+
+        await token_auth.warm_app_scope("some-app")
+
+        assert len(resolves) == token_auth._SCOPE_WARM_ATTEMPTS, (
+            "an always-cold cache did not stop at the attempt cap: " f"{len(resolves)} resolve(s)"
+        )

@@ -526,6 +526,44 @@ _CRON_POSTTOKEN_CONTINUE_MSG = _TRANSIENT_CONTINUE_MSG
 
 logger = logging.getLogger(__name__)
 
+
+def _append_then_publish(
+    emit: Callable[[], None],
+    publish: Callable[[], None],
+) -> None:
+    """Append to the durable log, THEN publish the frame. Publish either way.
+
+    The order is the point. A frame published before its append is a transition
+    every subscriber has already acted on and the log can still lose, so a reader
+    of the log and a reader of the socket disagree about what happened and only
+    the socket was right.
+
+    The publish is conditional on the append. Withholding it leaves every
+    subscriber on the state it already holds, so the live view goes stale, never
+    blank, and the next successful append restores it. Publishing regardless
+    would buy availability that is not at risk, and pay for it in a permanent
+    disagreement between the log and what clients were told.
+
+    Module level, and taking both sides as callables, so the order is a property
+    of one named function that a test can drive rather than of a closure buried in
+    an observer.
+    """
+    try:
+        emit()
+    except Exception:
+        # No publish. A frame sent after a failed append is a transition every
+        # subscriber acts on and the log never held, so the ledger and the
+        # socket disagree permanently and only the socket is believed.
+        # Withholding it leaves subscribers on the state they already have,
+        # which the next successful append republishes -- stale and recoverable
+        # instead of divergent and durable.
+        #
+        # error, not debug: this is a dropped durable write.
+        logger.error("event-log append failed; withholding the patrol publish", exc_info=True)
+        return
+    publish()
+
+
 # Full chat turn timeout — tool calls, multi-step reasoning, spawning.
 # More generous than INJECTION_TIMEOUT (default 900s, tunable via
 # KIROCREW_INJECTION_TIMEOUT) which only covers a single injected continuation turn.
@@ -7832,14 +7870,102 @@ class GatewayOrchestrator:
                     if is_structured_monitor_loop(loop)
                     else self.dashboard_state.broadcast_ws
                 )
-                broadcast(
-                    "autonudge_state",
-                    {
-                        "event": event,
-                        "slot": loop.slot_key,
-                        "loop": loop_payload,
-                    },
-                )
+                _frame = {
+                    "event": event,
+                    "slot": loop.slot_key,
+                    "loop": loop_payload,
+                }
+
+                def _publish(_b: Any = broadcast, _f: dict = _frame) -> None:
+                    _b("autonudge_state", _f)
+
+                # Per-member event log: a member's DM-slot patrol started or
+                # stopped. The log write is SEQUENCED BEFORE the publish, so a
+                # subscriber never sees a patrol transition the durable log does
+                # not already hold -- a frame published ahead of the append is a
+                # transition every client acted on and the audit trail can lose
+                # if the process ends in between.
+                #
+                # Three constraints meet here and one shape satisfies all three.
+                # The emit fsyncs, so it may not run on the gateway loop. The
+                # ordering of a start/stop pair must be preserved, so it belongs
+                # on the single-worker member-log writer. And the publish must
+                # follow the append. Submitting both as ONE unit to that writer
+                # gives all three by construction: the worker runs units in
+                # submission order, and each unit appends before it publishes.
+                #
+                # The publish is NOT conditional on the append succeeding. The
+                # log is additive, so a disk fault there must not also blank the
+                # live patrol roster; what the ordering buys is that the write is
+                # finished being attempted before anyone is told.
+                _publish_arranged = False
+                try:
+                    import asyncio as _asyncio
+
+                    from kiro_crew import eventlog_hooks
+                    from kiro_crew.eventlog.types import PATROL_STARTED, PATROL_STOPPED
+
+                    _pslug = eventlog_hooks.member_slug_for_slot(loop.slot_key)
+                    _etype2: str | None = None
+                    _edata: dict = {}
+                    if event == "added":
+                        _etype2, _edata = PATROL_STARTED, {"slot_key": loop.slot_key}
+                    elif event in ("removed", "expired"):
+                        _reason = getattr(loop, "stopped_reason", None) or event
+                        _etype2, _edata = (
+                            PATROL_STOPPED,
+                            {"slot_key": loop.slot_key, "reason": _reason},
+                        )
+                    if _pslug is not None and _etype2 is not None:
+                        _pslug_s: str = _pslug
+                        _etype_s: str = _etype2
+
+                        def _emit_then_publish(
+                            slug: str = _pslug_s,
+                            etype: str = _etype_s,
+                            data: dict = _edata,
+                            publish: Any = _publish,
+                        ) -> None:
+                            # Order, and withholding the publish when the append
+                            # fails, both live in the helper, so this closure only
+                            # supplies the two sides. Runs off the gateway loop;
+                            # the fan-out hops back to the serving loop itself
+                            # when it originates on a worker thread.
+                            # emit_strict, not emit: the helper withholds the
+                            # publish when the append raises, and emit is
+                            # best-effort by contract -- it logs at debug and
+                            # returns, so the guard would never see a failure and
+                            # every transition would publish regardless.
+                            _append_then_publish(
+                                lambda: eventlog_hooks.emit_strict(slug, None, etype, data),
+                                publish,
+                            )
+
+                        try:
+                            _loop = _asyncio.get_running_loop()
+                            # The member-log writer, not the default executor: a
+                            # start/stop pair handed to a many-threaded pool can
+                            # land stopped-then-started, and the `wake` projection
+                            # folds from log order, so the roster would show a
+                            # patrol still armed after it stopped.
+                            from kiro_crew.dashboard.state import _member_log_executor
+
+                            _loop.run_in_executor(_member_log_executor(), _emit_then_publish)
+                            _publish_arranged = True
+                        except RuntimeError:
+                            # Either no running loop (not the serving thread) or a
+                            # writer already shut down. Both are safe to run
+                            # inline: the fsync stalls only this caller, and the
+                            # publish still follows the append.
+                            _emit_then_publish()
+                            _publish_arranged = True
+                except Exception:
+                    logger.debug("patrol event-log hook failed", exc_info=True)
+                if not _publish_arranged:
+                    # No patrol event to log for this transition, or the hook
+                    # itself failed before arranging one. The frame is owed to
+                    # subscribers either way.
+                    _publish()
 
         self.autonudge_svc = AutoNudgeService(
             base_dir=data_home(),
@@ -13431,6 +13557,36 @@ class GatewayOrchestrator:
         # early-returns so persisted loops are harmless until a dashboard
         # process takes over.
         await self._init_autonudge()
+
+        # Per-member event-log startup reconcile. Runs AFTER AutoNudge is
+        # constructed (it consults live loops to decide patrol closers) and
+        # after slot restoration: member slots are rehydrated lazily on demand
+        # rather than eagerly at boot, so ``state._slots`` here holds whatever
+        # the dashboard restored, and any driving.open slot not present is
+        # closed as interrupted. Off-loop (ensure/append are synchronous file
+        # IO) and best-effort — the helper swallows its own failures so a
+        # logging fault never blocks boot.
+        if self.dashboard_state is not None:
+            from kiro_crew import eventlog_hooks
+
+            async def _reconcile_members() -> None:
+                # Off-loop (ensure/append are synchronous file IO, and first-boot
+                # migration fsyncs per record) and best-effort. Run as a background
+                # task rather than an awaited boot step: it must not delay Slack
+                # availability or socket connect, and it is idempotent on reboot.
+                try:
+                    await asyncio.to_thread(
+                        eventlog_hooks.reconcile_members_at_startup,
+                        self._cfg,
+                        self.dashboard_state,
+                        self.autonudge_svc,
+                    )
+                except Exception:
+                    logger.debug("member event-log startup reconcile failed", exc_info=True)
+
+            # Retain a strong reference: a bare create_task is only weakly held,
+            # so the loop could garbage-collect it mid-run.
+            self._member_reconcile_task = asyncio.create_task(_reconcile_members())
 
         # Wire up event routing and interactive handlers
         init_interactions(self)

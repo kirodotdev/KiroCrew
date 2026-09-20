@@ -36,7 +36,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Plus, Route, Square, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
-import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
+import { api, type MemberActivityEntry, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
   memberActivityQueryKey,
@@ -98,7 +98,10 @@ import { loadColumnWidth } from '../../lib/columnWidth'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
+import { ContributedViews } from './ContributedViewCard'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { useMemberProjection, useMemberContributedViews, useMemberRosterViews } from '../../state/useMemberProjection'
+import type { RosterView, ActivityView, WakeView } from '../../state/memberProjectionTypes'
 
 /** The crew manager surface — the ONLY write path for member configuration.
  *  The explicit tab wins over CapabilitiesPage's remembered last tab. */
@@ -168,6 +171,11 @@ const ROSTER_MIN = 200
 const ROSTER_MAX = 420
 const ROSTER_DEFAULT = 264
 const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
+/** Size of the newest-first activity ring the members projection serves
+ *  (mirrors the backend's `_ACTIVITY_RING` in members_projections.py). A full
+ *  ring means older in-window events were dropped, so a count off it is a
+ *  floor, not exact. */
+const ACTIVITY_RING = 50
 /** The permanent first tab of the member's side panel. Its id is what
  *  `usePanelTabs` stores as the strip's focus while it is selected, so it must
  *  not collide with a chat `TabKind` — `'summary'` is the chat page's
@@ -305,11 +313,8 @@ const PATROL_STOPPED_REASON: Record<string, string> = {
   cycle_cap: 'pages.membersPage.patrol_stopped_cycle_cap',
   runtime_budget: 'pages.membersPage.patrol_stopped_runtime_budget',
   approval_stalled: 'pages.membersPage.patrol_stopped_approval_stalled',
+  interrupted: 'pages.membersPage.patrol_stopped_interrupted',
 }
-/** Floor under the websocket-driven invalidation of the loop registry: frames
- *  fire only on change, so a frame lost to a dropped socket would otherwise
- *  leave a stale verdict on screen indefinitely. One minute bounds that. */
-const PATROL_REFRESH_MS = 60_000
 /** How often the "next wake in …" countdown in the drawer re-reads the clock.
  *  Coarser than the popover's per-second tick on purpose: the drawer line is
  *  an at-a-glance status, and a per-second re-render of the whole drawer for
@@ -426,6 +431,238 @@ function MemberScheduleDialog({ member, agentTemplate, saving, onSavingChange, o
   )
 }
 
+/** i18n translate function, taken from the hook so the row need not re-derive
+ *  its type. */
+type TFn = ReturnType<typeof useTranslation>['t']
+
+/** One roster row. Extracted so `useMemberProjection` is called once PER ROW
+ *  (a hook cannot run inside the parent's `.map`), letting a `member_projection`
+ *  frame re-render just this row. The projected roster view overrides the
+ *  server row field-by-field when present; a field the projection omits (or a
+ *  gateway with no projections block) falls back to the row. Presence
+ *  (`running`) and the driving list stay on live slots in the parent and are
+ *  not projected here. */
+function MemberRow({
+  m,
+  t,
+  activeName,
+  openMember,
+  toggleStar,
+  starPending,
+  slotKeyOf,
+  isRunning,
+  isUnread,
+  activePatrolOf,
+  reduceMotion,
+  scrollActiveRowIntoView,
+}: {
+  m: MemberRosterRow
+  t: TFn
+  activeName: string
+  openMember: (m: MemberRosterRow) => void
+  toggleStar: (m: MemberRosterRow) => void
+  starPending: Set<string>
+  slotKeyOf: (m: MemberRosterRow) => string
+  isRunning: (m: MemberRosterRow) => boolean | undefined
+  isUnread: (m: MemberRosterRow) => boolean
+  activePatrolOf: (m: MemberRosterRow) => AutoNudgeLoop | undefined
+  reduceMotion: boolean | null
+  scrollActiveRowIntoView: (el: HTMLButtonElement | null) => void
+}) {
+  const roster = useMemberProjection<RosterView>(m.slug, 'roster')
+  // The projected view over the server row: projection wins field-by-field
+  // when present, so slotKeyOf / isRunning / isUnread and the display read the
+  // pushed value. `running` is intentionally NOT overridden — it is live
+  // presence, resolved from slots in the parent.
+  const view: MemberRosterRow = roster
+    ? {
+        ...m,
+        kiro_agent: roster.kiro_agent ?? m.kiro_agent,
+        workspace: roster.workspace ?? m.workspace,
+        memory_store: roster.memory_store ?? m.memory_store,
+        model: roster.model ?? m.model,
+        source: roster.source ?? m.source,
+        starred: roster.starred ?? m.starred,
+        avatar: roster.avatar ?? m.avatar,
+        slot_key: roster.slot_key ?? m.slot_key,
+        last_active_ts: roster.last_active_ts ?? m.last_active_ts,
+        last_message: roster.last_message ?? m.last_message,
+      }
+    : m
+  return (
+      <li key={view.name} className="group/row relative">
+        {/* ChatSidebar's own row recipe (components/listShell), so the
+            two conversation lists read as one family; pr-8 widens the
+            right padding over ROW_BOX_CLS's pr-3 to hold the star. The
+            star is a SIBLING of the row button, not a child: a button
+            inside a button is invalid HTML and breaks keyboard
+            activation. It is absolutely placed over the row's right
+            padding so the row keeps its single click target and the
+            label its width. */}
+        <button
+          onClick={() => openMember(view)}
+          // The open row keeps itself in view: a member opened by URL
+          // (a deep link, the crew manager's post-create landing) can sit
+          // below the fold of a long roster, and a thread with no visible
+          // row looks like a member that was never added (#9513).
+          ref={view.name === activeName ? scrollActiveRowIntoView : undefined}
+          className={cn(
+            'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
+            ROW_BOX_CLS, 'pr-8',
+            view.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
+          )}
+          aria-current={view.name === activeName ? 'true' : undefined}
+        >
+          <span className="relative shrink-0">
+            {/* The face reacts: it animates while the member works and
+                flashes its finished / failed expression on the turn's
+                trailing edge. The dot below stays presence-only — a
+                finished turn is not presence. */}
+            <CrewStateAvatar
+              seed={view.name}
+              avatar={view.avatar}
+              slotKey={slotKeyOf(view)}
+              running={!!isRunning(view)}
+              size={36}
+              working="subtle"
+            />
+            {/* Presence dot renders only while the member is working —
+                an idle member shows nothing rather than a gray dot,
+                which read as a broken/disabled state. */}
+            {isRunning(view) && (
+              <span
+                className="absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg bg-ok"
+                aria-hidden="true"
+                data-testid="member-presence-dot"
+              />
+            )}
+            {/* Patrol badge — the member has an ACTIVE auto-nudge loop
+                on its own thread. Rendered only while the loop patrols:
+                a stopped loop and a never-armed member both show
+                nothing, because "not patrolling" is a member's resting
+                state, not an incident — a standing warn mark on an
+                idle avatar read as "something is broken", and the
+                drawer's block already spells a stopped loop's reason.
+                Top-right corner of the avatar, the composer's goal-chip
+                glyph on a solid accent fill (the presence dot's own
+                idiom — an outline read as nothing at a glance): a
+                different corner from the presence dot (bottom-right,
+                ok-green, "working now") and a different edge from the
+                row's right-side markers, so all of them can show at
+                once without covering each other. Mount/unmount is
+                animated (the badge fades out when the loop ends rather
+                than vanishing): a badge that pops in or out mid-glance
+                is what a state change looks like when it is not a
+                glitch. Under prefers-reduced-motion the tween is
+                skipped and the badge cuts straight to its new state. */}
+            <AnimatePresence initial={false}>
+              {(() => {
+                const lp = activePatrolOf(view)
+                if (!lp) return null
+                // The tooltip spells the count the drawer's way ("3 of 24"
+                // / "61 · no limit"): the compact "3/24" alone read as a date.
+                const cycle =
+                  lp.max_cycles > 0
+                    ? t('pages.membersPage.patrol_cycles_of', { n: lp.cycle_count, max: lp.max_cycles })
+                    : t('pages.membersPage.patrol_cycles_unlimited', { n: lp.cycle_count })
+                const label = t('pages.membersPage.patrol_badge', { cycle })
+                return (
+                  <motion.span
+                    key="patrol"
+                    initial={reduceMotion ? false : { opacity: 0, scale: 0.6 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.6 }}
+                    transition={reduceMotion ? { duration: 0 } : { duration: 0.15, ease: [0.2, 0, 0, 1] }}
+                    className="absolute -right-1 -top-1 w-4 h-4 rounded-full border-2 border-bg flex items-center justify-center bg-accent text-accent-fg"
+                    role="img"
+                    aria-label={label}
+                    title={label}
+                    data-testid="member-patrol-dot"
+                    data-state="active"
+                  >
+                    <Goal size={10} aria-hidden="true" />
+                  </motion.span>
+                )
+              })()}
+            </AnimatePresence>
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{view.name}</span>
+            {/* Last-message preview, like a session row — presence
+                already rides the avatar dot, so a textual Idle/Working
+                label says nothing the dot does not. A "Stopped" chip
+                leads the preview when the thread's NEWEST event is a
+                Stop press: the server skips the stop card's JSON, so the
+                preview is the last conversational line, which reads as
+                ongoing work on a thread the user has stopped — the chip
+                is the honest marker over it. It is localized HERE, not
+                sent as a word from the server, whose preview is computed
+                without the client's locale. The chip is `shrink-0` so
+                the preview, not the label, is what truncates. The server
+                flag is false once a newer real message lands, so the chip
+                cannot outlive the stop. */}
+            <span className={`flex items-center gap-1 ${ROW_STATUS_CLS} text-muted min-w-0`}>
+              {view.last_message_stopped && (
+                <span
+                  className="inline-flex items-center gap-0.5 shrink-0 font-medium text-danger"
+                  data-testid="member-stopped-indicator"
+                >
+                  <Square size={9} fill="currentColor" className="lucide-inline" aria-hidden="true" />
+                  {t('pages.membersPage.stopped_indicator')}
+                </span>
+              )}
+              <span className="block truncate min-w-0">{view.last_message || '\u00a0'}</span>
+            </span>
+          </span>
+          {/* Unread marker on the row's right edge — the IM convention
+              (and where the rail badge sits), vertically centered by the
+              row's items-center. Accent-filled w-2 h-2 like ChatSidebar's
+              unread dot, with a real accessible name: nothing else on
+              the row says "unread". The left side is taken — presence
+              rides the avatar. */}
+          {isUnread(view) && (
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ background: 'var(--accent)' }}
+              role="img"
+              aria-label={t('pages.membersPage.unread_message')}
+              title={t('pages.membersPage.unread_message')}
+              data-testid="member-unread-dot"
+            />
+          )}
+        </button>
+        {/* Star: always rendered when starred. Unstarred: visible below md
+            (touch has no hover or keyboard focus to reveal it), hover /
+            focus-revealed at md+ so a desktop roster stays quiet. Never
+            hidden from AT — opacity, not display. */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            toggleStar(view)
+          }}
+          aria-pressed={!!view.starred}
+          disabled={starPending.has(view.name)}
+          aria-label={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: view.name })}
+          title={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: view.name })}
+          // 24x24 minimum target (the icon is 13px): a touch that lands beside
+          // the glyph must hit the star, not the row button underneath.
+          className={`absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded hover:bg-bg-hover transition-opacity ${
+            view.starred
+              ? 'opacity-100 text-accent'
+              : 'md:opacity-0 md:group-hover/row:opacity-100 md:focus-visible:opacity-100 text-muted'
+          }`}
+          data-testid={`member-star-${view.slug}`}
+        >
+          <Star
+            size={13}
+            {...(view.starred ? { fill: 'var(--accent)', stroke: 'none' } : {})}
+          />
+        </button>
+      </li>
+  )
+}
+
 export default function MembersPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -440,9 +677,42 @@ export default function MembersPage() {
   // answered, answered, failed with no answer to fall back on — a refetch
   // error after a good read keeps showing the last roster.
   const rosterQuery = useQuery(membersRosterQuery)
-  const members = rosterQuery.data ?? EMPTY_ROSTER
+  const rows = rosterQuery.data ?? EMPTY_ROSTER
   const loaded = rosterQuery.data !== undefined || rosterQuery.isError
   const loadError = rosterQuery.data === undefined && rosterQuery.isError
+  // ONE source of truth for the roster fields the page derives from (starred
+  // count, the Starred filter, search, sort, source chips): the react-query
+  // rows merged with each member's pushed `roster` projection, projection
+  // fields winning field-by-field when present. Keying the projection read on
+  // the slug list means a `member_projection` frame flips the merged row here
+  // WITHOUT a roster refetch, so a page-level count/filter and the row's own
+  // star button never disagree. `running` is not projected — it stays live
+  // presence, resolved from slots.
+  const slugs = useMemo(() => rows.map((r) => r.slug), [rows])
+  const rosterViews = useMemberRosterViews(slugs)
+  const members = useMemo<MemberRosterRow[]>(
+    () =>
+      rows.map((r) => {
+        const v = rosterViews.get(r.slug)
+        if (!v) return r
+        // Field-by-field, like MemberRow: a value the projection OMITS
+        // (undefined) must not clobber the row's own field, so spreading the
+        // whole view is wrong — only defined projection fields win.
+        const merged: MemberRosterRow = { ...r }
+        for (const key of Object.keys(v) as (keyof RosterView)[]) {
+          // Identity fields are never taken from the projection: rows are keyed
+          // and selected by the exact crew NAME, and slug is lossy (two names
+          // can share one). The projection's own name/slug would rewrite a
+          // row's identity across a shared-slug pair (MemberRow excludes them
+          // for the same reason).
+          if (key === 'name' || key === 'slug') continue
+          const pv = v[key]
+          if (pv !== undefined) (merged as Record<string, unknown>)[key] = pv
+        }
+        return merged
+      }),
+    [rows, rosterViews],
+  )
   // Identity is the exact crew name (unique in the registry); the slug is not.
   const [activeName, setActiveName] = useState<string>('')
   // The member the LAST open asked for, written synchronously by `activate`.
@@ -581,7 +851,32 @@ export default function MembersPage() {
     () => members.find((m) => m.name === activeName),
     [members, activeName],
   )
-  const activeMemory = active ? memberMemoryDisplay(active) : 'unavailable'
+  // The active member's projected roster view over its server row: the drawer
+  // Configuration and header read config fields (kiro_agent/model/workspace/
+  // memory_store) and last_active_ts from the projection when present, the row
+  // otherwise. `running` stays live (isRunning), not projected.
+  const activeRoster = useMemberProjection<RosterView>(active?.slug, 'roster')
+  const activeView = useMemo<MemberRosterRow | undefined>(() => {
+    if (!active) return undefined
+    if (!activeRoster) return active
+    return {
+      ...active,
+      kiro_agent: activeRoster.kiro_agent ?? active.kiro_agent,
+      workspace: activeRoster.workspace ?? active.workspace,
+      memory_store: activeRoster.memory_store ?? active.memory_store,
+      model: activeRoster.model ?? active.model,
+      source: activeRoster.source ?? active.source,
+      starred: activeRoster.starred ?? active.starred,
+      avatar: activeRoster.avatar ?? active.avatar,
+      slot_key: activeRoster.slot_key ?? active.slot_key,
+      last_active_ts: activeRoster.last_active_ts ?? active.last_active_ts,
+      last_message: activeRoster.last_message ?? active.last_message,
+    }
+  }, [active, activeRoster])
+  // Read the memory-disclosure vocabulary off the projected view so a pushed
+  // memory_store frame updates the drawer copy without a roster refetch, the
+  // same way the config fields above do; falls back to the server row.
+  const activeMemory = activeView ? memberMemoryDisplay(activeView) : 'unavailable'
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,
   // which changes only when the cache does — a return to the page, a focus
@@ -727,13 +1022,24 @@ export default function MembersPage() {
   const committedOrderRef = useRef<{ sort: MemberSort; names: string[] }>({ sort, names: [] })
   const orderedMembers = useMemo(() => {
     const byName = new Map(members.map((m) => [m.name, m]))
+    // Recency for the sort comes from the RAW query rows, not the merged
+    // member: the pushed `roster` projection freezes last_active_ts at its
+    // baseline seq (a plain roster refetch re-seeds at the same seq and is
+    // dropped by higher-seq-wins), so sorting the merged value would hold the
+    // order stale across a membership change. The fresh row carries the
+    // authoritative last_active_ts a re-sort must read.
+    const tsByName = new Map(rows.map((r) => [r.name, r.last_active_ts ?? 0]))
     const prev = committedOrderRef.current
     const sameMembership =
       prev.sort === sort && prev.names.length === byName.size && prev.names.every((n) => byName.has(n))
-    const names = sameMembership ? prev.names : sortRoster(members, sort).map((m) => m.name)
+    // Sort on the raw-row recency (tsByName), not the projection-frozen merged
+    // value: sortRoster reads last_active_ts, and the merged member's is held
+    // stale by higher-seq-wins, so overlay the fresh row ts before sorting.
+    const forSort = members.map((m) => ({ ...m, last_active_ts: tsByName.get(m.name) ?? m.last_active_ts ?? 0 }))
+    const names = sameMembership ? prev.names : sortRoster(forSort, sort).map((m) => m.name)
     committedOrderRef.current = { sort, names }
     return names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m)
-  }, [members, sort])
+  }, [members, rows, sort])
   // Named apart from `rosterQuery` above: that one is the React Query READ of
   // the roster, this one is the user's filter/sort question asked of it.
   const rosterFilterQuery = useMemo<RosterQuery>(
@@ -1039,11 +1345,31 @@ export default function MembersPage() {
   })
   const activityLoading = activityQuery.data === undefined && !activityQuery.isError
   const activityError = activityQuery.data === undefined && activityQuery.isError
+  // Records come from the pushed activity projection so a new engagement
+  // re-renders the block without a refetch; the day-folding rendering (#9564)
+  // is unchanged — it is fed the projection's `recent` instead of the query
+  // result. The activity QUERY is kept solely for `capped`, which the
+  // projection does not carry (the floor markers below depend on it), and for
+  // the loading/error three-state the drawer keeps. When no projection is held
+  // (an older gateway), fall back to the query's own entries.
+  const activityView = useMemberProjection<ActivityView>(activeSlug, 'activity')
+  // Contributed `<app>/<key>` views for the open member. Nothing to fetch: they
+  // arrive in the same roster baseline and the same member_projection frames as
+  // the built-in keys, which is the whole point of §5 reusing that frame.
+  const contributedViews = useMemberContributedViews(activeSlug)
   const activeEntries = useMemo(
-    () => activityQuery.data?.entries ?? [],
-    [activityQuery.data],
+    () => (activityView?.recent as MemberActivityEntry[] | undefined) ?? activityQuery.data?.entries ?? [],
+    [activityView, activityQuery.data],
   )
-  const activityCapped = !!activityQuery.data?.capped
+  // A count is a floor ("N+") when the source may have dropped older in-window
+  // events. Two sources can do that: the query path sets `capped`, and the
+  // projection path serves a newest-first ring bounded at ACTIVITY_RING (the
+  // backend's `_ACTIVITY_RING`) — a full ring means older events fell off, so a
+  // busy member's tile must not assert its count as exact.
+  const fromProjectionRing = activityView?.recent !== undefined
+  const activityCapped =
+    !!activityQuery.data?.capped ||
+    (fromProjectionRing && activeEntries.length >= ACTIVITY_RING)
 
   // Wake sources — global lists (crons, webhook tokens, the default crew),
   // shared with the crew editor and the Schedule page through the same query
@@ -1354,7 +1680,6 @@ export default function MembersPage() {
   const patrolQuery = useQuery({
     queryKey: AUTONUDGE_LOOPS_QUERY_KEY,
     queryFn: () => api.autonudgeList(),
-    refetchInterval: PATROL_REFRESH_MS,
     refetchOnReconnect: true,
   })
   // `failed` is kept distinct from empty for the same reason the wake-sources
@@ -1392,6 +1717,14 @@ export default function MembersPage() {
     [patrolLoopOf],
   )
   const activePatrol = activeMemberKey ? patrol.loops[activeMemberKey] : undefined
+  // The armed/stopped verdict and the stop reason now come from the pushed
+  // `wake` projection, so a stop that lands re-renders the block without a
+  // poll — that is why patrolQuery no longer carries a refetchInterval. The
+  // patrolQuery is kept only for the DETAIL fields wake does not carry
+  // (interval, cycle counts, last/next fire, the instruction banner) and for
+  // the roster badge's cycle tooltip. `since` and `slot_key` on wake are not
+  // rendered here yet.
+  const activeWake = useMemberProjection<WakeView>(activeSlug || null, 'wake')
   // The live facts the status filters read, resolved per row the same way the
   // row's own markers are (isRunning / isUnread / activePatrolOf), so a filter
   // can never disagree with the dot it filters on.
@@ -1438,17 +1771,25 @@ export default function MembersPage() {
   // copy would be wrong then, since the roster is not empty.
   const filteredOut =
     loaded && !loadError && members.length > 0 && sortedMembers.length === 0 && !filter.trim()
-  // Which of the block's three verdicts to render. An active loop wins; a
-  // stopped loop keeps its reason visible rather than collapsing into
-  // "nothing scheduled" — that collapse is exactly how a dead patrol goes
-  // unnoticed. (A refused arm is a reserved fourth verdict: the registry
-  // contract names the field, but no backend emits it yet, so nothing here
-  // renders one.)
+  // Which of the block's three verdicts to render. Two sources, two roles:
+  // the live loop registry is PRESENCE — a loop it holds as active is active,
+  // full stop — while the pushed `wake` projection is the DURABLE record, so
+  // a stop (and its reason) survives the registry forgetting the loop. That
+  // is the case that used to read "nothing scheduled" after a restart killed
+  // a patrol mid-cycle; now the loader's synthesised stop is what renders.
   const patrolState: 'active' | 'stopped' | 'none' = activePatrol?.active
     ? 'active'
-    : activePatrol
+    : activeWake?.patrol === 'stopped'
       ? 'stopped'
-      : 'none'
+      : activePatrol
+        ? 'stopped'
+        : activeWake?.patrol === 'armed'
+          ? 'active'
+          : 'none'
+  // The stop reason feeds PATROL_STOPPED_REASON; from wake when it holds the
+  // stop, else the loop record's own field.
+  const patrolStoppedReason =
+    (activeWake?.patrol === 'stopped' ? activeWake.stopped_reason : undefined) ?? activePatrol?.stopped_reason
   // Clock for the "next wake" countdown, ticking only while the summary shows
   // an active loop — the same deadline-preserving reading the composer's goal
   // chip renders (see nextCycleText), on a coarser tick.
@@ -1855,176 +2196,21 @@ export default function MembersPage() {
             </li>
           )}
           {sortedMembers.map((m) => (
-            <li key={m.name} className="group/row relative">
-              {/* ChatSidebar's own row recipe (components/listShell), so the
-                  two conversation lists read as one family; pr-8 widens the
-                  right padding over ROW_BOX_CLS's pr-3 to hold the star. The
-                  star is a SIBLING of the row button, not a child: a button
-                  inside a button is invalid HTML and breaks keyboard
-                  activation. It is absolutely placed over the row's right
-                  padding so the row keeps its single click target and the
-                  label its width. */}
-              <button
-                onClick={() => openMember(m)}
-                // The open row keeps itself in view: a member opened by URL
-                // (a deep link, the crew manager's post-create landing) can sit
-                // below the fold of a long roster, and a thread with no visible
-                // row looks like a member that was never added (#9513).
-                ref={m.name === activeName ? scrollActiveRowIntoView : undefined}
-                className={cn(
-                  'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
-                  ROW_BOX_CLS, 'pr-8',
-                  m.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
-                )}
-                aria-current={m.name === activeName ? 'true' : undefined}
-              >
-                <span className="relative shrink-0">
-                  {/* The face reacts: it animates while the member works and
-                      flashes its finished / failed expression on the turn's
-                      trailing edge. The dot below stays presence-only — a
-                      finished turn is not presence. */}
-                  <CrewStateAvatar
-                    seed={m.name}
-                    avatar={m.avatar}
-                    slotKey={slotKeyOf(m)}
-                    running={!!isRunning(m)}
-                    size={36}
-                    working="subtle"
-                  />
-                  {/* Presence dot renders only while the member is working —
-                      an idle member shows nothing rather than a gray dot,
-                      which read as a broken/disabled state. */}
-                  {isRunning(m) && (
-                    <span
-                      className="absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg bg-ok"
-                      aria-hidden="true"
-                      data-testid="member-presence-dot"
-                    />
-                  )}
-                  {/* Patrol badge — the member has an ACTIVE auto-nudge loop
-                      on its own thread. Rendered only while the loop patrols:
-                      a stopped loop and a never-armed member both show
-                      nothing, because "not patrolling" is a member's resting
-                      state, not an incident — a standing warn mark on an
-                      idle avatar read as "something is broken", and the
-                      drawer's block already spells a stopped loop's reason.
-                      Top-right corner of the avatar, the composer's goal-chip
-                      glyph on a solid accent fill (the presence dot's own
-                      idiom — an outline read as nothing at a glance): a
-                      different corner from the presence dot (bottom-right,
-                      ok-green, "working now") and a different edge from the
-                      row's right-side markers, so all of them can show at
-                      once without covering each other. Mount/unmount is
-                      animated (the badge fades out when the loop ends rather
-                      than vanishing): a badge that pops in or out mid-glance
-                      is what a state change looks like when it is not a
-                      glitch. Under prefers-reduced-motion the tween is
-                      skipped and the badge cuts straight to its new state. */}
-                  <AnimatePresence initial={false}>
-                    {(() => {
-                      const lp = activePatrolOf(m)
-                      if (!lp) return null
-                      // The tooltip spells the count the drawer's way ("3 of 24"
-                      // / "61 · no limit"): the compact "3/24" alone read as a date.
-                      const cycle =
-                        lp.max_cycles > 0
-                          ? t('pages.membersPage.patrol_cycles_of', { n: lp.cycle_count, max: lp.max_cycles })
-                          : t('pages.membersPage.patrol_cycles_unlimited', { n: lp.cycle_count })
-                      const label = t('pages.membersPage.patrol_badge', { cycle })
-                      return (
-                        <motion.span
-                          key="patrol"
-                          initial={reduceMotion ? false : { opacity: 0, scale: 0.6 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.6 }}
-                          transition={reduceMotion ? { duration: 0 } : { duration: 0.15, ease: [0.2, 0, 0, 1] }}
-                          className="absolute -right-1 -top-1 w-4 h-4 rounded-full border-2 border-bg flex items-center justify-center bg-accent text-accent-fg"
-                          role="img"
-                          aria-label={label}
-                          title={label}
-                          data-testid="member-patrol-dot"
-                          data-state="active"
-                        >
-                          <Goal size={10} aria-hidden="true" />
-                        </motion.span>
-                      )
-                    })()}
-                  </AnimatePresence>
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{m.name}</span>
-                  {/* Last-message preview, like a session row — presence
-                      already rides the avatar dot, so a textual Idle/Working
-                      label says nothing the dot does not. A "Stopped" chip
-                      leads the preview when the thread's NEWEST event is a
-                      Stop press: the server skips the stop card's JSON, so the
-                      preview is the last conversational line, which reads as
-                      ongoing work on a thread the user has stopped — the chip
-                      is the honest marker over it. It is localized HERE, not
-                      sent as a word from the server, whose preview is computed
-                      without the client's locale. The chip is `shrink-0` so
-                      the preview, not the label, is what truncates. The server
-                      flag is false once a newer real message lands, so the chip
-                      cannot outlive the stop. */}
-                  <span className={`flex items-center gap-1 ${ROW_STATUS_CLS} text-muted min-w-0`}>
-                    {m.last_message_stopped && (
-                      <span
-                        className="inline-flex items-center gap-0.5 shrink-0 font-medium text-danger"
-                        data-testid="member-stopped-indicator"
-                      >
-                        <Square size={9} fill="currentColor" className="lucide-inline" aria-hidden="true" />
-                        {t('pages.membersPage.stopped_indicator')}
-                      </span>
-                    )}
-                    <span className="block truncate min-w-0">{m.last_message || '\u00a0'}</span>
-                  </span>
-                </span>
-                {/* Unread marker on the row's right edge — the IM convention
-                    (and where the rail badge sits), vertically centered by the
-                    row's items-center. Accent-filled w-2 h-2 like ChatSidebar's
-                    unread dot, with a real accessible name: nothing else on
-                    the row says "unread". The left side is taken — presence
-                    rides the avatar. */}
-                {isUnread(m) && (
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ background: 'var(--accent)' }}
-                    role="img"
-                    aria-label={t('pages.membersPage.unread_message')}
-                    title={t('pages.membersPage.unread_message')}
-                    data-testid="member-unread-dot"
-                  />
-                )}
-              </button>
-              {/* Star: always rendered when starred. Unstarred: visible below md
-                  (touch has no hover or keyboard focus to reveal it), hover /
-                  focus-revealed at md+ so a desktop roster stays quiet. Never
-                  hidden from AT — opacity, not display. */}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  toggleStar(m)
-                }}
-                aria-pressed={!!m.starred}
-                disabled={starPending.has(m.name)}
-                aria-label={t(m.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: m.name })}
-                title={t(m.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: m.name })}
-                // 24x24 minimum target (the icon is 13px): a touch that lands beside
-                // the glyph must hit the star, not the row button underneath.
-                className={`absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 rounded hover:bg-bg-hover transition-opacity ${
-                  m.starred
-                    ? 'opacity-100 text-accent'
-                    : 'md:opacity-0 md:group-hover/row:opacity-100 md:focus-visible:opacity-100 text-muted'
-                }`}
-                data-testid={`member-star-${m.slug}`}
-              >
-                <Star
-                  size={13}
-                  {...(m.starred ? { fill: 'var(--accent)', stroke: 'none' } : {})}
-                />
-              </button>
-            </li>
+            <MemberRow
+              key={m.name}
+              m={m}
+              t={t}
+              activeName={activeName}
+              openMember={openMember}
+              toggleStar={toggleStar}
+              starPending={starPending}
+              slotKeyOf={slotKeyOf}
+              isRunning={isRunning}
+              isUnread={isUnread}
+              activePatrolOf={activePatrolOf}
+              reduceMotion={reduceMotion}
+              scrollActiveRowIntoView={scrollActiveRowIntoView}
+            />
           ))}
         </ul>
         {/* Window-splitter between roster and thread: the same component as the
@@ -2282,8 +2468,8 @@ export default function MembersPage() {
                 <span className="text-ok">{t(delegatedOnly
                   ? 'pages.membersPage.drawer_delegated_working'
                   : 'pages.membersPage.drawer_working')}</span>
-              ) : active.last_active_ts ? (
-                <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
+              ) : (activeView ?? active).last_active_ts ? (
+                <span className="text-muted">{timeAgo((activeView ?? active).last_active_ts!)}</span>
               ) : null}
             </span>
           </div>
@@ -2497,17 +2683,29 @@ export default function MembersPage() {
                     )}
                   </dl>
                 </>
-              ) : patrolState === 'stopped' && activePatrol ? (
+              ) : patrolState === 'active' ? (
+                // Armed by a wake projection that arrived ahead of the loop
+                // record (the registry no longer polls, so the projection can
+                // lead). It carries no interval/cycle/next-wake detail, so we
+                // render the same "Patrolling" verdict as the full block rather
+                // than the full detail (which it cannot fill) or, worse, "No
+                // patrol scheduled." under the accent-lit patrol icon. Reusing
+                // patrol_active means the label does not flip when the loop
+                // record lands right after.
+                <div className="text-[11px] text-accent" data-testid="member-patrol-status">
+                  {t('pages.membersPage.patrol_active')}
+                </div>
+              ) : patrolState === 'stopped' ? (
                 <div className="text-[11px] text-muted" data-testid="member-patrol-status">
                   <span className="text-text">{t('pages.membersPage.patrol_stopped')}</span>
-                  {activePatrol.stopped_reason && (
+                  {patrolStoppedReason && (
                     <span className="block mt-0.5" data-testid="member-patrol-reason">
-                      {PATROL_STOPPED_REASON[activePatrol.stopped_reason]
-                        ? t(PATROL_STOPPED_REASON[activePatrol.stopped_reason])
-                        : activePatrol.stopped_reason}
+                      {PATROL_STOPPED_REASON[patrolStoppedReason]
+                        ? t(PATROL_STOPPED_REASON[patrolStoppedReason])
+                        : patrolStoppedReason}
                     </span>
                   )}
-                  {activePatrol.last_fire_ts > 0 && (
+                  {activePatrol && activePatrol.last_fire_ts > 0 && (
                     <span className="block mt-0.5" title={fmtDateTimeNumeric(activePatrol.last_fire_ts)}>
                       {t('pages.membersPage.patrol_last_wake_ago', { when: timeAgo(activePatrol.last_fire_ts) })}
                     </span>
@@ -2663,6 +2861,9 @@ export default function MembersPage() {
               )}
             </div>
           )}
+          {/* Contributed views render AFTER Configuration (see below), so a
+              chatty app adds to the drawer's tail rather than pushing the
+              member's own Wake sources and Configuration off-screen. */}
           <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center gap-1">
             <span className="flex-1">{t('pages.membersPage.wake_sources')}</span>
             {/* The one write this block offers: a new schedule bound to THIS
@@ -2796,14 +2997,19 @@ export default function MembersPage() {
             <ul className="list-none m-0 p-0 mb-4 space-y-1.5" data-testid="member-wake-sources">
               {/* An active patrol IS a wake source — the one this member set
                   for itself. Listing it here keeps the card from saying
-                  "Last wake 6m ago" above "Nothing wakes this member". */}
-              {patrolState === 'active' && activePatrol && (
+                  "Last wake 6m ago" above "Nothing wakes this member". The
+                  armed-projection case (no loop record yet) has no interval to
+                  show, so it lists the patrol without the "every N" detail
+                  rather than leaving the list empty under its heading. */}
+              {patrolState === 'active' && (
                 <li className="flex items-center gap-2 text-[11px]" data-testid="member-wake-patrol">
                   <Goal size={12} className="lucide-inline text-accent shrink-0" aria-hidden="true" />
                   <span className="min-w-0 truncate flex-1">{t('pages.membersPage.patrol_title')}</span>
-                  <span className="text-muted shrink-0">
-                    {t('pages.membersPage.wake_patrol_every', { every: intervalText(activePatrol.idle_secs) })}
-                  </span>
+                  {activePatrol && (
+                    <span className="text-muted shrink-0">
+                      {t('pages.membersPage.wake_patrol_every', { every: intervalText(activePatrol.idle_secs) })}
+                    </span>
+                  )}
                 </li>
               )}
               {wakeJobs.map((jb) => (
@@ -2838,23 +3044,23 @@ export default function MembersPage() {
               <dt className="w-24 shrink-0 text-muted">
                 {t('pages.membersPage.agent_template')}
               </dt>
-              <dd className="min-w-0 truncate">{active.kiro_agent || t('pages.membersPage.inherited')}</dd>
+              <dd className="min-w-0 truncate">{(activeView ?? active).kiro_agent || t('pages.membersPage.inherited')}</dd>
             </div>
             <div className="flex gap-2">
               <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.model')}</dt>
-              <dd className="min-w-0 truncate">{active.model || t('pages.membersPage.inherited')}</dd>
+              <dd className="min-w-0 truncate">{(activeView ?? active).model || t('pages.membersPage.inherited')}</dd>
             </div>
             <div className="flex gap-2">
               <dt className="w-24 shrink-0 text-muted">
                 {t('pages.membersPage.workspace')}
               </dt>
-              <dd className="min-w-0 truncate">{String(active.workspace ?? '')}</dd>
+              <dd className="min-w-0 truncate">{String((activeView ?? active).workspace ?? '')}</dd>
             </div>
             <div className="flex gap-2">
               <dt className="w-24 shrink-0 text-muted">
                 {t('pages.membersPage.memory_store')}
               </dt>
-              <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
+              <dd className="min-w-0 truncate">{String((activeView ?? active).memory_store ?? '')}</dd>
             </div>
           </dl>
           <div className="mt-3 flex flex-col gap-2 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
@@ -2896,6 +3102,14 @@ export default function MembersPage() {
             <Pencil size={12} className="lucide-inline" />
             {t('pages.membersPage.edit_in_crew_manager')}
           </button>
+          {/* Contributed views: any `<app>/<key>` projection an app published on
+              this member's log (contribution protocol §7). Rendered generically
+              from the value plus an optional declarative schema -- no app code
+              runs here -- and placed AFTER the host's own blocks (Wake sources,
+              Configuration) so a contribution adds to the drawer's tail rather
+              than displacing the member's own config. Absent entirely when no
+              app has published for this member. */}
+          <ContributedViews views={contributedViews} />
             </div>
           )
           const leadingTab: SidePanelLeadingTab = {

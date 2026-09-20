@@ -22,6 +22,8 @@ agent loads only the one it needs.
 | [session.md](session.md) | Sessions, slots, session keys, the warm pool, and PID tracking. |
 | [history.md](history.md) | Conversation persistence, JSONL rotation, and transcript search. |
 | [session-summary.md](session-summary.md) | Intent-level session summaries: the sidecar cache, extraction, and the turn-end pass. |
+| [contribution-protocol.md](contribution-protocol.md) | Draft contract for out-of-process contributors: read a unit's log, append namespaced events, publish projected views; adapters for foreign plugin runtimes build on it. |
+| [member-event-log.md](member-event-log.md) | Per-member append-only event log, its four projections, the whole-value push frames, and load-time closers behind the Members page. |
 | [session-work-ledger.md](session-work-ledger.md) | Per-session durable work state (goal, phase, tried, artifacts) on disk, its MCP tools, and monitor-loop snapshot injection. |
 | [crew-log-core.md](crew-log-core.md) | Append-only per-crew and per-session crew logs: the wire format, type ownership and guest namespacing, the torn-tail rule, and the pre-release status of the session vocabulary. |
 | [crew-log-emitter.md](crew-log-emitter.md) | The flag-gated writer that turns the ACP turn lifecycle into an append-only per-session `log.jsonl`: which facts are recorded, from which call site, and which are deliberately not. |
@@ -90,6 +92,8 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [app-kit-platform.md](app-kit-platform.md) | App contracts: MCP scoping, agent JSON composition, permissions, and dependencies. |
+| [plugin-import.md](plugin-import.md) | Converting a manifest-declared plugin package into an installable app: manifest discovery, per-kind mapping, root containment, and what is reported instead of converted. |
+| [harness-plugin-mapping.md](harness-plugin-mapping.md) | Where other harnesses' plugin contribution kinds land -- an existing extension point, the contribution protocol, a converter, or nowhere -- and the diffs their models propose to the contract. |
 | [mcp-apps.md](mcp-apps.md) | Apps that surface as MCP servers. |
 | [mcp-shareability.md](mcp-shareability.md) | Predicting which MCP servers can share one backend, from local evidence. |
 | [mcp-gateway-backend-replacement.md](mcp-gateway-backend-replacement.md) | Validating a replacement MCP backend's tool set before a live session adopts it. |

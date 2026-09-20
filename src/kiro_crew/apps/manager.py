@@ -1036,6 +1036,32 @@ def update_app(
     except OSError:
         logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
 
+    # The replacement is durable from here, so the scope caches keyed on the
+    # grant generation describe a manifest that is gone. Those caches hold
+    # `permissions.api` prefixes and the contribution declaration, and an update
+    # is free to NARROW either one; nothing else on this path moves the
+    # generation, so without this bump a removed grant stays authorized for the
+    # life of the process. These caches have no expiry, which is what makes the
+    # window unbounded rather than merely long.
+    #
+    # After the write, not before: a bump on a failed update discards warm
+    # entries that are still correct, and the rollback above restores the tree
+    # those entries describe.
+    try:
+        from kiro_crew.eventlog import grants as _grants
+
+        _grants.invalidate(name)
+    except Exception:
+        # A cache that cannot be invalidated must not strand a completed update,
+        # but it MUST be visible: the process is now serving grants from a
+        # manifest that is gone, which is security-relevant, not a debug detail.
+        logger.error(
+            "app update %r: could not invalidate cached grants; "
+            "removed permissions may stay authorized until restart",
+            name,
+            exc_info=True,
+        )
+
     # Ensure data directory exists
     app_data_dir(name)
 

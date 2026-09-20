@@ -37,7 +37,7 @@ thing; these pages say *crew log* throughout.
 
 **unit** — the thing a crew log belongs to. One unit, one crew log.
 
-**kind** — which of the two unit types a crew log is: `crew` or `session`. A kind
+**kind** — which unit type a crew log is: `crew`, `session` or `member`. A kind
 decides which `type` domains may be written to the file and which `src` values may
 write them.
 

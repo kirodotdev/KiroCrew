@@ -10,7 +10,8 @@ import json
 
 import pytest
 
-from kiro_crew import members
+from kiro_crew.crew_log.schema import KIND_MEMBER
+from kiro_crew.crew_log.store import crew_log_path
 from kiro_crew.members import (
     ACTIVITY_FILE_NAME,
     MemberSlugError,
@@ -21,6 +22,16 @@ from kiro_crew.members import (
     slug_for_name,
     validate_slug,
 )
+
+
+def _log_path(slug: str):
+    """Where a member's append-only log lives: inside the fenced ``crew-log`` tree.
+
+    Asked of the store rather than composed here. The directory under it is a
+    readable-plus-digest fold of the slug, so a hand-built path would be wrong,
+    and asking means these tests follow the layout instead of pinning a copy of it.
+    """
+    return crew_log_path(KIND_MEMBER, slug)
 
 
 class TestSlugForName:
@@ -135,9 +146,23 @@ class TestRecordActivity:
         record_activity("M", "s2", "persistent", via="chat")
         assert [r["session"] for r in read_activity("m")] == ["s1", "s2"]
 
-    def test_creates_the_member_directory_on_demand(self):
+    def test_creates_the_member_log_on_demand(self):
+        # The member's space is the per-member append-only log, kept as a
+        # ``member``-kind crew log: record_activity ensures it exists with a
+        # header line followed by one activity/record envelope.
         record_activity("Brand New", "s1", "persistent")
-        assert (member_dir("brand-new") / ACTIVITY_FILE_NAME).is_file()
+        log = _log_path("brand-new")
+        assert log.is_file()
+        lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        entries = [json.loads(ln) for ln in lines]
+        # A header first, then the activity record somewhere after it. Found by
+        # SEARCHING rather than by indexing line 1: the position only holds while
+        # nothing else is in the log, and where the record sits is not what "creates
+        # the log on demand" claims.
+        assert entries[0]["type"] == "member"
+        records = [e for e in entries[1:] if e["type"] == "activity/record"]
+        assert len(records) == 1
+        assert records[0]["data"]["session"] == "s1"
 
     def test_omits_empty_optional_fields(self):
         record_activity("M", "s1", "persistent")
@@ -215,19 +240,25 @@ class TestRecordActivity:
     def test_requires_both_member_and_session(self, member, session):
         assert record_activity(member, session, "persistent") is False
 
-    def test_does_not_fsync(self, monkeypatch):
-        # A durability barrier is a blocking kernel syscall; this log is
-        # advisory and one call site shares the gateway event loop.
+    def test_appends_are_fsynced(self, monkeypatch):
+        # Durability is now the contract: the append-only log fsyncs every
+        # committed record, so a crash cannot lose an activity the caller was
+        # told landed. The old best-effort activity.jsonl (no fsync) is gone.
         calls = []
         monkeypatch.setattr("os.fsync", lambda fd: calls.append(fd))
         record_activity("M", "s1", "persistent")
-        assert calls == []
+        assert calls, "record_activity must fsync at least once per record"
 
     def test_reports_failure_instead_of_raising(self, monkeypatch):
         # Total by contract: the call sites have no guard, and one of them
         # (mcp_core) has no logger, so a raise here would surface as a tool error.
+        # Patched at the service lookup because that is the first thing on the
+        # write path now that the log's location comes from the store, not from
+        # member_dir -- a patch on the old path would pass without proving
+        # anything.
         monkeypatch.setattr(
-            "kiro_crew.members.member_dir", lambda _s: (_ for _ in ()).throw(OSError("boom"))
+            "kiro_crew.eventlog.service.get_service",
+            lambda: (_ for _ in ()).throw(OSError("boom")),
         )
         assert record_activity("M", "s1", "persistent") is False
 
@@ -244,6 +275,9 @@ class TestReadActivity:
         # line. The next record must not be glued onto it, or BOTH are lost.
         record_activity("M", "s1", "persistent")
         path = member_dir("m") / ACTIVITY_FILE_NAME
+        # The member directory holds only the LEGACY file now -- the log moved
+        # under the fenced crew-log tree -- so nothing has created it yet.
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write('{"ts":"x","session":"torn"')  # no newline: torn write
         record_activity("M", "s2", "persistent")
@@ -252,6 +286,7 @@ class TestReadActivity:
     def test_skips_torn_lines_and_keeps_the_rest(self):
         record_activity("M", "s1", "persistent")
         path = member_dir("m") / ACTIVITY_FILE_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write("\n{not valid json\n")
         record_activity("M", "s2", "persistent")
@@ -260,6 +295,7 @@ class TestReadActivity:
     def test_skips_non_object_rows(self):
         record_activity("M", "s1", "persistent")
         path = member_dir("m") / ACTIVITY_FILE_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write("\n" + json.dumps(["not", "a", "dict"]))
         assert len(read_activity("m")) == 1
@@ -270,198 +306,152 @@ class TestReadActivity:
         assert [r["session"] for r in read_activity("m", limit=2)] == ["s3", "s4"]
 
 
-class TestRecordActivityRotation:
-    """The activity log rotates at the size cap — bounded disk, no lost record.
+class TestNoRotationAppendOnly:
+    """The per-member log is append-only: never rotated, never truncated for
+    retention, so no record is ever dropped.
 
-    Mirrors the ``slow_commands.jsonl`` rotation tests in
-    ``test_subagent_persistence.py``: the shared ``rotate_jsonl_at`` helper
-    runs before the append, lock-guarded because this log is append-only from
-    multiple processes.
+    Replaces the former ``activity.jsonl`` byte-cap rotation suite: durability
+    now comes from one fsynced append per record into a single ``log.jsonl``
+    (header line + one envelope per event), and read_activity pages that one
+    log rather than spanning generations.
     """
 
-    CAP = 400  # bytes — small enough to cross with a handful of records
+    def test_many_records_stay_in_one_log(self):
+        n = 40
+        for i in range(n):
+            assert record_activity("M", f"s{i}", "persistent")
+        log = _log_path("m")
+        lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        # Every record is still here; nothing rotated aside. Counting the RECORDS
+        # rather than the lines is what says that: a line count also passes when a
+        # record is lost and some other entry takes its place, and it fails when the
+        # log legitimately holds an entry this test never wrote.
+        records = [ln for ln in lines if json.loads(ln)["type"] == "activity/record"]
+        assert len(records) == n
+        # Retention in this store is dropping whole segments off the front, and
+        # nothing rotates yet, so a second segment would mean the append-only
+        # claim had been broken.
+        assert [p.name for p in log.parent.glob("log.*.jsonl")] == []
 
-    @pytest.fixture(autouse=True)
-    def small_cap(self, monkeypatch):
-        monkeypatch.setattr("kiro_crew.members._ACTIVITY_LOG_MAX_BYTES", self.CAP)
+    def test_read_limit_returns_most_recent_oldest_first(self):
+        n = 10
+        for i in range(n):
+            assert record_activity("M", f"s{i}", "persistent")
+        got = read_activity("m", limit=3)
+        # The most recent k, oldest-first within that window.
+        assert [r["session"] for r in got] == ["s7", "s8", "s9"]
 
-    def test_rotation_keeps_every_record(self):
-        """One rotation: older records land in ``.jsonl.1`` and stay visible
-        through :func:`read_activity`, which spans both generations."""
-        live = member_dir("m") / ACTIVITY_FILE_NAME
-        rotated = live.with_name(live.name + ".1")
-        n = 0
-        while not rotated.exists():
-            assert record_activity("M", f"s{n}", "persistent")
-            n += 1
-            assert n < 100, "cap never triggered a rotation"
-        # The rotated generation holds the pre-rotation records intact...
-        old = [
-            json.loads(row)
-            for row in rotated.read_text(encoding="utf-8").splitlines()
-            if row.strip()
-        ]
-        assert [r["session"] for r in old] == [f"s{i}" for i in range(n - 1)]
-        # ...the live file holds exactly the one record written after...
-        live_rows = [
-            json.loads(row) for row in live.read_text(encoding="utf-8").splitlines() if row.strip()
-        ]
-        assert [r["session"] for r in live_rows] == [f"s{n - 1}"]
-        assert live.stat().st_size < self.CAP
-        # ...and the PUBLIC reader still returns the full history, oldest
-        # first: rotation must not hide records from consumers.
+    def test_no_records_are_dropped(self):
+        n = 25
+        for i in range(n):
+            assert record_activity("M", f"s{i}", "persistent")
         assert [r["session"] for r in read_activity("m")] == [f"s{i}" for i in range(n)]
 
-    def test_read_activity_limit_spans_generations(self):
-        """``limit`` counts across both generations, newest last."""
-        live = member_dir("m") / ACTIVITY_FILE_NAME
-        rotated = live.with_name(live.name + ".1")
-        n = 0
-        while not rotated.exists():
-            assert record_activity("M", f"s{n}", "persistent")
-            n += 1
-            assert n < 100, "cap never triggered a rotation"
-        got = read_activity("m", limit=n)
-        assert [r["session"] for r in got] == [f"s{i}" for i in range(n)]
-
-    def test_dedupe_survives_rotation(self):
-        """A member/session pair whose entry was rotated aside must STILL be
-        suppressed: the dedupe probe reads both generations, so rotation
-        cannot re-inflate the counts it protects."""
-        live = member_dir("m") / ACTIVITY_FILE_NAME
-        rotated = live.with_name(live.name + ".1")
+    def test_dedupe_still_works_after_many_records(self):
         assert record_activity("M", "dedup-me", "persistent", via="chat", dedupe_session=True)
-        n = 0
-        while not rotated.exists():
-            assert record_activity("M", f"filler-{n}", "persistent")
-            n += 1
-            assert n < 100, "cap never triggered a rotation"
-        # The original entry now lives only in the rotated generation.
-        assert "dedup-me" in rotated.read_text(encoding="utf-8")
-        assert "dedup-me" not in live.read_text(encoding="utf-8")
+        for i in range(30):
+            assert record_activity("M", f"filler-{i}", "persistent")
+        # The original pair is still suppressed — the dedupe probe reads the
+        # one append-only log, so a burst of later records cannot re-inflate it.
         assert (
             record_activity("M", "dedup-me", "persistent", via="chat", dedupe_session=True) is False
         )
-
-    def test_total_bytes_stay_bounded(self):
-        """The property the issue is about: many appends, bounded total disk.
-
-        One rotation alone does not prove boundedness — total bytes across
-        BOTH generations must stay bounded no matter how many records land.
-        """
-        for i in range(300):
-            record_activity("M", f"session-{i:04d}", "persistent")
-        live = member_dir("m") / ACTIVITY_FILE_NAME
-        rotated = live.with_name(live.name + ".1")
-        # Each generation may overshoot the cap by at most one record (the
-        # size check runs before the append), so bound each at CAP plus a
-        # generous one-record slack.
-        slack = 200
-        assert live.stat().st_size <= self.CAP + slack
-        assert rotated.exists()
-        assert rotated.stat().st_size <= self.CAP + slack
-        assert live.stat().st_size + rotated.stat().st_size <= 2 * (self.CAP + slack)
-
-    def test_rotation_failure_still_appends(self):
-        """Best-effort contract: a failing rotation never drops the record and
-        never breaks the ``record_activity`` return contract. A directory
-        squatting on the rotation target makes ``os.replace`` raise a REAL
-        ``OSError`` on both POSIX and Windows — no stdlib patching."""
-        record_activity("M", "seed", "persistent")
-        live = member_dir("m") / ACTIVITY_FILE_NAME
-        with open(live, "a", encoding="utf-8") as fh:
-            fh.write("x" * (self.CAP + 10) + "\n")
-        live.with_name(live.name + ".1").mkdir()
-
-        assert record_activity("M", "after-fail", "persistent") is True
-        assert live.with_name(live.name + ".1").is_dir()
-        assert "after-fail" in live.read_text(encoding="utf-8")
+        assert len([r for r in read_activity("m") if r.get("session") == "dedup-me"]) == 1
 
 
-class TestOverCapRecordFailsClosed:
-    """The activity log is agent-writable and its read decides an append.
+class TestLogCorruptionContract:
+    """The append-only log's damage contract, now that the log is a crew log.
 
-    ``for line in fh`` would materialise one crafted newline-free line whole.
-    The reader aborts on an over-cap record, and because the
-    ``dedupe_session`` probe cannot prove absence from a log it could not
-    finish reading, it declines to append rather than risk a duplicate.
+    A torn TRAILING line (partial write, no newline) is repaired by truncation on
+    load, and the next record_activity appends with a contiguous seq. A damaged
+    line INSIDE the committed region costs a reader that line and nothing else.
+    An unreadable HEADER is the fatal case -- without it nothing in the file is
+    attributable -- and it raises LogCorrupt in the log layer, which
+    record_activity reports as False and read_activity as [] rather than raising.
+
+    The service caches a loaded MemberLog per slug, so a file mutated behind
+    its back is only observed after the singleton is dropped — these tests
+    ``set_service(None)`` to force the next call to reload from disk, which is
+    exactly the cold-start / other-process path the damage contract exists
+    for (a live process never tears its own committed region).
     """
 
-    @pytest.fixture(autouse=True)
-    def _small_cap(self, monkeypatch):
-        # raising=False so this file also RUNS against a pre-fix source, where
-        # the attribute does not exist: the tests then fail on behaviour (the
-        # append that should have been refused) rather than erroring on a
-        # missing name. Same idiom as test_session_digest's `create=True`.
-        monkeypatch.setattr(members, "_RECORD_CAP", 200, raising=False)
-
     @staticmethod
-    def _log_for(slug: str):
-        path = member_dir(slug) / ACTIVITY_FILE_NAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+    def _reset_service():
+        from kiro_crew.eventlog.service import set_service
 
-    def test_over_cap_record_refuses_to_append(self):
-        """Red on base: base skips the unparseable line, finds no match, and appends."""
-        log = self._log_for("m")
-        log.write_bytes(b"y" * 400 + b"\n")
-        before = log.read_bytes()
-        assert (
-            record_activity("m", "s1", "persistent", dedupe_session=True) is False
-        ), "must not append when the log could not be read in full"
-        assert log.read_bytes() == before, "log was modified despite the refusal"
+        set_service(None)
 
-    def test_a_normal_log_still_appends(self):
-        """The refusal is specific to an over-cap record, not to every read."""
-        assert record_activity("m", "s1", "persistent", dedupe_session=True) is True
-        assert [r["session"] for r in read_activity("m")] == ["s1"]
-
-    def test_dedupe_still_suppresses_a_repeat_within_cap(self):
-        assert record_activity("m", "s1", "persistent", dedupe_session=True) is True
-        assert record_activity("m", "s1", "persistent", dedupe_session=True) is False
-        assert len(read_activity("m")) == 1
-
-    def test_read_activity_still_degrades_for_display(self):
-        """The public reader keeps its documented non-raising contract.
-
-        An over-cap record stops that generation, but the rows already read are
-        returned and no exception escapes — only the write path fails closed.
-        """
-        log = self._log_for("m")
-        log.write_bytes(
-            json.dumps({"member": "m", "session": "s1"}).encode() + b"\n" + b"y" * 400 + b"\n"
-        )
+    def test_torn_trailing_line_is_repaired_and_next_append_is_contiguous(self):
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        # A write interrupted before its newline leaves a torn trailing line.
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write('{"type":"activity/record","seq":2,"time":123,"dat')
+        self._reset_service()
+        # The next record reloads, repairs (truncates) the torn tail, and
+        # appends with a contiguous seq — no gap, no lost record.
+        assert record_activity("M", "s2", "persistent")
         rows = read_activity("m")
-        assert [r["session"] for r in rows] == ["s1"]
+        assert [r["session"] for r in rows] == ["s1", "s2"]
+        lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        # The header carries no seq, so contiguity is a claim about the entries after
+        # it: they run 1, 2, 3, ... with no gap, which means the torn tail was
+        # truncated and the next append took the very next number. Stated as "no gap"
+        # rather than as a line count and a literal pair, because the count moves
+        # when the log holds any other entry while contiguity does not -- and a gap
+        # is the defect this test exists to catch.
+        seqs = [json.loads(ln)["seq"] for ln in lines[1:]]
+        assert seqs == list(range(1, len(seqs) + 1)), "no gap, no lost record"
+        assert len(seqs) >= 2  # at least the two committed records
 
-    def test_a_cr_delimited_log_does_not_produce_a_duplicate(self):
-        """The log is read binary now, so its boundaries must stay universal.
+    def test_a_damaged_committed_line_costs_that_line_and_nothing_else(self):
+        """A damaged line inside the committed region is skipped, not fatal.
 
-        These logs were read in TEXT mode, where a bare carriage return ended a
-        record. The reader splits on it too, so this file parses as two records
-        and the dedupe probe still sees the prior entry. Splitting only on LF
-        would glue them into one unparseable line, the probe would see no prior
-        entry, and a duplicate would be appended -- which is what an earlier
-        revision of this PR did.
+        This changed with the move into the crew log store and the new answer is
+        the better one for a record whose purpose is to survive damage: refusing
+        the file turns one bad line into a member whose entire history is
+        unreadable, and the bad line is unrecoverable either way. So the reads
+        keep working and the next append still lands.
         """
-        log = self._log_for("m")
-        first = json.dumps({"member": "m", "session": "s1"})
-        log.write_bytes(first.encode() + b"\r" + first.encode() + b"\n")
-        before = log.read_bytes()
-        assert record_activity("m", "s1", "persistent", dedupe_session=True) is False
-        assert log.read_bytes() == before, "a CR-delimited log must not gain a duplicate entry"
-        assert len(read_activity("m")) == 2, "both CR-delimited records must be read"
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write("not valid json at all\n")  # committed damage
+        self._reset_service()
 
-    def test_record_exactly_at_cap_is_not_refused(self):
-        """The cap is inclusive, so a legitimate record at the limit still reads."""
-        log = self._log_for("m")
-        entry = {"member": "m", "session": "s1", "pad": ""}
-        pad = 200 - len(json.dumps(entry).encode())
-        entry["pad"] = "z" * pad
-        raw = json.dumps(entry).encode()
-        assert len(raw) == 200
-        log.write_bytes(raw + b"\n")
-        assert record_activity("m", "s1", "persistent", dedupe_session=True) is False, (
-            "the at-cap record must be READ (and so suppress the duplicate), "
-            "not refused as over-cap"
-        )
+        assert record_activity("M", "s2", "persistent")
+        assert [r["session"] for r in read_activity("m")] == ["s1", "s2"]
+
+    def test_an_unreadable_header_degrades_both_public_funcs(self):
+        """Without a header nothing in the file is attributable, so it IS fatal.
+
+        That is the difference from one damaged line, and it is the case the
+        ``LogCorrupt`` contract now covers: record_activity is documented
+        best-effort so it reports False, and read_activity degrades to [] rather
+        than raising through to the drawer and the counters.
+        """
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        lines = log.read_text(encoding="utf-8").splitlines(keepends=True)
+        log.write_text("garbage header\n" + "".join(lines[1:]), encoding="utf-8")
+        self._reset_service()
+
+        assert record_activity("M", "s2", "persistent") is False
+        assert read_activity("m") == []
+
+    def test_corruption_contract_matches_the_service(self):
+        # Guard the claim against drift: the log layer really raises LogCorrupt
+        # for an unreadable header, and both public members funcs convert that
+        # into their non-raising contracts once the stale in-memory log is gone.
+        from kiro_crew.eventlog.log import LogCorrupt, MemberLog
+
+        assert record_activity("M", "s1", "persistent")
+        log = _log_path("m")
+        lines = log.read_text(encoding="utf-8").splitlines(keepends=True)
+        log.write_text("garbage header\n" + "".join(lines[1:]), encoding="utf-8")
+        with pytest.raises(LogCorrupt):
+            MemberLog("m").load()
+        self._reset_service()
+        assert record_activity("M", "s2", "persistent") is False
+        assert read_activity("m") == []
