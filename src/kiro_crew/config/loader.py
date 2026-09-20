@@ -2632,9 +2632,12 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # not mount it never has them -- the same rule as every other MCP
         # server. This stays as a single withdrawal for an operator who
         # wants the capability gone from every agent at once without
-        # editing each spec, so an EXPLICIT `false` must still disable it:
-        # `bool("false")` is `True`, and `_safe_bool` is what keeps a
-        # quoted opt-out from loading as enabled.
+        # editing each spec, so an EXPLICIT `false` must still disable it.
+        # A present-but-malformed value -- the quoted `"false"` an operator
+        # writes by mistake -- is coerced to False upstream, BEFORE schema
+        # validation, so it cannot ride the missing-field default back to
+        # true; see the normalization above the `_validate_config_data`
+        # call. `_safe_bool` here is the final guard for a real bool.
         session_control=_safe_bool(agent_data.get("session_control", True), True),
         # Default true preserves the zero-configuration member-dispatch
         # grant (today's behaviour) for a MISSING key. A present-but-
@@ -4257,19 +4260,40 @@ class KiroCrewConfig:
                 data["resource_limits"] = asdict(
                     ResourceLimitsConfig.from_raw(data["resource_limits"])
                 )
-            # Same fail-closed-before-validation reason for the member-dispatch
-            # ceiling. `agent.member_dispatch` gates whether a crew member
-            # bypasses `session_control`; its safe direction is FALSE (bypass
-            # off). Schema validation pops a present-but-malformed value and the
-            # missing-field default is TRUE, so a quoted `"false"` — a routine
-            # operator quoting mistake — would silently ride that default back
-            # to an authorized bypass. Coerce a present non-bool to False HERE,
-            # so validation sees a valid bool and keeps it; a genuinely absent
-            # key is left absent and still defaults to true (today's behaviour).
+            # Same fail-closed-before-validation reason for the two agent
+            # switches whose safe direction is FALSE.
+            # `agent.session_control` is the operator's single withdrawal of
+            # cross-session control, and `agent.member_dispatch` gates whether
+            # a crew member bypasses that withdrawal. Schema validation pops a
+            # present-but-malformed value and the missing-field default is TRUE
+            # for both, so a quoted `"false"` — a routine operator quoting
+            # mistake — would silently ride that default back to the
+            # capability staying enabled. Coerce a present non-bool to False
+            # HERE, so validation sees a valid bool and keeps it; a genuinely
+            # absent key is left absent and still defaults to true (today's
+            # behaviour). One loop, so neither switch can keep the guard while
+            # the other loses it.
+            #
+            # Say so out loud. The coercion resolves a malformed value one way,
+            # and an operator who meant the other way has no other signal:
+            # validation sees the repaired bool and stays quiet. The line names
+            # the key, the type it found and the JSON it wanted, so the fix is
+            # the next thing the operator does rather than a capability they
+            # find missing later.
             _agent_section = data.get("agent")
-            if isinstance(_agent_section, dict) and "member_dispatch" in _agent_section:
-                if not isinstance(_agent_section["member_dispatch"], bool):
-                    _agent_section["member_dispatch"] = False
+            if isinstance(_agent_section, dict):
+                for _fail_closed_key in ("session_control", "member_dispatch"):
+                    if _fail_closed_key in _agent_section and not isinstance(
+                        _agent_section[_fail_closed_key], bool
+                    ):
+                        logger.warning(
+                            "agent.%s is %s, not a boolean; reading it as the safe "
+                            "value false (the capability is OFF). Write true or false "
+                            "without quotes to choose.",
+                            _fail_closed_key,
+                            type(_agent_section[_fail_closed_key]).__name__,
+                        )
+                        _agent_section[_fail_closed_key] = False
             # Keep a genuinely absent default backward-compatible with older
             # configs, but normalize a PRESENT malformed value before advisory
             # schema validation can delete it and turn corruption into the

@@ -524,6 +524,68 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
     assert reloaded.slack.home_tab_sessions_per_kind == 42
 
 
+class TestSessionControlLoad:
+    """agent.session_control load-time coercion.
+
+    The operator's single withdrawal of cross-session control. A MISSING key
+    defaults to true (today's behaviour), but a PRESENT-but-malformed value --
+    the routine quoted `"false"` config mistake -- must coerce to FALSE, so a
+    botched opt-out withdraws the capability rather than silently leaving every
+    agent able to drive peer sessions.
+    """
+
+    def test_missing_key_defaults_true(self) -> None:
+        assert _load_from_dict({}).agent.session_control is True
+
+    def test_explicit_true_and_false(self) -> None:
+        assert _load_from_dict({"agent": {"session_control": True}}).agent.session_control is True
+        assert _load_from_dict({"agent": {"session_control": False}}).agent.session_control is False
+
+    def test_quoted_false_coerces_to_false_not_true(self) -> None:
+        # The fail-open this locks shut: `"false"` is not a bool, and defaulting
+        # it to true keeps the capability on against the operator's intent.
+        assert (
+            _load_from_dict({"agent": {"session_control": "false"}}).agent.session_control is False
+        )
+
+    def test_quoted_true_also_coerces_to_false(self) -> None:
+        # A non-bool is an explicit opt-out, the same rule `member_dispatch`
+        # follows: a value the operator quoted is not a value to trust.
+        assert (
+            _load_from_dict({"agent": {"session_control": "true"}}).agent.session_control is False
+        )
+
+    def test_any_present_non_bool_coerces_to_false(self) -> None:
+        for bad in ("false", "true", "yes", 1, 0, {}, [], None):
+            assert (
+                _load_from_dict({"agent": {"session_control": bad}}).agent.session_control is False
+            ), bad
+
+    def test_round_trips_through_to_dict(self) -> None:
+        loaded = _load_from_dict({"agent": {"session_control": "false"}})
+        reloaded = _load_from_dict(loaded.to_dict())
+        assert reloaded.agent.session_control is False
+
+    def test_coercion_says_so_in_the_log(self) -> None:
+        """Silence is half the defect: an operator who meant ON gets told."""
+        cfg, logs = _load_from_dict_with_logs({"agent": {"session_control": "true"}})
+        assert cfg.agent.session_control is False
+        said = [m for m in logs if "agent.session_control" in m and "not a boolean" in m]
+        assert said, logs
+        line = said[0]
+        # Names the type it found and the JSON that chooses, so the operator can act.
+        assert "str" in line
+        assert "false" in line
+
+    def test_a_real_bool_draws_no_coercion_line(self) -> None:
+        # The superseded-default notice for a stored ``false`` is a different
+        # line and belongs to a different mechanism; only the coercion line is
+        # this loop's to emit.
+        for good in (True, False):
+            _, logs = _load_from_dict_with_logs({"agent": {"session_control": good}})
+            assert not [m for m in logs if "not a boolean" in m], (good, logs)
+
+
 class TestMemberDispatchLoad:
     """agent.member_dispatch load-time coercion.
 
@@ -560,6 +622,12 @@ class TestMemberDispatchLoad:
         loaded = _load_from_dict({"agent": {"member_dispatch": False}})
         reloaded = _load_from_dict(loaded.to_dict())
         assert reloaded.agent.member_dispatch is False
+
+    def test_coercion_says_so_in_the_log(self) -> None:
+        """The shared loop covers this key too, so the signal does as well."""
+        cfg, logs = _load_from_dict_with_logs({"agent": {"member_dispatch": "true"}})
+        assert cfg.agent.member_dispatch is False
+        assert [m for m in logs if "agent.member_dispatch" in m and "not a boolean" in m], logs
 
 
 class TestFallbackModelLoad:
