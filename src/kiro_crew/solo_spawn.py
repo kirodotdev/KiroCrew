@@ -1,44 +1,10 @@
-"""The solo-spawn gate: one sub-agent for one task has to say why.
+"""Model-only solo admission: concrete reasons or a different configured worker.
 
-``spawn_run`` / ``spawn_sub_agents`` carry a textual gate in their descriptions
-("2+ independent tasks, bulk data, or a different agent/model -- otherwise do
-it yourself"). Text is advice, and the base prompt's "delegate to a sub-agent"
-kept winning against it: a single investigation, a single fix, a single review
-each spawned one sub-agent for no parallelism gain. This module is the
-MECHANICAL half of that gate, and it is a handshake rather than a wall:
-
-1. A call that spawns exactly ONE task, names no ``solo_reason``, and asks for
-   no model / agent / crew other than the caller's own is REFUSED with a
-   question -- can the caller do this itself? -- and nothing is spawned.
-2. The caller either does the work in its own session, or calls again with a
-   ``solo_reason`` from :data:`SOLO_SPAWN_REASONS`, or names a genuinely
-   different model / agent / crew. Only then does the spawn proceed.
-
-The reasons are a closed vocabulary on purpose. A free-text "why" or a bare
-``confirm=true`` is rubber-stamped by the second call; a menu that does NOT
-contain "to preserve context" or "investigation" makes the caller pick a
-reason it can defend, and the reason travels into the audit log on both hosts
-and, for ``spawn_run``, into the spawn line the user reads (``spawn_sub_agents``
-returns the collected results as JSON and adds no such line).
-
-Two halves, two hosts:
-
-* :func:`solo_spawn_refusal` runs in the MCP tool process, which is the only
-  place the task COUNT is known (the gateway sees one POST per task). It knows
-  whether a model / agent / crew was NAMED, not whether it differs from the
-  caller's own, so it lets a named one through.
-* :func:`solo_spawn_difference` runs in the gateway, which knows the
-  parent session's resolved agent template, its member selection and (for a
-  dashboard slot) its model, and catches the call that named the caller's OWN
-  agent, model or crew to slip past the tool-side check. It answers with the
-  GROUND on which the named value differs, so the gateway audits every
-  outcome -- refused, let through on a reason, let through on a difference.
-  It fails OPEN when a parent fact is unknown: an un-comparable value never
-  refuses a spawn that the tool side let through.
-
-Programmatic clients (the SDK, apps posting to ``/api/spawn`` directly) are
-not gated: they do not send the ``solo`` marker, and the gate is about a
-model's decision, not an app's.
+The MCP process knows task count; the gateway compares parent identity. Legacy
+bulk_data/fresh_context and named-worker payloads keep their compatibility.
+New reasons require an evidence description. These checks validate structure and
+runtime capability, never semantic value, independence or user authorization.
+Programmatic callers without the solo marker retain the existing API contract.
 """
 
 from __future__ import annotations
@@ -49,11 +15,17 @@ from kiro_crew.model_registry import canonical_key
 
 # The closed vocabulary. ``""`` is "not given", matching the EFFORT_VALUES
 # convention so the validator accepts an absent/empty field.
-SOLO_SPAWN_REASONS = frozenset({"", "bulk_data", "fresh_context"})
+SOLO_SPAWN_REASONS = frozenset(
+    {"", "bulk_data", "fresh_context", "parent_parallel", "specialist", "user_requested"}
+)
 
 # What each reason licenses, in the words the tool description uses. Read by
 # the schema builder so the parameter description and this module agree.
 SOLO_SPAWN_REASON_GLOSS: dict[str, str] = {
+    "parent_parallel": (
+        "the parent retains a separate ready workstream; describe that work and its "
+        "non-overlapping ownership in solo_details; asynchronous spawn_run only"
+    ),
     "bulk_data": (
         "the step would flood YOUR context with bulk output (a huge log, a "
         "wide search, many large files) and only the distilled result is needed"
@@ -63,7 +35,45 @@ SOLO_SPAWN_REASON_GLOSS: dict[str, str] = {
         "review, a clean-slate repro) -- not for investigation, research or "
         "saving context"
     ),
+    "specialist": (
+        "a needed capability or independent verification; name the capability, "
+        "inputs and verifiable output in solo_details, not merely a different model"
+    ),
+    "user_requested": (
+        "the user explicitly requested delegation; quote that request in solo_details; "
+        "this is a model claim, not verified authorization or a permission override"
+    ),
 }
+
+
+def delegation_refusal(reason: str, details: str, *, blocking: bool = False) -> str | None:
+    """Validate evidence shape, not the claimed value or independence of work.
+
+    Legacy reasons remain valid without details. A blocking tool cannot express
+    simultaneous parent work, regardless of how many children it launches.
+    """
+    if reason == "parent_parallel" and blocking:
+        return "Error: parent_parallel needs asynchronous spawn_run; this tool blocks the parent."
+    if reason in {"parent_parallel", "specialist", "user_requested"} and not details.strip():
+        return f"Error: {reason} requires concrete solo_details. Do the work directly otherwise."
+    return None
+
+
+def parent_work_supported(state: Any, parent_session: str) -> bool:
+    """Only dashboard-owned turns have the verified busy-turn completion queue.
+
+    Channel-only, nested and background callers retain their yield boundary.
+    A channel linked to a dashboard slot uses the same queue as dashboard chat.
+    """
+    if not parent_session or parent_session.startswith(("subagent:", "cron:", "hook:")):
+        return False
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    slots = getattr(state, "_slots", None)
+    return isinstance(slots, dict) and any(
+        effective_session_key(slot) == parent_session for slot in slots.values()
+    )
+
 
 # Error code the gateway returns when the roster check refuses a solo spawn.
 SOLO_SPAWN_REFUSED_CODE = "solo_spawn_unjustified"
@@ -88,8 +98,8 @@ def solo_spawn_question(*, tool: str = "spawn_run") -> str:
     return (
         "Error: solo spawn refused -- one task, no solo_reason, and nothing "
         "that differs from this session. Can you do this task yourself, here, "
-        "now? If yes, do it: one sub-agent is a round-trip with no parallelism "
-        "gain. If not, call again with a solo_reason you can defend -- the closed "
+        "now? If yes, do it. Delegate only for concrete value. If not, call again "
+        "with a solo_reason you can defend -- the closed "
         "list and what each reason licenses are in this tool's solo_reason "
         f"parameter description -- or name {differs}. Nothing was spawned."
     )

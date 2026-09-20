@@ -577,7 +577,7 @@ class TestSpawnRunArgumentHandling:
         assert "Spawned 1 subagent(s)" in out
         assert "1 task(s) failed to start" in out
         assert "1 task(s) have unknown acceptance status" in out
-        assert "END YOUR TURN NOW" in out
+        assert "END YOUR TURN NOW" in out.upper()
 
     def test_orphaned_spawn_warns_and_switches_to_polling_guidance(
         self, monkeypatch: pytest.MonkeyPatch

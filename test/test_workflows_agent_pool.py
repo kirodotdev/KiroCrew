@@ -15,7 +15,7 @@ import asyncio
 import pytest
 from overload_fakes import settle_dependency_park, settle_store_writes
 
-from kiro_crew.workflows.agent_pool import build_pooled_agent_fn
+from kiro_crew.workflows.agent_pool import _WorkflowSessionWorker, build_pooled_agent_fn
 
 
 class _FakeProvider:
@@ -29,6 +29,11 @@ class _FakeProvider:
     async def new_conversation(self) -> None:
         # Cheap warm reset — the win. No cold start here.
         self.new_conversation_calls += 1
+        # Records the swap so a test can assert the child suppression was armed BEFORE the
+        # conversation handle changed hands.
+        sink = getattr(self, "order_sink", None)
+        if sink is not None:
+            sink.append("new_conversation")
 
     def is_process_alive(self) -> bool:
         return self.alive
@@ -69,9 +74,17 @@ class _FakeSessions:
         if cleanup:
             self.live.pop(key, None)
 
-    async def reset(self, key):
+    async def reset(self, key, *, ends_conversation=False):
         self.resets += 1
+        self.reset_intents = getattr(self, "reset_intents", [])
+        self.reset_intents.append(ends_conversation)
         self.live.pop(key, None)
+
+    async def end_children_for(self, key):
+        self.children_ended = getattr(self, "children_ended", [])
+        self.children_ended.append(key)
+        self.order = getattr(self, "order", [])
+        self.order.append("end_children")
 
     async def destroy(self, key):
         self.destroys = getattr(self, "destroys", 0) + 1
@@ -1071,3 +1084,40 @@ async def test_a_nested_agent_call_is_refused_not_parked_behind_its_ancestor(tmp
         assert calls == ["p2"]
     finally:
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_the_cheap_reuse_path_still_ends_the_previous_conversations_children():
+    """Replacing the conversation on a warm process still ends that conversation's children.
+
+    ``reset`` has two paths and both must end the children. The cheap path calls
+    ``provider.new_conversation()`` and keeps the process, so nothing about the process
+    dying stands in for the teardown -- and a child of the step that just finished would
+    otherwise inject into whatever this warm worker is handed next. The hard-reset fallback
+    reaches the teardown through ``ends_conversation=True``; this pins the other path.
+    """
+    sessions = _FakeSessions()
+    worker = _WorkflowSessionWorker(
+        sessions,
+        key="wf-pool:run-1:0",
+        agent="kirocrew",
+        model=None,
+        cwd=None,
+    )
+    await worker.start()
+    prov = sessions.live["wf-pool:run-1:0"]
+    sessions.order = []
+    prov.order_sink = sessions.order
+
+    await worker.reset()
+
+    assert prov.new_conversation_calls == 1, "the cheap path did not run"
+    assert sessions.order == ["end_children", "new_conversation"], (
+        "the suppression was armed after the conversation handle was swapped, so a child "
+        f"finishing during the swap delivers into the NEXT task's conversation: {sessions.order}"
+    )
+    assert sessions.resets == 0, "the cheap path fell back to a hard reset"
+    assert getattr(sessions, "children_ended", []) == ["wf-pool:run-1:0"], (
+        "the reused worker kept the previous conversation's children, so one of them can "
+        "inject into the next task's conversation"
+    )

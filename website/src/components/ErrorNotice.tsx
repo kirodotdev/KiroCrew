@@ -76,6 +76,7 @@ export default function ErrorNotice({
   variant = 'block',
   askAgent = false,
   onHandoff,
+  askAgentLabel,
   className = '',
   messageClassName = '',
   messageTooltip,
@@ -122,6 +123,13 @@ export default function ErrorNotice({
    * as a dead button. Ignored when `askAgent` is off.
    */
   onHandoff?: () => void
+  /**
+   * Overrides the hand-off's shared "Ask the agent" label — for a surface that
+   * stacks several notices, where every hand-off otherwise reads as the same
+   * affordance and nothing says which failure it carries. Pass a full localized
+   * label. Ignored when `askAgent` is off.
+   */
+  askAgentLabel?: string
   className?: string
   /**
    * Classes for the `message` span only — e.g. `font-mono` when the message is
@@ -166,6 +174,7 @@ export default function ErrorNotice({
             report={report}
             message={message}
             onHandoff={onHandoff}
+            label={askAgentLabel}
           />
         )}
         {onDismiss && (
@@ -203,6 +212,7 @@ export default function ErrorNotice({
           report={report}
           message={message}
           onHandoff={onHandoff}
+          label={askAgentLabel}
           className="mt-[1px]"
         />
       )}

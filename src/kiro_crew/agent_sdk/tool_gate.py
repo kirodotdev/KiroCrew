@@ -266,12 +266,14 @@ def adapter_hidden_credential_dirs(backend: str) -> tuple:
     step, and a floor entry added later is covered with no edit here.
 
     The harness's own credential store is excluded, because the adapter must read
-    it to authenticate. Crew's own ceilings and consent records are excluded for every
+    it to authenticate. A NARROW set of Crew runtime leaves is excluded for every
     backend, because an in-sandbox Crew reader needs them and they hold no credential
-    -- :func:`kiro_crew.sandbox.crew_host_runtime_leaves` owns that set. A
-    gate-artifact leaf is excluded for the ONE backend whose child must execute Crew's
-    launcher there, which is narrower than the set above on purpose: every other
-    child's mask still covers it.
+    -- :func:`kiro_crew.sandbox.crew_host_runtime_leaves` owns that set, and the
+    governance ceilings and consent records are deliberately NOT in it: they are
+    inputs to an authorization decision, so they stay masked and an in-sandbox
+    resolution fails closed. A gate-artifact leaf is excluded for the ONE backend
+    whose child must execute Crew's launcher there, which is narrower than the set
+    above on purpose: every other child's mask still covers it.
 
     All three asymmetries are intentional and safe: the floor still blocks the AGENT's
     file tools from each leaf, so the controls cover different readers rather than

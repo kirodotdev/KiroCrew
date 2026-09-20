@@ -68,6 +68,7 @@ export default function AskAgentButton({
   variant = 'link',
   hard = false,
   onHandoff,
+  label,
   className = '',
 }: {
   report?: ErrorReport
@@ -87,6 +88,16 @@ export default function AskAgentButton({
    * every caller.
    */
   onHandoff?: () => void
+  /**
+   * Overrides the shared "Ask the agent" label.
+   *
+   * For a surface that stacks SEVERAL notices, where the default leaves every
+   * hand-off looking like the same affordance and nothing says which failure
+   * each one carries. The reports genuinely differ -- each has its own
+   * endpoint, status and code -- so the label is the only part that was
+   * indistinguishable. Pass a full localized label, not a fragment to append.
+   */
+  label?: string
   className?: string
 }) {
   // Render only needs to know whether there is anything to offer. The report is
@@ -117,7 +128,7 @@ export default function AskAgentButton({
       onClick={onClick}
     >
       <Sparkles size={13} aria-hidden="true" />
-      {i18nT('components.askAgent.ask_the_agent')}
+      {label ?? i18nT('components.askAgent.ask_the_agent')}
     </button>
   )
 }

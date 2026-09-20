@@ -231,6 +231,17 @@ def _invalidate(path: Path) -> None:
         )
 
 
+def retract_session_token(token: str) -> None:
+    """Remove one published mapping, the counterpart of publish_session_token.
+
+    An empty token is a no-op. The shared _invalidate primitive already logs at
+    WARNING when the unlink is refused.
+    """
+    if not token:
+        return
+    _invalidate(_sig_path(token, config_dir()))
+
+
 def publish_session_token(token: str, session_key: str) -> None:
     """Publish the *token* -> *session_key* mapping, signed. Gateway-side only.
 
@@ -386,6 +397,33 @@ def verify_session_token(token: str) -> str:
         )
         return ""
     return body
+
+
+def session_token_header(token: str = "") -> dict[str, str]:
+    """The ``X-Session-Token`` header for *token*, else this process's own, or ``{}``.
+
+    The send side of what :func:`verify_session_token` reads, and it lives beside
+    it so the header name and the environment variable behind it have ONE
+    definition. Every internal request that declares an ``X-Session-Key`` needs
+    it: the gateway accepts a declared key only behind an attestation, and a
+    loopback TCP connection has no kernel peer attestation to offer, so this
+    header is the only one left. A request that omits it is answered as a caller
+    that cannot be named.
+
+    *token* is for a caller that has ALREADY resolved one it trusts more than the
+    environment -- a per-call caller block, which a pooled backend depends on
+    because it is spawned from the daemon's environment and so has no token of
+    its own there. Resolving that block is the caller's business rather than this
+    module's, which is why it arrives as an argument instead of being looked up
+    here. Falls back to this process's environment when it is empty.
+
+    Empty when neither source has a token, so a caller that never had one sends
+    exactly the request it always sent.
+    """
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    resolved = token or os.environ.get(STUB_SESSION_TOKEN_ENV, "")
+    return {"X-Session-Token": resolved} if resolved else {}
 
 
 def session_key_from_env_token() -> str:

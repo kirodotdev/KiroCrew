@@ -2166,10 +2166,9 @@ async def test_a_retarget_clears_the_coalescing_window(tmp_path):
     """Changing the target resets every per-subject field, the window included.
 
     A retarget is a new subject, so a window opened on the old subject describes
-    nothing on the new one. The reset block clears the window fingerprint, its
-    open time and the re-alert map alongside the other per-subject state, so a
-    re-assert decision on the new subject reads none of the old subject's alert
-    times.
+    nothing on the new one. The reset block clears the per-condition window and
+    the re-alert map alongside the other per-subject state, so a re-assert
+    decision on the new subject reads none of the old subject's alert times.
     """
     service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
     try:
@@ -2190,7 +2189,7 @@ async def test_a_retarget_clears_the_coalescing_window(tmp_path):
             now=10.0,
             config_generation=loop.monitor.config_generation,
         )
-        assert loop.monitor.coalesce_fingerprint == "red-old"
+        assert loop.monitor.coalesce_windows != {}
         assert loop.monitor.coalesce_alerted != {}
 
         await service.record_monitor_turn_completion(
@@ -2218,8 +2217,7 @@ async def test_a_retarget_clears_the_coalescing_window(tmp_path):
             loop.id, target="https://github.com/acme/widgets/pull/9"
         )
         assert updated is not None and updated.monitor is not None
-        assert updated.monitor.coalesce_fingerprint == ""
-        assert updated.monitor.coalesce_opened_at == 0.0
+        assert updated.monitor.coalesce_windows == {}
         assert updated.monitor.coalesce_alerted == {}
         # A streak counted on the old subject describes nothing on the new one,
         # so carrying it over would retire a fresh watch early.

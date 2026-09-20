@@ -607,6 +607,7 @@ class _PumpMixin(ManagerComponent):
                 parent_session=info.parent_session_key,
                 max_turns=info.max_turns,
                 context_groups=_context_groups_field(info),
+                delegation=info.delegation,
                 memory_store=info.memory_store,
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,

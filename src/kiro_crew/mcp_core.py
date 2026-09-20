@@ -1357,16 +1357,23 @@ def _session_token_header() -> dict[str, str]:
     to the session that launched this MCP process; the gateway verifies the
     signature and the key match.  It is a transport identity proof, not a
     member-memory capability.
-    """
-    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
-    # A pooled backend is spawned from gatewayd's own environment, so the
-    # per-session token is not in ``os.environ``; gatewayd forwards it inside
-    # the per-call caller block for Kiro Crew's control-plane servers instead.
+    EVERY verb below attaches it, not only the writes: the gateway's
+    session-scoped reads authorize on the declared key the same way, so a read
+    that omitted it would be answered as an unnamed caller and a whole tool
+    surface would refuse on a policy it could not fetch.
+
+    A pooled backend is spawned from gatewayd's own environment, so the
+    per-session token is not in ``os.environ``; gatewayd forwards it inside the
+    per-call caller block for Kiro Crew's control-plane servers instead, and the
+    caller block wins because it is stamped per CALL and cannot go stale. The
+    header itself is spelled once, in :mod:`kiro_crew.session_token_sig`, beside
+    the verifier that reads it.
+    """
+    from kiro_crew.session_token_sig import session_token_header
+
     ctx = current_caller()
-    token = ctx.session_token if ctx is not None and ctx.from_gateway else ""
-    token = token or os.environ.get(STUB_SESSION_TOKEN_ENV, "")
-    return {"X-Session-Token": token} if token else {}
+    return session_token_header(ctx.session_token if ctx is not None and ctx.from_gateway else "")
 
 
 def _transport_failure(message: str, mark: bool) -> dict:
@@ -1728,7 +1735,11 @@ def _get(path: str, session_key: str | None = None, *, timeout: float = 10) -> d
     ``python -m kiro_crew pod`` subprocess in the gateway, so they pay a cold
     interpreter start that 10s cannot cover on a loaded host.
     """
-    headers = {"X-Internal-Secret": _internal_secret(), **_caller_header()}
+    headers = {
+        "X-Internal-Secret": _internal_secret(),
+        **_caller_header(),
+        **_session_token_header(),
+    }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
@@ -1751,6 +1762,7 @@ def _patch(path: str, body: dict | None = None, *, session_key: str | None = Non
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
+        **_session_token_header(),
     }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
@@ -1779,6 +1791,7 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
+        **_session_token_header(),
     }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
@@ -1791,7 +1804,11 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
 
 def _delete(path: str, body: dict | None = None) -> dict:
     data = json.dumps(body or {}).encode() if body else None
-    headers = {"X-Internal-Secret": _internal_secret(), **_caller_header()}
+    headers = {
+        "X-Internal-Secret": _internal_secret(),
+        **_caller_header(),
+        **_session_token_header(),
+    }
     sk = _resolve_session_key()
     _sk_err = _session_key_header_error(sk)
     if _sk_err:

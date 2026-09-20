@@ -51,6 +51,7 @@ from kiro_crew.monitoring.decision import (
     decide_monitor,
     monitor_budget_reason,
     monitor_stall_reason,
+    stamp_monitor_alerted,
 )
 
 # The one place this module names a host: a tick that sent no request is a third
@@ -2997,11 +2998,12 @@ class AutoNudgeService:
                 elif decision is MonitorDecision.WAKE_ACTIONABLE:
                     staged_state.last_wake_fingerprint = observation.fingerprint
                     staged_state.last_wake_reason_code = observation.reason_code
-                    # Record that a wake was DECIDED for this fingerprint, next
-                    # to the persist so the stamp cannot outlive its write: the
-                    # re-alert period is measured from here. decide_monitor only
-                    # READS this map to derive its dedup comparison.
-                    staged_state.coalesce_alerted[observation.fingerprint] = now
+                    # Record that a wake was DECIDED for the conditions it
+                    # delivers, next to the persist so the stamp cannot outlive
+                    # its write: the re-alert interval is measured from here.
+                    # decide_monitor only READS this map. The engine owns which
+                    # conditions the wake covered, so it owns the keying too.
+                    stamp_monitor_alerted(staged_state, now=now)
                     staged_state.wake_in_flight = True
                     staged_state.wake_delivery = None
                     self._set_monitor_deadline(staged, 0.0)
@@ -3279,8 +3281,7 @@ class AutoNudgeService:
                 staged_state.last_completion_fingerprint = ""
                 staged_state.consecutive_provider_errors = 0
                 staged_state.last_provider_error = None
-                staged_state.coalesce_fingerprint = ""
-                staged_state.coalesce_opened_at = 0.0
+                staged_state.coalesce_windows = {}
                 staged_state.coalesce_alerted = {}
                 staged_state.stall_digest = ""
                 staged_state.stall_streak = 0

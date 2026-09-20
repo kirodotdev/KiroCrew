@@ -28,6 +28,7 @@ from kiro_crew.apps.manager import (
     get_app_manifest,
     install_app,
     list_apps,
+    list_apps_with_skips,
     register_external_app,
     registry_source_repository,
     uninstall_app,
@@ -2543,6 +2544,276 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
         )
 
         assert app_enabled_state("shape-probe") is True
+
+
+class TestListingReportsWhatItDropped:
+    """Tests for list_apps_with_skips — the listing says when it dropped an app.
+
+    ``list_apps`` reaches ``if not meta: continue`` for a record that does not read
+    and drops the app silently, so its return value cannot separate "no such app is
+    installed" from "that app's record went unread". The rebuild in ``agent.py``
+    needs them apart: treating an unread claim as a genuinely unclaimed name prunes a
+    mount ref that nothing re-adds.
+
+    These live in the owner's suite on purpose: this module owns the record
+    filename, the occupied-entry test and the skip rules, so a caller that walks
+    the apps directory itself can disagree with all three while every test here
+    still passes. Asking the listing is the only way a caller stays in step.
+    """
+
+    def _install_two(self, tmp_path):
+        install_app(_make_app_source(tmp_path, name="app-one"))
+        install_app(_make_app_source(tmp_path, name="app-two"))
+
+    def test_a_healthy_listing_reports_itself_complete(self, tmp_path, app_home):
+        """The accepting case, so the report is not refusing everything."""
+        self._install_two(tmp_path)
+
+        listing = list_apps_with_skips()
+
+        assert {a["name"] for a in listing.apps} == {"app-one", "app-two"}
+        assert listing.complete is True
+
+    def test_the_apps_list_is_handed_back_unchanged(self, tmp_path, app_home):
+        """The completeness flag is added BESIDE the listing, never instead of it.
+
+        ``list_apps`` has many callers and its shape is deliberately untouched, so
+        this pins that the new read is the same rows plus one answer.
+        """
+        self._install_two(tmp_path)
+
+        assert list_apps_with_skips().apps == list_apps()
+
+    def test_a_record_the_listing_drops_is_reported_as_a_skip(self, tmp_path, app_home):
+        """The case the whole function exists for: a record that does not parse.
+
+        The app is installed and its directory is on disk. ``list_apps`` reads the
+        record, fails, and drops the row -- so without this report a caller sees a
+        list that does not carry ``app-two`` and an apps root that does, and has to
+        reconstruct which of the two answers to believe.
+        """
+        self._install_two(tmp_path)
+        (app_home / "apps" / "app-two" / "installed.json").write_text(
+            "{ not json", encoding="utf-8"
+        )
+
+        listing = list_apps_with_skips()
+
+        assert {a["name"] for a in listing.apps} == {"app-one"}
+        assert listing.complete is False
+
+    def test_an_unreadable_record_is_reported_as_a_skip(self, tmp_path, app_home):
+        """A permission fault on the record is the same silent drop as a parse fault."""
+        self._install_two(tmp_path)
+        record = app_home / "apps" / "app-two" / "installed.json"
+        os.chmod(record, 0o000)
+        try:
+            if os.access(record, os.R_OK):
+                pytest.skip("this user bypasses file permissions")
+
+            listing = list_apps_with_skips()
+
+            assert {a["name"] for a in listing.apps} == {"app-one"}
+            assert listing.complete is False
+        finally:
+            os.chmod(record, stat.S_IRUSR | stat.S_IWUSR)
+
+    def test_a_dangling_record_link_is_reported_as_a_skip(self, tmp_path, app_home):
+        """Presence is judged WITHOUT resolving the path.
+
+        ``Path.exists`` follows a symlink, so a dangling ``installed.json`` link reads
+        absent while the listing still drops that app for failing to read it. The two
+        answers together would claim there is no such app while the app sits on disk.
+        """
+        self._install_two(tmp_path)
+        record = app_home / "apps" / "app-two" / "installed.json"
+        record.unlink()
+        record.symlink_to(tmp_path / "no-such-target.json")
+        assert not record.exists()
+
+        listing = list_apps_with_skips()
+
+        assert {a["name"] for a in listing.apps} == {"app-one"}
+        assert listing.complete is False
+
+    def test_a_junction_shaped_record_is_reported_as_a_skip(self, tmp_path, app_home, monkeypatch):
+        """``is_symlink`` is False for a Windows directory junction, so it is not enough.
+
+        Fed as a SHAPE rather than a real junction, for the reason the enabled-state
+        tests above give: a junction has no POSIX equivalent, so requiring one would
+        exercise this only on the platform it breaks. A dangling junction presents as
+        ``exists=False, is_symlink=False``, which is what an absent record presents as
+        too, so only the junction probe has to be stood in for.
+        """
+        self._install_two(tmp_path)
+        record = app_home / "apps" / "app-two" / "installed.json"
+        record.unlink()
+        assert not record.exists() and not record.is_symlink()
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.is_link_or_junction",
+            lambda path: Path(path) == record,
+        )
+
+        listing = list_apps_with_skips()
+
+        assert {a["name"] for a in listing.apps} == {"app-one"}
+        assert listing.complete is False
+
+    def test_a_directory_with_no_record_at_all_is_not_a_skip(self, tmp_path, app_home):
+        """A directory that never held a record stood for no app, so it hides nothing.
+
+        This is the boundary against the tests above: there something was AT the
+        record path and could not be read, here the path is plainly empty. Counting
+        this would hold the listing permanently incomplete for any stray directory.
+        """
+        self._install_two(tmp_path)
+        (app_home / "apps" / "not-an-app").mkdir()
+
+        listing = list_apps_with_skips()
+
+        assert {a["name"] for a in listing.apps} == {"app-one", "app-two"}
+        assert listing.complete is True
+
+    def test_a_plain_file_beside_the_app_directories_is_not_a_skip(self, tmp_path, app_home):
+        """An ordinary file inspects cleanly as a file and is simply not an app.
+
+        It cannot be told apart from an app root overwritten by a file, and counting
+        every one would leave the listing permanently incomplete -- which costs every
+        caller reading completeness as doubt. That residue is deliberate.
+        """
+        self._install_two(tmp_path)
+        (app_home / "apps" / "notes.txt").write_text("not an app", encoding="utf-8")
+
+        listing = list_apps_with_skips()
+
+        assert {a["name"] for a in listing.apps} == {"app-one", "app-two"}
+        assert listing.complete is True
+
+    def test_a_dangling_app_root_link_is_reported_as_a_skip(self, tmp_path, app_home):
+        """The same blindness one level up, where the listing skips a non-directory.
+
+        An app root replaced by a dangling link is not a dir, is not listed, and its
+        record is unreachable, so every resolving predicate agrees the app is absent
+        while something plainly occupies its name.
+        """
+        self._install_two(tmp_path)
+        (app_home / "apps" / "vanished").symlink_to(tmp_path / "no-such-app-dir")
+
+        listing = list_apps_with_skips()
+
+        assert {a["name"] for a in listing.apps} == {"app-one", "app-two"}
+        assert listing.complete is False
+
+    def test_no_apps_root_at_all_is_a_complete_listing_of_nothing(self, app_home):
+        """An absent root is the ordinary "nothing installed" shape, not a doubt."""
+        assert not (app_home / "apps").exists()
+
+        listing = list_apps_with_skips()
+
+        assert listing.apps == []
+        assert listing.complete is True
+
+    def test_a_root_replaced_by_a_file_is_reported_as_incomplete(self, app_home):
+        """A file standing where the root belongs hides every record beneath it.
+
+        This is the boundary against the test above: both leave nothing to walk, and
+        only the root's own presence separates them. Absent means no app is installed;
+        occupied means every installed app's record is unreachable and none of them can
+        be vouched for by an entry either, because there are no entries to read.
+
+        A plain file counts HERE and not one level down, where an ordinary non-app file
+        sits legitimately beside the app directories. The position carries the
+        argument: no healthy installation has a file where the apps root belongs.
+        """
+        (app_home / "apps").write_text("not a directory", encoding="utf-8")
+
+        listing = list_apps_with_skips()
+
+        assert listing.apps == []
+        assert listing.complete is False
+
+    def test_a_dangling_root_link_is_reported_as_incomplete(self, tmp_path, app_home):
+        """Presence is judged WITHOUT resolving, one level up from the record tests.
+
+        ``Path.exists`` follows the link, so a dangling apps root reads absent by every
+        resolving predicate while something plainly occupies the name. Reading that as
+        "nothing installed" is the answer that prunes a grant nothing re-adds.
+        """
+        (app_home / "apps").symlink_to(tmp_path / "no-such-apps-root")
+        assert not (app_home / "apps").exists()
+
+        listing = list_apps_with_skips()
+
+        assert listing.apps == []
+        assert listing.complete is False
+
+    def test_a_junction_shaped_root_is_reported_as_incomplete(self, app_home, monkeypatch):
+        """``is_symlink`` is False for a Windows directory junction, so it is not enough.
+
+        Fed as a SHAPE for the reason the record-level junction test gives: a junction
+        has no POSIX equivalent, so requiring a real one would exercise this only on
+        the platform it breaks. A dangling junction and an absent root both present as
+        ``exists=False, is_symlink=False``, so the junction probe is the only thing
+        that separates them and the only thing stood in for.
+        """
+        root = app_home / "apps"
+        assert not root.exists() and not root.is_symlink()
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.is_link_or_junction",
+            lambda path: Path(path) == root,
+        )
+
+        listing = list_apps_with_skips()
+
+        assert listing.apps == []
+        assert listing.complete is False
+
+    def test_a_root_that_cannot_be_walked_is_reported_as_incomplete(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """A root that raises mid-walk vouches for nothing, and keeps the rows it has.
+
+        The rows already read stay in ``apps`` -- they were read before the walk --
+        so the caller keeps every claim it can see and loses only the assurance that
+        it saw them all.
+
+        The completeness walk is picked out by WHEN it runs rather than by counting
+        walks. ``list_apps`` can walk the root more than once on its own: it calls
+        ``detect_orphaned_builtins`` first, which walks the root whenever that
+        module-global cache is cold, so which walk is the Nth depends on whether an
+        earlier test in the same worker happened to warm it. Arming only once
+        ``list_apps`` has returned names the target exactly, however many walks it
+        takes internally, and it keeps the fault out of ``list_apps`` itself --
+        which is called OUTSIDE the completeness ``try``, so an ``OSError`` raised in
+        there would propagate instead of being reported as an incomplete listing.
+        """
+        self._install_two(tmp_path)
+        real_iterdir = Path.iterdir
+        real_list_apps = list_apps
+        root = app_home / "apps"
+        state = {"rows_read": False, "raised": False}
+
+        def _rows_then_arm():
+            rows = real_list_apps()
+            state["rows_read"] = True
+            return rows
+
+        def _explode_once_armed(self):
+            if state["rows_read"] and self == root:
+                state["raised"] = True
+                raise OSError("root unreadable")
+            return real_iterdir(self)
+
+        monkeypatch.setattr("kiro_crew.apps.manager.list_apps", _rows_then_arm)
+        monkeypatch.setattr(Path, "iterdir", _explode_once_armed)
+
+        listing = list_apps_with_skips()
+
+        assert state["raised"], "the completeness walk never ran, so nothing was tested"
+        assert {a["name"] for a in listing.apps} == {"app-one", "app-two"}
+        assert listing.complete is False
 
 
 class TestBootSkillReconcile:

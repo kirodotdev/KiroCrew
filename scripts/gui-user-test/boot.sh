@@ -13,7 +13,9 @@
 # On success $GUI_OUT/target.env holds GUI_BASE_URL and GUI_DASHBOARD_TOKEN (the
 # gateway's one-time token, mode 0600) and $GUI_OUT/pids lists the process
 # groups teardown.sh kills. The token is a throwaway CI value for a gateway that
-# dies with the job; it never leaves the runner.
+# dies with the job; it never leaves the runner. Three sample markdown notes are
+# also staged at the fixed path /tmp/kirocrew-gui-user-test/team-notes -- not
+# configurable, because the Knowledge scenarios type that path verbatim.
 #
 # Local reproduction: docs/build/gui-user-test.md.
 set -euo pipefail
@@ -54,6 +56,37 @@ for m in "${members[@]}"; do
   [ -n "$m" ] && member_args+=(--member "$m")
 done
 KIROCREW_HOME="$HOME_DIR" python3 "$(dirname "$0")/seed_home.py" --fixture "$GUI_SEED" "${member_args[@]}"
+
+# ---- 2b. sample notes folder for the Knowledge scenarios -------------------
+# The Knowledge "Add Source > Local Folder" form takes a typed absolute path
+# (the native picker is macOS-only), and the seeded home above lives at a
+# mktemp path a scenario's static YAML cannot spell. So the sample notes are
+# staged at ONE fixed path the scenario text names verbatim. Fixed means shared
+# /tmp, so nothing here deletes a path it cannot prove is its own: a stale tree
+# from a crashed run is recognised by the marker file this script writes into
+# it (a real directory, owned by this user, marker present as a regular file,
+# never a symlink) and only that is dropped; anything else at the path -- a
+# symlink, another user's directory, a directory without the marker or with a
+# planted symlink in its place -- refuses the boot instead of being removed or
+# reused. `mkdir` without -p fails closed if the path is taken again in between.
+# teardown.sh applies the same ownership test before it removes the tree.
+GUI_NOTES_DIR="/tmp/kirocrew-gui-user-test/team-notes"
+notes_root="$(dirname "$GUI_NOTES_DIR")"
+notes_marker="$notes_root/.owned-by-gui-user-test"
+if [ -e "$notes_root" ] || [ -L "$notes_root" ]; then
+  if [ ! -L "$notes_root" ] && [ -d "$notes_root" ] && [ -O "$notes_root" ] \
+     && [ ! -L "$notes_marker" ] && [ -f "$notes_marker" ] && [ -O "$notes_marker" ]; then
+    rm -rf -- "$notes_root"
+  else
+    echo "::error::$notes_root exists but was not created by boot.sh (no ownership marker); move it aside" >&2
+    exit 2
+  fi
+fi
+mkdir -m 0700 -- "$notes_root"
+: > "$notes_marker"
+mkdir -m 0700 -- "$GUI_NOTES_DIR"
+cp -- "$(dirname "$0")/knowledge-notes/"*.md "$GUI_NOTES_DIR/"
+echo "notes=$notes_root" >> "$GUI_OUT/target.paths"
 
 # ---- 3. gateway ------------------------------------------------------------
 # Same shape as kiro_crew.testing.harness.spawn_feature_gateway (the E2E job's

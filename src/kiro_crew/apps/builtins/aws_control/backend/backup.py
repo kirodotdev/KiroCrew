@@ -31,8 +31,19 @@ engine's own merge/replace tooling (or a stopped gateway) takes it from
 there, and the UI copy says exactly that.
 
 State (`<app data dir>/backup.json`): this install's identity, plus the last
-run per kind and the nightly toggle per account. The nightly loop lives in the
-app's ``on_startup`` hook.
+run per kind, the nightly toggle per account, and the per-account retention
+count. The nightly loop lives in the app's ``on_startup`` hook.
+
+**Retention runs after a successful push, never before it.** Both key shapes
+above carry a timestamp, so nothing is ever overwritten and an unbounded drive
+was the default: a nightly backup added one archive a night forever. Each push
+therefore ends by retiring this install's oldest archives OF THAT KIND, but only
+once an operator has set a count: retention is opt-in, and with no usable count
+every archive is kept. The bucket is
+versioned, so the sweep deletes object VERSIONS rather than objects -- a plain
+delete would leave a marker and go on billing for the bytes behind it. It is
+best-effort: a cleanup that fails logs one line and leaves the successful backup
+alone. See ``_prune_remote_archives``.
 
 CALLER CONTRACT: handlers hold the consent gate; sync, subprocess/tar-bound
 — call via ``asyncio.to_thread`` (pushes of a large sessions set can run
@@ -42,6 +53,7 @@ minutes; handlers use generous timeouts).
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import hashlib
 import json
 import logging
@@ -64,6 +76,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.deploy.engine import AWSError, _checked
 from kiro_crew.history import SESSIONS_DIR_NAME
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import file_lock, is_link_or_junction, open_lock_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -112,12 +125,47 @@ def _state_path() -> Path:
     return app_data_dir(APP_NAME) / "backup.json"
 
 
-def read_state() -> dict[str, Any]:
+def _read_state_checked() -> tuple[dict[str, Any], bool]:
+    """``(state, readable)`` from ONE read of the state file.
+
+    ``readable`` is False only when the file EXISTS and could not be read or
+    parsed as an object. An ABSENT file is readable: there is nothing configured
+    to misread, and every default in this module is written for that case.
+
+    The distinction exists for one caller. :func:`read_state` folds absent,
+    unreadable and corrupt into ``{}`` because every other reader wants a
+    default; the retention sweep must not, because there a default silently
+    replaces a configured value and the difference is measured in permanently
+    erased bytes. See :func:`_retention_keep_for_sweep`.
+    """
     try:
-        data = json.loads(_state_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {}
+        raw = _state_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, True
+    except (OSError, UnicodeDecodeError):
+        # `UnicodeDecodeError` is a `ValueError`, NOT an `OSError`, so an OSError-only
+        # catch lets a state file of non-UTF-8 bytes escape as an exception -- exactly
+        # the "exists but could not be read" case this function promises to answer
+        # `({}, False)` for. It matters more here than anywhere else in the module: the
+        # sweep resolves its keep count through this before entering its own
+        # best-effort handler, and its caller's comment promises retention cannot fail
+        # the run, so an escaping decode error would report a backup already off-host
+        # as failed AND skip the audited unreadable branch.
+        #
+        # Deliberately not the wider `ValueError`: a surprising one is a bug that
+        # should be loud rather than folded into "unreadable".
+        return {}, False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}, False
+    if not isinstance(data, dict):
+        return {}, False
+    return data, True
+
+
+def read_state() -> dict[str, Any]:
+    return _read_state_checked()[0]
 
 
 def write_state(state: dict[str, Any]) -> None:
@@ -162,12 +210,26 @@ def _read_state_for_update() -> dict[str, Any]:
 
     Corruption keeps its existing repair-on-write behaviour, which is a
     deliberate decision documented on :func:`_account_state`: a document that
-    parsed to nothing usable carries nothing to lose.
+    parsed to nothing usable carries nothing to lose. That covers a file which
+    DECODED and then failed to parse. Bytes that are not UTF-8 never reached the
+    parser, so they are the unreadable kind, not the corrupt kind, and the
+    mutation is abandoned rather than published over them.
     """
     try:
         data = json.loads(_state_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    except UnicodeDecodeError as exc:
+        # Repair-on-write below is justified for a document that PARSED to nothing
+        # usable. Bytes that are not UTF-8 never reached the parser, so that reasoning
+        # does not cover them: the file is still state we have, and publishing over it
+        # would replace every account's toggles, retention count and run history --
+        # including the `upload_versions` records the sweep's ownership test depends on
+        # -- on the strength of a document nobody read. It is caught explicitly because
+        # it is a `ValueError`, so the `OSError` clause below cannot see it.
+        raise _StateUnreadable(
+            errno.EILSEQ, "state file is not valid UTF-8", str(_state_path())
+        ) from exc
     except OSError as exc:
         raise _StateUnreadable(
             exc.errno, exc.strerror or "state file could not be read", exc.filename
@@ -200,11 +262,19 @@ def _locked_state_update(mutate) -> Any:
             with _unpersisted_lock:
                 for key, fingerprints in uploads.items():
                     held = _unpersisted_uploads.get(key, {})
+                    held_versions = _unpersisted_versions.get(key, {})
                     for name, fingerprint in fingerprints.items():
                         if held.get(name) == fingerprint:
                             held.pop(name, None)
+                            # The version is cleared with the fingerprint it arrived
+                            # with, never on its own: the persisted state now carries
+                            # both, so keeping either would be a second copy that can
+                            # go stale.
+                            held_versions.pop(name, None)
                     if not held:
                         _unpersisted_uploads.pop(key, None)
+                    if not held_versions:
+                        _unpersisted_versions.pop(key, None)
     return result
 
 
@@ -340,6 +410,45 @@ STAGING_NAME_MAX_BYTES = 255
 #: Subpath per backup kind. One place, because three call sites (upload, listing,
 #: key classification) have to agree on it or the namespace splits.
 KIND_SUBPATHS: dict[str, str] = {KIND_SNAPSHOT: "snapshots", KIND_SESSIONS: "sessions"}
+
+#: The floor, and not a style choice: at ``keep=0`` the sweep would delete the
+#: archive the run has just uploaded, so a backup would end by destroying itself.
+#: Every configured value is clamped through :func:`_clamp_retention_keep`. The
+#: newest complete archive is protected SEPARATELY from this floor, because a floor
+#: is a property of the number and the protection must not depend on the number.
+RETENTION_KEEP_MIN = 1
+
+#: Where the count lives in ``backup.json``, and the whole switch: this key present
+#: and holding a usable count is the only thing that enables retention. Absent, or
+#: holding anything else, means keep everything -- there is no default that deletes.
+#:
+#: Deleting an object version cannot be undone, and these are the operator's bytes
+#: in the operator's bucket, so the two ways of being wrong do not compare. Shipping
+#: off costs storage an operator can see in a listing and fix with one command;
+#: shipping on silently destroys archives somebody was deliberately keeping and
+#: leaves them nothing to restore from. It is also the house shape for this kind of
+#: switch rather than a new policy: ``nightly`` ships off, reads fail-closed, and is
+#: never inferred from an adjacent grant. Retention defaulting to delete would be
+#: the first capability here to act destructively on operator data unasked.
+#:
+#: Read only through :func:`_retention_keep_for_sweep`, never inferred from
+#: ``nightly`` or any other grant in either direction: authorizing unattended
+#: UPLOADS is not authorizing permanent DELETES.
+#:
+#: Per ACCOUNT, because the drive is per account: two connected accounts are two
+#: buckets and two bills, and one number for both would apply a decision made about
+#: one to the other.
+RETENTION_KEEP_STATE_KEY = "retention_keep"
+
+#: SEL operation names for the two decisions this module asks
+#: :func:`_authorize_upload` to make.
+#:
+#: Separate, because by the time retention runs the upload has ALREADY succeeded.
+#: Filing a refused sweep as a denied ``backup_upload`` would put a denial in the
+#: log for a transfer that completed, and an auditor counting denied uploads would
+#: be counting a push that happened.
+SEL_OP_UPLOAD = "aws_control.backup_upload"
+SEL_OP_RETENTION = "aws_control.backup_retention"
 
 #: An id for a process that could not persist one. See :func:`install_identity`.
 _fallback_identity: dict[str, str] = {}
@@ -624,6 +733,41 @@ def uploaded_keys(account: str) -> set[str]:
     return set(uploaded_objects(account))
 
 
+def uploaded_versions(account: str) -> dict[str, str]:
+    """Key -> the ``VersionId`` this install recorded writing under it.
+
+    A key is absent when no version was recorded for it: an archive uploaded before
+    this was recorded at all, an unversioned bucket, or a ``put-object`` response
+    that named none. Retention reads absence as "do not touch", which is the only
+    safe reading -- being in ``uploaded_keys`` proves this install wrote A version
+    of a key, and only this map says WHICH.
+
+    Merges the in-process records for the same reason :func:`uploaded_objects`
+    does: a run whose state write failed is still this install's own upload, and
+    its version is the one thing that makes it retireable.
+    """
+    entry = _account_view(account)
+    stored = entry.get("upload_versions")
+    versions: dict[str, str] = {}
+    if isinstance(stored, dict):
+        versions = {
+            key: value
+            for key, value in stored.items()
+            if isinstance(key, str) and isinstance(value, str) and value
+        }
+    path = _state_key()
+    with _unpersisted_lock:
+        versions.update(_unpersisted_versions.get((path, account), {}))
+        for (state_path, acct, _kind), record in _unpersisted_runs.items():
+            if state_path != path or acct != account:
+                continue
+            held = record.get("key")
+            version = record.get("version")
+            if isinstance(held, str) and isinstance(version, str) and version:
+                versions[held] = version
+    return versions
+
+
 class UnprovenArchive(RuntimeError):
     """A restore named an archive this install cannot prove is its own.
 
@@ -690,6 +834,12 @@ class UnprovenArchive(RuntimeError):
 #: kinds, and an entry is dropped as soon as one write for that key succeeds.
 _unpersisted_runs: dict[tuple[str, str, str], dict[str, Any]] = {}
 _unpersisted_uploads: dict[tuple[str, str], dict[str, str]] = {}
+#: Key -> the ``VersionId`` of a held upload, the version half of the map above.
+#: Retention can only retire a key whose version it knows, so a held upload that
+#: recovers its fingerprint and loses its version recovers into an archive nothing
+#: can ever reclaim. Trimmed to the keys ``_unpersisted_uploads`` holds rather than
+#: to its own count, so exactly ONE bound governs both and they cannot drift.
+_unpersisted_versions: dict[tuple[str, str], dict[str, str]] = {}
 _unpersisted_lock = threading.Lock()
 # Serialize record creation through recovery/acknowledgement in this process.
 # The sidecar still serializes disk updates across processes; it cannot order
@@ -717,13 +867,32 @@ def _run_is_newer(candidate: dict[str, Any], previous: Any) -> bool:
     return not isinstance(old_at, str) or old_at < str(candidate.get("at", ""))
 
 
-def _merge_uploads(entry: dict[str, Any], additions: dict[str, str]) -> None:
+def _merge_uploads(
+    entry: dict[str, Any],
+    additions: dict[str, str],
+    versions: Optional[dict[str, str]] = None,
+) -> None:
     uploads = entry.setdefault("uploads", {})
     if not isinstance(uploads, dict):
         uploads = entry["uploads"] = {}
     uploads.update(additions)
     for stale in list(uploads)[: max(0, len(uploads) - MAX_REMEMBERED_UPLOADS)]:
         uploads.pop(stale, None)
+    # The version map lives beside `uploads` rather than inside its values, because
+    # `uploaded_objects` filters that map to STRING values and would silently drop a
+    # key whose value became a dict -- taking `classify_key` and the restore
+    # ownership check down with it.
+    #
+    # It is trimmed to the keys `uploads` still holds rather than to its own count,
+    # so exactly ONE bound exists and the two maps cannot drift apart: a key that
+    # fell off `uploads` can never be retired, so its version would be dead weight,
+    # and a version whose key is gone answers a question nobody asks.
+    recorded = entry.setdefault("upload_versions", {})
+    if not isinstance(recorded, dict):
+        recorded = entry["upload_versions"] = {}
+    recorded.update(versions or {})
+    for orphan in [key for key in recorded if key not in uploads]:
+        recorded.pop(orphan, None)
 
 
 def _merge_pending(state: dict[str, Any]) -> tuple[list, dict]:
@@ -740,6 +909,7 @@ def _merge_pending(state: dict[str, Any]) -> tuple[list, dict]:
             for key, fingerprints in _unpersisted_uploads.items()
             if key[0] == path
         }
+        versions = {key: dict(ids) for key, ids in _unpersisted_versions.items() if key[0] == path}
     for account, kind, record in pending:
         entry = _account_state(state, account)
         runs = entry.setdefault("runs", {})
@@ -748,7 +918,14 @@ def _merge_pending(state: dict[str, Any]) -> tuple[list, dict]:
         if _run_is_newer(record, runs.get(kind)):
             runs[kind] = record
     for (_, account), fingerprints in uploads.items():
-        _merge_uploads(_account_state(state, account), fingerprints)
+        # The versions travel with the fingerprints. Recovering a key WITHOUT its
+        # version persists an upload retention can never retire, and the key carries
+        # a timestamp and entropy so it is never re-uploaded to self-correct.
+        _merge_uploads(
+            _account_state(state, account),
+            fingerprints,
+            versions.get((path, account), {}),
+        )
     return pending, uploads
 
 
@@ -790,8 +967,16 @@ def _remember_unpersisted(account: str, kind: str, record: dict[str, Any]) -> No
             _unpersisted_runs[run_key] = record
         uploads = _unpersisted_uploads.setdefault((path, account), {})
         uploads[record["key"]] = str(record.get("fingerprint", "") or "")
+        version = str(record.get("version", "") or "")
+        versions = _unpersisted_versions.setdefault((path, account), {})
+        if version:
+            versions[record["key"]] = version
         for stale in list(uploads)[: max(0, len(uploads) - MAX_REMEMBERED_UPLOADS)]:
             uploads.pop(stale, None)
+        # One bound, applied to `uploads`, then mirrored: a version whose key has
+        # fallen off can never be retired, so it would be dead weight.
+        for orphan in [key for key in versions if key not in uploads]:
+            versions.pop(orphan, None)
 
 
 def _forget_unpersisted(account: str, kind: str, persisted: dict[str, Any]) -> None:
@@ -828,14 +1013,14 @@ def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record_run(
-    account: str, kind: str, key: str, size: int, fingerprint: str = ""
+    account: str, kind: str, key: str, size: int, fingerprint: str = "", version: str = ""
 ) -> dict[str, Any]:
     with _run_lock:
-        return _record_run_locked(account, kind, key, size, fingerprint)
+        return _record_run_locked(account, kind, key, size, fingerprint, version)
 
 
 def _record_run_locked(
-    account: str, kind: str, key: str, size: int, fingerprint: str
+    account: str, kind: str, key: str, size: int, fingerprint: str, version: str = ""
 ) -> dict[str, Any]:
     global _run_sequence
     _run_sequence += 1
@@ -848,6 +1033,12 @@ def _record_run_locked(
         # Carried on the held record as well, so an upload whose state write failed
         # can still be authenticated from this process's memory.
         "fingerprint": fingerprint,
+        # The S3 version this upload created. On a versioned bucket this is the only
+        # value that identifies WHICH bytes under the key we wrote, which is what
+        # retention needs before it erases anything. Empty when the bucket is
+        # unversioned or the response named none, and retention then declines the
+        # key rather than guessing.
+        "version": version,
         # Provisional. The authoritative stamp is taken inside `mutate`, under the
         # sidecar lock -- see there. This value survives only on the path where the
         # READ fails, because `mutate` never runs then.
@@ -861,7 +1052,7 @@ def _record_run_locked(
             # A corrupted non-dict `runs` must not crash AFTER the archive
             # already uploaded (500 + no ledger entry + duplicate on retry).
             runs = entry["runs"] = {}
-        _merge_uploads(entry, {key: fingerprint})
+        _merge_uploads(entry, {key: fingerprint}, {key: version} if version else None)
         # Keep the observed wall time, even on a coarse or backwards clock.
         # Local sequence, not timestamp precision, orders this process's runs.
         record["at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
@@ -939,7 +1130,14 @@ def clear_stop() -> None:
     _STOP.clear()
 
 
-def _refuse_upload(account: str, reason: str, *, caller: str, outcome: str = "denied") -> NoReturn:
+def _refuse_upload(
+    account: str,
+    reason: str,
+    *,
+    caller: str,
+    outcome: str = "denied",
+    operation: str = SEL_OP_UPLOAD,
+) -> NoReturn:
     """Record why an upload was refused in the SEL, then refuse.
 
     A refusal is the outcome an auditor most wants evidence of, and it was the
@@ -971,13 +1169,19 @@ def _refuse_upload(account: str, reason: str, *, caller: str, outcome: str = "de
     as a withdrawn consent and devalue every real denial in the log. Both values
     are from the vocabulary ``sel.py`` documents for this field.
 
+    ``operation`` names WHICH decision was refused, because the same gate now
+    guards two of them: the archive upload, and the retention sweep that follows
+    a successful one. They must not share a name -- a refused sweep filed as a
+    denied upload is a denial recorded against a transfer that completed. See
+    :data:`SEL_OP_UPLOAD` and :data:`SEL_OP_RETENTION`.
+
     Best-effort, like the route's audit: a failed audit must never convert a
     refusal into an upload.
     """
     try:
         sel().log_api_access(
             caller=caller,
-            operation="aws_control.backup_upload",
+            operation=operation,
             outcome=outcome,
             source="aws-control",
             resources=f"account={account}"[:200],
@@ -988,7 +1192,9 @@ def _refuse_upload(account: str, reason: str, *, caller: str, outcome: str = "de
     raise RuntimeError(reason)
 
 
-def _authorize_upload(account: str, profile: str, region: str, *, caller: str) -> None:
+def _authorize_upload(
+    account: str, profile: str, region: str, *, caller: str, operation: str = SEL_OP_UPLOAD
+) -> None:
     """Re-check the authorization decisions at the moment of upload.
 
     An archive build can run for minutes inside a worker thread; consent
@@ -1023,17 +1229,22 @@ def _authorize_upload(account: str, profile: str, region: str, *, caller: str) -
             account,
             "this connection no longer points at the requested account; upload refused",
             caller=caller,
+            operation=operation,
         )
     if not is_app_enabled("aws-control"):
         _refuse_upload(
             account,
             "aws-control was disabled during the backup build; upload refused",
             caller=caller,
+            operation=operation,
         )
     granted, reason = aws_consent.is_granted(aws_consent.SERVICE_S3, profile=profile, region=region)
     if not granted:
         _refuse_upload(
-            account, f"S3 consent no longer holds; upload refused: {reason}", caller=caller
+            account,
+            f"S3 consent no longer holds; upload refused: {reason}",
+            caller=caller,
+            operation=operation,
         )
     # `is_granted` is only the LOCAL half of the gate and its own docstring says
     # so: it matches profile+region and deliberately does not look at the
@@ -1052,20 +1263,734 @@ def _authorize_upload(account: str, profile: str, region: str, *, caller: str) -
             account,
             "S3 consent was withdrawn during the backup build; upload refused",
             caller=caller,
+            operation=operation,
         )
     if not grant.account or grant.account != account:
         _refuse_upload(
             account,
             "the recorded S3 consent does not name this account; upload refused",
             caller=caller,
+            operation=operation,
         )
     # Last, and deliberately after every other check: app teardown. A worker
     # thread cannot be killed, so cancelling the loop's await leaves the archive
     # build running; this is what makes that build stop short of uploading.
     if _STOP.is_set():
         _refuse_upload(
-            account, "aws-control is shutting down; upload refused", caller=caller, outcome="failed"
+            account,
+            "aws-control is shutting down; upload refused",
+            caller=caller,
+            outcome="failed",
+            operation=operation,
         )
+
+
+def _clamp_retention_keep(raw: Any) -> int | None:
+    """A usable stored count, or ``None`` when there is none.
+
+    ``None`` means keep everything. Absent, a string, a float, a bool -- none of
+    those is a count somebody chose, and the only safe reading of a value nobody
+    chose is not to delete. There is deliberately no fallback number: a fallback
+    here would be a permanent delete performed on a value the operator never wrote.
+
+    Zero and negatives ARE counts somebody wrote, just unusable ones, so they clamp
+    UP to :data:`RETENTION_KEEP_MIN` rather than turning retention off -- switching
+    it off on a typo would silently stop doing the thing the operator asked for, and
+    that direction deletes FEWER archives than the stored number named. There is no
+    ceiling to clamp down to: a count larger than the number of archives that exist
+    simply keeps all of them, which is not a harm worth refusing an operator over, and
+    honouring what they wrote beats reading it as something smaller or as nothing.
+
+    ``bool`` is screened before ``int`` on purpose: ``True`` IS an ``int`` in
+    Python, so a state file carrying ``"retention_keep": true`` would otherwise
+    resolve to ``keep=1`` -- a plausible-looking number nobody configured, and the
+    most destructive one available.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return max(RETENTION_KEEP_MIN, raw)
+
+
+def _retention_keep_for_sweep(account: str) -> tuple[int | None, str]:
+    """The sweep's keep count, or ``None`` and why the sweep is keeping everything.
+
+    Retention is OFF unless this account's state holds a usable count, so ``None``
+    is the ordinary answer on an install nobody has configured, not an error. The
+    reason comes back with it because the ways of reaching ``None`` need different
+    handling downstream: an ABSENT key is the configured behaviour and a successful
+    sweep that had nothing to do, while a state file this process could not read --
+    or a key that is present and does not resolve to a usable count -- is an anomaly
+    worth a warning even though it keeps everything too. Those two are the same
+    reason on purpose: in both, somebody's intent is not being honoured, and the
+    difference between "unreadable file" and "unreadable value" is not one an
+    operator can act on differently.
+
+    Both are fail-closed, the direction :func:`nightly_enabled` picks for the same
+    kind of reason. A sweep that does not run costs storage the operator can see and
+    reclaim; a sweep run on a value nobody configured erases archives permanently.
+    An operator who set ``keep=50`` and meets a transient read failure after the
+    upload must not have 47 archives deleted by a number this process guessed.
+
+    Never derived from ``nightly`` or any other grant, in either direction.
+    Authorizing unattended uploads is not authorizing permanent deletes, and a
+    configured count is not withdrawn by turning the nightly off.
+    """
+    view, readable = _account_view_checked(account)
+    if not readable:
+        return None, "the retention setting could not be read"
+    if RETENTION_KEEP_STATE_KEY not in view:
+        return None, "retention is not enabled"
+    keep = _clamp_retention_keep(view.get(RETENTION_KEEP_STATE_KEY))
+    if keep is None:
+        # The key is THERE and does not resolve. Somebody configured something and it
+        # is not being honoured, so this is the anomaly reason rather than the off one:
+        # reporting it as "not enabled" would audit a successful sweep and leave an
+        # operator believing a count they wrote is in force.
+        return None, "the retention setting could not be read"
+    return keep, ""
+
+
+#: Serializes a sweep's FINAL count check with the delete it authorizes, and with
+#: :func:`set_retention_keep`. Re-reading the count is not enough on its own: whatever
+#: sits between the read and the delete is a window, and an owner's ``keep:null``
+#: landing inside it still loses versions they chose to keep.
+#:
+#: One lock for retention rather than one per account, deliberately. A per-account map
+#: would be unbounded state keyed by a caller-supplied string, and the cost of the
+#: coarser lock is only that two accounts' sweeps queue at their last step. It is NOT
+#: :data:`_run_lock`: that one also serializes :func:`last_runs`, so holding it across
+#: a purge would stall a status read for the length of the deletion.
+_RETENTION_GATE = threading.Lock()
+
+
+class _RetentionCountWithdrawn(Exception):
+    """The count stopped authorizing the candidate set while the gate was held."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class _RetentionAuthorizationWithdrawn(Exception):
+    """Consent was gone by the time the gate was held, so nothing may be deleted.
+
+    Carries the original refusal, because the audit entry the caller files reports
+    WHY authorization failed and a flattened message would lose that.
+    """
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+def _delete_under_the_retention_gate(
+    account: str,
+    keep: int,
+    profile: str,
+    region: str,
+    bucket: str,
+    versions: list[tuple[str, str]],
+    *,
+    caller: str,
+) -> int:
+    """Re-read the count and erase ``versions`` without letting a write interleave.
+
+    The re-read happens with :data:`_RETENTION_GATE` held and the delete runs before
+    it is released, so there is no instant at which the count can change between being
+    checked and being acted on. :func:`set_retention_keep` takes the same lock, which
+    is what makes the two orderings the only ones possible: either the write lands
+    first and this read sees it, or the delete completes and the write applies to the
+    next sweep.
+
+    A count that GREW protects keys this candidate set was built to delete, so the set
+    is stale and this raises. A count that shrank authorizes every key in the set and
+    more, so the set stays valid. Unreadable raises, as the first read does.
+    """
+    # BOTH locks, because either alone leaves a real hole. `_RETENTION_GATE` orders
+    # other THREADS in this process; the state file's sidecar lock orders other
+    # PROCESSES, and this module's own docstrings describe a second install writing
+    # into the first one's bucket and state as a designed-for case -- so a clear issued
+    # over there would otherwise not be ordered against this delete at all. A thread
+    # lock cannot see another process, and a file lock alone would not serialize two
+    # threads here, since each would open its own descriptor.
+    #
+    # The cost is deliberate: a state write in ANY process waits for this purge. That
+    # is the price of ordering an irreversible remote delete against a local
+    # withdrawal, and what waits is one batched delete rather than the whole sweep.
+    lock_path = _state_path().with_suffix(".lock")
+    _state_path().parent.mkdir(parents=True, exist_ok=True)
+    with (
+        _RETENTION_GATE,
+        open_lock_file(lock_path) as fd,
+        file_lock(fd, exclusive=True, required=True),
+    ):
+        keep_now, off_now = _retention_keep_for_sweep(account)
+        if keep_now is None or keep_now > keep:
+            raise _RetentionCountWithdrawn(off_now or "the retention count changed before deletion")
+        # Consent is re-checked HERE, inside both locks, for the same reason the count
+        # is: acquiring these locks can wait on another purge, and a gate is good for
+        # the call that follows it rather than for one on the far side of a wait. This
+        # is the LAST thing before the irreversible call.
+        #
+        # It costs an STS round trip inside the critical section, which is the trade
+        # already taken for the delete: a longer wait for other state writers buys a
+        # delete that cannot run on authority withdrawn while this waited.
+        try:
+            _authorize_upload(account, profile, region, caller=caller, operation=SEL_OP_RETENTION)
+        except Exception as exc:
+            raise _RetentionAuthorizationWithdrawn(exc) from exc
+        return storage.delete_object_versions(
+            profile, region, bucket, "backup", versions, account=account
+        )
+
+
+def _newest_first(keys: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """``keys`` ordered newest archive first, by the same rule the panel sorts by.
+
+    One ordering for the listing and the sweep, because two would eventually
+    disagree and the operator would then be shown a row that retention had
+    already decided was old. :func:`_archive_sort_key` leads on S3's own
+    ``LastModified`` and tie-breaks on the basename, so a key put here by some
+    other tool -- carrying no ``_stamp`` and therefore no time in its name --
+    still sorts by when the bucket says it arrived.
+    """
+
+    def _entry(key: str) -> dict[str, Any]:
+        newest = max((str(v.get("modified", "")) for v in keys[key]), default="")
+        return {"key": key, "modified": newest}
+
+    return sorted(keys, key=lambda k: _archive_sort_key(_entry(k)), reverse=True)
+
+
+def _current_version_is_ours(rows: list[dict[str, Any]], recorded: str) -> bool:
+    """Whether the version a restore would fetch under this key is ``recorded``.
+
+    `storage.get_file` names no version, so a restore reads the key's CURRENT
+    version. That makes "is this a restorable archive of ours" a question about one
+    version only, and the answer decides both whether the key may hold a ``keep``
+    slot and whether the sweep may run at all.
+
+    False for a key whose current version is a delete marker, and false for one
+    whose current version is a co-writer's. In the second case our bytes are still
+    on the drive as a noncurrent version, which is exactly why the count-based
+    reading of this looked fine: they are present, and they are also unreachable
+    through the only restore this product offers.
+
+    Empty ``recorded`` is therefore false as well: with no recorded id nothing can
+    be shown to be ours, which is the fail-closed end.
+
+    It is deliberately a question about the CURRENT version rather than the
+    newest-by-timestamp one, so a key ordered by `_newest_first` also carries our
+    version as its newest -- one rule, not two that can drift.
+    """
+    if not recorded:
+        return False
+    current = [row for row in rows if row.get("latest")]
+    if not current:
+        return False
+    row = current[0]
+    if row.get("deleteMarker"):
+        return False
+    return str(row.get("versionId", "")) == recorded
+
+
+def _audit_retention(
+    account: str,
+    outcome: dict[str, Any],
+    *,
+    caller: str,
+    result: str,
+    error: str = "",
+) -> None:
+    """Record in the SEL what the sweep DID, not only what it refused.
+
+    :func:`_refuse_upload` covers the gate, so a REFUSED sweep was already on the
+    record and a sweep that RAN was not. That asymmetry is the one an auditor
+    cannot work around, because this is the only path in the app that erases
+    object versions permanently: a purge leaving no event is indistinguishable
+    from no purge at all, and so is a purge that failed halfway. Each terminal
+    outcome therefore files one :data:`SEL_OP_RETENTION` event carrying the
+    counts that say which of them happened.
+
+    ``result`` is ``successful`` when the sweep completed, whether or not it had
+    anything to delete, and ``failed`` when it did not -- an AWS error, or the
+    refusal to act on a listing that does not show the archive just uploaded.
+    Neither is ``denied``: that value belongs to the access decisions
+    :func:`_refuse_upload` files, and putting a cloud error in the same bucket as
+    a withdrawn consent would devalue every real denial in the log.
+
+    Best-effort and last, for the same reason the sweep itself is: the archive is
+    already off-host, so a SEL write that fails must not reach the caller.
+    """
+    try:
+        sel().log_api_access(
+            caller=caller,
+            operation=SEL_OP_RETENTION,
+            outcome=result,
+            source="aws-control",
+            resources=(
+                f"account={account} kind={outcome['kind']} keep={outcome['keep']} "
+                f"live={outcome['live']} retired={outcome['retired']} "
+                f"versions={outcome['versions']} unclaimed={outcome['unclaimed']} "
+                f"unclaimedBytes={outcome['unclaimedBytes']}"
+            )[:200],
+            error=error[:200],
+        )
+    except Exception:
+        logger.debug("aws-control SEL audit failed", exc_info=True)
+
+
+def _audit_unfiled_authorization(
+    account: str,
+    outcome: dict[str, Any],
+    exc: BaseException,
+    *,
+    caller: str,
+) -> None:
+    """File a retention event for an authorization failure nobody else filed.
+
+    :func:`_refuse_upload` files its own ``denied`` event and THEN raises, so a
+    refusal is already on the record and filing again here would record one
+    decision twice. Every other way :func:`_authorize_upload` can fail -- an
+    :class:`AWSError` out of the live ``sts:GetCallerIdentity``, an expired or
+    missing credential, a transport error -- never reaches ``_refuse_upload``,
+    and leave the gate on the permanent-delete path with no event at all. A
+    credential failure is ordinary, so that is the common case this covers.
+
+    The exception TYPE is the discriminator because it is the one thing
+    ``_refuse_upload`` guarantees: it ends in ``raise RuntimeError(reason)``.
+    ``AWSError`` derives from ``Exception``, not ``RuntimeError``, and a test
+    pins that relationship -- if it ever changed, this would silently go back to
+    treating a real credential failure as already audited.
+
+    ``failed`` rather than ``denied``, per :func:`_audit_retention`: a cloud error
+    is not an access decision, and filing it as a denial would devalue the real
+    ones.
+    """
+    if isinstance(exc, RuntimeError):
+        return
+    _audit_retention(
+        account,
+        outcome,
+        caller=caller,
+        result="failed",
+        error=redact_log_via_context(str(exc)),
+    )
+
+
+def _prune_remote_archives(
+    account: str,
+    profile: str,
+    region: str,
+    bucket: str,
+    kind: str,
+    install_id: str,
+    newest_key: str,
+    *,
+    caller: str,
+) -> dict[str, Any]:
+    """Retire this install's oldest archives of ``kind``, keeping the newest ``keep``.
+
+    Without this the drive only ever grows. Both push paths mint a key carrying
+    :func:`_stamp`, so nothing is ever overwritten and a nightly backup adds one
+    archive a night forever -- measured on a real drive: 15 snapshot archives,
+    10.1 GB, the newest 2.49 GB, oldest three weeks old, on a bucket whose size
+    had never once gone down.
+
+    **Deleting the OBJECT would not have helped.** The drive has versioning
+    enabled and no lifecycle rule, so ``delete-object`` without a version id
+    writes a delete marker and leaves the bytes as a noncurrent version that goes
+    on being billed -- a retention pass built that way would empty the listing
+    and save nothing. So the sweep is version-aware end to end: it lists versions
+    (:func:`storage.list_object_versions`) and deletes them pinned to their
+    ``VersionId`` (:func:`storage.delete_object_versions`), which erases the bytes
+    and leaves no marker behind.
+
+    **BEST-EFFORT AND LAST.** The upload is the point of the run; retention is
+    housekeeping after it. Every failure below is caught and logged as one line,
+    because a backup whose archive is safely off-host must never be reported as
+    failed over a cleanup that was not -- the only cost of a skipped sweep is a
+    bill, and the next successful run collects it.
+
+    **AUDITED EITHER WAY.** Being best-effort is why the SEL entry matters: a
+    failure that only logs is a failure nobody reviewing the audit trail can see,
+    and this is the one path in the app that erases object versions for good. So
+    every terminal outcome files one event through :func:`_audit_retention` --
+    including the ones that deleted nothing -- while a refusal by the gate is left
+    to :func:`_refuse_upload`, which already recorded it where the decision was
+    made.
+
+    Three scoping rules, each made load-bearing by the shape of this bucket:
+
+    * **Per install.** One drive is reachable by several installs BY DESIGN (see
+      "install identity"), so the listing and every delete are anchored on THIS
+      install's prefix. Another machine's archives are not ours to retire and its
+      retention setting is not ours to apply.
+    * **Per kind.** ``snapshots/`` and ``sessions/`` are separate histories with
+      separate cadences. Counted together, a burst of one kind would evict the
+      other kind's only copy.
+    * **Never the newest, whatever the count.** The key this run just uploaded is
+      dropped from the candidates unconditionally, by name, and that is a SEPARATE
+      guarantee from the count rather than a consequence of it. The floor at
+      :data:`RETENTION_KEEP_MIN` also happens to spare the first entry of the age
+      order, but the two are not the same claim: the run's own key is only first in
+      that order while nothing else carries a later timestamp, and a co-writer with
+      a skewed clock or a future-dated object is enough to move it. Tying the
+      guarantee to the number would make it hold by luck exactly when the ordering
+      surprises us, which is the case it exists for.
+
+    And one refusal, which is the cloud form of the guard ``--keep`` already
+    carries locally: a bundle that omits data it was asked to carry does not
+    prune, so an incomplete backup cannot replace a complete one. Here, if the
+    listing does not show the archive this run just uploaded, NOTHING is pruned. A
+    view missing the newest object is a view that cannot be trusted about which
+    objects are old, and acting on one is how a retention pass deletes the history
+    and keeps nothing.
+
+    Returns a record of what it did, for the log line and for tests. Callers
+    ignore it: there is no outcome here that should change the run's own result.
+    """
+    keep, off_reason = _retention_keep_for_sweep(account)
+    outcome: dict[str, Any] = {
+        "kind": kind,
+        # "off" rather than a number when nothing is configured or the state could
+        # not be read. Recording a number here would name a count this sweep did not
+        # act on, and the absence of one is the whole point.
+        "keep": "off" if keep is None else keep,
+        "live": 0,
+        "retired": 0,
+        "versions": 0,
+        # Archives this install wrote and can never retire. Zero until the listing
+        # is read, and reported even when the sweep deletes nothing, because their
+        # whole problem is that no sweep ever collects them.
+        "unclaimed": 0,
+        "unclaimedBytes": 0,
+        "skipped": "",
+    }
+    # First, and before any cloud call, because neither branch needs one to decline.
+    #
+    # Retention is off unless this account holds a usable count, so an install nobody
+    # configured -- fresh or upgraded -- reaches here and keeps every archive. That
+    # is the whole opt-in: no first run after an upgrade deletes anything.
+    #
+    # The two reasons are audited differently on purpose. Not enabled is the
+    # configured behaviour, so the sweep SUCCEEDED at having nothing to do, and
+    # filing it as a failure would put the ordinary state of every unconfigured
+    # install in the same bucket as a real fault. A state file this process could not
+    # read keeps everything too, but it is an anomaly: an operator who configured a
+    # count is silently not getting it, so it stays a failure with its reason.
+    if keep is None:
+        outcome["skipped"] = off_reason
+        if off_reason == "retention is not enabled":
+            logger.debug(
+                "aws-control: %s retention for %s is not enabled, so every archive is "
+                "kept; set %s on this account to bound the pile",
+                kind,
+                account,
+                RETENTION_KEEP_STATE_KEY,
+            )
+            _audit_retention(account, outcome, caller=caller, result="successful")
+            return outcome
+        logger.warning(
+            "aws-control: skipping %s retention for %s: the app's state file could not "
+            "be read, so a configured keep count cannot be seen and guessing one could "
+            "erase archives the owner asked to keep; the backup itself succeeded and "
+            "nothing was deleted",
+            kind,
+            account,
+        )
+        _audit_retention(account, outcome, caller=caller, result="failed", error=outcome["skipped"])
+        return outcome
+    # Re-authorized, like the archive PUT itself. These are DELETES of the
+    # owner's data running after a build that may have taken minutes, and
+    # consent can be withdrawn, the app disabled or the profile repointed in
+    # between -- so the live gate runs again rather than the sweep inheriting a
+    # decision made before the push. Its own operation name keeps a refused sweep
+    # out of the upload's audit bucket: this run's upload succeeded.
+    #
+    # It gets its OWN handler so one refusal files one event: `_refuse_upload`
+    # records the decision as `denied` at the point it is made, and letting that
+    # RuntimeError fall into the sweep's broad handler below would file a second
+    # `failed` event for the same decision. A failure that never reaches
+    # `_refuse_upload` -- an expired credential, a dead STS call -- files nothing
+    # by itself, so `_audit_unfiled_authorization` covers exactly that half.
+    try:
+        _authorize_upload(account, profile, region, caller=caller, operation=SEL_OP_RETENTION)
+    except Exception as exc:
+        outcome["skipped"] = "authorization refused"
+        # `redact_log_via_context`, not the two bare egress redactors this module
+        # uses for object NAMES above: this is a gate-side log line, so a host with
+        # a companion policy loaded must not have it scanned with the weaker OSS
+        # pass. It never raises, and with no context installed it runs that same
+        # OSS pass, so the spelling costs nothing where nothing composes.
+        logger.warning(
+            "aws-control: %s retention for %s was not authorized; the backup itself "
+            "succeeded and nothing was deleted: %s",
+            kind,
+            account,
+            redact_log_via_context(str(exc)),
+        )
+        _audit_unfiled_authorization(account, outcome, exc, caller=caller)
+        return outcome
+    try:
+        sub = f"{KIND_SUBPATHS[kind]}/{install_id}"
+        rows = storage.list_object_versions(profile, region, bucket, "backup", sub, account=account)
+        # What this install can PROVE it wrote, not whatever sits under a prefix.
+        # The prefix is shared by design, so a co-writer -- another tool pointed at
+        # the same drive, or a compromised one -- can put an object under it, and
+        # erasing versions cannot be undone. The restore path already draws exactly
+        # this line for a far cheaper operation: anything outside this record reads
+        # as ORIGIN_UNVERIFIED and is refused without an explicit override. A
+        # permanent delete must be at least as strict as a read.
+        #
+        # `_record_run` writes this run's own key before the sweep is called, and
+        # `uploaded_objects` also merges runs whose state write failed, so
+        # `newest_key` is in here on both paths.
+        ours = uploaded_keys(account)
+        our_versions = uploaded_versions(account)
+        by_key: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            key = str(row.get("key", ""))
+            # The label sidecar shares the prefix with the archives it labels. It
+            # is not an archive: it must not consume a `keep` slot, and it must
+            # not be deleted -- another install reads it to render a name instead
+            # of hex.
+            if not key or _key_basename(key) == LABEL_OBJECT_NAME:
+                continue
+            # Not ours to retire, and it must not consume a `keep` slot either:
+            # `keep` counts what this install keeps of its OWN archives, so letting
+            # a foreign object fill a slot would let a co-writer's upload push one
+            # of ours over the edge and delete it.
+            if key not in ours:
+                continue
+            by_key.setdefault(key, []).append(row)
+        # A key counts as a live archive of OURS only when the version a restore
+        # would actually fetch is the version this install wrote. `storage.get_file`
+        # takes no version id, so a restore reads whatever is CURRENT under the key:
+        # if a co-writer's version is on top, our bytes are still on the drive but
+        # unreachable through the product's own restore path, so the key is not a
+        # restorable copy and must not hold a `keep` slot.
+        #
+        # Two ways a key fails that, both left entirely alone. Its current version is
+        # a delete marker: the noncurrent bytes are the separate, pre-existing cost
+        # of the manual delete path, and erasing them here would silently revoke the
+        # recoverability `storage.delete_key` documents. Or its current version is
+        # foreign: erasing our unreachable version under it would reclaim bytes, but
+        # it would also be this sweep deciding that a key a co-writer is actively
+        # writing is finished with, which is not a call retention gets to make.
+        live = {
+            key: versions
+            for key, versions in by_key.items()
+            if _current_version_is_ours(versions, our_versions.get(key, ""))
+        }
+        outcome["live"] = len(live)
+        # The keys this install wrote that carry no recorded version: an archive
+        # pushed before the record existed, an unversioned bucket, or a put response
+        # that named none. `_current_version_is_ours` is false for all of them, so
+        # they hold no `keep` slot and no sweep can ever delete them -- their bytes
+        # are a permanent cost. Every version under such a key is billed, so the
+        # total is over the whole key rather than its current version. Reported so
+        # the cost appears in the audit trail rather than only on an invoice.
+        unclaimed = [key for key in by_key if not our_versions.get(key, "")]
+        outcome["unclaimed"] = len(unclaimed)
+        outcome["unclaimedBytes"] = sum(
+            int(row.get("size", 0) or 0) for key in unclaimed for row in by_key[key]
+        )
+        if unclaimed:
+            logger.info(
+                "aws-control: %s retention for %s under install %s cannot own %d archive(s) "
+                "holding %d byte(s): no version id was recorded for them, so no sweep will "
+                "ever reclaim them",
+                kind,
+                account,
+                install_id,
+                outcome["unclaimed"],
+                outcome["unclaimedBytes"],
+            )
+        if newest_key not in live:
+            # Two different faults, and an auditor needs to tell them apart: a
+            # listing that omits the upload cannot be trusted about age at all,
+            # while one that shows the key under a foreign current version says the
+            # archive this run just wrote is already not the restorable copy.
+            if newest_key in by_key:
+                outcome["skipped"] = (
+                    "the archive this run uploaded is not the current version of its key"
+                )
+            else:
+                outcome["skipped"] = "the listing does not show the archive this run uploaded"
+            logger.warning(
+                "aws-control: skipping %s retention for %s under install %s: %s, so the "
+                "listing cannot be trusted about which archives are old; nothing was deleted",
+                kind,
+                account,
+                install_id,
+                outcome["skipped"],
+            )
+            _audit_retention(
+                account, outcome, caller=caller, result="failed", error=outcome["skipped"]
+            )
+            return outcome
+        by_age = _newest_first(live)
+        candidates = [key for key in by_age[keep:] if key != newest_key]
+        # `ours` proved the KEY. This proves the VERSION, which is what the delete
+        # below actually erases: a key can carry a version this install did not
+        # write, and the recorded id is the only thing that says which one is ours.
+        #
+        # One way a candidate drops out here, and it is left entirely alone:
+        # recorded but absent from the listing, meaning our version is already gone,
+        # so whatever remains under that key is not ours to erase -- exactly the
+        # case a version COUNT read as ownership and got wrong. The membership test
+        # beside it re-asserts an invariant rather than filtering a second case:
+        # every candidate came from `live`, and `_current_version_is_ours` is false
+        # without a recorded id, so a key with none is counted as unclaimed above
+        # and never reaches this point.
+        listed = {key: {str(row.get("versionId", "")) for row in by_key[key]} for key in candidates}
+        versions = [
+            (key, our_versions[key])
+            for key in candidates
+            if key in our_versions and our_versions[key] in listed[key]
+        ]
+        retire = [key for key, _ in versions]
+        if not retire:
+            logger.info(
+                "aws-control: %s retention for %s kept all %d archive(s) under install %s "
+                "(keep=%d)",
+                kind,
+                account,
+                len(live),
+                install_id,
+                keep,
+            )
+            _audit_retention(account, outcome, caller=caller, result="successful")
+            return outcome
+        # The SECOND gate, immediately before the only irreversible call in this
+        # function. The one at the top is separated from here by a
+        # `list_object_versions` round trip, and consent withdrawn inside that
+        # window would otherwise permanently erase versions nobody is authorized
+        # to touch any more. `_publish_label` holds the same rule for its own
+        # write: a gate is good for the call that FOLLOWS it, not for a later one.
+        #
+        # Its own handler, for the reason the first gate has one, and it returns
+        # instead of falling through: nothing has been deleted at this point, so
+        # this is a refusal and not a half-finished purge.
+        # The COUNT gets the same treatment as the consent gate below, and for the
+        # same reason: it was read once before a `list_object_versions` round trip
+        # that takes as long as the network takes, and an owner who switched
+        # retention off inside that window has chosen to keep these versions. A
+        # count read before the listing is good for the listing, not for a delete
+        # that happens after it.
+        #
+        # Re-reading here rather than holding `_run_lock` across the deletion is
+        # deliberate: that lock also serializes `last_runs`, so holding it through
+        # network calls would stall a status read for the length of a purge.
+        #
+        try:
+            removed = _delete_under_the_retention_gate(
+                account, keep, profile, region, bucket, versions, caller=caller
+            )
+        except _RetentionAuthorizationWithdrawn as withdrawn:
+            cause = withdrawn.cause
+            outcome["skipped"] = "authorization withdrawn before deletion"
+            logger.warning(
+                "aws-control: %s retention for %s was authorized before the listing but "
+                "no longer at the moment of deletion; the backup itself succeeded and "
+                "nothing was deleted: %s",
+                kind,
+                account,
+                redact_log_via_context(str(cause)),
+            )
+            _audit_unfiled_authorization(account, outcome, cause, caller=caller)
+            return outcome
+        except _RetentionCountWithdrawn as exc:
+            # Nothing has been deleted: the gate checked the count and refused before
+            # calling S3, so this is a refusal and not a half-finished purge.
+            outcome["skipped"] = exc.reason
+            logger.warning(
+                "aws-control: %s retention for %s was set to keep %s when the listing "
+                "began and no longer authorized that set at the moment of deletion; the "
+                "backup itself succeeded and nothing was deleted: %s",
+                kind,
+                account,
+                keep,
+                exc.reason,
+            )
+            # An owner who changed their mind is not a failure. An unreadable setting
+            # is, which is the same split the first read files.
+            if exc.reason == "the retention setting could not be read":
+                _audit_retention(account, outcome, caller=caller, result="failed", error=exc.reason)
+            else:
+                _audit_retention(account, outcome, caller=caller, result="successful")
+            return outcome
+        except storage.PartialVersionDelete as exc:
+            # Those bytes are already gone, so the count has to survive into the
+            # audit the broad handler below files -- otherwise a purge that failed
+            # halfway is recorded as having erased nothing.
+            #
+            # `retired` stays at 0 on purpose: batches are filled to the API's
+            # limit without regard to key boundaries, so the erased versions do
+            # not map to a number of retired KEYS, and a figure nothing measured
+            # is worse in an audit record than an absent one.
+            outcome["versions"] = exc.removed
+            raise
+        outcome["retired"] = len(retire)
+        outcome["versions"] = removed
+        logger.info(
+            "aws-control: %s retention for %s kept %d of %d archive(s) under install %s "
+            "(keep=%d), erasing %d object version(s)",
+            kind,
+            account,
+            len(live) - len(retire),
+            len(live),
+            install_id,
+            keep,
+            removed,
+        )
+        _audit_retention(account, outcome, caller=caller, result="successful")
+        return outcome
+    except Exception as exc:
+        # Deliberately broad, and it is the whole point of this function's
+        # contract: the archive is already off-host and the run has already been
+        # recorded, so nothing this sweep can fail at is worth converting a
+        # successful backup into a failed one. One line, with the reason, and the
+        # next run tries again.
+        outcome["skipped"] = "cleanup failed"
+        # Gate-side, so the same context-aware log spelling as the refusal above.
+        # One redaction feeds both the log line and the audit event's `error`: a
+        # composed companion's regexes apply to both, and in the one state that
+        # withholds the text the audit entry still fires carrying the placeholder,
+        # which is the shape an auditor can act on.
+        reason = redact_log_via_context(str(exc))
+        # Two spellings, because one of them would be false. A failure AFTER the
+        # listing may already have erased versions permanently, and the audit entry
+        # below carries that count deliberately -- so a log line next to it claiming
+        # nothing was deleted contradicts the record an auditor reads beside it, and
+        # points them at a purge that did not happen. Only the version count is named:
+        # batches are filled to the API's limit without regard to key boundaries, so
+        # `retired` stays 0 on that path and a number of KEYS is not something this
+        # failure measured.
+        if outcome["versions"]:
+            logger.warning(
+                "aws-control: %s retention for %s failed after erasing %d object "
+                "version(s); those bytes are gone and cannot be recovered, and the "
+                "backup itself succeeded: %s",
+                kind,
+                account,
+                outcome["versions"],
+                reason,
+            )
+        else:
+            logger.warning(
+                "aws-control: %s retention for %s could not run; the backup itself "
+                "succeeded and nothing was deleted: %s",
+                kind,
+                account,
+                reason,
+            )
+        # A failure AFTER the listing may already have erased some versions, so
+        # `outcome` carries whatever the sweep got through -- an entry saying
+        # nothing happened would be the one shape an auditor must not be handed.
+        _audit_retention(account, outcome, caller=caller, result="failed", error=reason)
+        return outcome
 
 
 def _publish_label(
@@ -1185,7 +2110,7 @@ def run_snapshot_backup(
         # label's own PUT takes its own authorization inside `_publish_label`,
         # which is why it can safely run afterwards.
         _authorize_upload(account, profile, region, caller=caller)
-        storage.put_file(
+        version = storage.put_file(
             profile,
             region,
             bucket,
@@ -1201,10 +2126,17 @@ def run_snapshot_backup(
             key,
             payload.stat().st_size,
             _body_fingerprint(payload),
+            version,
         )
         # After the archive and after the ledger write, and with its own
         # authorization: a caption must never delay or endanger the payload.
         _publish_label(account, profile, region, bucket, identity, caller=caller)
+        # LAST, and after a push that succeeded. This is the only step here that
+        # deletes, so it runs once everything proving this run worked is already
+        # done -- and it cannot fail the run. See _prune_remote_archives.
+        _prune_remote_archives(
+            account, profile, region, bucket, KIND_SNAPSHOT, identity["id"], key, caller=caller
+        )
         return record
 
 
@@ -1392,7 +2324,7 @@ def run_sessions_backup(
         # label's own PUT takes its own authorization inside `_publish_label`,
         # which is why it can safely run afterwards.
         _authorize_upload(account, profile, region, caller=caller)
-        storage.put_file(
+        version = storage.put_file(
             profile,
             region,
             bucket,
@@ -1408,10 +2340,17 @@ def run_sessions_backup(
             key,
             archive.stat().st_size,
             _body_fingerprint(archive),
+            version,
         )
         # After the archive and after the ledger write, and with its own
         # authorization: a caption must never delay or endanger the payload.
         _publish_label(account, profile, region, bucket, identity, caller=caller)
+        # LAST, and after a push that succeeded. This is the only step here that
+        # deletes, so it runs once everything proving this run worked is already
+        # done -- and it cannot fail the run. See _prune_remote_archives.
+        _prune_remote_archives(
+            account, profile, region, bucket, KIND_SESSIONS, identity["id"], key, caller=caller
+        )
         return record
 
 
@@ -1904,14 +2843,28 @@ def restore_download(
     return {"path": str(dest), "bytes": size, "origin": origin, "install": owner}
 
 
+def _account_view_checked(account: str) -> tuple[dict[str, Any], bool]:
+    """:func:`_account_view` plus whether the state was actually readable.
+
+    A non-dict level in a corrupted file is itself a read failure, not a missing
+    key, so it reports False rather than an empty view that looks configured-as-
+    default. Only :func:`_retention_keep_for_sweep` consults the flag; everything
+    else goes through :func:`_account_view` and keeps its defaults.
+    """
+    state, readable = _read_state_checked()
+    accounts = state.get("accounts", {})
+    if not isinstance(accounts, dict):
+        return {}, False
+    entry = accounts.get(account, {})
+    if not isinstance(entry, dict):
+        return {}, False
+    return entry, readable
+
+
 def _account_view(account: str) -> dict[str, Any]:
     """Shape-safe read of one account's sub-dict: any non-dict level in a
     corrupted state file reads as empty instead of raising on ``.get``."""
-    accounts = read_state().get("accounts", {})
-    if not isinstance(accounts, dict):
-        return {}
-    entry = accounts.get(account, {})
-    return entry if isinstance(entry, dict) else {}
+    return _account_view_checked(account)[0]
 
 
 def nightly_enabled(account: str) -> bool:
@@ -1937,6 +2890,62 @@ def set_nightly(account: str, enabled: bool) -> None:
         _account_state(state, account)["nightly"] = bool(enabled)
 
     _locked_state_update(mutate)
+
+
+def set_retention_keep(account: str, count: int | None) -> None:
+    """Write this account's retention count, or clear it to turn retention off.
+
+    ``None`` REMOVES the key rather than storing a sentinel, so "off" has exactly one
+    representation: the state an install has before anyone configures anything. A
+    second spelling of off would be a second thing
+    :func:`_retention_keep_for_sweep` has to agree about.
+
+    Rejects a ``bool`` rather than coercing it, which is the same screen
+    :func:`_clamp_retention_keep` applies on the way out. ``True`` IS an ``int`` in
+    Python, so coercing here would let a stringly-typed caller store ``keep=1`` --
+    the most destructive value available -- while believing it had sent a flag.
+
+    Out-of-range is REFUSED rather than clamped, and there is only one end to be out of:
+    below the floor. A count above any particular number is not refused, because keeping
+    more archives than exist is not a harm. Clamping a below-floor value up here would
+    store a number the caller did not ask for.
+
+    Raises ``ValueError`` on anything it will not store, and propagates ``OSError``
+    from the state write rather than reporting a count the next read contradicts.
+    """
+    if count is not None and (isinstance(count, bool) or not isinstance(count, int)):
+        raise ValueError("retention count must be an int or None")
+    if count is not None and count < RETENTION_KEEP_MIN:
+        raise ValueError(f"retention count must be at least {RETENTION_KEEP_MIN}")
+
+    def mutate(state: dict[str, Any]) -> None:
+        entry = _account_state(state, account)
+        if count is None:
+            entry.pop(RETENTION_KEEP_STATE_KEY, None)
+        else:
+            entry[RETENTION_KEEP_STATE_KEY] = count
+
+    # The same gate the sweep's final check holds. Without it here the lock there
+    # protects nothing: this write is the one it exists to be ordered against. A
+    # caller may wait for a purge already authorized to finish, which is the point --
+    # it makes the two orderings the only ones possible, rather than leaving a window
+    # where this write lands after the count was checked and before S3 was called.
+    with _RETENTION_GATE:
+        _locked_state_update(mutate)
+
+
+def retention_keep(account: str) -> int | None:
+    """This account's configured count, or ``None`` when retention is off.
+
+    Reported by the backup status read so a client can see what it would act on. NO
+    console renderer ships with this: the setting is reachable over HTTP only, and the
+    read exists so an operator who sets a count can confirm what was stored rather than
+    having to trust the write. Deliberately the same
+    resolution the sweep uses, so the number returned is the number that would be acted
+    on rather than the raw stored value -- reporting a count the sweep would clamp or
+    ignore is worse than reporting nothing.
+    """
+    return _retention_keep_for_sweep(account)[0]
 
 
 def last_runs(account: str) -> dict[str, Any]:

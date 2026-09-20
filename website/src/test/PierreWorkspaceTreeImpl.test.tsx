@@ -215,14 +215,62 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(screen.getByText(/Large workspace/)).toBeInTheDocument()
     unmount()
 
-    // Changed mode renders the git-status set, which carries no workspace-level
-    // truncation notice. The set itself IS capped server-side (500 entries, and
-    // the response says so via `truncated`), so this asserts only that the
-    // workspace notice is absent -- not that the listing is complete.
+    // Changed mode renders the git-status set, which carries no WORKSPACE-level
+    // truncation notice -- that one is about the tree payload's own file budget.
+    // The git-status set has its own cap and its own notice, asserted below.
     vi.mocked(api.projectGitStatus).mockResolvedValue(mkStatus([mkFile('project/a.ts', 'M')]))
     renderTree({ mode: 'changed' })
     await waitForTree()
     expect(screen.queryByText(/Large workspace/)).not.toBeInTheDocument()
+  })
+
+  // The server caps the changed-file listing at 500 and reports it. Without a
+  // notice of its own the tree simply ended at 500 rows, presenting a cut list
+  // as a complete one.
+  it('says the changed listing was cut when the git status was capped', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus(
+        Array.from({ length: 500 }, (_, i) => mkFile(`project/f${i}.ts`, 'M')),
+        { truncated: true },
+      ),
+    )
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+    const notice = await screen.findByTestId('workspace-tree-changed-truncated')
+    // The count names the rows THIS surface shows, not the payload length: the
+    // 500 listed files are filtered to those under the project root and
+    // de-duplicated across staged/unstaged first.
+    expect(notice).toHaveTextContent('first 500 shown')
+  })
+
+  it('leaves the changed tree unqualified when the git status was complete', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/a.ts', 'M')], { truncated: false }),
+    )
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+    expect(screen.queryByTestId('workspace-tree-changed-truncated')).not.toBeInTheDocument()
+  })
+
+  // The notice is gated on the mode it describes: `all` renders the tree payload,
+  // whose cap the workspace notice above already covers, so a capped git status
+  // must not put a changed-list claim over a full-workspace tree.
+  it('keeps the changed-listing notice out of all mode', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ truncated: false }))
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/a.ts', 'M')], { truncated: true }),
+    )
+    renderTree({ mode: 'all' })
+    await waitForTree()
+    // `all` mode gates the tree on the TREE payload, so it paints before the
+    // status lands -- asserting the notice's absence straight after
+    // `waitForTree` would pass with the mode gate deleted. Wait until the
+    // capped status has been folded into the model, so the absence below is
+    // about the gate rather than about timing.
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([{ path: 'a.ts', status: 'modified' }]),
+    )
+    expect(screen.queryByTestId('workspace-tree-changed-truncated')).not.toBeInTheDocument()
   })
 })
 

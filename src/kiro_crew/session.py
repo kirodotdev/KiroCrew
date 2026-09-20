@@ -2302,6 +2302,7 @@ class SessionManager:
         skip_if_busy: bool = False,
         skip_if_injecting: bool = False,
         clear_conversation: bool = False,
+        ends_conversation: bool = False,
     ) -> bool:
         """Reset a live session while preserving its persistence entry."""
         return await self._lifecycle_boundary().reset(
@@ -2310,6 +2311,7 @@ class SessionManager:
             skip_if_busy=skip_if_busy,
             skip_if_injecting=skip_if_injecting,
             clear_conversation=clear_conversation,
+            ends_conversation=ends_conversation,
         )
 
     def check_context_usage(self, key: str, provider: LLMProvider) -> float:
@@ -2438,6 +2440,18 @@ class SessionManager:
         if session is not None:
             session.floor_pending = True
         return True
+
+    def set_child_teardown_handler(self, handler: Any) -> None:
+        """Register the hook that ends a parent's sub-agent runs at parent end.
+
+        Called once at wiring time with the ``SubagentManager`` itself, which
+        supplies both halves: a synchronous snapshot of the runs a key owns, and
+        the cancellation that stops exactly those. Every parent-end path in
+        :mod:`kiro_crew.session_lifecycle` drives them, so a surface that ends a
+        conversation — the dashboard, a channel command, the idle sweep —
+        inherits the behaviour without a call of its own.
+        """
+        self._lifecycle_boundary().set_child_teardown_handler(handler)
 
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:
         """Register the lifecycle recycle callback."""
@@ -2579,6 +2593,15 @@ class SessionManager:
     async def remove_if_unclaimed(self, key: str) -> bool:
         """Remove a speculative session only before its first real claimant."""
         return await self._lifecycle_boundary().remove_if_unclaimed(key)
+
+    async def end_children_for(self, key: str) -> None:
+        """End *key*'s sub-agent runs without tearing its process down.
+
+        For a caller that replaces the conversation on a live process: the children of the
+        conversation that ended have nowhere to report, and the process surviving does not
+        change that.
+        """
+        return await self._lifecycle_boundary().end_children_for(key)
 
     async def destroy(self, key: str) -> None:
         """Permanently destroy a session and its persistence entry."""

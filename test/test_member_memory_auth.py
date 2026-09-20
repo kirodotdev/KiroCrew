@@ -7,6 +7,7 @@ import pytest
 from member_memory_helpers import env as _member_env
 from member_memory_helpers import request
 
+from kiro_crew import execution_context
 from kiro_crew import member_memory_auth as auth
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers import _shared
@@ -34,6 +35,54 @@ async def test_untrusted_header_does_not_authenticate_memory_request(env):
     scope = await _shared.member_request_scope(request(env, internal=False))
     assert not scope.verified
     assert scope.execution is None
+
+
+@pytest.mark.asyncio
+async def test_bare_session_header_is_not_a_verified_scope(env, monkeypatch):
+    """An internal caller's own word about its session buys no member scope."""
+    read = Mock(side_effect=AssertionError("unexpected canonical read"))
+    monkeypatch.setattr(execution_context, "read_session_execution", read)
+
+    scope = await _shared.member_request_scope(request(env, internal=True, attested=False))
+
+    assert scope.session == "dashboard:alice"
+    assert not scope.verified
+    assert scope.store is None
+    assert scope.execution is None
+    read.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_kernel_attested_peer_keeps_its_member_scope(env):
+    scope = await _shared.member_request_scope(request(env, internal=True))
+
+    assert scope.verified
+    assert scope.store == "member-alice"
+
+
+@pytest.mark.asyncio
+async def test_signed_token_attests_the_key_it_verifies_to(env, monkeypatch):
+    monkeypatch.setattr(auth, "verify_session_token", lambda token: "dashboard:alice")
+
+    scope = await _shared.member_request_scope(
+        request(env, internal=True, attested=False, session_token="signed")
+    )
+
+    assert scope.verified
+    assert scope.store == "member-alice"
+
+
+@pytest.mark.asyncio
+async def test_token_naming_another_session_attests_neither(env, monkeypatch):
+    monkeypatch.setattr(auth, "verify_session_token", lambda token: "dashboard:bob")
+
+    scope = await _shared.member_request_scope(
+        request(env, internal=True, attested=False, session_token="signed")
+    )
+
+    assert scope.session == "dashboard:alice"
+    assert not scope.verified
+    assert scope.store is None
 
 
 @pytest.mark.asyncio

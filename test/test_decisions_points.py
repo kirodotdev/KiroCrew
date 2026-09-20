@@ -313,8 +313,48 @@ async def test_select_skills_asks_one_question_over_the_menu(monkeypatch):
     extra = spy.await_args.kwargs["extra"]
     assert extra["candidates"] == 2
     assert extra["history_chars"] == 0 and extra["truncated"] == 0
+    assert extra["message_chars"] == len("review this"), "the excerpt's own length"
     assert "round" not in extra and "batches" not in extra
     assert isinstance(extra["turn_id"], str) and extra["turn_id"]
+
+
+@pytest.mark.parametrize(
+    "typed, expected",
+    [
+        (0, 0),
+        (12, 12),
+        (sel.MAX_MESSAGE_CHARS, sel.MAX_MESSAGE_CHARS),
+        (sel.MAX_MESSAGE_CHARS * 3, sel.MAX_MESSAGE_CHARS),
+    ],
+    ids=["empty", "short", "at the cap", "over the cap"],
+)
+def test_message_chars_counts_what_was_sent_and_not_what_was_typed(typed, expected):
+    """The strip's egress number is the EXCERPT's length, so the cap is visible.
+
+    Parametrised on the LENGTH and not on the string: pytest bakes a parameter
+    value into the node id, and a multi-kB id is exported as an environment
+    variable on Windows.
+    """
+    text = "x" * typed
+    assert sel.message_chars(text) == expected
+    assert len(sel.message_excerpt(text)) == expected
+
+
+def test_message_chars_reads_a_missing_message_as_nothing_sent():
+    """``None`` is what an unpopulated caller passes, and it sent no characters."""
+    assert sel.message_chars(None) == 0
+
+
+def test_the_excerpt_the_request_carries_is_the_one_message_chars_measures():
+    """One function for both, so the count on the record cannot overstate egress.
+
+    Measured through ``build_state_rows``, which is what assembles the request: a
+    second cap written beside this one could drift, and the reader of the strip
+    would be told more characters left than actually did.
+    """
+    text = "y" * (sel.MAX_MESSAGE_CHARS + 500)
+    state = sel.build_state_rows(text, [{"key": "k", "description": "d"}], [])
+    assert len(state["message"]) == sel.message_chars(text) == sel.MAX_MESSAGE_CHARS
 
 
 @pytest.mark.asyncio
@@ -911,10 +951,27 @@ def test_the_outcome_row_carries_both_arms(bg_loop, enabled, log_home, monkeypat
     assert row["p"] == 0.9
     assert row["tokens_saved"] == (2000 - 400) // sel.CHARS_PER_TOKEN
     assert row["candidates"] == 2
-    assert row["history_chars"] == 0 and row["truncated"] == 0
-    assert "batches" not in row and "rounds" not in row
+    assert row["history_chars"] == 0
+    assert row["message_chars"] == len("review this code"), "what actually left"
+    # No count that is the same on every turn: the menu is one question, and a
+    # history clip is a fact about the READ that the call row carries.
+    for absent in ("batches", "rounds", "truncated"):
+        assert absent not in row, f"{absent} is back on the strip record"
+    # The latency is one of the six core fields the log writer stamps, so the
+    # strip gets it for free by being the row. A point stamping its own would be
+    # a second number to reconcile.
+    assert isinstance(row["latency_ms"], int) and row["latency_ms"] >= 0
     assert isinstance(row["turn_id"], str) and row["turn_id"]
-    assert "message" not in json.dumps(row), "no conversation text in a row"
+    # The leak ratchet stays BROAD. `message_chars` is a length, so it is removed
+    # by exact key BEFORE the check rather than by loosening the pattern to fit
+    # it: a narrowed pattern would admit a `message_text` field carrying the
+    # conversation itself, which is the one thing this assertion exists to catch.
+    assert isinstance(row["message_chars"], int), "a length, and only a length"
+    without_length = {key: value for key, value in row.items() if key != "message_chars"}
+    assert "message" not in json.dumps(without_length), "no conversation text in a row"
+    # The ratchet's own teeth, so masking by key cannot quietly become masking by
+    # pattern: anything else naming a message still fails the same check.
+    assert "message" in json.dumps({**without_length, "message_text": "review this code"})
 
 
 def test_agreement_is_recorded_as_a_turn_that_saved_nothing(

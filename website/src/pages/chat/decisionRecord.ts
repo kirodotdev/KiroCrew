@@ -60,12 +60,21 @@ export interface DecisionStripRecord {
   tokensSaved: number
   /** Skills the gate offered Jev to choose from. */
   candidates: number
-  /** How many batches those candidates were offered in. */
-  batches: number
+  /**
+   * Characters of the message excerpt the question sent, or `null` when the
+   * record does not state it.
+   *
+   * Nullable, unlike every other count here, because 0 is not a credible
+   * measurement of this one: a turn that reached the selector had text. So a
+   * missing field read as 0 would print "message 0 chars" over a question that
+   * did send an excerpt -- the same always-zero row this strip exists to remove,
+   * reintroduced for every record stamped before the field existed.
+   */
+  messageChars: number | null
   /** Characters of conversation history the question carried. */
   historyChars: number
-  /** Candidates dropped to fit the question inside its budget. */
-  truncated: number
+  /** Milliseconds between asking Jev and its answer. */
+  latencyMs: number
   /** Answers the gate refused, each with the score it came with. */
   dropped: DecisionStripDropped[]
   /** Why the decision failed, or `null` when it did not. */
@@ -83,6 +92,20 @@ function asCount(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : 0
+}
+
+/**
+ * The same count, but `null` rather than `0` for a value that is not one.
+ *
+ * For a field whose 0 a reader would take as a measurement. Folding "the record
+ * did not say" into "the record said zero" is the one shape a receipt must not
+ * take: the absent case is every record a producer stamped before the field
+ * existed, and it is silent rather than rare.
+ */
+function asCountOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : null
 }
 
 /**
@@ -168,9 +191,9 @@ export function readDecisionStrip(raw: unknown): DecisionStripRecord | null {
     p,
     tokensSaved: asCount(root.tokens_saved),
     candidates: asCount(root.candidates),
-    batches: asCount(root.batches),
+    messageChars: asCountOrNull(root.message_chars),
     historyChars: asCount(root.history_chars),
-    truncated: asCount(root.truncated),
+    latencyMs: asCount(root.latency_ms),
     dropped,
     error,
   }

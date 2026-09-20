@@ -25,6 +25,7 @@ from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
     DEFAULT_MONITOR_PROVIDER_ERRORS,
     DEFAULT_MONITOR_STALL_TICKS,
+    MONITOR_REVISION_KEY_SPACE,
     MONITOR_STOP_VERDICT_STALL,
     MonitorBudgets,
     MonitorDecision,
@@ -3615,10 +3616,11 @@ async def test_shadow_records_a_stalled_watch_as_a_stall_not_as_the_subject() ->
         objective="review_ready",
         created_ts=1_000.0,
         # Already alerted and inside the re-alert interval, so every tick decides
-        # NO_CHANGE and the verdict never moves.
+        # NO_CHANGE and the verdict never moves. The key carries the revision key
+        # space, which is where a subject naming no conditions is remembered.
         last_fingerprint="red-1",
         last_wake_fingerprint="red-1",
-        coalesce_alerted={"red-1": 1_000.0},
+        coalesce_alerted={f"{MONITOR_REVISION_KEY_SPACE}red-1": 1_000.0},
         budgets=MonitorBudgets(max_runtime_secs=10_000_000),
     )
 

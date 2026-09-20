@@ -13,9 +13,10 @@ below because there is nothing Crew-side to describe.
 `main` today, not a guarantee across versions, backends or spec types. Where a
 sentence says "never" or "only", a single named reader backs it and that reader is
 cited; where behaviour varies by backend the per-surface table is the answer, and
-where it varies by harness `src/kiro_crew/providers/mirrors/` is. This page is a
-pointer into the code, not a contract the code is held to — if the two disagree,
-the code is right and this page is stale.
+where it varies by harness [How the other backends consume a
+spec](#how-the-other-backends-consume-a-spec) is. This page is a pointer into the
+code, not a contract the code is held to — if the two disagree, the code is right
+and this page is stale.
 
 This is the field table [Agents & Configuration](agents.md) and the
 [agent host contract](../../../docs/system-specs/modules/agent-host-contract.md)
@@ -56,24 +57,13 @@ seam spawned (`src/kiro_crew/agent_sdk/provider_identity.py`,
 | kiro-cli | `provider=acp`, `acp_backend=""` (default) | not at all — kiro-cli opens the file itself, named by `--agent <name>` on the spawn argv (`src/kiro_crew/acp/client.py`, `_spawn`) | the file IS the contract; an unknown key drops the whole spec |
 | KAS | `provider=acp`, `acp_backend="kas"` | Crew parses it and projects it onto `_meta.kiro.customAgents` (`src/kiro_crew/acp/kas_agents.py`, `to_client_custom_agent`) | only fields with a wire slot survive |
 | Claude Code seam | `provider=claude_code` | not at all — nothing reads the spec | Crew injects the spec's effect into context itself (the `is_cc` branches) |
-| claude-agent-acp harness | `acp_backend="claude"` | not as a spec file — Crew projects field by field | per `providers/mirrors/claude_code.py`: `mcpServers`, `model`, `availableModels`, `permissions.defaultMode` delivered; `tools`, `disabledTools` translated; `prompt`, `resources`, `autoApprove` withheld; `hooks` has no channel |
+| claude-agent-acp harness | `acp_backend="claude"` | not as a spec file — Crew projects field by field | `providers/mirrors/claude_code.py` is the per-field ruling; [How the other backends consume a spec](#how-the-other-backends-consume-a-spec) is the table |
 
 Three surfaces, not three backends. `src/kiro_crew/agent_sdk/backends.py` names
-eight (`""`, `kas`, `claude`, `codex`, `opencode`, `pi`, `goose`, `deepseek`).
-The five not in the table above receive **no agent definition in any shape** —
-no `--agent`, and no spec written anywhere — so nothing reads a spec AS a spec
-there, and this page's per-surface answers do not describe them.
-
-Individual fields still reach some of them by another channel, which is a
-different thing from reading the spec. `codex`, `opencode` and `goose` take
-`mcpServers` as the `session/new` array, `tools` translated into the allowlist
-deciding which servers enter it, and `model` as a session config option, while
-`prompt`, `resources`, `autoApprove` and `availableModels` are withheld with a
-reason each. `pi` and `deepseek` get no projection at all.
-`src/kiro_crew/providers/mirrors/` holds the per-harness ruling and the
-[agent host contract](../../../docs/system-specs/modules/agent-host-contract.md)
-§1 is the table. Only `kas` reads the markdown form
-(`ACP_BACKENDS_MARKDOWN_AGENT_SPECS`).
+eight (`""`, `kas`, `claude`, `codex`, `opencode`, `pi`, `goose`, `deepseek`),
+and only `kas` reads the markdown form (`ACP_BACKENDS_MARKDOWN_AGENT_SPECS`).
+[How the other backends consume a spec](#how-the-other-backends-consume-a-spec)
+below is what happens to the other five.
 
 These two are separate rows because they are separate axes, and only one is
 dormant. `provider=claude_code` is dormant in the public build, whose config
@@ -90,6 +80,219 @@ back to the default agent on any key it does not know — `--agent <name>` resol
 to the default with only a stderr line. That is why Crew's own per-agent
 bookkeeping lives in a sidecar instead (`src/kiro_crew/agent_state.py`), and why
 you cannot add your own keys to a spec.
+
+## How the other backends consume a spec
+
+The five backends missing from the table above — `codex`, `opencode`, `goose`,
+`pi` and `deepseek` — receive **no agent definition in any shape**: no
+`--agent`, and no spec written anywhere, so nothing reads a spec AS a spec
+there. That is not the same as receiving nothing. On three of them individual
+fields still arrive, one at a time, through whichever channel that harness reads
+— a `session/new` parameter, a `session/set_config_option` call after it, or one
+environment variable. The `acp_backend="claude"` row above is a fourth harness
+answered the same way, and `src/kiro_crew/providers/mirrors/` is where all four
+answers are recorded.
+
+Four cases, and the difference between them is the whole answer:
+
+- **kiro-cli reads the file itself.** `--agent <name>` on the spawn argv
+  (`acp/client.py`, `_spawn`); Crew projects nothing. `registry.py` records it
+  as kind `native`.
+- **KAS gets a wire projection.** Crew parses the spec and sends it as
+  `_meta.kiro.customAgents` (`acp/kas_agents.py`, `to_client_custom_agent`).
+  Kind `external`: a real projection down a real channel whose code has not yet
+  moved into the mirrors folder.
+- **The four MIRRORED harnesses get individual fields, decided one by one.**
+  `claude`, `codex`, `opencode` and `goose`. Crew reads the spec and a mirror
+  rules on each field. `providers/mirrors/base.py` is the vocabulary: `Concern`
+  is the closed list of things a spec expresses, so adding one obliges every
+  backend to answer it; `Disposition` is the four answers (`delivered`,
+  `translated`, `no-channel`, `withheld`); and `AgentConfigMirror.rulings` is
+  abstract, so a new backend cannot inherit silence.
+- **`pi` and `deepseek` have no mirror, so no field is DECIDED field by field.**
+  What they lose is the projection — the spec's own `mcpServers` and its per-tool
+  deny set. Two things still reach them, by channels that are not the mirror and
+  not the spec file: `model`, pushed with `session/set_config_option` (both are in
+  `agent_sdk/backends.py`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`), and `prompt`,
+  as ordinary context text. They are still in `registry.py`'s `PROJECTIONS`, which
+  carries an entry for every backend precisely so absence is a statement rather
+  than a lookup miss — `MIRRORS` is the four above, `PROJECTIONS` is all eight.
+
+**Where the mirror runs.** At session establishment, on both ACP seams, over the
+shared translation in `acp/session_mcp.py` (`session_mcp_projection`):
+
+| Seam | Entry point | What it does |
+|---|---|---|
+| the runtime | `acp/runtime.py`, `AcpRuntime._mirrored_session_mcp` | called only when `has_mirror` says so — a synchronous registry read at the call site, not an await that returns nothing, so kiro-cli's own construction gains no step. Runs the projection off the event loop and hands the pooled broker stubs down as `stub_elements` |
+| the client | `acp/client.py`, `AcpClient._resolve_session_mcp_servers` | the same projection, resolved on the spawn path because it blocks on the spec read, then cached; `_session_mcp_servers` serves the shared `session/new` call site from that cache |
+
+Both call `AgentConfigMirror.session_projection` rather than `session_params`,
+because one spec parse CAN produce two things and only one of them is wire data:
+the `mcpServers` array, and the `(server, tool)` pairs the client refuses itself
+when the harness asks permission for them (`acp/client.py`,
+`_deny_spec_disabled_tool`). Only `codex.py` fills that second half —
+`claude_code.py` puts its deny rules in the settings file instead, and
+`opencode.py` and `goose.py` return an empty set and withhold the whole server,
+which `base.py` calls out on `SessionProjection` itself. A mirrored backend's
+broker stubs are placed by the mirror rather than appended afterwards —
+`AcpClient._pooled_mcp_servers` is inert for one — so a single withhold rule
+covers the whole array instead of an unnarrowed append re-adding what the
+projection withheld.
+
+### Per-harness rulings
+
+Derived from each mirror's own `rulings()`, which is the record a test asserts
+against. Cells are kept to a phrase; the qualifiers that matter are numbered
+underneath.
+
+| Harness (`acp_backend`) | Mirror | Delivered | Translated | Not delivered, with the class |
+|---|---|---|---|---|
+| `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel |
+| `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel |
+| `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane INCLUDED [7] | as `codex`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
+| `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | as `codex`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
+| `pi` | none | — | — | no projection at all — kind `no-channel` [8]; `model` and `prompt` still arrive [9] |
+| `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
+
+1. Delivered ONLY when Crew authored `<work_dir>/.claude/settings.local.json`.
+   That file is this session's permission surface, and a tool Crew cannot gate is
+   not handed to the session at all — so a project carrying its own copy gets no
+   Crew MCP tools rather than ungoverned ones. The array is otherwise this
+   session's entire MCP surface, because the adapter reads no agent file.
+2. Written from the SESSION and from Crew's model registry, not copied out of the
+   spec. Which is why no mirrored harness honours a spec-REQUESTED permission
+   mode: `claude` is delivering the mode the session asked for, not the one the
+   agent file did.
+3. The allowlist matches on server NAME (`acp/session_mcp.py`,
+   `ToolsAllowlist.grants`), so an `@server/tool` grant narrows to one tool on
+   kiro-cli and mounts the WHOLE server on every mirror — the tool inventory is
+   not knowable without connecting. Every mirror records this residual. A missing
+   or non-list `tools` is an EMPTY allowlist, not "no filter".
+4. Unadvertised transports dropped (`drop_unadvertised_transports`), narrowed
+   third-party servers omitted, and Crew's own control plane rebuilt carrying
+   this session's identity — codex-rs `env_clear()`s its stdio children, so
+   nothing reaches them by inheritance.
+5. Not through the mirror: pushed with `session/set_config_option` after
+   `session/new` (on `goose`, from the provider and model selects the harness
+   advertises there).
+6. Not the mirrors' own wording: three of the four give this field a reason the
+   code does not support. See the note below the table, and
+   [#12215](https://github.com/kirodotdev/KiroCrew/issues/12215).
+7. `codex` is the one harness that keeps a narrowed CONTROL-PLANE server mounted
+   and refuses the call instead, at the permission request
+   (`AcpClient._deny_spec_disabled_tool`); withholding `kirocrew-core` would
+   leave the session unable to report back at all. `opencode` and `goose`
+   withhold it too. On `opencode` that is forced — it emits no per-call
+   `(server, tool)` identity Crew could match. On `goose` it is CONSERVATIVE
+   rather than forced: the pair is on the wire and Crew reads it, but no
+   projection yet mounts a narrowed server with its denied tools filtered out.
+8. `pi` accepts the array, stores it on its session state and never hands it to
+   the pi process, so a projection written into it would report Crew's tools as
+   mounted on a session where none can be called. `deepseek` DOES mount stdio
+   elements, so its session holds the shared gateway's pooled broker stubs — just
+   not the servers its own spec declares, and not its per-tool deny set.
+9. "No mirror" is not "nothing from the spec". Both are in
+   `agent_sdk/backends.py`'s `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, so the spec's
+   `model` reaches them with `session/set_config_option` after `session/new` —
+   the same channel `codex`, `opencode` and `goose` use, which is why `model` is
+   the one field no mirror needs to carry. And `prompt` arrives as context text on
+   every harness alike (`context.py` appends the `[AGENT SYSTEM PROMPT]` block for
+   a custom agent with no backend condition on it). What a mirror decides, and
+   these two therefore go without, is the MCP surface.
+
+**`resources` reaches nothing on a mirrored harness, and three of the four
+mirrors say otherwise.** A mapped `skill://` is not loaded natively — the harness
+is not kiro-cli and is handed no spec — and it is not injected either:
+`context.py`'s `_skills_injection_plan` returns `is_cc` for an agent carrying a
+mapping, the `file://` steering block is gated on `is_cc` too, and `is_cc` is
+`is_claude_code(provider_type)`, true only for `provider=claude_code` and never
+for an `acp_backend`. `claude_code.py`, `codex.py` and `opencode.py` nonetheless
+give `withheld` the reason that these are injected as context text instead,
+which describes that dormant seam rather than the harness they serve;
+`goose.py`'s reason is already right, and says no channel is advertised for them.
+Correcting those three strings, and deciding whether a spec author should be
+WARNED rather than left to read this page, is tracked in
+[#12215](https://github.com/kirodotdev/KiroCrew/issues/12215). Hence
+**no-reader** above rather than context-instead.
+
+Four classes cover the rest, and `no-channel` is not one of them:
+
+- **gate-preserving** — the value would pre-approve a call INSIDE the harness,
+  which then never sends `session/request_permission`, so Crew's permission gate,
+  its governance ceiling and its SEL audit are all skipped together.
+- **context-instead** — the effect already reaches every harness as ordinary
+  prompt text in the `[AGENT SYSTEM PROMPT]` block, so a config projection would
+  be a second channel for one guarantee. `prompt` is the field this genuinely
+  covers: a custom agent's prompt is loaded and appended with no backend gate.
+- **harness-owns-the-vocabulary** — the harness advertises its own list on
+  `session/new` and that list is the only source of ids it accepts, so Crew
+  CAPTURES the advertised set instead of sending one; projecting the spec's would
+  offer ids that kill the session.
+- **fixed-by-governance** — Crew writes the value
+  `src/kiro_crew/agent_sdk/tool_gate.py` demands (`ENFORCED_ROUTINGS`), not the
+  one the spec asked for, so an agent file cannot widen the session past the
+  boundary that makes the harness offerable.
+
+`no-channel` is the fourth `Disposition` and a different statement, which is why
+`hooks` sits in that column without being a withhold: the backend HAS the
+capability and this transport cannot carry it. All four harnesses run hooks
+natively; what is missing is the delivery path. `Ruling.__post_init__` refuses a
+`no-channel` ruling that does not name the channel it would have to travel on,
+which is what keeps a gap from reading as a decision.
+
+`providers/mirrors/identity.py` is shared by the mirrors that carry identity ON
+an element: `codex.py` and `opencode.py` call it directly, `goose.py` reaches it
+through `opencode_projection`, and `claude_code.py` does not use it at all,
+because a claude MCP child inherits the adapter's process env and needs no
+element-level carry. `control_plane_identity_env` is that carried env, and
+`identity_bound_crew_servers` derives which managed servers must not be mounted
+at all — mounted without an identity they would answer `not_bound` to every
+call.
+
+How far a per-tool MCP restriction survives is declared separately, as
+`per_tool_deny` on the projection record (`registry.py`, `PerToolDeny`):
+`settings-file` on `claude`, `per-call` on `codex`, `whole-server` on `opencode`
+and `goose`. It is a declaration, not a requirement — what it owes you is knowing
+which of the three you are getting BEFORE a session runs.
+
+### What this means for a spec author
+
+Three fields travel everywhere: `mcpServers`, `tools` and `model`. Every mirror
+rules them delivered or translated, so a spec's server set, which of those
+servers mount, and its model pin all still mean something on a mirrored harness.
+Everything else degrades, and the four degradations have different shapes, which
+is the part worth knowing before you switch:
+
+- **`tools` travels, but only at server granularity.** `@server` behaves
+  identically. `@server/tool` does NOT: it narrows to one tool on kiro-cli and
+  mounts the whole server everywhere else, so a spec that pins one tool of a
+  server widens to that server's siblings on all four mirrors. If that matters,
+  the restriction has to be `disabledTools`, not a narrow `tools` ref.
+- **A per-tool restriction can cost the whole server, on three harnesses out of
+  four.** `per_tool_deny` on the projection record says which of three forms you
+  get BEFORE a session runs. `settings-file` on `claude` keeps the server mounted
+  and the harness refuses the tool. `whole-server` on `opencode` and `goose` drops
+  the server. `per-call` on `codex` reads as the middle ground and is narrower
+  than it sounds: it keeps the server mounted and refuses the call for Crew's own
+  CONTROL PLANE only, whose tools carry no annotations so codex asks permission
+  for every one of them. A narrowed third-party server is withheld whole there
+  too, because codex approves a `readOnlyHint` tool internally without asking, so
+  there is no permission request for Crew to refuse at. Read per-call as "the
+  control plane survives", not "nothing is dropped".
+- **`autoApprove` and a spec-written `permissions` block travel nowhere.**
+  Deliberately, and this is the one degradation you want: every call reaches
+  Crew's gate instead of being pre-approved inside the harness.
+- **`hooks` and `resources` reach nothing.** `hooks` is `no-channel` on all four.
+  A `skill://` mapping is not loaded natively and not injected either, per the
+  note above — so an agent whose skills come from its spec has no skills on a
+  mirrored harness, silently ([#12215](https://github.com/kirodotdev/KiroCrew/issues/12215)).
+  `prompt` is the one that does survive, as context text.
+
+So a spec written for kiro-cli degrades predictably rather than silently, as long
+as you read `per_tool_deny`, the `hooks` ruling and the `resources` note first.
+The
+[agent host contract](../../../docs/system-specs/modules/agent-host-contract.md)
+§1 is the same table from the harness's side.
 
 ## Field inventory
 
@@ -220,8 +423,9 @@ with the `skill://` set for display. It predates `resources` support.
 
 Three columns, for the three surfaces a spec is READ by. The
 `acp_backend="claude"` harness is not one of them — its fields are mirrored into
-a different file in a different format, and
-`src/kiro_crew/providers/mirrors/claude_code.py` is the per-field ruling for it.
+a different file in a different format, and [How the other backends consume a
+spec](#how-the-other-backends-consume-a-spec) above is the table for it and for
+every other mirrored harness.
 
 | Field | kiro-cli | KAS | CC seam (`provider=claude_code`) |
 |---|---|---|---|
@@ -347,6 +551,8 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | owned filenames | `src/kiro_crew/agent_files.py` |
 | `model_managed`, `cc_model`, fork lineage | `src/kiro_crew/agent_state.py` |
 | the KAS wire projection | `src/kiro_crew/acp/kas_agents.py` |
+| the per-harness field rulings, and which backend has a mirror at all | `src/kiro_crew/providers/mirrors/` (`base.py`, `registry.py`, `identity.py`, `claude_code.py`, `codex.py`, `opencode.py`, `goose.py`) |
+| where a mirror runs at session establishment | `src/kiro_crew/acp/runtime.py` (`AcpRuntime._mirrored_session_mcp`), `src/kiro_crew/acp/client.py` (`AcpClient._resolve_session_mcp_servers`) |
 | `allowedTools` → `permissions` | `src/kiro_crew/acp/kas_permissions.py` |
 | `--agent` on the spawn argv, the freshness gate | `src/kiro_crew/acp/client.py` |
 | `excludedTools` for Tool Search | `src/kiro_crew/agent_sdk/tool_search.py` |

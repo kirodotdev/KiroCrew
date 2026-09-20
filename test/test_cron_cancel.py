@@ -83,7 +83,10 @@ class TestCronServiceCancel:
         assert "run1" not in svc._job_start_times
         assert "run1" not in svc._running_tasks
         task.cancel.assert_called_once()
-        sessions.reset.assert_awaited_once_with("cron:run1")
+        # ``ends_conversation``: cancelling the job ends its conversation, so its
+        # sub-agent runs go with it. Asserting the whole call keeps a later edit from
+        # dropping that and leaving the children of a cancelled cron running.
+        sessions.reset.assert_awaited_once_with("cron:run1", ends_conversation=True)
         assert "cron_history" in refresh_calls and "crons" in refresh_calls
         runs, total = await svc._history.get_job_history("run1")
         assert total == 1

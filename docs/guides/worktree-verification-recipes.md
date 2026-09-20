@@ -155,6 +155,61 @@ Playwright assertion and screenshot described by the pod-e2e skill. Inspect the
 resulting image before using it as PR evidence; a green verdict with a stale or
 unrelated frame is not proof.
 
+### Desktop-shell surfaces: the menu, its captions, the window chrome
+
+The recipe above photographs the web app. Electron draws the application menu,
+the menu popups and the native frame outside any web page, so neither a pod nor
+any of the ~546 `website/scripts/capture-*.mjs` scripts can reach them. Use
+`website/scripts/capture-electron-shell.mjs` for those: it launches real Electron
+through Playwright's `_electron` driver and grabs an X screen, so the menu
+frame lands in the picture.
+
+```bash
+npm ci --prefix website/electron        # once: installs the Electron binary
+node website/scripts/capture-electron-shell.mjs
+```
+
+`npm ci` fetches the binary in its postinstall, but an npm that gates lifecycle
+scripts (npm 12 does by default) installs the package without it. The harness then
+refuses at start and prints the one command that repairs it, which is also the
+command to run up front if lifecycle scripts are off where you work:
+
+```bash
+node website/electron/node_modules/electron/install.js
+```
+
+No `xvfb-run` and no `DISPLAY`: the harness starts its own Xvfb, lets Xvfb bind a
+free display number and report it back, and ignores an exported `DISPLAY`. That is
+deliberate and there is no flag to change it, because a grab has to take a whole
+screen - a menu popup is its own window - so the screen it takes must be one that
+holds nothing else. With no Xvfb binary on `PATH` (or `XVFB_BIN`) the run refuses
+rather than shooting on whatever display is there. The screen size is the harness's
+own, and each written file is cropped to the harness window's rectangle, so no
+pixel from anything else can reach it.
+
+It writes `electron-shell-window.png` and `electron-shell-menu-<id>.png` under
+`OUT_DIR`. Two runs on an unchanged tree produce byte-identical files, so a diff
+of the pair reports only what the change did.
+
+The shot is evidence rather than decoration because the script does not build the
+menu it photographs. It reads the menu back out of the running app and refuses to
+take any picture unless the caption the caller declared is the caption the app
+actually holds, which is what `--expect-item`, `--expect-accelerator` and
+`--expect-register-accelerator` declare. `website/src/test/electronShellEvidence.test.ts`
+covers that refusal.
+
+Two limits are worth knowing before it is quoted as proof. Window decorations
+belong to the window manager and the harness's Xvfb runs none, so the window is
+undecorated there - the menu bar is Electron's own and is always present.
+And macOS's menu bar belongs to the system: `--platform=darwin` renders the macOS
+menu template in a popup, which shows the items and which of them carry a chord,
+but the modifier names are drawn by the Linux toolkit (`CmdOrCtrl` prints as
+`Ctrl`).
+
+The harness is not wired into any CI lane. It needs an Xvfb binary and an Electron
+binary that the `website` install does not fetch, and none of its capture-script
+siblings run in CI either.
+
 ## Recipe 3: drive an agent inside the pod
 
 The existing routes and payloads are:

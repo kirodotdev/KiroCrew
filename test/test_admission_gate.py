@@ -272,6 +272,7 @@ class TestSpawnAdmissionGate:
             "kiro_crew.subagent.sel"
         ) as mock_sel:
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
@@ -299,6 +300,7 @@ class TestSpawnAdmissionGate:
             "kiro_crew.subagent.sel"
         ) as mock_sel:
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
@@ -352,6 +354,7 @@ class TestSpawnAdmissionGate:
             "kiro_crew.subagent.sel"
         ) as mock_sel:
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
@@ -373,7 +376,7 @@ class TestSpawnAdmissionGate:
             if c[1]["outcome"] == "memory_check_unavailable"
         )
         assert unavailable["tool_name"] == "spawn_run"
-        assert unavailable["metadata"]["min_gb"] == 4.0
+        assert unavailable["metadata"]["min_gb"] == 4.5  # floor plus the pending process
         assert unavailable["metadata"]["task"] == "test task"
 
 
@@ -702,6 +705,7 @@ class TestCronExprPassthrough:
             "kiro_crew.subagent.sel"
         ) as mock_sel:
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
             # On a running loop the pump is a coroutine (its store reads run
             # off-loop); await one pass directly.

@@ -36,6 +36,7 @@ MUTATIONS (also restricted-session refused + SEL-audited)
 ``POST /library/{account}/remove``             delete a cloud copy + forget its record
 ``POST /backup/{account}/run``                 run a backup (snapshot | sessions)
 ``POST /backup/{account}/nightly``             toggle the nightly snapshot
+``POST /backup/{account}/retention``           set or clear the retention count
 ``POST /backup/{account}/restore``             download an archive to the staging dir
 ``POST /install/label``                        rename THIS install (display only, local)
 
@@ -2295,6 +2296,10 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
     account, profile, region = target
     payload: dict[str, Any] = {
         "nightly": await asyncio.to_thread(backup_mod.nightly_enabled, account),
+        # The EFFECTIVE count the sweep would use, not the raw stored value, and
+        # `null` when retention is off. A panel reporting a number the sweep would
+        # clamp or ignore is worse than reporting none.
+        "retentionKeep": await asyncio.to_thread(backup_mod.retention_keep, account),
         "runs": await asyncio.to_thread(backup_mod.last_runs, account),
         "jobs": await asyncio.to_thread(_account_jobs, account),
         # This install's own identity, so every row can be told from every other
@@ -2444,6 +2449,50 @@ async def _handle_backup_nightly(request: web.Request) -> web.Response:
             status=500,
         )
     return web.json_response({"nightly": enabled})
+
+
+async def _handle_backup_retention(request: web.Request) -> web.Response:
+    """Set or clear this account's retention count -- the only shipped way in.
+
+    Retention deletes object versions permanently and ships OFF, so this is the
+    switch that turns it on. It takes the count rather than a flag because there is
+    no separate enable bit: a count IS on, and `null` IS off.
+    """
+    target = await _account_target(request)
+    if isinstance(target, web.Response):
+        return target
+    body = await _body(request)
+    raw = body.get("keep", ...)
+    if raw is ...:
+        return _bad_request("keep is required", "invalid_keep")
+    # NOT int(): this value authorizes PERMANENT DELETES of the owner's archives, so
+    # it is validated and never coerced. `True` IS an `int` in Python, so a coercing
+    # handler would read {"keep": true} as keep=1 -- the most destructive value
+    # available -- from a caller that believed it was sending a flag. Out of range is
+    # refused rather than clamped: the stored value must be the one the caller asked
+    # for, so nobody configures 0 and is later told they configured 1. There is no
+    # upper bound to refuse against -- a count larger than the number of archives that
+    # exist keeps all of them, which is not a harm.
+    if raw is not None and (isinstance(raw, bool) or not isinstance(raw, int)):
+        return _bad_request("keep must be an integer or null", "invalid_keep")
+    if raw is not None and raw < backup_mod.RETENTION_KEEP_MIN:
+        return _bad_request(
+            f"keep must be at least {backup_mod.RETENTION_KEEP_MIN}",
+            "invalid_keep",
+        )
+    account, _profile, _region = target
+    try:
+        await asyncio.to_thread(backup_mod.set_retention_keep, account, raw)
+    except OSError:
+        # Loud, and with a FIXED message, for the reasons the nightly toggle states:
+        # reporting a setting the next read contradicts is worse than an error, and
+        # the OSError's own text carries the state file's absolute path.
+        logger.exception("aws-control: the retention count could not be persisted")
+        return web.json_response(
+            {"error": "the retention setting could not be saved", "code": "state_persist_failed"},
+            status=500,
+        )
+    return web.json_response({"retentionKeep": raw})
 
 
 async def _handle_backup_restore(request: web.Request) -> web.Response:
@@ -2618,6 +2667,10 @@ def register_routes(app: web.Application) -> None:
     r.add_post(
         f"{_BASE}/backup/{{account}}/nightly",
         _guarded(_mutating("backup_nightly")(_handle_backup_nightly)),
+    )
+    r.add_post(
+        f"{_BASE}/backup/{{account}}/retention",
+        _guarded(_mutating("backup_retention")(_handle_backup_retention)),
     )
     r.add_post(
         f"{_BASE}/backup/{{account}}/restore",

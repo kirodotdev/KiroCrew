@@ -426,7 +426,7 @@ async def test_gateway_spawn_freezes_mode_and_enforces_it_after_parent_change(
     state = DashboardState(sessions, None, None, 0, subagents=manager, conversation_log=env.history)
     parent = "dashboard:parent"
     state._slots["parent"] = SimpleNamespace(
-        is_restricted=mode != "persistent", blocks_reads=mode == "temporary"
+        key="parent", is_restricted=mode != "persistent", blocks_reads=mode == "temporary"
     )
     ready, finish = asyncio.Event(), asyncio.Event()
 
@@ -456,7 +456,9 @@ async def test_gateway_spawn_freezes_mode_and_enforces_it_after_parent_change(
         key = f"subagent:{run_id}"
         assert read_run_memory_mode(run_id) == mode
         if parent_change == "replace":
-            state._slots["parent"] = SimpleNamespace(is_restricted=False, blocks_reads=False)
+            state._slots["parent"] = SimpleNamespace(
+                key="parent", is_restricted=False, blocks_reads=False
+            )
         else:
             del state._slots["parent"]
         refusal = await cron._recognize_session(

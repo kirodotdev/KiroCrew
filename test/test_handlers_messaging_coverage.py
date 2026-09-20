@@ -127,6 +127,7 @@ def _info(**kw: Any) -> Any:
         "reasoning_effort": "",
         "approval_mode": "",
         "silent": False,
+        "delegation": {},
         "_raw_task": "",
         "include_memory": True,
         "include_lessons": True,
@@ -242,6 +243,7 @@ class TestApiSpawn:
             "task": "build it",
             "status": "spawned",
             "conversation": "a9",
+            "parent_work_supported": False,
         }
         kwargs = mgr.spawn.call_args.kwargs
         assert kwargs["silent"] is True

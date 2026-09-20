@@ -89,6 +89,50 @@ def _on_disk(tmp_path) -> dict:
     return json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
 
 
+def test_unset_subagent_turn_budget_uses_long_task_default(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {}})
+    cfg = KiroCrewConfig.load()
+    assert cfg.agent.subagent_max_turns == 1000
+    assert cfg.agent.subagent_timeout_secs == 10800
+    cfg.save()
+    assert KiroCrewConfig.load().agent.subagent_max_turns == 1000
+
+
+@pytest.mark.parametrize("turns", [25, 100, 400, 1000])
+def test_stored_subagent_turn_budget_is_never_automatically_adopted(tmp_path, monkeypatch, turns):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_max_turns": turns}})
+    cfg = KiroCrewConfig.load()
+    assert cfg.agent.subagent_max_turns == turns
+    cfg.save()
+    assert _on_disk(tmp_path)["agent"]["subagent_max_turns"] == turns
+    assert KiroCrewConfig.load().agent.subagent_max_turns == turns
+    assert "agent.subagent_max_turns" not in SD.adopted_superseded()
+
+
+def test_subagent_turn_budget_overlay_wins_over_new_default(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {}})
+    _write_local(tmp_path, {"agent": {"subagent_max_turns": 100}})
+    cfg = KiroCrewConfig.load()
+    assert cfg.agent.subagent_max_turns == 100
+    cfg.save()
+    assert "subagent_max_turns" not in _on_disk(tmp_path)["agent"]
+    assert KiroCrewConfig.load().agent.subagent_max_turns == 100
+
+
+def test_stored_old_subagent_turn_default_is_reported_without_rewriting(tmp_path, monkeypatch):
+    _point_home(tmp_path, monkeypatch)
+    stored = {"agent": {"subagent_max_turns": 100}}
+    entries = superseded_default_drift(stored, acked={})
+    assert len(entries) == 1
+    assert entries[0].new_default == 1000
+    assert entries[0].auto_adopt is False
+    assert SD.auto_adoptable(stored) == []
+    assert stored == {"agent": {"subagent_max_turns": 100}}
+
+
 # --------------------------------------------------------------------------
 # Detection: pure, and precise about what counts as drift.
 # --------------------------------------------------------------------------

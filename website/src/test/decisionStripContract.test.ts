@@ -72,9 +72,9 @@ describe('the record fixture in the decisions spec', () => {
       p: 0.81,
       tokensSaved: 3240,
       candidates: 42,
-      batches: 3,
+      messageChars: 96,
       historyChars: 1840,
-      truncated: 2,
+      latencyMs: 197,
       dropped: [{ key: 'tst', p: 0.12 }],
       error: null,
     })
@@ -85,10 +85,38 @@ describe('the record fixture in the decisions spec', () => {
     // proves the spec still promises each INPUT it reads.
     for (const key of [
       'turn_id', 'point', 'baseline', 'jev', 'p', 'tokens_saved',
-      'candidates', 'batches', 'history_chars', 'truncated', 'dropped', 'error',
+      'candidates', 'message_chars', 'history_chars', 'latency_ms', 'dropped', 'error',
     ]) {
       expect(Object.keys(fixture), `the spec fixture no longer carries ${key}`).toContain(key)
     }
+  })
+
+  it('promises no count that is the same on every turn', () => {
+    // A row printing 0 forever is furniture, not a measurement. The menu is one
+    // question, so there is no batch count; a history clip is a fact about the
+    // transcript read and lives on the call row, not on the receipt.
+    expect(Object.keys(fixture)).not.toContain('batches')
+    expect(Object.keys(fixture)).not.toContain('truncated')
+  })
+
+  it('names the egress as two halves, so the strip can print what actually left', () => {
+    // `message_chars` is the excerpt the request carried, not the length of what
+    // the owner typed; together with `history_chars` it is the whole egress of
+    // one question. A spec that promised only the history would leave the strip
+    // printing 0 at the shipped budget while a message did leave.
+    expect(readDecisionStrip(fixture)!.messageChars).toBe(96)
+    expect(readDecisionStrip(fixture)!.historyChars).toBe(1840)
+    // Absent reads as `null`, not 0: the spec's floor-to-zero rule covers the
+    // counts a reader may take at face value, and an unstated egress is not one.
+    expect(readDecisionStrip({ ...fixture, message_chars: undefined })!.messageChars).toBeNull()
+  })
+
+  it('carries the latency under the core log field name, since the record IS the row', () => {
+    // The point does not stamp a latency of its own: `log.build_row` writes
+    // `latency_ms` among the six core fields and the whole row is what gets
+    // published. A reader keying on any other spelling would print nothing.
+    expect(readDecisionStrip(fixture)!.latencyMs).toBe(197)
+    expect(readDecisionStrip({ ...fixture, latency_ms: -5 })!.latencyMs).toBe(0)
   })
 
   it('promises neither `agree` nor `ts`, because nothing reads them', () => {
@@ -116,10 +144,19 @@ describe('the record fixture in the decisions spec', () => {
   })
 
   it('carries no message text, description or key — the bound the log section sets', () => {
-    const serialized = JSON.stringify(fixture).toLowerCase()
+    // `message_chars` is a LENGTH, so it is dropped by exact key before the
+    // check. The forbidden list itself stays broad — narrowing `message` to
+    // `"message"` so the new field fits would admit a `message_text` carrying the
+    // conversation, which is the leak this asserts against.
+    const { message_chars: _length, ...withoutLength } = fixture
+    const serialized = JSON.stringify(withoutLength).toLowerCase()
     for (const forbidden of ['api_key', 'secret', 'prompt', 'message', 'description', 'content']) {
       expect(serialized, `the fixture leaks ${forbidden}`).not.toContain(forbidden)
     }
+    // The teeth: masking is by key, so anything else naming a message still fails.
+    expect(JSON.stringify({ ...withoutLength, message_text: 'hi' })).toContain('message')
+    expect(Object.keys(fixture)).toContain('message_chars')
+    expect(typeof fixture.message_chars).toBe('number')
   })
 })
 

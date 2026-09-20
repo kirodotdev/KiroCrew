@@ -37,7 +37,7 @@ def _service():
 @pytest.mark.parametrize("entry,path,body,method", _ENTRY_POINTS)
 @pytest.mark.parametrize("session", ["dashboard:alice", "dashboard:global", None])
 async def test_workflow_http_ordinary_auth_and_canonical_routing(
-    env, entry, path, body, method, session
+    env, monkeypatch, entry, path, body, method, session
 ):
     service = _service()
     env.state.workflow_service = service
@@ -53,9 +53,15 @@ async def test_workflow_http_ordinary_auth_and_canonical_routing(
     app["state"] = env.state
     route = path.replace("global-run", "{run_id}").replace("/saved/", "/{workflow_ref}/")
     app.router.add_post(route, getattr(workflows, f"api_workflow_{entry}"))
+    # A loopback TCP caller cannot be attested by the kernel peer walk, so it
+    # proves its declared key with the signed token its launcher published. The
+    # stand-in token names its own session, which lets the verifier answer without
+    # a trust root on disk.
+    monkeypatch.setattr(auth, "verify_session_token", lambda token: token.removeprefix("signed:"))
     headers = {"X-Internal-Secret": "test-workflow-secret"}
     if session is not None:
         headers["X-Session-Key"] = session
+        headers["X-Session-Token"] = f"signed:{session}"
     async with TestClient(TestServer(app, host="127.0.0.1")) as client:
         response = await client.post(path, json=body, headers=headers)
         payload = await response.json()

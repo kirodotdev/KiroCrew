@@ -14,6 +14,15 @@
  * route does not cover the inlined body the Lottie tier renders. So the fetch
  * has to be refused here, before `loadAnimation`.
  *
+ * A font entry is the same boundary for a second reason. For one of its remote
+ * origins the player does not fetch a stylesheet, it BUILDS one: it writes an
+ * `@font-face` rule out of the entry's own `fFamily` text and appends a
+ * `<style>` to the SVG's `<defs>`. The renderer here is `renderer: 'svg'`, so
+ * that SVG is inline in the dashboard document and the rule it carries is a
+ * document stylesheet — a pack whose `fFamily` closes the rule and opens
+ * another one restyles the whole page. Refusing the entry is what keeps that
+ * text out of the DOM.
+ *
  * REFUSE rather than strip. Stripping leaves a clip drawn with holes in it,
  * which reads as a corrupt pack while quietly keeping every other reference in
  * the document to audit; refusing hands the caller a load failure it already
@@ -45,14 +54,31 @@ function assetIsRemote(entry: unknown): boolean {
   return typeof a.p !== 'string' || !a.p.startsWith('data:')
 }
 
+/** The whole set of values the player itself reads as "this family is local":
+ *  absent, `null`, the empty string, the `'n'` code, and the number `0`. Every
+ *  other value — a known remote code, an unknown code, a value of a type the
+ *  key is not supposed to hold — counts as remote, because a value this module
+ *  cannot place is a value it cannot prove is inline. */
+function fontOriginIsLocal(value: unknown): boolean {
+  return value === undefined || value === null || value === '' || value === 'n' || value === 0
+}
+
 /** A font is fetched unless it is a system family the document only names.
- *  `fPath`/`fWeight`/`fStyle` with a non-local `origin` is a webfont request. */
+ *
+ *  The player's own local branch tests `fPath` for TRUTHINESS, not for being a
+ *  string, so any truthy `fPath` — an object, an array, a number, `true` —
+ *  reaches the branches that build a `<link>` or a `<style>` out of the entry.
+ *  This predicate has to split the same way the player does, so it reads
+ *  `fPath` as truthiness too, and reads both origin keys against the player's
+ *  local set: `fOrigin` carries string codes (`'p'` Google, `'g'` a URL, `'t'`
+ *  Typekit) and `origin` carries the numeric ones (1 Google, 2 Adobe, 3 a
+ *  custom URL). */
 function fontIsRemote(entry: unknown): boolean {
   if (!entry || typeof entry !== 'object') return false
   const f = entry as Record<string, unknown>
-  if (typeof f.fPath === 'string' && f.fPath !== '') return true
-  // `origin` 0 is "local / none"; 1-3 are Google, Adobe and a custom URL.
-  return typeof f.origin === 'number' && f.origin !== 0
+  if (f.fPath) return true
+  if (!fontOriginIsLocal(f.fOrigin)) return true
+  return !fontOriginIsLocal(f.origin)
 }
 
 /**

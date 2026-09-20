@@ -7465,11 +7465,106 @@ def _proc_status_rss_kb(pid: int) -> int:
     return -1
 
 
+def _parse_ppid(stat: bytes) -> "int | None":
+    """The parent pid from raw ``/proc/<pid>/stat`` bytes, or None on a parse error.
+
+    Splits after the final ``)`` for the same reason :func:`_parse_cpu_jiffies`
+    does: ``comm`` may contain spaces and parens. ppid is field 4 (1-indexed),
+    index 1 of the post-comm tokens.
+    """
+    try:
+        rparen = stat.rindex(b")")
+        return int(stat[rparen + 2 :].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def proc_child_map() -> "dict[int, list[int]] | None":
+    """Every live process's children, from ONE pass over ``/proc``. Linux only.
+
+    For the caller that needs the subtrees of MANY roots at once. Asking the
+    kernel per root (:func:`_proc_children`) costs one read per THREAD of every
+    process visited, so a runtime carrying twenty threads is twenty reads and a
+    sampler walking forty roots pays that on each of them. A parent map is one
+    read per process on the host and answers every root from memory. Measured on
+    a 1713-process host sampling 40 session trees of 734 processes in total:
+    11296 children reads taking 432ms against 1717 ``stat`` reads taking 70ms,
+    both routes returning the same 40 trees.
+
+    The two routes agree for a process whose parent is alive, by construction:
+    ``task/<tid>/children`` is the kernel's child list and ``stat``'s ppid is its
+    inverse. Where they part, this map is the more complete of the two -- the
+    child list is documented as reliable only for a frozen task, so a live tree
+    can come back short through it. A process reparented after its parent died is
+    outside both: its ppid becomes 1 and no surviving parent lists it.
+
+    ``None`` -- off Linux, and when ``/proc`` cannot be listed -- means "walk the
+    roots yourself", never "this host has no processes": an empty map would read
+    as every tree being the root alone.
+
+    Two host-wide snapshots already exist and neither is used here, for a
+    measured reason each:
+
+    * :func:`_posix_process_parent_map` spawns ``ps -Ao pid=,ppid=``. Its edges
+      agree with this map exactly (measured on a 1743-process host: 335 parents
+      in both, zero whose child sets differ), but it costs 122-129ms against
+      66-86ms for this pass, and it puts a subprocess spawn on a 5-second
+      browser poll. ``_get_rss_tree_mb``'s own note records the same choice for
+      the same reason: the Linux branch reads ``/proc`` directly and never
+      spawns.
+    * :func:`parent_pid` parses one pid's ppid out of the same ``stat`` line, but
+      through ``read_text``, so a process whose ``comm`` is not valid UTF-8 --
+      any process may set its own name to arbitrary bytes with
+      ``prctl(PR_SET_NAME)`` -- raises and is reported as unknown. In a map that
+      would drop that process AND every descendant behind it from a caller's
+      tree, silently. :func:`_parse_ppid` reads bytes, so it answers. The
+      difference is pinned by a test.
+
+    Blocking: one read per process on the host. Executor thread, never the loop.
+    """
+    if not IS_LINUX:
+        return None
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    children: dict[int, list[int]] = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            # Exited between the listing and the open: it is in no live tree.
+            continue
+        ppid = _parse_ppid(raw)
+        if ppid is not None:
+            children.setdefault(ppid, []).append(int(name))
+    return children
+
+
+def proc_cpu_jiffies_for_pids(pids: "list[int]") -> int:
+    """Sum utime+stime (clock ticks) over pids already walked.
+
+    The counterpart of :func:`proc_subtree_sample` for a caller that ALREADY
+    holds the subtree, so the tree is not enumerated a second time to reach a
+    total over the same processes. Each pid is read exactly as the walker reads
+    it (:func:`_proc_cpu_jiffies`), so the figure is the walker's figure over
+    that set and not a second definition of it.
+    """
+    return sum(_proc_cpu_jiffies(p) for p in pids)
+
+
 def _proc_children(pid: int) -> list[int]:
     """Direct child PIDs of *pid* via ``/proc/<pid>/task/<tid>/children``.
 
     Uses the kernel-provided children list (``CONFIG_PROC_CHILDREN``), so no
     ``pgrep``/full-table scan. Returns ``[]`` if the file is unavailable.
+
+    Per-root: it reads one ``children`` file per THREAD of *pid*. A caller that
+    needs many roots' trees in one pass should build
+    :func:`proc_child_map` instead.
     """
     kids: list[int] = []
     task_dir = f"/proc/{pid}/task"

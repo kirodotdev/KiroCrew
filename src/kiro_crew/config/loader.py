@@ -347,6 +347,7 @@ from kiro_crew.config.validation import (  # noqa: F401
 )
 from kiro_crew.config.validation import validate_config_data as _validate_config_data  # noqa: F401
 from kiro_crew.constants import (
+    DEFAULT_SUBAGENT_MAX_TURNS,
     SUBAGENT_TIMEOUT_MAX,
     SUBAGENT_TIMEOUT_MIN,
     SUBAGENT_TIMEOUT_SECS,
@@ -2653,7 +2654,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             agent_data.get("subagent_auto_max", 32), 32, 3, SUBAGENT_AUTO_MAX_CEILING
         ),
         subagent_spawn_stagger_secs=_safe_float(
-            agent_data.get("subagent_spawn_stagger_secs", 2.0), 2.0
+            agent_data.get("subagent_spawn_stagger_secs", 0.25), 0.25
         ),
         spawn_min_memory_gb=_safe_float(agent_data.get("spawn_min_memory_gb", 4.0), 4.0),
         resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
@@ -2703,6 +2704,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         ),
         adaptive_floor=_safe_int(agent_data.get("adaptive_floor", 1), 1, 1, 64),
         adaptive_initial=_safe_int(agent_data.get("adaptive_initial", 4), 4, 1, 64),
+        adaptive_slow_start=_safe_bool(agent_data.get("adaptive_slow_start"), True),
         controller_sample_secs=_safe_int(agent_data.get("controller_sample_secs", 5), 5, 1, 300),
         # Dependency coordinator (taskq/dependency.py coordinator_from_config).
         dependency_max_attempts=_safe_int(
@@ -2722,7 +2724,10 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             "wait" if agent_data.get("interactive_command_policy") == "wait" else "cancel"
         ),
         subagent_max_turns=_safe_int(
-            agent_data.get("subagent_max_turns", 100), 100, 1, SUBAGENT_MAX_TURNS_CEILING
+            agent_data.get("subagent_max_turns", DEFAULT_SUBAGENT_MAX_TURNS),
+            DEFAULT_SUBAGENT_MAX_TURNS,
+            1,
+            SUBAGENT_MAX_TURNS_CEILING,
         ),
         subagent_timeout_secs=_subagent_timeout_from(
             agent_data.get("subagent_timeout_secs", SUBAGENT_TIMEOUT_SECS)

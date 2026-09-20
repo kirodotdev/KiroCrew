@@ -46,7 +46,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.dashboard.chat_delivery import sanitize_outbound, start_queue_persist
+from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_utils import (
@@ -2558,27 +2558,6 @@ async def send_to_target(
     if steered or requeued:
         # Neither arm starts a turn: a steer runs inside one that is already going,
         # and a requeued steer waits for the next like any queued message.
-        started = False
-    elif slot._in_stage_execution:
-        # A multi-stage plan is mid-flight. ``enqueue_or_run_prompt`` gates on
-        # ``slot.running`` alone, and between stages that reads False because each
-        # stage's ``_run_chat`` closes its own turn, so handing it the prompt here
-        # would start a SECOND turn racing the plan. Queue it instead, stamped the
-        # same way that method stamps, and hold it until the plan ends.
-        #
-        # ``slot.running or slot._in_stage_execution`` is the predicate every
-        # producer that must not start a concurrent turn reads: the composer
-        # (``chat_handlers``), the cron injection (``handlers/messaging``), the nudge
-        # arm (``handlers/autonudge``) and the transfer gate. The steer arm above
-        # reads it too, and between stages there is no live steer client, so a steer
-        # falls through its re-gate to this branch.
-        slot.queue_append(prompt, meta=containment_meta(state, slot))
-        # The queue is this prompt's ONLY record until the plan's drain picks it up,
-        # and the caller is handed a success receipt below. Without an immediate
-        # write, a restart inside the ordinary flush interval loses a message the
-        # sender was told had landed. Every other producer that appends and returns
-        # success does this; the inter-stage branch was the one that did not.
-        start_queue_persist(state, slot)
         started = False
     else:
         # `_run_chat` is passed straight through, NOT wrapped in

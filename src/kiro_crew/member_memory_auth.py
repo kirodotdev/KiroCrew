@@ -62,16 +62,39 @@ def protected_member_session_for_pid(peer_pid: int, *, home: Any | None = None) 
     return None
 
 
+def session_key_is_attested(request: Any, key: str) -> bool:
+    """Whether the transport attests the caller-declared *key*.
+
+    ``X-Internal-Secret`` proves only that a request came through the local
+    gateway, so a bare ``X-Session-Key`` is the caller's own word: any
+    same-machine process holding that secret can read another session's key off
+    a transcript and name it here.  Two positive channels answer for the two
+    ways a client resolves its OWN key, and either one binds this request to the
+    session that owns it:
+
+    * the Unix-socket kernel peer attestation ``token_auth`` sets once the
+      peer's process ancestry resolves to the declared key;
+    * the signed per-session token the MCP launcher publishes into each server's
+      environment, which verifies back to that same key.
+
+    Every caller is an authorization decision over a caller-supplied session
+    name, so they share one answer rather than one copy each.  Blocking file I/O
+    on the token branch; callers on an event loop must offload it.
+    """
+    if request.get("peer_verified") is True:
+        return True
+    token = request.headers.get("X-Session-Token", "")
+    if not isinstance(token, str) or not token:
+        return False
+    return verify_session_token(token) == key
+
+
 def memory_request_identity(request: Any) -> tuple[str | None, bool]:
     """Authenticate the session used by an internal cron-memory request.
 
-    ``X-Internal-Secret`` proves only that the request came through the local
-    gateway.  A caller-controlled ``X-Session-Key`` is therefore not enough on
-    the loopback TCP transport: a process that knows the secret could name any
-    existing execution record.  Unix-socket middleware may attach a positive
-    kernel peer attestation; TCP callers carry the signed per-session token that
-    the MCP launcher already publishes.  Both paths still read the canonical
-    execution record before returning the key.  This is ordinary transport
+    The declared key is accepted only with a transport attestation behind it
+    (:func:`session_key_is_attested`), and the canonical execution record is
+    still read before the key is returned.  This is ordinary transport
     identity, not a member-memory confidentiality mechanism.
     """
     if request.get("internal_auth") is not True:
@@ -81,10 +104,8 @@ def memory_request_identity(request: Any) -> tuple[str | None, bool]:
         return None, False
     if not key:
         return None, False
-    if request.get("peer_verified") is not True:
-        token = request.headers.get("X-Session-Token", "")
-        if not isinstance(token, str) or not token or verify_session_token(token) != key:
-            return None, False
+    if not session_key_is_attested(request, key):
+        return None, False
     try:
         read_session_execution(key)
     except (OSError, ValueError):

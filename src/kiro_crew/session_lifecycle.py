@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -51,9 +51,34 @@ StopOutcome = Literal["soft", "hard", "idle"]
 ProviderFactory = Callable[..., Any]
 _ANY_SESSION = object()
 
+#: Budget for cancelling one parent's sub-agent runs at a parent end. A parent
+#: end is on a user-facing path (a closed tab, a switched model), so an
+#: unresponsive child must not hold it open; the companion-runtime release that
+#: follows is the backstop for whatever the cancel does not reach in time.
+_CHILD_CANCEL_TIMEOUT_SECS = 20.0
+
 
 class _RecycleCallback(Protocol):
     async def __call__(self, key: str, *, reason: str) -> None: ...
+
+
+class _ChildTeardownHandler(Protocol):
+    """Ends the sub-agent runs a parent spawned, in two halves.
+
+    Satisfied by ``SubagentManager``. The halves are separate because they must
+    run at different moments: the snapshot while this module still holds the
+    registry lock, the cancel after the provider teardown awaits.
+    """
+
+    def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]: ...
+
+    async def cancel_for_teardown(
+        self,
+        agent_ids: "Sequence[str]",
+        *,
+        parent_session_key: str,
+        verb: str = "",
+    ) -> int: ...
 
 
 class _SessionEntry(Protocol):
@@ -173,6 +198,7 @@ class SessionLifecycleOwner(Protocol):
         skip_if_busy: bool = False,
         skip_if_injecting: bool = False,
         clear_conversation: bool = False,
+        ends_conversation: bool = False,
     ) -> bool: ...
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None: ...
@@ -242,6 +268,7 @@ class SessionLifecycleState:
     suppress_replay: set[str] = field(default_factory=set)
     origin_links: dict[str, Any] = field(default_factory=dict)
     on_recycled: _RecycleCallback | None = None
+    child_teardown: _ChildTeardownHandler | None = None
     # Per-session-key count of Stop requests, keyed by folded key. Bumped by
     # :meth:`SessionLifecycleService.stop_turn` BEFORE the provider cancel is
     # awaited, so a turn runner that snapshots the count at turn start and
@@ -318,6 +345,14 @@ class SessionLifecycleService:
     @_on_recycled.setter
     def _on_recycled(self, callback: _RecycleCallback | None) -> None:
         self.state.on_recycled = callback
+
+    @property
+    def _child_teardown(self) -> _ChildTeardownHandler | None:
+        return self.state.child_teardown
+
+    @_child_teardown.setter
+    def _child_teardown(self, handler: _ChildTeardownHandler | None) -> None:
+        self.state.child_teardown = handler
 
     async def refresh_defaults(self, cfg: Any = None) -> None:
         """Adopt config changes that only affect new sessions.
@@ -477,8 +512,39 @@ class SessionLifecycleService:
         skip_if_busy: bool = False,
         skip_if_injecting: bool = False,
         clear_conversation: bool = False,
+        ends_conversation: bool = False,
     ) -> bool:
-        """Kill a live session while preserving the exact reset semantics."""
+        """Kill a live session while preserving the exact reset semantics.
+
+        Defaults to recycling a PROCESS while the conversation survives. The session-map
+        entry keeps its resume sid, so the next turn on the key restores the same native
+        conversation through ``session/load`` — which is why this is the verb every
+        evict-and-retry path reaches for: a wedged prompt, a failed auto-compaction, a
+        provider or model switch, an idle expiry, the channel watchdog, a per-step
+        re-prompt. Those must NOT stop this parent's sub-agent runs: the child has a
+        conversation to deliver into and is bounded by its own run timeout, so stopping it
+        would discard live work belonging to a conversation that is coming back.
+
+        ``ends_conversation=True`` says the caller is ending the conversation, not
+        recycling it, and then this parent's runs are stopped like any other parent end.
+        Most endings are a different verb (``remove``, ``destroy``,
+        ``discard_conversation``, ``remove_if_unclaimed``,
+        ``retire_kiro_identity_sessions``), but some reach only this one, so the intent
+        has to be sayable here. The callers that pass it are named in
+        ``docs/system-specs/modules/session.md``; a test pins that they still do.
+
+        The default is the recycle because that is what the overwhelming majority of the
+        ~46 callers are, and the cost of the two mistakes is not symmetric -- but a MISSED
+        flag costs MORE than an orphan, which is the number a new caller has to weigh. It
+        arms no delivery gate either, so the child's report still reaches ``_on_done``,
+        which resolves the parent through ``get_or_create`` -- the call that CREATES a
+        session when none is live -- so the conversation the caller ended re-opens, seeded
+        with that report. That is the headline defect in full, not a bounded process. A
+        wrong ``True`` destroys live work for a conversation that comes right back, which
+        is why the default stays the recycle. Nothing structural catches an omission,
+        because a keyword is invisible to the AST ratchet, which is exactly why
+        ``test_the_conversation_ending_reset_callers_say_so`` pins the callers BY PATH.
+        """
         owner = self._owner
         logger = self._deps.logger
         key = owner._fold_key(key)
@@ -511,6 +577,12 @@ class SessionLifecycleService:
                 if injecting:
                     return False
             session = owner._sessions.pop(key, None)
+            # Snapshotted in the SAME lock hold as the pop, and only when the caller says
+            # the conversation is ending: every await below is a window a cold start can
+            # register a successor under this key in, and a selection made after one would
+            # name the successor's runs. A recycle takes no snapshot at all -- its children
+            # keep running and deliver into the resumed conversation.
+            teardown_children = self._snapshot_parent_children(key) if ends_conversation else ()
             owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             # ``clear_conversation`` means the conversation is being THROWN AWAY,
@@ -574,6 +646,7 @@ class SessionLifecycleService:
             # wakes its waiter without yielding, so control reaches this line before
             # any of them runs, and this clear cannot erase a successor's pointer.
             owner._session_map.clear_sid(key)
+        shutdown_error: BaseException | None = None
         if session:
             await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
             # Capture PID and child tree before shutdown clears them.
@@ -614,7 +687,17 @@ class SessionLifecycleService:
                             new_pids,
                         )
                     )
-            await session.provider.shutdown()
+            try:
+                await session.provider.shutdown()
+            except BaseException as exc:  # noqa: BLE001 - re-raised below, after the cancel
+                # DEFERRED rather than propagated, and re-raised at the end of the method.
+                # The cancel that ends this parent's children lives past the bottom of this
+                # block, so an exception leaving here skipped it and left children running
+                # with no parent to report to -- the outcome this verb exists to prevent,
+                # on the one path nobody exercises. A ``finally`` around the whole block
+                # would say the same thing; deferring says it without re-indenting two
+                # hundred lines of kill-and-sweep logic, which is its own risk.
+                shutdown_error = exc
             platform_compat = self._deps.get_platform_compat()
             if pid:
                 if platform_compat.pid_exists(pid):
@@ -639,16 +722,30 @@ class SessionLifecycleService:
                         )
                     except Exception:
                         logger.exception("Reset %s: child sweep failed", key)
-            if key in owner._subagent_runtimes:
-                try:
-                    await owner.release_subagent_runtime(key)
-                except Exception:
-                    logger.debug(
-                        "Reset %s: subagent runtime cleanup failed",
-                        key,
-                        exc_info=True,
-                    )
             logger.debug("Reset session: %s (pid=%s)", key, pid)
+        # BEFORE the runtime release below, and outside the ``if session`` block above.
+        #
+        # Outside, because a live provider is not what makes this an ending: a RECYCLING
+        # reset pops the session, so an ENDING reset that follows one arrives with
+        # ``session is None`` while the children are still running -- the shape that
+        # skipped the cancel in ``remove``. Gated on the INTENT rather than on the id set
+        # being empty, because an empty set still reaches the durable-row sweep and a
+        # recycle must not touch the store rows of a conversation that will resume.
+        #
+        # Before, because that is the order every other verb keeps and the helper's own
+        # docstring requires: a child is stopped through its own teardown rather than by
+        # having the runtime it is multiplexed onto pulled out from under a live turn.
+        if ends_conversation:
+            await self._cancel_parent_children(key, teardown_children, verb="reset")
+        if session is not None and key in owner._subagent_runtimes:
+            try:
+                await owner.release_subagent_runtime(key)
+            except Exception:
+                logger.debug("Reset %s: subagent runtime cleanup failed", key, exc_info=True)
+        if shutdown_error is not None:
+            # The caller still sees what went wrong; it just sees it after this parent's
+            # children have been dealt with rather than instead of that.
+            raise shutdown_error
         return session is not None
 
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:
@@ -669,12 +766,151 @@ class SessionLifecycleService:
         except Exception:
             self._deps.logger.exception("Recycle callback failed for %s", key)
 
+    def set_child_teardown_handler(self, handler: _ChildTeardownHandler | None) -> None:
+        """Register the two-half sub-agent teardown hook used at every parent end."""
+        if self._child_teardown is not None and handler is not None:
+            self._deps.logger.warning(
+                "Child teardown handler already registered; replacing existing handler"
+            )
+        self._child_teardown = handler
+
+    async def end_children_for(self, key: str) -> None:
+        """End *key*'s sub-agent runs without touching its process.
+
+        The conversation-ended half of a parent end, on its own. Every other verb here
+        reaches it as part of tearing a session down, but a caller can replace the
+        conversation on a LIVE process -- the workflow pool does exactly that when it hands
+        a warm worker to the next task through ``provider.new_conversation()``. The process
+        survives and the conversation does not, so the children of the conversation that
+        ended have nowhere to report: without this they inject into whatever the reused
+        worker is doing next.
+
+        Same two-phase shape as the teardown verbs, for the same reason: the snapshot is
+        taken under the registry lock so it cannot name the runs of a conversation that
+        starts after it, and the cancel runs outside the lock because it awaits.
+
+        No provider shutdown, no map mutation, no runtime release: this verb makes exactly
+        one claim, that the conversation is over. In particular it does NOT advance the
+        key's ownership generation -- that counter belongs to session allocation, the
+        process here leaves the session in place, and advancing it from a verb that
+        retires nothing would report a replacement to every reader of it.
+        """
+        owner = self._owner
+        async with owner._lock:
+            teardown_children = self._snapshot_parent_children(key)
+        # Names ITSELF in the audit, exactly as the six teardown verbs do, rather than
+        # forwarding a verb a caller supplies. One consumer passed one value, so the
+        # parameter carried no information the method name does not -- and it bought the
+        # verb-naming ratchet an exemption, which is machinery in place of a rule. The
+        # caller's own identity is not lost: the line's ``key`` carries it.
+        await self._cancel_parent_children(key, teardown_children, verb="end_children_for")
+
+    def _snapshot_parent_children(self, key: str) -> tuple[str, ...]:
+        """The runs *key* owns, read synchronously so the answer cannot drift.
+
+        Called while this module still holds ``owner._lock``, in the same block as
+        the pop. That is the only place the answer is certain: every await after it
+        is a window in which a cold start can register a successor under the same
+        key, and a snapshot taken after one would include the successor's runs.
+        Comments throughout this file already treat that window as reachable.
+        """
+        handler = self._child_teardown
+        if handler is None or not key:
+            return ()
+        try:
+            return tuple(handler.snapshot_teardown_children(key))
+        except Exception:
+            self._deps.logger.exception("Parent end %s: snapshotting sub-agents failed", key)
+            return ()
+
+    async def _cancel_parent_children(
+        self,
+        key: str,
+        agent_ids: "Sequence[str]",
+        *,
+        verb: str,
+    ) -> None:
+        """Stop the snapshotted runs, ahead of reaping the runtime they share.
+
+        *key* is passed alongside the snapshot rather than instead of it, so the
+        teardown's audit line can name the conversation the ids belonged to.
+
+        Paired with :meth:`SessionManager.release_subagent_runtime` at every site
+        that calls it, because that call IS this module's parent-end boundary and
+        the two halves of ending a parent belong together.
+
+        The pairing is what makes the rule backend-independent. Releasing the
+        companion runtime kills the process a session-sharing child lives ON, so
+        a parent end already ends the children of a harness that multiplexes —
+        as a side effect of reaping the process, not as a decision. A harness
+        that runs one process per child has no entry in ``_subagent_runtimes``,
+        so the release reaches nothing and its children outlive the conversation
+        that asked for them, each holding its own agent process and that
+        process's MCP fleet until its own run timeout expires. Asking the manager
+        to cancel makes the same thing happen for every harness, by intent, and
+        it happens FIRST so a child is stopped through its own teardown rather
+        than by having its runtime pulled out from under a live turn.
+
+        Bounded and best-effort, matching :meth:`_fire_recycle_callback`: a
+        parent end must not hang or fail on an unresponsive child, and the
+        release below is the backstop for anything the cancel does not reach.
+
+        ``close_all`` is deliberately NOT a caller. Gateway shutdown cancels
+        every run at once through ``SubagentManager.cancel_all``, which also
+        drains follow-up watchers and announces undelivered messages — work a
+        per-key cancel does not do.
+        """
+        handler = self._child_teardown
+        if handler is None or (not agent_ids and not key):
+            return
+
+        # The timeout bounds the PARENT'S WAIT, not the reap. A bare ``wait_for`` cancels
+        # the coroutine it is waiting on, and this coroutine kills child processes: a
+        # write-capable child whose reset runs long would have its ``_force_reap``
+        # cancelled part-way, after the marks were written and before the kills landed,
+        # leaving it executing tools against a conversation that has ended. So the reap
+        # runs as its own task, shielded, and a timeout leaves it running to completion.
+        #
+        # The task is registered in ``_background_tasks`` for the ordinary reason: a task
+        # with no strong reference can be garbage-collected mid-flight, and this one has
+        # nothing else holding it once the wait gives up.
+        task = asyncio.ensure_future(
+            handler.cancel_for_teardown(
+                agent_ids,
+                parent_session_key=key,
+                # Carried only so the teardown's single audit line can name WHICH verb
+                # ended the conversation. Six verbs reach this one helper, and "a parent
+                # end cancelled these runs" is not answerable from outside without it.
+                verb=verb,
+            )
+        )
+        self._owner._background_tasks.add(task)
+        task.add_done_callback(self._owner._background_tasks.discard)
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=_CHILD_CANCEL_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            self._deps.logger.warning(
+                "Parent end: cancelling sub-agents %s exceeded %.0fs; it continues in the "
+                "background and the runtime release still runs",
+                list(agent_ids),
+                _CHILD_CANCEL_TIMEOUT_SECS,
+            )
+        except Exception:
+            self._deps.logger.exception(
+                "Parent end: cancelling sub-agents %s failed", list(agent_ids)
+            )
+
     async def remove(self, key: str) -> None:
         """Shut down a session while preserving its session-map entry."""
         owner = self._owner
         key = owner._fold_key(key)
         async with owner._lock:
             session = owner._sessions.pop(key, None)
+            # Snapshot the runs this key owns in the SAME lock hold as the pop: every
+            # await below is a window a cold start can register a successor under
+            # this key in, and a selection made after one would name the
+            # successor's runs. The cancel itself happens after the teardown.
+            teardown_children = self._snapshot_parent_children(key)
             owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
@@ -685,11 +921,25 @@ class SessionLifecycleService:
                 # Same tick as the pop: see reset for why recording after the
                 # teardown awaits would consume a successor's start.
                 await record_session_ended(key, end_reason=END_REASON_REMOVED)
+        # OUTSIDE the ``if session`` guard, because a live provider is not what makes this
+        # a parent end. A reset pops the session and keeps the conversation, so the tab
+        # close that follows arrives with ``session is None`` while the children are still
+        # running -- and this is the call that ends them. Guarding on the provider skipped
+        # exactly the sequence the two verbs make ordinary. It is a no-op when the snapshot
+        # is empty, which is what a key this gateway never held produces.
+        await self._cancel_parent_children(key, teardown_children, verb="remove")
         if session:
             await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
             await session.provider.shutdown()
-            # A companion subagent runtime lives outside the provider registry
-            # and must be reaped separately from the parent provider.
+            # INSIDE the guard, unlike the cancel above, and the asymmetry is this verb's
+            # own contract: ``remove`` on a key it never held must touch nothing
+            # (`test_missing_key_teardown_persistence_matrix[remove]` pins zero
+            # `clear_sid`, zero `delete`, zero release). ``destroy`` and
+            # ``discard_conversation`` release unconditionally because they answer a
+            # different question -- they are told to forget the key, whether or not a
+            # process is behind it. Cancelling children is safe unconditionally because
+            # the snapshot answers empty for an unheld key; releasing is not, because it
+            # is the observable that contract names.
             await owner.release_subagent_runtime(key)
             self._deps.logger.info("Removed session (map preserved): %s", key)
 
@@ -712,6 +962,7 @@ class SessionLifecycleService:
         logger = self._deps.logger
         constants = self._deps.constants()
         doomed: list[tuple[str, Any]] = []
+        teardown_children_by_key: dict[str, tuple[str, ...]] = {}
         skipped = False
         # One sweep at a time. Two peers draining permits one-by-one could each
         # hold a partial barrier forever, preventing both finally blocks from
@@ -771,6 +1022,7 @@ class SessionLifecycleService:
                         self.state.stop_requests.pop(key, None)
                         retired_keys.append(key)
                         invalidated_keys.append(key)
+                        teardown_children_by_key[key] = self._snapshot_parent_children(key)
                         # Do not clear _compact_pending_verdict: the identity
                         # recycle preserves that deferred verdict.
                         doomed.append((key, sess.provider))
@@ -805,9 +1057,19 @@ class SessionLifecycleService:
 
         retired: list[str] = []
         for key, provider in doomed:
+            children = teardown_children_by_key.get(key, ())
             try:
-                await provider.shutdown()
-                await owner.release_subagent_runtime(key)
+                try:
+                    await provider.shutdown()
+                finally:
+                    # See ``destroy``: the key was retired under the lock above, so a
+                    # shutdown that raises must not skip the cancel. The outer ``except``
+                    # turns a failure into a warning and leaves the key unretired, and the
+                    # children are ended either way.
+                    await self._cancel_parent_children(
+                        key, children, verb="retire_kiro_identity_sessions"
+                    )
+                    await owner.release_subagent_runtime(key)
                 retired.append(key)
             except Exception:
                 logger.warning(
@@ -919,6 +1181,11 @@ class SessionLifecycleService:
             ):
                 return False
             del owner._sessions[key]
+            # Snapshot the runs this key owns in the SAME lock hold as the pop: every
+            # await below is a window a cold start can register a successor under
+            # this key in, and a selection made after one would name the
+            # successor's runs. The cancel itself happens after the teardown.
+            teardown_children = self._snapshot_parent_children(key)
             owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
@@ -928,8 +1195,13 @@ class SessionLifecycleService:
             # Same tick as the removal: see reset.
             await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
-        await session.provider.shutdown()
-        await owner.release_subagent_runtime(key)
+        try:
+            await session.provider.shutdown()
+        finally:
+            # See ``destroy``: the entry is already gone, so a shutdown that raises must
+            # not carry the exception past the cancel and leave orphaned children behind.
+            await self._cancel_parent_children(key, teardown_children, verb="remove_if_unclaimed")
+            await owner.release_subagent_runtime(key)
         self._deps.logger.info(
             "Removed unclaimed speculative session (map preserved): %s",
             key,
@@ -973,6 +1245,11 @@ class SessionLifecycleService:
                 if not allowed:
                     return False
             session = owner._sessions.pop(key, None)
+            # Snapshot the runs this key owns in the SAME lock hold as the pop: every
+            # await below is a window a cold start can register a successor under
+            # this key in, and a selection made after one would name the
+            # successor's runs. The cancel itself happens after the teardown.
+            teardown_children = self._snapshot_parent_children(key)
             owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
@@ -1066,8 +1343,16 @@ class SessionLifecycleService:
             if session:
                 await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
                 await session.provider.shutdown()
-            await owner.release_subagent_runtime(key)
         finally:
+            # In the FINALLY, because the parent has already been removed by the time the
+            # provider is asked to stop. A shutdown that raises must not carry the
+            # exception past both of these: that leaves children running with no parent to
+            # report to and the runtime they share still held -- the one outcome this verb
+            # exists to prevent, reached by the one path nobody exercises. Cancel first,
+            # then release: a child is stopped through its own teardown rather than by
+            # having the runtime pulled out from under a live turn.
+            await self._cancel_parent_children(key, teardown_children, verb="destroy")
+            await owner.release_subagent_runtime(key)
             self._deps.logger.info("Destroyed session (map deleted): %s", key)
         return True
 
@@ -1123,6 +1408,11 @@ class SessionLifecycleService:
             if skip_if_busy and current is not None and current.semaphore.locked():
                 return False
             session = owner._sessions.pop(key, None)
+            # Snapshot the runs this key owns in the SAME lock hold as the pop: every
+            # await below is a window a cold start can register a successor under
+            # this key in, and a selection made after one would name the
+            # successor's runs. The cancel itself happens after the teardown.
+            teardown_children = self._snapshot_parent_children(key)
             owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             owner._compact_pending_verdict.pop(key, None)
@@ -1154,8 +1444,11 @@ class SessionLifecycleService:
             if session:
                 await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
                 await session.provider.shutdown()
-            await owner.release_subagent_runtime(key)
         finally:
+            # See ``destroy``: in the finally because a shutdown that raises must not
+            # carry the exception past the cancel, and cancel before release.
+            await self._cancel_parent_children(key, teardown_children, verb="discard_conversation")
+            await owner.release_subagent_runtime(key)
             self._deps.logger.info(
                 "Discarded native conversation (sid cleared, map entry kept): %s",
                 key,

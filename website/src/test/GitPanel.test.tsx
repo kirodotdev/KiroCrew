@@ -142,7 +142,14 @@ describe('GitPanel repository state', () => {
     const notice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
     expect(notice).toHaveTextContent('无法读取仓库状态。提交历史可能已过时。')
     expect(notice).not.toHaveTextContent(serverMessage)
-    await userEvent.click(within(notice).getByRole('button', { name: '询问代理' }))
+    // The status notice's hand-off names the half it carries, so that a second
+    // notice stacked beside it is not the same affordance twice. Resolved
+    // through the catalog, which keeps this assertion language-agnostic.
+    await userEvent.click(
+      within(notice).getByRole('button', {
+        name: i18next.t('components.gitPanel.ask_agent_changes'),
+      }),
+    )
 
     const prompt = consumeChatHandoff()
     expect(prompt).toContain('- Request: /api/project/git/status -> HTTP 503')
@@ -500,7 +507,30 @@ describe('GitPanel filter-driver refusal', () => {
     // transient condition differ structurally. Two similar titles put the
     // difference back into body prose, which is what this asserts against.
     expect(statusNotice.querySelector('strong')).toBeNull()
-    expect(logNotice).toHaveTextContent(i18next.t('components.gitPanel.filter_refused_title'))
+    // The refusal names the half it is reporting, not both. The status notice
+    // beside it already covers the changes half on its own terms, so a refusal
+    // claiming "changes or history" here reports that sibling's failure as well
+    // as its own -- and the reader's question was whether these were two
+    // problems or one said twice.
+    expect(logNotice).toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title_history'),
+    )
+    expect(logNotice).not.toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title'),
+    )
+    // Each notice's hand-off says which failure it carries. The reports differ
+    // -- each has its own endpoint, status and code -- so with one shared label
+    // the only indistinguishable part was the label.
+    expect(
+      within(statusNotice).getByRole('button', {
+        name: i18next.t('components.gitPanel.ask_agent_changes'),
+      }),
+    ).toBeTruthy()
+    expect(
+      within(logNotice).getByRole('button', {
+        name: i18next.t('components.gitPanel.ask_agent_history'),
+      }),
+    ).toBeTruthy()
     // The coded log refusal renders localized copy here too: the backend's
     // English sentence would be mixed-language copy in twelve catalogs.
     expect(logNotice).toHaveTextContent(i18next.t('components.gitPanel.filter_refused'))
@@ -532,7 +562,14 @@ describe('GitPanel filter-driver refusal', () => {
 
     const statusNotice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
     expect(screen.queryByTestId('git-panel-filter-refused')).toBeNull()
-    expect(statusNotice).toHaveTextContent(i18next.t('components.gitPanel.filter_refused_title'))
+    // Mirror of the scope rule: here the refusal is the STATUS side, so it names
+    // the changes half and leaves history to the log notice beside it.
+    expect(statusNotice).toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title_changes'),
+    )
+    expect(statusNotice).not.toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title'),
+    )
     expect(statusNotice).toHaveTextContent(i18next.t('components.gitPanel.filter_refused'))
     expect(statusNotice).not.toHaveTextContent('STATUS-SIDE-REFUSAL')
     // The hand-off still carries the structured report, which a localized
@@ -563,6 +600,15 @@ describe('GitPanel filter-driver refusal', () => {
     expect(statusNotice).not.toHaveTextContent(
       i18next.t('components.gitPanel.status_failed'),
     )
+    // The notice now tells the reader to refresh, so the control it points at
+    // has to be live here. It is, by construction: the button goes inert only
+    // when BOTH routes refuse, and that is exactly the state where this notice
+    // is replaced by the coalesced one. Pinned so the promise and the control
+    // cannot drift apart.
+    expect(statusNotice).toHaveTextContent(i18next.t('components.gitPanel.refresh'))
+    expect(
+      screen.getByRole('button', { name: i18next.t('components.gitPanel.refresh') }),
+    ).toBeEnabled()
   })
 
   it('keeps the history clause when only the status route failed', async () => {
@@ -577,6 +623,75 @@ describe('GitPanel filter-driver refusal', () => {
 
     const statusNotice = await screen.findByTestId('git-panel-status-error', {}, { timeout: 5000 })
     expect(statusNotice).toHaveTextContent(i18next.t('components.gitPanel.status_failed'))
+  })
+
+  it('names only the refusing half when the other route is healthy', async () => {
+    // The coalesced notice is not always about both halves. Here the log route
+    // succeeded, so the commit list is rendering underneath -- a refusal
+    // claiming history cannot be shown denies something on screen.
+    H.api.projectGitStatus.mockRejectedValue(
+      refused('git_status_filter_refused', 'STATUS-SIDE-REFUSAL'),
+    )
+    H.api.projectGitLog.mockResolvedValue({ repo: true, commits: [] })
+
+    mount()
+
+    const notice = await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    expect(notice).toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title_changes'),
+    )
+    expect(notice).not.toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title'),
+    )
+  })
+
+  it('puts the temporariness of an unreadable config on the headline', async () => {
+    // The two causes take opposite advice and used to share one bold line, so a
+    // reader who read only the headline could not tell the permanent condition
+    // from the one that clears itself -- and then gives up on the wrong one.
+    H.api.projectGitStatus.mockRejectedValue(
+      refused('git_status_filter_refused', 'UNREADABLE-CONFIG', 'unreadable'),
+    )
+    H.api.projectGitLog.mockRejectedValue(
+      refused('git_log_filter_refused', 'UNREADABLE-CONFIG', 'unreadable'),
+    )
+
+    mount()
+
+    const notice = await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    expect(notice).toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title_unreadable'),
+    )
+    expect(notice).not.toHaveTextContent(
+      i18next.t('components.gitPanel.filter_refused_title'),
+    )
+  })
+
+  it('keeps the inert glyph legible at the size the header renders it', async () => {
+    // The slash IS the difference between the two causes' controls: declared
+    // deadens the button, unreadable leaves it live. At size 13 under this
+    // repo's dominant opacity-40 the slash is the first thing to disappear, and
+    // a reader shown three frames called all three crossed-out. A heavier stroke
+    // and a smaller fade keep it on a still frame; the live button's resting
+    // convention is untouched, so this is not a new treatment for one control.
+    H.api.projectGitStatus.mockRejectedValue(
+      refused('git_status_filter_refused', 'STATUS-SIDE-REFUSAL'),
+    )
+    H.api.projectGitLog.mockRejectedValue(
+      refused('git_log_filter_refused', 'LOG-SIDE-REFUSAL'),
+    )
+
+    mount()
+
+    await screen.findByTestId('git-panel-filter-refused', {}, { timeout: 5000 })
+    const inert = screen.getByRole('button', {
+      name: i18next.t('components.gitPanel.refresh_unavailable'),
+    })
+    const glyph = inert.querySelector('.lucide-refresh-cw-off')
+    expect(glyph).not.toBeNull()
+    expect(glyph?.getAttribute('stroke-width')).toBe('2.5')
+    expect(inert.className).toContain('opacity-60')
+    expect(inert.className).not.toContain('opacity-40')
   })
 
   it('hands the agent a refusal report when it does coalesce', async () => {

@@ -262,7 +262,8 @@ class TestStartDeviceLogin:
         monkeypatch.setattr(ssm, "run_command", fake_run_command)
         login.start_device_login("i-0abc", "dev", open_browser=False)
         assert "nohup" in captured["command"]
-        assert "kiro-cli login --use-device-flow" in captured["command"]
+        assert "login --use-device-flow" in captured["command"]
+        assert login._LOGIN_PROCESS_PATTERN in captured["command"]  # the replace pkill
         assert "timeout 20" not in captured["command"]
 
     def test_headless_browser_open_returns_false(self, monkeypatch):
@@ -281,7 +282,7 @@ class TestStartDeviceLogin:
 
         def fake_run_command(instance_id, command, profile="", region="", **_kwargs):
             commands.append(command)
-            if "kiro-cli login --use-device-flow" in command:
+            if login._LOGIN_PROCESS_PATTERN in command and "nohup" in command:
                 return ssm.CommandResult("Success", "device flow unavailable", "", 0)
             if "mkfifo" in command:
                 return ssm.CommandResult(
@@ -317,7 +318,7 @@ class TestStartDeviceLogin:
         assert p.port_forward is proc
         assert forwards == [("i-0abc", 49153, 49153, "dev", "us-west-2")]
         assert opened == ["https://auth.example.com/start?session=abc"]
-        assert any("kiro-cli login --use-device-flow" in cmd for cmd in commands)
+        assert any(login._LOGIN_PROCESS_PATTERN in cmd and "nohup" in cmd for cmd in commands)
         # kiro-cli is invoked via the resolved "$KIRO" absolute path now.
         assert any('"$KIRO" login <&3' in cmd for cmd in commands)
         assert any("printf '\\n' >&4" in cmd for cmd in commands)
@@ -338,7 +339,7 @@ class TestStartDeviceLogin:
         reaped: list[object] = []
 
         def fake_run_command(_instance_id, command, *_args, **_kwargs):
-            if "kiro-cli login --use-device-flow" in command:
+            if login._LOGIN_PROCESS_PATTERN in command and "nohup" in command:
                 return ssm.CommandResult("Success", "device flow unavailable", "", 0)
             if "mkfifo" in command:
                 return ssm.CommandResult(
@@ -368,7 +369,7 @@ class TestStartDeviceLogin:
         proc = _DummyProcess()
 
         def fake_run_command(_instance_id, command, *_args, **_kwargs):
-            if "kiro-cli login --use-device-flow" in command:
+            if login._LOGIN_PROCESS_PATTERN in command and "nohup" in command:
                 return ssm.CommandResult("Success", "", "", 0)
             if "mkfifo" in command:
                 return ssm.CommandResult("Success", "Use localhost:49153", "", 0)
@@ -393,7 +394,7 @@ class TestStartDeviceLogin:
         monkeypatch.setattr(login, "is_logged_in", lambda *a, **k: False)
 
         def fake_run_command(_instance_id, command, *_args, **_kwargs):
-            if "kiro-cli login --use-device-flow" in command:
+            if login._LOGIN_PROCESS_PATTERN in command and "nohup" in command:
                 return ssm.CommandResult("Success", "", "", 0)
             if "mkfifo" in command:
                 return ssm.CommandResult("Success", "Use localhost:49153", "", 0)

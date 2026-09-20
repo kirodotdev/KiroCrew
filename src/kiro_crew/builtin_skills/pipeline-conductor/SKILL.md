@@ -138,6 +138,10 @@ rather than permission.
 
 - `scripts/claim_preflight.py` — one verdict per candidate item before you
   dispatch it: `CLAIM` / `SKIP` / `CLOSE` / `REVIEW` / `UNKNOWN`.
+- `scripts/coverage_filter.py` — the batch open-PR exclusion for the queue
+  build: which of many candidates an open PR already carries, in ONE forge call.
+  It only ever SUBTRACTS, so `UNCOVERED` is not permission and
+  `claim_preflight.py` still gates every dispatch.
 - `scripts/fleet_probe.py` — batch worker-tail classification + idle age +
   error tails + banned-process scan + host load + delivery counters, in ONE
   call per cycle.
@@ -233,7 +237,12 @@ never relabel it success in the friction report.
    dispatched a worker cannot un-dispatch it. Only after exit 0 may you read the
    spec and use its values. Then `chat_folder_create` the pipeline folder.
 2. Build the queue from the work source (or adopt the operator's seeded
-   backlog). **Record the backlog at whatever size it is** — as the queue's
+   backlog), then **subtract the items an open PR already carries** with
+   `scripts/coverage_filter.py` before recording it — see "Queue build
+   exclusion" under "Pickup and dispatch". A work source selects and excludes by
+   LABEL, and a PR carrying `Fixes #N` applies no label, so an unfiltered queue
+   is mostly work already in flight (measured on this repo: 25 of 29 label-clean
+   candidates). **Record the backlog at whatever size it is** — as the queue's
    PROVENANCE, one entry: the work source, its selector, the count, and the item
    ids as one list. What costs one `artifacts` entry EACH is an item you are
    PROCESSING, never an item merely waiting, so backlog size and ledger capacity
@@ -462,6 +471,40 @@ On any stand-down, **unclaim promptly** — label and assignee both — and leav
 evidence comment on the item. An item released silently reads as still-yours to
 the next operator, and an item disposed of with no evidence reads as abandoned
 rather than as decided.
+
+### Queue build exclusion: `coverage_filter.py`
+
+The work source selects by label and excludes by label, and a contributor who
+opens a PR carrying `Fixes #N` applies no label at all. So a queue built from
+labels alone is mostly work already in flight: measured on this repo against the
+documented selector, 25 of 29 label-clean candidates were referenced by an open
+PR. Run this over the WHOLE candidate list before you record the backlog, and
+again whenever pickup rebuilds it:
+
+```
+python3 scripts/coverage_filter.py --repo <owner/repo> --items 10890,10849,9736 [--json]
+python3 scripts/coverage_filter.py --repo <owner/repo> --items -   # numbers on stdin
+```
+
+One forge call for the whole batch, up to 500 candidates — the same question
+`claim_preflight.py` check 2 answers per item, asked from the other end so the
+cost does not scale with the backlog. A larger batch is refused rather than
+truncated, so page the queue build instead of trimming it.
+
+| Exit | Line | What you do |
+| --- | --- | --- |
+| 0 | `COVERED <n> open-pr=#<pr> …` | Drop the item from the queue and record the PR as the reason. `unvouched=true` marks a cross-repository PR whose author has no standing: the item still leaves the queue, and that marker is your cue to review the subtraction rather than let it pass as routine. |
+| 0 | `UNCOVERED <n>` | **Not permission.** Keep the item as a candidate; `claim_preflight.py` still decides. A reference made in a PR COMMENT is in the item's timeline and not in this answer, so silence here is a smaller view, never a clean bill. |
+| 2 | malformed | YOUR arguments are wrong, including a batch over 500 items. Fix the call — a bad call is not a finding about any item, and a batch this refuses was never scanned. |
+| 3 | `UNKNOWN reason=<slug>` | The forge could not be read, so NO exclusion was computed. Keep every candidate and carry on; the per-item preflight still runs. Never read it as "none are covered" — the output prints no `uncovered` list for exactly that reason. |
+
+This filter only ever SUBTRACTS, and that is what makes two evidence sources
+safe. `COVERED` is a positive finding — a reference in a PR's own title or body —
+so acting on it can only remove an item. Nothing it prints can ADD an item or
+certify one as free, so the cheaper evidence can never widen what gets
+dispatched. If the script is absent from your install, treat it as `UNKNOWN`:
+keep the whole queue and let the preflight carry the coverage question, which is
+slower but never permission you did not have.
 
 ### Preflight: `claim_preflight.py`
 

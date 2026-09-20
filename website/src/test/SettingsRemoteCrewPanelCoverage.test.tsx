@@ -579,7 +579,10 @@ describe('RemoteCrewPanel — instance actions', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('button', { name: 'Cancel setup of kc-4d10' }))
+    // Two steps now: this cancel destroys the instance being created, so it arms
+    // (with the irreversibility warning) before it fires.
+    await u.click(await screen.findByRole('button', { name: 'Cancel setup of kc-4d10 and remove the instance' }))
+    await u.click(await screen.findByRole('button', { name: /Yes, remove/i }))
     expect(await screen.findByText(/too late to cancel/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
@@ -594,10 +597,12 @@ describe('RemoteCrewPanel — instance actions', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    const cancel = await screen.findByRole('button', { name: 'Cancel setup of kc-4d10' })
-    await u.click(cancel)
-    await waitFor(() => expect(cancel).toBeDisabled())
-    expect(cancel).toHaveTextContent(/Cancelling/)
+    // Arm, then fire: the button that carries the pending state is the confirm.
+    await u.click(await screen.findByRole('button', { name: 'Cancel setup of kc-4d10 and remove the instance' }))
+    const confirm = await screen.findByRole('button', { name: /Yes, remove/i })
+    await u.click(confirm)
+    await waitFor(() => expect(confirm).toBeDisabled())
+    expect(confirm).toHaveTextContent(/Cancelling/)
     release({ ...RUNNING_JOB, status: 'cancelled' })
   })
 })
@@ -732,7 +737,7 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Open sign-in page/ }))
+    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
     await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-run'))
   })
 
@@ -746,7 +751,7 @@ describe('RemoteCrewPanel — launching', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
-    await u.click(await screen.findByRole('button', { name: /Open sign-in page/ }))
+    await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
     expect(await screen.findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 

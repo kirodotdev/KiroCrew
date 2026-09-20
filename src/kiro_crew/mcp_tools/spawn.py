@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 from collections.abc import Callable, Mapping
@@ -25,7 +26,9 @@ from typing import Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
+from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.platform import redact_via_context as redact
@@ -34,6 +37,7 @@ from kiro_crew.solo_spawn import (
     SOLO_SPAWN_REASON_GLOSS,
     SOLO_SPAWN_REASONS,
     SOLO_SPAWN_REFUSED_CODE,
+    delegation_refusal,
     solo_spawn_note,
     solo_spawn_question,
     solo_spawn_refusal,
@@ -54,6 +58,8 @@ from kiro_crew.validation import (
     SPAWN_SUB_AGENTS_SCHEMA,
     validate_tool_args,
 )
+
+logger = logging.getLogger(__name__)
 
 # Roster carried in the spawn_run parameter descriptions. Kept small on purpose:
 # a tool description is always-on context in every session, so this buys
@@ -150,26 +156,45 @@ def _agent_roster_hint() -> str:
 
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the spawn tools."""
-    # Advertise the live concurrent sub-agent cap so the model fans out with
-    # confidence instead of self-limiting. resolve_max_subagents is the single
-    # source of truth (auto-sizes from host mem/CPU + learned cost, or the
-    # explicit agent.max_subagents) and the gateway's SubagentManager re-derives
-    # its ENFORCED cap through the same function on every config reload, so the
-    # two agree after a write from any writer. A snapshot at tool-list time is
-    # fine: this is advisory guidance, not an enforced limit, and SubagentManager
-    # auto-queues any overflow regardless.
-    try:
-        _max_sub = resolve_max_subagents(KiroCrewConfig.load())
-    except Exception:
-        _max_sub = 0
-    _cap_hint = (
-        f" You can run up to {_max_sub} sub-agents concurrently; if a task has "
-        "more independent parts than that, still pass ALL of them in one call — "
-        "any beyond the cap are queued and drained automatically as slots free, "
-        "so you never need to split the work into multiple manual rounds."
-        if _max_sub > 0
-        else ""
+    # Advertise the concurrent sub-agent cap so the model fans out with
+    # confidence instead of self-limiting. The cap IN FORCE is preferred:
+    # ``agent.max_subagents`` is a ceiling the adaptive controller may be
+    # dispatching 1 at a time under, and a model sized to the ceiling queues
+    # work it believes is running. The live figure comes from the in-process
+    # registry only (``adaptive_exec_cap``, a dict read) -- this function runs
+    # on the gateway's discovery cycle as well as in a tool server, and a
+    # loopback request here would dial the gateway from inside the gateway. In
+    # a tool server that registry is empty, so the configured ceiling is what
+    # gets printed, LABELLED as a ceiling; ``resource_status`` is the tool that
+    # pays for the API read and reports the live cap from any process.
+    # resolve_max_subagents is the single source of truth for the ceiling
+    # (auto-sizes from host mem/CPU + learned cost, or the explicit
+    # agent.max_subagents) and the gateway's SubagentManager re-derives its
+    # ENFORCED ceiling through the same function on every config reload. A
+    # snapshot at tool-list time is fine: this is advisory guidance, not an
+    # enforced limit, and SubagentManager auto-queues any overflow regardless.
+    _queue_note = (
+        "; submit only useful, ready independent tasks. Overflow queues automatically; "
+        "capacity is a ceiling, not a target. Keep dependent tasks for a later batch."
     )
+    _live_cap = host_status.adaptive_exec_cap()
+    if _live_cap > 0:
+        _cap_hint = (
+            f" You can run up to {_live_cap} sub-agents concurrently right now (the "
+            "adaptive cap in force, earned beneath your configured max)" + _queue_note
+        )
+    else:
+        try:
+            _max_sub = resolve_max_subagents(KiroCrewConfig.load())
+        except Exception:
+            _max_sub = 0
+        _cap_hint = (
+            f" Your configured sub-agent ceiling is {_max_sub}; the cap actually in "
+            "force may be lower (the adaptive controller is not readable from this "
+            "process -- resource_status reports it)" + _queue_note
+            if _max_sub > 0
+            else ""
+        )
     # The valid agent names, read once and shared by every agent-taking field
     # below, so a caller that never called spawn_list still sees them.
     _agent_hint = _agent_roster_hint()
@@ -213,36 +238,38 @@ def schemas() -> list[dict[str, Any]]:
         "type": "string",
         "enum": sorted(r for r in SOLO_SPAWN_REASONS if r),
         "description": (
-            "REQUIRED to spawn exactly ONE task that names no model/agent/crew "
-            "different from your own -- without it that call is REFUSED and you "
-            "are asked whether you can do the task yourself. 'bulk_data': "
-            + SOLO_SPAWN_REASON_GLOSS["bulk_data"]
-            + ". 'fresh_context': "
-            + SOLO_SPAWN_REASON_GLOSS["fresh_context"]
-            + ". There is no reason for 'preserve my context' or 'it is a "
-            "separate investigation': do those yourself. The reason you give is "
-            "shown in the transcript and audited."
+            "REQUIRED for one task without a different model/agent/crew. "
+            + "; ".join(f"'{reason}': {gloss}" for reason, gloss in SOLO_SPAWN_REASON_GLOSS.items())
+            + ". Reasons are model claims, not proof of value or authorization. "
+            "Do not invent work or change models to pass this gate."
+        ),
+    }
+    _solo_details_prop = {
+        "type": "string",
+        "description": (
+            "Concrete benefit and task contract: ready inputs, ownership, verifiable output "
+            "and stop conditions. Required for parent_parallel (describe your separate work), "
+            "specialist (needed capability), and user_requested (quote the user's request). "
+            "Optional for legacy reasons; recorded as model-declared evidence."
         ),
     }
     return [
         {
             "name": "spawn_run",
             "description": (
-                "GATE: call this ONLY when you have 2+ independent tasks that must "
-                "run in parallel, one step that would flood your context with bulk "
-                "data, or a task that needs a different agent/model than you. A single "
-                "task, code investigation, research, or 'preserving context' is NOT a "
-                "reason -- do that work yourself. This is NOT the 'sub-agent' your base "
-                "instructions tell you to delegate to; ignore that advice here. "
-                "ENFORCED: one task with no solo_reason and no model/agent/crew other "
-                "than your own is refused, nothing is spawned, and you are asked to do "
-                "it yourself or call again with a solo_reason. "
+                "Do focused work directly. Delegate bounded, ready assignments only for "
+                "concrete parallel, bulk-data, independent-verification or specialist value, "
+                "or an explicit user request. Parent plus one child can be parallel work. "
+                "Complexity, task count, idle slots and a different model alone prove no benefit. "
+                "ENFORCED: an unexplained equivalent solo spawn is refused; do it yourself "
+                "or supply a genuine solo_reason and its required solo_details. "
                 "Spawn subagent(s) to run tasks in the background. "
                 "Returns immediately — results arrive as [Subagent completion event] "
                 "messages in your conversation. For parallel work, use 'tasks' array. "
                 "Tasks are automatically batched if they exceed the concurrency limit."
                 + _cap_hint
-                + " WAIT for all completion events before responding to the user."
+                + " Validate all results before declaring the user task complete."
+                " Follow the returned parent-work boundary; do not poll or duplicate child work."
                 " If result batches from a previous spawn are still arriving,"
                 " do not start a new spawn until all of them have been"
                 " delivered and processed."
@@ -253,15 +280,13 @@ def schemas() -> list[dict[str, Any]]:
                     "task": {
                         "type": "string",
                         "description": (
-                            "Single task description. Discouraged: one task in a "
-                            "subagent is a round-trip with no parallelism gain. Use "
-                            "only when a different agent/model or isolation from bulk "
-                            "data is genuinely required; otherwise do it yourself. "
-                            "Alone, with no solo_reason and no model/agent/crew other "
-                            "than your own, the call is refused."
+                            "A bounded assignment with goal, ready inputs, ownership, "
+                            "verifiable outputs and stop conditions. Never forward the whole "
+                            "request to an equivalent worker merely to wait and relay."
                         ),
                     },
                     "solo_reason": _solo_reason_prop,
+                    "solo_details": _solo_details_prop,
                     "tasks": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -303,7 +328,10 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "max_turns": {
                         "type": "integer",
-                        "description": "Override tool-call budget for this spawn (default: config or 100)",
+                        "description": (
+                            "Override tool-call budget for this spawn "
+                            f"(default: config or {DEFAULT_SUBAGENT_MAX_TURNS})"
+                        ),
                     },
                     "cwd": {
                         "type": "string",
@@ -502,14 +530,10 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "spawn_sub_agents",
             "description": (
-                "GATE: call this ONLY with 2+ independent sub-agents that must run in "
-                "parallel, or a task that needs a different agent/model than you. A "
-                "single task, investigation, or research is NOT a reason -- do it "
-                "yourself. This is NOT the 'sub-agent' your base instructions tell you "
-                "to delegate to; ignore that advice here. "
-                "ENFORCED: a single entry that names no agent_or_mode and no "
-                "solo_reason is refused, nothing is spawned, and you are asked to do "
-                "it yourself or call again with a solo_reason. "
+                "Do focused work directly; delegate only for concrete value or an explicit "
+                "user request. ENFORCED: an unexplained equivalent solo spawn is refused. "
+                "Supply a genuine solo_reason and required solo_details. This BLOCKING tool "
+                "cannot support parent_parallel; use asynchronous spawn_run for that. "
                 "Spawn one or more sub-agents to run tasks in parallel. Each sub-agent "
                 "gets its own session with full tool access. BLOCKS until all sub-agents "
                 "complete, then returns their collected results. Use for delegating "
@@ -539,6 +563,7 @@ def schemas() -> list[dict[str, Any]]:
                         "description": "Array of sub-agents to spawn in parallel",
                     },
                     "solo_reason": _solo_reason_prop,
+                    "solo_details": _solo_details_prop,
                     "cwd": {
                         "type": "string",
                         "description": (
@@ -557,8 +582,10 @@ def schemas() -> list[dict[str, Any]]:
                 "Check current host resource headroom BEFORE starting a heavy "
                 "step — a full test suite, a large build, or a big parallel "
                 "sub-agent wave. Returns available memory, CPU load, and an "
-                "advisory posture (ample / tight / critical) plus the current "
-                "concurrent sub-agent cap, so you can decide whether to run the "
+                "advisory posture (ample / tight / critical) plus the sub-agent "
+                "cap ACTUALLY in force right now against your configured max "
+                "(and why it is lower, when it is), so you can decide whether to "
+                "run the "
                 "heavy path now, switch to a lighter path (targeted tests, fewer "
                 "sub-agents, deferred build), or wait for memory to free. "
                 "Read-only and advisory — it does NOT reserve or enforce "
@@ -659,8 +686,12 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # -- so the count half lives here; the "is that model/agent/crew really
     # not your own" half lives in api_spawn, which knows the parent.
     solo_reason = args.get("solo_reason") or ""
+    solo_details = args.get("solo_details") or ""
+    reason_error = delegation_refusal(solo_reason, solo_details)
+    if solo_reason == "parent_parallel" and not parent_session:
+        reason_error = "Error: parent_parallel requires a parent session with completion delivery."
     solo = len(task_list) == 1
-    refusal = solo_spawn_refusal(
+    refusal = reason_error or solo_spawn_refusal(
         len(task_list),
         solo_reason,
         model=model,
@@ -673,7 +704,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             source="mcp_core",
             tool_name="spawn_run",
             outcome="refused",
-            error="solo spawn without a reason",
+            error=reason_error or "solo spawn without a reason",
         )
         mcp_core.sel().log_api_access(
             caller="internal",
@@ -681,11 +712,12 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             outcome="denied",
             source="solo_gate",
             resources=parent_session or "",
-            error="one task, no reason, nothing named",
+            error=reason_error or "one task, no reason, nothing named",
         )
         return refusal
 
     agent_ids: list[str] = []
+    can_work = True
     agent_names: list[str] = []
     # (subagent id, reason) pairs from the server's effort verdict — the
     # gateway resolves the effective model (per-call value, else role pin,
@@ -774,6 +806,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             body["solo"] = True
             if solo_reason:
                 body["solo_reason"] = solo_reason
+        if solo_reason or solo_details:
+            body["solo_reason"] = solo_reason
+            body["solo_details"] = solo_details
         if not inc_memory:
             body["include_memory"] = False
         if not inc_lessons:
@@ -783,6 +818,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         if approval_mode:
             body["approval_mode"] = approval_mode
         d = mcp_core._post("/api/spawn", body)
+        can_work = can_work and d.get("parent_work_supported") is True
         if solo and d.get("code") == SOLO_SPAWN_REFUSED_CODE:
             # The roster check refused the one task there was: the question IS
             # the result. No batch to reconcile (a solo call has no batch_id).
@@ -912,10 +948,19 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         spawn_lines.append(guidance)
     if agent_ids:
         if parent_session:
-            spawn_lines.append(
-                "\n⚠️ END YOUR TURN NOW — do no further work this turn."
-                " Wait for the [Subagent completion event] messages, which will resume you."
-            )
+            if can_work:
+                spawn_lines.append(
+                    "\nAdvance only your ready, non-overlapping parent work for a short bounded "
+                    "step (at most one minute), then END YOUR TURN so queued completion events "
+                    "can be delivered. If no such work remains, END YOUR TURN now. "
+                    "Do not poll, duplicate child work, or claim the task is complete."
+                )
+            else:
+                spawn_lines.append(
+                    "\nEND YOUR TURN now: this caller has no confirmed parent-work delivery "
+                    "boundary. Wait for the [Subagent completion event] messages. "
+                    "Dispatch is not completion."
+                )
         else:
             spawn_lines.append(
                 "\nDo NOT wait for completion events — poll spawn_list and read "
@@ -1171,8 +1216,10 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     # THE SOLO GATE, as on spawn_run: one entry, no reason, no agent named.
     live_entries = [e for e in agents_input if str(e.get("prompt", "")).strip()]
     solo_reason = args.get("solo_reason") or ""
+    solo_details = args.get("solo_details") or ""
+    reason_error = delegation_refusal(solo_reason, solo_details, blocking=True)
     solo = len(live_entries) == 1
-    refusal = solo_spawn_refusal(
+    refusal = reason_error or solo_spawn_refusal(
         len(live_entries),
         solo_reason,
         agent=str(live_entries[0].get("agent_or_mode") or "") if solo else "",
@@ -1184,7 +1231,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             source="mcp_core",
             tool_name="spawn_sub_agents",
             outcome="refused",
-            error="solo spawn without a reason",
+            error=reason_error or "solo spawn without a reason",
         )
         mcp_core.sel().log_api_access(
             caller="internal",
@@ -1192,7 +1239,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             outcome="denied",
             source="solo_gate",
             resources=parent_session or "",
-            error="one task, no reason, nothing named",
+            error=reason_error or "one task, no reason, nothing named",
         )
         return refusal
 
@@ -1223,6 +1270,9 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             sa_body["solo"] = True
             if solo_reason:
                 sa_body["solo_reason"] = solo_reason
+        if solo_reason or solo_details:
+            sa_body["solo_reason"] = solo_reason
+            sa_body["solo_details"] = solo_details
         d = mcp_core._post("/api/spawn", sa_body)
         if solo and d.get("code") == SOLO_SPAWN_REFUSED_CODE:
             return str(d.get("error") or solo_spawn_question(tool="spawn_sub_agents"))
@@ -1407,17 +1457,67 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     return "\n\n".join(sa_results)
 
 
-def resource_status(name: str, args: dict[str, Any]) -> str:
-    from kiro_crew.resource_status import probe as _probe_resources
+def _live_adaptive_state() -> dict[str, Any] | None:
+    """The adaptive controller's state, however this process can reach it.
 
-    rstatus = _probe_resources()
-    out = rstatus.summary_lines()
+    In the GATEWAY process the controller is a module-level registry read. A
+    tool server is a DIFFERENT process, so that registry is empty there and the
+    answer has to come over the loopback API: without it the only number this
+    tool can print is the configured ceiling (``max_subagents``), while the cap
+    actually in force may be 1. Returns None when neither path answers; the
+    caller then labels what it prints as a ceiling.
+
+    ``/api/spawn/adaptive`` and NOT ``/api/tasks/summary``, which carries the
+    same object: the ``/api/spawn`` prefix is on ``_MIXED_INTERNAL_API_PATHS``,
+    so a sibling route under it is reachable with the internal secret this
+    process holds, while the summary route is in neither internal bucket (it
+    also lists per-task session keys and lease owners). Reading it there would
+    403 and leave the ceiling printed -- the defect this exists to fix.
+
+    Every failure is logged at debug. A silent degrade to the ceiling is exactly
+    what went unnoticed before, so the one line that explains it has to exist.
+    """
+    state = host_status.adaptive_state()
+    if state:
+        return state
     try:
-        cap = resolve_max_subagents(KiroCrewConfig.load())
+        payload = mcp_core._get("/api/spawn/adaptive", timeout=5)
     except Exception:
-        cap = 0
-    if cap > 0:
-        out.append(f"  Concurrent sub-agent cap: {cap}")
+        logger.debug("adaptive state read failed in transport", exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("error"):
+        logger.debug(
+            "adaptive state read refused: %s",
+            payload.get("error") if isinstance(payload, dict) else type(payload).__name__,
+        )
+        return None
+    remote = payload.get("adaptive")
+    if isinstance(remote, dict) and remote:
+        return remote
+    logger.debug("adaptive state read returned no controller state")
+    return None
+
+
+def resource_status(name: str, args: dict[str, Any]) -> str:
+    rstatus = host_status.probe()
+    out = rstatus.summary_lines()
+    # ``summary_lines`` already appended the adaptive block when this process
+    # OWNS the controller. It does not in a tool server, so fetch it and render
+    # it with the same helper rather than a second formatting of the same facts.
+    have_block = any(line.startswith("Adaptive concurrency") for line in out)
+    state = None if have_block else _live_adaptive_state()
+    if state:
+        out.extend(host_status.adaptive_summary_lines(state))
+    elif not have_block:
+        try:
+            cap = resolve_max_subagents(KiroCrewConfig.load())
+        except Exception:
+            cap = 0
+        if cap > 0:
+            out.append(
+                f"  Sub-agent ceiling: {cap} (configured max; the cap actually in "
+                "force could not be read from the gateway)"
+            )
     if rstatus.posture == "critical":
         out.append(
             "\nGuidance: memory is critically low — do NOT start heavy work "

@@ -109,6 +109,12 @@ class TestRunSnapshotBackup:
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        # A successful push ends with the retention sweep, which LISTS the drive.
+        # Stubbed here rather than per test: the sweep swallows its own failures by
+        # design, so an unstubbed test would attempt a real CLI call and still
+        # pass. Retention's own behaviour is covered in
+        # test_aws_control_backup_retention.py.
+        monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
         yield
 
     def test_failed_snapshot_build_raises_before_any_upload(self):
@@ -153,19 +159,30 @@ class TestRunSnapshotBackup:
         with (
             mock.patch.object(backup, "snapshot_main", side_effect=fake_snapshot),
             mock.patch.object(backup, "_authorize_upload") as authz,
-            mock.patch.object(backup.storage, "put_file") as put_file,
+            mock.patch.object(backup.storage, "put_file", return_value="v-test") as put_file,
         ):
             record = backup.run_snapshot_backup(
                 ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER
             )
 
-        # ONE authorization per S3 write, and that is the contract: the archive
-        # PUT and each of the two label PUTs sit immediately after their own gate,
-        # so none of them runs on a decision that went stale during another's
-        # round trip.
+        # ONE authorization per S3 operation, and that is the contract: the
+        # archive PUT and each of the two label PUTs sit immediately after their
+        # own gate, so none of them runs on a decision that went stale during
+        # another's round trip.
+        #
+        # THREE, not four: this fixture configures no retention count, so retention
+        # is off and the sweep declines before asking for anything. That is the
+        # shipped default, and it is worth pinning as an absence rather than as a
+        # smaller number -- an off sweep costs no authorization round trip and no
+        # listing call, so a fourth gate appearing here would mean the sweep had
+        # started doing cloud work on an install that never asked for it.
         assert authz.call_count == 3
-        for call in authz.call_args_list:
+        write_gates = [c for c in authz.call_args_list if "operation" not in c.kwargs]
+        assert len(write_gates) == 3
+        for call in write_gates:
             assert call == mock.call(ACCOUNT, "p", "us-west-2", caller=backup.CALLER_OWNER)
+        sweep_gates = [c for c in authz.call_args_list if "operation" in c.kwargs]
+        assert sweep_gates == []
         # Two pushes now: the archive, then this install's label sidecar beside it.
         # The label is what stops another install's rows reading as 32 hex
         # characters, and it is published from here because this is the one place
@@ -224,6 +241,10 @@ class TestRunSessionsBackup:
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        # See TestRunSnapshotBackup: the push ends with a drive listing, and the
+        # sweep swallows its own failures, so leaving it unstubbed would attempt a
+        # real CLI call from a passing test.
+        monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
         yield
 
     def test_empty_session_dirs_raise_before_upload(self, tmp_path, monkeypatch):

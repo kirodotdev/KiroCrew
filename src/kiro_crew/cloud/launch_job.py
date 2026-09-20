@@ -176,6 +176,12 @@ class LaunchJob:
     # rather than a Builder ID one; a job file written before the field existed
     # loads as the default target, which is what it was. Never a credential.
     login_target: KiroLoginTarget = field(default_factory=KiroLoginTarget)
+    #: True when :meth:`from_dict` could NOT parse the stored identity and
+    #: substituted the default. Parse state, so it is deliberately NOT persisted
+    #: by :meth:`to_dict`: what is on disk is the identity bytes, and whether they
+    #: read is answered by reading them. Kept off ``error`` because the retry
+    #: worker clears that field as routine state, which would drop the guard.
+    target_unreadable: bool = False
 
     @property
     def terminal(self) -> bool:
@@ -214,6 +220,7 @@ class LaunchJob:
             if isinstance(steps_raw, list) and steps_raw
             else default_steps()
         )
+        target_unreadable = False
         signin_raw = d.get("signin")
         signin = SigninPrompt.from_dict(signin_raw) if isinstance(signin_raw, dict) else None
         status = str(d.get("status", PENDING))
@@ -227,7 +234,8 @@ class LaunchJob:
             # here, visibly, and a terminal job is never resumed.
             login_target = KiroLoginTarget()
             status = FAILED
-            error = f"persisted Kiro identity target is unreadable: {exc}"
+            error = f"{UNREADABLE_TARGET_ERROR}: {exc}"
+            target_unreadable = True
         return cls(
             id=str(d.get("id", "")),
             profile=str(d.get("profile", "")),
@@ -244,6 +252,7 @@ class LaunchJob:
             updated_at=float(d.get("updated_at", time.time())),
             provider_id=str(d.get("provider_id") or BUILTIN_PROVISIONER_ID),
             login_target=login_target,
+            target_unreadable=target_unreadable,
         )
 
 
@@ -447,6 +456,58 @@ class LaunchJobStore:
         for job in self.list():
             if job.terminal or job.id in self._owned:
                 continue
+            if job.step(STEP_CONNECT).state == STEP_DONE:
+                # Only a sign-in RETRY (:func:`run_signin_retry`) is non-terminal
+                # after the connect step: the crew is created and registered, so
+                # "the stack may still exist, check before retrying" would be wrong
+                # and failing the whole job would hide a working crew behind a red
+                # card. Park it back at done, unsigned, so the crew keeps its
+                # "Sign in" action.
+                signin_step = job.step(STEP_SIGNIN)
+                if signin_step.state == STEP_FAILED:
+                    # A VERIFIED refusal (the box holds a session for a different
+                    # identity) was recorded on the step, and ``run_launch`` saves
+                    # the connect step before it sets FAILED -- a restart in that
+                    # window lands here. Parking DONE would hide the one failure
+                    # whose recovery is an explicit logout, behind a generic
+                    # "interrupted". Keep it failed, with its own words.
+                    job.status = FAILED
+                    job.error = signin_step.detail[:400] or job.error
+                    self.save(job)
+                    reaped.append(job.id)
+                    continue
+                for step in job.steps:
+                    if step.state == STEP_ACTIVE:
+                        step.state = STEP_SKIPPED
+                job.status = DONE
+                # The device code is KEPT. The remote login is `nohup`'d on the box
+                # and outlives a gateway restart, so the code it is polling for is
+                # still live -- and a live poller with no local record is one whose
+                # approval signs the crew in with nothing tracking it. With the
+                # record kept, this job lands in the stale-code shape: the card
+                # offers "I approved it -- check now", the re-probe clears the badge
+                # when the approval landed, and "Start over with a new code" replaces the login
+                # (which kills the old poller) when it did not. A confirmed sign-in
+                # has no code to keep; ``run_launch`` clears it before this point.
+                #
+                # Only mark unconfirmed a sign-in that was never confirmed.
+                # ``run_launch`` saves the connect step BEFORE the terminal status,
+                # so a restart landing in that window reaches here with
+                # signin_detected already True -- and overwriting it would badge a
+                # working crew "Needs sign-in" and offer a "new code" that signs it
+                # out of the session it has.
+                job.error = (
+                    ""
+                    if job.signin_detected
+                    else (
+                        "Interrupted — Kiro Crew restarted while the Kiro sign-in was "
+                        "running. If you already approved the code, check now; "
+                        "otherwise get a new one from the crew."
+                    )
+                )
+                self.save(job)
+                reaped.append(job.id)
+                continue
             for step in job.steps:
                 if step.state == STEP_ACTIVE:
                     step.state = STEP_FAILED
@@ -490,6 +551,22 @@ class SigninHandle(Protocol):
     def wait(self, cancel: threading.Event) -> bool: ...
     def close(self) -> None: ...
 
+    def abort(self) -> bool:
+        """Stop the remote login outright, for a CANCELLED sign-in only.
+
+        Distinct from :meth:`close`, which every path calls and which deliberately
+        leaves an unconfirmed login polling so a preserved code stays finishable.
+
+        REQUIRED, and each lane answers for itself. A lane that drives a real
+        remote login returns whether it is CONFIRMED stopped. A lane with no login
+        to stop (``FargateSigninHandle``: no browser, no device-code poller, no
+        session) returns ``True`` and says why in its docstring. Nothing is
+        inferred from a missing method: a handle that forgets to implement this
+        raises into :func:`_abort_signin`, which records "not confirmed stopped"
+        -- the safe answer -- rather than treating absence as a clean cancel.
+        """
+        ...
+
 
 class LaunchEngine(Protocol):
     """The AWS-touching operations a launch needs, injected for testability."""
@@ -525,6 +602,17 @@ def _begin_signin_with_target(engine: "LaunchEngine", job: "LaunchJob") -> Signi
     By the time this is called the combination is known to be valid, so the
     ``RuntimeError`` below is a programming-error guard, never a runtime path.
     """
+    if target_is_unreadable(job):
+        # The stored identity could not be parsed, so `job.login_target` is the
+        # substituted DEFAULT (Builder ID). Signing in with it would authenticate
+        # an org-portal crew against the wrong account and overwrite the original
+        # bytes on the next save. The routes refuse before they get here; this is
+        # the funnel both workers pass through, so it refuses too rather than
+        # trusting every future caller to remember.
+        raise RuntimeError(
+            "refusing to start a Kiro sign-in: this job's identity target could not be read, "
+            "so the sign-in would use the default account instead"
+        )
     if _engine_accepts_login_target(engine):
         return engine.begin_signin(
             instance_id=job.instance_id,
@@ -603,6 +691,106 @@ def _check_signin_target_supported(engine: "LaunchEngine", job: "LaunchJob") -> 
         )
 
 
+#: Prefix of ``job.error`` when the persisted identity target could not be read.
+#:
+#: The substituted target is the DEFAULT (Builder ID), so anything that resumes
+#: such a job would sign the crew in as the wrong identity and overwrite the
+#: original bytes on the next save. The route that could do that
+#: (:func:`~kiro_crew.dashboard.handlers_cloud.api_cloud_launch_signin_restart`)
+#: refuses on this marker rather than on the bare ``FAILED`` status, because
+#: FAILED is an ordinary outcome the restart is allowed to act on.
+UNREADABLE_TARGET_ERROR = "persisted Kiro identity target is unreadable"
+
+
+def target_is_unreadable(job: "LaunchJob") -> bool:
+    """Whether *job*'s stored identity could not be parsed by this release.
+
+    Reads the ``target_unreadable`` flag :meth:`LaunchJob.from_dict` sets at parse
+    time. The error text is a fallback for a job whose flag was lost across a
+    boundary that only carries the persisted fields: the flag is authoritative,
+    and the text alone was not enough, because :func:`run_signin_retry` clears
+    ``job.error`` as routine state before the sign-in starts.
+    """
+    return bool(getattr(job, "target_unreadable", False)) or job.error.startswith(
+        UNREADABLE_TARGET_ERROR
+    )
+
+
+#: Recorded on a cancelled job whose remote login could not be confirmed
+#: stopped. The cancel still happened — but a login left polling can complete
+#: minutes later, so the only person who can check the box is told instead of
+#: being shown a launch that looks fully torn down.
+ABORT_UNCONFIRMED_NOTE = (
+    "Cancelled, but the Kiro sign-in on the instance was NOT confirmed stopped — "
+    "if that device code is approved it may still sign this crew in. Check the "
+    "instance, or delete it."
+)
+
+
+def mark_signed_in(job: "LaunchJob", detail: str = "Signed in.") -> None:
+    """Record a CONFIRMED sign-in consistently, wherever it was confirmed.
+
+    Three paths confirm one: the retry's own wait, its already-signed-in answer,
+    and the dashboard's re-probe of a preserved code. Setting ``signin_detected``
+    alone leaves the rest of the job saying the opposite -- an "Interrupted"
+    error from a restart, a connect step still reading "Finish the Kiro sign-in
+    before connecting." A card that says signed
+    in and not signed in at once is the state this feature exists to remove, so
+    the normalisation lives in one place.
+    """
+    job.signin_detected = True
+    job.signin = None
+    # Every error EXCEPT the one that says we could not read the identity. That
+    # marker is what keeps the sign-in paths off this job (see
+    # :func:`target_is_unreadable`); clearing it here would let the next caller
+    # act on the substituted default target, which is the downgrade the marker
+    # exists to prevent. A confirmed sign-in does not make the stored bytes
+    # readable.
+    if not target_is_unreadable(job):
+        job.error = ""
+    s = job.step(STEP_SIGNIN)
+    s.state = STEP_DONE
+    s.detail = detail
+    c = job.step(STEP_CONNECT)
+    if c.state == STEP_DONE:
+        c.detail = "Added to your instances."
+
+
+def _abort_signin(handle: SigninHandle, job: "Optional[LaunchJob]" = None) -> bool:
+    """Stop a CANCELLED sign-in's remote login, when the handle can.
+
+    Distinct from ``handle.close()``, which every path calls: an *unconfirmed*
+    sign-in deliberately leaves its remote login polling, because that is what
+    makes the preserved device code still finishable from the dashboard. Only a
+    cancel means the opposite — that no later approval may land.
+
+    Two outcomes, and the lane decides which -- never this function by inference:
+
+    * ``abort()`` returns ``True`` — confirmed stopped, or (``FargateSigninHandle``)
+      confirmed there was never a login to stop. Nothing recorded.
+    * Anything else, including a raise or a missing method — NOT confirmed. Given
+      *job*, records :data:`ABORT_UNCONFIRMED_NOTE` on ``job.error`` (only when
+      nothing more urgent is already there), because a login that may still be
+      polling is the one outcome an operator has to act on.
+
+    Never raises: the caller is already unwinding a cancellation.
+    """
+    try:
+        # Only True confirms. `None` is not evidence the login died, and a handle
+        # that answers nothing has told us nothing. A handle with no `abort` at
+        # all raises AttributeError here and is recorded as not confirmed: absence
+        # of a stopper is not evidence the login stopped.
+        stopped = handle.abort() is True
+    except Exception:  # noqa: BLE001 - cleanup on the cancel path
+        logger.warning("could not abort the sign-in after cancellation", exc_info=True)
+        stopped = False
+    if not stopped:
+        logger.warning("the remote Kiro login was not confirmed stopped after cancellation")
+        if job is not None and not job.error:
+            job.error = ABORT_UNCONFIRMED_NOTE
+    return stopped
+
+
 def _rollback_cancelled_stack(
     job: "LaunchJob", store: "LaunchJobStore", engine: "LaunchEngine"
 ) -> None:
@@ -626,11 +814,14 @@ def _rollback_cancelled_stack(
     step = job.step(STEP_PROVISION)
     step.detail = f"Removing {job.tag}…"
     store.save(job)
+    # Anything already recorded (e.g. an unconfirmed abort of the remote login)
+    # is kept as a prefix rather than overwritten.
+    prior = f"{job.error} " if job.error else ""
     try:
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
         job.error = (
-            f"Cancelled, but the {_resource_noun(job)} {job.tag} could not be removed "
+            f"{prior}Cancelled, but the {_resource_noun(job)} {job.tag} could not be removed "
             f"automatically ({str(exc)[:200]}). Delete it from your crews — or with "
             "the CLI — so it stops billing."
         )
@@ -638,11 +829,17 @@ def _rollback_cancelled_stack(
         return
     if confirmed:
         step.detail = f"Removed {job.tag} after cancellation."
+        if job.error == ABORT_UNCONFIRMED_NOTE:
+            # The note warns that a login left polling could still sign the crew
+            # in. The instance it would poll from is confirmed gone, so there is
+            # no poller and nothing to check: keep the card from telling the user
+            # to inspect a machine that is gone.
+            job.error = ""
         return
     job.error = (
-        f"Cancelled, and the delete of {_resource_noun(job)} {job.tag} was requested but did NOT "
-        "confirm (it may be DELETE_FAILED). Check your crews — it may still be running "
-        "and billing."
+        f"{prior}Cancelled, and the delete of {_resource_noun(job)} {job.tag} was requested but "
+        "did NOT confirm (it may be DELETE_FAILED). Check your crews — it may still be "
+        "running and billing."
     )
     logger.warning("Rollback of %s did not confirm deletion", job.tag)
 
@@ -726,6 +923,11 @@ def run_launch(
         job.tag = _new_tag()
     store.save(job)
 
+    # Held at function scope for the cancel path below: the sign-in's own block
+    # closes the handle, which deliberately leaves the remote login polling so an
+    # unconfirmed code stays finishable. A CANCEL means the opposite.
+    started: Optional[SigninHandle] = None
+
     try:
         # 1) Preflight — includes the identity/engine compatibility check, so a
         #    target the engine cannot honour fails HERE, before any resource is
@@ -751,6 +953,7 @@ def run_launch(
         _check_cancel()
         s = _activate(STEP_SIGNIN)
         handle = _begin_signin_with_target(engine, job)
+        started = handle
         # A sign-in that was REFUSED (verified identity mismatch on a reused
         # instance) is recorded here and raised only after register(): failing
         # before registration would strand a provisioned, billing instance that
@@ -789,7 +992,7 @@ def run_launch(
                 s.detail = (
                     "Signed in."
                     if signed
-                    else "Not signed in yet — finish it from the dashboard."
+                    else "Not signed in yet — finish it in the sign-in box below."
                 )
                 store.save(job)
             else:
@@ -811,6 +1014,15 @@ def run_launch(
             instance_id=job.instance_id, tag=job.tag, profile=job.profile, region=job.region
         )
         s.state = STEP_DONE
+        # The step ran -- the instance is registered -- but a green check with no
+        # words beside "Connect" reads as ready to use. Say what is still owed
+        # when the sign-in did not confirm; the card's icon shows a waiting key in
+        # that case and this is the sentence under it.
+        s.detail = (
+            "Added to your instances."
+            if job.signin_detected
+            else "Added to your instances. Finish the Kiro sign-in before connecting."
+        )
         store.save(job)
 
         if signin_error:
@@ -827,6 +1039,14 @@ def run_launch(
         return job
 
     except LaunchCancelled:
+        # Stop the remote login BEFORE the step rewrite and BEFORE the rollback,
+        # and regardless of whether the rollback will confirm. The teardown below
+        # can end in DELETE_FAILED — a state this code reports rather than rules
+        # out — and an instance that survives with a login still polling would
+        # authenticate the crew minutes after the owner cancelled. Ordered first
+        # because the rollback takes minutes and the browser tab is already open.
+        if started is not None:
+            _abort_signin(started, job)
         # Captured before the loop below rewrites the step states: anything past
         # PENDING means a CloudFormation stack may already exist for this tag.
         stack_may_exist = bool(job.tag) and job.step(STEP_PROVISION).state != STEP_PENDING
@@ -857,3 +1077,167 @@ def run_launch(
         store.save(job)
         logger.info("launch job %s failed: %s", job.id, exc)
         return job
+
+
+def run_signin_retry(
+    job: LaunchJob,
+    store: LaunchJobStore,
+    engine: LaunchEngine,
+    *,
+    cancel: Optional[threading.Event] = None,
+) -> LaunchJob:
+    """Re-run ONLY the sign-in step on a launch whose crew exists but is unsigned.
+
+    This is the dashboard's "Start sign-in" / "Start over with a new code" action. The
+    launch itself finished (the instance is created and registered), so **no
+    other step is touched and nothing is ever re-provisioned**; the job returns
+    to ``DONE`` whatever happens here. What changes is ``signin`` (a fresh device
+    code, or none) and ``signin_detected``. While the new code is pending the job
+    is ``AWAITING_SIGNIN`` so the UI polls it live, exactly as during setup.
+
+    The job's persisted ``login_target`` is reused, via the same
+    :func:`_begin_signin_with_target` the launch uses: an Identity Center crew
+    gets an Identity Center code, not the Builder ID prompt that stranded it in
+    the first place.
+
+    Never raises for an expected failure — a broken engine is recorded on the
+    step — except for the programming error of calling it on a job that has no
+    instance to sign in on (``ValueError``).
+    """
+    cancel = cancel or threading.Event()
+    if not job.instance_id:
+        raise ValueError("this launch has no instance to sign in on")
+    s = job.step(STEP_SIGNIN)
+    s.state = STEP_ACTIVE
+    if target_is_unreadable(job):
+        # Before any state is touched: this job's stored identity could not be
+        # parsed, so `job.login_target` is the substituted default and a sign-in
+        # would authenticate the crew as the wrong account. The routes refuse
+        # first, and `_begin_signin_with_target` refuses last; refusing here as
+        # well means the worker never clears `job.error` (the marker's text
+        # fallback) on a job it is not allowed to drive.
+        s.state = STEP_FAILED
+        s.detail = "This crew's Kiro identity could not be read, so no sign-in was started."
+        job.status = FAILED
+        job.error = (
+            f"{UNREADABLE_TARGET_ERROR}: refusing to sign in with the default identity. "
+            "Use a release that can read it, or delete this crew and launch again."
+        )
+        store.save(job)
+        return job
+    s.detail = ""
+    job.error = ""
+    # The previous code is KEPT until the box has replaced the login. Only
+    # `begin_signin` (`start_device_login(replace_existing=True)`) kills the old
+    # poller; until that call lands, the old code is still live on the instance.
+    # Dropping the local record first would leave a live poller nothing tracks --
+    # an approval of that stale code would then sign the crew in silently. The
+    # card shows a spinner while this step is active, so the old code is not on
+    # screen beside the new one.
+    job.signin_detected = False
+    job.status = RUNNING
+    store.save(job)
+    # Held separately from ``handle`` so the cancel path below can reach it
+    # without making every use inside the try optional.
+    started: Optional[SigninHandle] = None
+    try:
+        handle = _begin_signin_with_target(engine, job)
+        started = handle
+        # A VERIFIED refusal (the box holds a session for a DIFFERENT identity
+        # than the target). Recorded as a failed step and a job error, exactly as
+        # ``run_launch`` does — filing it as the benign "no device code" case
+        # would report the retry as finished while the crew serves chats under
+        # the wrong account.
+        signin_error = str(getattr(handle, "error", "") or "")
+        # A returned handle is NOT proof the box replaced the login: the real
+        # engine swallows an SSM failure into an EMPTY handle (no code, not signed
+        # in, no error), and in that case the remote `pkill` never ran and the old
+        # poller is still live. Drop the old code only on evidence the box
+        # answered -- a new code, an already-signed-in answer, or a verified
+        # refusal. An empty handle keeps the old record, so the code stays tracked.
+        box_answered = bool(signin_error or handle.already_logged_in or handle.url)
+        if box_answered:
+            job.signin = None
+        try:
+            if signin_error:
+                s.state = STEP_FAILED
+                s.detail = signin_error
+                job.error = signin_error[:400]
+            elif handle.already_logged_in:
+                mark_signed_in(job, "Already signed in.")
+            elif handle.url:
+                job.signin = SigninPrompt(
+                    url=handle.url, code=handle.code, ports=list(handle.ports or [])
+                )
+                job.status = AWAITING_SIGNIN
+                store.save(job)  # UI now shows the new URL + code
+                signed = handle.wait(cancel)
+                if cancel.is_set() and not signed:
+                    raise LaunchCancelled()
+                # `and not signed`: the wait's final poll is a seconds-wide SSM
+                # round trip, so a click can land inside it. If that poll came back
+                # SIGNED the box already holds the session -- there is no login left
+                # to abort, and reporting CANCELLED would leave a signed-in crew
+                # badged "Needs sign-in" with Connect held. The cancel is honoured
+                # for every outcome where the sign-in did NOT complete.
+                # Keep the prompt when the wait ran out: the code is still valid
+                # for a while and the message below tells the user to finish it
+                # from the dashboard, which needs the URL and code to still be there.
+                job.signin_detected = signed
+                if signed:
+                    mark_signed_in(job)
+                else:
+                    s.state = STEP_SKIPPED
+                    s.detail = "Not signed in yet — finish it in the sign-in box below."
+            else:
+                # No code, not signed in, no refusal: the box was not reached. The
+                # previous code (if any) is still on the job and still live.
+                if cancel.is_set():
+                    # The owner cancelled while the box was being asked. Nothing new
+                    # is known to run, but the OLD poller may still be: a cancel means
+                    # no later approval may land, so the login on the box must be
+                    # stopped, not merely left "still valid if you have it".
+                    raise LaunchCancelled()
+                s.state = STEP_SKIPPED
+                s.detail = (
+                    "Could not reach the instance to start the sign-in. "
+                    "The previous code is still valid if you have it; otherwise try again."
+                    if job.signin is not None
+                    else "Sign in from the box below once it opens."
+                )
+        finally:
+            try:
+                handle.close()
+            except Exception:  # pragma: no cover - best effort
+                logger.info("sign-in handle close failed (non-fatal)", exc_info=True)
+    except LaunchCancelled:
+        if started is not None:
+            # `begin_signin` returned: either a new login was started (the box
+            # replaced the old one, so the new poller is the only one alive) or
+            # the box did not answer (the OLD poller may still be alive). In both
+            # cases the login on the box must be stopped -- dropping the code
+            # locally is not cancelling, it is in a browser.
+            stopped = _abort_signin(started, job)
+            s.state = STEP_SKIPPED
+            s.detail = "Sign-in cancelled." if stopped else ABORT_UNCONFIRMED_NOTE
+            job.signin = None
+        else:
+            # Cancelled before the box was reached: nothing new was started, the
+            # OLD poller is still live, and `job.signin` was never cleared (that
+            # happens only once `begin_signin` returns) -- so the preserved code
+            # stays tracked and re-probed exactly as before the retry.
+            s.state = STEP_SKIPPED
+            s.detail = "Sign-in cancelled."
+    except Exception as exc:  # noqa: BLE001 - recorded on the job, never propagated
+        # The crew exists and is registered, so a failure here must leave it
+        # exactly as it was: DONE, visible, and still offering "Sign in". That
+        # includes the preserved code: `job.signin` is cleared only after
+        # `begin_signin` returns, so a failure before then leaves the record of a
+        # poller that is still live on the box.
+        s.state = STEP_SKIPPED
+        s.detail = f"Could not start the Kiro sign-in: {str(exc)[:300]}"
+        job.error = str(exc)[:400]
+        logger.info("sign-in retry for launch job %s failed: %s", job.id, exc)
+    job.status = DONE
+    store.save(job)
+    return job

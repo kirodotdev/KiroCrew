@@ -3723,7 +3723,7 @@ class TestDynamicSubagentSizingFields:
         assert a.subagent_cost_gb == 0.5
         assert a.subagent_cpu_cost_cores == 1.0
         assert a.subagent_auto_max == 32
-        assert a.subagent_spawn_stagger_secs == 2.0
+        assert a.subagent_spawn_stagger_secs == 0.25
 
     def test_explicit_values_load(self) -> None:
         cfg = _load_from_dict(

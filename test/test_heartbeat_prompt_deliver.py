@@ -125,6 +125,38 @@ class TestPromptDashboardDeliver:
         state.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio()
+    async def test_prompt_queues_between_a_plans_stages(self, orchestrator, dashboard_state):
+        """The heartbeat carries no mid-plan gate, so the admission point is the gate.
+
+        Its sibling in the same module, the auto-nudge arm, reads
+        ``slot.running or slot._in_stage_execution`` and drops the nudge; this path
+        records no intent to interrupt a plan and branches on the return value only
+        to decide whether the UI is pushed -- so the queued outcome is the one it is
+        already written for. Driven through a REAL ``_ChatSlot`` because a mocked
+        ``enqueue_or_run_prompt`` cannot show which branch the gate takes.
+
+        Mutation guard: drop ``or self._in_stage_execution`` from the gate and the
+        heartbeat starts a turn alongside the plan.
+        """
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        state, _ = dashboard_state
+        slot = _ChatSlot(key="chat-1")
+        # The inter-stage shape: nothing in flight, plan still executing.
+        slot.task = None
+        slot._in_stage_execution = True
+        state.resolve_slot.return_value = slot
+
+        await orchestrator._deliver_result(
+            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
+        )
+
+        assert slot.task is None, "the heartbeat must not open a turn mid-plan"
+        assert len(slot._queue) == 1, "the prompt is held for the plan's own drain"
+        assert "Fix these" in slot._queue[0]["content"]
+        state.notify.assert_not_called(), "a queued prompt has no visible effect yet"
+
+    @pytest.mark.asyncio()
     async def test_prompt_noop_when_no_dashboard_state(self, orchestrator, caplog):
         import logging
 
@@ -570,3 +602,73 @@ class TestEnqueueOrRunPrompt:
             await slot.task
         except asyncio.CancelledError:
             pass
+
+    @pytest.mark.asyncio()
+    async def test_queues_between_a_plans_stages(self):
+        """The mid-plan window: no task in flight, plan still live.
+
+        Each stage's ``_run_chat`` closes its own turn, so ``slot.task`` is None and
+        ``running`` reads False in the gap between stages. Gating on ``running``
+        alone admits the prompt there and starts a SECOND turn alongside the plan,
+        which no later step can recover from once two turns own one slot. Every
+        other admission point in the product already reads
+        ``running or _in_stage_execution``; this one is the last.
+
+        Mutation guard: drop ``or self._in_stage_execution`` from the gate and this
+        starts a turn.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        slot = _ChatSlot(key="chat-1")
+        # The inter-stage shape exactly: nothing in flight, plan still executing.
+        slot.task = None
+        slot._in_stage_execution = True
+        state = MagicMock()
+        state._background_tasks = set()
+        mock_coro = AsyncMock()
+
+        ran = slot.enqueue_or_run_prompt("do not race the plan", mock_coro, state)
+        await asyncio.sleep(0)
+
+        assert ran is False, "a mid-plan prompt must be queued, not started"
+        mock_coro.assert_not_called(), "and no turn coroutine may be constructed"
+        assert slot.task is None, "and no task may be created alongside the plan"
+        assert [q["content"] for q in slot._queue] == ["do not race the plan"]
+
+    @pytest.mark.asyncio()
+    async def test_a_queued_prompt_starts_its_durable_write(self):
+        """Returning False is a receipt, so the write that makes it durable starts.
+
+        Until the drain writes the prompt's transcript row the queue is its only
+        record, so a restart inside the periodic flush interval loses a prompt the
+        caller was told had landed. ``start_queue_persist`` exists to close exactly
+        that window at every point a prompt is accepted onto a slot queue, and this
+        method is one of them, so every caller gets the write rather than one path.
+
+        Mutation guard: drop the ``start_queue_persist`` call and no write starts.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        slot = _ChatSlot(key="chat-1")
+        slot.task = None
+        slot._in_stage_execution = True
+        state = MagicMock()
+        state._background_tasks = set()
+
+        ran = slot.enqueue_or_run_prompt("hold this durably", AsyncMock(), state)
+        # The write is started, not awaited, and runs in an executor.
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if state.flush_slot_now.call_args_list:
+                break
+
+        assert ran is False
+        assert state.flush_slot_now.call_args_list == [
+            ((slot,), {})
+        ], "the durable write for this slot's queue must have been started"

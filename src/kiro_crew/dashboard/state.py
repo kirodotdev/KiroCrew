@@ -3945,13 +3945,32 @@ class _ChatSlot:
         it was queued. Lets callers gate UI-visible side-effects (notifications,
         SSE pushes) on whether the prompt actually ran.
 
+        Busy is ``running or _in_stage_execution``, not ``running`` alone. A
+        multi-stage plan closes each stage's own turn before opening the next, so
+        ``self.task`` is None and ``running`` reads False in the gap between
+        stages while the plan is still live. Gating on ``running`` alone admits a
+        prompt there and starts a SECOND turn alongside the plan, with no
+        recovery once two turns own one slot. ``_in_stage_execution`` is held for
+        the whole loop (set by ``_stage_loop``, cleared in its ``finally``) and is
+        the predicate every other producer that must not stack a turn already
+        reads -- the composer and cron injection (``chat_handlers``), the nudge arm
+        (``handlers/autonudge``), channel messaging (``handlers/messaging``),
+        regenerate (``chat_regenerate``) and the transfer gate. This method was the
+        one admission point that did not, which is what left the Slack heartbeat
+        (``slack/gateway.py``), the workflow auto-turn (``dashboard/server.py``) and
+        the Issue Radar crew dispatch (``issue_radar`` ``crew_runtime``) able to
+        start a mid-plan turn while recording no intent to interrupt a plan.
+        Nothing is dropped: ``_stage_loop``'s ``finally`` hands the queue off once
+        the flag clears, so a prompt held here is delivered after the plan.
+
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running:
+        if self.running or self._in_stage_execution:
             # circular import: session_control imports this module at module level.
+            from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta
 
             # Stamp the containment constraints holding at ADMISSION, so the
@@ -3959,6 +3978,19 @@ class _ChatSlot:
             # that gains a channel/mirror link while this prompt waits must not
             # execute it under the weaker constraints that admitted it.
             self.queue_append(prompt, meta=containment_meta(state, self))
+            # Returning False IS the receipt that the prompt was accepted onto the
+            # queue, and until the drain writes its transcript row the queue is the
+            # prompt's only record -- so a restart inside the periodic flush
+            # interval loses a prompt the caller was told had landed.
+            # ``start_queue_persist``'s own contract is that every place a prompt is
+            # accepted onto a slot queue starts the write that makes it durable,
+            # "a receipt from one path and a write from only the other" being the
+            # asymmetry it exists to prevent. This admission point is one of those
+            # places. Started, not awaited, and self-limiting: it is skipped unless
+            # the slot is dirty or its queue drifted from disk, and it is
+            # single-flight per slot, so a burst of queued prompts is not a burst of
+            # transcript rewrites.
+            start_queue_persist(state, self)
             return False
         self.append("user", prompt, "msg msg-u")
         task = asyncio.create_task(run_chat_coro(state, self, prompt))

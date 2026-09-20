@@ -483,8 +483,9 @@ orchestrator prompt in order: `~/.kiro/crew/prompt-orchestrator.md`, then
 prompt if none exists. `ContextBuilder` passes the slot's mode through on the
 first message of a session, so
 switching mode takes effect on the next fresh session, and
-`{{MAX_SUBAGENTS}}` in the prompt is substituted with the live resolved
-concurrency cap.
+`{{MAX_SUBAGENTS}}` in the prompt is substituted with the execution cap in
+force (`resource_status.adaptive_exec_cap`), or with the configured ceiling
+labelled as one when no controller runs in the process.
 
 The bundled prompt is self-contained and replaces, rather than appends to, the
 normal prompt. Its planning contract is explicit: a plan request in any language

@@ -30,6 +30,14 @@ surfaces, out-of-range values are clamped with a warning rather than raising, an
 a malformed section degrades to defaults so a hand-edited file cannot prevent the
 gateway from starting.
 
+## Orchestration prompt contract
+
+`config/prompt.md` and `config/prompt-orchestrator.md` guide direct work and
+delegation using the same concrete-value policy. Parent-plus-child parallelism
+depends on the spawn receipt's delivery capability; the existing Autopilot
+approval and stage boundaries remain. Runtime checks and compatibility are
+owned by [subagent.md](subagent.md), not inferred from prompt wording.
+
 ## Embedding rebuild request publication
 
 `memory.embed_rebuild_generation` is an explicit-apply request identity, not a
@@ -395,8 +403,17 @@ Registered so far: `mcp_gateway.forward_declared_env` (False -> True, #4566),
 `dashboard.loop_stall_exit_after_secs` (25 -> unset, #6651),
 `instances.warm_set_cap` (5 -> 0, #7248),
 `agent.chat_turn_timeout_secs` (7200 -> 14400, #8949) and
-`agent.subagent_timeout_secs` (1800 -> 10800, #8891). **Two** carry `auto_adopt` --
-the agent timeout budgets -- and the other six are report-only; see below.
+`agent.subagent_timeout_secs` (1800 -> 10800, #8891), and
+`agent.subagent_max_turns` (100 -> 1000, #12203). **Two** carry `auto_adopt` --
+the agent timeout budgets -- and the other entries are report-only; see below.
+
+The subagent turn budget follows 1000 automatically when its key is absent,
+including in an existing installation after an update. Every valid stored value
+is retained, even 100: a materialized old default and an explicitly selected
+100-turn cap are indistinguishable without historical per-key provenance.
+The defaults report exposes the change and the existing adopt/keep commands;
+it does not claim that ambiguous legacy files can be upgraded without risking
+an operator's deliberate cap. The three-hour execution timeout remains separate.
 
 ### Auto-adoption, and the line it does not cross
 
@@ -424,6 +441,7 @@ supported configuration:
 | `mcp_gateway.forward_declared_env` | reports | `test_a_real_false_still_turns_it_off` |
 | `stt.model` | reports | a picker value; adopting changes transcription accuracy |
 | `instances.warm_set_cap` | reports | 5 is an ordinary deliberate cap |
+| `agent.subagent_max_turns` | reports | An explicitly stored 100 is a supported cost/turn cap |
 
 A row whose old value another suite guarantees is not stale noise by definition,
 whatever its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins the
@@ -1828,7 +1846,7 @@ class AgentConfig:
     yolo: bool = False             # permanent YOLO mode (skip tool approval); tracked via _yolo_from_config flag
     max_subagents: int = 3         # concurrent subagent cap; 0 = auto-size from host memory/CPU. Load-time: 0 (auto) or [3, 64] — a fixed pin of 1/2 is raised to 3
     subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
-    subagent_max_turns: int = 100  # default per-subagent tool-call budget. Load-time clamped to [1, 1000]
+    subagent_max_turns: int = 1000  # default per-subagent tool-call budget. Load-time clamped to [1, 1000]
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
@@ -1846,6 +1864,7 @@ class AgentConfig:
     adaptive_concurrency_mode: str = "aimd"  # "aimd" | "fixed" ("fixed" pins both caps at their initial values -- the one-flip reversal). Live
     adaptive_floor: int = 1                  # lowest execution cap under sustained pressure. Load-time clamped to [1, 64]. Live
     adaptive_initial: int = 4                # fresh-gateway execution cap, bounded by max_subagents; earned upward. Load-time clamped to [1, 64]. Live
+    adaptive_slow_start: bool = True          # before the first corroborated pressure, double the execution cap per clear 5 s window instead of +1 per 30 s, bounded by max_subagents and by what this host's memory and CPU size the cap at. Live
     # AIMD tuning uses fixed constants in adaptive/policy.py.
     controller_sample_secs: int = 5          # adaptive controller sampling interval. Load-time clamped to [1, 300]. Live
     dependency_max_attempts: int = 20          # coordinated probes a dependency scope gets before every waiter is failed. Load-time clamped to [1, 1000]

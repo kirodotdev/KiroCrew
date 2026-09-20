@@ -862,7 +862,7 @@ def _lessons_request(
     request.app = {"state": state}
     request.headers = {"X-Session-Key": session_key}
     request.query = {}
-    identity = {"internal_auth": True} if claims is None else claims
+    identity = {"internal_auth": True, "peer_verified": True} if claims is None else claims
     request.get.side_effect = identity.get
     request.__contains__.side_effect = identity.__contains__
     request.__getitem__.side_effect = identity.__getitem__
@@ -954,7 +954,7 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
             ({"user": "viewer", "app": ""}, False),
             ({"user": "operator", "app": "external-app"}, False),
             ({"user": "operator", "app": ""}, True),
-            ({"internal_auth": True}, True),
+            ({"internal_auth": True, "peer_verified": True}, True),
         ],
         ids=["non-owner", "app-token", "owner", "internal"],
     )

@@ -27,6 +27,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import (
     CallerContext,
     caller_identity_capability,
+    current_caller,
     set_current_caller,
     set_current_tenant_nonce,
     tenant_nonce_from_meta,
@@ -628,7 +629,15 @@ def _resolve_tool_policy(
             )
             return ToolPolicy(frozenset(), "no_session_key")
 
-        headers: dict[str, str] = {"X-Internal-Secret": secret}
+        # The declared key needs the attestation that goes with it. Without the
+        # token this read is answered as a caller the gateway cannot name, the
+        # policy stays unresolved, and the fail-closed branch below then refuses
+        # every tool call for the session.
+        from kiro_crew.session_token_sig import session_token_header
+
+        _ctx = current_caller()
+        _tok = _ctx.session_token if _ctx is not None and _ctx.from_gateway else ""
+        headers: dict[str, str] = {"X-Internal-Secret": secret, **session_token_header(_tok)}
         headers["X-Session-Key"] = session_key
 
         req = urllib.request.Request(

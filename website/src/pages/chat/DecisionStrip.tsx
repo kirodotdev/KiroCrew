@@ -133,14 +133,20 @@ function Detail({ label, value }: { label: string; value: string }) {
  * past replies were Jev-picked — which is the invisibility this strip exists to
  * remove, reintroduced for history.
  *
- * Collapsed it is one line: the point, who picked what, the score, and the
- * prompt tokens the narrower set saved. When the two sides picked the same
- * skills the line says so and prints the set once, naming both sides; when they
- * differ it names each with its own list, because that difference is the only
- * thing on the line a reader can act on. Expanding adds the question's own
- * shape — how many candidates, in how many rounds, how much context it carried,
- * what was dropped — and a second thumbs pair for the word-matching rule, so a
- * reader can say the old rule was the right one.
+ * Collapsed it is one line: the point, who picked what, the score and how long
+ * Jev took, and the prompt tokens the narrower set saved. When the two sides
+ * picked the same skills the line says so and prints the set once, naming both
+ * sides; when they differ it names each with its own list, because that
+ * difference is the only thing on the line a reader can act on. Expanding adds
+ * the question's own shape — how many candidates, how many characters of message
+ * and history left the machine, how long the answer took, what was dropped — and
+ * a second thumbs pair for the word-matching rule, so a reader can say the old
+ * rule was the right one.
+ *
+ * Every row here is a measurement a reader can act on. A number that is the
+ * same on every turn is furniture, not a measurement, so the strip carries no
+ * row for how the menu was batched (it is asked in one question) and none for
+ * how many prior turns were clipped (a fact about the read, on the call row).
  *
  * Expansion survives the row being recycled out of the virtualised transcript
  * (`useRowDisclosure`); the thumbs survive it through their own store.
@@ -168,6 +174,25 @@ const DecisionStrip = memo(function DecisionStrip({
     : record.point
   const rightJev = i18nT('pages.chat.decisionStrip.rate_right_jev')
   const wrongJev = i18nT('pages.chat.decisionStrip.rate_wrong_jev')
+  const latency = record.latencyMs > 0
+    ? i18nT('pages.chat.decisionStrip.latency_value', { ms: fmtNumber(record.latencyMs) })
+    : null
+  // Both numbers describe the answer, so they share one parenthetical rather
+  // than each taking a segment of a line that already truncates. Joined with
+  // `fmtList`, as is the egress row below: the separator between two list items
+  // is a locale's decision, not this file's, and the two joins are the same
+  // shape -- a short list of measurements read as one value.
+  const scores = [record.p !== null ? confidence(record.p) : null, latency].filter(
+    (part): part is string => part !== null,
+  )
+  // The legend names what the group CAN hold, and the group holds a different
+  // pair depending on what the record carried — so all three cases get their own
+  // sentence instead of one that describes a number that is not there.
+  const scoresTitle = record.p !== null && latency !== null
+    ? i18nT('pages.chat.decisionStrip.confidence_latency_title')
+    : record.p !== null
+      ? i18nT('pages.chat.decisionStrip.confidence_title')
+      : i18nT('pages.chat.decisionStrip.latency_title')
 
   return (
     <div
@@ -220,13 +245,13 @@ const DecisionStrip = memo(function DecisionStrip({
               </>
             )}
           </span>
-          {record.p !== null && (
+          {scores.length > 0 && (
             <span
               className="shrink-0 tabular-nums"
-              title={i18nT('pages.chat.decisionStrip.confidence_title')}
-              data-testid="decision-strip-confidence"
+              title={scoresTitle}
+              data-testid="decision-strip-scores"
             >
-              ({confidence(record.p)})
+              ({fmtList(scores, { type: 'unit' })})
             </span>
           )}
           {record.tokensSaved > 0 && (
@@ -255,12 +280,30 @@ const DecisionStrip = memo(function DecisionStrip({
             label={i18nT('pages.chat.decisionStrip.candidates_label')}
             value={fmtNumber(record.candidates)}
           />
-          <Detail label={i18nT('pages.chat.decisionStrip.batches_label')} value={fmtNumber(record.batches)} />
-          <Detail
-            label={i18nT('pages.chat.decisionStrip.history_chars_label')}
-            value={fmtNumber(record.historyChars)}
-          />
-          <Detail label={i18nT('pages.chat.decisionStrip.truncated_label')} value={fmtNumber(record.truncated)} />
+          {/* ONE row for the egress, because the two halves are one fact: the
+              message excerpt and the prior turns are everything the question
+              sends. Naming only the history would leave the number at 0 at the
+              shipped budget while the message that did leave went unmentioned.
+
+              Drawn only for a record that states the message length, the same
+              way the latency row below is. A record without it is one whose
+              producer did not measure the excerpt, and "message 0 chars" over a
+              question that carried one is the false receipt this row replaced. */}
+          {record.messageChars !== null && (
+            <Detail
+              label={i18nT('pages.chat.decisionStrip.sent_label')}
+              value={fmtList(
+                [
+                  i18nT('pages.chat.decisionStrip.sent_message', { chars: fmtNumber(record.messageChars) }),
+                  i18nT('pages.chat.decisionStrip.sent_history', { chars: fmtNumber(record.historyChars) }),
+                ],
+                { type: 'unit' },
+              )}
+            />
+          )}
+          {latency !== null && (
+            <Detail label={i18nT('pages.chat.decisionStrip.latency_label')} value={latency} />
+          )}
           {record.dropped.length > 0 && (
             <Detail
               label={i18nT('pages.chat.decisionStrip.dropped_label')}

@@ -1438,7 +1438,7 @@ class TestResourceManagement:
         def track_release(key):
             call_order.append(f"release:{key}")
 
-        async def track_reset(key):
+        async def track_reset(key, **kwargs):
             call_order.append(f"reset:{key}")
 
         sessions.release = track_release

@@ -133,7 +133,9 @@ def test_first_cpu_sample_reports_unknown_not_zero(monkeypatch: pytest.MonkeyPat
     """CPU is a rate: one observation cannot produce one, and reporting 0.0 would
     claim the session is idle."""
     monkeypatch.setattr(sm.sys, "platform", "linux")
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: 100)
+    # ``**kw`` because the sampler hands the subtree it already walked over as
+    # ``pids=`` rather than letting the CPU reading enumerate the tree again.
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 100)
     sampler = sm.SessionMemorySampler()
     assert sampler._cpu_cores(42, 10.0) is None
 
@@ -141,7 +143,7 @@ def test_first_cpu_sample_reports_unknown_not_zero(monkeypatch: pytest.MonkeyPat
 def test_second_cpu_sample_uses_the_delta(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sm.sys, "platform", "linux")
     jiffies = iter([100, 100 + sm._CLK_TCK * 2])
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: next(jiffies))
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: next(jiffies))
     sampler = sm.SessionMemorySampler()
     sampler._cpu_cores(42, 10.0)
     # 2 core-seconds of CPU over 4 wall seconds = 0.5 cores.
@@ -164,9 +166,11 @@ def stub_proc(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sm, "_get_rss_tree_mb", lambda pid, **kw: {7: 3238.0, 8: 843.0}.get(pid, 0.0)
     )
-    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [pid, pid + 100, pid + 200])
+    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid, **kw: [pid, pid + 100, pid + 200])
     monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "python -m kiro_crew.mcp_gateway.stub")
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: 0)
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
+    # The poll builds the host's parent map once; keep that off real /proc too.
+    monkeypatch.setattr(sm, "proc_child_map", lambda: {})
     monkeypatch.setattr(sm, "_get_static_system_info", lambda: {"mem_total_gb": 124.0})
 
 

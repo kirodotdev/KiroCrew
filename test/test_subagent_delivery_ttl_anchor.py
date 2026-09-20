@@ -896,6 +896,66 @@ class TestReaperDoesNotPruneAQueuedPromise:
         assert info._delivery_queued is True
         assert not (agent_root / info.id / "tombstone.json").exists()
 
+    @pytest.mark.asyncio
+    async def test_child_completion_waits_for_parent_work_without_interrupting_it(self, agent_root):
+        from test_subagent_scale import _drain_injections, _mock_dashboard_state, _mock_sessions
+
+        from kiro_crew.slack import gateway
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = _ChatSlot("main")
+        parent_release = asyncio.Event()
+        busy_checked = asyncio.Event()
+        parent = asyncio.create_task(parent_release.wait())
+        slot.task = parent
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        with patch.object(gateway, "SubagentManager") as manager:
+            manager.return_value.running_agents_for.return_value = []
+            with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
+                orch._init_subagents()
+            on_done = manager.call_args.kwargs["on_done"]
+
+        injected = []
+        real_busy = gateway._injection_slot_busy
+
+        def checked_busy(current):
+            busy_checked.set()
+            return real_busy(current)
+
+        async def run_chat(_state, _slot, text, **kwargs):
+            assert parent.done() and not parent.cancelled()
+            injected.append(text)
+            if kwargs.get("_on_consumed"):
+                kwargs["_on_consumed"]()
+
+        info = _member()
+        _finished_run(info.id, agent_root)
+        with (
+            patch.object(gateway, "_injection_slot_busy", side_effect=checked_busy),
+            patch.object(gateway, "_run_chat", side_effect=run_chat),
+        ):
+            delivery = asyncio.create_task(on_done(info))
+            try:
+                await asyncio.wait_for(busy_checked.wait(), 3)
+                assert not parent.done()
+                assert not delivery.done()
+                assert not injected
+                parent_release.set()
+                await asyncio.wait_for(delivery, 3)
+                await asyncio.wait_for(_drain_injections(orch), 3)
+            finally:
+                parent_release.set()
+                await parent
+                if not delivery.done():
+                    delivery.cancel()
+                await asyncio.gather(delivery, return_exceptions=True)
+        assert len(injected) == 1
+        assert info.id in injected[0]
+        assert slot._subagent_deliveries_inflight == 0
+
 
 def _make_orchestrator():
     from kiro_crew.config import KiroCrewConfig

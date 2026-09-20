@@ -491,6 +491,11 @@ def sdk(tmp_path: Path):
 @pytest.fixture(autouse=True)
 def _isolated_backup_state(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    # A successful push ends with the retention sweep, which LISTS the drive. The
+    # sweep swallows its own failures by design, so an unstubbed run here would
+    # attempt a real CLI call and the test would still pass. Retention's own
+    # behaviour lives in test_aws_control_backup_retention.py.
+    monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
     backup.clear_stop()
     yield
     backup.clear_stop()
@@ -960,7 +965,7 @@ class TestLedgerSurvives:
             mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
             mock.patch.object(backup, "snapshot_main", side_effect=fake_snapshot),
             mock.patch.object(backup, "_authorize_upload"),
-            mock.patch.object(backup.storage, "put_file"),
+            mock.patch.object(backup.storage, "put_file", return_value="v-test"),
         ):
             run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
             run = _await_terminal(sdk, run_id)

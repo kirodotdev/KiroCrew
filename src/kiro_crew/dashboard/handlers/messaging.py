@@ -92,6 +92,8 @@ from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.solo_spawn import (
     SOLO_SPAWN_REFUSED_CODE,
+    delegation_refusal,
+    parent_work_supported,
     solo_spawn_difference,
     solo_spawn_question,
 )
@@ -260,6 +262,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 # Why one task is spawned alone (solo gate). Listed for the same
                 # reason as ``crew``: an unlisted field is dropped, not refused.
                 "solo_reason": body.get("solo_reason", ""),
+                "solo_details": body.get("solo_details", ""),
                 "target_member": body.get("target_member", ""),
             },
             SPAWN_RUN_SCHEMA,
@@ -376,6 +379,26 @@ async def api_spawn(request: web.Request) -> web.Response:
     if not isinstance(solo, bool):
         solo = str(solo).lower() in ("true", "1", "yes")
     solo_reason = cleaned.get("solo_reason") or ""
+    solo_details = cleaned.get("solo_details") or ""
+    can_work = parent_work_supported(state, parent_session)
+    reason_error = delegation_refusal(solo_reason, solo_details)
+    if solo_reason == "parent_parallel" and not can_work:
+        reason_error = (
+            "Error: parent_parallel requires a dashboard-owned parent turn. "
+            "This caller must yield immediately; do the work directly instead."
+        )
+    if reason_error:
+        _sel().log_api_access(
+            caller="internal",
+            operation="spawn.solo",
+            outcome="denied",
+            source="solo_gate",
+            resources=parent_session,
+            error=reason_error,
+        )
+        return web.json_response(
+            {"error": reason_error, "code": SOLO_SPAWN_REFUSED_CODE}, status=400
+        )
     if solo and not solo_reason:
         ground = solo_spawn_difference(state, parent_session, agent=agent, model=model, crew=crew)
         if not ground:
@@ -408,7 +431,7 @@ async def api_spawn(request: web.Request) -> web.Response:
             operation="spawn.solo",
             outcome="allowed",
             source="solo_gate",
-            resources=f"{parent_session} reason={solo_reason}",
+            resources=f"{parent_session} reason={solo_reason} source=model_claim",
         )
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
@@ -436,6 +459,11 @@ async def api_spawn(request: web.Request) -> web.Response:
         silent=silent,
         batch_id=batch_id,
         batch_total=batch_total,
+        delegation=(
+            {"reason": solo_reason, "details": solo_details, "source": "model_claim"}
+            if solo_reason or solo_details
+            else None
+        ),
         keep=keep,
         include_memory=cleaned.get("include_memory", True) is not False,
         include_lessons=cleaned.get("include_lessons", True) is not False,
@@ -474,7 +502,12 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    resp: dict[str, object] = {"id": info.id, "task": task, "status": "spawned"}
+    resp: dict[str, object] = {
+        "id": info.id,
+        "task": task,
+        "status": "spawned",
+        "parent_work_supported": can_work,
+    }
     # Server-side effort verdict: only this side knows the model the factory's
     # effort gate will see (explicit per-call value, else the subagent role
     # pin, else the session chain for the effective agent — a crew's pin, else
@@ -1113,6 +1146,7 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         silent=old.silent,
         # A retry must see the SAME context scope as the run it replaces —
         # otherwise the retried agent is a different experiment.
+        delegation=dict(old.delegation),
         include_memory=old.include_memory,
         include_lessons=old.include_lessons,
         include_project=old.include_project,

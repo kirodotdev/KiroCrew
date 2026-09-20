@@ -282,6 +282,7 @@ async def select_skills(
     extra: dict[str, Any] = {
         "turn_id": turn,
         "candidates": len(rows),
+        "message_chars": message_chars(text),
         "history_chars": state_trace["history_chars"],
         "truncated": state_trace["truncated"],
     }
@@ -468,6 +469,26 @@ def build_state(
     )
 
 
+def message_excerpt(text: str) -> str:
+    """The part of *text* that actually leaves the machine, after the cap.
+
+    One function so the count on the outcome record and the string in the request
+    cannot disagree: :func:`build_state_rows` sends this, and
+    :func:`message_chars` measures the same call.
+    """
+    return (text or "")[:MAX_MESSAGE_CHARS]
+
+
+def message_chars(text: str) -> int:
+    """Characters of *text* that were sent, which is the excerpt's own length.
+
+    The number the strip prints beside ``history_chars``: together they are the
+    whole egress of one question, so a reader can see what left rather than infer
+    it from the message they typed.
+    """
+    return len(message_excerpt(text))
+
+
 def build_state_rows(
     text: str,
     rows: Sequence[dict[str, str]],
@@ -483,7 +504,7 @@ def build_state_rows(
     already answered locally by ``history_chars`` on the call row.
     """
     state: dict[str, Any] = {
-        "message": (text or "")[:MAX_MESSAGE_CHARS],
+        "message": message_excerpt(text),
         "candidates": [dict(row) for row in rows],
     }
     if history_rows:
@@ -647,6 +668,12 @@ def build_outcome(
     a reader comparing the arms is comparing what reached the prompt. ``agree``
     is SET equality: the two arms are selections, and an order difference between
     two identical sets is not a disagreement about which skills apply.
+
+    ``message_chars`` and ``history_chars`` are the whole egress of the question,
+    each measured on the string that was actually sent, so a reader of the strip
+    can see what left this machine rather than infer it. A clip count is NOT on
+    the record: it is a fact about the history READ, which the call row carries,
+    and a reader comparing two arms cannot act on it.
     """
     return {
         "turn_id": trace.get("turn_id"),
@@ -656,8 +683,8 @@ def build_outcome(
         "p": trace.get("p"),
         "tokens_saved": tokens_saved(skills_loader, baseline, injected, project_dir),
         "candidates": trace.get("candidates"),
+        "message_chars": trace.get("message_chars"),
         "history_chars": trace.get("history_chars"),
-        "truncated": trace.get("truncated"),
     }
 
 

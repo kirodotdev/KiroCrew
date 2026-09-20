@@ -128,11 +128,11 @@ class TestSchema:
         t = _tools()[tool]
         prop = t["inputSchema"]["properties"]["solo_reason"]
         assert set(prop["enum"]) == {r for r in SOLO_SPAWN_REASONS if r}
-        assert "REFUSED" in prop["description"]
+        assert "REQUIRED" in prop["description"]
         # The description says the gate is enforced, not merely advised.
         assert "ENFORCED" in t["description"]
         # ...and still opens with the textual gate the sibling test pins.
-        assert t["description"].startswith("GATE:")
+        assert t["description"].startswith("Do focused work directly")
 
 
 # ── tool side ────────────────────────────────────────────────────────────────
@@ -161,6 +161,29 @@ def _run(tool: str, args: dict[str, Any], answer: dict | None = None):
 
 
 class TestSpawnRunToolSide:
+    @pytest.mark.parametrize("reason", ["parent_parallel", "specialist", "user_requested"])
+    def test_new_reasons_need_concrete_details_before_any_post(self, reason):
+        bodies, result, _ = _run("spawn_run", {"task": "x", "solo_reason": reason})
+        assert not bodies
+        assert result.startswith("Error:") and "solo_details" in result
+
+    @pytest.mark.parametrize("supported", [True, False, None])
+    def test_parent_parallel_receipt_controls_work_boundary(self, supported):
+        bodies, result, _ = _run(
+            "spawn_run",
+            {
+                "task": "Document the finalized API",
+                "solo_reason": "parent_parallel",
+                "solo_details": "I implement validation in backend.py; child owns api.md.",
+            },
+            {"id": "a1", "parent_work_supported": supported},
+        )
+        assert bodies[0]["solo_details"].startswith("I implement")
+        assert bodies[0]["solo_reason"] == "parent_parallel"
+        assert "END YOUR TURN" in result
+        assert ("at most one minute" in result) is (supported is True)
+        assert ("no confirmed parent-work" in result) is (supported is not True)
+
     def test_lone_task_is_refused_before_any_post(self):
         bodies, result, sel = _run("spawn_run", {"task": "read the log and fix it"})
         assert bodies == []
@@ -230,6 +253,18 @@ class TestSpawnRunToolSide:
 
 
 class TestSpawnSubAgentsToolSide:
+    def test_blocking_tool_cannot_claim_parent_parallelism(self):
+        bodies, result, _ = _run(
+            "spawn_sub_agents",
+            {
+                "agents": [{"prompt": "docs"}],
+                "solo_reason": "parent_parallel",
+                "solo_details": "parent implements backend",
+            },
+        )
+        assert bodies == []
+        assert "asynchronous spawn_run" in result
+
     def test_lone_entry_is_refused_before_any_post(self):
         bodies, result, sel = _run("spawn_sub_agents", {"agents": [{"prompt": "review this"}]})
         assert bodies == []
@@ -508,3 +543,53 @@ class TestApiSpawnGate:
         resp, mgr, _ = await self._call({"task": "x", "solo": True, "solo_reason": "because"})
         assert resp.status == 400
         mgr.spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_parallel_claim_reaches_manager_with_evidence_and_capability(self):
+        import json
+
+        resp, mgr, _ = await self._call(
+            {
+                "task": "docs",
+                "solo": True,
+                "solo_reason": "parent_parallel",
+                "solo_details": "parent: backend.py; child: docs/api.md",
+            }
+        )
+        assert resp.status == 200
+        assert json.loads(resp.text)["parent_work_supported"] is True
+        assert mgr.spawn.call_args.kwargs["delegation"] == {
+            "reason": "parent_parallel",
+            "details": "parent: backend.py; child: docs/api.md",
+            "source": "model_claim",
+        }
+
+    @pytest.mark.asyncio
+    async def test_parallel_claim_without_supported_parent_is_refused(self):
+        with patch(
+            "kiro_crew.dashboard.handlers.messaging.parent_work_supported", return_value=False
+        ):
+            resp, mgr, _ = await self._call(
+                {
+                    "task": "docs",
+                    "solo": True,
+                    "solo_reason": "parent_parallel",
+                    "solo_details": "parent implements backend",
+                }
+            )
+        assert resp.status == 400
+        assert "dashboard-owned" in resp.text
+        mgr.spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_direct_http_cannot_skip_new_reason_details(self):
+        resp, mgr, _ = await self._call({"task": "review", "solo_reason": "user_requested"})
+        assert resp.status == 400
+        mgr.spawn.assert_not_called()
+
+
+@pytest.mark.parametrize("parent", ["", "cron:a", "subagent:a", "hook:a", "slack:unlinked"])
+def test_unknown_or_background_parent_cannot_claim_concurrent_work(parent):
+    from kiro_crew.solo_spawn import parent_work_supported
+
+    assert not parent_work_supported(SimpleNamespace(_slots={}), parent)

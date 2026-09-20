@@ -15,9 +15,9 @@ import math
 import os
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Container, Iterable
+from collections.abc import Awaitable, Callable, Container, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from kiro_crew.acp.liveness import (
@@ -53,7 +53,11 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
-from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX, SUBAGENT_TIMEOUT_SECS
+from kiro_crew.constants import (
+    DEFAULT_SUBAGENT_MAX_TURNS,
+    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_TIMEOUT_SECS,
+)
 from kiro_crew.context import (
     CONTEXT_GROUP_LESSONS,
     CONTEXT_GROUP_MEMORY,
@@ -488,7 +492,7 @@ def _done_result(text: str) -> str:
 # ``constants`` because the MCP gateway's hard-wedge ceiling has to sit above
 # it (see ``mcp_gateway/backend.py``).
 _TIMEOUT_SECS = SUBAGENT_TIMEOUT_SECS
-_TURN_LIMIT = 100
+_TURN_LIMIT = DEFAULT_SUBAGENT_MAX_TURNS
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # Idle TTL for continuable conversations (keep=True): a conversation with no
 # run for this long has its session files + map entry deleted by the reaper.
@@ -838,25 +842,35 @@ def check_memory_available(
     ``platform_compat._linux_available_mib`` reads the same file the same
     way. The ``path`` keyword is keyword-only and exists for tests only;
     production callers always take the constant.
-    Returns (ok, available_gb).  On read failure returns (True, -1.0)
-    to avoid blocking spawns on non-Linux systems.
+    Native macOS/Windows readers handle the production path on those hosts.
+    Linux production reads also respect cgroup headroom. An explicit test path
+    always exercises the file reader. With no readable host memory or finite
+    cgroup limit, returns (True, -1.0).
     """
+    if path == "/proc/meminfo" and not platform_compat.IS_LINUX:
+        avail = (
+            _macos_available_memory_gb()
+            if platform_compat.IS_MACOS
+            else _windows_available_memory_gb() if platform_compat.IS_WINDOWS else -1.0
+        )
+        return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
+    avail = -1.0
     try:
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
-    except (OSError, UnicodeDecodeError):
-        # UnicodeDecodeError is a ValueError, not an OSError: without it a
-        # mangled read would escape a function whose contract is fail-open.
-        return (True, -1.0)
-    try:
         for line in text.splitlines():
             if line.startswith("MemAvailable:"):
                 kb = int(line.split()[1])
                 avail = kb / (1024 * 1024)
-                return (avail >= min_gb, round(avail, 2))
-    except (ValueError, IndexError):
-        return (True, -1.0)
-    return (True, -1.0)
+                break
+    except (OSError, ValueError, IndexError):
+        # A failed host read cannot discard a known container constraint.
+        pass
+    if path == "/proc/meminfo":
+        cgroup_gb = _cgroup_available_gb()
+        if cgroup_gb >= 0:
+            avail = cgroup_gb if avail < 0 else min(avail, cgroup_gb)
+    return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
 
 
 # Process-subtree readings come from ONE shared walker,
@@ -882,13 +896,23 @@ def _proc_subtree_sample(pid: Optional[int]) -> platform_compat.SubtreeSample:
     return platform_compat.proc_subtree_sample(pid, counts=True, needles=(STUB_MODULE,))
 
 
-def _subtree_cpu_jiffies(pid: int) -> int:
+def _subtree_cpu_jiffies(pid: int, *, pids: Optional[list[int]] = None) -> int:
     """Sum utime+stime across ``pid`` and its descendants (clock ticks).
 
     Asks the shared walker for the CPU reading alone, so the CPU subtree the
     Sessions session rows read is the same subtree the task rows describe, and
     the session rows pay no ``status`` read for an RSS figure they do not use.
+
+    ``pids`` is that subtree when the caller has ALREADY walked it, so the tree
+    is not enumerated a second time to total the same processes -- the same
+    hand-over ``_get_rss_tree_mb`` takes, and for the same reason: nearly all of
+    the cost is the enumeration, not the per-process read. It also makes the CPU
+    figure describe exactly the set the caller's other figures describe, where
+    two enumerations could disagree (the walker stops at ``_SUBTREE_MAX_PROCS``
+    and a caller's own walk need not).
     """
+    if pids is not None:
+        return platform_compat.proc_cpu_jiffies_for_pids(pids)
     return platform_compat.proc_subtree_sample(pid, rss=False, counts=False).jiffies
 
 
@@ -1047,7 +1071,7 @@ def _read_int_file(path: str) -> int | None:
     try:
         with open(path, encoding="ascii") as fh:
             txt = fh.read().strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     if txt == "max":  # cgroup v2 unlimited sentinel
         return None
@@ -1057,29 +1081,106 @@ def _read_int_file(path: str) -> int | None:
         return None
 
 
+def _cgroup_memory_roots() -> list[tuple[PurePosixPath, PurePosixPath, bool]]:
+    """Return (process directory, mount boundary, v2) for visible memory mounts."""
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as handle:
+            memberships = handle.read().splitlines()
+        with open("/proc/self/mountinfo", encoding="utf-8") as handle:
+            mounts = handle.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        memberships, mounts = [], []
+
+    groups: dict[bool, PurePosixPath] = {}
+    for line in memberships:
+        fields = line.split(":", 2)
+        if len(fields) != 3:
+            continue
+        if fields[0] == "0" and not fields[1]:
+            v2 = True
+        elif "memory" in fields[1].split(","):
+            v2 = False
+        else:
+            continue
+        membership = PurePosixPath(fields[2])
+        if membership.is_absolute() and ".." not in membership.parts:
+            groups[v2] = membership
+
+    roots = []
+    for line in mounts:
+        before, separator, after = line.partition(" - ")
+        fields, fs = before.split(), after.split()
+        if not separator or len(fields) < 6 or len(fs) < 3:
+            continue
+        v2 = fs[0] == "cgroup2"
+        if not v2 and not (fs[0] == "cgroup" and "memory" in fs[2].split(",")):
+            continue
+        group = groups.get(v2)
+        if group is None:
+            continue
+        # mountinfo escapes whitespace and backslashes in its path fields.
+        paths = [
+            PurePosixPath(
+                field.replace(r"\040", " ")
+                .replace(r"\011", "\t")
+                .replace(r"\012", "\n")
+                .replace(r"\134", "\\")
+            )
+            for field in fields[3:5]
+        ]
+        root, mount = paths
+        if not root.is_absolute() or not mount.is_absolute():
+            continue
+        try:
+            relative = group.relative_to(root)
+        except ValueError:
+            continue  # This bind mount does not expose our cgroup.
+        roots.append((mount / relative, mount, v2))
+
+    if not roots:
+        # Preserve the root-only probe on hosts without readable proc metadata.
+        for directory, v2 in (("/sys/fs/cgroup", True), ("/sys/fs/cgroup/memory", False)):
+            path = PurePosixPath(directory)
+            roots.append((path, path, v2))
+    return roots
+
+
 def _cgroup_available_gb() -> float:
-    """Container memory headroom (GB) = limit − current, or -1.0 if unlimited/unknown.
+    """Tightest visible cgroup headroom (GB), or -1.0 if unlimited/unknown.
 
     Reads cgroup v2 (``memory.max``/``memory.current``) then v1
-    (``memory.limit_in_bytes``/``memory.usage_in_bytes``). A sentinel-large
-    limit means unlimited. Returns -1.0 on unconstrained / non-Linux hosts so
-    the caller ignores the clamp (``dynamic-subagent-sizing.md`` §9).
+    (``memory.limit_in_bytes``/``memory.usage_in_bytes``) at the process's
+    cgroup and its visible ancestors. Each limit is paired with usage at the
+    SAME level, including siblings charged to a parent. A finite limit with
+    unknown usage contributes zero headroom, never zero usage. Ancestors
+    hidden above a mount cannot be measured.
     """
-    # cgroup v2
-    limit = _read_int_file("/sys/fs/cgroup/memory.max")
-    if limit is not None:
-        if limit >= _CGROUP_UNLIMITED:
-            return -1.0
-        current = _read_int_file("/sys/fs/cgroup/memory.current") or 0
-        return max(0.0, (limit - current) / (1024**3))
-    # cgroup v1
-    limit = _read_int_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-    if limit is not None:
-        if limit >= _CGROUP_UNLIMITED:
-            return -1.0
-        current = _read_int_file("/sys/fs/cgroup/memory/memory.usage_in_bytes") or 0
-        return max(0.0, (limit - current) / (1024**3))
-    return -1.0  # no cgroup memory controller
+    available = -1.0
+    for leaf, mount, v2 in _cgroup_memory_roots():
+        limit_name = "memory.max" if v2 else "memory.limit_in_bytes"
+        usage_name = "memory.current" if v2 else "memory.usage_in_bytes"
+        directory = leaf
+        while True:
+            # Older v1 kernels can disable descendant accounting per group.
+            if (
+                v2
+                or directory == leaf
+                or _read_int_file(str(directory / "memory.use_hierarchy")) == 1
+            ):
+                limit = _read_int_file(str(directory / limit_name))
+                current = _read_int_file(str(directory / usage_name))
+                if limit is not None and 0 <= limit < _CGROUP_UNLIMITED:
+                    # No spare capacity is established when usage is unknown.
+                    headroom = (
+                        max(0.0, (limit - current) / (1024**3))
+                        if current is not None and current >= 0
+                        else 0.0
+                    )
+                    available = headroom if available < 0 else min(available, headroom)
+            if directory == mount:
+                break
+            directory = directory.parent
+    return available
 
 
 def compute_max_subagents(cfg: KiroCrewConfig) -> int:
@@ -1107,23 +1208,15 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
     hard_cap = max(_LEGACY_DEFAULT_MAX, agent.subagent_auto_max)
     lo = _LEGACY_DEFAULT_MAX
 
-    avail_gb = _available_memory_gb()
-    if avail_gb <= 0:
+    terms = _host_terms(cfg)
+    if terms is None:
         # Memory unreadable (non-Linux / read error) — fail open.
         logger.info(
             "dynamic subagent cap = %d (memory unreadable; fail-open to legacy default)",
             lo,
         )
         return lo
-
-    buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
-    mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or 0.5
-    cpu_cost = read_learned_cost("cpu_cores") or agent.subagent_cpu_cost_cores or 1.0
-    pool_size = cfg.session.pool_size
-
-    mem_term = math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
-    cpu_count = os.cpu_count() or 1
-    cpu_term = math.floor((cpu_count * buf) / cpu_cost)
+    mem_term, cpu_term = terms
 
     candidate = min(mem_term, cpu_term)
     result = max(lo, min(candidate, hard_cap))
@@ -1147,6 +1240,88 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
         hard_cap,
     )
     return result
+
+
+def _host_terms(cfg: KiroCrewConfig) -> tuple[int, int] | None:
+    """``(mem_term, cpu_term)`` for this host, or None when memory is unreadable.
+
+    THE one place the sizing arithmetic lives. Both public readings are built on
+    it -- :func:`compute_max_subagents`, which clamps to ``subagent_auto_max``
+    and logs, and :func:`host_terms_subagent_cap`, which does neither -- so the
+    two can never drift apart, and the log line still gets each term separately
+    to name the bound that actually bound.
+    """
+    agent = cfg.agent
+    avail_gb = _available_memory_gb()
+    if avail_gb <= 0:
+        return None
+    buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
+    mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or 0.5
+    cpu_cost = read_learned_cost("cpu_cores") or agent.subagent_cpu_cost_cores or 1.0
+    pool_size = cfg.session.pool_size
+    mem_term = math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
+    cpu_count = os.cpu_count() or 1
+    cpu_term = math.floor((cpu_count * buf) / cpu_cost)
+    return mem_term, cpu_term
+
+
+def host_terms_subagent_cap(cfg: KiroCrewConfig, *, resident_agents: int = 0) -> int:
+    """What this host's MEMORY and CPU alone size the subagent cap at.
+
+    :func:`compute_max_subagents` without the ``subagent_auto_max`` clamp, and
+    without the sizing log line. Two readings of one host, sharing
+    :func:`_host_terms`; neither calls the other. Two callers need exactly that:
+
+    * ``compute_max_subagents``, which applies the clamp and logs;
+    * the adaptive controller's growth ceiling, which must NOT apply it. The
+      clamp stands in for the LLM provider's concurrency limit and is documented
+      as auto-sizing only -- ``subagent_auto_max``'s own help says "only applies
+      when max_subagents=0 ... Ignored when max_subagents is set explicitly",
+      and :func:`resolve_max_subagents` honours that. Applying it to the climb
+      would put a hard 32 under an explicit ``max_subagents=64``, so the user's
+      pin would be unreachable by construction on a host large enough for it --
+      the exact failure the climb exists to remove.
+
+    Floored at ``_LEGACY_DEFAULT_MAX`` when the host IS measured. ``0`` when
+    memory cannot be read -- "not measured", NOT the floor. The two callers
+    want different answers to an unreadable host: ``compute_max_subagents``
+    must still produce a cap, so it fails open to the floor; the controller
+    reads this figure only as a bound on how high the cap may climb, and the
+    floor (3) sits BELOW the fresh-start cap (``adaptive_initial``, 4), so
+    handing it the floor would deny every increase and hold the cap at 4 for
+    the life of the process.
+    ``Sample.host_cap`` already defines 0 as "leave the user's ceiling as the
+    only bound", and that is the only safe reading of a probe that failed.
+    The memory term is ADDITIONAL slots in currently available memory; the CPU
+    term is TOTAL capacity. Add already-resident managed agents to memory only,
+    using occupancy captured with this observation. Queued or unstarted work
+    has consumed no process memory and must not buy capacity. Cache the resulting
+    total, never add newer occupancy to an older memory observation.
+    """
+    terms = _host_terms(cfg)
+    if terms is None:
+        return 0
+    mem_term, cpu_term = terms
+    return max(_LEGACY_DEFAULT_MAX, min(mem_term + max(0, resident_agents), cpu_term))
+
+
+def _startup_memory_reserve_gb(
+    agents: list[SubagentInfo], *, running_count: int, cost_gb: float
+) -> float:
+    """Memory promised to cold dedicated starts but not observed in RSS yet.
+
+    Include the next start and claims awaiting registration. Queued and terminal
+    rows promise nothing; a yielded parent still owns its process. Confirmed
+    shared sessions do not launch another process and incur no dedicated-start
+    reservation. Until sharing is known, reserve the configured process cost.
+    """
+    live = [info for info in agents if not info.done and not info.queued]
+    dedicated = [info for info in live if not info._session_sharing]
+    expected = max([0.0, cost_gb, *(info.peak_rss_gb for info in dedicated)])
+    unregistered = max(0, running_count - sum(not info._slot_released for info in live))
+    return expected * (1 + unregistered) + sum(
+        max(0.0, expected - info.last_rss_gb) for info in dedicated
+    )
 
 
 def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
@@ -1316,6 +1491,7 @@ class SubagentInfo:
     # Batch/wave identity: set when this spawn is part of a multi-task wave
     # (spawn_run tasks=[...]) so scale plumbing can digest completions and
     # emit batch lifecycle events. Empty for standalone spawns.
+    delegation: dict[str, str] = field(default_factory=dict)
     batch_id: str = ""
     batch_total: int = 0
     # True when this member's per-agent injection was HELD for the wave digest
@@ -1685,6 +1861,193 @@ class SpawnApprovalCallback(Protocol):
 _MAX_COMPLETION_WAITERS = 64
 
 
+# ── Delivery routing state: enumerated from the PRODUCING side ────────────────
+#
+# Every ``SubagentInfo`` attribute that the four modules owning terminal-outcome
+# routing WRITE -- ``subagent_manager/terminal.py``, ``subagent_manager/waves.py``,
+# ``subagent_manager/cancellation.py`` and ``slack/gateway.py`` -- classified by what it
+# says about whether the outcome has reached the parent.
+#
+# The list exists because "has this run's outcome reached its parent" has more than one
+# representation, and reading only the obvious one was wrong four separate times. A
+# parent-end teardown has to suppress the delivery of a run whose parent is gone, so a
+# representation it does not know about is a delivery that lands in a conversation that
+# ended -- and the injector CREATES a session when none is live, so that delivery rebuilds
+# the conversation the teardown just took down.
+#
+# ``PARKS_WHEN_SET``  -- truthy means the outcome is parked somewhere and has not landed.
+# ``PARKS_WHEN_UNSET`` -- falsy means it has not landed; truthy means it has.
+# ``NOT_DELIVERY_STATE`` -- written by those modules but says nothing about delivery.
+#
+# ``test_the_delivery_parked_states_are_enumerated_from_the_producers`` recomputes the
+# write set from those modules' AST and fails when it stops matching this table, so a new
+# field written by any of them cannot be added without being classified here.
+PARKS_WHEN_SET = "parks-when-set"
+PARKS_WHEN_UNSET = "parks-when-unset"
+NOT_DELIVERY_STATE = "not-delivery-state"
+
+DELIVERY_ROUTING_FIELDS: "dict[str, str]" = {
+    # The gateway parked this member's per-agent injection for the wave digest. Two
+    # fields on purpose: the flag is the restart-safety contract the run loop reads, the
+    # timestamp is the hold-deadline sweep's only input, and the sweep must not mutate the
+    # flag. Either being set means the result is not in the parent's context.
+    "_digest_held": PARKS_WHEN_SET,
+    "_digest_held_at": PARKS_WHEN_SET,
+    # The held SIBLINGS whose delivery tombstones this member owes once its digest is
+    # handed off. Non-empty means other runs' deliveries are parked ON this record.
+    "_digest_settle_ids": PARKS_WHEN_SET,
+    # The announce sits in the parent's slot queue because the slot was busy. Delivery is
+    # not consumption: a turn has to drain it.
+    "_delivery_queued": PARKS_WHEN_SET,
+    # Set the moment ``_on_done`` RETURNS. Its truth is the only positive evidence the
+    # outcome reached the parent -- which is why it reads the other way round, and why
+    # reading it ALONE was wrong: two routes above return having merely parked the work.
+    "_reported_to_parent": PARKS_WHEN_UNSET,
+    # A synthetic record ``force_digest_flush`` builds to release an expired hold. It is a
+    # CARRIER of a future injection rather than a member with a parked outcome, and it
+    # carries a fresh id, so an id-keyed gate can never recognise it -- which is why the
+    # wave hold is disarmed at its source (``_expired_digest_holds``) instead.
+    "_digest_flush_only": NOT_DELIVERY_STATE,
+    # Run bookkeeping these modules also write. None of them says where an outcome is.
+    "_finalized": NOT_DELIVERY_STATE,
+    "_reap_started": NOT_DELIVERY_STATE,
+    "_recovering": NOT_DELIVERY_STATE,
+    "_slot_released": NOT_DELIVERY_STATE,
+    "done": NOT_DELIVERY_STATE,
+    "elapsed": NOT_DELIVERY_STATE,
+    "error": NOT_DELIVERY_STATE,
+    "reaped": NOT_DELIVERY_STATE,
+    "result": NOT_DELIVERY_STATE,
+    "streaming_text": NOT_DELIVERY_STATE,
+    "user_stopped": NOT_DELIVERY_STATE,
+}
+
+# The modules the table is derived from. Named here so the test and the table cannot
+# disagree about which producers were read.
+DELIVERY_ROUTING_MODULES: tuple[str, ...] = (
+    "subagent_manager/terminal.py",
+    "subagent_manager/waves.py",
+    "subagent_manager/cancellation.py",
+    "slack/gateway.py",
+)
+
+
+def delivery_is_parked(info: "SubagentInfo") -> bool:
+    """True when this run's outcome has not reached its parent.
+
+    Reads :data:`DELIVERY_ROUTING_FIELDS` rather than naming fields inline, so the
+    predicate and the classification cannot drift -- the drift is what let a parked
+    representation through on four separate rounds.
+
+    The union is deliberately conservative. Answering True for a run whose delivery has in
+    fact landed costs nothing: the gate only SKIPS an injection, and a run that already
+    delivered does not inject again. Answering False for a parked one rebuilds a retired
+    conversation.
+    """
+    for field_name, rule in DELIVERY_ROUTING_FIELDS.items():
+        value = getattr(info, field_name, None)
+        if rule == PARKS_WHEN_SET and value:
+            return True
+        if rule == PARKS_WHEN_UNSET and not value:
+            return True
+    return False
+
+
+def _audit_ids(ids: "Iterable[str]", cap: int = 20) -> str:
+    """Render run ids for the parent-end audit line, bounded.
+
+    Declared on the facade rather than in the component that logs, because a component
+    method's module-level names resolve against THIS module's globals at runtime -- a
+    helper defined beside its caller raises ``NameError`` there.
+
+    A wave can carry more ids than one log line should hold, and a silently truncated list
+    is worse than a count: it reads as the whole set.
+    """
+    listed = list(ids)
+    if not listed:
+        return "none"
+    if len(listed) <= cap:
+        return ",".join(listed)
+    return ",".join(listed[:cap]) + f",+{len(listed) - cap}-more"
+
+
+# How long the delivery gate remembers a teardown-cancelled run id when nothing has
+# explicitly discarded it.
+#
+# A BACKSTOP, not the primary rule. The primary rule is that the gate keeps an id until
+# that run's delivery has actually been suppressed, which is what ``_report_terminal_impl``
+# discards on -- so the ordinary case never depends on this number. It exists for a marked
+# run that never reaches a terminal at all.
+#
+# A day rather than an hour, because an approval-parked run is deliberately NOT cancelled
+# (the approval is a person's decision to make) and a person can take far longer than an
+# hour to answer. An hour let a later teardown prune the mark while such a run was still
+# waiting, and its completion then injected into whatever the key served by then.
+_TEARDOWN_GATE_TTL_SECS = 86400.0
+
+
+class _AgingIdSet:
+    """A membership set of run ids that forgets an entry once it is OLD, never when full.
+
+    Age since MARKING is the only eviction rule, and the reason is that the alternative
+    is unsafe. A CAPACITY rule evicts by arrival order regardless of whether the run
+    could still announce, so a single parent with more queued children than the capacity
+    would evict its own earliest ids while its reports were still being spawned -- and
+    those reports then walk through the gate and rebuild the conversation the teardown
+    took down. An age rule cannot do that: the TTL is chosen to exceed every window in
+    which a marked run has an announce left.
+
+    Age is also why the lifetime is not tied to the run's ``_agents`` record. That record
+    is popped while a run is still tearing down (a dashboard "clear completed" does it),
+    so discarding on the pop would disarm the gate while the run can still announce --
+    the same reason ``_teardown_gates`` outlives those records.
+
+    Not an LRU: a read must not extend an entry's life, or a hot gate check on one id
+    would keep others alive past the point the TTL is reasoned about.
+    """
+
+    __slots__ = ("_marked_at", "_ttl")
+
+    def __init__(self, ttl_secs: float) -> None:
+        self._marked_at: dict[str, float] = {}
+        self._ttl = max(1.0, float(ttl_secs))
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._ttl
+        if not self._marked_at:
+            return
+        # Insertion-ordered, and marking times are monotonic, so the expired entries are
+        # a PREFIX: stop at the first live one instead of scanning the whole dict.
+        for agent_id, marked_at in list(self._marked_at.items()):
+            if marked_at > cutoff:
+                break
+            del self._marked_at[agent_id]
+
+    def add(self, agent_id: str) -> None:
+        if not agent_id:
+            return
+        now = time.monotonic()
+        self._prune(now)
+        self._marked_at.pop(agent_id, None)
+        self._marked_at[agent_id] = now
+
+    def update(self, agent_ids: "Iterable[str]") -> None:
+        for agent_id in agent_ids:
+            self.add(agent_id)
+
+    def discard(self, agent_id: str) -> None:
+        self._marked_at.pop(agent_id, None)
+
+    def __contains__(self, agent_id: object) -> bool:
+        return agent_id in self._marked_at
+
+    def __iter__(self) -> "Iterator[str]":
+        return iter(tuple(self._marked_at))
+
+    def __len__(self) -> int:
+        return len(self._marked_at)
+
+
 class SubagentManager:
     """Spawn and track isolated background agents."""
 
@@ -1733,6 +2096,14 @@ class SubagentManager:
         defer_queue_dispatch: bool = False,
     ):
         self._sessions = sessions
+        # Run ids a parent-end teardown stopped. Keyed by ID rather than carried
+        # only on the run record because a QUEUED run has no ``_agents`` row at
+        # all: ``_report_queued_stop`` builds a fresh ``SubagentInfo`` for its
+        # synthetic terminal, which would default the flag to False and walk
+        # straight through the delivery gate. The gate reads this set, so live
+        # runs, queued runs and follow-up synthetics are all covered by the one
+        # place the teardown writes.
+        self._teardown_cancelled_ids = _AgingIdSet(_TEARDOWN_GATE_TTL_SECS)
         self._memory_mode_for_session = memory_mode_for_session
         self._ctx_builder = ctx_builder
         self._on_done = on_done
@@ -1872,14 +2243,17 @@ class SubagentManager:
             self._result_ttl_secs = int(KiroCrewConfig.load().agent.subagent_result_ttl_secs)
         except Exception:
             self._result_ttl_secs = 3600
-        # Spawn stagger interval — bounds the cold-start ramp rate so a high cap
-        # never bursts (dynamic-subagent-sizing.md §5.3).
+        # Spawn stagger interval — serializes cold starts so a high cap fills as
+        # a ramp rather than a burst (dynamic-subagent-sizing.md §5.3). It is a
+        # smoothing interval, not the memory guard: every spawn still clears
+        # ``spawn_min_memory_gb`` and the host budget, and the adaptive
+        # controller cuts the cap on real pressure.
         try:
             self._spawn_stagger_secs = max(
                 0.0, float(KiroCrewConfig.load().agent.subagent_spawn_stagger_secs)
             )
         except Exception:
-            self._spawn_stagger_secs = 2.0
+            self._spawn_stagger_secs = 0.25
 
         # Every limit captured above is a copy of config.json. The live watcher
         # pushes a rewrite at this object through ``reconfigure`` so a write from
@@ -2672,6 +3046,7 @@ class SubagentManager:
         *,
         crew: str = "",
         target_member: str | None = None,
+        delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
@@ -2707,6 +3082,7 @@ class SubagentManager:
             _child_registration=_child_registration,
             crew=crew,
             target_member=target_member,
+            delegation=delegation,
             _execution_context=_execution_context,
         )
         assert not isinstance(result, PreparedSpawn)
@@ -3394,8 +3770,8 @@ class SubagentManager:
                 info._cancel_retry_used = True
         task.cancel()
 
-    def _unqueue(self, agent_id: str) -> dict | None:
-        return self._cancellation._unqueue_impl(agent_id)
+    def _unqueue(self, agent_id: str, **kwargs: Any) -> dict | None:
+        return self._cancellation._unqueue_impl(agent_id, **kwargs)
 
     def _report_queued_stop(self, params: dict) -> None:
         return self._cancellation._report_queued_stop_impl(params)
@@ -3405,6 +3781,36 @@ class SubagentManager:
 
     async def cancel_for_parent(self, parent_session_key: str) -> tuple[int, int]:
         return await self._cancellation.cancel_for_parent_impl(parent_session_key)
+
+    def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
+        """Run ids under *parent_session_key*, taken with no await. Parent-end use.
+
+        Marks them as teardown-cancelled in the same synchronous step. The mark is what
+        stops a terminal report from injecting into the retired parent, and a run can
+        finish on its own during the provider-teardown awaits that follow — so marking
+        later, when the cancel actually runs, is too late for exactly the runs whose
+        report is already on its way.
+        """
+        return self._cancellation.snapshot_teardown_children_impl(parent_session_key)
+
+    async def cancel_for_teardown(
+        self,
+        agent_ids: "Sequence[str]",
+        *,
+        parent_session_key: str,
+        verb: str = "",
+    ) -> int:
+        """Stop the snapshotted runs without reporting them to a retired parent.
+
+        ``parent_session_key`` is carried so the teardown's one audit line can name the
+        conversation whose runs these were; the ids themselves come from the snapshot,
+        which is the only reading of them that cannot drift.
+        """
+        return await self._cancellation.cancel_for_teardown_impl(
+            agent_ids,
+            parent_session_key=parent_session_key,
+            verb=verb,
+        )
 
     async def cancel_all(self) -> None:
         return await self._cancellation.cancel_all_impl()

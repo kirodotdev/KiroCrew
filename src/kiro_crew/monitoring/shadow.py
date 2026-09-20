@@ -11,6 +11,7 @@ from kiro_crew.monitoring.decision import (
     decide_monitor,
     monitor_budget_reason,
     monitor_stall_reason,
+    stamp_monitor_alerted,
     terminal_decision_for_outcome,
 )
 
@@ -123,11 +124,11 @@ async def run_shadow_probe(
         staged.last_fingerprint = observation.fingerprint
         staged.last_observed_at = now
     if decision is MonitorDecision.WAKE_ACTIONABLE:
-        # Record that a wake was DECIDED for this fingerprint, next to the
-        # persist. The shadow path deliberately does not deliver, but the field
-        # records the decision, not the delivery, so the re-alert period is
-        # measured from here exactly as on the delivering path.
-        staged.coalesce_alerted[observation.fingerprint] = now
+        # Record that a wake was DECIDED for the conditions it delivers, next to
+        # the persist. The shadow path deliberately does not deliver, but the
+        # field records the decision, not the delivery, so the re-alert interval
+        # is measured from here exactly as on the delivering path.
+        stamp_monitor_alerted(staged, now=now)
     if decision in {
         MonitorDecision.STOP_SUCCESS,
         MonitorDecision.STOP_BLOCKED,

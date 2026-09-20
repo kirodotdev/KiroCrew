@@ -735,7 +735,11 @@ class TestSessionCleanupOnCancellation:
         assert tr._sessions.cancel_current.call_count == 3
         assert tr._sessions.reset.call_count == 3
         for key in keys:
-            tr._sessions.reset.assert_any_await(key)
+            # ``ends_conversation``: cancel cleanup ends every step conversation of the
+            # run, so each step's sub-agent runs end with it. Asserting the whole call
+            # keeps a later edit from turning this back into a process recycle, which
+            # would leave a cancelled run's children going.
+            tr._sessions.reset.assert_any_await(key, ends_conversation=True)
 
     @pytest.mark.asyncio
     async def test_cleanup_ignores_other_runs(self):

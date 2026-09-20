@@ -31,6 +31,24 @@ kirocrew eval --all
 | `lesson_application` | 2 | 2 | lesson_application | ~30s |
 | `context_accumulation` | 3 | 3 | context_accumulation, memory_recall | ~2 min |
 
+## Delegation decisions
+
+`kirocrew eval subagent_policy` exercises eighteen hypothetical decisions with
+the existing read-only harness. It covers direct work, parent plus one child,
+independent fan-out, dependencies, legitimate and invented solo reasons,
+bounded parent work, terminal failures, cancellation, explicit user choices,
+blocking-tool limits and conflicting writers. No spawn tools are enabled by
+this scenario. Its response assertions test **planned decisions**, not actual
+child execution, task completion, or a speed/cost improvement.
+
+For a before/after comparison, use the same case text, provider/model and tool
+availability with each revision's orchestration prompt, repeat key cases, and
+retain raw responses. Record actual and planned agent counts separately, parent
+work, wait reasons, wall latency and provider-reported usage. Missing token
+counts are unknown. Pair the decision traces with deterministic solo-gate,
+busy-parent delivery and delayed-startup-memory tests; enum acceptance alone
+does not prove meaningful delegation.
+
 ## Output
 
 Results print to stdout and save to `eval_results/`:

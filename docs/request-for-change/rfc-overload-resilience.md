@@ -103,7 +103,7 @@ compose multiplicatively with the row above them.
 | Limiter (symbol) | Scope | Default | On exhaustion | Multiplies? |
 |---|---|---|---|---|
 | `SubagentManager._max_concurrent` (`resolve_max_subagents`) | active subagent runs, gateway-wide | auto (`compute_max_subagents`, floor 3) | queue in memory | base |
-| `subagent_spawn_stagger_secs` | subagent starts | 2.0s | queue | — |
+| `subagent_spawn_stagger_secs` | subagent starts | 0.25s | queue | — |
 | `check_memory_available` / `cached_admission_check` | new subagent spawns | `resource_critical_gb` 2.0 | REFUSE | — |
 | `_COLD_START_MAX_CONCURRENT` (`_ColdStartAdmission`) | runtime spawn+`initialize`, per event loop | 2 | wait | — (does not cover `session/new` on an existing runtime) |
 | `_SESSION_NEW_TIMEOUT` / `session_start_timeout_secs` | one `session/new` | 90s | `AcpRequestTimeout` → dedicated-process fallback | amplifies ×(1 runtime + N stubs) |
@@ -402,7 +402,7 @@ feed the controller.
 |---|---|---|
 | initial / floor / ceiling | 4 / 1 / 8 | `min(user_max, 4)` / 1 / `user_max` |
 | decrease | ×0.5 floor 1 on **corroborated** pressure (host signal + ≥2 distinct keys slow/failing, or ENOMEM/EAGAIN) | ×0.5 floor 1 |
-| increase | +1 after ≥20 successful inits AND ≥30s without pressure AND demand at the limit | +1 after ≥`increase_window_secs` (60) clean, demand at limit |
+| increase | +1 after ≥20 successful inits AND ≥30s without pressure AND demand at the limit | ×2 per 5s clean window until this process meets corroborated pressure, then +1 per clean window; the success bar is `min(increase_successes, cap)` |
 | cooldown after decrease | 30s; pre-decrease successes discarded | 60s |
 | hysteresis | decrease at lag ≥ 250ms or mem ≤ `resource_critical_gb`; increase only below 100ms and ≥ `resource_pressure_gb` | same thresholds |
 | pause | mem ≤ critical for 2 samples, or dependency (gatewayd/provider) down | stop admitting; keep running work |
@@ -418,6 +418,17 @@ cap.
 
 Thresholds above are starting values; the in-repo fault-injection harness (§11,
 wave E) fixes them and the spec records the measured numbers.
+
+The `ExecutionCap` increase rule and the `subagent_spawn_stagger_secs` default in
+the tables above are the **recorded defaults**, replacing the `+1` per 60s clean
+window and the `2.0s` stagger this RFC first proposed. Both were changed because
+the original pair could not reach a user's configured ceiling: a ×0.5 decrease
+fires on one lag spike while a flat 20-success bar at cap 1 needs twenty serial
+runs to earn cap 2, and a 2.0s stagger takes over two minutes to fill 64 slots
+even once the cap allows them. The climb is bounded by what the host's memory and
+CPU size the cap at, so a faster rule cannot exceed the machine. Doubling is
+one-way per process: the first corroborated pressure or pause retires it and the
+controller stays in congestion avoidance for that process lifetime.
 
 ## 6. Fairness
 

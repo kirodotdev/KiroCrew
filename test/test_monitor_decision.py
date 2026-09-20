@@ -20,17 +20,21 @@ from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_STALL_MIN_SECS,
     DEFAULT_MONITOR_STALL_TICKS,
     MIN_MONITOR_CADENCE_SECS,
+    MONITOR_REVISION_KEY_SPACE,
     MONITOR_STOP_APPROVAL_STALL,
     MONITOR_STOP_PROVIDER_ERROR_BUDGET,
     MONITOR_STOP_RUNTIME_BUDGET,
     MONITOR_STOP_VERDICT_STALL,
     MonitorBudgets,
+    MonitorCondition,
     MonitorDecision,
     MonitorObservation,
     MonitorObservationStatus,
+    MonitorResetsOn,
     MonitorState,
     MonitorVerdict,
     ProviderErrorKind,
+    monitor_condition_dedupe_key,
     monitor_state_from_dict,
     monitor_state_to_dict,
 )
@@ -72,8 +76,10 @@ def _state(**changes: object) -> MonitorState:
                 last_wake_fingerprint="failure-b",
                 # A real wake records the alert time, so the within-period
                 # suppression is asserted against state the caller produces:
-                # now=1100 sits well inside the re-alert period from 1000.
-                coalesce_alerted={"failure-b": 1_000.0},
+                # now=1100 sits well inside the re-alert period from 1000. The
+                # key carries the revision key space, which is where a subject
+                # that names no conditions of its own is remembered.
+                coalesce_alerted={f"{MONITOR_REVISION_KEY_SPACE}failure-b": 1_000.0},
             ),
             MonitorDecision.NO_CHANGE,
         ),
@@ -496,7 +502,9 @@ class TestAnUnattemptedProbeNeverPredictsRetirement:
 
 
 def _suppressed_red(
-    fingerprint: str = "red-1", reason: str = "checks_failed"
+    fingerprint: str = "red-1",
+    reason: str = "checks_failed",
+    conditions: tuple[MonitorCondition, ...] = (),
 ) -> MonitorObservation:
     """An actionable subject already alerted, so every tick decides NO_CHANGE."""
     return MonitorObservation(
@@ -504,6 +512,7 @@ def _suppressed_red(
         MonitorObservationStatus.ACTIONABLE,
         reason_code=reason,
         summary="One check is failing.",
+        conditions=conditions,
     )
 
 
@@ -511,7 +520,7 @@ def _suppressed_red_state(**changes: object) -> MonitorState:
     return _state(
         last_fingerprint="red-1",
         last_wake_fingerprint="red-1",
-        coalesce_alerted={"red-1": 1_000.0},
+        coalesce_alerted={f"{MONITOR_REVISION_KEY_SPACE}red-1": 1_000.0},
         **changes,
     )
 
@@ -708,9 +717,25 @@ class TestTheStallStreak:
 
         ``head_changed`` is inside the digest, so a new commit breaks the streak
         even when every other fact about the subject reads the same.
+
+        The subject is carried by a ``NEVER`` condition deliberately. A new head
+        clears the revision-scoped half of the dedupe memory, so a
+        revision-scoped condition would legitimately wake on this tick and the
+        DECISION would move alongside the digest, leaving nothing attributable to
+        the digest alone. A review thread survives a force-push, so its mask
+        survives it too and the digest is the only thing that notices the commit.
         """
-        state = _suppressed_red_state()
-        self._run(state, DEFAULT_MONITOR_STALL_TICKS - 1)
+        threads = MonitorCondition(key="unresolved_threads", resets_on=MonitorResetsOn.NEVER)
+        state = _state(
+            last_fingerprint="red-1",
+            last_wake_fingerprint="red-1",
+            coalesce_alerted={monitor_condition_dedupe_key(threads): 1_000.0},
+        )
+        held = _suppressed_red(conditions=(threads,))
+        for index in range(DEFAULT_MONITOR_STALL_TICKS - 1):
+            assert decide_monitor(state, held, now=_tick_at(state, index)).decision is (
+                MonitorDecision.NO_CHANGE
+            )
 
         pushed = MonitorObservation(
             "red-1",
@@ -718,8 +743,9 @@ class TestTheStallStreak:
             reason_code="checks_failed",
             summary="One check is failing.",
             head_changed=True,
+            conditions=(threads,),
         )
-        # Dedupe still suppresses the wake -- the fingerprint is inside its
+        # Dedupe still suppresses the wake -- the sticky condition is inside its
         # re-alert interval -- so the DECISION is unchanged and the digest is the
         # only thing that notices the new commit.
         assert decide_monitor(state, pushed, now=4_400.0).decision is MonitorDecision.NO_CHANGE
@@ -737,7 +763,7 @@ class TestTheStallStreak:
             MonitorDecision.WAKE_ACTIONABLE
         )
         # The caller stamps the alert time next to its own persist.
-        state.coalesce_alerted["red-1"] = 0.0
+        state.coalesce_alerted[f"{MONITOR_REVISION_KEY_SPACE}red-1"] = 0.0
 
         held = _suppressed_red("red-2")
         for index in range(1, DEFAULT_MONITOR_STALL_TICKS + 3):

@@ -1240,6 +1240,7 @@ async def test_private_chat_control_cannot_create_or_relabel_unbound_slots(env, 
         headers={"X-Session-Key": "dashboard:alice"},
     )
     req["internal_auth"] = True
+    req["peer_verified"] = True
     response = await private_chat_route_refusal(req)
     assert response.status == 403
     assert json.loads(response.text)["code"] == "member_scope_denied"
@@ -1265,6 +1266,7 @@ async def test_private_followup_card_can_only_target_its_own_bound_tab(env):
             headers={"X-Session-Key": "dashboard:alice"},
         )
         req["internal_auth"] = True
+        req["peer_verified"] = True
         req.match_info["slot"] = slot
         response = await private_chat_route_refusal(req)
         if slot == "alice":
@@ -1341,8 +1343,11 @@ async def test_internal_chat_middleware_refuses_member_before_slot_creation(env)
         internal_secret="test-member-secret",
     )
     response = await middleware(req, handler)
-    assert response.status == 403
-    assert json.loads(response.text)["code"] == "member_scope_denied"
+    # The loopback TCP caller holds the secret and declares a session key it
+    # cannot attest, so the identity refusal lands ahead of the member-scope
+    # decision. Either way the chat control never runs.
+    assert response.status == 409
+    assert json.loads(response.text)["code"] == "member_identity_unavailable"
     handler.assert_not_awaited()
 
 
