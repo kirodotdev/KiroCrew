@@ -163,13 +163,21 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
         for name in stores:
             for index in range(4):
                 tasks.extend(
-                    asyncio.create_task(operation(name, "episode", index)) for _ in range(2)
+                    asyncio.create_task(
+                        operation(name, "episode", index), name=f"{name}/episode/{index}"
+                    )
+                    for _ in range(2)
                 )
-                tasks.append(asyncio.create_task(operation(name, "fact", index)))
+                tasks.append(
+                    asyncio.create_task(operation(name, "fact", index), name=f"{name}/fact/{index}")
+                )
             tasks.extend(
-                asyncio.create_task(operation(name, "recall", index)) for index in range(2)
+                asyncio.create_task(operation(name, "recall", index), name=f"{name}/recall/{index}")
+                for index in range(2)
             )
-            tasks.append(asyncio.create_task(operation(name, "backfill", 0)))
+            tasks.append(
+                asyncio.create_task(operation(name, "backfill", 0), name=f"{name}/backfill/0")
+            )
 
         async def wait_for_queue():
             while backend._jobs.qsize() == 0:
@@ -178,7 +186,43 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
         await asyncio.wait_for(wait_for_queue(), 5)
         stats["queue_peak"] = max(stats["queue_peak"], backend._jobs.qsize())
         release.set()
-        await asyncio.wait_for(asyncio.gather(*tasks), 45)
+        # Diagnostics only. This budget expires on a loaded shard from time to
+        # time and the bare TimeoutError says nothing about WHY, so the failure is
+        # unactionable: you cannot tell a store that never finished from a queue
+        # that never drained from a worker that was starved. The report below is
+        # built from state this test already keeps, the exception is re-raised
+        # unchanged, and nothing here alters the workload, the budget, the task
+        # ordering or any assertion -- a green run takes this path never.
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks), 45)
+        except TimeoutError:
+            # `wait_for` cancels the gather before it raises, so nothing is left
+            # "not done" by the time this runs -- a pending count here is always
+            # zero and says nothing. The tasks the budget actually caught are the
+            # CANCELLED ones; the rest finished in time.
+            caught = [t for t in tasks if t.cancelled()]
+            kinds = Counter(str(t.get_name()).split("/")[1] for t in caught)
+            stores_waiting = Counter(str(t.get_name()).split("/")[0] for t in caught)
+            print(
+                "MIXED_LOAD_TIMEOUT "
+                + json.dumps(
+                    {
+                        "concurrency": concurrency,
+                        "elapsed_s": round(time.monotonic() - started, 1),
+                        "tasks_total": len(tasks),
+                        "tasks_cancelled_by_budget": len(caught),
+                        "cancelled_by_kind": dict(kinds),
+                        "cancelled_stores": len(stores_waiting),
+                        "embed_queue_depth": backend._jobs.qsize(),
+                        "embed_calls": sum(calls.values()),
+                        "stats": dict(stats),
+                        "latencies_recorded": len(latencies),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            raise
         await blocker
         gateway = object.__new__(GatewayOrchestrator)
         gateway._memory_repair_stop = threading.Event()
