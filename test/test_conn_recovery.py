@@ -124,6 +124,9 @@ async def test_queue_dispatch_preserves_recovery_provenance(
         slot,
         _CONN_RECOVER_MSG,
         **_expected_kwargs,
+        # A recovery replay is not a clicked label, so `$skill` expansion stays enabled.
+        _model_authored=False,
+        _action_context=None,
     )
     assert slot.messages[-1]["role"] == expected_role
 
@@ -235,6 +238,8 @@ async def test_dispatch_classifies_the_payload_not_the_recovery(
         _synthetic_recovery_turn=True,
         _directive_user_origin=False,
         _directive_channel_origin=False,
+        _model_authored=False,
+        _action_context=None,
     )
     # Provenance is unchanged by the split: either payload still renders as an
     # inject row, which is what stops the duplicate user bubble.

@@ -22,7 +22,10 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
+# Both, deliberately: the declarations live in the leaf module, and scanning the dashboard
+# module as well keeps a partial move -- one prefix left behind -- inside the guard's reach.
 _STATE = _ROOT / "src/kiro_crew/dashboard/state.py"
+_CONSTANTS = _ROOT / "src/kiro_crew/constants.py"
 _CARD = _ROOT / "website/src/pages/chat/RecoveryCard.tsx"
 _EN = _ROOT / "website/src/i18n/locales/en.json"
 _DENIED_RULES = _ROOT / "src/kiro_crew/security/denied_rules.py"
@@ -47,11 +50,15 @@ def _code_only(src: str) -> str:
 
 
 def _state_prefixes() -> dict[str, str]:
-    found = {
-        m.group("name"): m.group("value")
-        for m in _PREFIX_DECL.finditer(_STATE.read_text(encoding="utf-8"))
-    }
-    assert found, "no *_RECOVERY_PREFIX constants found in state.py -- regex drift"
+    found: dict[str, str] = {}
+    for path in (_CONSTANTS, _STATE):
+        found.update(
+            {
+                m.group("name"): m.group("value")
+                for m in _PREFIX_DECL.finditer(path.read_text(encoding="utf-8"))
+            }
+        )
+    assert found, "no *_RECOVERY_PREFIX constants found in constants.py or state.py -- regex drift"
     return found
 
 
