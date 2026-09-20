@@ -60,6 +60,262 @@ class TestNormalizeMcpServerKeys:
         assert cfg["tools"] == ["@builder-mcp", "@playwright-mcp"]
         assert cfg["allowedTools"] == ["@playwright-mcp"]
 
+    def test_rewrites_the_per_tool_spelling_carrying_the_suffix_verbatim(self):
+        """``@oldkey/tool`` moves with ``@oldkey``; the suffix is carried verbatim.
+
+        A per-tool ref left on the old key names a server this pass just
+        removed, so the final reconcile reads it as dangling and drops it from
+        BOTH lists -- and a dropped ``tools`` ref is never re-added, while a
+        dropped ``allowedTools`` grant is a lost per-tool approval. The server
+        key itself contains a slash (``npm:@scope/pkg``), so a rewrite that
+        re-derives the suffix by splitting the ref takes the wrong component:
+        only a prefix match that carries the remainder verbatim survives it.
+        """
+        cfg = {
+            "mcpServers": {"npm:@scope/pkg": {"command": "x"}},
+            "tools": [
+                "@npm:@scope/pkg",
+                "@npm:@scope/pkg/tool_a",
+                # Control (over-application): shares the prefix without the
+                # ``/`` boundary, so it is another server's ref and must not
+                # be rewritten.
+                "@npm:@scope/pkgx",
+            ],
+            "allowedTools": ["@npm:@scope/pkg/tool_a", "@npm:@scope/pkg/tool_b"],
+        }
+        _normalize_mcp_server_keys(cfg)
+        assert cfg["mcpServers"]["scope-pkg"] == {"command": "x"}
+        assert cfg["tools"] == ["@scope-pkg", "@scope-pkg/tool_a", "@npm:@scope/pkgx"]
+        assert cfg["allowedTools"] == ["@scope-pkg/tool_a", "@scope-pkg/tool_b"]
+
+    def test_allowed_tools_keeps_the_narrow_runtime_reading_when_claimable(self):
+        ambiguous = {
+            "mcpServers": {
+                "a": {"command": "ancestor"},
+                "a/b": {"command": "descendant"},
+            },
+            "tools": ["@a/b"],
+            "allowedTools": ["@a/b"],
+        }
+        _normalize_mcp_server_keys(ambiguous)
+        assert ambiguous["mcpServers"] == {
+            "a": {"command": "ancestor"},
+            "a-b": {"command": "descendant"},
+        }
+        assert ambiguous["tools"] == ["@a-b"]
+        assert ambiguous["allowedTools"] == ["@a/b"]
+        assert "@a-b" not in ambiguous["allowedTools"]
+
+        unambiguous = {
+            "mcpServers": {"a/b": {"command": "descendant"}},
+            "allowedTools": ["@a/b"],
+        }
+        _normalize_mcp_server_keys(unambiguous)
+        assert unambiguous["mcpServers"] == {"a-b": {"command": "descendant"}}
+        assert unambiguous["allowedTools"] == ["@a-b"]
+
+        deeper = {
+            "mcpServers": {
+                "a": {"command": "ancestor"},
+                "a/b/c": {"command": "descendant"},
+            },
+            "allowedTools": ["@a/b/c"],
+        }
+        _normalize_mcp_server_keys(deeper)
+        assert deeper["mcpServers"] == {
+            "a": {"command": "ancestor"},
+            "a-b-c": {"command": "descendant"},
+        }
+        assert deeper["allowedTools"] == ["@a/b/c"]
+
+    def test_an_ancestor_key_does_not_steal_a_descendant_keys_ref(self):
+        """Overlapping slash keys: the longer key's bare ref is not a per-tool ref.
+
+        With ``a/b`` and ``a/b/c`` both present, ``@a/b/c`` is ambiguous text:
+        the bare ref of server ``a/b/c``, or tool ``c`` on server ``a/b``. An
+        exact server-key match is the stronger evidence, so the longer key must
+        claim it -- processed ancestor-first, ``a/b``'s per-tool rewrite would
+        steal it, stranding ``a-b-c`` in the map with no ref (``tools`` is a
+        closed allowlist, so the server would mount and expose nothing) and
+        leaving a grant under ``a-b``'s namespace instead.
+        """
+        cfg = {
+            "mcpServers": {
+                # Ancestor inserted FIRST, so insertion order alone would
+                # process it first; the pass must order by length instead.
+                "a/b": {"command": "x"},
+                "a/b/c": {"command": "y"},
+            },
+            "tools": ["@a/b", "@a/b/tool", "@a/b/c", "@a/b/c/tool"],
+            "allowedTools": ["@a/b/c"],
+        }
+        _normalize_mcp_server_keys(cfg)
+        assert cfg["mcpServers"]["a-b"] == {"command": "x"}
+        assert cfg["mcpServers"]["a-b-c"] == {"command": "y"}
+        assert cfg["tools"] == ["@a-b", "@a-b/tool", "@a-b-c", "@a-b-c/tool"]
+        assert cfg["allowedTools"] == ["@a-b-c"]
+
+    def test_an_ancestor_key_cannot_absorb_a_reserved_descendants_refs(self):
+        """An absent descendant's refs stay verbatim and outside its ancestor.
+
+        A reserved key cannot take part in the present-key longest-first pass.
+        Its refs must remain immovable while the present ancestor moves to its
+        alias, or the ancestor inherits the descendant's mount and auto-approval.
+        """
+        cfg = {
+            "mcpServers": {"a/b": {"command": "x"}},
+            "tools": ["@a/b", "@a/b/tool", "@a/b/c", "@a/b/c/tool"],
+            "allowedTools": ["@a/b", "@a/b/tool", "@a/b/c", "@a/b/c/tool"],
+        }
+        _normalize_mcp_server_keys(cfg, reserved_keys={"a/b/c"})
+        assert cfg["mcpServers"] == {"a-b": {"command": "x"}}
+        assert cfg["tools"] == ["@a-b", "@a-b/tool", "@a/b/c", "@a/b/c/tool"]
+        assert cfg["allowedTools"] == [
+            "@a-b",
+            "@a-b/tool",
+            "@a/b/c",
+            "@a/b/c/tool",
+        ]
+        for key in ("tools", "allowedTools"):
+            assert "@a-b/c" not in cfg[key]
+            assert "@a-b/c/tool" not in cfg[key]
+
+    def test_reserved_alias_collision_does_not_transfer_refs_to_live_server(self):
+        """An unresolved key cannot lend mounts or grants to an occupied alias."""
+        cfg = {
+            "mcpServers": {"scope-pkg": {"command": "y"}},
+            "tools": [
+                "@npm:@scope/pkg",
+                "@npm:@scope/pkg/tool",
+                "@scope-pkg",
+            ],
+            "allowedTools": [
+                "@npm:@scope/pkg",
+                "@npm:@scope/pkg/tool",
+                "@scope-pkg",
+            ],
+        }
+
+        _normalize_mcp_server_keys(cfg, reserved_keys={"npm:@scope/pkg"})
+
+        assert cfg["mcpServers"] == {"scope-pkg": {"command": "y"}}
+        assert cfg["tools"] == [
+            "@npm:@scope/pkg",
+            "@npm:@scope/pkg/tool",
+            "@scope-pkg",
+        ]
+        assert cfg["allowedTools"] == [
+            "@npm:@scope/pkg",
+            "@npm:@scope/pkg/tool",
+        ]
+        assert "@scope-pkg/tool" not in cfg["tools"]
+        assert "@scope-pkg/tool" not in cfg["allowedTools"]
+
+    def test_slash_free_reserved_key_grant_cannot_transfer_to_colliding_live_server(self):
+        """A slash-free unresolved key's stale grant never approves the live occupant.
+
+        ``foo-bar`` is reserved (declared, unresolved this pass) while a present
+        ``foo/bar`` normalizes onto that exact name. The pre-existing
+        ``@foo-bar`` grants belong to the absent server and must be dropped --
+        surviving, they would auto-approve the live server on the one list that
+        never reaches the PreToolUse gate.
+        """
+        cfg = {
+            "mcpServers": {"foo/bar": {"command": "y"}},
+            "tools": ["@foo/bar", "@foo-bar"],
+            "allowedTools": ["@foo-bar", "@foo-bar/tool"],
+        }
+        removed: list[str] = []
+
+        _normalize_mcp_server_keys(cfg, reserved_keys={"foo-bar"}, removed_grants=removed)
+
+        # The live server still lands on its canonical alias.
+        assert cfg["mcpServers"] == {"foo-bar": {"command": "y"}}
+        # The live ref is rewritten; the reserved key's frozen ref dedupes into it.
+        assert cfg["tools"] == ["@foo-bar"]
+        # The stale grants must NOT survive to approve the live occupant.
+        assert cfg["allowedTools"] == []
+        assert set(removed) == {"@foo-bar", "@foo-bar/tool"}
+
+    def test_persisted_reserved_alias_grants_only_survive_without_a_live_occupant(self):
+        """Alias-family grants cannot approve distinct servers occupying those aliases."""
+        cfg = {
+            "mcpServers": {
+                "foo-bar": {"command": "live-canonical"},
+                "foo-bar-2": {"command": "live-sibling"},
+            },
+            "tools": ["@foo-bar", "@foo-bar/keep"],
+            "allowedTools": [
+                "@foo-bar",
+                "@foo-bar/tool",
+                "@foo-bar-2/y",
+                "@baz-qux/x",
+                "@foo-barn/x",
+                "@foo-bar-2x/z",
+            ],
+        }
+
+        _normalize_mcp_server_keys(cfg, reserved_keys={"foo/bar", "baz/qux"})
+
+        assert cfg["mcpServers"] == {
+            "foo-bar": {"command": "live-canonical"},
+            "foo-bar-2": {"command": "live-sibling"},
+        }
+        assert cfg["tools"] == ["@foo-bar", "@foo-bar/keep"]
+        assert cfg["allowedTools"] == [
+            "@baz-qux/x",
+            "@foo-barn/x",
+            "@foo-bar-2x/z",
+        ]
+
+    def test_a_reserved_alias_never_lands_on_a_present_keys_computed_alias(self):
+        """Reserved refs stay verbatim when a present key computes the same alias."""
+        cfg = {
+            "mcpServers": {"npm:@scope/pkg": {"command": "x"}},
+            "tools": [
+                "@npm:@scope/pkg",
+                "@npm:@scope/pkg/present-tool",
+                "@pip:@scope/pkg",
+                "@pip:@scope/pkg/reserved-tool",
+            ],
+            "allowedTools": [
+                "@npm:@scope/pkg",
+                "@npm:@scope/pkg/present-tool",
+                "@pip:@scope/pkg",
+                "@pip:@scope/pkg/reserved-tool",
+            ],
+        }
+
+        _normalize_mcp_server_keys(cfg, reserved_keys={"pip:@scope/pkg"})
+
+        assert cfg["mcpServers"] == {"scope-pkg": {"command": "x"}}
+        assert cfg["tools"] == [
+            "@scope-pkg",
+            "@scope-pkg/present-tool",
+            "@pip:@scope/pkg",
+            "@pip:@scope/pkg/reserved-tool",
+        ]
+        assert cfg["allowedTools"] == [
+            "@pip:@scope/pkg",
+            "@pip:@scope/pkg/reserved-tool",
+        ]
+        for key in ("tools", "allowedTools"):
+            assert "@scope-pkg/reserved-tool" not in cfg[key]
+
+    def test_a_reserved_ancestor_cannot_freeze_a_present_descendants_refs(self):
+        """Longest-match ownership lets a present descendant move normally."""
+        cfg = {
+            "mcpServers": {"a/b/c": {"command": "x"}},
+            "tools": ["@a/b/c", "@a/b/c/tool"],
+            "allowedTools": ["@a/b/c", "@a/b/c/tool"],
+        }
+
+        _normalize_mcp_server_keys(cfg, reserved_keys={"a/b"})
+
+        assert cfg["mcpServers"] == {"a-b-c": {"command": "x"}}
+        assert cfg["tools"] == ["@a-b-c", "@a-b-c/tool"]
+        assert cfg["allowedTools"] == ["@a-b-c", "@a-b-c/tool"]
+
     def test_idempotent(self):
         cfg = {
             "mcpServers": {"npm:@playwright/mcp": {"command": "x"}},
@@ -188,9 +444,7 @@ class TestSyncMcpToAgentSlashName:
         agent_path.write_text(json.dumps({"mcpServers": {}, "tools": [], "allowedTools": []}))
         global_path = tmp_path / "global_mcp.json"
         global_path.write_text(
-            json.dumps(
-                {"mcpServers": {"npm:@playwright/mcp": {"command": "npx", "args": ["x"]}}}
-            )
+            json.dumps({"mcpServers": {"npm:@playwright/mcp": {"command": "npx", "args": ["x"]}}})
         )
         monkeypatch.setattr(agents_mod, "_installed_agent_config", lambda: agent_path)
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", global_path)

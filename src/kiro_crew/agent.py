@@ -38,6 +38,7 @@ import sys
 import tempfile
 import threading
 import uuid
+from collections.abc import Collection
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -3314,22 +3315,39 @@ def _is_alias_family(key: str, base: str) -> bool:
     ``mcp_server_alias`` is many-to-one, so :func:`_normalize_mcp_server_keys`
     gives the loser of a collision the lowest free ``base-<n>`` rather than
     dropping a distinct server. One base alias therefore stands for a FAMILY of
-    concrete keys, and anything reasoning about a server's identity from its base
-    alias has to include the suffixed siblings or it misses exactly the keys the
-    collision minted. Module level so the emitter and the ownership reconcile
-    cannot drift to two spellings of this rule.
+    concrete keys. The family rule serves KEY NORMALIZATION only
+    (converging equivalent duplicates onto one alias): the ref reconcile
+    deliberately consults no family, because which claimant a suffix came from
+    is not recoverable there -- its mount exemption is unconditional and its
+    grants require an exact claim.
     """
     return key == base or (key.startswith(f"{base}-") and key[len(base) + 1 :].isdigit())
 
 
-def _normalize_mcp_server_keys(config: dict) -> None:
+def _normalize_mcp_server_keys(
+    config: dict,
+    *,
+    reserved_keys: Collection[str] = (),
+    removed_grants: list[str] | None = None,
+) -> dict[str, str]:
     """Rewrite any slash-containing ``mcpServers`` key to its slash-free alias.
 
     Mutates ``config`` in place: moves each affected server spec under its
     alias key and rewrites (and de-duplicates) the matching ``@oldkey`` ->
-    ``@alias`` reference in ``tools``/``allowedTools``.  Migrates already-broken
-    existing configs.  Idempotent: slash-free keys are left untouched and a
-    re-merged duplicate collapses onto the canonical alias (no churn).
+    ``@alias`` reference in ``tools``/``allowedTools``. Returns each input key's
+    concrete mount alias so later ownership decisions survive collision suffixing.
+    Migrates already-broken existing configs. Idempotent: slash-free keys are left
+    untouched and a re-merged duplicate collapses onto the canonical alias (no churn).
+
+    ``reserved_keys`` names known-but-absent servers. Their refs are left
+    exactly as they are: no present key's per-tool prefix rewrite may capture
+    one, and nothing moves one onto an alias this function may hand to a live
+    server further down. An absent slashed server's refs therefore reach the
+    final dangling-ref reconcile unchanged and are dropped there -- it has no
+    ref-survival guarantee, and minting one is what lets an ``allowedTools``
+    grant move between servers. When provided, ``removed_grants`` receives only
+    grants this pass drops for a reserved-alias collision; rewrites and duplicate
+    collapse are not revocations.
 
     Dedup is by *normalized* spec (:func:`_norm_mcp_spec`), so a re-added key
     that differs only by an empty ``env``/``args`` reuses the existing alias
@@ -3345,20 +3363,86 @@ def _normalize_mcp_server_keys(config: dict) -> None:
     """
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
-        return
+        return {}
     managed = set(_MANAGED_MCP_SERVERS)
+    mounted_aliases = {key: key for key in servers}
 
     def _is_family(key: str, base: str) -> bool:
         """True if ``key`` is ``base`` or a ``base-<n>`` numeric-suffixed sibling."""
         return _is_alias_family(key, base)
 
-    def _rewrite_ref(old_ref: str, new_ref: str) -> None:
-        for key in ("tools", "allowedTools"):
-            lst = config.get(key)
-            if isinstance(lst, list):
-                config[key] = list(dict.fromkeys(new_ref if t == old_ref else t for t in lst))
+    def _rewrite_ref(ref: object, old_ref: str, new_ref: str) -> object:
+        # Both spellings kiro-cli resolves move together: the bare ``@server``
+        # and the per-tool ``@server/tool``. Leaving the per-tool spelling on
+        # the old key strands it on a name this pass removes, and the final
+        # reconcile then drops it from BOTH lists as dangling. The suffix is
+        # carried VERBATIM by slicing off the matched prefix -- never re-derived
+        # by splitting the ref, because the server key itself may contain a
+        # slash (``npm:@scope/pkg``), so a split takes the wrong component.
+        if isinstance(ref, str) and ref in _immovable:
+            return ref
+        if ref == old_ref:
+            return new_ref
+        if isinstance(ref, str) and ref.startswith(f"{old_ref}/"):
+            return new_ref + ref[len(old_ref) :]
+        return ref
 
-    for old_key in [k for k in servers if "/" in k and k not in managed]:
+    # A known-but-absent slashed server's refs are IMMOVABLE. They need
+    # protecting from exactly one thing -- a present ANCESTOR reading the absent
+    # descendant's bare ``@a/b/c`` as its own per-tool spelling -- and moving
+    # them to the absent server's own alias buys that protection at the price of
+    # MINTING a name this same function hands out further down (the canonical
+    # alias, or a ``base-<n>`` from the collision path below), so whatever lands
+    # there inherits an ``allowedTools`` grant belonging to the absent server,
+    # on the one list that never reaches the PreToolUse gate. No "is the alias
+    # free" test can close that: the name is allocated AFTER the test runs.
+    # Frozen instead, the refs address a name the final map does not hold and
+    # the reconcile drops them -- exactly as it did before this pass learned the
+    # per-tool spelling -- and no grant can travel.
+    #
+    # Ownership is resolved LONGEST-match across both sets, not "some reserved
+    # key claims this ref": with a reserved ancestor ``a/b`` and a PRESENT
+    # descendant ``a/b/c``, the bare ``@a/b/c`` belongs to the live key, and
+    # freezing it would strand that server with no ref instead.
+    #
+    # EVERY absent reserved key participates -- slash-free ones included. A
+    # slash-free unresolved key (``foo-bar``) is its own alias, so a present
+    # ``foo/bar`` normalizing onto that exact name is the same
+    # grant-inheritance hole as the slashed case: excluding it here kept its
+    # stale ``@foo-bar`` grant invisible to the collision filter below, and
+    # the grant auto-approved whatever live server landed on the name. The
+    # ``key not in servers`` guard still keeps every PRESENT key out, and
+    # longest-match ownership keeps a reserved name from claiming a live
+    # descendant's refs.
+    _reserved = {key for key in reserved_keys if isinstance(key, str) and key not in servers}
+    _claimable = _reserved | set(servers)
+
+    def _owner(ref: str) -> str:
+        """The longest key claiming ``ref``; an exact bare match always wins."""
+        return max(
+            (k for k in _claimable if ref == f"@{k}" or ref.startswith(f"@{k}/")),
+            key=len,
+            default="",
+        )
+
+    _immovable: set[str] = set()
+    for _key in ("tools", "allowedTools"):
+        _lst = config.get(_key)
+        if isinstance(_lst, list):
+            _immovable |= {
+                r
+                for r in _lst
+                if isinstance(r, str) and r.startswith("@") and _owner(r) in _reserved
+            }
+
+    # Phase A allocates every final mount key before any reference moves.
+    # Longest-first keeps an exact descendant ahead of its ancestor when their
+    # slash-containing names overlap; equal-length keys cannot prefix each
+    # other, so their order is immaterial.
+    renames: dict[str, str] = {}
+    for old_key in sorted(
+        [k for k in servers if "/" in k and k not in managed], key=len, reverse=True
+    ):
         spec = _norm_mcp_spec(servers.pop(old_key))
         base = mcp_server_alias(old_key)
 
@@ -3380,20 +3464,80 @@ def _normalize_mcp_server_keys(config: dict) -> None:
                     n += 1
                 alias = f"{alias}-{n}"
         servers[alias] = spec
-        _rewrite_ref(f"@{old_key}", f"@{alias}")
+        renames[old_key] = alias
+        mounted_aliases[old_key] = alias
 
-        # Converge any OTHER sibling that duplicates the spec we just placed
-        # (self-heals configs polluted by the pre-fix bug): drop it and redirect
-        # its @ref onto the surviving alias.
+        # Converge any OTHER sibling that duplicates the spec we just placed:
+        # drop it and redirect its @ref onto the surviving alias.
         for dup in [
             k
             for k in list(servers)
             if k != alias and _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec
         ]:
             del servers[dup]
-            _rewrite_ref(f"@{dup}", f"@{alias}")
+            for source, target in renames.items():
+                if target == dup:
+                    renames[source] = alias
+            renames[dup] = alias
+            for source, target in mounted_aliases.items():
+                if target == dup:
+                    mounted_aliases[source] = alias
 
         logger.info("Normalized MCP server key %r -> %r (kiro-safe)", old_key, alias)
+
+    # Phase B resolves ownership from the untouched ref and maps that original
+    # prefix straight to its final alias. A moved ref is never matched again.
+    def _moved_once(ref: object, *, grant: bool = False) -> object:
+        if not isinstance(ref, str):
+            return ref
+        owner = _owner(ref)
+        alias = renames.get(owner)
+        if alias is None:
+            return ref
+        if grant and "/" in owner:
+            runtime_server = ref[1:].split("/", 1)[0]
+            # allowedTools follows the runtime's first-slash parsing. When both
+            # readings name claimable servers, preserving the runtime reading
+            # keeps a per-tool grant narrow instead of granting the renamed
+            # owner as a whole server.
+            if runtime_server != owner and runtime_server in _claimable:
+                return ref
+        return _rewrite_ref(ref, f"@{owner}", f"@{alias}")
+
+    for key in ("tools", "allowedTools"):
+        lst = config.get(key)
+        if isinstance(lst, list):
+            config[key] = list(
+                dict.fromkeys(_moved_once(ref, grant=key == "allowedTools") for ref in lst)
+            )
+
+    _reserved_aliases = {mcp_server_alias(key) for key in _reserved}
+
+    def _collides_with_reserved_alias(ref: object) -> bool:
+        """True when a live server occupies an absent server's alias family."""
+        if not isinstance(ref, str) or not ref.startswith("@"):
+            return False
+        alias = ref[1:].split("/", 1)[0]
+        return alias in servers and any(_is_alias_family(alias, base) for base in _reserved_aliases)
+
+    allowed = config.get("allowedTools")
+    if isinstance(allowed, list):
+        kept_allowed: list[object] = []
+        for ref in allowed:
+            dropped = (
+                isinstance(ref, str)
+                and ref in _immovable
+                and ref.startswith("@")
+                and ref[1:].split("/", 1)[0] in servers
+            ) or _collides_with_reserved_alias(ref)
+            if dropped:
+                if removed_grants is not None and isinstance(ref, str):
+                    removed_grants.append(ref)
+            else:
+                kept_allowed.append(ref)
+        config["allowedTools"] = kept_allowed
+
+    return mounted_aliases
 
 
 def migrate_agent_specs() -> int:
@@ -4372,12 +4516,12 @@ def _app_owned_mcp_keys() -> _AppOwnership:
     config as ``playwright-mcp``. A raw composite key matches no candidate at all,
     so the owner of exactly the names that NEED aliasing would read as unowned.
 
-    Each key is a base alias standing for the whole :func:`_is_alias_family`, and
-    a colliding pair collapses to one entry whose value is the AND of their
-    enablements. The concrete ``base-<n>`` a collision mints is assigned against
-    the live server map, so it cannot be reproduced from manifests here; reading
-    the family with the conservative answer covers the sibling without guessing
-    which claimant it came from.
+    Each key is a base alias, and a colliding pair collapses to one entry whose
+    value is the AND of their enablements. The concrete ``base-<n>`` a collision
+    mints is assigned against the live server map, so it cannot be reproduced
+    from manifests here -- which is why the ref reconcile treats family
+    membership as a guess: a suffixed sibling inherits nobody's answer, its
+    grant goes unless a source vouches for it, and only its mount survives.
 
     Covers DISABLED apps deliberately: "an app owns this name and is switched off"
     is the case whose grant must not linger on the name, and a collection that
@@ -5018,8 +5162,17 @@ def rebuild_agent_config(
 
     # Rewrite slash-containing server keys to kiro-safe aliases (also migrates
     # already-broken configs); runs after merges so global-only servers and
-    # their stale @refs are normalized too. See mcp_server_alias.
-    _normalize_mcp_server_keys(config)
+    # their stale @refs are normalized too. The normalizer reports only grants
+    # its terminal collision filter removes; rewrites and dedup stay non-revoking.
+    _alias_purge_removed_grants: list[str] = []
+    _mounted_alias_by_source = _normalize_mcp_server_keys(
+        config,
+        reserved_keys=_unresolved_this_pass,
+        removed_grants=_alias_purge_removed_grants,
+    )
+    _proxy_purge_grants_before = list(
+        dict.fromkeys(ref for ref in (config.get("allowedTools") or []) if isinstance(ref, str))
+    )
 
     # Drop any server whose argv invokes the deleted mcp-playwright-proxy
     # subcommand.  Runs on EVERY rebuild because the entry can be
@@ -5028,6 +5181,29 @@ def rebuild_agent_config(
     # GLOBAL ~/.kiro/settings/mcp.json, which is a different file and a
     # different ownership boundary; this covers the assembled agent config.
     purge_deleted_proxy_from_config(config)
+    _proxy_purge_grants_after = {
+        ref for ref in (config.get("allowedTools") or []) if isinstance(ref, str)
+    }
+    _alias_purge_revoked_by_purge = [
+        ref for ref in _proxy_purge_grants_before if ref not in _proxy_purge_grants_after
+    ]
+    _alias_purge_revoked = list(
+        dict.fromkeys((*_alias_purge_removed_grants, *_alias_purge_revoked_by_purge))
+    )
+    if _alias_purge_revoked:
+        try:
+            sel().log_api_access(
+                caller="system",
+                operation="mcp_auto_approve_revoked",
+                outcome="ok",
+                source="rebuild_agent_config",
+                resources=(
+                    f"{', '.join(_alias_purge_revoked)} auto-approval removed "
+                    "(reserved-alias collision or deleted-proxy purge)"
+                ),
+            )
+        except Exception:  # noqa: BLE001 — auditing never fails the rebuild
+            logger.debug("SEL audit for revoked MCP auto-approvals failed", exc_info=True)
 
     # Sync shared (user-installed) servers to tools/allowedTools.
     # These are explicitly installed by the user via `aim mcp install` or
@@ -5053,24 +5229,49 @@ def rebuild_agent_config(
     # ``allowedTools`` is the one path that never reaches the PreToolUse gate, so
     # the operator's disable would be silently void for every tool on that server.
     #
-    # Both sides are keyed by the ALIAS, not the raw key, because that is the
-    # identity the emitted ref carries and the mapping is many-to-one: a slashed
-    # global key and a slash-free store key are different dict keys that mount the
-    # same ``@ref``. Comparing raw keys would let the alias-spelled entry look
-    # like a different server and re-add the ref the disable just removed.
-    #
-    # Unlike the OAuth-hint binding above, this match deliberately does NOT also
-    # demand transport identity. The two run in opposite directions: over-matching
-    # here only over-disables -- an availability cost, no privilege gained --
-    # while under-matching would let an operator's disable be missed on the one
-    # path (``allowedTools``) that never reaches the PreToolUse gate. Denying is
-    # allowed to be loose; granting is not.
-    _disabled_anywhere = {
-        mcp_server_alias(srv)
-        for scope in (extra_shared_mcp, shared_mcp, kirocrew_mcp)
-        for srv, srv_spec in scope.items()
+    # Mount stripping follows the concrete alias allocated above, so a distinct
+    # collision sibling remains mounted. Grant revocation is intentionally looser:
+    # every disabled source denies auto-approval to its canonical alias family,
+    # because ``allowedTools`` bypasses the PreToolUse gate.
+    _shared_source_entries = tuple(
+        itertools.chain(extra_shared_mcp.items(), shared_mcp.items(), kirocrew_mcp.items())
+    )
+    _disabled_source_names = {
+        srv
+        for srv, srv_spec in _shared_source_entries
         if isinstance(srv_spec, dict) and srv_spec.get("disabled")
     }
+    _disabled_mounted_aliases = {
+        mounted
+        for srv, _srv_spec in _shared_source_entries
+        for mounted in (_mounted_alias_by_source.get(srv),)
+        if mounted is not None and srv in _disabled_source_names
+    }
+    _disabled_grant_families = {
+        mcp_server_alias(srv)
+        for srv, srv_spec in _shared_source_entries
+        if isinstance(srv_spec, dict) and srv_spec.get("disabled")
+    }
+
+    def _grant_ref_is_in_alias_family(ref: object, base: str) -> bool:
+        """True when an MCP grant targets ``base`` or a numeric-suffixed sibling."""
+        if not isinstance(ref, str) or not ref.startswith("@"):
+            return False
+        alias = ref[1:].partition("/")[0]
+        return _is_alias_family(alias, base)
+
+    for family in _disabled_grant_families:
+        family_ref = f"@{family}"
+        allowed = config.get("allowedTools")
+        if isinstance(allowed, list):
+            kept_allowed = [
+                tool for tool in allowed if not _grant_ref_is_in_alias_family(tool, family)
+            ]
+            if len(kept_allowed) != len(allowed):
+                allowed[:] = kept_allowed
+                if family_ref not in _shared_removed:
+                    _shared_removed.append(family_ref)
+
     # A server the probe has failed N consecutive times is COUNTED and surfaced,
     # but not unmounted here. The unmount has no safe lever in this file: the
     # generated agent config is simultaneously the mount decision and the only
@@ -5078,20 +5279,49 @@ def rebuild_agent_config(
     # lives only there and stamping ``disabled`` makes ``list_servers`` delete the
     # server's own row. See the follow-up issue linked from
     # docs/system-specs/modules/mcp-probe-quarantine.md.
-    for name, spec in itertools.chain(
-        extra_shared_mcp.items(), shared_mcp.items(), kirocrew_mcp.items()
-    ):
+    for name, spec in _shared_source_entries:
         if not isinstance(spec, dict) or name in managed_names:
             continue
-        alias = mcp_server_alias(name)
+        alias = _mounted_alias_by_source.get(name)
+        if alias is None:
+            continue
         ref = f"@{alias}"
-        if spec.get("disabled") or alias in _disabled_anywhere:
+        # The bare spelling is rebuild-owned and is stripped from both lists.
+        # Per-tool spellings are stripped only from ``allowedTools``, where the
+        # disable defect lives because that list bypasses the PreToolUse gate. A
+        # per-tool ``tools`` ref mounts nothing while the map entry is disabled
+        # and resumes on re-enable; deleting it destroys a user's selective
+        # mount with no recovery lever. This is the same deny-may-be-loose,
+        # never-destroy-a-mount asymmetry used by the final reconcile. The ``/``
+        # boundary still protects a prefix-sharing server such as ``@aliasx``.
+        _owned = f"{ref}/"
+
+        def _strip_owned_refs(key: str, *, strip_per_tool: bool) -> bool:
+            """Drop the bare ref and, when requested, every owned per-tool ref.
+
+            Rebuilds the list in place rather than ``list.remove``, which drops
+            only the first occurrence and lets a duplicated ref survive.
+            """
+            lst = config.get(key)
+            if not isinstance(lst, list):
+                return False
+            kept = [
+                t
+                for t in lst
+                if t != ref and not (strip_per_tool and isinstance(t, str) and t.startswith(_owned))
+            ]
+            if len(kept) == len(lst):
+                return False
+            lst[:] = kept
+            return True
+
+        if spec.get("disabled") or alias in _disabled_mounted_aliases:
             for key in ("tools", "allowedTools"):
-                lst = config.get(key)
-                if lst is not None and ref in lst:
-                    lst.remove(ref)
-                    if ref not in _shared_removed:
-                        _shared_removed.append(ref)
+                if (
+                    _strip_owned_refs(key, strip_per_tool=key == "allowedTools")
+                    and ref not in _shared_removed
+                ):
+                    _shared_removed.append(ref)
         elif alias in valid_servers:
             valid_servers[alias].pop("disabled", None)
             # `tools` is what MOUNTS the server; `allowedTools` additionally
@@ -5103,17 +5333,19 @@ def rebuild_agent_config(
             # user-installed MCP server on the primary agent — the same bypass
             # that was closed for app agents, at the second of the two places
             # that write such a list. One predicate serves both.
-            keys = ("tools", "allowedTools") if _may_auto_approve(ref) else ("tools",)
+            may_auto_approve = _may_auto_approve(ref) and not any(
+                _grant_ref_is_in_alias_family(ref, base) for base in _disabled_grant_families
+            )
+            keys = ("tools", "allowedTools") if may_auto_approve else ("tools",)
             for key in keys:
                 if ref not in config.get(key, []):
                     config.setdefault(key, []).append(ref)
                     if ref not in _shared_added:
                         _shared_added.append(ref)
             if "allowedTools" not in keys:
-                lst = config.get("allowedTools")
-                if lst is not None and ref in lst:
-                    # A grant written before the ceiling arrived must not survive it.
-                    lst.remove(ref)
+                # A grant written before the ceiling arrived must not survive
+                # it -- in either spelling, and not as a duplicate either.
+                _strip_owned_refs("allowedTools", strip_per_tool=True)
                 if ref not in _shared_not_auto:
                     _shared_not_auto.append(ref)
     if _shared_added:
@@ -5380,110 +5612,68 @@ def rebuild_agent_config(
             for _n in scope
         }
         _vouched = _gated_aliases | _vouched_sources
-        # Matched by alias FAMILY, not equality. The ownership map is keyed by the
-        # base alias a manifest mints, while the config can hold the suffixed
-        # sibling, and an equality test reads that sibling as owned by nobody --
-        # leaving its auto-approval on the name once its app is switched off. Which
-        # claimant a suffix came from is not recoverable, so a candidate matching
-        # several claimed bases needs ALL of them switched on.
+        # Which claimant a collision suffix came from is not recoverable (it is
+        # assigned against the live server map, and the slashed key it came
+        # from is gone by the next rebuild), so family membership -- ``base-2``
+        # against a claimed ``base`` -- is a GUESS. The two lists price a guess
+        # differently, which is why this reconcile walks no family: the MOUNT
+        # survives every candidate here
+        # unconditionally (so the guess has nothing left to decide for it), and
+        # the GRANT requires positive evidence a guess can never supply (so
+        # attribution by family never lends one). What remains is exactness:
+        # a name an app claims EXACTLY answers to its own claimant.
 
         def _base_still_grants(_b: str) -> bool:
             """Whether a claimed base is POSITIVELY still owned and switched on."""
             return _app_owned_now.get(_b) is True
 
-        def _base_may_still_mount(_b: str) -> bool:
-            """Whether a claimed base might still be owned, counting an unread claim."""
-            if _b in _app_owned_now:
-                # The final read reached this app, so its answer is the answer.
-                return _app_owned_now[_b] is True
-            # Missing from the final read. That is positive REMOVAL only when the
-            # read saw every claim; otherwise the claim may merely have gone
-            # unread, which this module calls the ordinary shape of the failure.
-            # Dropping a MOUNT ref on that doubt can unmount a server for good, so
-            # the pre-rebuild answer stands here -- and only here. The grant side
-            # above requires the positive answer instead, because a grant kept on
-            # the same doubt is an auto-approval left on a name.
-            return not _ownership_full_now and _app_owned_at_start.get(_b) is True
-
-        # Built TWICE, because the two lists fail in opposite directions and one set
-        # cannot serve both. `_exempt_mounts` keeps a name whose ownership merely
-        # went unread, since dropping a mount ref can unmount a server for good.
-        # `_exempt_grants` requires a positive answer, since keeping a grant on the
-        # same doubt leaves an auto-approval on a name any later server inherits --
-        # and `allowedTools` is the path that never reaches the PreToolUse gate.
+        # Built TWICE, because the two lists fail in opposite directions and one
+        # set cannot serve both. `_exempt_mounts` keeps EVERY name this reconcile
+        # reached -- and it only ever reaches the unresolved and gated candidates;
+        # a server the locked app re-merge deleted is in neither set and loses
+        # both refs above. Dropping a `tools` ref can unmount a server for good
+        # -- an existing config never re-adds a template ref, and nothing
+        # re-adds a user's own suffixed sibling -- while keeping one costs at
+        # most a mount attempt against an empty name (an app-claimed UNRESOLVED
+        # name loses nothing either: re-enabling the app re-merges its entry and
+        # the kept ref resumes mounting it). `_exempt_grants` requires a
+        # positive answer, since keeping a grant on doubt leaves an
+        # auto-approval on a name any later server inherits -- and
+        # `allowedTools` is the path that never reaches the PreToolUse gate.
+        # The same mount-survives-doubt / grant-needs-evidence asymmetry the
+        # unresolved and gated handling in this reconcile already runs on.
         _exempt_mounts: set[str] = set()
         _exempt_grants: set[str] = set()
         for _n in _narrowed_away | _gated_aliases:
-            _bases = [_b for _b in _ever_app_owned if _is_alias_family(_n, _b)]
-            if _bases:
-                # A readable non-app SOURCE that declares this exact name outranks
-                # app attribution, because pruning its refs does not merely narrow
-                # them. The shared sync re-adds the BARE `@alias` to `allowedTools`
-                # once the command resolves again, so a user's per-tool grant comes
-                # back as a WHOLE-SERVER one -- widening the very grant this
-                # reconcile exists to keep from widening.
-                #
-                # The managed GATE does not vouch that way. `gated_off` says a
+            _exempt_mounts.add(_n)
+            if _n in _ever_app_owned:
+                # Exactly claimed: its own claimant decides the grant. A
+                # readable non-app SOURCE that still declares the name outranks
+                # a switched-off claim, because pruning its refs does not merely
+                # narrow them: the shared sync re-adds the BARE `@alias` to
+                # `allowedTools` once the command resolves again, so a user's
+                # per-tool grant comes back as a WHOLE-SERVER one -- widening
+                # the very grant this reconcile exists to keep from widening.
+                # The managed GATE does not vouch that way: `gated_off` says a
                 # shipped server is withheld right now, not that anything still
-                # declares the name, so an app whose alias lands exactly on a gated
-                # managed name must still lose its grant: otherwise reopening the
-                # gate hands the managed server an approval nobody granted for it.
-                #
-                # A SUFFIXED sibling stays ambiguous either way. The suffix is
-                # assigned against the live map and the slashed key it came from is
-                # gone by the next rebuild, so nothing here can tell a minted
-                # sibling from a name a source chose that way, and any vouching
-                # outranks the guess.
-                if _n in _vouched_sources or (_n not in _ever_app_owned and _n in _vouched):
-                    _exempt_mounts.add(_n)
+                # declares the name, so an app whose alias lands exactly on a
+                # gated managed name must still lose its grant -- otherwise
+                # reopening the gate hands the managed server an approval nobody
+                # granted for it.
+                if _n in _vouched_sources or _base_still_grants(_n):
                     _exempt_grants.add(_n)
-                    continue
-                # When the candidate is ITSELF a claimed alias, its own owner decides.
-                # Widening to the family lets a sibling's switched-off owner delete a
-                # name whose own app is switched on, and it does that to both lists
-                # because the AND below gates each of them. Family matching is for a
-                # name nothing claims exactly, where the suffix is the only evidence
-                # there is.
-                _deciding = [_n] if _n in _ever_app_owned else _bases
-                if all(_base_may_still_mount(_b) for _b in _deciding):
-                    _exempt_mounts.add(_n)
-                if _n in _ever_app_owned and all(_base_still_grants(_b) for _b in _deciding):
-                    # The GRANT needs the name to be a claimed base ITSELF, not
-                    # merely a family match. A suffix is minted against the live map
-                    # and the slashed key it came from is gone by the next rebuild,
-                    # so a `base-2` candidate cannot be told from a name a source
-                    # chose that way -- and attributing it to an ENABLED owner of
-                    # `base` would keep an auto-approval on a server that owner
-                    # never declared, for whatever binds to the name next. The mount
-                    # above stays on the family answer because that guess costs a
-                    # mount attempt against an empty name, while dropping it cannot
-                    # be undone. Exactness only ever narrows: a family sibling whose
-                    # base is switched off still loses its grant, which is the case
-                    # the family match was added for.
-                    _exempt_grants.add(_n)
-            else:
-                # No app claims this name or its family. The MOUNT is exempt
-                # unconditionally, matching the `if _bases:` branch above and this
-                # helper's own cost model: an unsure caller keeps the mount and
-                # drops only the grant. Gating it on the ownership read would let an
-                # unrelated app's unreadable manifest -- which that read calls an
-                # ordinary shape of failure -- permanently strip the `tools` refs of
-                # a server that merely has its binary off PATH this pass, and no
-                # later pass re-adds them.
-                _exempt_mounts.add(_n)
-                if _n in _vouched:
-                    # The GRANT is the side that needs a positive answer. An
-                    # unclaimed name whose command did not resolve has no source
-                    # declaring it, so keeping the auto-approval leaves it on the
-                    # NAME for whatever binds there next, and `allowedTools` never
-                    # reaches the PreToolUse gate. Dropping it costs one approval a
-                    # human can grant again, where the mount above cannot be undone.
-                    # The gate DOES vouch here, unlike in the app branch above:
-                    # there the grant belonged to a switched-off app, so reopening
-                    # the gate would hand the managed server an approval nobody
-                    # granted it, while here the grant is the withheld server's own
-                    # and revoking it strands a shipped default.
-                    _exempt_grants.add(_n)
+            elif _n in _vouched:
+                # Unclaimed -- including a `base-2` sibling nothing claims
+                # exactly, whose family guess never lends it an enabled owner's
+                # answer. The GRANT is the side that needs a positive answer,
+                # and here the vouching supplies it: a readable source still
+                # declares the name, or the grant is a gated-off shipped
+                # server's own, where revoking it would strand a shipped
+                # default. An unclaimed, unvouched name keeps nothing: the
+                # auto-approval would sit on the NAME for whatever binds there
+                # next, and `allowedTools` never reaches the PreToolUse gate,
+                # while dropping it costs one approval a human can grant again.
+                _exempt_grants.add(_n)
         # Snapshot the grant list, because only this side is a permission
         # decision: `tools` mounts, `allowedTools` auto-approves.
         _grants_before = [_r for _r in (config.get("allowedTools") or []) if isinstance(_r, str)]

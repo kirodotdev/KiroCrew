@@ -349,22 +349,29 @@ def purge_deleted_proxy_from_config(config: dict) -> list[str]:
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         return []
-    to_remove = [
-        name for name, spec in servers.items()
-        if _invokes_deleted_playwright_proxy(spec)
-    ]
+    to_remove = [name for name, spec in servers.items() if _invokes_deleted_playwright_proxy(spec)]
     for name in to_remove:
         del servers[name]
     if to_remove:
         # Also strip @refs from tools/allowedTools so kiro-cli does not try
-        # to mount a server that no longer exists in the map.
+        # to mount a server absent from the map. Both spellings
+        # the server owns go: the bare ``@name`` and the per-tool
+        # ``@name/tool`` -- a per-tool grant left in ``allowedTools`` is an
+        # auto-approval on the deleted proxy's name, and that list never
+        # reaches the PreToolUse gate. Bounded by the ``/`` so a
+        # prefix-sharing name (``@namex``) is untouched. Rebuilt in place
+        # rather than ``list.remove`` so a duplicated ref cannot survive.
         for key in ("tools", "allowedTools"):
             lst = config.get(key)
             if isinstance(lst, list):
                 for name in to_remove:
                     ref = f"@{name}"
-                    while ref in lst:
-                        lst.remove(ref)
+                    owned = f"{ref}/"
+                    lst[:] = [
+                        t
+                        for t in lst
+                        if t != ref and not (isinstance(t, str) and t.startswith(owned))
+                    ]
         logger.info(
             "Purged deleted-proxy MCP entries from agent config: %s",
             to_remove,

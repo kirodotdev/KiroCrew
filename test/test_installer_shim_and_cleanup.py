@@ -181,8 +181,7 @@ def test_resolver_finds_the_bundled_launcher(tmp_path, monkeypatch):
     resolved = agent._resolve_kirocrew_bin()
 
     assert resolved == str(launcher), (
-        "bundled app must resolve to its own launcher, not bare 'kirocrew' "
-        f"(got {resolved!r})"
+        "bundled app must resolve to its own launcher, not bare 'kirocrew' " f"(got {resolved!r})"
     )
 
 
@@ -347,12 +346,7 @@ def test_first_run_removes_a_generated_conductor_skill(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.skills.skills_dir", lambda: skills_root)
     skill = skills_root / "conductor" / "SKILL.md"
     skill.parent.mkdir(parents=True)
-    fixture = (
-        Path(__file__).parent
-        / "fixtures"
-        / "retired_conductor_skill"
-        / "select-crew-v2.md"
-    )
+    fixture = Path(__file__).parent / "fixtures" / "retired_conductor_skill" / "select-crew-v2.md"
     skill.write_bytes(fixture.read_bytes())
 
     agent.run_first_run_setup()
@@ -556,7 +550,9 @@ def test_ensure_shim_noop_when_already_on_path(tmp_path, monkeypatch):
 # `git worktree remove` deletes the tree's .venv with it, so a shim pointing
 # there dangles and `kirocrew` breaks machine-wide, not just in that tree.
 # --------------------------------------------------------------------------
-def _checkout_with_kirocrew(root: Path, *, linked_worktree: bool, bare_parent: bool = False) -> Path:
+def _checkout_with_kirocrew(
+    root: Path, *, linked_worktree: bool, bare_parent: bool = False
+) -> Path:
     """Build a fake checkout at *root* whose venv holds a `kirocrew` entrypoint.
 
     ``linked_worktree`` chooses the repository marker: a ``.git`` FILE with a
@@ -570,9 +566,7 @@ def _checkout_with_kirocrew(root: Path, *, linked_worktree: bool, bare_parent: b
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
     if linked_worktree:
-        git_dir = (
-            f"{root.parent}/myrepo.git" if bare_parent else f"{root.parent}/main/.git"
-        )
+        git_dir = f"{root.parent}/myrepo.git" if bare_parent else f"{root.parent}/main/.git"
         (root / ".git").write_text(f"gitdir: {git_dir}/worktrees/{root.name}\n")
     else:
         (root / ".git").mkdir()
@@ -602,9 +596,7 @@ def test_in_linked_git_worktree_matches_a_bare_repo_pointer(tmp_path):
     """A bare repo's git dir IS the repo dir, so its worktree pointer carries no
     `.git` component (`/…/myrepo.git/worktrees/<name>`). Matching on `/.git/`
     would miss it and reopen the bypass."""
-    wt = _checkout_with_kirocrew(
-        tmp_path / "wt-from-bare", linked_worktree=True, bare_parent=True
-    )
+    wt = _checkout_with_kirocrew(tmp_path / "wt-from-bare", linked_worktree=True, bare_parent=True)
     pointer = (tmp_path / "wt-from-bare" / ".git").read_text()
     assert "/.git/worktrees/" not in pointer, "fixture must reproduce the bare shape"
 
@@ -802,6 +794,44 @@ def test_rebuild_purge_drops_proxy_entry_even_when_marker_exists(tmp_path):
     assert "@playwright-mcp" not in config["tools"]
     assert "@playwright-mcp" not in config["allowedTools"]
     assert "@user-server" in config["tools"]
+
+
+def test_rebuild_purge_strips_the_per_tool_spelling_and_duplicates(tmp_path):
+    """The purge strips EVERY ref the deleted server owns, once and all.
+
+    ``@playwright-mcp/browser_navigate`` is a grant on the same server, and
+    ``allowedTools`` never reaches the PreToolUse gate, so a per-tool entry
+    surviving the purge is a live auto-approval on the deleted proxy's name. A
+    duplicated ref must go too. ``@playwright-mcpx`` shares the prefix without
+    the ``/`` boundary and belongs to another server, so it keeps its refs --
+    the control proving the removal is bounded to this server's spellings.
+    """
+    config: dict = {
+        "mcpServers": {
+            "playwright-mcp": {
+                "command": "kirocrew",
+                "args": ["mcp-playwright-proxy"],
+            },
+            "playwright-mcpx": {"command": "npx", "args": ["some-tool"]},
+        },
+        "tools": [
+            "@playwright-mcp",
+            "@playwright-mcp/browser_navigate",
+            "@playwright-mcp/browser_navigate",
+            "@playwright-mcpx",
+        ],
+        "allowedTools": [
+            "@playwright-mcp/browser_navigate",
+            "@playwright-mcp/browser_navigate",
+            "@playwright-mcpx",
+            "@playwright-mcpx/keep",
+        ],
+    }
+    removed = mcp_cleanup.purge_deleted_proxy_from_config(config)
+
+    assert removed == ["playwright-mcp"]
+    assert config["tools"] == ["@playwright-mcpx"]
+    assert config["allowedTools"] == ["@playwright-mcpx", "@playwright-mcpx/keep"]
 
 
 def test_rebuild_purge_leaves_operator_playwright_server_untouched():

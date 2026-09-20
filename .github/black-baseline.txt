@@ -234,7 +234,6 @@ src/kiro_crew/knowledge/spend.py
 src/kiro_crew/knowledge/store.py
 src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
-src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
@@ -617,7 +616,6 @@ test/test_image_artifacts.py
 test/test_inbound_unbind_notice.py
 test/test_installer_distro.py
 test/test_installer_node_floor.py
-test/test_installer_shim_and_cleanup.py
 test/test_instance_credential_pairing.py
 test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
@@ -710,7 +708,6 @@ test/test_mcp_probe_treadmill.py
 test/test_mcp_probe_warn_once.py
 test/test_mcp_registry_governance.py
 test/test_mcp_seed.py
-test/test_mcp_server_alias.py
 test/test_mcp_shareability.py
 test/test_mcp_shared.py
 test/test_mcp_shared_cache.py

@@ -258,24 +258,30 @@ retained by design, and a name some readable source still declares. A `@` name i
 `@builtin` carries the whole built-in tool surface plus the `tool_search` loader
 — so it is never in the map and is never a leftover.
 
+An unresolved disabled source deliberately denies grants across its complete alias
+family: the canonical alias and every numeric-suffixed sibling whose final dash
+segment contains only digits. It removes those refs from `allowedTools` and blocks
+the rebuild from adding them again, while leaving `tools` and `mcpServers` intact.
+The collision allocator can hand any family alias to a distinct live server, so a
+stale grant on that name must not auto-approve the replacement. Prefix-sharing
+aliases outside the numeric-suffix family keep their grants.
+
 **App-contributed names are read twice, before and after the rebuild's work.** A
 `{app}:{server}` key is minted by an app manifest, so a disabled app's grant must
 not outlive it; but an ownership read that FAILED cannot be told from one that
-found no owner, and only the second is safe to treat as unowned. An unclaimed name
-therefore keeps its mount unconditionally, because an unrelated app's unreadable
-manifest is doubt about that app and never a licence to unmount a server whose
-binary is merely off PATH this pass, and it keeps its grant only while a readable
-source still declares the name. An app's enablement is read as a tri-state so that
-a metadata read fault is not recorded as a deliberate disable. A name no source
-claims exactly is matched by alias family rather than by equality, because
-`mcp_server_alias()` is many-to-one and a collision is resolved by suffixing, so
-a `base-2` sibling with no claim of its own has only its base's answer to
-inherit. A name that IS claimed exactly answers to its own claimant on both
-lists, because widening that to the family lets a sibling's switched-off owner
-delete a server whose own app is running. A name a
-readable source still declares outranks a switched-off app's claim on it, since
-the rebuild's own ref sync would otherwise re-add the pruned per-tool grant as a
-WHOLE-server one.
+found no owner, and only the second is safe to treat as unowned. An app's
+enablement is read as a tri-state so that a metadata read fault is not recorded
+as a deliberate disable. Ownership only ever decides the GRANT: the reconcile
+never unmounts on an ownership answer, because `mcp_server_alias()` is
+many-to-one and a collision is resolved by suffixing, so which claimant a
+`base-2` sibling came from is a guess that is unrecoverable by the next rebuild
+— dropping its `tools` ref on that guess deletes a server nothing re-adds, while
+keeping a ref costs one mount attempt against an empty name. The grant requires
+positive evidence a guess cannot supply: a name an app claims EXACTLY keeps its
+grant only while its own claimant is readably switched on, and family membership
+never lends a sibling an enabled owner's answer. A name a readable source still
+declares outranks a switched-off app's claim on it, since the rebuild's own ref
+sync would otherwise re-add the pruned per-tool grant as a WHOLE-server one.
 
 **Both outcomes are recorded where an operator can see them.** Revoking a grant
 emits `mcp_auto_approve_revoked` to SEL, the same feed as the withhold above,
