@@ -1049,6 +1049,21 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed browser runtime",
         "the agent could replace the browser executable the gateway runs",
     ),
+    "subagents": (
+        "sealed run records",
+        "the agent could rewrite the app owner a cold continuation restores its "
+        "authorization from",
+    ),
+    "member-memory-bindings": (
+        "sealed run records",
+        "the agent could rewrite the app owner a retained V1 run restores its "
+        "authorization from",
+    ),
+    "decisions": (
+        "sealed decision log",
+        "the agent could append a feedback row the owner's summary counts as a "
+        "verdict nobody gave",
+    ),
 }
 assert set(_DELEGATED_OVERLAP_LEAF_REASONS) == set(_CREW_NOFOLLOW_READONLY_FILE_LEAVES) | set(
     _CREW_NOFOLLOW_READONLY_DIR_LEAVES
