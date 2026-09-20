@@ -524,20 +524,130 @@ describe('attachUserScrollIntent', () => {
     detach()
   })
 
-  it('derives touch direction from the finger path, with no guess on the first move', () => {
-    const touchAt = (clientY: number) =>
-      new TouchEvent('touchmove', {
+  it('derives touch direction from the finger path, anchored on touchstart', () => {
+    const touchAt = (kind: 'touchstart' | 'touchmove', clientY: number) =>
+      new TouchEvent(kind, {
         touches: [new Touch({ identifier: 1, target: document.body, clientY })],
       })
     const { el, onUser, detach } = harness()
-    // First move has no baseline: no direction rather than a guess.
-    el.dispatchEvent(touchAt(300))
-    expect(onUser).toHaveBeenLastCalledWith(undefined)
+    // touchstart takes the baseline, so even the FIRST move has a direction.
+    el.dispatchEvent(touchAt('touchstart', 300))
     // Finger moving DOWN the screen scrolls the content UP.
-    el.dispatchEvent(touchAt(340))
+    el.dispatchEvent(touchAt('touchmove', 340))
     expect(onUser).toHaveBeenLastCalledWith('up')
-    el.dispatchEvent(touchAt(310))
+    el.dispatchEvent(touchAt('touchmove', 310))
     expect(onUser).toHaveBeenLastCalledWith('down')
+    detach()
+  })
+
+  it('a move with no baseline at all still reports no direction rather than a guess', () => {
+    const { el, onUser, detach } = harness()
+    // A touchmove whose touch list is unreadable, and a first move that never
+    // saw a touchstart: neither may invent a direction.
+    el.dispatchEvent(new Event('touchmove'))
+    expect(onUser).toHaveBeenLastCalledWith()
+    el.dispatchEvent(
+      new TouchEvent('touchmove', {
+        touches: [new Touch({ identifier: 1, target: document.body, clientY: 300 })],
+      }),
+    )
+    expect(onUser).toHaveBeenLastCalledWith(undefined)
+    detach()
+  })
+
+  it('does not carry one gesture’s baseline into the next, which inverted its first move', () => {
+    // The baseline used to live for the whole attachment, so the first move of
+    // every later gesture was measured against wherever the previous finger was
+    // LIFTED. Lift at y=500, touch down at y=200 and drag to 260: a scroll into
+    // older history reported 'down'. That first move is the one the phone's
+    // clamp-release gate looks for at the start of a scroll-up, and the gesture
+    // only self-corrected on its second move.
+    const touchAt = (kind: 'touchstart' | 'touchmove' | 'touchend', clientY?: number) =>
+      new TouchEvent(kind, {
+        touches: typeof clientY === 'number'
+          ? [new Touch({ identifier: 1, target: document.body, clientY })]
+          : [],
+      })
+    const { el, onUser, detach } = harness()
+    // Gesture 1: finger up the screen -> content down (newer).
+    el.dispatchEvent(touchAt('touchstart', 700))
+    el.dispatchEvent(touchAt('touchmove', 600))
+    el.dispatchEvent(touchAt('touchmove', 500))
+    expect(onUser).toHaveBeenLastCalledWith('down')
+    el.dispatchEvent(touchAt('touchend'))
+    // Gesture 2 starts far from where gesture 1 ended, and goes the other way.
+    el.dispatchEvent(touchAt('touchstart', 200))
+    el.dispatchEvent(touchAt('touchmove', 260))
+    expect(onUser).toHaveBeenLastCalledWith('up')
+    detach()
+  })
+
+  it('a second finger does not rebase the first finger’s path', () => {
+    // A pinch or a stray second thumb lands mid-drag. Rebasing the baseline onto
+    // that finger's starting point would invert the very next move, and dropping
+    // it when one of the two lifts would blind the finger still on the glass.
+    const ev = (kind: string, ys: number[]) =>
+      new TouchEvent(kind, {
+        touches: ys.map((clientY, i) =>
+          new Touch({ identifier: i, target: document.body, clientY })),
+      })
+    const { el, onUser, detach } = harness()
+    el.dispatchEvent(ev('touchstart', [200]))
+    el.dispatchEvent(ev('touchmove', [260]))
+    expect(onUser).toHaveBeenLastCalledWith('up')
+    // Second finger lands far up the screen: the baseline must not move to it.
+    el.dispatchEvent(ev('touchstart', [260, 50]))
+    el.dispatchEvent(ev('touchmove', [320, 110]))
+    expect(onUser).toHaveBeenLastCalledWith('up')
+    // One finger lifts, one remains: still the same gesture, and the survivor
+    // is the finger the baseline was already tracking, so its path continues.
+    el.dispatchEvent(ev('touchend', [320]))
+    el.dispatchEvent(ev('touchmove', [380]))
+    expect(onUser).toHaveBeenLastCalledWith('up')
+    detach()
+  })
+
+  it('lifting the FIRST of two fingers rebases onto the one still on the glass', () => {
+    // The mirror of the case above, and the one it did not cover. `touches[0]`
+    // names the tracked finger, so when finger 0 lifts, finger 1 inherits that
+    // slot: holding finger 0's Y measures finger 1's next move against a finger
+    // that is gone. Finger 1 sits far UP the screen here, so a kept baseline
+    // reports 'down' for a finger that is in fact moving down the glass, i.e.
+    // scrolling UP into older history -- the one input the clamp-release gate
+    // reads at the start of a scroll-up.
+    const ev = (kind: string, ys: number[]) =>
+      new TouchEvent(kind, {
+        touches: ys.map((clientY, i) =>
+          new Touch({ identifier: i, target: document.body, clientY })),
+      })
+    const { el, onUser, detach } = harness()
+    el.dispatchEvent(ev('touchstart', [500]))
+    el.dispatchEvent(ev('touchmove', [560]))
+    expect(onUser).toHaveBeenLastCalledWith('up')
+    // Second finger lands high up the screen; the baseline stays on finger 0.
+    el.dispatchEvent(ev('touchstart', [560, 120]))
+    // Finger 0 lifts. Finger 1, at 120, becomes touches[0].
+    el.dispatchEvent(ev('touchend', [120]))
+    // Finger 1 drags DOWN the glass, which scrolls up into older history.
+    el.dispatchEvent(ev('touchmove', [180]))
+    expect(onUser).toHaveBeenLastCalledWith('up')
+    detach()
+  })
+
+  it('a cancelled gesture drops its baseline too', () => {
+    const touchAt = (kind: 'touchstart' | 'touchmove' | 'touchcancel', clientY?: number) =>
+      new TouchEvent(kind, {
+        touches: typeof clientY === 'number'
+          ? [new Touch({ identifier: 1, target: document.body, clientY })]
+          : [],
+      })
+    const { el, onUser, detach } = harness()
+    el.dispatchEvent(touchAt('touchstart', 700))
+    el.dispatchEvent(touchAt('touchmove', 600))
+    el.dispatchEvent(touchAt('touchcancel'))
+    // No baseline survives the cancel, so the next move cannot invent one.
+    el.dispatchEvent(touchAt('touchmove', 300))
+    expect(onUser).toHaveBeenLastCalledWith(undefined)
     detach()
   })
 
@@ -563,7 +673,10 @@ describe('attachUserScrollIntent', () => {
     const { el, onUser, detach } = harness()
     detach()
     el.dispatchEvent(new Event('wheel'))
+    el.dispatchEvent(new Event('touchstart'))
     el.dispatchEvent(new Event('touchmove'))
+    el.dispatchEvent(new Event('touchend'))
+    el.dispatchEvent(new Event('touchcancel'))
     el.dispatchEvent(new Event('pointerdown'))
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }))
     expect(onUser).not.toHaveBeenCalled()

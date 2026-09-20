@@ -305,10 +305,48 @@ export function attachUserScrollIntent(
     const dy = (e as WheelEvent).deltaY
     onUser(dy < 0 ? 'up' : dy > 0 ? 'down' : undefined)
   }
-  // Track the previous touch Y within this attachment: a finger moving DOWN the
-  // screen scrolls the content UP. The first move has no baseline and reports
-  // no direction rather than guessing.
+  // Track the previous touch Y within ONE gesture: a finger moving DOWN the
+  // screen scrolls the content UP.
+  //
+  // The baseline is taken at `touchstart` and dropped at `touchend`, because a
+  // baseline that OUTLIVES its gesture reports the opposite direction. Carried
+  // across, the first move of every later gesture is compared against wherever
+  // the previous finger was lifted: lift at y=500, touch down at y=200 and drag
+  // to 260, and a scroll into older history reports 'down'. On a phone that is
+  // the one event that matters -- it is the input the clamp-release gate looks
+  // for at the start of a scroll-up -- and the gesture only self-corrects on its
+  // SECOND move. Anchoring on `touchstart` also gives the first move of the
+  // first gesture a direction, which a NaN seed could not.
   let lastTouchY = Number.NaN
+  // Baseline only: `pointerdown` already reports the directionless "a finger
+  // landed" input for this same touch, so stamping again here would say nothing
+  // new. Gated on the touch COUNT so a landing finger never moves the baseline
+  // mid-gesture: a second finger landing would otherwise rebase finger 0's path
+  // onto finger 1's starting point and invert one move. A finger LIFTING is the
+  // mirror case and is handled in `onTouchEnd`, which rebases onto the touch
+  // still on the glass rather than dropping the baseline or keeping the lifted
+  // finger's.
+  const onTouchStart = (e: Event) => {
+    const touches = (e as TouchEvent).touches
+    if (touches && touches.length !== 1) return
+    const y = touches?.[0]?.clientY
+    lastTouchY = typeof y === 'number' ? y : Number.NaN
+  }
+  const onTouchEnd = (e: Event) => {
+    const touches = (e as TouchEvent).touches
+    // A finger leaving a multi-touch gesture does not end the gesture, but it
+    // can change WHICH finger `touches[0]` names: lift the first of two and the
+    // remaining one takes that slot, so holding the lifted finger's Y would
+    // measure the survivor's next move against a finger no longer on the glass
+    // and invert it. Rebase onto whoever holds the slot the move handler reads;
+    // only an empty list drops the baseline.
+    if (touches && touches.length > 0) {
+      const y = touches[0]?.clientY
+      lastTouchY = typeof y === 'number' ? y : Number.NaN
+      return
+    }
+    lastTouchY = Number.NaN
+  }
   const onTouch = (e: Event) => {
     const y = (e as TouchEvent).touches?.[0]?.clientY
     if (typeof y !== 'number') {
@@ -323,14 +361,20 @@ export function attachUserScrollIntent(
   const onPointer = () => onUser()
   const passive = { passive: true } as const
   target.addEventListener('wheel', onWheel, passive)
+  target.addEventListener('touchstart', onTouchStart, passive)
   target.addEventListener('touchmove', onTouch, passive)
+  target.addEventListener('touchend', onTouchEnd, passive)
+  target.addEventListener('touchcancel', onTouchEnd, passive)
   // pointerdown fires when the scrollbar thumb is grabbed, before any scroll
   // event arrives, so the abort lands ahead of the first drag movement.
   target.addEventListener('pointerdown', onPointer, passive)
   target.addEventListener('keydown', onKey, passive)
   return () => {
     target.removeEventListener('wheel', onWheel)
+    target.removeEventListener('touchstart', onTouchStart)
     target.removeEventListener('touchmove', onTouch)
+    target.removeEventListener('touchend', onTouchEnd)
+    target.removeEventListener('touchcancel', onTouchEnd)
     target.removeEventListener('pointerdown', onPointer)
     target.removeEventListener('keydown', onKey)
   }

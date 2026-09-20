@@ -248,15 +248,21 @@ export const FOLLOW_REENGAGE_PX = 16
  * Direction-aware `stick` decision for a *user-initiated* scroll (self-scrolls
  * filtered out by the caller via `isSelfScroll`):
  *
- *   1. At the true bottom (within the DPR-aware epsilon) → follow. This also
- *      absorbs the layout engine's clamp: a mid-stream content SHRINK drops
- *      scrollTop (which reads as an upward move) but lands exactly at the new
- *      bottom — releasing there froze streaming follow for the rest of the
- *      turn. The exception is a non-downward landing under a confirmed UPWARD
- *      user input inside the settle window (`upwardInputWithinSettle`): that
- *      shrink coincided with the reader's own scroll-up, so it belongs to the
- *      user and releases follow. A downward or directionless input keeps the
- *      clamp absorbed.
+ *   1. At the true bottom (within the DPR-aware epsilon) → follow, PROVIDED
+ *      follow was already armed. This absorbs the layout engine's clamp: a
+ *      mid-stream content SHRINK drops scrollTop (which reads as an upward
+ *      move) but lands exactly at the new bottom — releasing there froze
+ *      streaming follow for the rest of the turn. Two exceptions, both meaning
+ *      "this landing is not the engine carrying a follower":
+ *        - a non-downward landing under a confirmed UPWARD user input inside
+ *          the settle window (`upwardInputWithinSettle`): that shrink
+ *          coincided with the reader's own scroll-up, so it belongs to the
+ *          user and releases follow. A downward or directionless input keeps
+ *          the clamp absorbed.
+ *        - follow already RELEASED (`stick === false`) and the reader did not
+ *          move DOWN to get here: the content below them collapsed and the
+ *          engine clamped them flush. Arriving at the bottom is not asking for
+ *          it, and re-arming hands the rest of the turn to the pin.
  *   2. Any other upward move → release, regardless of distance from the
  *      bottom. The scroll position now belongs to the user; only returning to
  *      the bottom (3) re-engages.
@@ -334,7 +340,32 @@ export function resolveUserScrollStick(args: {
     // release. Direction-blind or downward input keeps the clamp guard.
     const movedDown = prevScrollTop >= 0 && scrollTop > prevScrollTop + atBottomEpsilon()
     if (args.upwardInputWithinSettle && !movedDown) return false
-    return clampedByViewport ? stick : true
+    if (clampedByViewport) return stick
+    // ARRIVING at the bottom is not the same as ASKING for it. Rule 1 exists to
+    // carry a reader who was ALREADY following across a mid-stream content
+    // shrink, and that reader is `stick === true` by construction: the shrink's
+    // own scroll event is the first thing that could have released them. So a
+    // reader whose follow is already RELEASED reaches this branch for a
+    // different reason -- the content below them collapsed far enough to drop
+    // the maximum scrollTop under where they sat, and the engine clamped them
+    // flush with no finger anywhere near the screen.
+    //
+    // Re-arming there hands the rest of the turn to the pin: every later token
+    // drags the reader along, which is the phone report of scrolling up to read
+    // and being taken to the end seconds later. It is the exact defect rule 3
+    // already refuses inside FOLLOW_REENGAGE_PX ("the band arrives at a STILL
+    // reader"), and a clamp lands at distance ~0 rather than inside that band,
+    // so it slipped past that fix through here. A phone is where it bites: the
+    // narrow column prices unmeasured rows far under their real wrapped height,
+    // so the collapse is large enough to clamp rather than merely nudge.
+    //
+    // The old reading was "at the true bottom there is nothing below to be
+    // yanked to" -- true for that one instant, and false for every token after
+    // it. `movedDown` is the discriminator the same way it is in rule 3: a
+    // clamp only ever LOWERS scrollTop, so a reader who moved DOWN to get here
+    // came on their own and re-engages.
+    if (!stick) return movedDown
+    return true
   }
   if (prevScrollTop < 0) return dist <= FOLLOW_REENGAGE_PX
   if (scrollTop < prevScrollTop - 0.5) return false
