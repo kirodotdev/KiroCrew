@@ -819,8 +819,11 @@ describe('ChannelFolderBackfill on an expired session', () => {
     await waitFor(() => expect(banner()).not.toBeNull())
     expect(isAuthBannerShown()).toBe(true)
     // The banner is only worth raising for what it carries: the command that
-    // mints a fresh token, and somewhere to paste the result.
-    expect(banner()?.querySelector('code')?.textContent).toBe('kirocrew token')
+    // mints a fresh token, and somewhere to paste the result. The command sits
+    // inside the instruction sentence rather than its own <code> element,
+    // because a catalog value that stops mid-sentence cannot be reordered by a
+    // translator.
+    expect(banner()?.textContent).toContain('kirocrew token')
     expect(banner()?.querySelector('input')).not.toBeNull()
   })
 

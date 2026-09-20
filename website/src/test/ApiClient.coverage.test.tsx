@@ -34,6 +34,7 @@ import {
   SEARCH_MIN_CHARS,
 } from '../api/client'
 import { STALE_OWNER_SESSION_CODE, __resetStaleOwnerHandlerForTests, installStaleOwnerHandler } from '../api/staleOwnerSignal'
+import { queryClient } from '../api/queryClient'
 import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
@@ -425,7 +426,7 @@ describe('session-expired banner', () => {
     const el = banner() as HTMLElement
     // The recovery instructions are the point of the banner: the command to run
     // and a field to paste the resulting URL into.
-    expect(el.querySelector('code')?.textContent).toBe('kirocrew token')
+    expect(el.textContent).toContain('kirocrew token')
     expect(el.querySelector('input')).not.toBeNull()
     expect(el.querySelector('button')?.textContent).toBe('✕')
   })
@@ -463,6 +464,44 @@ describe('session-expired banner', () => {
     } finally {
       window.removeEventListener('mc-auth-required', required)
       window.removeEventListener('mc-auth-cleared', cleared)
+    }
+  })
+
+  it('emits mc-auth-recovered on real recovery but never on a dismiss', async () => {
+    // Two events, and the whole point is that they are NOT interchangeable.
+    // `mc-auth-cleared` means the banner is gone, which a dismiss also achieves;
+    // `mc-auth-recovered` means authentication works. A consumer that resets a
+    // stale auth failure must only ever hear the second, so this pins the
+    // difference at the producer -- the side no synthetic dispatchEvent can test.
+    const cleared = vi.fn()
+    const recovered = vi.fn()
+    window.addEventListener('mc-auth-cleared', cleared)
+    window.addEventListener('mc-auth-recovered', recovered)
+    try {
+      fetchMock.mockResolvedValue(res(401, 'revoked'))
+      checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+      await vi.waitFor(() => expect(banner()).not.toBeNull())
+
+      const dismiss = Array.from(banner()?.querySelectorAll('button') ?? []).find(
+        b => b.textContent === '✕',
+      )
+      expect(dismiss).toBeDefined()
+      dismiss?.click()
+      // Precondition, not the claim: prove the click landed, so the assertions
+      // below cannot pass merely because nothing happened.
+      expect(banner()).toBeNull()
+      expect(cleared).toHaveBeenCalled()
+      expect(recovered).not.toHaveBeenCalled()
+
+      // Now the real thing. Raise the banner again and clear it the way every
+      // 2xx and every accepted token exchange does.
+      checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+      await vi.waitFor(() => expect(banner()).not.toBeNull())
+      removeAuthBanner()
+      expect(recovered).toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('mc-auth-cleared', cleared)
+      window.removeEventListener('mc-auth-recovered', recovered)
     }
   })
 
@@ -507,31 +546,52 @@ describe('session-expired banner', () => {
       Object.defineProperty(window, 'location', { value: original, writable: true, configurable: true })
     })
 
+    /**
+     * Paste *value*, press Enter, and report the URL the exchange requested.
+     *
+     * The paste used to navigate, so these cases read `location.href`. It now
+     * exchanges the token in place against `/api/auth/me?token=...`, which
+     * authenticates by the same mechanism the navigation did -- the auth
+     * middleware takes a query token ahead of the cookie and writes the session
+     * cookie onto the response -- without discarding the page's in-memory state
+     * (#12240). What each case is really about, extracting the token out of a
+     * pasted URL and encoding it for a query string, is unchanged; only where the
+     * token is sent has moved. `location.href` is asserted separately to stay
+     * untouched, so a regression back to navigating fails here.
+     */
     async function pasteAndEnter(value: string) {
       fetchMock.mockResolvedValue(res(401, 'revoked'))
       checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
       await vi.waitFor(() => expect(banner()).not.toBeNull())
       const input = banner()!.querySelector('input') as HTMLInputElement
+      fetchMock.mockClear()
+      // The exchange is awaited by the handler, so the request is visible on the
+      // mock but the paste itself resolves nothing for the caller to await.
+      fetchMock.mockResolvedValue(res(200, '{}'))
       input.value = value
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-      return window.location.href
+      await vi.waitFor(() => {
+        if (!fetchMock.mock.calls.length) throw new Error('no exchange requested')
+      }).catch(() => {})
+      expect(window.location.href).toBe('https://desk.example:6776/')
+      return (fetchMock.mock.calls[0]?.[0] as string | undefined) ?? null
     }
 
     it('extracts the token out of a pasted `kirocrew token` URL', async () => {
       expect(await pasteAndEnter('http://127.0.0.1:6776/?token=abc123&x=1'))
-        .toBe('https://desk.example:6776?token=abc123')
+        .toBe('/api/auth/me?token=abc123')
     })
 
     it('accepts a bare token, which is not a parseable URL', async () => {
-      expect(await pasteAndEnter('rawtoken')).toBe('https://desk.example:6776?token=rawtoken')
+      expect(await pasteAndEnter('rawtoken')).toBe('/api/auth/me?token=rawtoken')
     })
 
     it('percent-encodes a token containing URL-significant characters', async () => {
-      expect(await pasteAndEnter('a+b/c=')).toBe('https://desk.example:6776?token=a%2Bb%2Fc%3D')
+      expect(await pasteAndEnter('a+b/c=')).toBe('/api/auth/me?token=a%2Bb%2Fc%3D')
     })
 
     it('does nothing on an empty field', async () => {
-      expect(await pasteAndEnter('   ')).toBe('https://desk.example:6776/')
+      expect(await pasteAndEnter('   ')).toBeNull()
     })
 
     it('ignores keys other than Enter', async () => {
@@ -539,9 +599,158 @@ describe('session-expired banner', () => {
       checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
       await vi.waitFor(() => expect(banner()).not.toBeNull())
       const input = banner()!.querySelector('input') as HTMLInputElement
+      fetchMock.mockClear()
       input.value = 'abc'
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }))
+      expect(fetchMock).not.toHaveBeenCalled()
       expect(window.location.href).toBe('https://desk.example:6776/')
+    })
+
+    /**
+     * Raise the banner and press Enter on *value*, with the exchange answering
+     * *exchange*. Returns the banner so a case can read what it now says.
+     */
+    async function pasteWithExchange(value: string, exchange: Response) {
+      fetchMock.mockResolvedValue(res(401, 'revoked'))
+      checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+      await vi.waitFor(() => expect(banner()).not.toBeNull())
+      const input = banner()!.querySelector('input') as HTMLInputElement
+      fetchMock.mockClear()
+      fetchMock.mockResolvedValue(exchange)
+      input.value = value
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      return input
+    }
+
+    it('says so when the exchange refuses the token, instead of failing silently', async () => {
+      const input = await pasteWithExchange('stale-token', res(401, 'expired'))
+      // The refusal has to be VISIBLE. Re-enabling the field is the only other
+      // cue and is indistinguishable from nothing having happened, which is what
+      // makes a user press Enter again and conclude the banner is broken.
+      await vi.waitFor(() => {
+        expect(banner()!.textContent).toContain('sign-in URL was not accepted')
+      })
+      expect(input.disabled).toBe(false)
+      // Still shown: the user corrects a refused token rather than re-pasting.
+      expect(banner()).not.toBeNull()
+    })
+
+    it('announces the refusal to a screen reader as well as showing it', async () => {
+      await pasteWithExchange('stale-token', res(401, 'expired'))
+      await vi.waitFor(() => {
+        const live = banner()!.querySelector('[role="status"]')
+        expect(live?.textContent).toContain('sign-in URL was not accepted')
+      })
+    })
+
+    it('drops the previous refusal when a new attempt starts', async () => {
+      const input = await pasteWithExchange('stale-token', res(401, 'expired'))
+      await vi.waitFor(() =>
+        expect(banner()!.textContent).toContain('sign-in URL was not accepted'),
+      )
+      // A second attempt must not leave the old answer on screen while it runs,
+      // or a user cannot tell which attempt the text belongs to.
+      fetchMock.mockClear()
+      fetchMock.mockImplementation(() => new Promise(() => {}))
+      input.value = 'another-token'
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      expect(banner()!.querySelector('[role="status"]')!.textContent).toBe('')
+    })
+
+    it('sets the command as its own <code> element, not as prose', async () => {
+      fetchMock.mockResolvedValue(res(401, 'revoked'))
+      checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+      await vi.waitFor(() => expect(banner()).not.toBeNull())
+      // The sentence is ONE translatable unit, so the chip is found by splitting
+      // the rendered text on the command itself. Without it the command reads as
+      // prose and a reader cannot see where it begins and ends.
+      const chip = banner()!.querySelector('code')
+      expect(chip?.textContent).toBe('kirocrew token')
+      // Still one sentence around it, not a fragment.
+      expect(banner()!.textContent).toContain('in a terminal')
+      expect(banner()!.textContent).toContain('press Enter')
+    })
+
+    it('every catalog keeps the command its instruction is split on', async () => {
+      // The chip rests on a relationship between two catalog values that this
+      // module does not own: each locale's instruction must contain that same
+      // locale's `reauth_command` verbatim. Pin the RELATIONSHIP, so a
+      // translation that breaks it fails here instead of silently costing the
+      // chip.
+      const catalogs = import.meta.glob<Record<string, unknown>>(
+        '../i18n/locales/*.json',
+        { eager: true },
+      )
+      const broken: string[] = []
+      let checked = 0
+      for (const [path, mod] of Object.entries(catalogs)) {
+        // `en.json` holds no api.client section, and `en-XA` is the GENERATED
+        // pseudolocale: its generator accents every ASCII letter, so it carries
+        // no verbatim command by construction and is not a shipping locale.
+        if (path.endsWith('en.json') || path.endsWith('en-XA.json')) continue
+        const root = (mod as { default?: Record<string, unknown> }).default ?? mod
+        const client = (root as { api?: { client?: Record<string, string> } }).api?.client
+        const command = client?.reauth_command
+        const instruction = client?.run_kirocrew_token_then_paste_sign_in_url
+        if (command === undefined || instruction === undefined) continue
+        checked += 1
+        if (!instruction.includes(command)) broken.push(path)
+      }
+      // A vacuous pass is the failure mode here: zero catalogs checked would
+      // assert nothing at all.
+      expect(checked).toBeGreaterThanOrEqual(12)
+      expect(broken).toEqual([])
+    })
+
+    it('refetches only the queries that FAILED and hold nothing, so no draft is overwritten', async () => {
+      const spy = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+      try {
+        await pasteWithExchange('good-token', res(200, '{}'))
+        await vi.waitFor(() => expect(spy).toHaveBeenCalled())
+        const arg = spy.mock.calls.at(-1)?.[0] as
+          | { predicate?: (q: { state: { status: string; data?: unknown } }) => boolean }
+          | undefined
+        // A no-argument invalidateQueries() refetches EVERY active query,
+        // including ones holding good data -- and a panel whose effect syncs
+        // editor state from its query would then overwrite an unsaved draft.
+        // Asserting the filter exists is what stops a regression back to that.
+        expect(arg?.predicate).toBeTypeOf('function')
+        expect(arg!.predicate!({ state: { status: 'error' } })).toBe(true)
+        expect(arg!.predicate!({ state: { status: 'success' } })).toBe(false)
+        expect(arg!.predicate!({ state: { status: 'pending' } })).toBe(false)
+        // The status is not enough on its own. React Query keeps the last
+        // successful `data` when a refetch fails, so an error-state query can
+        // still be holding a value -- and refetching THAT is what re-delivers
+        // server data to a sync effect and wipes the draft. `McpCustomServerModal`
+        // has exactly such an effect on `specQuery.data`.
+        expect(arg!.predicate!({ state: { status: 'error', data: { spec: {} } } })).toBe(false)
+        expect(arg!.predicate!({ state: { status: 'error', data: null } })).toBe(false)
+        expect(arg!.predicate!({ state: { status: 'error', data: undefined } })).toBe(true)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+  })
+
+  describe('banner copy', () => {
+    it('tells the reader WHERE to run the command, and asks for a sign-in URL', async () => {
+      fetchMock.mockResolvedValue(res(401, 'revoked'))
+      checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+      await vi.waitFor(() => expect(banner()).not.toBeNull())
+      // "Run kirocrew token" alone left a reader guessing where to run it; the
+      // panel's own error sentence already said "in a terminal", so the banner
+      // saying less than the card was the inconsistency. The command sits inside
+      // that sentence rather than in its own <code>, because a value that stops
+      // mid-sentence cannot be reordered by a translator.
+      expect(banner()!.textContent).toContain('in a terminal')
+      expect(banner()!.textContent).toContain('kirocrew token')
+      // On this page the user is already holding a credential for the secrets
+      // form, so a field labelled "token" invites pasting the wrong one.
+      const input = banner()!.querySelector('input') as HTMLInputElement
+      expect(input.placeholder).toContain('sign-in URL')
+      expect(input.placeholder).not.toContain('raw token')
     })
   })
 

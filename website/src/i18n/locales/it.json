@@ -135,13 +135,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "Incolla l'URL del token o il token grezzo…",
+      "paste_token_url_or_raw_token": "Incolla l'URL di accesso…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "Esegui kirocrew token in un terminale, incolla qui sotto l'URL di accesso e premi Invio.",
       "session_expired": "Sessione scaduta.",
-      "session_expired_sign_in_again": "Sessione scaduta. Esegui kirocrew token in un terminale, quindi incolla l'URL nel banner in cima a questa pagina per accedere di nuovo.",
+      "session_expired_sign_in_again": "Sessione scaduta. Esegui kirocrew token in un terminale, quindi incolla l'URL di accesso nel banner in cima a questa pagina per accedere di nuovo.",
       "stale_owner_session": "Questa sessione è precedente al proprietario configurato. Accedi di nuovo.",
-      "stale_owner_session_sign_in_again": "Questa sessione è precedente al proprietario configurato (l'accesso è avvenuto prima che KIROCREW_OWNER_ID fosse impostato). Esegui kirocrew token in un terminale, quindi incolla l'URL nel banner in cima a questa pagina per accedere di nuovo.",
+      "stale_owner_session_sign_in_again": "Questa sessione è precedente al proprietario configurato (l'accesso è avvenuto prima che KIROCREW_OWNER_ID fosse impostato). Esegui kirocrew token in un terminale, quindi incolla l'URL di accesso nel banner in cima a questa pagina per accedere di nuovo.",
       "stream_ended_without_completion": "Lo stream è terminato senza completarsi",
+      "token_not_accepted": "Questo URL di accesso non è stato accettato. Esegui di nuovo kirocrew token e incolla qui sotto il nuovo URL di accesso.",
+      "token_exchange_unreachable": "Non è stato possibile raggiungere il gateway, quindi l'URL di accesso non è stato verificato. Verifica che sia in esecuzione, poi premi di nuovo Invio.",
       "unexpected_server_response": "Risposta del server inaspettata"
     }
   },

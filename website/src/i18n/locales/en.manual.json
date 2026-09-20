@@ -134,13 +134,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "Paste token URL or raw token…",
+      "paste_token_url_or_raw_token": "Paste sign-in URL…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "Run kirocrew token in a terminal, then paste the sign-in URL below and press Enter.",
       "session_expired": "Session expired.",
-      "session_expired_sign_in_again": "Session expired. Run kirocrew token in a terminal, then paste the URL into the banner at the top of this page to sign back in.",
+      "session_expired_sign_in_again": "Session expired. Run kirocrew token in a terminal, then paste the sign-in URL into the banner at the top of this page to sign back in.",
       "stale_owner_session": "This session predates the configured owner. Sign in again.",
-      "stale_owner_session_sign_in_again": "This session predates the configured owner (it was signed in before KIROCREW_OWNER_ID was set). Run kirocrew token in a terminal, then paste the URL into the banner at the top of this page to sign back in.",
+      "stale_owner_session_sign_in_again": "This session predates the configured owner (it was signed in before KIROCREW_OWNER_ID was set). Run kirocrew token in a terminal, then paste the sign-in URL into the banner at the top of this page to sign back in.",
       "stream_ended_without_completion": "Stream ended without completion",
+      "token_not_accepted": "That sign-in URL was not accepted. Run kirocrew token again and paste the new sign-in URL below.",
+      "token_exchange_unreachable": "Could not reach the gateway, so the sign-in URL was not checked. Make sure it is running, then press Enter again.",
       "unexpected_server_response": "Unexpected server response"
     }
   },

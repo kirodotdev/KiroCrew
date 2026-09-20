@@ -135,13 +135,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "Cole a URL do token ou o token bruto…",
+      "paste_token_url_or_raw_token": "Cole a URL de início de sessão…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limite de taxa aplicado pela borda do túnel (HTTP 429) — muitas solicitações em rajada. O painel repete a tentativa automaticamente; se isso persistir, aguarde alguns segundos e recarregue.",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "Execute kirocrew token num terminal, cole abaixo a URL de início de sessão e pressione Enter.",
       "session_expired": "Sessão expirada.",
-      "session_expired_sign_in_again": "A sessão expirou. Execute kirocrew token em um terminal e cole o URL no banner no topo desta página para entrar novamente.",
+      "session_expired_sign_in_again": "A sessão expirou. Execute kirocrew token em um terminal e cole a URL de início de sessão no banner no topo desta página para entrar novamente.",
       "stale_owner_session": "Esta sessão é anterior ao proprietário configurado. Entre novamente.",
-      "stale_owner_session_sign_in_again": "Esta sessão é anterior ao proprietário configurado (o login ocorreu antes de KIROCREW_OWNER_ID ser definido). Execute kirocrew token em um terminal e cole o URL no banner no topo desta página para entrar novamente.",
+      "stale_owner_session_sign_in_again": "Esta sessão é anterior ao proprietário configurado (o login ocorreu antes de KIROCREW_OWNER_ID ser definido). Execute kirocrew token em um terminal e cole a URL de início de sessão no banner no topo desta página para entrar novamente.",
       "stream_ended_without_completion": "Stream encerrado sem conclusão",
+      "token_not_accepted": "Essa URL de início de sessão não foi aceita. Execute kirocrew token de novo e cole abaixo a nova URL de início de sessão.",
+      "token_exchange_unreachable": "Não foi possível contactar o gateway, por isso a URL de início de sessão não foi verificada. Confirme que está em execução e pressione Enter novamente.",
       "unexpected_server_response": "Resposta inesperada do servidor"
     }
   },

@@ -1445,7 +1445,7 @@ let _sessionExpiredShown = false
  * because that session is still AUTHENTICATED: ordinary polls keep succeeding,
  * so the `j` wrapper's clear-banner-on-2xx self-dismissal would remove the one
  * instruction that recovers the owner-gated surfaces. It clears via the
- * banner's own ✕ or the sign-in reload, never via a 2xx.
+ * banner's own X or a successful in-banner token exchange, never via a 2xx.
  */
 let _staleOwnerBanner = false
 
@@ -1463,8 +1463,19 @@ export function isAuthBannerShown(): boolean {
  * to auth-banner state transitions. The banner itself is a vanilla DOM
  * element managed by this module; the events let consumers (e.g.
  * `ChatPage`) suppress redundant offline UI when auth is the real blocker.
+ *
+ * Two events, and the difference is load-bearing. `mc-auth-cleared` means
+ * only THE BANNER IS GONE, which includes the reader dismissing it with its
+ * X while the session is still broken. `mc-auth-recovered` means
+ * AUTHENTICATION WORKS AGAIN, and is emitted from `removeAuthBanner` alone --
+ * every one of whose callers is gated on a 2xx or on an accepted token
+ * exchange. A consumer that acts on recovery (dropping a stale auth failure)
+ * must read the second; a consumer that only mirrors banner presence reads
+ * the first.
  */
-function _emitAuthEvent(kind: 'mc-auth-required' | 'mc-auth-cleared'): void {
+function _emitAuthEvent(
+  kind: 'mc-auth-required' | 'mc-auth-cleared' | 'mc-auth-recovered',
+): void {
   if (typeof window === 'undefined') return
   try { window.dispatchEvent(new CustomEvent(kind)) } catch { /* ignore */ }
 }
@@ -1472,9 +1483,10 @@ function _emitAuthEvent(kind: 'mc-auth-required' | 'mc-auth-cleared'): void {
 /**
  * Clear the session-expired banner if it is currently shown.
  * Called automatically from the `j` response wrapper on any 2xx response so
- * the banner self-dismisses once auth is restored (e.g. via the in-banner
- * token-paste flow that reloads with `?token=X`, OR via a successful poll
- * after gateway restart wiped the session table).
+ * the banner self-dismisses once auth is restored (e.g. via a successful poll
+ * after gateway restart wiped the session table). The in-banner token paste
+ * calls it directly once its exchange succeeds, since that path deliberately
+ * issues no request whose 2xx would reach `j`.
  *
  * Idempotent: safe to call on every response.
  */
@@ -1495,6 +1507,11 @@ export function removeAuthBanner(): void {
   const el = document.getElementById('mc-session-expired')
   if (el) el.remove()
   _emitAuthEvent('mc-auth-cleared')
+  // Reaching here means a caller proved auth works: every call site is behind a
+  // 2xx or an accepted token exchange. The banner's own X does NOT come through
+  // here -- it tears the banner down inline -- so this event, unlike
+  // `mc-auth-cleared`, is never fired by a reader simply dismissing the notice.
+  _emitAuthEvent('mc-auth-recovered')
 }
 
 // Reactive warm-path recovery: background-poll 403s funnel here, through the
@@ -1552,6 +1569,110 @@ export function __resetAuthRecoveryStateForTests(): void {
   }
 }
 
+/**
+ * Exchange a pasted token for a session cookie WITHOUT leaving the page.
+ *
+ * The auth middleware reads `?token=` AHEAD of the session cookie on every path,
+ * and because such a token did not arrive from the cookie it writes the session
+ * cookie onto that response once the handler returns (`dashboard/token_auth.py`,
+ * the `if not from_cookie` branch). `GET /api/auth/me` is deliberately kept off
+ * the bypass list so it runs the full auth path. One credentialed request on that
+ * endpoint therefore establishes the session in place.
+ *
+ * This used to be `window.location.href = ...?token=...`, which authenticated by
+ * exactly the same mechanism and threw away every piece of in-memory state on the
+ * way. Whatever the user had typed into the panel that prompted the re-auth went
+ * with it -- for Settings -> Secrets that was a credential they had already
+ * pasted, which is the loss this replaces (#12240).
+ *
+ * Answers false for any non-2xx and for a transport failure, including the 404 an
+ * older gateway gives for this endpoint. The caller keeps the banner up on false,
+ * so a server that cannot exchange in place leaves the user exactly where they
+ * were rather than half-signed-in.
+ */
+/**
+ * What one in-banner exchange established.
+ *
+ * `reached` is false only when the request never got an answer -- an unreachable
+ * gateway, a dropped connection. It is separate from `ok` because the two need
+ * different words: a refused token asks the user to paste a better one, while an
+ * unreachable gateway makes "not accepted" an assertion about a check that never
+ * ran.
+ *
+ * `ok` means some credential is live: enough to drop a plain-expiry banner,
+ * which was raised because nothing was. `tokenAccepted` is the gateway's answer
+ * to the narrower question -- is the token in THIS request what authenticated it
+ * -- and `ownerOk` to whether that caller also clears the owner gate. A token
+ * minted before the owner was configured is valid, so it can be accepted and
+ * still denied; resolving an owner denial needs both. A gateway that predates
+ * either field leaves it false, which keeps the prompt up rather than dismissing
+ * one it cannot vouch for.
+ */
+type PasteExchange = {
+  reached: boolean
+  ok: boolean
+  tokenAccepted: boolean
+  ownerOk: boolean
+}
+
+const EXCHANGE_UNREACHABLE: PasteExchange = {
+  reached: false,
+  ok: false,
+  tokenAccepted: false,
+  ownerOk: false,
+}
+
+async function exchangePastedToken(token: string): Promise<PasteExchange> {
+  try {
+    const r = await fetch('/api/auth/me?token=' + encodeURIComponent(token), {
+      credentials: 'include',
+    })
+    if (!r.ok) return { reached: true, ok: false, tokenAccepted: false, ownerOk: false }
+    try {
+      const body = (await r.json()) as
+        | { token_accepted?: unknown; owner_ok?: unknown }
+        | null
+      return {
+        reached: true,
+        ok: true,
+        tokenAccepted: body?.token_accepted === true,
+        ownerOk: body?.owner_ok === true,
+      }
+    } catch {
+      // 2xx with an unreadable body: the session is live, but nothing vouches
+      // for the pasted token, so it counts as the unproven case.
+      return { reached: true, ok: true, tokenAccepted: false, ownerOk: false }
+    }
+  } catch {
+    return EXCHANGE_UNREACHABLE
+  }
+}
+
+/**
+ * Render *sentence* into *el* with the command wrapped in a <code> element.
+ *
+ * The command comes from `api.client.reauth_command`, so the value split on is
+ * the SAME value a translator sees, and no untranslated literal sits in this
+ * module. Falls back to the plain sentence when the command is absent from it,
+ * because a translation that moved or dropped it must still be readable --
+ * losing the chip is a styling regression, whereas rendering nothing would be a
+ * blank banner. `ApiClient.coverage.test.tsx` pins the relationship across every
+ * catalog, so a translation that breaks it reddens CI rather than silently
+ * costing the chip.
+ */
+function setInstructionWithCommandChip(el: HTMLElement, sentence: string): void {
+  const command = i18nT('api.client.reauth_command')
+  const at = command ? sentence.indexOf(command) : -1
+  if (at < 0) {
+    el.textContent = sentence
+    return
+  }
+  el.append(document.createTextNode(sentence.slice(0, at)))
+  const chip = document.createElement('code')
+  chip.textContent = command
+  el.append(chip, document.createTextNode(sentence.slice(at + command.length)))
+}
+
 function showSessionExpiredBanner(lead?: string): void {
   if (_sessionExpiredShown) return
   _sessionExpiredShown = true
@@ -1563,9 +1684,6 @@ function showSessionExpiredBanner(lead?: string): void {
     'padding:12px 20px;text-align:center;font:14px/1.5 system-ui;'
   const b = document.createElement('b')
   b.textContent = lead ?? i18nT('api.client.session_expired')
-  const code = document.createElement('code')
-  code.textContent = 'kirocrew token'
-  code.style.cssText = 'background:#7f1d1d;padding:2px 6px;border-radius:4px'
   const input = document.createElement('input')
   input.type = 'text'
   input.placeholder = i18nT('api.client.paste_token_url_or_raw_token')
@@ -1575,16 +1693,123 @@ function showSessionExpiredBanner(lead?: string): void {
     'outline:2px solid transparent;outline-offset:2px;transition:border-color 0.2s,box-shadow 0.2s;'
   input.addEventListener('focus', () => { input.style.borderColor = '#fff'; input.style.boxShadow = '0 0 0 3px rgba(255,255,255,0.25),0 0 20px rgba(255,255,255,0.1)' })
   input.addEventListener('blur', () => { input.style.borderColor = '#fca5a5'; input.style.boxShadow = 'none' })
+  // A refused paste has to say so. The exchange's only other cue is the field
+  // re-enabling, which is indistinguishable from nothing having happened, so
+  // without this the user presses Enter again and concludes the banner is
+  // broken. `role="status"` announces the text when it appears, since a sighted
+  // user sees it arrive and a screen-reader user otherwise would not.
+  //
+  // A `div`, and deliberately unstyled: block layout puts it on its own line
+  // without an inline-spacing rule, and it inherits the banner's white-on-red
+  // type, which clears contrast at this size where a lighter red would not.
+  const failure = document.createElement('div')
+  failure.setAttribute('role', 'status')
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const v = input.value.trim()
       if (!v) return
       let t: string | null = null
       try { t = new URL(v).searchParams.get('token') } catch { t = v }
-      if (t) window.location.href = `${window.location.protocol}//${window.location.host}?token=${encodeURIComponent(t)}`
+      if (!t) return
+      // Disabled for the round trip so a second Enter cannot start a second
+      // exchange. The pasted text is left in the field: on a refusal the user
+      // corrects it rather than re-pasting from scratch.
+      input.disabled = true
+      // Drop the previous attempt's refusal now, so the next one is visibly a
+      // new answer rather than text that was already on screen.
+      failure.textContent = ''
+      void exchangePastedToken(t).then(({ reached, ok, tokenAccepted, ownerOk }) => {
+        input.disabled = false
+        if (!reached) {
+          // The request never got an answer, so nothing judged the token. Saying
+          // it was not accepted would assert a check that never ran and send the
+          // user to re-run a command that cannot help.
+          failure.textContent = i18nT('api.client.token_exchange_unreachable')
+          input.focus()
+          return
+        }
+        if (!ok) {
+          failure.textContent = i18nT('api.client.token_not_accepted')
+          input.focus()
+          return
+        }
+        // An owner denial is resolved by ONE event: a credential that both
+        // authenticates AND clears the owner gate. A 2xx here establishes
+        // neither. `/api/auth/me` is not owner-gated, so this session -- still
+        // authenticated, still owner-denied -- answers 200 on its cookie, and
+        // the middleware quietly falls back to that cookie when the pasted token
+        // is invalid. A token minted before the owner was configured is valid
+        // too, so it is accepted and still denied everywhere the gate fronts.
+        // Clearing the latch on the status alone, or on acceptance alone, would
+        // hide the prompt while every owner-gated call kept failing, and the
+        // user would learn that from their next refused save.
+        //
+        // So the latch drops only when the gateway reports both. Without them
+        // the banner stays up and says the token was not accepted, which is the
+        // accurate reading of a 200 that proves neither.
+        if (_staleOwnerBanner && !(tokenAccepted && ownerOk)) {
+          failure.textContent = i18nT('api.client.token_not_accepted')
+          input.focus()
+          return
+        }
+        // `removeAuthBanner` returns early while the latch is set --
+        // deliberately, because that session keeps answering 2xx on everything
+        // the owner gate does not front, so an unrelated success proves
+        // nothing. Dropping it here is what lets the banner clear on its own
+        // recovery, which the previous full-page reload hid by wiping the
+        // document.
+        _staleOwnerBanner = false
+        // Auth works again. `removeAuthBanner` drops the banner and clears the
+        // terminal-refresh latch, so a LATER lapse in this document retries the
+        // silent path instead of going straight back to the banner.
+        removeAuthBanner()
+        // Only queries that failed AND are holding nothing get refetched.
+        //
+        // `status === 'error'` alone is not enough, and the earlier version of
+        // this comment was wrong to say an error-state query has no data to sync
+        // from. React Query KEEPS the last successful `data` when a later
+        // refetch fails: measured against `@tanstack/query-core`, a query that
+        // succeeds and then fails a refetch reports `status: 'error'` with its
+        // `data` still defined and unchanged. Refetching one of those
+        // re-delivers data to whatever watches it, and
+        // `McpCustomServerModal`'s effect runs
+        // `setText(JSON.stringify(specQuery.data.spec, ...))` on every change of
+        // `specQuery.data` -- so an unsaved spec draft would be silently
+        // overwritten by the server's copy. A no-argument
+        // `invalidateQueries()` does that to every panel at once, which is the
+        // wider version of the same bug.
+        //
+        // `data === undefined` narrows it to queries that never carried a
+        // successful value: exactly the ones the lapse broke, and the only ones
+        // with nothing to overwrite a draft with.
+        void queryClient.invalidateQueries({
+          predicate: (q) => q.state.status === 'error' && q.state.data === undefined,
+        })
+      })
     }
   })
-  el.append(b, ' Run ', code, ' then paste URL: ', input)
+  // The connective text around the command used to sit here as two bare English
+  // It used to be two bare English fragments wrapped around a <code> element,
+  // which left the banner untranslated everywhere while the panel's own error
+  // card was translated. A key per fragment is not the fix: the i18n gate
+  // rejects a value that ends mid-sentence, because the translator cannot
+  // reorder around a sibling it never sees -- and several languages need the
+  // command somewhere English does not put it. `api.client.
+  // session_expired_sign_in_again` already carries this same command inline in a
+  // whole sentence across every locale, so this follows that precedent. A `div`
+  // so it needs no inline spacing rule.
+  //
+  // The command still gets its own <code> element, found by splitting the
+  // rendered sentence on the command itself rather than by a placeholder: that
+  // keeps one whole translatable sentence in one key AND keeps the command
+  // visually separable, which is the whole reason a reader can tell where it
+  // begins and ends.
+  const instruction = document.createElement('div')
+  setInstructionWithCommandChip(
+    instruction,
+    i18nT('api.client.run_kirocrew_token_then_paste_sign_in_url'),
+  )
+  el.append(b, instruction, input, failure)
   const dismiss = document.createElement('button')
   dismiss.textContent = '✕'
   dismiss.style.cssText =
@@ -1662,7 +1887,7 @@ function handleStaleOwnerSession(): void {
   // raised moments earlier would otherwise keep its clear-on-2xx self-dismissal
   // and vanish on the next successful poll — this session still succeeds on
   // everything the owner gate does not front, so once the stale denial is seen
-  // only the ✕ or a sign-in reload may clear the prompt.
+  // only the X or a successful in-banner token exchange may clear the prompt.
   _staleOwnerBanner = true
   if (_sessionExpiredShown) return
   // Embedded in the Instances pane stack: hand recovery to the hub, mirroring
@@ -2810,6 +3035,36 @@ export interface ChannelFolderBackfillReport {
   failed: number
 }
 
+/** One credential the gateway knows how to use by name, as `GET /api/secrets`
+ *  reports it. `host` is present only for a per-host credential. */
+export interface ManagedSecret {
+  name: string
+  kind: string
+  host?: string
+}
+
+/** What `GET /api/secrets` answers with.
+ *
+ *  Values are never on this wire: the vault is write-only to the dashboard, so
+ *  the list carries NAMES plus the catalog rows that describe them.
+ *
+ *  Typed HERE rather than in the panel that renders it because the request
+ *  belongs on this transport. The panel used to issue its own `fetch`, which
+ *  reached none of the recovery `j` runs, so an expired session read a bare
+ *  status code with no way to sign back in (#12240).
+ */
+export interface SecretsListResponse {
+  names: string[]
+  managed: ManagedSecret[]
+  /** Stored names the gateway currently ignores, with the reason. Absent when
+   *  every stored name is live. */
+  unused?: Array<{ name: string; reason: 'wakatime_disabled' | 'jira_multi_host' | 'jira_host_precedence' }>
+  /** The managed catalog could not be read. Carried on a 200: the stored names
+   *  are still authoritative, so this is a warning beside a good list rather
+   *  than a failed request. */
+  managed_error?: boolean
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -3606,8 +3861,24 @@ export const api = {
   cronRunDetail: (jobId: string, runId: string) => fetch('/api/crons/' + jobId + '/history/' + encodeURIComponent(runId), { headers: { ..._sk } }).then(j),
   cronScript: (jobId: string) => fetch('/api/crons/' + jobId + '/script', { headers: { ..._sk } }).then(j),
   /** Vault secret NAMES (values are never exposed). Same endpoint the Settings
-   * Secrets panel reads. */
-  secretsList: () => fetch('/api/secrets').then(j),
+   * Secrets panel reads.
+   *
+   * On `get` rather than a bare `fetch` so the request carries `X-Session-Key`
+   * and the server-side ephemeral gate always runs, matching every other method
+   * here. */
+  secretsList: () => get('/api/secrets').then(j) as Promise<SecretsListResponse>,
+  /** Store a vault secret under *name*, replacing any current value.
+   *
+   *  On this transport rather than the Secrets panel's own `fetch`, which is what
+   *  every sibling settings panel already does and what the panel gains by it:
+   *  the `X-Session-Key` header, `checkSessionExpired`'s silent refresh and
+   *  re-auth banner, and an `ApiError` whose message is the sign-in instruction
+   *  instead of the gateway's cryptographic reason. Raw `fetch` reaches none of
+   *  that, so an expired session was shown a bare status code and offered only a
+   *  retry that could not succeed (#12240). */
+  secretsSave: (name: string, value: string) => post('/api/secrets', { name, value }).then(j),
+  /** Remove a vault secret by name. Same transport reason as `secretsSave`. */
+  secretsDelete: (name: string) => del('/api/secrets/' + encodeURIComponent(name)).then(j),
   ackCron: (id: string, summary: string, ts?: string) => post('/api/crons/' + id + '/ack', { summary, ts }).then(j),
   cronHistoryAll: (opts?: { offset?: number; limit?: number; jobId?: string }) => {
     const p = new URLSearchParams()

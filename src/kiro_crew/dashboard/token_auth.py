@@ -3101,6 +3101,19 @@ def token_auth_middleware(
         request["auth_token"] = session_token
         # POSITIVE dashboard-user signal for the WS scope gate (see above).
         request["is_dashboard_user"] = not app_name
+        # WHICH credential authenticated: the ``?token=`` the caller presented,
+        # or the session cookie the fallback above adopted after that query
+        # token proved invalid. One bit, derived from the same ``from_cookie``
+        # the cookie-set branch below already keys on -- a fresh cookie is set
+        # only on a query-token exchange, so this is that decision named.
+        #
+        # A status code cannot carry it. ``/api/auth/me`` is not owner-gated, so
+        # a session that is authenticated but owner-denied answers 200 there on
+        # its cookie alone; a caller reading only the status would take that for
+        # "the token I sent was accepted". ``api_auth_me`` returns this so the
+        # in-banner re-auth exchange can tell the two apart, which it cannot do
+        # from Set-Cookie: that header is unreadable from a browser.
+        request["auth_from_query_token"] = not from_cookie
 
         # App-token least-privilege gate (CWE-269): an app token is confined to
         # its own namespace + its manifest ``permissions.api`` allowlist. This

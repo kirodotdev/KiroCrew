@@ -133,13 +133,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "粘贴令牌 URL 或原始令牌…",
+      "paste_token_url_or_raw_token": "粘贴登录 URL…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "在终端中运行 kirocrew token，然后将登录 URL 粘贴到下方并按 Enter。",
       "session_expired": "会话已过期。",
-      "session_expired_sign_in_again": "会话已过期。请在终端运行 kirocrew token，然后将 URL 粘贴到本页顶部的横幅中重新登录。",
+      "session_expired_sign_in_again": "会话已过期。请在终端运行 kirocrew token，然后将登录 URL 粘贴到本页顶部的横幅中重新登录。",
       "stale_owner_session": "此会话早于已配置的所有者。请重新登录。",
-      "stale_owner_session_sign_in_again": "此会话早于已配置的所有者（登录发生在设置 KIROCREW_OWNER_ID 之前）。请在终端运行 kirocrew token，然后将 URL 粘贴到本页顶部的横幅中重新登录。",
+      "stale_owner_session_sign_in_again": "此会话早于已配置的所有者（登录发生在设置 KIROCREW_OWNER_ID 之前）。请在终端运行 kirocrew token，然后将登录 URL 粘贴到本页顶部的横幅中重新登录。",
       "stream_ended_without_completion": "流在完成前结束",
+      "token_not_accepted": "该登录 URL 未被接受。请重新运行 kirocrew token，然后将新的登录 URL 粘贴到下方。",
+      "token_exchange_unreachable": "无法连接到网关，因此没有校验登录 URL。请确认它正在运行，然后再按一次 Enter。",
       "unexpected_server_response": "服务器响应异常"
     }
   },

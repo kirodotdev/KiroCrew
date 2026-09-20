@@ -140,6 +140,106 @@ describe('stale pre-owner session re-auth prompt', () => {
     expect(bannerEl()).not.toBeNull()
   })
 
+  /**
+   * Paste *value* into the standing banner's field with the exchange answering
+   * *exchange*, and return the field so a case can read its state after.
+   */
+  async function pasteIntoBanner(value: string, exchange: Response | Error) {
+    const input = bannerEl()!.querySelector('input') as HTMLInputElement
+    fetchMock.mockReset()
+    if (exchange instanceof Error) fetchMock.mockRejectedValue(exchange)
+    else fetchMock.mockResolvedValue(exchange)
+    input.value = value
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    return input
+  }
+
+  /** `/api/auth/me` answering 200 and naming which credential authenticated. */
+  const exchanged = (tokenAccepted: boolean, ownerOk = tokenAccepted) =>
+    new Response(
+      JSON.stringify({
+        user_id: 'same-user',
+        token_accepted: tokenAccepted,
+        owner_ok: ownerOk,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+
+  it('keeps the prompt up when the exchange authenticated on the cookie, not the pasted token', async () => {
+    fetchMock.mockResolvedValueOnce(staleDenial())
+    await api.chatMode('trust').catch(() => null)
+    expect(bannerEl()).not.toBeNull()
+
+    // 200 with the SAME user, because this session is authenticated -- just
+    // owner-denied -- and `/api/auth/me` is not owner-gated. The gateway says
+    // the pasted token is not what authenticated it, so nothing was recovered:
+    // clearing here would hide the prompt while every owner-gated call kept
+    // failing, and the identity is identical so it cannot be the tell.
+    const input = await pasteIntoBanner('not-the-owners-token', exchanged(false))
+
+    expect(bannerEl()).not.toBeNull()
+    await vi.waitFor(() => {
+      expect(bannerEl()!.querySelector('[role="status"]')!.textContent).toContain(
+        'sign-in URL was not accepted',
+      )
+    })
+    // Corrigible: the field comes back with the text still in it.
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('not-the-owners-token')
+  })
+
+  it('clears the prompt once the gateway confirms the pasted token authenticated', async () => {
+    fetchMock.mockResolvedValueOnce(staleDenial())
+    await api.chatMode('trust').catch(() => null)
+    expect(bannerEl()).not.toBeNull()
+
+    await pasteIntoBanner('the-owners-token', exchanged(true))
+
+    // The one event that resolves an owner denial, now established rather than
+    // assumed -- so the banner goes, without the full-page reload that used to
+    // take the user's unsaved input with it.
+    await vi.waitFor(() => expect(bannerEl()).toBeNull())
+  })
+
+  it('keeps the prompt up for a token that is accepted but still owner-denied', async () => {
+    fetchMock.mockResolvedValueOnce(staleDenial())
+    await api.chatMode('trust').catch(() => null)
+    expect(bannerEl()).not.toBeNull()
+
+    // A token minted before the owner was configured is a VALID token, so it
+    // authenticates and `token_accepted` is true -- while its subject is still
+    // the bootstrap one the owner gate refuses. Re-pasting an old link from
+    // one's own history lands exactly here, so acceptance alone must not clear
+    // the prompt.
+    await pasteIntoBanner('a-valid-pre-owner-token', exchanged(true, false))
+
+    expect(bannerEl()).not.toBeNull()
+    await vi.waitFor(() => {
+      expect(bannerEl()!.querySelector('[role="status"]')!.textContent).toContain(
+        'sign-in URL was not accepted',
+      )
+    })
+  })
+
+  it('says the gateway was unreachable rather than claiming the token was refused', async () => {
+    fetchMock.mockResolvedValueOnce(staleDenial())
+    await api.chatMode('trust').catch(() => null)
+    expect(bannerEl()).not.toBeNull()
+
+    // Nothing judged the token, so "not accepted" would assert a check that
+    // never ran and send the user to re-run a command that cannot help.
+    const input = await pasteIntoBanner('any-token', new TypeError('Failed to fetch'))
+
+    expect(bannerEl()).not.toBeNull()
+    await vi.waitFor(() => {
+      const live = bannerEl()!.querySelector('[role="status"]')!.textContent ?? ''
+      expect(live).toContain('Could not reach the gateway')
+      expect(live).not.toContain('was not accepted')
+    })
+    expect(input.disabled).toBe(false)
+  })
+
   it('upgrades an already-showing plain-expiry banner to stale-owner lifetime rules', async () => {
     // Raise the generic banner first: access-cookie lapse with the silent
     // refresh terminally exhausted (refresh answers 401).

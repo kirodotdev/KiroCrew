@@ -135,13 +135,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "Colle l’URL du token ou le token brut…",
+      "paste_token_url_or_raw_token": "Colle l’URL de connexion…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Débit limité par la bordure du tunnel (HTTP 429) — trop de requêtes d’un coup. Le tableau de bord réessaie automatiquement ; si cela persiste, attends quelques secondes et recharge la page.",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "Lance kirocrew token dans un terminal, colle l’URL de connexion ci-dessous, puis appuie sur Entrée.",
       "session_expired": "Session expirée.",
-      "session_expired_sign_in_again": "Session expirée. Exécutez kirocrew token dans un terminal, puis collez l'URL dans la bannière en haut de cette page pour vous reconnecter.",
+      "session_expired_sign_in_again": "Session expirée. Exécutez kirocrew token dans un terminal, puis collez l'URL de connexion dans la bannière en haut de cette page pour vous reconnecter.",
       "stale_owner_session": "Cette session est antérieure au propriétaire configuré. Reconnectez-vous.",
-      "stale_owner_session_sign_in_again": "Cette session est antérieure au propriétaire configuré (elle a été ouverte avant la définition de KIROCREW_OWNER_ID). Exécutez kirocrew token dans un terminal, puis collez l'URL dans la bannière en haut de cette page pour vous reconnecter.",
+      "stale_owner_session_sign_in_again": "Cette session est antérieure au propriétaire configuré (elle a été ouverte avant la définition de KIROCREW_OWNER_ID). Exécutez kirocrew token dans un terminal, puis collez l'URL de connexion dans la bannière en haut de cette page pour vous reconnecter.",
       "stream_ended_without_completion": "Flux interrompu avant la fin",
+      "token_not_accepted": "Cette URL de connexion a été refusée. Relance kirocrew token et colle la nouvelle URL de connexion ci-dessous.",
+      "token_exchange_unreachable": "La passerelle est injoignable, l'URL de connexion n'a donc pas été vérifiée. Vérifiez qu'elle fonctionne, puis appuyez de nouveau sur Entrée.",
       "unexpected_server_response": "Réponse inattendue du serveur"
     }
   },

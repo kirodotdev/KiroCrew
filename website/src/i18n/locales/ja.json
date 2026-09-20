@@ -133,13 +133,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "トークン URL またはトークンを貼り付け…",
+      "paste_token_url_or_raw_token": "サインイン URL を貼り付け…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "トンネルエッジでレート制限されています (HTTP 429) — バーストでリクエストが多すぎます。ダッシュボードは自動的に再試行します。これが続く場合は、数秒待ってからリロードしてください。",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "ターミナルで kirocrew token を実行し、下にサインイン URL を貼り付けて Enter を押してください。",
       "session_expired": "セッションの有効期限が切れました。",
-      "session_expired_sign_in_again": "セッションの有効期限が切れました。ターミナルで kirocrew token を実行し、このページ上部のバナーに URL を貼り付けて再度サインインしてください。",
+      "session_expired_sign_in_again": "セッションの有効期限が切れました。ターミナルで kirocrew token を実行し、このページ上部のバナーにサインイン URL を貼り付けて再度サインインしてください。",
       "stale_owner_session": "このセッションはオーナー設定前のものです。再度サインインしてください。",
-      "stale_owner_session_sign_in_again": "このセッションはオーナー設定前のものです（KIROCREW_OWNER_ID の設定前にサインインされました）。ターミナルで kirocrew token を実行し、このページ上部のバナーに URL を貼り付けて再度サインインしてください。",
+      "stale_owner_session_sign_in_again": "このセッションはオーナー設定前のものです（KIROCREW_OWNER_ID の設定前にサインインされました）。ターミナルで kirocrew token を実行し、このページ上部のバナーにサインイン URL を貼り付けて再度サインインしてください。",
       "stream_ended_without_completion": "ストリームが完了せずに終了しました",
+      "token_not_accepted": "このサインイン URL は受け付けられませんでした。kirocrew token を再実行し、新しいサインイン URL を下に貼り付けてください。",
+      "token_exchange_unreachable": "ゲートウェイに接続できなかったため、サインイン URL は検証されていません。起動していることを確認して、もう一度 Enter を押してください。",
       "unexpected_server_response": "予期しないサーバーレスポンス"
     }
   },

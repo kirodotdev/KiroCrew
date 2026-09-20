@@ -135,13 +135,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "Pega la URL del token o el token sin procesar…",
+      "paste_token_url_or_raw_token": "Pega la URL de inicio de sesión…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "Ejecuta kirocrew token en una terminal, pega abajo la URL de inicio de sesión y pulsa Intro.",
       "session_expired": "La sesión ha caducado.",
-      "session_expired_sign_in_again": "La sesión ha caducado. Ejecuta kirocrew token en una terminal y pega la URL en el banner de la parte superior de esta página para volver a iniciar sesión.",
+      "session_expired_sign_in_again": "La sesión ha caducado. Ejecuta kirocrew token en una terminal y pega la URL de inicio de sesión en el banner de la parte superior de esta página para volver a iniciar sesión.",
       "stale_owner_session": "Esta sesión es anterior al propietario configurado. Vuelve a iniciar sesión.",
-      "stale_owner_session_sign_in_again": "Esta sesión es anterior al propietario configurado (se inició antes de establecer KIROCREW_OWNER_ID). Ejecuta kirocrew token en una terminal y pega la URL en el banner de la parte superior de esta página para volver a iniciar sesión.",
+      "stale_owner_session_sign_in_again": "Esta sesión es anterior al propietario configurado (se inició antes de establecer KIROCREW_OWNER_ID). Ejecuta kirocrew token en una terminal y pega la URL de inicio de sesión en el banner de la parte superior de esta página para volver a iniciar sesión.",
       "stream_ended_without_completion": "La transmisión terminó sin completarse",
+      "token_not_accepted": "Esa URL de inicio de sesión no se ha aceptado. Ejecuta kirocrew token de nuevo y pega abajo la nueva URL de inicio de sesión.",
+      "token_exchange_unreachable": "No se pudo contactar con la puerta de enlace, así que la URL de inicio de sesión no se ha verificado. Comprueba que está en marcha y vuelve a pulsar Intro.",
       "unexpected_server_response": "Respuesta inesperada del servidor"
     }
   },

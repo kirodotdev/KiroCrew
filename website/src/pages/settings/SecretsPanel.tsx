@@ -13,62 +13,72 @@ const UNUSED_REASON_KEYS = {
   jira_host_precedence: 'settings.secrets.jira_global_unused_host_token',
 } as const
 import { Btn, IconButton, Input, PanelSectionHeader } from '../../components/ui'
+import { api, isAuthExpiredError, type ManagedSecret, type SecretsListResponse } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { Link } from 'react-router-dom'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 
 /**
- * Parse a JSON response, REJECTING on a non-2xx status.
+ * The three secrets requests go through `api/client.ts`, not a local `fetch`.
  *
- * A bare `r.json()` resolves for an error response too, so react-query treated a
- * 403/500 as a successful mutation: `onSuccess` fired and cleared the form,
- * silently discarding the secret the user had typed without ever storing it.
- * Throwing routes those statuses to `onError` instead, which leaves the form
- * populated so the value is not lost. This is a local `!r.ok` guard rather than
- * the shared `api/client.ts` transport because SecretsPanel authenticates with
- * the raw stored token, not the transport's `dashboard:ui` session key.
+ * That transport rejects a non-2xx, which is what keeps react-query's
+ * `onSuccess` from firing on a 403 and clearing the form -- the data-loss
+ * regression this file's own guard was written for. It also surfaces the
+ * backend's error prose the same way, and adds the recovery a local guard could
+ * never reach: `X-Session-Key`, one silent cookie refresh, the re-auth banner,
+ * and the localized sign-in sentence in place of the gateway's cryptographic
+ * reason (#12240).
+ *
+ * The panel's own `settings.secrets.*_error` sentences stay as the FRAME around
+ * whatever message arrives. They name which action failed and prescribe nothing,
+ * so an expired session reads "Could not save secret: Session expired. Run ..."
+ * -- the recovery instruction is carried, not hidden.
  */
-const j = async (r: Response) => {
-  if (!r.ok) {
-    // Surface the backend's error prose when it sent any, so the failure is
-    // actionable rather than a bare status code.
-    let detail = ''
-    try {
-      const body = await r.json()
-      if (body && typeof body.error === 'string') detail = `: ${body.error}`
-    } catch {
-      // Non-JSON error body — the status alone is what we have.
-    }
-    throw new Error(`HTTP ${r.status}${detail}`)
-  }
-  return r.json()
-}
-// Send the same fixed `dashboard:ui` session key the shared transport uses
-// (`src/api/client.ts`). This panel previously read `localStorage['kiro_crew_token']`,
-// but nothing in the app ever writes that key — the browser's dashboard identity
-// is the `dashboard:ui` literal, and the backend treats a missing/empty
-// X-Session-Key as `dashboard:ui` anyway — so the read was vestigial dead code
-// that always resolved to ''. Use the literal directly so the header is explicit
-// and matches every other panel.
-const _sk = { 'X-Session-Key': 'dashboard:ui' }
-const get = (url: string) => fetch(url, { headers: { ..._sk } })
-const post = (url: string, body?: object) =>
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
-const del = (url: string) =>
-  fetch(url, { method: 'DELETE', headers: { ..._sk } })
 
-interface ManagedSecret {
-  name: string
-  kind: string
-  host?: string
+/**
+ * Drop a stale AUTH failure card once auth works again.
+ *
+ * Keyed on `mc-auth-recovered`, NOT on `mc-auth-cleared`. The distinction is
+ * the whole guard: `mc-auth-cleared` means only that the banner is gone, and
+ * the banner's own X emits it while the session is still broken, so resetting
+ * on it erases a live "could not save" card the reader has not acted on and
+ * nothing has fixed. `mc-auth-recovered` is emitted from `removeAuthBanner`
+ * alone, every caller of which is gated on a 2xx or an accepted token
+ * exchange, so it is the only one of the two that actually means authentication
+ * succeeded.
+ *
+ * At that moment a card reciting "Session expired. Run kirocrew token ... to
+ * sign back in." points at a banner that is gone and a session that has been
+ * replaced -- instructions for a state that no longer exists. Only a mutation's
+ * own `reset()` clears it, because the failure lives in react-query's mutation
+ * state and no refetch touches that.
+ *
+ * `isAuthExpiredError` is the second half of the guard. The event says auth
+ * recovered, NOT that every request since has become valid, and the two are
+ * easy to conflate: a disk-full save failure sitting unread on screen is still
+ * true after an auth recovery, so resetting it would delete a message the user
+ * has not acted on. Only a failure the event actually resolves is cleared.
+ *
+ * The listener is registered once and reads the latest callback through a ref, so
+ * a caller can pass an inline closure without re-subscribing on every render.
+ * Window-level, matching `_emitAuthEvent` and `KiroPrerequisiteGate`.
+ */
+function useResetOnAuthRecovered(onRecovered: () => void): void {
+  const latest = useRef(onRecovered)
+  useEffect(() => {
+    latest.current = onRecovered
+  }, [onRecovered])
+  useEffect(() => {
+    const handle = () => latest.current()
+    window.addEventListener('mc-auth-recovered', handle)
+    return () => window.removeEventListener('mc-auth-recovered', handle)
+  }, [])
 }
 
-interface SecretsListResponse {
-  names: string[]
-  managed: ManagedSecret[]
-  unused?: Array<{ name: string; reason: 'wakatime_disabled' | 'jira_multi_host' | 'jira_host_precedence' }>
-  managed_error?: boolean
+/** Reset *mutation* only if what it is showing is an expired-session failure. */
+function resetIfAuthExpired(mutation: { error: unknown; reset: () => void }): void {
+  if (isAuthExpiredError(mutation.error)) mutation.reset()
 }
 
 function managedCopy(kind: string) {
@@ -139,15 +149,19 @@ function ManagedSecretRow({
   }
 
   const setMutation = useMutation({
-    mutationFn: () => post('/api/secrets', { name: secret.name, value }).then(j),
+    mutationFn: () => api.secretsSave(secret.name, value),
     onSuccess: finish,
   })
   const deleteMutation = useMutation({
-    mutationFn: () => del(`/api/secrets/${encodeURIComponent(secret.name)}`).then(j),
+    mutationFn: () => api.secretsDelete(secret.name),
     onMutate: () => setMutation.reset(),
     onSuccess: finish,
   })
   const isPending = setMutation.isPending || deleteMutation.isPending
+  useResetOnAuthRecovered(() => {
+    resetIfAuthExpired(setMutation)
+    resetIfAuthExpired(deleteMutation)
+  })
   // Freeze the row while its own mutation is in flight OR the parent Add is
   // saving this same canonical name — a concurrent row delete/replace during
   // the Add POST could otherwise reorder around it and corrupt the credential.
@@ -257,12 +271,12 @@ export function SecretsPanel() {
 
   const { data, isLoading, isError, error: listError } = useQuery<SecretsListResponse>({
     queryKey: ['secrets'],
-    queryFn: () => get('/api/secrets').then(j),
+    queryFn: () => api.secretsList(),
   })
 
   const setMutation = useMutation({
     mutationFn: (params: { name: string; value: string }) =>
-      post('/api/secrets', params).then(j),
+      api.secretsSave(params.name, params.value),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['secrets'] })
       setShowAdd(false)
@@ -272,7 +286,7 @@ export function SecretsPanel() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (name: string) => del(`/api/secrets/${encodeURIComponent(name)}`).then(j),
+    mutationFn: (name: string) => api.secretsDelete(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['secrets'] })
       setDeleteConfirm(null)
@@ -281,6 +295,10 @@ export function SecretsPanel() {
 
   const names = data?.names ?? []
   const managed = data?.managed ?? []
+  useResetOnAuthRecovered(() => {
+    resetIfAuthExpired(setMutation)
+    resetIfAuthExpired(deleteMutation)
+  })
   const storedNames = new Set(names)
   const managedNames = new Set(managed.map(secret => secret.name))
   const otherNames = names.filter(name => !managedNames.has(name))

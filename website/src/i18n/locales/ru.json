@@ -136,13 +136,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "Вставьте URL с токеном или сам токен…",
+      "paste_token_url_or_raw_token": "Вставьте URL для входа…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Ограничение частоты на границе туннеля (HTTP 429) — слишком много запросов за короткое время. Панель повторяет запросы автоматически; если ошибка не исчезает, подождите несколько секунд и перезагрузите страницу.",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "Запустите kirocrew token в терминале, вставьте URL для входа ниже и нажмите Enter.",
       "session_expired": "Срок сессии истёк.",
-      "session_expired_sign_in_again": "Сессия истекла. Выполните kirocrew token в терминале, затем вставьте URL в баннер в верхней части страницы, чтобы войти снова.",
+      "session_expired_sign_in_again": "Сессия истекла. Выполните kirocrew token в терминале, затем вставьте URL для входа в баннер в верхней части страницы, чтобы войти снова.",
       "stale_owner_session": "Эта сессия создана до настройки владельца. Войдите снова.",
-      "stale_owner_session_sign_in_again": "Эта сессия создана до настройки владельца (вход выполнен до установки KIROCREW_OWNER_ID). Выполните kirocrew token в терминале, затем вставьте URL в баннер в верхней части страницы, чтобы войти снова.",
+      "stale_owner_session_sign_in_again": "Эта сессия создана до настройки владельца (вход выполнен до установки KIROCREW_OWNER_ID). Выполните kirocrew token в терминале, затем вставьте URL для входа в баннер в верхней части страницы, чтобы войти снова.",
       "stream_ended_without_completion": "Поток прервался до завершения",
+      "token_not_accepted": "Этот URL для входа не принят. Запустите kirocrew token снова и вставьте новый URL для входа ниже.",
+      "token_exchange_unreachable": "Не удалось связаться со шлюзом, поэтому URL для входа не был проверен. Убедитесь, что он запущен, и нажмите Enter снова.",
       "unexpected_server_response": "Неожиданный ответ сервера"
     }
   },

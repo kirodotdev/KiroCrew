@@ -134,13 +134,17 @@
   },
   "api": {
     "client": {
-      "paste_token_url_or_raw_token": "টোকেন URL অথবা সরাসরি টোকেন পেস্ট করো…",
+      "paste_token_url_or_raw_token": "সাইন-ইন URL পেস্ট করো…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "টানেল এজ রেট লিমিট করেছে (HTTP 429) — অল্প সময়ে অনেক বেশি রিকোয়েস্ট। ড্যাশবোর্ড নিজেই আবার চেষ্টা করে; যদি এটা চলতেই থাকে, কয়েক সেকেন্ড অপেক্ষা করে রিলোড করো।",
+      "reauth_command": "kirocrew token",
+      "run_kirocrew_token_then_paste_sign_in_url": "টার্মিনালে kirocrew token চালাও, তারপর নিচে সাইন-ইন URL পেস্ট করো এবং Enter চাপো।",
       "session_expired": "সেশনের মেয়াদ শেষ হয়ে গেছে।",
       "session_expired_sign_in_again": "সেশনের সময় শেষ হয়েছে। টার্মিনালে kirocrew token চালান, তারপর আবার সাইন ইন করতে এই পৃষ্ঠার উপরের ব্যানারে URL পেস্ট করুন।",
       "stale_owner_session": "এই সেশনটি কনফিগার করা মালিকের আগের। আবার সাইন ইন করুন।",
       "stale_owner_session_sign_in_again": "এই সেশনটি কনফিগার করা মালিকের আগের (KIROCREW_OWNER_ID সেট করার আগে সাইন ইন হয়েছিল)। টার্মিনালে kirocrew token চালান, তারপর আবার সাইন ইন করতে এই পৃষ্ঠার উপরের ব্যানারে URL পেস্ট করুন।",
       "stream_ended_without_completion": "স্ট্রিম সম্পূর্ণ হওয়ার আগেই শেষ হয়ে গেছে",
+      "token_not_accepted": "এই সাইন-ইন URL গৃহীত হয়নি। kirocrew token আবার চালাও এবং নতুন সাইন-ইন URL নিচে পেস্ট করো।",
+      "token_exchange_unreachable": "গেটওয়েতে পৌঁছানো যায়নি, তাই সাইন-ইন URL যাচাই করা হয়নি। এটি চলছে কিনা নিশ্চিত করে আবার Enter চাপো।",
       "unexpected_server_response": "সার্ভার থেকে অপ্রত্যাশিত সাড়া"
     }
   },
