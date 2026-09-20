@@ -514,15 +514,12 @@ class AdaptivePolicy:
         if not changed:
             return self._emit(ACTION_HOLD, "clear; increase not yet earned or no demand", report)
         self._last_increase_at = now
-        reason = (
-            "fresh progress with host headroom earned one exec probe"
-            if probed
-            else (
-                f"clean window earned x{p.slow_start_factor} (slow start)"
-                if self._slow_start
-                else "clean window earned +1"
-            )
-        )
+        if probed:
+            reason = "fresh progress with host headroom earned one exec probe"
+        elif self._slow_start:
+            reason = f"clean window earned x{p.slow_start_factor} (slow start)"
+        else:
+            reason = "clean window earned +1"
         return self._emit(ACTION_INCREASE, reason, report)
 
     def _growth_ceiling(self, sample: Sample) -> int:

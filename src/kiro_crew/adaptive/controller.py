@@ -93,7 +93,7 @@ def classify_run_outcome(info: Any) -> str:
     if not error:
         return OUTCOME_SUCCESS
     lowered = error.lower()
-    if lowered == "cancelled" or lowered.startswith("cancel"):
+    if lowered.startswith("cancel"):
         return OUTCOME_NON_CONGESTION
     if any(marker in lowered for marker in ATTRIBUTABLE_MARKERS):
         return OUTCOME_ATTRIBUTABLE
@@ -235,7 +235,6 @@ class _Evidence:
     starts: deque[_StartRecord] = field(default_factory=lambda: deque(maxlen=4096))
     throttles: deque[tuple[float, str]] = field(default_factory=lambda: deque(maxlen=4096))
     completions_total: int = 0
-    attributable_total: int = 0
     completed_at: deque[tuple[float, str]] = field(default_factory=lambda: deque(maxlen=4096))
     gate_outcomes: dict[str, int] = field(
         default_factory=lambda: {"success": 0, "failure": 0, "neutral": 0}
@@ -398,7 +397,6 @@ class AdaptiveController:
             self._evidence.completions_total += 1
         elif attributable_timeout:
             kind = OUTCOME_ATTRIBUTABLE
-            self._evidence.attributable_total += 1
         else:
             kind = OUTCOME_NON_CONGESTION
         self._evidence.completed_at.append((self._clock(), kind))
@@ -621,12 +619,13 @@ class AdaptiveController:
         live_ids: set[str] = set()
         progressing = 0
         for agent_id, info in list(agents.items()):
-            live_ids.add(str(agent_id))
+            key = str(agent_id)
+            live_ids.add(key)
             done = bool(getattr(info, "done", False))
             stream_started = getattr(info, "_first_stream_started", None)
             activity = float(getattr(info, "last_activity", 0.0) or 0.0)
-            previous = self._seen_activity.get(str(agent_id), activity)
-            self._seen_activity[str(agent_id)] = activity
+            previous = self._seen_activity.get(key, activity)
+            self._seen_activity[key] = activity
             if (
                 not done
                 and not getattr(info, "queued", False)
@@ -636,15 +635,13 @@ class AdaptiveController:
                 and activity > max(previous, float(stream_started))
             ):
                 progressing += 1
-            was_done = self._seen_done.get(str(agent_id))
+            was_done = self._seen_done.get(key)
             if done and not was_done:
                 kind = classify_run_outcome(info)
                 self._evidence.completed_at.append((now, kind))
                 if kind == OUTCOME_SUCCESS:
                     self._evidence.completions_total += 1
-                elif kind == OUTCOME_ATTRIBUTABLE:
-                    self._evidence.attributable_total += 1
-            self._seen_done[str(agent_id)] = done
+            self._seen_done[key] = done
         for stale in [k for k in self._seen_done if k not in live_ids]:
             del self._seen_done[stale]
             self._seen_activity.pop(stale, None)

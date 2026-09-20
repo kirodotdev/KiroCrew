@@ -565,6 +565,12 @@ class TestRunOutcomeClassifier:
             ("error: tool stall", OUTCOME_ATTRIBUTABLE),
             ("startup timeout", OUTCOME_ATTRIBUTABLE),
             ("cancelled", OUTCOME_NON_CONGESTION),
+            # The cancel prefix wins over a congestion marker in the same text:
+            # an operator cancel must never pull the adaptive cap down. Without
+            # the prefix test this row is OUTCOME_ATTRIBUTABLE, so it is what
+            # pins that guard -- a bare "cancelled" would still bucket as
+            # non-congestion by falling through to the default.
+            ("Cancelled during startup", OUTCOME_NON_CONGESTION),
             ("turn_limit:100", OUTCOME_NON_CONGESTION),
             ("permission denied for tool x", OUTCOME_NON_CONGESTION),
             ("invalid params", OUTCOME_NON_CONGESTION),
