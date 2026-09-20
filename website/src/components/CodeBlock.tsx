@@ -9,6 +9,7 @@ import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { APPROVAL_COMMAND_TAG } from '../lib/approvalNotificationBody'
 
 /** A block taller than this repeats its action row at the bottom, so copying
  *  or editing never costs a scroll back to the top. Fixed rather than
@@ -25,8 +26,11 @@ const TALL_CODE_BLOCK_PX = 480
  *  horizontal scroll (that is the reported requirement, not an oversight).
  *  `error-report` is the dashboard's own tag (utils/errorReport.prompt.ts):
  *  a `- Message: …` line is one long sentence, and clipping it at the bubble
- *  edge hid the very text the user asked the agent to diagnose. */
-const PROSE_LANGS = new Set(['markdown', 'md', 'text', 'txt', 'plaintext', 'plain', 'error-report'])
+ *  edge hid the very text the user asked the agent to diagnose. The approval
+ *  command tag (lib/approvalNotificationBody.ts) is here for the same reason:
+ *  the feed row that authorizes a command must show all of it, and a shell
+ *  line wider than the feed column would otherwise scroll off the edge. */
+const PROSE_LANGS = new Set(['markdown', 'md', 'text', 'txt', 'plaintext', 'plain', 'error-report', APPROVAL_COMMAND_TAG])
 const isProseLang = (lang?: string) => !!lang && PROSE_LANGS.has(lang.toLowerCase())
 
 /** Module constant so the options reference is stable across renders — Pierre

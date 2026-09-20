@@ -78,7 +78,7 @@ describe('Cron Notification Buttons', () => {
     await user.click(screen.getByText('Cron result'))
 
     await waitFor(() => {
-      expect(screen.getByText(/source/i)).toBeInTheDocument()
+      expect(screen.getByText(/^kind$/i)).toBeInTheDocument()
     })
     expect(screen.queryByRole('button', { name: /go to chat/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /view last result/i })).not.toBeInTheDocument()

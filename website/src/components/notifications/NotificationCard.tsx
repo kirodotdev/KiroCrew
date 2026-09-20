@@ -61,6 +61,12 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
   muted?: boolean
   /** Rendered under the actions (a failure notice the card must keep showing). */
   footer?: ReactNode
+  /** Replaces the clamped excerpt. A card whose actions authorize a command
+   *  must show the whole command: a two-line clamp turns `echo safe` +
+   *  `rm -rf target` into a harmless-looking excerpt beside one-click Approve.
+   *  The feed passes the full read-only approval render here; the banner,
+   *  which offers only Review, keeps the excerpt. */
+  body?: ReactNode
 }
 
 /**
@@ -68,7 +74,9 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
  * popover's rows and the in-app banner — so a note never has two look-alike
  * renderings that drift apart. Layout is fixed: kind-tinted 26 px icon square,
  * title (13 px semibold, one line), body (12 px muted, two-line clamp, markdown
- * stripped and capped at 140 chars), relative time with the unread dot beneath
+ * stripped and capped at 140 chars -- unless the host passes `body`, which the
+ * feed does for an approval so the command beside Approve/Reject is whole),
+ * relative time with the unread dot beneath
  * it, hover-reveal close, quiet capsule actions. Read (acked) and passive notes
  * dim; a critical note is signalled ONLY by its danger unread dot and the
  * approval kind's icon tint — never an edge or a label.
@@ -78,7 +86,7 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
  */
 export default function NotificationCard({
   n, elevation, material, onOpen, openLabel, onDismiss, dismissLabel, dismissTestId, dismissVisible = false,
-  actions = [], actionsAlign = 'start', trailing, active = false, muted = false, footer, className = '', ...rest
+  actions = [], actionsAlign = 'start', trailing, active = false, muted = false, footer, body: bodyOverride, className = '', ...rest
 }: NotificationCardProps) {
   const km = KIND_META[n.kind] || DEFAULT_META
   const prio = notePriority(n)
@@ -88,7 +96,9 @@ export default function NotificationCard({
       <span className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center shrink-0 text-[13px] ${km.color}`}>{km.icon}</span>
       <div className="flex-1 min-w-0">
         <div className={`text-[13px] font-semibold truncate leading-tight ${muted ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
-        <div className="text-[12px] text-muted mt-0.5 line-clamp-2 leading-snug">{stripMd(n.body || '').slice(0, 140)}</div>
+        {bodyOverride !== undefined
+          ? bodyOverride
+          : <div className="text-[12px] text-muted mt-0.5 line-clamp-2 leading-snug">{stripMd(n.body || '').slice(0, 140)}</div>}
       </div>
       <div className="flex flex-col items-end gap-0.5 shrink-0">
         <span className="text-[11px] text-muted">{fmtRelativeMinute(n.ts)}</span>

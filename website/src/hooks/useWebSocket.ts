@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
+import { approvalNotificationBody } from '../lib/approvalNotificationBody'
 import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
 import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
@@ -815,7 +816,7 @@ export function useWebSocket() {
         dispatch(addNotification({
           kind: 'approval',
           title: i18nT('hooks.useWebSocket.tool_approval', { name: a.tool || i18nT('hooks.useWebSocket.unknown') }),
-          body: `**Source:** ${a.source || 'agent'}\n\n${a.tool_input || ''}`.trim(),
+          body: approvalNotificationBody(a.source, a.tool_input),
           ts: String(a.ts || Date.now() / 1000),
           approval_id: a.id,
         } as Notification))
@@ -1688,7 +1689,7 @@ export function useWebSocket() {
             dispatch(addNotification({
               kind: 'approval',
               title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
-              body: `**Source:** ${data.source || 'agent'}\n\n${data.tool_input || ''}\n\n${data.tool_purpose || ''}`.trim(),
+              body: approvalNotificationBody(data.source, data.tool_input, data.tool_purpose),
               ts: String(data.ts || Date.now() / 1000),
               approval_id: data.id,
             } as Notification))

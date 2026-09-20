@@ -57,7 +57,7 @@ describe('TurnNavigationMinimap', () => {
     expect(shortenTurnPreview('![screenshot](/p/a.png)', 40)).toBe('screenshot')
     expect(shortenTurnPreview('![](/p/a.png) look', 40)).toBe('look')
     expect(shortenTurnPreview('## Plan\n- **bold** step with [a link](https://x.y)\n```ts\ncode\n```', 80)).toBe('Plan bold step with a link code')
-    expect(shortenTurnPreview('## Plan\n\n1. `first` step', 40)).toBe('Plan first step')
+    expect(shortenTurnPreview('## Plan\n\n1. `first` step', 40)).toBe('Plan · first step')
   })
 
   it('shortens previews at a word boundary with three dots', () => {

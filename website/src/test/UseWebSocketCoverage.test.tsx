@@ -371,6 +371,23 @@ describe('useWebSocket frame router', () => {
     }
   })
 
+  it.each(['live', 'reconciled'])('fences %s approval commands while preserving its purpose policy', async delivery => {
+    const approval = {
+      id: 'ap-literal', source: 'cron', tool: 'execute_bash',
+      tool_input: 'echo ```; rm -rf *cache*', tool_purpose: '**Reason:** cleanup', ts: 5,
+    }
+    if (delivery === 'reconciled') vi.mocked(api.approvals).mockResolvedValueOnce([approval])
+    const { ws } = mount()
+    // Boot notification fetch and the pending-approval snapshot must settle first.
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    if (delivery === 'live') {
+      act(() => { ws.simulateMessage({ type: 'approval', data: approval }) })
+    }
+    const note = testStore.getState().notifications.items.find(n => n.approval_id === approval.id)
+    const body = '**Source:** cron\n\n````approval-command\necho ```; rm -rf *cache*\n````'
+    expect(note?.body).toBe(delivery === 'live' ? `${body}\n\n**Reason:** cleanup` : body)
+  })
+
   it('raises a desktop notification for an approval while the tab is hidden', () => {
     class MockNotification {
       static permission = 'granted'

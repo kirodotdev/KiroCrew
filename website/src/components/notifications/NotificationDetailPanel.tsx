@@ -79,9 +79,12 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
         }
       </div>
 
-      {/* Source & navigation */}
+      {/* Kind & navigation. The row prints the note's KIND (`km.label`, the same
+          noun the `kind_*` catalog keys and `n.kind` use), so it is labelled as
+          such: an approval body carries its own "Source:" line naming the system
+          that asked, and a reader must not take the two for one field. */}
       <div className="px-5 py-2.5 border-b border-border flex items-center gap-2 flex-wrap shrink-0">
-        <span className="text-[12px] text-muted uppercase tracking-[.04em] font-medium">{i18nT('components.notifications.notificationDetailPanel.source')}</span>
+        <span className="text-[12px] text-muted uppercase tracking-[.04em] font-medium">{i18nT('pages.artifactsPage.kind')}</span>
         <span className="text-[13px] text-text">{km.label}{n.kind === 'cron' && n.job_id ? ` (${n.job_id.slice(0, 8)})` : n.kind === 'taskrunner' && n.task_id ? ` (${n.task_id.slice(0, 8)})` : (directSlot || relatedSlot) ? ` · ${(directSlot || relatedSlot)!.title || (directSlot || relatedSlot)!.key}` : ''}</span>
         <span className="flex-1" />
         {/* Jump-to buttons */}
@@ -125,8 +128,8 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
           {/* Per-item boundary: a body that crashes the markdown renderer
               degrades the body alone; the header and actions stay usable
               instead of the whole panel escalating to the app ErrorBoundary. */}
-          <MessageErrorBoundary rawContent={n.body || ''}>
-            <MarkdownRenderer content={n.body || ''} />
+          <MessageErrorBoundary rawContent={typeof n.body === 'string' ? n.body : ''}>
+            <MarkdownRenderer content={typeof n.body === 'string' ? n.body : ''} readOnlyCode />
           </MessageErrorBoundary>
         </div>
 

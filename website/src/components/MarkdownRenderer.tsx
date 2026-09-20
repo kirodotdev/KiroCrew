@@ -4307,7 +4307,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle, readOnlyCode }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; readOnlyCode?: boolean }) {
   switch (block.type) {
     case 'diff': {
       const pathHint = prevBlock?.type === 'markdown'
@@ -4362,7 +4362,14 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
         const mdNode = <MarkdownContentCard content={block.content} lang={block.language} />
         return smooth ? <SmoothResize enabled={!block.complete}>{mdNode}</SmoothResize> : mdNode
       }
-      const node = <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} />
+      // `readOnlyCode`: the content is a record the reader must not be able to
+      // touch -- an approval's command awaiting authorization. EditableCodeBlock's
+      // Raw scratch editor edits a local copy that is never written back, so a
+      // pencil there lets someone edit the block and then Approve the ORIGINAL
+      // command while looking at their edit. Plain CodeBlock keeps copy only.
+      const node = readOnlyCode
+        ? <CodeBlock code={block.content} lang={block.language} complete={block.complete} />
+        : <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} />
       // Height-grow only — streaming code renders as one plain <pre> text node
       // so per-line content animation isn't applied here.
       return smooth ? <SmoothResize enabled={!block.complete}>{node}</SmoothResize> : node
@@ -4379,7 +4386,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, collapseDiffs = false, mdCardToggle = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, collapseDiffs = false, mdCardToggle = false, readOnlyCode = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const blocks = useBlockAssembler(content, streaming)
   // One message = one config-rule scan pool. The blocks below each mount their
@@ -4548,6 +4555,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             softBreaks={softBreaks}
             collapseDiffs={collapseDiffs}
             mdCardToggle={mdCardToggle}
+            readOnlyCode={readOnlyCode}
           />
         ))}
       </ImageVersionCtx.Provider>

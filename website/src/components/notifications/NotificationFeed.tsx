@@ -8,6 +8,8 @@ import { deleteNotification, clearNotifications, ackAllNotifications } from '../
 import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
+import MarkdownRenderer from '../MarkdownRenderer'
+import MessageErrorBoundary from '../MessageErrorBoundary'
 import { disintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
@@ -313,6 +315,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // actions that render only with a safe dashboard-internal url
                 // (never executable content).
                 const isApproval = n.kind === 'approval' && !n.acked
+                // A persisted row is untrusted: a truthy non-string body must
+                // not reach the renderer, its raw fallback, or the flattener.
+                const bodyText = typeof n.body === 'string' ? n.body : ''
                 // Defense-in-depth for legacy/corrupted persisted rows: the
                 // actions field must be a real array (a truthy non-array like
                 // `{}` would throw on .filter), and only string fields render
@@ -322,6 +327,24 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                   .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
                   .filter(a => a.safeUrl)
                 const hasActions = isApproval || urlActions.length > 0
+                // A row whose controls authorize a command shows the whole
+                // command: a clamped excerpt turns `echo safe` + `rm -rf target`
+                // into one harmless-looking line. Gated on the KIND, not on
+                // unread: reading the row acks it, and a pending command must
+                // not collapse back into that line while the detail panel
+                // still offers Approve/Reject. A resolved approval leaves the
+                // feed, so an approval row here is undecided. Same renderer
+                // and boundary as the detail panel; the producer's fence tag
+                // makes the lines wrap, so nothing is clipped, clamped or
+                // hidden. One definition for both variants: the mac card's
+                // own excerpt is a two-line clamp, so it takes this instead.
+                const approvalBody = n.kind === 'approval' ? (
+                  <div className={`msg-content text-[12px] text-muted break-words ${mac ? 'mt-1 leading-snug' : 'mt-1'}`} data-testid="approval-body">
+                    <MessageErrorBoundary rawContent={bodyText}>
+                      <MarkdownRenderer content={bodyText} readOnlyCode />
+                    </MessageErrorBoundary>
+                  </div>
+                ) : undefined
                 const collapsedStack = !!(stackKey && stackCount && stackCount > 1 && !stackExpanded)
                 const actionBtn = MAC_ACTION_BTN_CLASS
                 // The mac row IS the shared card (one rendering with the
@@ -365,6 +388,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         onDismiss={dismissRow}
                         dismissLabel={i18nT('components.notifications.notificationFeed.dismiss_notification')}
                         actions={macActions}
+                        body={approvalBody}
                         trailing={silenced ? (
                           <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
                         ) : collapsedStack ? (
@@ -384,7 +408,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         <span className="text-[13px] shrink-0">{km.icon}</span>
                         <div className="flex-1 min-w-0">
                           <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
-                          <div className="text-[12px] text-muted mt-0.5 truncate">{stripMd(n.body || '').slice(0, 80)}</div>
+                          {approvalBody ?? (
+                            <div className="text-[12px] text-muted mt-0.5 truncate">{stripMd(bodyText).slice(0, 80)}</div>
+                          )}
                         </div>
                         <div className="flex flex-col items-end gap-0.5 shrink-0">
                           <span className="text-[11px] text-muted font-mono">{fmtTime(n.ts)}</span>

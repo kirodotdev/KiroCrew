@@ -3,6 +3,7 @@ import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationFeed from '../components/notifications/NotificationFeed'
 import { safeInternalUrl } from '../components/notifications/notifMeta'
+import { approvalNotificationBody } from '../lib/approvalNotificationBody'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
 
@@ -77,6 +78,55 @@ describe('NotificationFeed Phase 4: inline approval actions', () => {
   it('acked approval rows show no inline buttons', () => {
     renderFeed([mkN({ ...approval, acked: true })])
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
+  })
+
+  it('an actionable approval row shows every line of the command, not a clamped excerpt', () => {
+    // A one-line excerpt would flatten this to `echo safe rm -rf target`, a
+    // harmless-looking echo beside a one-click Approve.
+    const body = approvalNotificationBody('agent', 'echo safe\nrm -rf target', 'clean up')
+    renderFeed([mkN({ ...approval, body })])
+    const rendered = screen.getByTestId('approval-body')
+    const code = rendered.querySelector('pre, code')
+    expect(code).not.toBeNull()
+    expect(code!.textContent).toContain('echo safe\nrm -rf target')
+    expect(rendered.textContent).not.toContain('echo safe rm -rf target')
+    expect(screen.getByRole('button', { name: /Approve/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
+  it('an acked approval keeps the full command -- reading a pending request must not shrink it', () => {
+    // Selecting a row acks it, but the approval is still undecided (the detail
+    // panel still offers Approve/Reject), so it must not collapse back into
+    // the joined one-liner this row exists to prevent.
+    const body = approvalNotificationBody('agent', 'echo safe\nrm -rf target', 'clean up')
+    renderFeed([mkN({ ...approval, body, acked: true })])
+    const code = screen.getByTestId('approval-body').querySelector('pre, code')
+    expect(code!.textContent).toContain('echo safe\nrm -rf target')
+    // Raw matcher: the default normalizer folds the newline into a space and
+    // would make the faithful render look like the joined line.
+    expect(screen.queryByText(/echo safe rm -rf target/, { normalizer: s => s })).toBeNull()
+  })
+
+  it('every other kind keeps the one-line excerpt', () => {
+    renderFeed([mkN({ ts: '2', kind: 'cron', title: 'Cron', body: 'line one\n\nline two' })])
+    expect(screen.queryByTestId('approval-body')).toBeNull()
+    expect(screen.getByText(/line one · line two/)).toBeTruthy()
+  })
+
+  it('a non-string persisted body renders an empty approval body instead of crashing the route', () => {
+    renderFeed([mkN({ ...approval, body: { raw: 1 } as unknown as string })])
+    expect(screen.getByTestId('approval-body').textContent).toBe('')
+    expect(screen.getByRole('button', { name: /Approve/ })).toBeTruthy()
+  })
+
+  it('the command awaiting authorization carries no edit affordance', () => {
+    // EditableCodeBlock's scratch editor edits a local copy that is never
+    // written back; beside Approve that would let a reader authorize the
+    // original command while looking at their edit.
+    const body = approvalNotificationBody('agent', 'echo safe\nrm -rf target', 'clean up')
+    renderFeed([mkN({ ...approval, body })])
+    expect(screen.getByTestId('approval-body').querySelector('.code-block')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Edit code block' })).toBeNull()
   })
 })
 
@@ -205,5 +255,38 @@ describe('NotificationFeed Phase 4: mac deck stacking (macOS NC style)', () => {
     const approve = screen.getByRole('button', { name: 'Approve' })
     expect(approve.className).toContain('text-ok')
     expect(approve.className).not.toContain('bg-ok')
+  })
+
+  it('a mac approval card shows every line of the command beside Approve/Reject, not the two-line clamp', () => {
+    // The bell popover is a live surface that keeps one-click Approve/Reject.
+    // The shared card's default excerpt is a 140-char two-line clamp, which
+    // would hide the tail of `echo safe` + `rm -rf target` next to the
+    // control that authorizes it.
+    const body = approvalNotificationBody('agent', 'echo safe\nrm -rf target', 'clean up')
+    renderFeed([mkN({ ts: '1', kind: 'approval', title: 'Tool approval: shell', approval_id: 'apr-1', body })], 'mac')
+    const card = document.querySelector('[data-notification-card]')!
+    const rendered = card.querySelector('[data-testid="approval-body"]')
+    expect(rendered).not.toBeNull()
+    const code = rendered!.querySelector('pre, code')
+    expect(code!.textContent).toContain('echo safe\nrm -rf target')
+    expect(card.querySelector('.line-clamp-2')).toBeNull()
+    expect(screen.queryByText(/echo safe rm -rf target/, { normalizer: s => s })).toBeNull()
+    expect(card.contains(screen.getByRole('button', { name: 'Approve' }))).toBe(true)
+    expect(card.contains(screen.getByRole('button', { name: 'Reject' }))).toBe(true)
+  })
+
+  it('a mac approval card keeps the full command once read, and other kinds keep the clamp', () => {
+    const body = approvalNotificationBody('agent', 'echo safe\nrm -rf target', 'clean up')
+    renderFeed([
+      mkN({ ts: '1', kind: 'approval', title: 'Tool approval: shell', approval_id: 'apr-1', body, acked: true }),
+      mkN({ ts: '2', kind: 'cron', title: 'Cron', body: 'line one\n\nline two' }),
+    ], 'mac')
+    const cards = Array.from(document.querySelectorAll('[data-notification-card]'))
+    expect(cards).toHaveLength(2)
+    const approvalCard = cards.find(c => c.textContent!.includes('Tool approval'))!
+    expect(approvalCard.querySelector('[data-testid="approval-body"] pre, [data-testid="approval-body"] code')!.textContent).toContain('echo safe\nrm -rf target')
+    const cronCard = cards.find(c => c.textContent!.includes('Cron'))!
+    expect(cronCard.querySelector('[data-testid="approval-body"]')).toBeNull()
+    expect(cronCard.querySelector('.line-clamp-2')!.textContent).toBe('line one · line two')
   })
 })

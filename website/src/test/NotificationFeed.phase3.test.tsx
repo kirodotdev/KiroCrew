@@ -4,6 +4,7 @@ import { renderWithProviders, createTestStore } from './helpers'
 import NotificationFeed, { SEEN_CHANNELS_STORAGE_KEY } from '../components/notifications/NotificationFeed'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
+import { approvalNotificationBody } from '../lib/approvalNotificationBody'
 
 const mockUpdateChannelSettings = vi.fn().mockResolvedValue({})
 
@@ -140,5 +141,25 @@ describe('NotificationFeed Phase 3: keep/mute prompt', () => {
     localStorage.setItem(SEEN_CHANNELS_STORAGE_KEY, JSON.stringify(['oncall-radar.ticket-update']))
     renderFeed([appNote])
     expect(screen.queryByText(/Keep receiving these\?/)).toBeNull()
+  })
+})
+
+describe('NotificationFeed approval excerpts', () => {
+  it.each(['panel', 'mac'] as const)('spends the %s excerpt budget on content, not fences', variant => {
+    const command = 'echo ```; rm -rf *cache*; echo ' + 'x'.repeat(160)
+    // Not an approval: every approval row renders its whole body, so the
+    // excerpt path is exercised on another kind carrying the same fenced body.
+    const store = createTestStore(stateWith([
+      mkN({ kind: 'cron', body: approvalNotificationBody('agent', command) }),
+    ]))
+    const { container } = renderWithProviders(
+      <NotificationFeed selectedTs={null} onSelect={() => {}} variant={variant} />, { store },
+    )
+    const limit = variant === 'mac' ? 140 : 80
+    const preview = `Source: agent · ${command}`.slice(0, limit)
+    expect(screen.getByText(preview).textContent).toBe(preview)
+    // The command's own triple run stays; neither four-backtick wrapper leaks.
+    expect(container.textContent).not.toContain('````')
+    expect(preview).toHaveLength(limit)
   })
 })

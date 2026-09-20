@@ -99,7 +99,52 @@ Dashboard-user settings routes expose the union of registered channels and store
 
 `NotificationPayload.validate` accepts action entries with non-empty `id` and `label`, and validates each optional action URL at the persistence trust root. `test_notification_bus.py::test_action_count_capped` and `::test_action_field_lengths_capped` pin action bounds. URL-less actions persist but do not render; `test_action_without_url_accepted` pins that contract.
 
-`website/src/components/notifications/NotificationDetailPanel.tsx` and `NotificationFeed.tsx` render navigation actions only after `safeInternalUrl` rechecks a dashboard-internal URL. Unacknowledged approval notes render Approve and Reject controls that use the approval API. `NotificationFeed` collapses notes sharing a `group_key` within a date group to the newest row and expands the stack on demand. `NotificationsBellButton` sends the unread attention count through `badge:set`; `electron/badge.js` clamps it before `app.setBadgeCount`.
+`website/src/components/notifications/NotificationDetailPanel.tsx` and `NotificationFeed.tsx` render navigation actions only after `safeInternalUrl` rechecks a dashboard-internal URL. Unacknowledged approval feed rows render inline Approve and Reject that resolve through the approvals endpoint (the one-click path `rfc-local-notification-bus.md` Phase 4 shipped). Every approval row -- read or unread, because reading a pending request must not shrink it -- renders the notification body in full through the same markdown renderer and per-item error boundary as the detail panel: no slice, clamp or hidden overflow, because a control that authorizes a command must sit next to the whole command, and a truncated excerpt turns two lines into one harmless-looking line. The producer tags the command fence `approval-command` (`lib/approvalNotificationBody.ts`), a dashboard-own tag `CodeBlock` soft-wraps like `error-report`, so a line wider than the feed column wraps instead of scrolling off the edge. Both surfaces render the body with `readOnlyCode`, so the command carries a copy control but no edit affordance: `EditableCodeBlock`'s scratch editor changes only a local copy, and a pencil beside Approve would let a reader authorize the original command while looking at their edit. Every other row keeps the flattened one-line excerpt. This contract applies to the full page and bell popover, including the mac feed variant. `NotificationFeed` collapses notes sharing a `group_key` within a date group to the newest row and expands the stack on demand. `NotificationsBellButton` sends the unread attention count through `badge:set`; `electron/badge.js` clamps it before `app.setBadgeCount`.
+
+## Plain-text previews
+
+The native notification body, feed-row preview and transcript turn minimap share
+`website/src/components/notifications/notifMeta.tsx::stripMd`. It unwraps paired
+emphasis and code delimiters, keeps code contents literal, and preserves unpaired
+markers and intraword underscores. Heading, blockquote and list prefixes (`-`,
+`+`, `*`, ordered) are removed only at line starts and only when whitespace
+follows the marker, so `*emphasis*` and `**bold**` at a line start are unwrapped
+as emphasis rather than deleted as bullets; links/images retain labels/alt text,
+and fenced code loses its language tag. A single prose newline collapses to a space; a
+paragraph break (two or more newlines, blank lines may hold whitespace) in prose
+becomes ` · ` — the detail panel's own separator idiom — so an approval reads
+`Source: agent · <command> · <purpose>` and a skill note's paragraphs stay
+distinct instead of running together. Empty paragraphs are dropped, so the
+separator never leads, trails or doubles. Whitespace inside code regions stays
+literal, including indentation, repeated spaces, tabs and blank lines; only the
+fence wrapper's final line ending is removed. A multiline command remains a
+multiline string in the preview. Backtick fences
+close only on a standalone run at least as long as their opening run; shorter
+runs inside code remain literal. An inline span pairs runs of EQUAL length, so a
+longer or shorter run inside one stays literal content. One deliberate deviation
+from CommonMark: a newline ends an unclosed inline span rather than continuing
+it, because in a preview a stray backtick would otherwise pair with another far
+below and hold every line between as code, suppressing flattening for that whole
+region — the deviation costs only multi-line inline spans, which no producer
+writes. Approval bodies use
+`website/src/lib/approvalNotificationBody.ts::approvalNotificationBody` to combine
+a formatted source label with a literal command in a fence longer than any
+backtick run in that command (minimum three). Empty input adds no fence. The
+live WebSocket event appends its optional purpose; reconciliation keeps its
+source-and-command-only content. This preserves balanced globs, home paths,
+redirects and command backticks in both previews. The feed slices the flattened
+text to 80/140 characters, so wrapper fences do not consume its excerpt budget;
+the detail panel renders the fenced input as one code block. That body is the
+only surface naming the requesting system: the detail panel's metadata row
+prints the note's kind (`KIND_META[...].label`) under the `pages.artifactsPage.kind`
+label, so its label and the body's `Source:` label are distinct fields.
+
+The shared contracts live in `website/src/test/notifMeta.stripMd.test.ts` (with
+the code-region scan in `website/src/test/notifMeta.codeScan.test.ts`) and
+`website/src/test/approvalNotificationBody.test.tsx`; native banner formatting is
+pinned in `website/integration/AppNotification.integration.test.tsx`. WebSocket
+producer coverage pins the differing purpose policies, and the feed tests pin
+both excerpt lengths.
 
 ## Notification sound (client)
 
@@ -173,7 +218,12 @@ bell popover's mac rows and the banner both use (kind-tinted 26 px icon square,
 one-line title, two-line body, relative time with the unread dot, hover-reveal
 close, quiet capsule actions); its `elevation` prop is the only difference —
 `popover` (72 % card tint, the theme's `--shadow-md`) versus `banner` (88 %
-tint, `--shadow-lg`); shadows are theme tokens, never literal alphas. A critical note is signalled only by its danger dot and the approval
+tint, `--shadow-lg`); shadows are theme tokens, never literal alphas. The
+card's `body` prop replaces the two-line clamp: the feed passes the full
+read-only approval render for every approval row, because the popover card
+keeps one-click Approve/Reject and a clamped excerpt hides the tail of the
+command they authorize. The banner, which offers only Review, keeps the
+excerpt. A critical note is signalled only by its danger dot and the approval
 icon tint, never an edge or a label. Nothing about the banner is persisted
 server-side.
 
