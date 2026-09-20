@@ -139,22 +139,28 @@ describe('safe-area prerequisites', () => {
     // offered, so a migration leftover like `me-safe` or `inset-x-safe-or-3` is
     // still caught even though this plugin never emits it.
     const CANDIDATE = new RegExp(
-      '^(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me'
+      '^-?(?:p|px|py|pt|pr|pb|pl|ps|pe|m|mx|my|mt|mr|mb|ml|ms|me'
       + '|inset|inset-x|inset-y|top|right|bottom|left|start|end'
       + '|h|min-h|max-h|h-screen|min-h-screen|max-h-screen'
       + ')-safe(?:-(?:offset|or)-(?:\\[[^\\]]+\\]|[\\d.]+))?$',
     )
-    // What tailwind-theme.css actually emits. Anything else compiles to NOTHING
-    // and fails silently -- the same invisible-regression class the guard exists
-    // for. (This replaced an exact-version pin and a banned-utility list that
-    // only existed to police the third-party package these utilities took over
-    // from.)
-    const EMITTED = /^(?:p-safe|(?:top|right|bottom|left)-safe(?:-(?:offset|or)-(?:\[[^\]]+\]|[\d.]+))?)$/
+    // What tailwind-theme.css actually emits, READ from its `@utility` names so
+    // the list can never drift from the file: a static `name` matches exactly,
+    // a functional `name-*` matches a spacing step or an arbitrary `[value]`.
+    // Anything else compiles to NOTHING and fails silently -- the same
+    // invisible-regression class the guard exists for. Only the families this
+    // codebase uses are declared, so a `top-safe-or-3` or a negative
+    // `-bottom-safe-offset-4` written tomorrow lands here, not in a blank inset.
+    const utilities = [...theme.matchAll(/^@utility\s+(-?[a-z][a-z-]*)(\*)?\s*\{/gm)]
+      .filter(m => m[1].includes('-safe'))
+    expect(utilities.length, 'no safe-area @utility blocks found in tailwind-theme.css').toBeGreaterThan(0)
+    const emitted = (token: string) => utilities.some(([, name, star]) =>
+      star ? new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\[[^\\]]+\\]|[\\d.]+)$`).test(token) : token === name)
     const unsupported = new Set<string>()
     for (const file of [...walk(SRC), join(WEBSITE_ROOT, 'index.html')]) {
       for (const literal of stringLiterals(readFileSync(file, 'utf8'))) {
         for (const token of literal.split(/\s+/)) {
-          if (CANDIDATE.test(token) && !EMITTED.test(token)) unsupported.add(token)
+          if (CANDIDATE.test(token) && !emitted(token)) unsupported.add(token)
         }
       }
     }

@@ -112,9 +112,27 @@ async function bindRoutes(page, theme) {
 }
 
 /** Freeze every animation so two builds are photographed at rest, not at
- *  different frames of a spinner or an entrance. */
+ *  different frames of a spinner or an entrance. `animation: none` rather than
+ *  `animation-play-state: paused`: a paused animation holds its FIRST frame, and
+ *  for the shadcn overlays (`animate-in fade-in-0`) that frame is fully
+ *  transparent, so a menu or dialog opened after the freeze would never show up
+ *  in the frame. With no animation at all every element renders its resting
+ *  state, which is the thing the two builds are compared on. */
 async function freezeMotion(page) {
-  await page.addStyleTag({ content: '*,*::before,*::after{animation-play-state:paused!important;transition:none!important;caret-color:transparent!important}' })
+  await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}' })
+}
+
+/** Refuse a frame whose overlay is not actually painted: a locator can be
+ *  "visible" while its computed opacity is 0, which is exactly how a frozen
+ *  entrance animation hides a menu or a dialog. */
+async function assertPainted(locator, what) {
+  const { opacity, w, h } = await locator.evaluate(el => {
+    const r = el.getBoundingClientRect()
+    return { opacity: getComputedStyle(el).opacity, w: r.width, h: r.height }
+  })
+  if (parseFloat(opacity) < 0.99 || w < 40 || h < 40) {
+    throw new Error(`${what} is not painted (opacity=${opacity}, ${Math.round(w)}x${Math.round(h)}) — the frame would not show it`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +152,7 @@ async function shootChat(page, base, out, theme) {
   const menu = page.locator('[role="menu"]').first()
   await menu.waitFor({ state: 'visible', timeout: 10000 })
   await page.waitForTimeout(600)
+  await assertPainted(menu, 'sidebar caret menu')
   await page.screenshot({ path: join(out, `${theme}-dropdown.png`) })
   await page.keyboard.press('Escape')
 }
@@ -160,6 +179,7 @@ async function shootAgents(page, base, out, theme) {
   const sheet = page.getByRole('dialog', { name: /edit (crew|agent)/i })
   await sheet.waitFor({ state: 'visible', timeout: 10000 })
   await page.waitForTimeout(800)
+  await assertPainted(sheet, 'edit-crew dialog')
   await page.screenshot({ path: join(out, `${theme}-dialog.png`) })
 }
 

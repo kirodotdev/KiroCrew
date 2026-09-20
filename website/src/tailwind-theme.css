@@ -204,9 +204,12 @@
  * viewport-fit=cover, so on a notched iPhone the web view spans the whole
  * screen. The shell insets its in-flow chrome once with `p-safe`; every `fixed`
  * surface escapes that padding and opts in on its own, which
- * src/test/safeArea.guard.test.ts enforces. Only the families this codebase
- * uses are emitted; anything else compiles to nothing, and the guard test lists
- * what is emitted so a leftover like `me-safe` is caught rather than silent.
+ * src/test/safeArea.guard.test.ts enforces. Only the utilities this codebase
+ * uses are emitted (`p-safe`, the four `<edge>-safe`, the four
+ * `<edge>-safe-offset-*`, and `bottom-`/`left-safe-or-*`); anything else
+ * compiles to nothing, and the guard test reads this file's `@utility` names so
+ * a leftover like `me-safe` or an unemitted `top-safe-or-3` is caught rather
+ * than silent.
  *
  * TOP goes through --safe-area-top (index.css), which is 0 outside the
  * standalone/fullscreen display modes: with browser chrome on screen the UA's
@@ -239,43 +242,19 @@
   top: calc(var(--safe-area-top, env(safe-area-inset-top)) + --spacing(--value(number)));
   top: calc(var(--safe-area-top, env(safe-area-inset-top)) + --value([*]));
 }
-@utility -top-safe-offset-* {
-  top: calc(var(--safe-area-top, env(safe-area-inset-top)) - --spacing(--value(number)));
-  top: calc(var(--safe-area-top, env(safe-area-inset-top)) - --value([*]));
-}
 @utility right-safe-offset-* {
   right: calc(env(safe-area-inset-right) + --spacing(--value(number)));
   right: calc(env(safe-area-inset-right) + --value([*]));
-}
-@utility -right-safe-offset-* {
-  right: calc(env(safe-area-inset-right) - --spacing(--value(number)));
-  right: calc(env(safe-area-inset-right) - --value([*]));
 }
 @utility bottom-safe-offset-* {
   bottom: calc(env(safe-area-inset-bottom) + --spacing(--value(number)));
   bottom: calc(env(safe-area-inset-bottom) + --value([*]));
 }
-@utility -bottom-safe-offset-* {
-  bottom: calc(env(safe-area-inset-bottom) - --spacing(--value(number)));
-  bottom: calc(env(safe-area-inset-bottom) - --value([*]));
-}
 @utility left-safe-offset-* {
   left: calc(env(safe-area-inset-left) + --spacing(--value(number)));
   left: calc(env(safe-area-inset-left) + --value([*]));
 }
-@utility -left-safe-offset-* {
-  left: calc(env(safe-area-inset-left) - --spacing(--value(number)));
-  left: calc(env(safe-area-inset-left) - --value([*]));
-}
 
-@utility top-safe-or-* {
-  top: max(var(--safe-area-top, env(safe-area-inset-top)), --spacing(--value(number)));
-  top: max(var(--safe-area-top, env(safe-area-inset-top)), --value([*]));
-}
-@utility right-safe-or-* {
-  right: max(env(safe-area-inset-right), --spacing(--value(number)));
-  right: max(env(safe-area-inset-right), --value([*]));
-}
 @utility bottom-safe-or-* {
   bottom: max(env(safe-area-inset-bottom), --spacing(--value(number)));
   bottom: max(env(safe-area-inset-bottom), --value([*]));
