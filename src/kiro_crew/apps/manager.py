@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, NamedTuple
 from urllib.parse import urlparse
 
 from kiro_crew import platform_compat
@@ -2033,6 +2033,120 @@ def list_apps() -> list[dict[str, Any]]:
             app_info["orphaned"] = True
         result.append(app_info)
     return result
+
+
+class AppsListing(NamedTuple):
+    """What :func:`list_apps` returned, and whether it saw every app on disk."""
+
+    #: Exactly what :func:`list_apps` returns, unchanged.
+    apps: list[dict[str, Any]]
+    #: False when at least one entry in the apps root stood for an app that
+    #: :func:`list_apps` dropped. An app absent from ``apps`` then carries no
+    #: information: it cannot be read as "no such app is installed".
+    complete: bool
+
+
+def _path_is_occupied(path: Path) -> bool:
+    """Whether something is AT *path*, judged without resolving it.
+
+    ``Path.exists`` follows a symlink, so a dangling ``installed.json`` link reads
+    absent while :func:`_read_installed` still fails on it -- and the two answers
+    together say "no such app" about an app that is on disk. ``is_symlink`` does not
+    close it either: it is False for a Windows directory junction, so a dangling
+    junction stays invisible to every predicate that resolves its target.
+
+    Anything uninspectable counts as present, the same fail-to-unknown direction
+    :func:`_absence_is_genuine` takes.
+    """
+    try:
+        return path.exists() or path.is_symlink() or is_link_or_junction(path)
+    except OSError:
+        return True
+
+
+def _entry_stands_for_a_dropped_app(entry: Path) -> bool:
+    """Whether a root entry :func:`list_apps` did not return still holds an app's claim.
+
+    A DIRECTORY that still has its record file counts: :func:`list_apps` reaches
+    ``if not meta: continue`` for a record that does not read and drops the app
+    silently, so the directory is the only remaining evidence the app is there.
+
+    A non-directory entry counts when it is link-ish or uninspectable.
+    :func:`list_apps` skips any entry that is not a readable directory, so an app
+    root replaced by a dangling symlink or junction is not a dir, is not listed, and
+    its record is unreachable -- every resolving predicate agrees the app is absent
+    when something is plainly occupying its name.
+
+    An entry that inspects cleanly as a plain FILE is deliberately NOT counted. It
+    cannot be told apart from an ordinary non-app file in this directory, and
+    treating every such file as a dropped app would leave the listing permanently
+    incomplete, which costs every caller that reads completeness as doubt. An app
+    root overwritten by a plain file is the residue that leaves.
+    """
+    try:
+        if entry.is_dir():
+            return _path_is_occupied(entry / INSTALLED_META_FILENAME)
+        return entry.is_symlink() or is_link_or_junction(entry)
+    except OSError:
+        return True
+
+
+def list_apps_with_skips() -> AppsListing:
+    """:func:`list_apps`, plus whether it dropped an app that is on disk.
+
+    :func:`list_apps` drops an app whose installed record does not read, and drops
+    it SILENTLY rather than raising, so its return value on its own cannot separate
+    "no such app is installed" from "that app's record went unread". A caller that
+    must tell those apart -- one deciding whether an absent app means a name is
+    genuinely unclaimed -- has no way to ask, and the wrong answer is on the
+    unrecoverable side.
+
+    This reports the second case, so the decision belongs to the module that owns
+    the skip rules. ``agent.py``'s rebuild consumed a copy of this walk before, in a
+    module where a change to ``list_apps``'s record layout or skip behaviour would
+    have left the copy stale with nothing failing.
+
+    ``complete`` is a property of the LISTING, not of any one app: it says only that
+    something on disk stood for an app the list does not carry. It does not name
+    which, because the dropped record is exactly the thing that could not be read.
+
+    Raises only what :func:`list_apps` raises, so an unreadable registry stays
+    distinguishable from an empty one. A root that cannot be WALKED is reported as an
+    incomplete listing instead, because the apps it would have vouched for are
+    already in ``apps``.
+    """
+    apps = list_apps()
+    try:
+        named = {app.get("name") for app in apps if isinstance(app, dict)}
+        root = apps_dir()
+        if not root.is_dir():
+            # Nothing can be enumerated here, so the two shapes are told apart by
+            # whether anything is AT the root rather than by walking it.
+            #
+            # An ABSENT root is the ordinary "nothing installed" case, and
+            # :func:`list_apps` returns the same empty list for it, so the listing is
+            # complete and an app missing from it really is not installed.
+            #
+            # A root something else OCCUPIES is the opposite answer. Every installed
+            # app's record is underneath it and none of them can be reached, while no
+            # entry can stand for them either because the walk cannot run at all. So
+            # completeness is unknown, and reporting it as unknown is what stops a
+            # caller pruning a claim it merely could not read.
+            #
+            # A plain FILE counts here, where :func:`_entry_stands_for_a_dropped_app`
+            # deliberately does not count one. The reason is the position, not the
+            # shape: a file BESIDE the app directories is an ordinary member of a
+            # healthy apps root, and counting it would hold every normal listing
+            # incomplete, whereas a file standing WHERE the root belongs has replaced
+            # the whole directory and no healthy installation looks like that.
+            return AppsListing(apps, not _path_is_occupied(root))
+        dropped = any(
+            entry.name not in named and _entry_stands_for_a_dropped_app(entry)
+            for entry in root.iterdir()
+        )
+    except Exception:  # noqa: BLE001 — a root that cannot be read vouches for nothing
+        return AppsListing(apps, False)
+    return AppsListing(apps, not dropped)
 
 
 def get_app(name: str) -> dict[str, Any] | None:
