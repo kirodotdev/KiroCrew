@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 from aiohttp import web
 
-from kiro_crew import platform_compat, port_resolution
+from kiro_crew import platform_compat, port_resolution, shutdown_event
 from kiro_crew.apps.backend import start_deferred_app_backends, start_enabled_app_backends
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler
 from kiro_crew.apps.hooks_integration import (
@@ -128,6 +128,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
 from kiro_crew.dashboard.handlers.spawn_resume import setup_spawn_resume_routes
 from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
 from kiro_crew.dashboard.handlers.whatsapp_setup import setup_whatsapp_routes
+from kiro_crew.dashboard.listener_guard import ListenerGuard
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     AUDIT_CLAIMED_KEY,
@@ -3542,6 +3543,47 @@ def _register_prevent_sleep_shutdown(app: web.Application, state: DashboardState
     app.on_cleanup.append(_prevent_sleep_shutdown)
 
 
+def _register_listener_guard_shutdown(app: web.Application, state: DashboardState) -> None:
+    """Register the on_cleanup hook that detaches the listener guard.
+
+    MUST be called BEFORE ``runner.setup()`` freezes the app's signal lists. The
+    guard is created after the TCP site binds (:func:`_arm_listener_guard`) and
+    resolved here lazily via ``getattr``. Detaching first matters: cleanup stops
+    every site, and a guard still armed would read its own site's closed
+    listener as a lost one and try to rebind it mid-shutdown.
+    """
+
+    async def _listener_guard_shutdown(app_: web.Application) -> None:
+        guard = getattr(state, "_listener_guard", None)
+        if guard is not None:
+            guard.stop()
+
+    app.on_cleanup.append(_listener_guard_shutdown)
+
+
+def _arm_listener_guard(state: DashboardState, runner: web.AppRunner, site: web.TCPSite) -> None:
+    """Watch the just-started TCP *site* and rebind it if its listener dies.
+
+    Windows only, because the defect is: one failed ``accept()``
+    (``ERROR_NETNAME_DELETED`` from an aborted tunnelled peer) makes the
+    proactor loop close the LISTEN socket for good while the process and its
+    accepted connections live on. The guard hooks the loop's exception handler
+    for that exact report, self-probes ``/api/live`` over loopback
+    periodically, rebinds the same host/port with bounded backoff, and exits
+    non-zero when it cannot -- see
+    :mod:`kiro_crew.dashboard.listener_guard`. Shared by ``start_dashboard``
+    and the headless ``start_api_server``. POSIX selector loops keep the
+    listener registered across a failed accept, so on those platforms this is
+    a no-op rather than an idle probe task.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return
+
+    guard = ListenerGuard(runner, site, shutdown_event)
+    guard.arm()
+    state._listener_guard = guard
+
+
 def _import_stt_engine() -> Any:
     """Import the recogniser module. BLOCKING: 169 ms cold, numpy plus the binding.
 
@@ -4693,6 +4735,9 @@ async def start_dashboard(
     # same reason as the watchdog hook above. The inhibitor + poll task are
     # created after runner.setup by _arm_prevent_sleep_poll and released here.
     _register_prevent_sleep_shutdown(app, state)
+    # Listener guard detach hook -- same ordering constraint; the guard itself
+    # is armed after the TCP site binds (below).
+    _register_listener_guard_shutdown(app, state)
 
     async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
         await app_["kiro_prerequisite_service"].close()
@@ -4740,6 +4785,9 @@ async def start_dashboard(
     await runner.setup()
     site = web.TCPSite(runner, bind_address_for(local_only), port)
     await _start_site(site, port)
+    # The listener is up -- keep it up. One failed accept() on Windows would
+    # otherwise close it for the life of the process (see listener_guard).
+    _arm_listener_guard(state, runner, site)
     # Export the port this gateway ACTUALLY bound so child processes resolve
     # loopback callbacks against the truth, not a re-derived config guess.
     _export_bound_port(runner, port)
@@ -5542,6 +5590,7 @@ async def start_api_server(
     # is what makes headless --slack-only keep the host awake during a long
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
+    _register_listener_guard_shutdown(app, state)
     _register_connections_warm_lifecycle(app, state)
     _register_workflow_lifecycle(app, state)
 
@@ -5563,6 +5612,9 @@ async def start_api_server(
     bind_addr = bind_address_for(local_only)
     site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
+    # Same listener guard as start_dashboard: a headless gateway loses its
+    # listener to a failed accept() exactly the same way.
+    _arm_listener_guard(state, runner, site)
     # Export the actually-bound port for child processes (parity with
     # start_dashboard — headless gateways spawn the same MCP stdio children).
     _export_bound_port(runner, port)

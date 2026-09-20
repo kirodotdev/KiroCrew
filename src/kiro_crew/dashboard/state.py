@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         SubagentManager,
         TaskRunner,
     )
+    from kiro_crew.dashboard.listener_guard import ListenerGuard  # noqa: F401
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
     from kiro_crew.power import SleepInhibitor  # noqa: F401
@@ -4449,6 +4450,11 @@ class DashboardState:
         # entrypoint (faulthandler enabled) and stopped on shutdown. Annotated
         # here so the assignment in start_dashboard type-checks under mypy strict.
         self._loop_watchdog: "LoopStallWatchdog | None" = None
+        # Listener guard: rebinds the TCP site when its LISTEN socket dies (the
+        # Windows proactor accept-failure path) and carries the non-zero exit
+        # status the gateway uses when it cannot. Armed after the site binds,
+        # detached on cleanup; annotated here for mypy.
+        self._listener_guard: "ListenerGuard | None" = None
         # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
         # released/cancelled on shutdown; annotated here so the assignments in
         # start_dashboard type-check under mypy.

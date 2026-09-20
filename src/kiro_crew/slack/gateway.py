@@ -142,6 +142,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_context_tokens,
     read_effective_agent,
 )
+from kiro_crew.dashboard.listener_guard import listener_guard_exit_code
 from kiro_crew.dashboard.origin import (
     build_dashboard_url,
     format_dashboard_urls,
@@ -13619,7 +13620,14 @@ class GatewayOrchestrator:
         # gateway for hours on exactly this path. The watchdog has already
         # returned (True on the vanish path) by the time it sets the event, so
         # its task result is the signal; see shutdown_exit_code.
-        exit_code = shutdown_exit_code(watchdog)
+        #
+        # The listener guard is the other self-initiated shutdown: it set the
+        # event because the TCP listener died and could not be rebound, so the
+        # process was alive but unreachable. That state must never be an
+        # exit 0 either -- the supervisor has to relaunch it.
+        exit_code = shutdown_exit_code(watchdog) or listener_guard_exit_code(
+            getattr(self.dashboard_state, "_listener_guard", None)
+        )
 
         # Drop this gateway's run-marker BEFORE _shutdown() releases the
         # listener: once the port is free a replacement gateway can bind it
