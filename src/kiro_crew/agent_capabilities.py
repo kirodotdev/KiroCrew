@@ -944,11 +944,15 @@ class CapabilityService:
             raise CapabilityError("parent_change_missing")
         intent["accepted"] = baseline
         intent["catalog"] = snap["catalog"]
-        if any(
-            op["section"] in ("allowedTools", "autoApprove", "tools")
-            for op in request["operations"]
-        ) or spec.get("allowedTools") != snap["spec"].get("allowedTools"):
-            _align_permissions(snap["spec"], spec)
+        if (
+            reset_parent
+            or any(
+                op["section"] in ("allowedTools", "autoApprove", "tools")
+                for op in request["operations"]
+            )
+            or spec.get("allowedTools") != snap["spec"].get("allowedTools")
+        ):
+            _align_permissions(base, spec)
         _sanitize_projection(spec, intent, snap["catalog"])
         if spec.get("includeMcpJson", True) is not False:
             before = _rows(snap["spec"], snap["catalog"])
