@@ -800,8 +800,10 @@ def crew_host_runtime_leaves() -> tuple[str, ...]:
     """Crew-home leaves an ENFORCED harness's child may read, per this module.
 
     :data:`_CREW_CHILD_READABLE_LEAVES` verbatim -- the half of this module's
-    non-hidden crew leaves that holds no credential: the governance ceilings, the
-    opt-out and consent records, the browser launcher, the authorization sidecars.
+    non-hidden crew leaves that holds no credential AND is no input to an
+    authorization decision: the browser launcher, the authorization sidecars
+    (``apps/.dev-grants.json``, ``settings_seeds.json``, the model-state pair), the
+    gateway-owned run and decision records, and the operator's cloud configuration.
     Its sibling :data:`_CREW_CHILD_WITHHELD_LEAVES` carries the rest, and
     ``test_sandbox_governance_mask`` pins the pair complete and disjoint against
     ``_CREW_SANDBOX_VISIBLE_LEAVES | _CREW_READONLY_LEAVES``, so a leaf added to
@@ -821,10 +823,17 @@ def crew_host_runtime_leaves() -> tuple[str, ...]:
     same entry hides the artifact from the CHILD -- which is not the reader the floor
     was aiming at, and is the reader these lists exist to serve.
 
-    Hiding a ceiling is the sharpest case, because it is not merely lost: an empty
-    bind over ``security_policy.json`` makes ``boot_platform()`` raise, so every
-    in-sandbox Crew process under an enforced harness stops booting on exactly the
-    governed hosts that set one.
+    The governance ceiling is NOT in this set, and that is deliberate rather than an
+    omission -- see the governance family in
+    :data:`_CREW_CHILD_WITHHELD_LEAVES`. It is the case where the two readers pull
+    hardest in opposite directions: an empty bind over ``security_policy.json`` makes
+    ``boot_platform()`` raise, so an in-sandbox Crew process under an enforced harness
+    stops booting on exactly the governed hosts that set one. That cost is accepted
+    because it lands in the safe direction -- a session refuses rather than proceeding
+    ungoverned -- and a ceiling is an INPUT TO AN AUTHORIZATION DECISION, which a
+    foreign harness's child reads through a channel that reaches no gate and leaves no
+    record. So do not read the paragraph above as licence to move a ceiling or a
+    consent record here to make a harness boot.
 
     Subtracting these is not a hole. An unenforced harness's child already sees every
     leaf that remains (those harnesses get no mask at all), each readonly entry is
