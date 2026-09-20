@@ -594,7 +594,7 @@ export default function LexicalComposerInput({
               spellCheck={spellCheck}
               data-composer-input=""
               data-lexical-composer=""
-              className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-none whitespace-pre-wrap break-words ${INPUT_TYPO}`}
+              className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-hidden whitespace-pre-wrap break-words ${INPUT_TYPO}`}
             />
           }
           placeholder={

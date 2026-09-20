@@ -372,7 +372,7 @@ export default function TurnNavigationMinimap({
           // aria-disabled, not disabled: the cap stays in the tab order and keeps
           // its tooltip while a page loads, mirroring EarlierMessagesBar.
           aria-disabled={earlier.loading}
-          className={`pointer-events-auto flex w-7 flex-col items-start gap-[3px] border-none bg-transparent p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] rounded ${earlier.loading ? 'cursor-progress' : 'cursor-pointer'}`}
+          className={`pointer-events-auto flex w-7 flex-col items-start gap-[3px] border-none bg-transparent p-0 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] rounded ${earlier.loading ? 'cursor-progress' : 'cursor-pointer'}`}
           onClick={() => { if (!earlier.loading) earlier.onLoad() }}
         >
           {[10, 7, 4].map(width => (
@@ -385,7 +385,7 @@ export default function TurnNavigationMinimap({
         type="button"
         aria-label={label}
         aria-describedby={active ? 'turn-navigation-preview' : undefined}
-        className="relative w-7 cursor-pointer pointer-events-auto bg-transparent border-none p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] rounded"
+        className="relative w-7 cursor-pointer pointer-events-auto bg-transparent border-none p-0 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] rounded"
         style={{ height: `min(calc(100% - ${earlier ? 32 : 8}px), ${railHeight}px)` }}
         onMouseMove={onMouseMove}
         onMouseLeave={scheduleClose}

@@ -233,6 +233,7 @@ predate this subsystem and remain the color-theme surface.)
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `_scopeOverridesCss` + `_rewriteOverridesUrls`; `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
 | Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator |
+| Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### One theme, one picker row (registered vs installed)
 

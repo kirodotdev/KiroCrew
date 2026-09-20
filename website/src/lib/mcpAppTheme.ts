@@ -87,7 +87,7 @@ const tok = (name: string): TokenSource => ({ from: 'token', name })
 const wash = (name: string, amount: string): WashSource => ({ from: 'wash', name, amount })
 
 /** The wash `bg-info-subtle` already paints with, spelled once and as the whole
- *  CSS token. Pinned equal to `tailwind.config.js`'s `info-subtle` by a test that
+ *  CSS token. Pinned equal to `tailwind-theme.css`'s `info-subtle` by a test that
  *  parses that config, so the dashboard's own info surfaces and an app's
  *  `--color-background-info` cannot drift into two visibly different washes of one
  *  hue. */
@@ -129,7 +129,7 @@ export const COLOR_TOKEN_MAP: Record<McpUiColorVariableKey, ColorSource> = {
   // Where the wash COMES FROM differs for info, and follows the dashboard rather
   // than the pattern: `--ok/--warn/--danger-subtle` are stored per theme, but
   // `--info` has no stored companion and `bg-info-subtle` is derived in
-  // tailwind.config.js as `color-mix(in srgb, var(--info) 12%, transparent)`. So
+  // tailwind-theme.css as `color-mix(in srgb, var(--info) 12%, transparent)`. So
   // the map derives it the same way instead of adding a 57th theme-pack variable
   // — an app's info fill and the dashboard's own `bg-info-subtle` surfaces then
   // resolve from one definition and cannot disagree. A pack that wants a

@@ -249,7 +249,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
             onChange={(e) => setPrQuery(e.target.value)}
             placeholder={i18nT('apps.issueRadar.components.prList.search', { label: terms.changeRequestPluralTitle })}
             aria-label={i18nT('apps.issueRadar.components.prList.search_2', { label: terms.changeRequestPluralTitle })}
-            className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-none"
+            className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-hidden"
           />
           {prQuery && (
             <button

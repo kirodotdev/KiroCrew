@@ -93,7 +93,7 @@ export default function MultiSelect({
         disabled={disabled}
         aria-label={label}
         aria-haspopup="dialog"
-        className="flex min-h-9 w-full items-center justify-between rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-text outline-none transition-all hover:border-border-strong focus-visible:border-accent disabled:pointer-events-none disabled:opacity-40"
+        className="flex min-h-9 w-full items-center justify-between rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-text outline-hidden transition-all hover:border-border-strong focus-visible:border-accent disabled:pointer-events-none disabled:opacity-40"
       >
         <span className="min-w-0 truncate text-left">{summary}</span>
         <ChevronDown className="lucide-inline ml-2 shrink-0 text-muted" aria-hidden />
@@ -114,7 +114,7 @@ export default function MultiSelect({
               onChange={event => setFilter(event.target.value)}
               placeholder={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
               aria-label={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
-              className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-[13px] outline-none focus-ring placeholder:text-muted"
+              className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-[13px] outline-hidden focus-ring placeholder:text-muted"
             />
           </div>
           {!!bulkActions?.length && (

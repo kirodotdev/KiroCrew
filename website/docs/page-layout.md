@@ -332,7 +332,7 @@ A dismissible banner above the content:
 ## Animations
 
 `animate-rise` on cards and banners, `animate-scale-in` on inline reveals. Both
-are Tailwind utilities defined in `tailwind.config.js`, and both use
+are Tailwind utilities declared in `src/tailwind-theme.css`, and both use
 `backwards` fill so an `animationDelay` holds the element hidden until its turn.
 
 ## Do NOT

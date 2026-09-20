@@ -33,7 +33,7 @@ function Field({ label, hint, children }: {
 
 const SELECT_CLASS =
   'text-[12.5px] px-2 py-1 rounded-md bg-bg-elevated text-text border border-border '
-  + 'outline-none focus:border-accent cursor-pointer'
+  + 'outline-hidden focus:border-accent cursor-pointer'
 
 export default function SettingsView() {
   const qc = useQueryClient()

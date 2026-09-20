@@ -6545,7 +6545,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           <motion.div
             key="sessions-backdrop"
             data-testid="sessions-backdrop"
-            className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-sm"
+            className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-xs"
             // ^ Frosted, matching every other scrim in the app (App.tsx's own
             // mobile nav backdrop is the same three classes). Kept adjacent to
             // `key` — the composer-chrome occlusion guard anchors its z-order

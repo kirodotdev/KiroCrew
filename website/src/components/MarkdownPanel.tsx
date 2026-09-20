@@ -136,7 +136,7 @@ export function FileHeaderBreadcrumb({ filePath }: { filePath: string }) {
             below. Same focusable-region pattern as CodeBlock / FileRenderers. */}
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
         <div
-          className="flex items-center min-w-0 outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
+          className="flex items-center min-w-0 outline-hidden focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
           title={filePath}
           role="group"
           aria-label={filePath}
@@ -524,7 +524,7 @@ function KnowledgeToggleIconButton({ state }: { state: ReturnType<typeof useFile
 // a row's truncating children only shrink when the row itself may shrink past its
 // content. Without it a long app-contributed label sets the row's width and spills past
 // the cap instead of being clipped by it.
-const menuRowCls = 'flex items-center gap-2 w-full min-w-0 overflow-hidden px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left whitespace-nowrap hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-none'
+const menuRowCls = 'flex items-center gap-2 w-full min-w-0 overflow-hidden px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left whitespace-nowrap hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-hidden'
 
 export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit }: {
   filePath: string; content: string
@@ -1367,7 +1367,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFind() }
         }}
         placeholder={i18nT('components.markdownPanel.find_in_document')}
-        className="bg-transparent border-none outline-none text-text placeholder:text-muted w-[170px] text-[13px]"
+        className="bg-transparent border-none outline-hidden text-text placeholder:text-muted w-[170px] text-[13px]"
         aria-label={i18nT('components.markdownPanel.find_in_document_2')}
       />
       <button onClick={() => setFindCase((c) => !c)} className={`p-0.5 rounded cursor-pointer border-none transition-colors ${findCase ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`} title={i18nT('components.markdownPanel.case_sensitive')} aria-label={i18nT('components.markdownPanel.case_sensitive')}><CaseSensitive size={15} /></button>

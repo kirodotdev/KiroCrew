@@ -811,7 +811,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
                 value={draft.extraPrompt}
                 placeholder={t('apps.issueRadar.views.crews.editor.prompt_placeholder')}
                 onChange={e => patch('extraPrompt', e.target.value)}
-                className="w-full resize-y rounded-md border border-border bg-bg-elevated px-3 py-2 font-body text-sm text-text outline-none transition-colors focus-ring"
+                className="w-full resize-y rounded-md border border-border bg-bg-elevated px-3 py-2 font-body text-sm text-text outline-hidden transition-colors focus-ring"
               />
             </Field>
           </div>

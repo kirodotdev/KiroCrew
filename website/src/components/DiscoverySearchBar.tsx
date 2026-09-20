@@ -57,7 +57,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
             onKeyDown={onKeyDown}
             {...inputProps}
             placeholder={i18nT('components.discoverySearchBar.search_across_providers', { subject })}
-            className="w-full pl-9 pr-9 py-2 rounded-md border border-border bg-bg text-text text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            className="w-full pl-9 pr-9 py-2 rounded-md border border-border bg-bg text-text text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
             autoFocus
           />
           {query && (

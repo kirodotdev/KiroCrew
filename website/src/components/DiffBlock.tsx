@@ -252,7 +252,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
         {onFold && (
           <button
             type="button"
-            className="group/fold absolute left-0 top-0 w-8 h-8 z-0 flex items-center justify-center bg-transparent border-none cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-tl-xl"
+            className="group/fold absolute left-0 top-0 w-8 h-8 z-0 flex items-center justify-center bg-transparent border-none cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent/50 rounded-tl-xl"
             data-diff-toggle
             onClick={onFold}
             aria-label={i18nT('pages.chat.toolCallLine.aria_hide_diff')}

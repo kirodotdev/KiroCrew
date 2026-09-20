@@ -87,7 +87,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   // is what makes an onClick div compliant rather than a static-element one.
   const itemCls =
     'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[12.5px] text-text ' +
-    'cursor-pointer hover:bg-bg-hover focus:bg-bg-hover outline-none'
+    'cursor-pointer hover:bg-bg-hover focus:bg-bg-hover outline-hidden'
   const activate = (run: () => void) => (e: React.MouseEvent | React.KeyboardEvent) => {
     if ('key' in e) {
       if (e.key !== 'Enter' && e.key !== ' ') return

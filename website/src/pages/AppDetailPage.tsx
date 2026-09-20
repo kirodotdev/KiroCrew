@@ -459,7 +459,7 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
           // dismiss/navigate via the onKeyDown handler (Escape / arrows) below.
           // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
           <div
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-bg/80 backdrop-blur-sm"
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-bg/80 backdrop-blur-xs"
             onClick={() => {
               // A pinch, drag or double-tap just finished — that click is gesture
               // residue and must not dismiss the viewer the user just zoomed into.
@@ -1329,7 +1329,7 @@ export default function AppDetailPage() {
           // Modal backdrop: click-to-dismiss is a mouse affordance; keyboard
           // users dismiss via the Escape handler in onKeyDown below.
           // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise"
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
             onClick={() => setShowUninstallConfirm(false)}
             onKeyDown={e => { if (e.key === 'Escape') setShowUninstallConfirm(false) }}
             tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}

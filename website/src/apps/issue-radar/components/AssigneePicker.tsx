@@ -129,7 +129,7 @@ export default function AssigneePicker({
             onKeyDown={(e) => e.stopPropagation()}
             placeholder={i18nT('apps.issueRadar.components.assigneePicker.filter_members')}
             aria-label={i18nT('apps.issueRadar.components.assigneePicker.filter_members')}
-            className="w-full pl-8 pr-2 py-1.5 text-[13px] rounded-md border border-border bg-bg text-text placeholder:text-muted outline-none focus:border-accent"
+            className="w-full pl-8 pr-2 py-1.5 text-[13px] rounded-md border border-border bg-bg text-text placeholder:text-muted outline-hidden focus:border-accent"
           />
         </div>
 

@@ -328,7 +328,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     // users close via Escape, already wired through the document keydown
     // listener above, so the dialog role stays keyboard-accessible.
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('components.shortcutsModal.keyboard_shortcuts')} onClick={onClose}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('components.shortcutsModal.keyboard_shortcuts')} onClick={onClose}>
       {/* onClick only stops propagation so inner clicks don't hit the backdrop
           dismiss handler; it is event plumbing, not an interactive control. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}

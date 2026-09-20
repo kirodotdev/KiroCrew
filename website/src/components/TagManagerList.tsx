@@ -85,7 +85,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                  *  menu: a native <button> is Tab-reachable and Space/Enter-operable, and
                  *  the owning popover owns focus/Escape (no orphan menuitem ARIA). */
                 <button type="button" role="checkbox" aria-checked={on} aria-label={i18nT('components.tagManagerList.include_in_filter', { name: t.name })}
-                  className="w-4 h-4 rounded-sm border border-border shrink-0 cursor-pointer relative outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  className="w-4 h-4 rounded-sm border border-border shrink-0 cursor-pointer relative outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
                   style={{ background: t.color }}
                   onClick={() => onToggleTag?.(t.id, nextIds)}>
                   {on && <span className="absolute inset-0 flex items-center justify-center" style={{ color: t.color === '#ffffff' ? '#000' : '#fff' }}><Check size={10} /></span>}
@@ -98,7 +98,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                   aria-expanded={openColorId === t.id}
                   aria-label={i18nT('components.tagManagerList.change_color', { name: t.name })}
                   title={i18nT('components.tagManagerList.change_color', { name: t.name })}
-                  className="w-4 h-4 rounded-sm border border-border shrink-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  className="w-4 h-4 rounded-sm border border-border shrink-0 cursor-pointer outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
                   style={{ background: t.color }}
                   onClick={() => setOpenColorId(cur => (cur === t.id ? null : t.id))} />
               )}
@@ -113,7 +113,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 data-testid={`tag-name-${t.id}`}
                 aria-label={i18nT('components.tagManagerList.rename_tag', { name: t.name })}
                 defaultValue={t.name}
-                className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 rounded focus-visible:bg-bg-elevated focus-visible:border focus-visible:border-accent/50"
+                className="flex-1 min-w-0 bg-transparent border-none outline-hidden text-[12px] text-text py-0 px-0.5 rounded focus-visible:bg-bg-elevated focus-visible:border focus-visible:border-accent/50"
                 {...ime.bindComposition<HTMLInputElement>({
                   onBlur: e => { const v = e.target.value.trim(); if (!v) { e.target.value = t.name; return } if (v !== t.name) updateTagMutation.mutate({ id: t.id, body: { name: v } }) },
                 })}
@@ -139,7 +139,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               />
               {/* Status lightning — filled for status tags, muted ghost for non-status on hover */}
               <button type="button" data-testid={`tag-status-${t.id}`}
-                className={`shrink-0 cursor-pointer bg-transparent border-none p-[2px] transition-all outline-none focus-visible:ring-1 focus-visible:ring-accent ${t.status ? 'text-accent hover:text-accent-hover' : 'text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-text'}`}
+                className={`shrink-0 cursor-pointer bg-transparent border-none p-[2px] transition-all outline-hidden focus-visible:ring-1 focus-visible:ring-accent ${t.status ? 'text-accent hover:text-accent-hover' : 'text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-text'}`}
                 title={t.status ? i18nT('components.tagManagerList.status_tag_mutually_exclusive_on_cards_click_to') : i18nT('components.tagManagerList.make_status_tag')}
                 aria-pressed={!!t.status}
                 aria-label={t.status ? i18nT('components.tagManagerList.remove_status_flag_from', { name: t.name }) : i18nT('components.tagManagerList.make_a_status_tag', { name: t.name })}
@@ -148,7 +148,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               </button>
               {/* Delete */}
               <button type="button" data-testid={`tag-delete-${t.id}`}
-                className="shrink-0 cursor-pointer bg-transparent border-none p-[2px] text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-danger transition-all outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                className="shrink-0 cursor-pointer bg-transparent border-none p-[2px] text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-danger transition-all outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
                 title={i18nT('components.tagManagerList.delete_tag', { name: t.name })}
                 aria-label={i18nT('components.tagManagerList.delete_tag_2', { name: t.name })}
                 onClick={() => { if (confirm(`Delete tag "${t.name}"?`)) deleteTagMutation.mutate(t.id) }}>
@@ -187,7 +187,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                       title={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
                       aria-label={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
                       aria-pressed={t.color === value}
-                      className={`w-4 h-4 rounded-full cursor-pointer border hover:brightness-125 swatch-cue outline-none focus-visible:ring-2 focus-visible:ring-accent ${t.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
+                      className={`w-4 h-4 rounded-full cursor-pointer border hover:brightness-125 swatch-cue outline-hidden focus-visible:ring-2 focus-visible:ring-accent ${t.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                       style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
                       onClick={() => {
                         updateTagMutation.mutate({ id: t.id, body: { color: value } })
@@ -210,7 +210,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
           type="text"
           data-testid={createTestId}
           placeholder={i18nT('components.tagManagerList.new_tag')}
-          className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60"
+          className="flex-1 min-w-0 bg-transparent border-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60"
           {...ime.bindComposition()}
           onKeyDown={e => {
             if (e.key !== 'Enter') return

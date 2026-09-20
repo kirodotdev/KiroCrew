@@ -101,7 +101,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
             onChange={(e) => setQuery(e.target.value)}
             placeholder={i18nT('apps.issueRadar.components.issueList.search', { label: i18nT(terms.trackedItemPluralTitleKey) })}
             aria-label={i18nT('apps.issueRadar.components.issueList.search_2', { label: i18nT(terms.trackedItemPluralTitleKey) })}
-            className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-none"
+            className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-hidden"
           />
           {query && (
             <button

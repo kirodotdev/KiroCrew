@@ -270,7 +270,7 @@ function DeclarationEditor({
               onChange={e => onPattern(e.target.value)}
               aria-label={i18nT('pages.overview.steeringTab.file_pattern')}
               aria-describedby={normalizePattern(pattern) ? undefined : 'steering-file-pattern-required'}
-              className="flex-1 min-w-[180px] bg-bg border border-border rounded-md px-2 py-1 text-[12px] font-mono text-text outline-none focus-ring"
+              className="flex-1 min-w-[180px] bg-bg border border-border rounded-md px-2 py-1 text-[12px] font-mono text-text outline-hidden focus-ring"
             />
           </label>
           {/* Stated where and when it applies. Save is disabled the moment
@@ -335,7 +335,7 @@ function isProjectConflict(err: unknown): boolean {
 
 /** Textarea styling matches SkillForm's raw-markdown editor. */
 const EDITOR_CLASS =
-  'w-full h-full min-h-[320px] bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-none focus-ring'
+  'w-full h-full min-h-[320px] bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-hidden resize-none focus-ring'
 
 /**
  * The list-detail shell's height.
@@ -685,7 +685,7 @@ export default function SteeringTab() {
           <input
             id="steering-new-name"
             aria-label={i18nT('pages.overview.steeringTab.steering_file_name')}
-            className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-[13px] outline-none focus-ring"
+            className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-[13px] outline-hidden focus-ring"
             placeholder={i18nT('pages.overview.steeringTab.api_standards_md')}
             value={newName}
             onChange={e => setNewName(e.target.value)}

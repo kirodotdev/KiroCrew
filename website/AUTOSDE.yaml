@@ -60,7 +60,7 @@ custom-rules:
     rule: |
       Use CSS custom property design tokens instead of hardcoded Tailwind color classes. Hardcoded colors break dark/light theme switching.
 
-      Use the semantic tokens defined in `index.css` and mapped in `tailwind.config.js`:
+      Use the semantic tokens defined in `index.css` and mapped in `src/tailwind-theme.css`:
       - `bg-[var(--bg)]`, `bg-[var(--card)]` instead of `bg-gray-900`
       - `text-[var(--text)]`, `text-[var(--muted)]` instead of `text-gray-400`
       - `border-[var(--border)]` instead of `border-gray-700`

@@ -1671,7 +1671,7 @@ export function RemoteCrewPanel() {
                 <input
                   id="cloud-profile"
                   aria-label={i18nT('pages.settings.instancesPanel.aws_profile')}
-                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-none focus-ring"
+                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
                   value={profile}
                   onChange={e => setProfile(e.target.value)}
                   onBlur={runCheck}
@@ -1683,7 +1683,7 @@ export function RemoteCrewPanel() {
                 <input
                   id="cloud-region"
                   aria-label={i18nT('pages.settings.remoteCrewPanel.region')}
-                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-none focus-ring"
+                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
                   value={region}
                   onChange={e => setRegion(e.target.value)}
                   onBlur={runCheck}
@@ -1875,7 +1875,7 @@ export function RemoteCrewPanel() {
                         placeholder="https://example.awsapps.com/start"
                         spellCheck={false}
                         aria-invalid={identityStartUrl !== '' && !identityStartUrlOk}
-                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-none focus-visible:border-accent"
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
                       />
                     </label>
                     <label className="block text-[12px] text-muted">
@@ -1888,7 +1888,7 @@ export function RemoteCrewPanel() {
                         placeholder="us-east-1"
                         spellCheck={false}
                         aria-invalid={identityRegion !== '' && !identityRegionOk}
-                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-none focus-visible:border-accent"
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
                       />
                       <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
                     </label>

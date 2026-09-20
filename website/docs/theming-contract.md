@@ -162,13 +162,13 @@ about MCP apps. Do not copy the three-dep spelling into a new site.
 **Where each wash comes from is not symmetric, and follows the dashboard.**
 `--ok-subtle`, `--warn-subtle` and `--danger-subtle` are stored per theme and are
 read directly. `--info` has no stored companion in the 56 — `bg-info-subtle` is
-derived in `tailwind.config.js` as
+derived in `src/tailwind-theme.css` as
 `color-mix(in srgb, var(--info) 12%, transparent)` — so `COLOR_TOKEN_MAP` derives
 `--color-background-info` the same way, from `INFO_WASH` of the resolved
 `--info`, rather than adding a 57th variable to the customization surface. One
 wash, one definition: an app's info fill and the dashboard's own
 `bg-info-subtle` surfaces cannot drift into two visibly different washes of one
-hue, and `mcpAppTheme.test.ts` parses `tailwind.config.js` to keep the two
+hue, and `mcpAppTheme.test.ts` parses `src/tailwind-theme.css` to keep the two
 percentages equal. A pack that wants a different info wash retunes `--info`,
 which moves both. Adding the stored token later is still open — the customization
 surface only ever grows safely, because a pack install REJECTS unknown keys and so

@@ -231,7 +231,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             bubble it replaces, capped at 550px or the column, whichever is
             smaller. No JS measurement. */}
         <div
-          className="edit-grow user-bubble px-4 py-2 text-sm leading-6 rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] outline outline-2 -outline-offset-2 outline-accent/60"
+          className="edit-grow user-bubble px-4 py-2 text-sm leading-6 rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] outline-solid outline-2 -outline-offset-2 outline-accent/60"
           data-replicated-value={draft}
           style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
         >
@@ -239,7 +239,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             ref={taRef}
             rows={1}
             aria-label={i18nT('pages.chat.userMessage.edit_message')}
-            className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-none text-sm leading-6"
+            // focus-cue-ok: the cue is the wrapping .edit-grow frame above, which
+            // paints a 2px accent outline for the whole edit session; a second
+            // ring on the textarea would double-paint the one control.
+            className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-hidden text-sm leading-6"
             value={draft}
             onChange={e => setDraft(e.target.value)}
             {...ime.bindComposition()}

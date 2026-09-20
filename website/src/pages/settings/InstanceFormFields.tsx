@@ -480,7 +480,7 @@ const inputCls =
   // different fill plus a dashed border, not opacity: 60% opacity on
   // bg-elevated over --bg is nearly invisible in the dark theme, and the
   // dashed border reads even where the two fills are close.
-  'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-none focus-ring disabled:bg-bg-hover disabled:text-muted disabled:border-dashed disabled:cursor-not-allowed'
+  'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring disabled:bg-bg-hover disabled:text-muted disabled:border-dashed disabled:cursor-not-allowed'
 // A frozen field must LOOK frozen: identical styling invites the user to click in,
 // type, and discover only from the note below the grid that nothing landed.
 const readOnlyCls = `${inputCls} opacity-60 cursor-not-allowed`

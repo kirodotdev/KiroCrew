@@ -223,7 +223,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
         {/* Chrome type ("Normal" / "Reads" / "Trust" / "YOLO" are labels), so no
             `font-mono` — that pinned `var(--mono)`, which the Font Family
             setting never writes. */}
-        <button ref={triggerBtnRef} className={`h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-none focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2 ${spotlight || (nudge && !open) ? 'ring-2 ring-accent/60 bg-bg-hover text-text' : ''}`} title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
+        <button ref={triggerBtnRef} className={`h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-hidden focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2 ${spotlight || (nudge && !open) ? 'ring-2 ring-accent/60 bg-bg-hover text-text' : ''}`} title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
           {!compact && displayText.label}
         </button>

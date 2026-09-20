@@ -37,7 +37,7 @@ describe('session header at phone widths', () => {
   it('lets the editing input shrink too', async () => {
     const s = await src()
     // `flex-none` plus a `size` attribute refuses to shrink at all.
-    expect(s).toMatch(/session-header-title[^"]*min-w-0 flex-1 outline-none md:max-w-\[50vw\]/)
+    expect(s).toMatch(/session-header-title[^"]*min-w-0 flex-1 outline-hidden md:max-w-\[50vw\]/)
     expect(s, 'flex-none would pin the input at its size attribute')
       .not.toMatch(/session-header-title[^"]*flex-none/)
   })

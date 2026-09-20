@@ -198,7 +198,7 @@ describe('Task Runner — rail is keyboard operable', () => {
     // must be able to see it take focus.
     const expand = screen.getByRole('button', { name: 'Expand sidebar' })
     expect(expand.className).toContain('focus-ring')
-    expect(expand.className).not.toContain('outline-none')
+    expect(expand.className).not.toContain('outline-hidden')
   })
 })
 

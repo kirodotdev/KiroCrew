@@ -202,8 +202,8 @@ describe('ChatPage — mobile sessions drawer frame budget', () => {
   it('keeps the frosted scrim, in motion and at rest', () => {
     renderChat()
     openDrawer()
-    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-sm')
+    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-xs')
     finishSlide()
-    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-sm')
+    expect(screen.getByTestId('sessions-backdrop').className).toContain('backdrop-blur-xs')
   })
 })

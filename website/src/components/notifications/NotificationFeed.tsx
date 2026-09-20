@@ -299,7 +299,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           Array.from(stackedGroups.entries()).map(([group, rows]) => (
             <div key={group} className="mb-3">
               <div className={mac
-                ? 'text-[11px] font-bold text-text-strong/80 uppercase tracking-[.06em] mb-1.5 px-1 drop-shadow-sm'
+                ? 'text-[11px] font-bold text-text-strong/80 uppercase tracking-[.06em] mb-1.5 px-1 drop-shadow-xs'
                 : 'text-[11px] font-semibold text-muted uppercase tracking-[.04em] mb-1.5 px-1'}>{group}</div>
               {rows.map(({ n, stackKey, stackCount, stackExpanded, isStackChild }) => {
                 const km = KIND_META[n.kind] || DEFAULT_META

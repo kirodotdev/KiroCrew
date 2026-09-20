@@ -110,7 +110,7 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
            outline since it shipped, and this change only rewired the
            composition/Enter handling, so restyling the docked header is out of
            its scope. */
-        className={`bg-transparent border-none outline-none text-text placeholder:text-muted text-[13px] ${docked ? 'flex-1 min-w-0' : 'w-[180px]'}`}
+        className={`bg-transparent border-none outline-hidden text-text placeholder:text-muted text-[13px] ${docked ? 'flex-1 min-w-0' : 'w-[180px]'}`}
       />
       <button
         onClick={toggleCaseSensitive}

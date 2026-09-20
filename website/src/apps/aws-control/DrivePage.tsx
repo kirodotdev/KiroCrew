@@ -985,7 +985,7 @@ function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, failedW
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <IconButton
-              className="bg-card/85 backdrop-blur-sm"
+              className="bg-card/85 backdrop-blur-xs"
               aria-label={i18nT('apps.awsControl.console.library_actions')}
               data-testid="library-more"
             >
@@ -1209,7 +1209,7 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
                  the CLI drawer) before reaching this dialog. It also gives mouse
                  users type-to-filter immediately. */
               autoFocus
-              className="min-w-0 flex-1 border-none bg-transparent text-[13px] text-text outline-none"
+              className="min-w-0 flex-1 border-none bg-transparent text-[13px] text-text outline-hidden"
               data-testid="library-add-search"
             />
           </div>

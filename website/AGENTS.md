@@ -15,6 +15,7 @@ them.
 | layout of a page, panels, headers | [page-layout](docs/page-layout.md) |
 | narrow screens, gutters, page zoom, touch gestures | [narrow-viewport](docs/narrow-viewport.md) |
 | themes, colors, CSS vars, stable class hooks | [theming-contract](docs/theming-contract.md) |
+| Tailwind: a new utility for a token, `src/tailwind-theme.css`, `src/index.css`'s Tailwind header, safe-area utilities | [frontend-conventions § Styling](docs/frontend-conventions.md#styling) |
 | shared components, a11y, URL sanitization, data fetching, the stack, adding a dependency | [frontend-conventions](docs/frontend-conventions.md) |
 | any user-facing string, date, number, or sort order | [i18n-catalog](docs/i18n-catalog.md) + [i18n gates](../docs/ci/i18n-gates.md) |
 | `src/extensions.ts`, edition composition, registries | [extension-seams](docs/extension-seams.md) |

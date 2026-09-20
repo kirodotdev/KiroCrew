@@ -1128,7 +1128,7 @@ export default function SchedulePage() {
                 onEnter: () => { if (confirmArmed && !batchDeleting) runBatchDelete() },
               })}
               placeholder={BULK_DELETE_TOKEN}
-              className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-none focus-visible:border-accent"
+              className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-hidden focus-visible:border-accent"
             />
             {/* askAgent on: the only input here is the typed confirm token,
                 which is a safety gesture, not a draft worth protecting — the

@@ -471,7 +471,7 @@ function ChatPaneDropZone({ refusal }: { refusal: SessionRefBlockReason | null }
         ? 'border-accent bg-bg-elevated/90 text-accent ring-2 ring-accent'
         : 'border-border bg-bg-elevated/90 text-muted'
   const pill = (
-    <div className={`inline-flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-[12px] shadow-lg backdrop-blur-sm ${tone}`}>
+    <div className={`inline-flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-[12px] shadow-lg backdrop-blur-xs ${tone}`}>
       {refusal === 'private'
         ? <EyeOff size={14} className="shrink-0" />
         : refusal === 'self'
@@ -2811,7 +2811,7 @@ const SessionRow = memo(function SessionRow({
                   onRename handler) so users can edit or drop it when they rename.
                   A separate ↳ glyph also double-stacked into "↳↳ Fork of …". */}
               {renamingHere ? (
-                <textarea ref={renameInputRef} rows={1} className={`w-full bg-transparent border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-none select-text resize-none block overflow-hidden focus-ring`} value={renameValue} onChange={e => onRenameChange(e.target.value)} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: onRenameCancel, onBlur: () => onRenameCommit(s.key, renameValue) })} onMouseDown={e => e.stopPropagation()} />
+                <textarea ref={renameInputRef} rows={1} className={`w-full bg-transparent border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-hidden select-text resize-none block overflow-hidden focus-ring`} value={renameValue} onChange={e => onRenameChange(e.target.value)} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: onRenameCancel, onBlur: () => onRenameCommit(s.key, renameValue) })} onMouseDown={e => e.stopPropagation()} />
               ) : (s.title && s.title !== s.key ? s.title : s.key)}
             </div>
             {/* Secondary line: one ordered resolver decides both the words and the
@@ -7914,7 +7914,7 @@ function ChatSidebar({
         <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
           <div className="font-medium text-text-strong mb-2"><Cpu size={14} className="lucide-inline" /> {i18nT('pages.chatSidebar.switch_all_sessions')}</div>
           <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.pick_a_model_for_every_session_switching_a_sessi')} <span className="text-danger">{i18nT('pages.chatSidebar.resets_its_conversation')}</span>.</div>
-          <div ref={bulkListRef} role="listbox" aria-label={i18nT('pages.chatSidebar.model_list')} tabIndex={-1} onKeyDown={bulkOnListKeyDown} className="max-h-[220px] overflow-y-auto rounded-md border border-border bg-bg-elevated p-1 mb-2 outline-none">
+          <div ref={bulkListRef} role="listbox" aria-label={i18nT('pages.chatSidebar.model_list')} tabIndex={-1} onKeyDown={bulkOnListKeyDown} className="max-h-[220px] overflow-y-auto rounded-md border border-border bg-bg-elevated p-1 mb-2 outline-hidden">
             <ModelDropdownList models={bulkModelOptions} activeModel={bulkModel} onSelect={setBulkModel} />
           </div>
           {bulkRunningCount > 0 && (
@@ -8910,7 +8910,7 @@ function ChatSidebar({
                        the page is inert would mislead screen readers. */
                     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape-dismiss and the Tab trap ARE a dialog's documented keyboard operation, and they have to live on the dialog root because the trap reasons about first/last focusable inside it; the onClick only stopPropagation
                     <div ref={columnPopoverRef} role="dialog" aria-label={i18nT('pages.chatSidebar.filter_tags', { name: col.name || 'column' })} tabIndex={-1} data-column-popover={col.id}
-                      className="fixed z-[9100] bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px] outline-none"
+                      className="fixed z-[9100] bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px] outline-hidden"
                       style={{ top: popoverPos.top, left: popoverPos.left }}
                       onClick={e => e.stopPropagation()}
                       onKeyDown={e => {

@@ -100,8 +100,8 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
   return (
     <DetailPanel
       title={editable
-        ? <>{typeIcon} {i18nT('pages.aidlc.taskDetailPanel.task')} {task.index}: <input aria-label={i18nT('pages.aidlc.taskDetailPanel.task_title')} value={editTitle} disabled={saving} onChange={e => { setEditTitle(e.target.value); reportEdit(e.target.value, editDesc, editDeps) }}
-            className="bg-transparent border-b border-accent text-text text-[14px] outline-none w-[200px]" /></>
+        ? <>{typeIcon} {i18nT('pages.aidlc.taskDetailPanel.task')} {task.index}: {/* focus-cue-ok: edit-mode field whose permanent accent underline (border-b border-accent) is the cue; a ring would double-paint it inside the panel title. */}<input aria-label={i18nT('pages.aidlc.taskDetailPanel.task_title')} value={editTitle} disabled={saving} onChange={e => { setEditTitle(e.target.value); reportEdit(e.target.value, editDesc, editDeps) }}
+            className="bg-transparent border-b border-accent text-text text-[14px] outline-hidden w-[200px]" /></>
         : <>{typeIcon} {i18nT('pages.aidlc.taskDetailPanel.task')} {task.index}: {task.title}</>}
       onClose={onClose}
       initialWidth={420}
@@ -138,7 +138,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
         {/* Description */}
         {editable ? (
           <textarea aria-label={i18nT('pages.aidlc.taskDetailPanel.task_description')} value={editDesc} disabled={saving} onChange={e => { setEditDesc(e.target.value); reportEdit(editTitle, e.target.value, editDeps) }}
-            className="w-full text-[13px] leading-relaxed bg-bg-elevated border border-border rounded-md p-2 text-text outline-none resize-y min-h-[80px] focus-ring" />
+            className="w-full text-[13px] leading-relaxed bg-bg-elevated border border-border rounded-md p-2 text-text outline-hidden resize-y min-h-[80px] focus-ring" />
         ) : (
           <div className="text-[13px] leading-relaxed whitespace-pre-wrap">{task.description}</div>
         )}

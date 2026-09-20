@@ -504,7 +504,7 @@ export default function OnboardingFlow({
         panelFootnote={i18nT('components.onboardingFlow.change_anything_later_in_settings')}
         header={
           <div className="mt-6">
-            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
+            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-hidden">
               {i18nT('components.onboardingFlow.pick_your_look')}
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted">
@@ -580,7 +580,7 @@ export default function OnboardingFlow({
         panelFootnote={i18nT('components.onboardingFlow.change_anything_later_in_settings')}
         header={
           <div className="mt-6">
-            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
+            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-hidden">
               {i18nT('components.onboardingFlow.tell_kiro_about_you')}
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted">
@@ -650,7 +650,7 @@ export default function OnboardingFlow({
             {...ime.bindEnter({ onEnter: () => { if (!savingProfile) void next() } })}
             placeholder={i18nT('components.onboardingFlow.e_g_solutions_architect_sre_founder')}
             aria-label={i18nT('components.onboardingFlow.describe_your_role')}
-            className="mt-2 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-[13px] text-text placeholder:text-muted focus-visible:border-accent focus:outline-none disabled:opacity-60"
+            className="mt-2 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-[13px] text-text placeholder:text-muted focus-visible:border-accent focus:outline-hidden disabled:opacity-60"
           />
         )}
 

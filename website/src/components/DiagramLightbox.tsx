@@ -230,7 +230,7 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
       role="dialog"
       aria-modal="true"
       aria-label={t('components.diagramLightbox.diagram_viewer')}
-      className="fixed inset-0 z-[9999] bg-bg/95 backdrop-blur-sm flex flex-col"
+      className="fixed inset-0 z-[9999] bg-bg/95 backdrop-blur-xs flex flex-col"
       initial={reduceMotion ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.15 }}

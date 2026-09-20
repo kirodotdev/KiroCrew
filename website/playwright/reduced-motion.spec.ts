@@ -52,7 +52,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
       // The override applies: 0.01ms, i.e. well under a frame.
       expect(duration).toBeLessThan(0.001)
     } else {
-      // The default path really animates. `tailwindcss-animate`'s `animate-in`
+      // The default path really animates. `tw-animate-css`'s `animate-in`
       // carries a 150ms duration; asserting a floor rather than the exact value
       // keeps this from breaking on a deliberate timing change.
       expect(duration).toBeGreaterThanOrEqual(0.1)

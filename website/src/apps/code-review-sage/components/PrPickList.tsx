@@ -105,7 +105,7 @@ function PasteLinks() {
           onChange={(e) => setText(e.target.value)}
           aria-label={i18nT('apps.codeReviewSage.components.prPickList.paste_pr_links')}
           placeholder={i18nT('apps.codeReviewSage.components.prPickList.one_or_more_github_pr_links')}
-          className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-[12px] font-mono font-normal text-text outline-none focus-visible:border-accent resize-y block"
+          className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-[12px] font-mono font-normal text-text outline-hidden focus-visible:border-accent resize-y block"
         />
       </label>
       <div className="flex items-center gap-2">
@@ -261,7 +261,7 @@ export default function PrPickList() {
               onChange={(e) => setQuery(e.target.value)}
               aria-label={i18nT('apps.codeReviewSage.components.prPickList.filter_pull_requests')}
               placeholder={i18nT('apps.codeReviewSage.components.prPickList.filter_pull_requests')}
-              className="flex-1 min-w-0 bg-transparent border-0 py-1.5 text-[12.5px] text-text outline-none"
+              className="flex-1 min-w-0 bg-transparent border-0 py-1.5 text-[12.5px] text-text outline-hidden"
             />
           </div>
           {labelUniverse.length > 0 && (
@@ -302,7 +302,7 @@ export default function PrPickList() {
                 className={
                   'inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[12px] '
                   + 'font-medium cursor-pointer transition-colors flex-shrink-0 max-w-[45%] '
-                  + 'focus:outline-none focus-visible:border-accent '
+                  + 'focus:outline-hidden focus-visible:border-accent '
                   + (activeLabels.size > 0
                     ? 'bg-accent-subtle text-accent border-accent'
                     : 'bg-card text-muted border-border hover:text-text')

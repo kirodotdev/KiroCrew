@@ -360,7 +360,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
     // scrim it RECORDS a verdict, because pressing it is a deliberate act where a
     // stray click is not.
     <div
-      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-sm flex items-center justify-center"
+      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs flex items-center justify-center"
       role="presentation"
       onClick={e => { if (e.target === e.currentTarget) closeWithoutVerdict() }}
     >
@@ -379,7 +379,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
         initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={reduceMotion ? { duration: 0 } : { duration: 0.22, ease: 'easeOut' }}
-        className="bg-card border border-border rounded-xl shadow-xl w-[560px] max-w-[92vw] flex flex-col overflow-hidden outline-none"
+        className="bg-card border border-border rounded-xl shadow-xl w-[560px] max-w-[92vw] flex flex-col overflow-hidden outline-hidden"
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-bg-elevated">
           <span className="text-sm font-semibold text-text">

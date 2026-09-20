@@ -551,7 +551,7 @@ export default function CommandPalette({
       // height and its lower half sits behind the keyboard, unreachable. iOS also
       // scrolls the focused input into view, which moves the visual viewport's
       // origin -- hence the top offset as well as the height.
-      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-sm animate-rise"
+      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-xs animate-rise"
       style={{ top: vv.offsetTop, height: vv.height }}
       role="dialog"
       aria-modal="true"
@@ -617,7 +617,12 @@ export default function CommandPalette({
             // narrow viewport the row overflows instead and the modal's
             // overflow-hidden clips whatever trails the input — the Tab hint and,
             // worse, the close button.
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-[14px] text-text placeholder:text-muted"
+            // focus-cue-ok: combobox — focus stays in this field for the palette's
+            // whole lifetime (options are tabIndex={-1}; arrows move the
+            // aria-selected highlight below), so the highlighted option is the
+            // visible cue and the palette frame itself only exists while this
+            // field owns focus.
+            className="flex-1 min-w-0 bg-transparent border-none outline-hidden text-[14px] text-text placeholder:text-muted"
           />
           {scopeHint && (
             <span className="shrink-0 flex items-center gap-1 text-[11px] text-muted">

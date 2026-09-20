@@ -19,14 +19,12 @@ import { createRef } from 'react'
 import { render, screen } from '@testing-library/react'
 import { Dialog, DialogContent, DialogTitle } from '../components/ui/dialog'
 
-/** The `tailwindcss-animate` utilities that make up the enter animation.
- *  `animate-in` is what creates the CSS animation; the zoom/slide pair is what
- *  moves the rendered rect (the thing Excalidraw measures once). */
+/** The `tw-animate-css` utilities that make up the enter animation.
+ *  `animate-in` is what creates the CSS animation; the zoom is what moves the
+ *  rendered rect (the thing Excalidraw measures once). */
 const ENTER_ANIMATION_CLASSES = [
   'data-[state=open]:animate-in',
   'data-[state=open]:zoom-in-95',
-  'data-[state=open]:slide-in-from-left-1/2',
-  'data-[state=open]:slide-in-from-top-[48%]',
 ]
 
 describe('ui/dialog — enter animation placement', () => {

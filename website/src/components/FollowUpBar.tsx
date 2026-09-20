@@ -82,7 +82,7 @@ export const FOLLOWUP_CHIP_STAGGER_MS = 55
 export const FOLLOWUP_CHIP_STAGGER_MAX_STEPS = 6
 
 /**
- * Duration of the `chip-hop` animation declared in tailwind.config.js. Exported
+ * Duration of the `chip-hop` animation declared in src/tailwind-theme.css. Exported
  * so a test can pin the two together: the settle window below is built from it,
  * and a CSS duration that outgrew it would end the window mid-hop.
  */

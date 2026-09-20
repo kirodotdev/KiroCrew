@@ -330,7 +330,7 @@ function OverlayChrome({
       // One notch below the promoted frame (z-[90]). Both sit above the chat
       // content and the topbar; see the wrapper's comment for what they can NOT
       // out-stack.
-      className="fixed inset-0 z-[89] bg-bg/70 backdrop-blur-sm"
+      className="fixed inset-0 z-[89] bg-bg/70 backdrop-blur-xs"
       onClick={onClose}
     />
   )

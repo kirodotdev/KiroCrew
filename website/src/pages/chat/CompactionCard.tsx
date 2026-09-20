@@ -205,7 +205,7 @@ const CompactionCard = memo(function CompactionCard({ content, disclosureKey }: 
         // descendant is unreachable to a keyboard. Ring INSET because the body
         // is flush with the card's clipped edges (see SubagentCompletionCard).
         <div
-          className="px-3 pb-3 pt-2 text-[13px] leading-5 border-t border-border max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+          className="px-3 pb-3 pt-2 text-[13px] leading-5 border-t border-border max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
           data-testid="compaction-card-body"
           role="region"
           aria-labelledby={headlineId}

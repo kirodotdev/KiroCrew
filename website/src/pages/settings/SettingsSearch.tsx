@@ -159,8 +159,8 @@ export default function SettingsSearch() {
         // preventDefault, so a genuine blur means focus left the widget.
         onBlur={close}
         className={floating
-          ? 'w-full bg-transparent border-none rounded-full pl-8 pr-4 py-2.5 text-[14px] text-text placeholder:text-muted focus:outline-none'
-          : 'w-44 sm:w-56 bg-bg-elevated border border-border rounded-lg pl-8 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-none focus-visible:border-accent'}
+          ? 'w-full bg-transparent border-none rounded-full pl-8 pr-4 py-2.5 text-[14px] text-text placeholder:text-muted focus:outline-hidden'
+          : 'w-44 sm:w-56 bg-bg-elevated border border-border rounded-lg pl-8 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent'}
       />
       {open && (
         <div

@@ -1,6 +1,57 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* ── Tailwind CSS v4 entry ──
+   Theme, preflight and the utilities are pulled in piecewise rather than through
+   the one-line `@import "tailwindcss"`, and the difference is deliberate:
+
+   The stock import puts every generated utility inside `@layer utilities`. In a
+   cascade layer, a rule loses to ANY unlayered rule whatever its specificity —
+   so `text-muted` on an element would lose to a bare `a { color: … }` written
+   below, and `hover:text-accent` would lose to `.foo { color: … }`. The 2,900
+   lines of component CSS that follow were written under Tailwind v3, where the
+   utilities were emitted unlayered right here at the top of the file and the
+   two competed on ordinary specificity + source order. Emitting `@tailwind
+   utilities` unlayered keeps that cascade exactly as it was: same position,
+   same rules, same winners. Preflight and this file's own `@layer base` blocks
+   sit in the real `base` layer, which is the position they already occupied
+   (first, and beaten by everything after them).
+
+   `source(none)` turns off v4's automatic template detection, which would scan
+   this whole package (scripts, docs, tests, capture fixtures) for class names.
+   The `@source` lines restore the v3 content list: index.html plus src/**. A
+   downstream edition's own sources are appended by `editionExtensionPlugin` in
+   vite.config.ts (see `EDITION_SOURCE_MARKER` there), gated on the same
+   KIROCREW_ALLOW_EDITION opt-in as the rest of the seam.
+
+   The utility ↔ token bridge (`@theme`, the `dark:`/`hover:` variants and the
+   safe-area utilities) lives in tailwind-theme.css so the phantom-classes gate
+   and the vitest theme guards can compile against it alone. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tw-animate-css";
+@import "./tailwind-theme.css";
+@source "../index.html";
+@source "../src/**/*.{ts,tsx}";
+/* @kirocrew-edition-source */
+@tailwind utilities source(none);
+
+/* ── Tailwind v3 → v4 Preflight compensation ──
+   v4's Preflight changed three defaults this codebase leaned on. Each is restored
+   here as a token-backed base rule rather than as v3's literal grey:
+   - Default border colour: v3 painted every `border` without a `border-<token>`
+     in gray-200 (#e5e7eb) — a visible white hairline in dark themes; v4 uses
+     currentColor, which reads as a text-coloured line. `--border` is the colour
+     every explicit border in the app already uses, so an unqualified `border`
+     now matches them in every theme.
+   - Placeholder colour: v3 used gray-400 (#9ca3af), v4 uses 50% of currentColor.
+     `--muted` is what every `placeholder:text-muted` in the app already asks for.
+   - Buttons lost `cursor: pointer` in v4 Preflight. Nearly every <button> here
+     relies on it; disabled buttons are excluded so `disabled:cursor-default`
+     no longer has to fight the reset. */
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button { border-color: var(--border); }
+  input::placeholder, textarea::placeholder { color: var(--muted); }
+  button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+}
 
 /* ── Script fallback faces ──
    zh-CN, ja, ko, hi and bn have no font coverage otherwise: every family in --font-body
@@ -284,8 +335,9 @@
 /* ── Design tokens ── */
 /* Shared across all themes */
 :root {
-  /* Top safe-area inset, consumed by the tailwind.config.js safe-area plugin
-     (p-safe / top-safe / top-safe-offset-* / top-safe-or-*). 0 by default: in
+  /* Top safe-area inset, consumed by the safe-area utilities in
+     tailwind-theme.css (p-safe / top-safe / top-safe-offset-* / top-safe-or-*).
+     0 by default: in
      any in-browser context the UA's own chrome sits between the status bar /
      display cutout and the page, so a non-zero top env() there is spurious —
      Android WebView browsers (e.g. corporate wrappers) report the cutout
@@ -293,7 +345,7 @@
      the app header. Only when the app IS the window (installed PWA) does the
      viewport really extend under the cutout, and display-mode is exactly that
      signal — the @media block after this rule re-enables env() there.
-     Bottom/left/right stay bare env() in the plugin — those insets are real
+     Bottom/left/right stay bare env() in those utilities — those insets are real
      in-browser. Declared INSIDE this first :root block deliberately:
      src/i18n/scriptFonts.test.ts reads the file's first :root body for the
      script-fallback tokens, so a separate leading block would shadow it. */
@@ -1388,12 +1440,15 @@ html:lang(ko) {
   ::-webkit-scrollbar-thumb:hover{background:var(--text)}
 }
 
-/* ── Ambient background ── */
+/* ── Ambient background ──
+   Static: the three washes are painted once at 200% size and never animated. A
+   full-viewport fixed pseudo-element repainting three radial gradients every
+   frame would cost battery on every dashboard page for a barely visible drift. */
 body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;
   background:radial-gradient(ellipse at 20% 50%,color-mix(in srgb,var(--accent) 4%,transparent) 0%,transparent 50%),
              radial-gradient(ellipse at 80% 20%,color-mix(in srgb,var(--accent) 2.5%,transparent) 0%,transparent 50%),
              radial-gradient(ellipse at 50% 80%,color-mix(in srgb,var(--accent) 2%,transparent) 0%,transparent 50%);
-  animation:gradient-shift 20s ease infinite;background-size:200% 200%;
+  background-size:200% 200%;
   pointer-events:none;z-index:0}
 [data-mode="light"] body::before{
   background:radial-gradient(ellipse at 20% 50%,color-mix(in srgb,var(--accent) 5%,transparent) 0%,transparent 50%),

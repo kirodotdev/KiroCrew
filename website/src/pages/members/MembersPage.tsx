@@ -2986,7 +2986,7 @@ export default function MembersPage() {
                        handed the window width (`fillWidth`) so it fills the
                        scrim; on a tablet-width window the panel keeps its own
                        (resizable, persisted) width against the dimmed chat. */
-                    : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end bg-bg/60 backdrop-blur-sm'}
+                    : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end bg-bg/60 backdrop-blur-xs'}
                   style={panelHidden ? { display: 'none' } : undefined}
                   onClick={beside ? undefined : (e) => { if (e.target === e.currentTarget) closeOverlay() }}
                   data-testid="member-side-panel"

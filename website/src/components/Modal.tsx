@@ -138,7 +138,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
       tabIndex={-1}
       onKeyDown={isolateKeys}
       {...motionProps}
-      className="bg-card border border-border rounded-xl shadow-2xl w-full flex flex-col pointer-events-auto overflow-hidden outline-none"
+      className="bg-card border border-border rounded-xl shadow-2xl w-full flex flex-col pointer-events-auto overflow-hidden outline-hidden"
       style={{ maxWidth, height, maxHeight: '90vh' }}
     >
       {/* Header */}

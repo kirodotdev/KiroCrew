@@ -109,7 +109,7 @@ export default function RemoteArtifactCard({
         }
       }}
       title={i18nT('components.remoteArtifactCard.open_read_only_viewer', { name: remoteName })}
-      className="flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg hover:bg-bg-elevated/60 transition-colors cursor-pointer focus-ring outline-none"
+      className="flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg hover:bg-bg-elevated/60 transition-colors cursor-pointer focus-ring outline-hidden"
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">

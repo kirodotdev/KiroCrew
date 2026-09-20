@@ -3,12 +3,13 @@
  *
  * Two things here are sequences a still frame cannot judge:
  *
- *   1. `DialogContent` is centred with `-translate-x-1/2 -translate-y-1/2`, so a
- *      keyframe that declares a bare `transform: scale(...)` outranks that class
- *      for the animation's whole duration and parks the panel with its top-left
- *      corner at the viewport centre, then snaps it back on the last frame.
+ *   1. `DialogContent` is centred with `-translate-x-1/2 -translate-y-1/2`, which
+ *      Tailwind emits as the standalone `translate` property, while the enter
+ *      keyframe animates `transform`. The two must compose so the panel zooms
+ *      around the viewport centre; a stray `slide-in-from-*` on top would add a
+ *      second half-width offset and the panel would fly in from off-screen.
  *   2. `ui/select.tsx` carries `animate-in`/`zoom-in-95` in its class list, which
- *      emits no CSS at all unless `tailwindcss-animate` is installed — so the
+ *      emits no CSS at all unless `tw-animate-css` is installed — so the
  *      dropdown either animates or pops, and only motion tells the two apart.
  *
  * Runs the REAL built SPA (website/dist) behind the shared in-process static

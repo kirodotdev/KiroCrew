@@ -1799,7 +1799,7 @@ export default function CommandBarOverlay({
 
   return createPortal(
     <div
-      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-sm animate-rise"
+      className="fixed left-0 right-0 z-[9999] flex items-start justify-center bg-bg/60 backdrop-blur-xs animate-rise"
       style={{ top: vv.offsetTop, height: vv.height }}
       // The backdrop is a click target for dismissal, not a control: the dialog role
       // belongs to the card below, and screen readers should skip this layer.
@@ -1880,7 +1880,7 @@ export default function CommandBarOverlay({
                 // where you are, what follows is what you type. The focus ring stays,
                 // and unlike the field's it only ever paints on Tab, so it is never the
                 // permanent box.
-                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
               >
                 {navName}
               </button>
@@ -1940,7 +1940,7 @@ export default function CommandBarOverlay({
             // around the one element that is ALWAYS focused read as the loudest thing
             // on a surface whose entire visual weight is supposed to sit on the
             // selected row.
-            className={`flex-1 min-w-0 bg-transparent border-none outline-none rounded text-[13px] text-text placeholder:text-muted${
+            className={`flex-1 min-w-0 bg-transparent border-none outline-hidden rounded text-[13px] text-text placeholder:text-muted${
               rowCount === 0 ? ' focus-visible:ring-1 focus-visible:ring-border-strong' : ''
             }`}
           />
@@ -2043,7 +2043,7 @@ export default function CommandBarOverlay({
                       // halt on inert text.
                       // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
                       tabIndex={0}
-                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
                     >
                       {resolvePrompt(argCommand, query)}
                     </pre>

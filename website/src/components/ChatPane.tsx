@@ -1161,7 +1161,7 @@ export default function ChatPane({
   const inputAreaRef = useRef<HTMLDivElement>(null)
   const { onQuote, onAsk, quoteFlight, endQuoteFlight } = useSelectionQuoteAsk({ slot: slotKey, setInput, revealComposer, openSideChat })
 
-  const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus-visible:border-accent'
+  const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent'
 
   return (
     <SlotProvider slotId={slotKey}>

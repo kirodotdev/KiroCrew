@@ -560,7 +560,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <div className="flex flex-col gap-1">
             <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.message')}</span>
             <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.the_prompt_or_task_sent_to_the_agent_when_this_j')}</span>
-            <textarea id="jobform-message" aria-label={i18nT('components.jobForm.message')} className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none resize-y min-h-[60px] focus-ring" value={msg} onChange={e => setMsg(e.target.value)} />
+            <textarea id="jobform-message" aria-label={i18nT('components.jobForm.message')} className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden resize-y min-h-[60px] focus-ring" value={msg} onChange={e => setMsg(e.target.value)} />
           </div>)}
         </div>
       </>) : (

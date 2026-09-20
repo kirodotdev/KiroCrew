@@ -462,7 +462,7 @@ function MentionInput({ agents, value, onChange, onSend }: {
       <textarea ref={ref} value={value} onChange={handleChange}
         rows={1}
         aria-label={i18nT('pages.channelPage.message_the_channel')}
-        className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none flex-1 transition-colors focus-ring resize-none"
+        className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden flex-1 transition-colors focus-ring resize-none"
         placeholder={i18nT('pages.channelPage.message_the_channel_type_to_mention')}
         {...ime.bindComposition()}
         onKeyDown={e => {

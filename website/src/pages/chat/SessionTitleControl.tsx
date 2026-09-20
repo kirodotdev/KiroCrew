@@ -275,8 +275,8 @@ export default function SessionTitleControl({
         <TitleEditor
           initial={title}
           className={compact
-            ? 'text-[13px] font-semibold text-text-strong font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none focus:!shadow-none focus-visible:border-b focus-visible:border-accent'
-            : 'session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none focus-visible:border-b focus-visible:border-accent'}
+            ? 'text-[13px] font-semibold text-text-strong font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-hidden focus:!shadow-none focus-visible:border-b focus-visible:border-accent'
+            : 'session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-hidden md:max-w-[50vw] focus:!shadow-none focus-visible:border-b focus-visible:border-accent'}
           onCommit={commit}
           onClose={() => setEditing(false)}
         />

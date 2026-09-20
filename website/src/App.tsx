@@ -426,7 +426,7 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   }, [dispatch, onCancel])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -1292,7 +1292,7 @@ function NotificationsBellButton() {
                 the cards' own backdrop-blur still samples the page). */}
             <div
               aria-hidden="true"
-              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.12] backdrop-blur-sm [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
+              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.12] backdrop-blur-xs [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
             />
             <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
               <NotificationFeed
@@ -4042,7 +4042,7 @@ export default function App() {
 
       {/* Update error modal */}
       {updateError && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')}>
           <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
             <div className="text-4xl mb-4"><AlertTriangle className="lucide-inline" /></div>
             <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.update_failed')}</div>
@@ -4061,7 +4061,7 @@ export default function App() {
 
       {/* Changelog modal */}
       {showChangelog && !updating && (
-        <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-sm animate-rise" onClick={e => { if (e && e.target === e.currentTarget) { setShowChangelog(false); setShowFull(false) } }}>
+        <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" onClick={e => { if (e && e.target === e.currentTarget) { setShowChangelog(false); setShowFull(false) } }}>
           <div role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} className={`bg-card border border-border rounded-xl p-6 w-full mx-4 shadow-xl transition-all duration-300 ${showFull ? 'max-w-2xl' : 'max-w-md'}`}>
             <div className="flex justify-between items-center mb-4">
               <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
@@ -4221,7 +4221,7 @@ export default function App() {
           data-testid="nav-backdrop"
           aria-hidden="true"
           style={{ opacity: mobileNavScrim }}
-          className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-sm"
+          className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-xs"
           onClick={closeMobileNavDrawer}
         />
       )}

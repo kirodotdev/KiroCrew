@@ -301,12 +301,12 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
           <span>{i18nT('pages.overview.memoryTab.consolidation_idle_hours')}</span>
-          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={0.5} max={24} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={idleHours} onChange={e => setIdleHours(Number(e.target.value))} />
+          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={0.5} max={24} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => setIdleHours(Number(e.target.value))} />
         </label>
         {!migrated && (
           <label htmlFor="memory-max-days" className="flex flex-col gap-1 text-[13px] text-muted">
             <span>{i18nT('pages.overview.memoryTab.history_retention_days')}</span>
-            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={7} max={365} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none transition-colors focus-ring" value={maxDays} onChange={e => setMaxDays(Number(e.target.value))} />
+            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={7} max={365} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => setMaxDays(Number(e.target.value))} />
           </label>
         )}
         <Btn onClick={async () => { await api.saveMemorySettings({ history_idle_hours: idleHours, history_max_days: maxDays }); setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000) }}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>

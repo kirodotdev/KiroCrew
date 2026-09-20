@@ -73,14 +73,14 @@ const fixture = `<!doctype html>
   <div class="row">
     <span class="cap">text field — carries the focus-ring class</span>
     <input id="fld" class="focus-ring bg-bg-elevated border border-border rounded-md px-3 py-2
-           text-text placeholder:text-muted outline-none" style="width:270px"
+           text-text placeholder:text-muted outline-hidden" style="width:270px"
            placeholder="Session name">
   </div>
   <div class="row">
     <span class="cap">borderless input inside a bordered wrapper — the WRAPPER cues focus</span>
     <div class="flex items-center gap-2 bg-bg-elevated border border-border rounded-md px-3 py-2
                 focus-within:border-accent" style="width:270px">
-      <input id="emb" class="flex-1 min-w-0 bg-transparent border-none outline-none text-text
+      <input id="emb" class="flex-1 min-w-0 bg-transparent border-none outline-hidden text-text
              placeholder:text-muted" placeholder="Filter sessions">
     </div>
   </div>

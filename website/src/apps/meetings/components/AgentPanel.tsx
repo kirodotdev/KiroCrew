@@ -351,7 +351,7 @@ export default function AgentPanel({
           // indistinguishable to a screen reader.
           aria-label={i18nT('apps.meetings.agentPanel.editorLabel', { name: agent.name })}
           spellCheck
-          className="min-h-[280px] max-h-[520px] resize-y bg-transparent border border-border rounded-md outline-none p-3 text-[13px] leading-relaxed text-text font-body focus-ring"
+          className="min-h-[280px] max-h-[520px] resize-y bg-transparent border border-border rounded-md outline-hidden p-3 text-[13px] leading-relaxed text-text font-body focus-ring"
         />
         {/* No hand-off: the minutes draft in the textarea above is unsaved. */}
         <ErrorNotice message={outputError} />

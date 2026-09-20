@@ -246,7 +246,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
           actionable buttons — a dead end exactly while the agent is parked
           waiting on the user (#5487). */}
       {needsAttention && (onApprove || onApproveBatch) && (isBatch ? batchPreviews.length > 0 : !!truncated) && (
-        <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_theme(colors.amber.400)] forced-colors:border-l-2">
+        <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_var(--color-amber-400)] forced-colors:border-l-2">
           {isBatch ? (
             <>
               {/* Batch: preview EVERY pending call so "Approve all N" is not a

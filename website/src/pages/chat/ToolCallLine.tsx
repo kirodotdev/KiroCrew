@@ -935,7 +935,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           writes. The file-path chip below keeps mono, where it is earned. */}
       <button
         ref={pillButtonRef}
-        className={`inline-flex ${ROW_PILL_BUTTON_CLASS} focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
+        className={`inline-flex ${ROW_PILL_BUTTON_CLASS} focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
         aria-expanded={effectivelyExpanded}
         title={pillLabelTitle}
         aria-label={hasPendingPerm
@@ -986,7 +986,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           the wrapper's 4px before. */}
       {showFileOpen && filePath && (
         <button
-          className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden"
           style={{ marginTop: '1px' }}
           onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
           title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
@@ -1010,7 +1010,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       {chipView && (
         <button
           type="button"
-          className="mt-1 ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="mt-1 ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden"
           title={chipView.path ?? undefined}
           aria-expanded={chipView.opensCard ? showCard : effectivelyExpanded}
           data-diff-toggle={chipView.opensCard ? true : undefined}
@@ -1123,7 +1123,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           <button
             type="button"
             onClick={() => { if (toolCallId) onOpenApp?.(toolCallId) }}
-            className="mt-1.5 flex items-center gap-2 px-1.5 py-0.5 -ml-1.5 rounded text-[12px] leading-5 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            className="mt-1.5 flex items-center gap-2 px-1.5 py-0.5 -ml-1.5 rounded text-[12px] leading-5 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
           >
             <PanelRight size={13} aria-hidden />
             <span>{i18nT('pages.chat.toolCallLine.opened_in_the_side_panel')}</span>

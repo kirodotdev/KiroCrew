@@ -267,7 +267,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="shrink-0 flex items-center text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
+            className="shrink-0 flex items-center text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
             aria-expanded={!collapsed}
             aria-label={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
             title={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
@@ -360,7 +360,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               <div key={a.id} data-testid="subagent-row" className="flex items-start gap-1">
                 <button
                   type="button"
-                  className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                  className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
                   onClick={() => openAgent(a.id)}
                   aria-label={i18nT('pages.chat.subagentProgressBar.open_in_subagents_sidebar', { label: agentLabel })}
                 >

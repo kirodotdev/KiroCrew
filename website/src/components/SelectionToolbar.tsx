@@ -1182,7 +1182,7 @@ function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAct
             void onCopyShortcut()
           }
         }}
-        className={`bg-bg border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-none focus-ring resize-none leading-[20px] overflow-hidden placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:text-ellipsis ${stacked ? 'w-full' : 'flex-1 min-w-[140px]'}`}
+        className={`bg-bg border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-hidden focus-ring resize-none leading-[20px] overflow-hidden placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:text-ellipsis ${stacked ? 'w-full' : 'flex-1 min-w-[140px]'}`}
       />
       {controls}
       {/* No hand-off: the comment draft in this box's textarea is unsaved, and

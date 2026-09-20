@@ -200,7 +200,7 @@ function AccountIdentity({ usage }: { usage: KiroAccountUsage }) {
               {email && (
                 <Clickable
                   onClick={toggleEmailVisibility}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/35 hover:bg-accent/10 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/35 hover:bg-accent/10 hover:text-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
                   aria-label={i18nT(emailHidden ? 'components.kiroAccountModal.show_email' : 'components.kiroAccountModal.hide_email')}
                   title={i18nT(emailHidden ? 'components.kiroAccountModal.show_email' : 'components.kiroAccountModal.hide_email')}
                 >

@@ -335,7 +335,7 @@ export default function FeaturedSpotlight({
            the icon would fill the whole 16:9 panel and read as hero art rather
            than as an icon. `overflow-hidden` is what makes it take the
            `rounded-3xl`, which this plate did not need while the icon was inset. */
-        <div className="w-[92px] h-[92px] rounded-3xl bg-white/15 border border-white/25 backdrop-blur-sm grid place-items-center text-white relative overflow-hidden">
+        <div className="w-[92px] h-[92px] rounded-3xl bg-white/15 border border-white/25 backdrop-blur-xs grid place-items-center text-white relative overflow-hidden">
           {(lead.iconUrl || lead.iconUrlDark || lead.icon) ? <AppIcon icon={lead.icon} iconUrl={lead.iconUrl} iconUrlDark={lead.iconUrlDark} size={56} rasterFill /> : <Package size={44} />}
         </div>
       )}

@@ -462,7 +462,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               aria-label={contentMode
                 ? t('pages.chat.fileBrowserRail.content_placeholder')
                 : t('pages.chat.fileBrowserRail.filter_placeholder')}
-              className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text"
+              className="flex-1 min-w-0 bg-transparent border-none outline-hidden text-[12px] text-text"
             />
             {query && (
               <button

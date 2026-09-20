@@ -117,7 +117,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false, connected = tru
           value={extraPrompt}
           onChange={e => setExtraPrompt(e.target.value)}
           rows={2}
-          className="mt-2 w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-none resize-none focus-ring leading-[18px]"
+          className="mt-2 w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
         />
       )}
     </div>

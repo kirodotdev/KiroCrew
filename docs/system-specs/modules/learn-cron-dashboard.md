@@ -2636,11 +2636,11 @@ redacted readiness endpoint every three seconds while waiting for the owner, so
 they observe completion without a reload; a manual **Check again** covers
 external changes immediately.
 
-React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 3 + DOMPurify. Source in `frontend/`, builds to `src/kiro_crew/static/dist/`.
+React 18 + TypeScript + Vite 8 + Redux Toolkit + React Router v7 + Tailwind CSS 4 + DOMPurify. Source in `frontend/`, builds to `src/kiro_crew/static/dist/`.
 
-**Styling** — Tailwind CSS with custom theme in `tailwind.config.js`. CSS custom properties (design tokens) defined in `index.css` for dark/light themes. `darkMode: ['selector', '[data-theme="dark"]']` enables Tailwind `dark:` variant with the `data-theme` attribute. Tailwind utility classes used throughout components (no separate CSS files per component). PostCSS + autoprefixer for processing. Theme toggle smoothly crossfades via `transition: background-color .25s, color .25s` on `body`.
+**Styling** — Tailwind CSS 4, configured in CSS: `website/src/tailwind-theme.css` bridges every utility to a runtime token (`--color-accent: var(--accent)`, …) and declares the variants and safe-area utilities; `website/src/index.css` imports it, lists the `@source` scan and defines the CSS custom properties (design tokens) for dark/light themes. `@custom-variant dark ([data-theme="dark"] …)` drives the Tailwind `dark:` variant off the `data-theme` attribute. Tailwind utility classes used throughout components (no separate CSS files per component). Compiled by `@tailwindcss/vite`; no PostCSS. Theme toggle smoothly crossfades via `transition: background-color .25s, color .25s` on `body`.
 
-**Design tokens** — All colors use CSS custom properties mapped in `tailwind.config.js`:
+**Design tokens** — All colors use CSS custom properties mapped in `website/src/tailwind-theme.css`:
 - Core: `--bg`, `--card`, `--text`, `--muted`, `--border`, `--accent` (amber/orange)
 - Semantic: `--ok` (green), `--warn` (amber), `--danger` (red), `--info` (blue)
 - AIM: `--aim` / `--aim-subtle` (purple) — used for AIM agent badges, MCP server pills
@@ -3737,7 +3737,7 @@ marker (`CONN_RECOVERY_PREFIX`, `BUSY_RECOVERY_PREFIX`), is folded by the fronte
 ### Design
 
 - OpenClaw-inspired: Space Grotesk + JetBrains Mono, dark/light theme with amber accent
-- Tailwind CSS 3 with custom theme (`tailwind.config.js`) — design tokens as CSS custom properties, utility classes throughout
+- Tailwind CSS 4 with the theme bridge in `website/src/tailwind-theme.css` — design tokens as CSS custom properties, utility classes throughout
 - **Typography scale**: body 14px, descriptions/details 14px (`text-sm`), labels/buttons/sidebar 13px, badges/captions 12px, decorative icons 10-11px. Minimum readable text: 11px. Code blocks: 13px mono. No text below 10px anywhere.
 - CSS grid shell: topbar + nav sidebar + content area
 - Nav sidebar: collapsible (220px full / 56px icon-only), prominent logo (frameless, radial gradient accent wash, 80px with drop-shadow)

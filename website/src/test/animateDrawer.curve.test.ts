@@ -28,7 +28,8 @@
  * motion language across both files.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import tailwindConfig from '../../tailwind.config.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const animateSpy = vi.fn(() => ({ stop: vi.fn() }))
 vi.mock('framer-motion', async (importOriginal) => ({
@@ -144,8 +145,8 @@ describe('animateDrawer — settle curves', () => {
 
   it('is the ONLY spelling of the sheet motion language — no CSS keyframe twin', () => {
     // The Notification Center sheet used to state these curves a SECOND time, as
-    // a `nc-slide-in` / `nc-slide-out` Tailwind keyframe pair, because a tailwind
-    // config cannot import a TS module — and the test here compared the two
+    // a `nc-slide-in` / `nc-slide-out` Tailwind keyframe pair, because a Tailwind
+    // theme cannot import a TS module — and the test here compared the two
     // spellings to keep them in step. The sheet now settles through
     // `animateDrawer`, so there is one spelling and drift is impossible rather
     // than merely detected.
@@ -157,12 +158,10 @@ describe('animateDrawer — settle curves', () => {
     // ~100px to fully-open, and re-opening 50ms into the exit flung it the whole
     // 410px offscreen and replayed the full entrance. Re-introducing either
     // entry is re-introducing that, so their ABSENCE is the assertion.
-    const ext = (tailwindConfig as {
-      theme: { extend: { animation: Record<string, string>; keyframes: Record<string, unknown> } }
-    }).theme.extend
+    const theme = readFileSync(join(__dirname, '..', 'tailwind-theme.css'), 'utf8')
     for (const key of ['nc-slide-in', 'nc-slide-out'] as const) {
-      expect(ext.animation[key], `${key} animation must not come back`).toBeUndefined()
-      expect(ext.keyframes[key], `${key} keyframes must not come back`).toBeUndefined()
+      expect(theme, `--animate-${key} must not come back`).not.toContain(`--animate-${key}`)
+      expect(theme, `@keyframes ${key} must not come back`).not.toContain(`@keyframes ${key}`)
     }
   })
 

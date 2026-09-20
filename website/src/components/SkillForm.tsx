@@ -1066,7 +1066,7 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
         </div>
         <textarea
           aria-label={i18nT('components.skillForm.raw_yaml_and_markdown')}
-          className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-y leading-normal transition-colors focus-ring"
+          className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-hidden resize-y leading-normal transition-colors focus-ring"
           rows={20}
           value={rawValue}
           onChange={e => onChange({ ...data, raw: e.target.value })}
@@ -1125,7 +1125,7 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
       <div>
         <label htmlFor="skill-description" className="text-[13px] font-semibold text-text mb-1 block">
           <span className="block mb-1">{i18nT('components.skillForm.description')}</span>
-          <textarea id="skill-description" aria-label={i18nT('components.skillForm.description')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={3} placeholder={i18nT('components.skillForm.what_this_skill_does_and_when_the_agent_should_u')} value={data.description} onChange={e => set('description', e.target.value)} />
+          <textarea id="skill-description" aria-label={i18nT('components.skillForm.description')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden resize-y leading-relaxed transition-colors focus-ring" rows={3} placeholder={i18nT('components.skillForm.what_this_skill_does_and_when_the_agent_should_u')} value={data.description} onChange={e => set('description', e.target.value)} />
         </label>
       </div>
       <div>
@@ -1149,7 +1149,7 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
       <div>
         <label htmlFor="skill-instructions" className="text-[13px] font-semibold text-text mb-1 block">
           <span className="block mb-1">{i18nT('components.skillForm.instructions')}</span>
-          <textarea id="skill-instructions" aria-label={i18nT('components.skillForm.instructions')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-y leading-normal transition-colors focus-ring" rows={10} placeholder={i18nT('components.skillForm.my_skill_step_by_step_instructions_for_the_agent')} value={data.body} onChange={e => set('body', e.target.value)} />
+          <textarea id="skill-instructions" aria-label={i18nT('components.skillForm.instructions')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-hidden resize-y leading-normal transition-colors focus-ring" rows={10} placeholder={i18nT('components.skillForm.my_skill_step_by_step_instructions_for_the_agent')} value={data.body} onChange={e => set('body', e.target.value)} />
         </label>
       </div>
     </div>

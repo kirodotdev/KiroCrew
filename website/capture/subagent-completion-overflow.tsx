@@ -68,7 +68,7 @@ if (scene === 'before') {
 
 // `ring=off` = the pre-#4408 focus state: no author ring (the box-shadow half
 // is suppressed), UA :focus-visible outline RESTORED — the explicit
-// restoration is required because the fix's own `focus-visible:outline-none`
+// restoration is required because the fix's own `focus-visible:outline-hidden`
 // compiles to `outline: 2px solid transparent`, which the old markup never
 // had. The card root's overflow-hidden clips the restored outward outline to
 // a hairline on the top edge alone, which IS the pre-fix rendering.

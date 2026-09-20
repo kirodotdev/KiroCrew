@@ -95,7 +95,7 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
           }
           if (e.key === 'Escape') { e.preventDefault(); onCancel() }
         }}
-        className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-none resize-none focus-ring leading-[18px]"
+        className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
       />
       <div className="flex items-center justify-end gap-1.5 mt-1">
         <button
@@ -138,7 +138,7 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
           }
           if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCancel() }
         }}
-        className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-none resize-none focus-ring leading-[18px]"
+        className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
       />
       <div className="flex items-center justify-end gap-1.5 mt-1">
         <button
@@ -608,7 +608,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
                 }
                 if (e.key === 'Escape') { e.preventDefault(); setAdding(false); setAddText('') }
               }}
-              className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-none resize-none focus-ring leading-[18px]"
+              className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-hidden resize-none focus-ring leading-[18px]"
             />
             <div className="flex items-center justify-end gap-1.5 mt-1">
               <button

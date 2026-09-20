@@ -13,7 +13,7 @@
  *
  * ## Why this asks Tailwind instead of comparing against a token list
  *
- * The obvious gate — parse `theme.extend.colors` and diff the heads found in
+ * The obvious gate — parse the theme's `--color-*` keys and diff the heads found in
  * source against it — manufactures false positives faster than it finds bugs.
  * Measured over this tree: 480 candidate heads outside the palette, of which 68
  * are real phantoms. The other 412 are correct code:
@@ -21,16 +21,17 @@
  *   - composite utilities whose head is not the token: `border-l-accent`,
  *     `ring-offset-bg`, `divide-border`, `border-l-[3px]`;
  *   - the entire non-color half of these prefixes: `text-sm`, `border-none`,
- *     `outline-none`, `ring-inset`, `bg-transparent`, `bg-gradient-to-r`;
+ *     `outline-hidden`, `ring-inset`, `bg-transparent`, `bg-gradient-to-r`;
  *   - Tailwind's own palette: `text-red-500`.
  *
  * Every one of those IS emitted by Tailwind. So the question this gate asks is
  * not "is the head a token" but "does Tailwind emit this class" — which is
  * exactly the failure mode, needs no table of exceptions to maintain, and stays
  * correct when the config gains a token or a Tailwind upgrade changes what
- * resolves. The config is the input, never re-implemented: one compile of
- * `@tailwind utilities` against the real config, with every candidate handed to
- * it as content, and the emitted selectors are the answer.
+ * resolves. The theme is the input, never re-implemented: one compile of
+ * `@tailwind utilities` against the app's own `src/tailwind-theme.css`, with
+ * every candidate handed to it as the only content, and the emitted selectors
+ * are the answer.
  *
  * ## Two filters, and why a bare token is not a class
  *
@@ -87,9 +88,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import postcss from 'postcss'
-import tailwindcss from 'tailwindcss'
-import tailwindConfig from '../tailwind.config.js'
+import { compile } from '@tailwindcss/node'
 
 const WEBSITE = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 const REPO_ROOT = join(WEBSITE, '..')
@@ -366,21 +365,30 @@ function looksLikeCss(value) {
 // Ask Tailwind which classes it emits
 // ---------------------------------------------------------------------------
 
+/** The stylesheet the oracle compiles: Tailwind's default theme plus the app's
+ *  own theme bridge (token colours, variants, safe-area utilities), and nothing
+ *  else. `source(none)` switches off template scanning so the ONLY content the
+ *  compile sees is the candidate list handed to `build()`; `index.css` itself
+ *  is deliberately not imported — it carries the `@source` scan of the whole
+ *  tree, which would make every real class "emitted" at the cost of scanning
+ *  `src/` on each run. */
+const ORACLE_CSS = [
+  '@import "tailwindcss/theme.css" layer(theme);',
+  '@import "tw-animate-css";',
+  '@import "./src/tailwind-theme.css";',
+  '@tailwind utilities source(none);',
+].join('\n')
+
 /** The subset of `candidates` Tailwind actually emits a rule for.
  *
- * One compile for the whole run. The real config is passed through untouched
- * except for `content`, so every token, plugin and theme extension the app has
- * is in force — the gate never re-implements a resolution rule it could ask
- * about.
+ * One compile for the whole run. The app's real theme file is imported
+ * untouched, so every token, variant and custom utility the app has is in force
+ * — the gate never re-implements a resolution rule it could ask about.
  */
 export async function emittedClasses(candidates) {
   if (candidates.length === 0) return new Set()
-  const raw = [...new Set(candidates)].join(' ')
-  const config = { ...tailwindConfig, content: [{ raw, extension: 'html' }] }
-  const { css } = await postcss([tailwindcss(config)]).process(
-    '@tailwind utilities;',
-    { from: undefined },
-  )
+  const compiler = await compile(ORACLE_CSS, { base: WEBSITE, onDependency() {} })
+  const css = compiler.build([...new Set(candidates)])
   const emitted = new Set()
   // Selectors arrive escaped: `.hover\:bg-ok:hover`, `.bg-warn\/10`,
   // `.border-l-\[3px\]`. Read to the first UNescaped delimiter, then unescape.
@@ -560,14 +568,14 @@ const touchedLines = (from, path) =>
 
 const REMEDY =
   `\nThe class is not emitted, so the element renders with NO color. Check the ` +
-  `token against \`theme.extend.colors\` in website/tailwind.config.js — the ` +
+  `token against the \`--color-*\` keys in website/src/tailwind-theme.css — the ` +
   `palette is ok / warn / danger / info / accent / muted / bg-* / border* / ` +
   `card / aim / clarify / diff-*, so a "success" is \`ok\` and a "warning" is ` +
   `\`warn\`. Alpha and -subtle/-fg forms exist only where the config declares ` +
   `them.\nNOTE: a CSS variable existing is NOT enough — \`--panel\`, ` +
   `\`--panel-strong\` and \`--border-hover\` are defined in every theme but are ` +
-  `absent from \`theme.extend.colors\`, so \`bg-panel\` and ` +
-  `\`border-border-hover\` emit nothing. Add the token to the config, or use a ` +
+  `absent from the \`--color-*\` theme keys, so \`bg-panel\` and ` +
+  `\`border-border-hover\` emit nothing. Add the token to the theme, or use a ` +
   `declared one.\nIf the class is genuinely produced elsewhere, put a ` +
   `\`${MARKER}\` comment on the literal's line and say where it comes from.`
 
@@ -776,9 +784,12 @@ const PROBES = [
     caught: [],
   },
   {
-    name: 'a valid token with an off-scale alpha step is still a phantom',
-    src: 'const a = <div className="ml-auto rounded-full bg-accent/12 text-accent" />',
-    caught: ['bg-accent/12'],
+    // Tailwind v4 accepts any integer percentage as an opacity modifier (v3
+    // only had the 5-step scale), so `bg-accent/12` is a real 12% wash. What
+    // stays a phantom is a modifier on a token the theme never declared.
+    name: 'an off-scale alpha step on a real token is emitted; on a phantom token it is not',
+    src: 'const a = <div className="ml-auto rounded-full bg-accent/12 bg-success/12 text-accent" />',
+    caught: ['bg-success/12'],
   },
   {
     name: 'the escape-hatch marker suppresses a real phantom',

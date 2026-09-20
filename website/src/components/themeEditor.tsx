@@ -272,7 +272,7 @@ export function ColorRow({ label, value, onChange }: { label: string; value: str
         <div className="w-8 h-7 rounded border border-border shrink-0" style={{ background: value }} />
       )}
       <input type="text" aria-label={label} value={value} onChange={e => onChange(e.target.value)}
-        className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text font-mono outline-none focus-ring"
+        className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text font-mono outline-hidden focus-ring"
         spellCheck={false} />
     </div>
   )
@@ -378,7 +378,7 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
               value={jsonText} onChange={e => setJsonText(e.target.value)}
               onBlur={() => syncJsonToPicker(jsonText)}
               placeholder={i18nT('components.themeEditor.name_my_theme_emoji_dark_bg_12141a_light_bg_fafa')}
-              className="w-full h-56 bg-bg-elevated border border-border rounded-md px-3 py-2 text-[13px] text-text font-mono outline-none resize-y focus-ring"
+              className="w-full h-56 bg-bg-elevated border border-border rounded-md px-3 py-2 text-[13px] text-text font-mono outline-hidden resize-y focus-ring"
               spellCheck={false}
             />
           </label>

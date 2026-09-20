@@ -729,7 +729,7 @@ export default function AgentTemplateDetail({
               value={publishName}
               onChange={e => { setPublishName(e.target.value); setPublishError(''); setPublishNameHint('') }}
               onKeyDown={e => { if (e.key === 'Enter') void submitPublish() }}
-              className="mt-1.5 block w-full rounded-md border border-border-strong bg-bg-elevated px-2.5 py-1.5 font-mono text-[12.5px] text-text outline-none focus:border-accent"
+              className="mt-1.5 block w-full rounded-md border border-border-strong bg-bg-elevated px-2.5 py-1.5 font-mono text-[12.5px] text-text outline-hidden focus:border-accent"
             />
           </label>
           {/* Validation hint, deliberately NOT an ErrorNotice: nothing failed

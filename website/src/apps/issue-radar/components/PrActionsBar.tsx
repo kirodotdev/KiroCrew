@@ -268,7 +268,7 @@ export default function PrActionsBar({
           placeholder={copy.placeholder}
           aria-label={copy.title}
           rows={3}
-          className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-none resize-y transition-colors focus-ring font-body"
+          className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-hidden resize-y transition-colors focus-ring font-body"
         />
         {/* No hand-off: the review / comment body typed in the textarea above is
             unsaved — the failure shows precisely because it did not post. */}

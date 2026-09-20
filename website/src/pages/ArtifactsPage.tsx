@@ -790,7 +790,7 @@ function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }:
       <div
         ref={listRef}
         tabIndex={-1}
-        className={`flex flex-col gap-0.5 outline-none ${expanded ? 'max-h-[40vh] overflow-y-auto' : ''}`}
+        className={`flex flex-col gap-0.5 outline-hidden ${expanded ? 'max-h-[40vh] overflow-y-auto' : ''}`}
       >
         {visible.map((d) => (
           <div key={d.path} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg">

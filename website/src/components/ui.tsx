@@ -150,7 +150,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
   ({ className = '', ...props }, ref) => (
     <input
       ref={ref}
-      className={twMerge('bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none flex-1 min-w-0 transition-colors focus-ring', className)}
+      className={twMerge('bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden flex-1 min-w-0 transition-colors focus-ring', className)}
       {...props}
     />
   )
@@ -161,7 +161,7 @@ export function SearchInput({ className = '', ...props }: React.InputHTMLAttribu
     <div className={`relative ${className}`}>
       <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <input
-        className="w-full bg-bg-elevated border border-border rounded-md pl-7 pr-3 py-1.5 text-text text-[13px] font-body outline-none transition-all focus-ring placeholder:text-muted/50"
+        className="w-full bg-bg-elevated border border-border rounded-md pl-7 pr-3 py-1.5 text-text text-[13px] font-body outline-hidden transition-all focus-ring placeholder:text-muted/50"
         {...props}
       />
     </div>
@@ -628,12 +628,12 @@ export function Slider({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onPointerLeave={onPointerLeave}
-        // outline-none is CORRECT here and must stay: the knob below already
+        // outline-hidden is CORRECT here and must stay: the knob below already
         // carries the replacement cue (`group-focus-visible:ring-2`), which
         // points at the current value instead of boxing the whole track. Letting
         // the global :focus-visible outline through as well would paint two
         // indicators on one control.
-        className={`group relative h-[18px] flex items-center select-none touch-none outline-none ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+        className={`group relative h-[18px] flex items-center select-none touch-none outline-hidden ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
       >
         {/* groove */}
         <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-border" />

@@ -58,7 +58,7 @@ const NativeSelect = React.forwardRef<HTMLSelectElement, NativeSelectProps>(
           // reason the composer bumps to 16px on coarse pointers.
           className={cn(
             'flex items-center justify-between w-full pl-3 py-2 rounded-md text-base border border-border bg-bg-elevated text-text truncate',
-            'hover:border-border-strong transition-all cursor-pointer outline-none appearance-none',
+            'hover:border-border-strong transition-all cursor-pointer outline-hidden appearance-none',
             'focus-visible:border-accent disabled:opacity-40 disabled:pointer-events-none',
             className
           )}

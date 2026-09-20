@@ -85,7 +85,7 @@ export default function MemoryDocCard({ docKey, store, title, info, rows, mono, 
       <textarea
         aria-label={title}
         disabled={!editable}
-        className={`w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm ${mono ? 'font-mono' : 'font-body'} outline-none resize-y leading-relaxed transition-colors focus-ring`}
+        className={`w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm ${mono ? 'font-mono' : 'font-body'} outline-hidden resize-y leading-relaxed transition-colors focus-ring`}
         rows={rows}
         value={value}
         onChange={e => setDraft(e.target.value)}

@@ -19,15 +19,15 @@ import { i18nT } from '../../i18n/t'
  *     name, and warns when `aria-describedby` points at nothing. `DialogContent`
  *     therefore defaults `aria-describedby` to `undefined`; pass a
  *     `DialogDescription` and wire it explicitly if a description is wanted.
- *   - Animations are `tailwindcss-animate`'s `animate-in` / `animate-out` pair,
- *     the same classes shadcn ships. They are load-bearing here rather than
- *     decorative: `DialogContent` is centred with `-translate-x-1/2
- *     -translate-y-1/2`, and a CSS animation that declares `transform` outranks
- *     that class for as long as it runs. `animate-in`'s keyframe composes the
- *     translate and the scale into ONE var-driven `transform`, so the
- *     `slide-in-from-*` utilities re-supply the centring the zoom would
- *     otherwise drop. The same plugin backs `ui/select.tsx`,
- *     `ui/dropdown-menu.tsx`, `ui/popover.tsx` and `ui/context-menu.tsx`.
+ *   - Animations are `tw-animate-css`'s `animate-in` / `animate-out` pair, the
+ *     same classes shadcn ships. `DialogContent` is centred with
+ *     `-translate-x-1/2 -translate-y-1/2`, which Tailwind emits as the standalone
+ *     `translate` property, while the enter/exit keyframe animates `transform`
+ *     (a translate3d + scale3d composed from `--tw-enter-*` vars). The two
+ *     properties compose instead of competing, so the zoom plays around the
+ *     centred position with no extra slide utility. The same package backs
+ *     `ui/select.tsx`, `ui/dropdown-menu.tsx`, `ui/popover.tsx` and
+ *     `ui/context-menu.tsx`.
  */
 
 const Dialog = DialogPrimitive.Root
@@ -89,14 +89,13 @@ const DialogContent = React.forwardRef<
       style={{ maxWidth, maxHeight: '90vh', ...style }}
       className={cn(
         'fixed left-1/2 top-1/2 z-[101] flex w-[calc(100%-4rem)] -translate-x-1/2 -translate-y-1/2',
-        'flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl outline-none',
-        // The centering lives in `transform`, so the enter/exit animation must
-        // CARRY that translate rather than replace it. `animate-in`'s keyframe
-        // composes translate+scale into one var-driven transform, and the
-        // `slide-*-1/2` / `-[48%]` pair is what re-supplies the -50%/-50% — a
-        // keyframe that declares a bare `transform: scale(...)` would drop the
-        // centering for the animation's whole duration, parking the dialog with
-        // its top-left corner at the viewport centre until the animation ends.
+        'flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl outline-hidden',
+        // The centering is the `translate` property (from `-translate-x-1/2
+        // -translate-y-1/2` above) and the enter/exit keyframe animates
+        // `transform`, so the zoom plays around the centred position. Do NOT add
+        // a `slide-in-from-*` re-centring pair here: with `translate` already
+        // holding the -50%/-50%, a slide utility would ADD another half-width
+        // offset and the dialog would fly in from off-screen.
         //
         // These classes must stay on THIS element (the one the forwarded `ref`
         // and role="dialog" land on), not on a wrapper: SketchDialog's placement
@@ -108,8 +107,6 @@ const DialogContent = React.forwardRef<
         'duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
         'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
-        'data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]',
-        'data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%]',
         className,
       )}
       {...props}

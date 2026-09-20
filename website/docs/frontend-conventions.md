@@ -9,7 +9,7 @@ in [theming-contract](theming-contract.md); user-facing strings are in
 ## The stack
 
 React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
-Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify, highlight.js, Monaco,
+Framer Motion, Tailwind CSS 4, Lucide React, DOMPurify, highlight.js, Monaco,
 TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.
 
 Prefer the library already here over a new dependency. Every addition is bytes in a
@@ -452,9 +452,36 @@ Two habits belong to the same concern:
 
 ## Styling
 
-Tailwind CSS with the custom theme in `tailwind.config.js`, and
-`darkMode: ['selector', '[data-theme="dark"]']`, so dark mode is driven by the
-`data-theme` attribute rather than the OS media query alone.
+Tailwind CSS 4, configured in CSS rather than a JavaScript config file. Two
+files own it:
+
+- `src/tailwind-theme.css` — the utility ↔ token bridge. Every `--color-*`,
+  `--radius-*`, `--shadow-*`, `--font-*` and `--animate-*` theme key maps a
+  utility (`bg-accent`, `rounded-md`, `shadow-sm`, `font-mono`, `animate-rise`) to
+  the runtime design token of the same stem, so `text-muted/40` renders a
+  translucent `var(--muted)`. It also declares the `dark:` variant
+  (`@custom-variant dark ([data-theme="dark"] …)`, so dark mode follows the
+  `data-theme` attribute rather than the OS media query alone), keeps `hover:` an
+  ungated `:hover` so touch devices still reach hover-revealed controls, and
+  emits the iOS safe-area utilities (`p-safe`, `top-safe-offset-*`, …) as
+  `@utility` blocks. Adding a utility for a new token means adding one
+  `--color-<token>: var(--<token>)` line here; `scripts/check-phantom-classes.mjs`
+  compiles against this file to catch a utility whose token was never declared.
+- `src/index.css` — the entry. It imports Tailwind's theme and Preflight into
+  their cascade layers and emits `@tailwind utilities` UNLAYERED (see the header
+  comment there: the component CSS below it was written against v3's unlayered
+  utilities and must keep competing with them on plain specificity), lists the
+  template sources with `@source`, and restores three v3 Preflight defaults as
+  token-backed base rules (default border colour `var(--border)`, placeholder
+  colour `var(--muted)`, `cursor: pointer` on enabled buttons).
+
+The build runs through `@tailwindcss/vite`; there is no PostCSS config. A
+downstream edition's sources are added to the content scan by
+`editionExtensionPlugin` in `vite.config.ts`, which swaps the
+`/* @kirocrew-edition-source */` marker in `index.css` for an `@source` line.
+Utility names follow Tailwind v4: `outline-hidden` (not `outline-none`) is the
+accessible outline suppressor, `backdrop-blur-xs` is the 4px blur, and the
+`shadcn/ui` primitives animate through `tw-animate-css`.
 
 Colors come from CSS custom properties defined in `src/index.css`, including the
 semantic roles `--aim`, `--clarify`, and the `--diff-*` family. Never a hardcoded

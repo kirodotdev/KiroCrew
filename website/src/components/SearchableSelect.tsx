@@ -181,7 +181,7 @@ export default function SearchableSelect({
         aria-haspopup="listbox"
         className={[
           'flex items-center justify-between w-full px-3 py-2 rounded-md text-sm border border-border bg-bg-elevated text-text',
-          'hover:border-border-strong transition-all cursor-pointer outline-none',
+          'hover:border-border-strong transition-all cursor-pointer outline-hidden',
           'focus-visible:border-accent disabled:opacity-40 disabled:pointer-events-none',
           className || '',
         ].join(' ').trim()}
@@ -227,7 +227,7 @@ export default function SearchableSelect({
             }}
             placeholder={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
             aria-label={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
-            className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[13px] text-text placeholder:text-muted"
+            className="flex-1 min-w-0 bg-transparent border-0 outline-hidden text-[13px] text-text placeholder:text-muted"
           />
         </div>
         <div
@@ -260,7 +260,7 @@ export default function SearchableSelect({
                 }
               }}
               className="flex w-full cursor-pointer select-none items-center rounded-md px-3 py-1.5 text-[13px]
-                text-accent outline-none transition-colors hover:bg-bg-hover focus:bg-bg-hover"
+                text-accent outline-hidden transition-colors hover:bg-bg-hover focus:bg-bg-hover"
             >
               {action.label}
             </div>
@@ -293,7 +293,7 @@ export default function SearchableSelect({
                 aria-disabled={opt.disabled || undefined}
                 onClick={() => choose(opt)}
                 className={[
-                  'relative flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] text-left outline-none transition-colors',
+                  'relative flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] text-left outline-hidden transition-colors',
                   'focus:bg-bg-hover hover:bg-bg-hover aria-disabled:pointer-events-none aria-disabled:opacity-50',
                   isSel ? 'bg-accent-subtle text-accent font-semibold hover:bg-accent-subtle' : '',
                 ].join(' ')}

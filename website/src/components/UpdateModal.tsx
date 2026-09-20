@@ -150,7 +150,7 @@ export default function UpdateModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-sm flex items-center justify-center animate-rise"
+      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
       role="button"
       tabIndex={-1}
       aria-label={i18nT('components.updateModal.dismiss_update_dialog')}

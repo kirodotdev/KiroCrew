@@ -94,7 +94,7 @@ export function DefaultAgentRow({ agentName, isDefault, onSetDefault }: {
       // focused option's activation to the button itself. Omitted while disabled,
       // so the ring never stops on a row that cannot be actuated.
       {...(isDefault ? {} : { 'data-option': true, tabIndex: -1 })}
-      className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover focus:text-text focus:bg-bg-hover focus:outline-none focus-ring transition-colors disabled:cursor-default disabled:hover:bg-transparent"
+      className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover focus:text-text focus:bg-bg-hover focus:outline-hidden focus-ring transition-colors disabled:cursor-default disabled:hover:bg-transparent"
     >
       {/* Wraps rather than truncates. The label's whole job is to name WHICH agent the
           write targets, and that identifier sits mid-string — an ellipsis eats exactly

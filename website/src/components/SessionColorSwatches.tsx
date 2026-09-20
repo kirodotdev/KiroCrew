@@ -188,7 +188,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
             {...ime.bindComposition({ onBlur: () => { if (dirtyRef.current) commitHex(draft) } })}
             aria-label={i18nT('components.sessionColorSwatches.hex_color_code')}
             placeholder="#4f8ef7"
-            className="w-[76px] bg-bg-accent border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text outline-none focus-visible:border-accent"
+            className="w-[76px] bg-bg-accent border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text outline-hidden focus-visible:border-accent"
           />
         </div>
       )}

@@ -81,7 +81,7 @@ function RelTime({ iso, className = '' }: { iso?: string | null; className?: str
       title={absolute}
       onClick={(e) => { e.stopPropagation(); toggle() }}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
-      className={`cursor-pointer rounded-sm hover:text-accent transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ${className}`}
+      className={`cursor-pointer rounded-sm hover:text-accent transition-colors focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 ${className}`}
     >
       {abs ? absolute : relativeTimeOrDate(iso)}
     </span>
