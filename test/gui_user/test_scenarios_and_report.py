@@ -26,6 +26,7 @@ SHIPPED_SMOKE = {
     "apps-discover-enable-research-lab",
     "auth-sign-in-card-signed-out",
     "chat-switch-seeded-sessions",
+    "schedule-list-calendar-executions-views",
     "search-everywhere-jump-to-setting",
     "sessions-new-chat",
     "settings-search-jump-to-theme",
@@ -112,6 +113,7 @@ class TestShippedScenarios:
             "members": ["members-dm-hello", "members-private-memory-keeps-thread"],
             "knowledge": ["knowledge-add-folder-source-and-scan"],
             "apps": ["apps-discover-enable-research-lab"],
+            "schedule": ["schedule-list-calendar-executions-views"],
             "auth": ["auth-sign-in-card-signed-out"],
             "settings": ["settings-search-jump-to-theme", "settings-theme-toggle"],
         }
@@ -123,6 +125,7 @@ class TestShippedScenarios:
             "members",
             "knowledge",
             "apps",
+            "schedule",
             "auth",
             "settings",
         ]
@@ -471,7 +474,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_8 of {len(scenarios.FEATURES)} features covered · 11 scenarios (8 smoke / 3 nightly)._"
+            f"_9 of {len(scenarios.FEATURES)} features covered · 12 scenarios (9 smoke / 3 nightly)._"
             in md
         )
         assert (
