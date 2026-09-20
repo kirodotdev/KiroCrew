@@ -117,6 +117,53 @@ Any Kiro-family uninstaller spec **MUST** either explicitly exclude
 Independently, a user who wants the data home entirely outside `~/.kiro/` can set
 `KIROCREW_HOME` to relocate it.
 
+## Scratch/Runtime Location (`KIROCREW_SCRATCH_ROOT`)
+
+The per-process **scratch** tree — agent working residue (repository clones,
+`pytest` basetemps, screenshots) and kiro-cli's own chat log, one directory per
+spawned session — is the bulky, disposable part of the data home. It defaults to
+`config_dir()/scratch` (`agent_scratch.scratch_root()`), i.e. on the same drive
+as config and credentials. `KIROCREW_SCRATCH_ROOT` relocates **only** that tree
+onto another drive, independent of `KIROCREW_HOME` (the original ask in
+[#11708](https://github.com/kirodotdev/KiroCrew/issues/11708)):
+
+1. `$KIROCREW_SCRATCH_ROOT` when set and valid — used **as the managed root
+   itself** (`scratch_root()` returns it directly), else
+2. `config_dir()/scratch` (the default).
+
+`scratch_root_override()` (in `kiro_crew/config/paths.py`) resolves it with the
+**same safety posture** as `KIROCREW_HOME`: `expanduser().resolve()`, then the
+shared `_is_unsafe_home()` guard, so a filesystem/drive root or a known system
+directory (`/`, `/usr`, `/System`, `/etc`, `/private/etc`) is refused — the
+override is ignored (with a logged warning mirroring the `KIROCREW_HOME` "is a
+system directory, ignoring" message) and the default is used. It is resolved per
+call (not memoized): `scratch_root()` is not a hot path, and a fresh resolve
+keeps the override honoured the moment it changes.
+
+**Why an env var, not a `config.json` key.** `scratch_root()` must resolve on the
+spawn path independent of a loaded config object, and must be honorable by every
+process that allocates or sweeps scratch (gateway, ACP transports, sweep loop) —
+including before any config is read. An env var meets that; a config key would
+not, and it also leaves `config-baseline.json` unaffected.
+
+**Link/junction refusal is the supported relocation path.** A symlink or Windows
+junction **at** the resolved root is refused by the same `_refuse_linked` /
+`platform_compat.is_link_or_junction` guards that `allocate_scratch`,
+`sweep_dead_scratch` and `cap_kiro_cli_logs` already run against
+`scratch_root()`'s return. So the earlier junction-on-the-default-path workaround
+is unnecessary and unsupported: point `KIROCREW_SCRATCH_ROOT` at a **real
+directory** on the other drive instead.
+
+**Sandbox-mask interaction.** `sandbox.py` masks the `scratch` leaf relative to
+the data home for every sandboxed process, and each spawn re-exposes only its own
+directory as a private window (`extra_private_dirs`). A relocated scratch root
+sits *outside* the home, so the home-relative leaf no longer covers it;
+`_relocated_scratch_root_target()` therefore adds the resolved root to the masked
+set (in both the Linux launcher and the macOS Seatbelt builders, and in the
+carve-out shadow guard) whenever the override moves it out of the home. A
+sibling session's scratch stays hidden from a sandboxed peer, while the spawn's
+own directory remains re-exposed as a private window inside that mask.
+
 **Technical hedge — recovery-pointer breadcrumb.** `config_dir()` writes a small,
 non-secret `~/.kirocrew.breadcrumb` pointer file at the top-level home
 (`RECOVERY_BREADCRUMB_NAME`), deliberately **outside** `~/.kiro/`, recording the

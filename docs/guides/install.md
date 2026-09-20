@@ -621,6 +621,7 @@ drives your own running Chrome with the sessions you are already logged into.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases) |
+| `KIROCREW_SCRATCH_ROOT` | `<KIROCREW_HOME>/scratch` | Managed scratch/runtime tree (agent working residue, kiro-cli logs). Relocate it onto another drive; see note below |
 | `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
@@ -631,6 +632,39 @@ ephemeral port). The `dashboard.url` config key only advertises a remote URL.
 For the installed service the port is baked into the unit at install time — see
 [Running as a service](#running-as-a-service) for how to set and later change
 it.
+
+### Relocating the scratch/runtime tree with `KIROCREW_SCRATCH_ROOT`
+
+Each agent session gets its own directory under a managed **scratch** root for
+its working residue — repository clones, `pytest` basetemps, screenshots, and
+kiro-cli's own chat log. This tree can grow large and is disposable (reclaimed
+when its owning process dies). By default it lives under the data home at
+`<KIROCREW_HOME>/scratch`, i.e. on the same drive as your config and
+credentials.
+
+Set `KIROCREW_SCRATCH_ROOT` to move **only** that scratch/runtime tree onto
+another drive, independent of `KIROCREW_HOME`:
+
+```bash
+KIROCREW_SCRATCH_ROOT=/mnt/data/kirocrew-scratch   # POSIX
+```
+```powershell
+$env:KIROCREW_SCRATCH_ROOT = 'D:\kirocrew-scratch'  # Windows
+```
+
+The path you give **is** the managed root (sessions land in
+`<KIROCREW_SCRATCH_ROOT>/<label>-<id>/`). Notes:
+
+- The target must be a **real directory**. A symlink or Windows **junction** at
+  the root is refused for safety, so there is no need for the old
+  junction-on-the-default-path workaround — point the override at the real
+  directory on the other drive instead.
+- Like `KIROCREW_HOME`, an override naming a system directory (`/`, `/usr`,
+  `/System`, `/etc`, a drive root) is ignored with a warning and the default is
+  used.
+- The relocated scratch root stays isolated per session: one session cannot read
+  another's scratch, on every sandbox tier, exactly as when it lives under the
+  data home.
 
 ### The data home lives under `~/.kiro/`
 

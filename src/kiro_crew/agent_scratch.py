@@ -86,7 +86,7 @@ from typing import Literal
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import config_dir, scratch_root_override
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,28 @@ class ScratchBoundaryError(Exception):
 
 
 def scratch_root() -> Path:
-    """The managed root: ``<data home>/scratch``."""
+    """The managed root for per-process scratch dirs.
+
+    Default is ``<data home>/scratch`` (``config_dir() / _SUBDIR``). When
+    ``KIROCREW_SCRATCH_ROOT`` names a valid directory
+    (:func:`kiro_crew.config.paths.scratch_root_override`), THAT directory is the
+    managed root directly -- the override relocates only the bulky, disposable
+    scratch/runtime tree onto another drive, independent of ``KIROCREW_HOME``.
+
+    The override is resolved with the same safety posture as ``KIROCREW_HOME``
+    (``expanduser`` + ``resolve``): an override naming a system directory is
+    REFUSED there (a warning is logged) and this falls back to the default. A
+    junction/symlink AT the resolved root is refused separately, by the
+    ``_refuse_linked`` / :func:`platform_compat.is_link_or_junction` guards that
+    :func:`allocate_scratch`, :func:`sweep_dead_scratch` and
+    :func:`cap_kiro_cli_logs` run against whatever this returns -- so pointing the
+    override at a REAL directory on another drive is the supported way to
+    relocate scratch, and the old junction-on-the-default-path workaround is
+    unnecessary.
+    """
+    override = scratch_root_override()
+    if override is not None:
+        return override
     return config_dir() / _SUBDIR
 
 

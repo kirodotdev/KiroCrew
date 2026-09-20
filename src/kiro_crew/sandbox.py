@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import refuse_linked_parent
-from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.config.paths import config_dir, kiro_agents_dir, scratch_root_override
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.pinned_fs import fd_real_path
@@ -1146,6 +1146,7 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
         for entry in (
             *_relocated_crew_targets(_CREW_HIDDEN_LEAVES),
             *_relocated_policy_cache_dirs(),
+            *_relocated_scratch_root_target(),
         )
     )
     for ancestor in dict.fromkeys(ancestors):
@@ -2910,6 +2911,56 @@ def _relocated_crew_targets(leaves: tuple[str, ...]) -> list[str]:
     return out
 
 
+def _relocated_scratch_root_target() -> list[str]:
+    """The RESOLVED scratch root when ``KIROCREW_SCRATCH_ROOT`` moves it out of the home.
+
+    :func:`_relocated_crew_targets` masks the ``scratch`` leaf as
+    ``config_dir()/scratch`` (both the ``$HOME``-relative default and a
+    ``KIROCREW_HOME``-relocated data home). But ``KIROCREW_SCRATCH_ROOT``
+    relocates the scratch tree INDEPENDENTLY of the data home -- once it points
+    at, say, ``D:\\kirocrew-scratch``, the real managed root
+    (``agent_scratch.scratch_root()``) is that directory, and the home-relative
+    ``scratch`` mask no longer covers it. Every session still gets its OWN
+    ``<scratch root>/<label>-<rand>`` and re-exposes only that one dir as a
+    private window (``extra_private_dirs``), so WITHOUT masking the relocated
+    root a sibling session's scratch would leak to a sandboxed peer.
+
+    So: when the override resolves to a valid path that is NOT already covered by
+    the home-relative / ``KIROCREW_HOME``-relocated ``scratch`` masks, return it
+    as an absolute path to add to the masked set. Returns ``[]`` when the
+    override is unset/invalid or when it resolves under the data home (already
+    masked by the ``scratch`` leaf).
+
+    ``normpath`` never ``realpath``, like :func:`_relocated_crew_targets`: this
+    runs inside the launcher/seatbelt builders on the event loop, so no
+    link-resolving syscall. Never raises: an unresolvable root yields nothing and
+    the ``$HOME``-relative / relocated entries still apply.
+    """
+    try:
+        override = scratch_root_override()
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug(
+            "could not resolve the scratch root override for sandbox masking", exc_info=True
+        )
+        return []
+    if override is None:
+        return []
+    resolved = os.path.normpath(str(override))
+    # If the override still lands under the data home, the ``scratch`` leaf mask
+    # (via ``_relocated_crew_targets``) already covers it -- adding it again would
+    # only produce a duplicate rule.
+    already_masked = {os.path.normpath(entry) for entry in _relocated_crew_targets(("scratch",))}
+    try:
+        home = str(Path.home())
+        for prefix in _CREW_HOME_PREFIXES:
+            already_masked.add(os.path.normpath(os.path.join(home, prefix, "scratch")))
+    except Exception:  # pragma: no cover - defensive
+        pass
+    if resolved in already_masked:
+        return []
+    return [resolved]
+
+
 #: Tier leaves NOT re-anchored under a pod child's remapped home, because they ARE
 #: the pod's own MCP OAuth grant store: the child WRITES its grants under this tree
 #: and ``mcp_grant`` stats them there, so bind-masking it empty would discard every
@@ -3960,6 +4011,9 @@ def _crew_hidden_sandbox_targets() -> set[str]:
     home = str(Path.home())
     targets = {os.path.join(home, rel) for rel in _CREW_HIDDEN_DIRS}
     targets.update(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
+    # A KIROCREW_SCRATCH_ROOT relocated out of the data home is masked as a whole
+    # crew-home secret too, so the seatbelt write/link denies cover it.
+    targets.update(_relocated_scratch_root_target())
     return targets
 
 
@@ -5533,6 +5587,11 @@ def _build_launcher_script(
     hidden_dirs.extend(_pod_os_home_targets(tuple(dirs)))
     hidden_dirs.extend(_relocated_policy_cache_dirs())
     hidden_dirs.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
+    # KIROCREW_SCRATCH_ROOT can move the scratch tree OUT of the data home, past
+    # the home-relative ``scratch`` mask above. Mask the relocated root as a whole
+    # so a sibling session's scratch stays hidden; each spawn's own dir is still
+    # re-exposed via ``extra_private_dirs`` as a window inside this mask.
+    hidden_dirs.extend(_relocated_scratch_root_target())
     # Placed BEFORE the extra_visible_dirs filter on purpose: the predicate that adds
     # these is the same one that withholds the backend's carve-out, so in practice they
     # never collide — and if a future change did hand the backend its state paths while
@@ -6776,6 +6835,11 @@ def _build_seatbelt_profile(
         + _pod_os_home_targets(tuple(dirs))
         + _relocated_policy_cache_dirs()
         + _relocated_crew_targets(_CREW_HIDDEN_LEAVES)
+        # A KIROCREW_SCRATCH_ROOT relocated out of the data home, past the
+        # home-relative ``scratch`` mask, for the same reason as the Linux
+        # launcher: a sibling session's scratch must not be readable, while the
+        # spawn's own dir is re-exposed as a private window below.
+        + _relocated_scratch_root_target()
         # Seatbelt needs this for the same reason the Linux launcher does: the sweep
         # cannot delete an orphan through a linked chain on either platform, so the
         # directory mask is what keeps that orphan out of the sandbox. Omitting it here

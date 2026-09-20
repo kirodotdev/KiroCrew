@@ -267,6 +267,49 @@ def _valid_override_home() -> Path | None:
     return p
 
 
+def scratch_root_override() -> Path | None:
+    """Return the resolved ``KIROCREW_SCRATCH_ROOT`` override iff set AND valid.
+
+    ``agent_scratch.scratch_root()`` names the managed scratch/runtime tree.
+    By default that tree lives UNDER the data home (``config_dir()/scratch``),
+    but the scratch tree is the bulky, disposable part -- repository clones,
+    pytest basetemps, screenshots -- and an operator may want it on a data
+    drive rather than the system drive that holds the config home (the original
+    ask in issue #11708). This override relocates ONLY that tree, independent of
+    :func:`config_dir` / ``KIROCREW_HOME``: point ``KIROCREW_SCRATCH_ROOT`` at a
+    real directory (e.g. ``D:\\kirocrew-scratch``) and it becomes the managed
+    scratch root directly.
+
+    Resolved with the SAME safety posture as ``KIROCREW_HOME``
+    (:func:`_valid_override_home`): ``expanduser().resolve()`` then
+    :func:`_is_unsafe_home`, so a filesystem/drive root or a known system
+    directory (``/usr``, ``/System``, ``/etc``, ``/private/etc``) is REFUSED --
+    this returns ``None`` (with a logged warning mirroring the ``KIROCREW_HOME``
+    "is a system directory, ignoring" message) and ``scratch_root()`` falls back
+    to the default. A junction/symlink AT the resolved root is a separate
+    concern, refused by the link guards in ``agent_scratch`` (``_refuse_linked``
+    / :func:`platform_compat.is_link_or_junction`) before anything is created or
+    deleted under it -- which is the sanctioned way to relocate scratch, so the
+    junction-on-the-default-path workaround is unnecessary.
+
+    Resolved per call (not memoized): ``scratch_root()`` is not a hot path, and a
+    fresh resolve keeps the override honoured the moment it changes (the test
+    suite repoints it per test), matching how ``config_dir`` treats
+    ``KIROCREW_HOME``.
+    """
+    override = os.environ.get("KIROCREW_SCRATCH_ROOT")
+    if not override:
+        return None
+    p = Path(override).expanduser().resolve()
+    if _is_unsafe_home(p):
+        logger.warning(
+            "KIROCREW_SCRATCH_ROOT=%s is a system directory, ignoring",
+            override,
+        )
+        return None
+    return p
+
+
 def shared_kiro_settings_writable() -> bool:
     """False when this process must not write the user's kiro-cli settings.
 

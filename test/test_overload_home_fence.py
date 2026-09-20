@@ -142,6 +142,62 @@ class TestScratchConfidentiality:
             assert "extra_private_dirs=scratch_window" in src, module.__name__
 
 
+class TestRelocatedScratchRootIsMasked:
+    """``KIROCREW_SCRATCH_ROOT`` moves the scratch tree OUT of the data home,
+    past the home-relative ``scratch`` mask. The relocated root must still be
+    masked as a whole so a sibling session's scratch is hidden from a sandboxed
+    peer, while each spawn's own dir is re-exposed as a private window."""
+
+    def test_relocated_root_is_added_to_the_masked_set(self, tmp_path: Path, monkeypatch) -> None:
+        relocated = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(relocated))
+        assert sandbox._relocated_scratch_root_target() == [str(relocated.resolve())]
+
+    def test_unset_override_adds_nothing(self, monkeypatch) -> None:
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        assert sandbox._relocated_scratch_root_target() == []
+
+    def test_override_under_the_home_is_not_double_masked(self, monkeypatch) -> None:
+        # An override that still resolves under the data home is already covered
+        # by the ``scratch`` leaf mask, so it must not be added twice.
+        under_home = os.path.join(_CREW, "scratch")
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", under_home)
+        assert sandbox._relocated_scratch_root_target() == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX launcher only")
+    def test_the_launcher_masks_the_relocated_root(self, tmp_path: Path, monkeypatch) -> None:
+        import json
+        import re
+
+        relocated = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(relocated))
+        own = str(relocated.resolve() / "session-aaaa")
+        script = sandbox._build_launcher_script("standard", extra_private_dirs=(own,))
+        hidden = json.loads(re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S).group(1))
+        windows = json.loads(re.search(r"PRIVATE_DIRS = (\[.*?\])\n", script, re.S).group(1))
+        assert str(relocated.resolve()) in hidden, "the relocated scratch root is not masked"
+        assert windows == [own], "the spawn's own dir is no longer re-exposed"
+
+    @pytest.mark.skipif(os.name == "nt", reason="Seatbelt profile only")
+    def test_seatbelt_masks_the_relocated_root_except_the_own_window(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        relocated = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(relocated))
+        root = str(relocated.resolve())
+        own = os.path.join(root, "session-aaaa")
+        profile = sandbox._build_seatbelt_profile("standard", extra_private_dirs=(own,))
+        rules = [line for line in profile.splitlines() if root in line]
+        for op in ("file-read*", "file-write*", "file-link"):
+            assert any(
+                op in line
+                and f'(subpath "{root}")' in line
+                and f'(require-not (subpath "{own}"))' in line
+                for line in rules
+            ), op
+        assert not any(line.startswith("(allow") and root in line for line in rules)
+
+
 class TestPrivateWindowDoesNotCostDelegation:
     def test_windows_kiro_spawn_with_only_a_private_window_still_delegates(
         self, monkeypatch

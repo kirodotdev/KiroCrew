@@ -98,6 +98,7 @@ from kiro_crew.config.paths import (  # noqa: F401, kiro_agents_dir
     data_home,
     ensure_data_home,
     kiro_agents_dir,
+    scratch_root_override,
 )
 from kiro_crew.config.resolution import (  # noqa: F401
     _KNOWN_CONFIG_SECTIONS,

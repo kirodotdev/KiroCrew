@@ -463,3 +463,70 @@ class TestKiroCliLogCap:
         scratch_root.symlink_to(real)
 
         assert self._cap() == 0
+
+
+class TestScratchRootOverride:
+    """``KIROCREW_SCRATCH_ROOT`` relocates the managed scratch tree, independent
+    of ``KIROCREW_HOME``, resolved with the same safety posture."""
+
+    def test_override_becomes_the_managed_root_and_allocation_lands_there(
+        self, scratch_root: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        # ``scratch_root`` fixture still points config_dir at tmp_path/home, so
+        # the default would be tmp_path/home/scratch. The override must WIN and
+        # name the managed root directly.
+        elsewhere = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(elsewhere))
+
+        assert sc.scratch_root() == elsewhere.resolve()
+
+        path = sc.allocate_scratch("chat-31")
+        assert path.parent == elsewhere.resolve()
+        assert path.is_dir()
+        # And NOT under the config-home default.
+        assert not (scratch_root / path.name).exists()
+
+    def test_unset_override_falls_back_to_config_home_default(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+
+        assert sc.scratch_root() == scratch_root
+
+        path = sc.allocate_scratch("chat-31")
+        assert path.parent == scratch_root
+
+    def test_empty_override_falls_back_to_default(self, scratch_root: Path, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", "")
+        assert sc.scratch_root() == scratch_root
+
+    @pytest.mark.skipif(os.name != "posix", reason="'/usr' is a POSIX system dir")
+    def test_system_dir_override_is_refused_and_falls_back_with_warning(
+        self, scratch_root: Path, monkeypatch, caplog
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", "/usr")
+        with caplog.at_level("WARNING"):
+            assert sc.scratch_root() == scratch_root
+        assert any("system directory" in rec.getMessage() for rec in caplog.records)
+
+    def test_symlinked_override_root_is_refused_by_allocate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A junction/symlink AT the override root is refused by the SAME link
+        # guards that protect the default root (``_refuse_linked`` in
+        # ``allocate_scratch``). ``scratch_root_override`` calls ``resolve()``,
+        # which would collapse a link the override names directly; so the guard
+        # is what covers a managed root that IS a link, exactly as it does for a
+        # linked default root (see ``test_linked_root_caps_nothing``). Point the
+        # override at a link and assert allocation refuses with
+        # ``ScratchBoundaryError`` -- proven by making ``scratch_root`` return
+        # the un-collapsed link, i.e. the value a Windows junction (which
+        # ``resolve()`` does not always collapse) would surface.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link_root = tmp_path / "linked-scratch"
+        sc.platform_compat.symlink_or_junction(outside, link_root)
+        monkeypatch.setattr(sc, "scratch_root", lambda: link_root)
+
+        with pytest.raises(sc.ScratchBoundaryError):
+            sc.allocate_scratch("chat-31")

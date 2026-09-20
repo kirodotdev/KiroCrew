@@ -69,6 +69,41 @@ class TestConfigDir:
         assert result == tmp_path / ".kiro" / "crew"
 
 
+class TestScratchRootOverride:
+    """``scratch_root_override()`` honors KIROCREW_SCRATCH_ROOT with the same
+    safety posture as KIROCREW_HOME, independent of the data home."""
+
+    def test_unset_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        assert paths.scratch_root_override() is None
+
+    def test_empty_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", "")
+        assert paths.scratch_root_override() is None
+
+    def test_valid_dir_is_expanded_and_resolved(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "data-drive" / "scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(target))
+        assert paths.scratch_root_override() == target.resolve()
+
+    def test_system_dir_is_refused_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Same platform-shaped refusal as KIROCREW_HOME: ``/usr`` is a POSIX
+        # system tree; on Windows the drive root is what ``_is_unsafe_home``
+        # refuses (and it exists, so nothing is created on the dev drive).
+        if sys.platform == "win32":
+            system_dir = Path.cwd().anchor
+        else:
+            system_dir = "/usr"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", system_dir)
+        with caplog.at_level(logging.WARNING):
+            assert paths.scratch_root_override() is None
+        assert any("system directory" in rec.getMessage() for rec in caplog.records)
+
+
 class TestLedgerRoot:
     def test_link_is_refused_without_touching_its_target(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
