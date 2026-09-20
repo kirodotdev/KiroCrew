@@ -158,12 +158,13 @@ await shoot('blocked-placeholder',
 
 // The second variant the placeholder frame cannot show: an ADOPTED row whose
 // resolve() failed. It keeps the release its tree holds and routes the failure to
-// the same ErrorNotice rather than to a Badge title, which is not keyboard-reachable.
+// a DISTINCT ErrorNotice that names the tip check as what failed ("Could not check
+// for newer … releases"), rather than the placeholder's "could not be resolved".
 // The badge is the bare version — no `latest ?`, no `latest` at all, since the
 // tip is unknown and the tooltip says so. Its Behind cell is the same n/a marker
 // as every other channel state — never a `?` cell and never a dash.
 await shoot('blocked-adopted',
-  ['release-channel-stable', '0.5.0', 'Could not resolve host'], ['latest 0.5', 'latest ?', 'tip 0.5', 'tip ?'],
+  ['release-channel-stable', '0.5.0', 'Could not check for newer', 'Could not resolve host'], ['latest 0.5', 'latest ?', 'tip 0.5', 'tip ?', 'could not be resolved'],
   '07-release-channel-blocked-adopted-dark.png',
   async (page, scene) => {
     await behindNa(page, scene)

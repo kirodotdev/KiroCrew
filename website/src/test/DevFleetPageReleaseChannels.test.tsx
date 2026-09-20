@@ -203,9 +203,9 @@ describe('DevFleetPage release-channel rows', () => {
     // A lane whose worktree exists and is detached is adopted even when resolution
     // fails, so there is no placeholder row to carry the message. The error still
     // must not live in a Badge title (not keyboard-reachable, no agent hand-off):
-    // channelErrorFor routes it to the same ErrorNotice the placeholder row uses,
-    // one surface for every channel error, rather than a page-level notice that
-    // fired on every mount for a checkout with no tags.
+    // channelErrorFor routes it to the ErrorNotice. On an adopted row the sentence
+    // names the tip check as what failed ("Could not check for newer … releases"),
+    // distinguishing it from the placeholder where nothing resolved at all.
     const adoptedButBroken = {
       ...CHANNELS.stable,
       ref: null,
@@ -220,6 +220,10 @@ describe('DevFleetPage release-channel rows', () => {
     expect(screen.queryByTestId('release-channel-placeholder-stable')).not.toBeInTheDocument()
     const notice = screen.getByTestId('release-channel-error-stable')
     expect(notice.textContent).toContain('cannot list tags')
+    // The adopted row uses the tip-check sentence, NOT the placeholder's
+    // "could not be resolved" sentence (#12355).
+    expect(notice.textContent).toContain('Could not check for newer')
+    expect(notice.textContent).not.toContain('could not be resolved')
     // No page-level toast: the row-scoped notice said it.
     expect(screen.queryByTestId('devfleet-action-error')).not.toBeInTheDocument()
   })
