@@ -46,6 +46,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SESSION_EVICTION,
+    ACP_BACKENDS_SILENT_TURN_FAILURE,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -721,6 +722,16 @@ class AcpSessionProvider(LLMProvider):
         """
         backend = self.backend
         if not isinstance(backend, str) or backend in ACP_BACKENDS_COMPACT:
+            return None
+        return backend
+
+    @property
+    def silent_turn_failure_backend(self) -> str | None:
+        """Same ``ACP_BACKENDS_SILENT_TURN_FAILURE`` membership answer as
+        ``AcpProvider.silent_turn_failure_backend``, for the bare shared-subagent
+        shape handed out without the wrapper."""
+        backend = self.backend
+        if not isinstance(backend, str) or backend not in ACP_BACKENDS_SILENT_TURN_FAILURE:
             return None
         return backend
 

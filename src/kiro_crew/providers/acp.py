@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_SILENT_TURN_FAILURE,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     EVENT_COMPACTION_STATUS,
     PROVIDER_LABEL_BY_BACKEND,
@@ -705,6 +706,21 @@ class AcpProvider(LLMProvider):
         """
         backend = getattr(self._client, "backend", ACP_BACKEND_KIRO)
         if not isinstance(backend, str) or backend in ACP_BACKENDS_COMPACT:
+            return None
+        return backend
+
+    @property
+    def silent_turn_failure_backend(self) -> str | None:
+        """Backend id when a failed turn looks empty on the wire (harness-parity H6).
+
+        Membership in ``ACP_BACKENDS_SILENT_TURN_FAILURE``, read off the backend
+        STRING for the same reason ``manual_compact_unsupported_backend`` is: a
+        non-``str`` value (a spec'd double) answers ``None`` so no test double can
+        rewrite a transcript card. The empty string is ``ACP_BACKEND_KIRO``, absent
+        from the set, so a non-``None`` answer is always a non-empty backend id.
+        """
+        backend = getattr(self._client, "backend", ACP_BACKEND_KIRO)
+        if not isinstance(backend, str) or backend not in ACP_BACKENDS_SILENT_TURN_FAILURE:
             return None
         return backend
 
