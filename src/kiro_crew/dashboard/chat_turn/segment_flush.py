@@ -38,7 +38,11 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.state import chat_message_note, row_mid
-from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
+from kiro_crew.messaging.empty_turn_copy import (
+    EMPTY_TURN_NOTICE,
+    EMPTY_TURN_NOTICE_AFTER_WORK,
+    silent_turn_failure_note,
+)
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
 from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX, redact, redact_and_truncate
@@ -1478,11 +1482,50 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             else:
                 _empty_msg = EMPTY_TURN_NOTICE
                 _empty_notice = gn.GATEWAY_NOTICE_EMPTY_TURN
+            # A harness whose FAILED turn is indistinguishable from an empty one
+            # makes both non-productive cards above actively misleading: "send
+            # your message again" is the one instruction that cannot help when
+            # the provider call failed deterministically (an unresolvable
+            # region, an unusable credential) and the adapter answered
+            # ``end_turn`` with no content anyway. Crew still cannot tell the two
+            # apart -- the wire carries no difference, usage is absent on a good
+            # turn too, and this harness's own session file is deliberately never
+            # read (agent-host-contract §2) -- so the card names the ambiguity
+            # and points at the log that does carry the reason, while keeping
+            # the retry advice that is still right for a transient empty turn.
+            #
+            # Only under a NON-productive card -- the same test that picked the
+            # card above -- so the AFTER_WORK wording stays alone. Asked of the
+            # LIVE provider (peeked, never created) through the H14 property, so
+            # an undeclared harness and a provider-less slot are unchanged.
+            _silent_failure_backend = getattr(
+                state.sessions.get_provider(turn.session_key),
+                "silent_turn_failure_backend",
+                None,
+            )
+            if (
+                not (_empty_activity.productive or slot._empty_episode_productive)
+                and isinstance(_silent_failure_backend, str)
+                and _silent_failure_backend
+            ):
+                _empty_msg += silent_turn_failure_note(_silent_failure_backend)
+                # The dashboard renders the TOKEN's copy, not ``content``, so the
+                # note needs its own token or the card still says only "resend".
+                _empty_notice_meta = gn.gateway_notice_meta(
+                    (
+                        gn.GATEWAY_NOTICE_EMPTY_TURN_AFTER_RECOVERY_SILENT_FAILURE
+                        if _empty_notice == gn.GATEWAY_NOTICE_EMPTY_TURN_AFTER_RECOVERY
+                        else gn.GATEWAY_NOTICE_EMPTY_TURN_SILENT_FAILURE
+                    ),
+                    harness=_silent_failure_backend,
+                )
+            else:
+                _empty_notice_meta = gn.gateway_notice_meta(_empty_notice)
             slot.append(
                 "notice",
                 _empty_msg,
                 "msg msg-info",
-                meta={"kind": EMPTY_TURN_NOTICE_KIND, **gn.gateway_notice_meta(_empty_notice)},
+                meta={"kind": EMPTY_TURN_NOTICE_KIND, **_empty_notice_meta},
             )
         # ONE warning per empty verdict, emitted AFTER the rung is chosen so
         # the log line carries the decision rather than only the symptom. It

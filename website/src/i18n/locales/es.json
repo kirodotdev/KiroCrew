@@ -12395,6 +12395,8 @@
         "shared_runtime_restarting": "El proceso del agente que comparte este chat se reinició varias veces{{detail}} — vuelve a intentarlo.",
         "empty_turn_give_up": "El modelo no devolvió nada en este turno. Vuelve a enviar tu mensaje para continuar.",
         "empty_turn_after_recovery": "El modelo no devolvió nada en este turno (se intentó una recuperación automática). Vuelve a enviar tu mensaje para continuar.",
+        "empty_turn_give_up_silent_failure": "El modelo no devolvió nada en este turno. Vuelve a enviar tu mensaje para continuar. Nota: {{harness}} informa de un turno fallido igual que de uno vacío, así que puede ser un error del proveedor o de credenciales. Revisa el registro de sesión de {{harness}} antes de reintentar.",
+        "empty_turn_after_recovery_silent_failure": "El modelo no devolvió nada en este turno (se intentó una recuperación automática). Vuelve a enviar tu mensaje para continuar. Nota: {{harness}} informa de un turno fallido igual que de uno vacío, así que puede ser un error del proveedor o de credenciales. Revisa el registro de sesión de {{harness}} antes de reintentar.",
         "empty_turn_after_work": "El turno terminó sin una respuesta final. Envía un mensaje para continuar desde donde se detuvo — los pasos completados no se repetirán.",
         "empty_turn_continuing": "El modelo no devolvió nada dos veces — continuando automáticamente una vez.",
         "empty_turn_continuing_counted": "El modelo no devolvió nada — continuando automáticamente (recuperación {{n}} de {{max}}).",

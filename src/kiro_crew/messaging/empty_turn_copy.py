@@ -65,3 +65,20 @@ UNFINISHED_TURN_NOTICE = (
     "⏱️ The agent did not finish its answer before this turn's time limit, so the "
     "turn was stopped. Your next message starts the agent again."
 )
+
+
+def silent_turn_failure_note(backend: str) -> str:
+    """The sentence a NON-productive give-up card gains for a harness whose
+    FAILED turn looks exactly like an empty one (``ACP_BACKENDS_SILENT_TURN_FAILURE``).
+
+    "Send your message again" cannot help when the provider call failed
+    deterministically (a missing region, an unusable credential), so the card
+    says the turn may be such a failure and points at the harness's own log.
+    ``backend`` is the backend id from the live provider, never wire text.
+    """
+    return (
+        f" Note: the {backend} backend reports a FAILED turn the same way it "
+        "reports an empty one, so this may be a provider or credential error "
+        "rather than a silent model — check the harness's own session log "
+        "before retrying."
+    )

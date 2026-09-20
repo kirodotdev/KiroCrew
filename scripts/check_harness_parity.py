@@ -471,6 +471,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": "standard ACP: advertised model id values",
     "ACP_BACKENDS_INLINE_COMPACTION": "standard ACP: session/prompt terminal frame",
     "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
+    "ACP_BACKENDS_SILENT_TURN_FAILURE": "standard ACP: empty end_turn; changes only give-up card text",
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": "standard ACP timing; changes only error text",
     "ACP_BACKENDS_EFFORT_OVERLAY": "off the wire: workspace cli.json at spawn",
     "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": "off the wire: workspace cli.json at spawn",

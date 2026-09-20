@@ -367,6 +367,16 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_SILENT_TURN_FAILURE": (
+        "whether a FAILED turn is distinguishable from an empty one on the wire. Read "
+        "only by the empty-response ladder's give-up notice, which a reader meets once "
+        "it has already happened and never while choosing a harness: membership adds a "
+        "sentence to a card the turn was going to show anyway, removes no feature, "
+        "moves no boundary and changes no setting of theirs. A card line would state "
+        "the diagnostic quality of an ERROR path as a capability, which is exactly the "
+        "reading it is not -- a member is a harness whose adapter should be fixed "
+        "upstream, not one a reader should decline"
+    ),
     "ACP_BACKENDS_MODEL_AT_LAUNCH": (
         "which channel carries a model pick: a launch argument instead of a wire "
         "request. The model-switch line already says whether a running session can move."

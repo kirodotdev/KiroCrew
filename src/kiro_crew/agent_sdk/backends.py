@@ -241,6 +241,9 @@ with no row here.
    * - ``ACP_BACKENDS_OPEN_EXTERNAL_URL``
      - driver-internal (whether the reader loop answers ``_kiro/openExternalUrl``
        and a session starts MCP sign-ins with ``_kiro/mcp/resetServer``)
+   * - ``ACP_BACKENDS_SILENT_TURN_FAILURE``
+     - driver-internal (whether a FAILED turn is indistinguishable on the wire
+       from an empty one, read by the empty-response ladder's give-up card)
    * - ``ACP_BACKENDS_SIDE_READONLY``
      - pre-session registry query (whether a side-chat turn may execute
        read-only tools under the derived ``<agent>--readonly`` spec; asked
@@ -1164,6 +1167,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_REPORT_USAGE,
+    ACP_BACKENDS_SILENT_TURN_FAILURE,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEER_RETRACT,

@@ -12395,6 +12395,8 @@
         "shared_runtime_restarting": "Il processo dell’agente condiviso da questa chat si è riavviato più volte{{detail}} — riprova.",
         "empty_turn_give_up": "Il modello non ha restituito nulla in questo turno. Invia di nuovo il messaggio per continuare.",
         "empty_turn_after_recovery": "Il modello non ha restituito nulla in questo turno (è stato tentato un ripristino automatico). Invia di nuovo il messaggio per continuare.",
+        "empty_turn_give_up_silent_failure": "Il modello non ha restituito nulla in questo turno. Invia di nuovo il messaggio per continuare. Nota: {{harness}} segnala un turno fallito come uno vuoto, quindi potrebbe trattarsi di un errore del provider o delle credenziali. Controlla il log di sessione di {{harness}} prima di riprovare.",
+        "empty_turn_after_recovery_silent_failure": "Il modello non ha restituito nulla in questo turno (è stato tentato un ripristino automatico). Invia di nuovo il messaggio per continuare. Nota: {{harness}} segnala un turno fallito come uno vuoto, quindi potrebbe trattarsi di un errore del provider o delle credenziali. Controlla il log di sessione di {{harness}} prima di riprovare.",
         "empty_turn_after_work": "Il turno è terminato senza una risposta finale. Invia un messaggio per continuare da dove si è fermato — i passaggi completati non verranno ripetuti.",
         "empty_turn_continuing": "Il modello non ha restituito nulla due volte — continuo automaticamente una volta.",
         "empty_turn_continuing_counted": "Il modello non ha restituito nulla — continuo automaticamente (ripristino {{n}} di {{max}}).",
