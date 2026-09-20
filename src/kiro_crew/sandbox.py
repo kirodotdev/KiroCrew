@@ -9435,6 +9435,45 @@ def detect_backend(config_mode: str = "auto") -> str:
     return _backend
 
 
+#: Env marker the cron *script* launcher sets on its child -- the one way to tell
+#: that child apart at a spawn site every caller shares.
+CRON_SCRIPT_CHILD_ENV = "_KIROCREW_CRON_SCRIPT_CHILD"
+
+
+class UnauditedSpawnRefused(BaseException):
+    """A cron script child refused to proceed after an ENOSYS audit failure.
+
+    ``BaseException`` because it is raised inside the user function's own stack
+    (``ctx.call_tool`` re-enters ``wrap_argv``), and a script's own ``except
+    Exception`` must not be able to swallow it and return a success envelope.
+    """
+
+
+def refuse_unaudited_on_dead_fs(exc: BaseException, what: str) -> None:
+    """Turn a best-effort audit degrade into a refusal, for a cron script child.
+
+    Log-and-proceed is right for the gateway: denying a spawn on an audit hiccup
+    would brick built-in tooling and every in-sandbox MCP call. It is wrong for a
+    detached cron child, whose ``ENOSYS`` write means its filesystem is gone, so it
+    can neither audit nor persist what it does next. Both conditions are required.
+    """
+    if os.environ.get(CRON_SCRIPT_CHILD_ENV) != "1":
+        return
+    # SEL wraps its writes, so the errno can sit a link or two down the chain;
+    # ``seen`` bounds a cyclic one.
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, OSError) and cur.errno == errno.ENOSYS:
+            raise UnauditedSpawnRefused(
+                f"{what}: the security-event log write failed with ENOSYS (errno 38), "
+                "so this cron child can neither audit nor persist -- refusing to "
+                "continue unaudited."
+            ) from exc
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+
+
 class SandboxUnavailableError(RuntimeError):
     """``wrap_argv`` fail-closed because this host could not build a sandbox.
 
@@ -10036,7 +10075,8 @@ def wrap_argv(
                     ),
                     critical=True,  # synchronous write for audit integrity
                 )
-            except Exception:
+            except Exception as exc:
+                refuse_unaudited_on_dead_fs(exc, "mode=off delegation audit")
                 # Fail OPEN (not to seatbelt): an unaudited delegation with
                 # mode=off still applies env scrub but returns without seatbelt.
                 # This is deliberately different from _delegate_to_kiro_internal_sandbox
@@ -10152,7 +10192,8 @@ def wrap_argv(
                 },
                 critical=True,
             )
-        except Exception:
+        except Exception as exc:
+            refuse_unaudited_on_dead_fs(exc, "nested-sandbox passthrough audit")
             logger.warning(
                 "SEL audit failed for nested-sandbox passthrough — proceeding "
                 "unaudited: the outer namespace + seccomp still confine this "

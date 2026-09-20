@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.config.loader import config_dir, read_local_secret
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.github_runner import prevalidated_gh_env
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
@@ -52,6 +52,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
+    CRON_SCRIPT_CHILD_ENV,
     SandboxUnavailableError,
     cgroup_scope_argv,
     popen_limited,
@@ -92,6 +93,34 @@ def _clean_cron_env() -> dict[str, str]:
         for k, v in os.environ.items()
         if k not in _CRON_ENV_DENY and k not in _GRANTED_ENV_KEYS
     }
+
+
+# A script child inherits its parent's seccomp filter, and seccomp survives fork /
+# exec / setsid: when the sandbox that installed it is torn down underneath the
+# child, every file syscall returns ENOSYS while the process looks healthy, the user
+# function still returns, and the parent records a successful run for a job that
+# banked nothing. So the child probes its data home with the gateway's own probe.
+
+#: Exit code for a child that cannot persist (sysexits.h EX_CONFIG: the
+#: environment is wrong, not the script). Only "non-zero" is load-bearing.
+CHILD_PERSISTENCE_EXIT_CODE = 78
+
+CHILD_PERSISTENCE_PREFIX = "❌ Cron child cannot persist state: "
+
+
+def child_persistence_preflight() -> None:
+    """Refuse the run when this child's own filesystem cannot persist state.
+
+    Called from the launcher preamble, after ``boot_platform`` (so a composition
+    failure still surfaces as itself) and before the script body runs. The probe
+    names an inherited seccomp filter when ``errno`` says ``ENOSYS``.
+    ``SystemExit``, so no handler can reshape it into a status envelope.
+    """
+    reason = platform_compat.probe_file_persistence(data_home())
+    if reason is None:
+        return
+    print(f"{CHILD_PERSISTENCE_PREFIX}{reason}", file=sys.stderr, flush=True)
+    raise SystemExit(CHILD_PERSISTENCE_EXIT_CODE)
 
 
 # ---------------------------------------------------------------------------
@@ -1837,6 +1866,10 @@ def run_script_sandboxed(
         "from kiro_crew.config.loader import KiroCrewConfig\n"
         "from kiro_crew.platform.bootstrap import boot_platform\n"
         "boot_platform(KiroCrewConfig.load())\n"
+        # Before the script body, so a dead filesystem can never be reported as
+        # a successful no-op run.
+        "from kiro_crew.cron_script import child_persistence_preflight\n"
+        "child_persistence_preflight()\n"
         "from kiro_crew.cron_script import ScriptContext, Skip, Done, Report\n"
         # Record the granted key NAMES so _clean_cron_env strips them from
         # every descendant env (ctx.call_tool's MCP server subprocess): the
@@ -2003,6 +2036,9 @@ def run_script_sandboxed(
         # The child must dial the gateway the credential above was minted for:
         # same dial_port, resolved once above, not a second resolution here.
         clean_env["_KIROCREW_DIAL_PORT"] = str(dial_port)
+        # Marks the script child for ``refuse_unaudited_on_dead_fs``: an ENOSYS SEL
+        # write is fatal for THIS child, not "proceeding unaudited", and for it only.
+        clean_env[CRON_SCRIPT_CHILD_ENV] = "1"
         # Give the child the SAME identity the gateway hands every agent
         # subprocess (acp/client.py injects KIROCREW_SESSION_KEY for agent crons
         # too): the strict resolver behind every state-mutating MCP tool

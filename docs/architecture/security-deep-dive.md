@@ -413,6 +413,16 @@ nested-sandbox passthrough, which has no safe alternative (the kernel denies a
 re-wrap by design) and would otherwise couple every in-sandbox spawn to SEL
 health; it logs loudly and proceeds, still confined by the outer boundary.
 
+That exception has one carve-out, and only one: a **cron script child** whose
+audit write fails with `ENOSYS`. That errno means the child inherited a seccomp
+filter from a sandbox torn down underneath it, so it can neither audit nor
+persist anything it goes on to do, and nobody is watching it -- its parent
+records the run as ok either way. Such a child refuses instead of proceeding
+(`sandbox.refuse_unaudited_on_dead_fs`, gated on a marker the cron launcher puts
+in the child's environment AND on that errno). Everything else, including the
+gateway's own spawns and any other audit failure, keeps the log-and-proceed
+posture above. `test_sandbox_cron_child_audit.py` pins both halves.
+
 ## Governance: the enterprise ceiling
 
 Governance is a second, orthogonal axis to the layers above:
