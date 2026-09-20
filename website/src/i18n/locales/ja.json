@@ -10949,7 +10949,8 @@
       "reserved_name_on_a_branch": "ブランチ上のため、{{lane}} リリースはこの名前を使えません — 名前を変更するか削除して空けてください",
       "rows_pending_other": "ワークツリー {{count}} 件 · 作成待ち {{pending}} 件",
       "release_rows_measured_by_version": "リリース行はバージョンで測ります — バッジを参照",
-      "no_worktree_yet_create_checks_out": "ワークツリーはまだありません — Create は {{version}} をチェックアウトします"
+      "no_worktree_yet_create_checks_out": "ワークツリーはまだありません — Create は {{version}} をチェックアウトします",
+      "release_channel_tip_unresolved": "新しい {{lane}} リリースを確認できませんでした: {{error}}"
     },
     "developer": {
       "agentBackendTab": {

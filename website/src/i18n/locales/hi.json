@@ -11107,7 +11107,8 @@
       "rows_pending_one": "{{count}} वर्कट्री · {{pending}} बनाना बाकी",
       "rows_pending_other": "{{count}} वर्कट्री · {{pending}} बनाना बाकी",
       "release_rows_measured_by_version": "रिलीज़ पंक्तियाँ संस्करण से मापी जाती हैं — बैज देखें",
-      "no_worktree_yet_create_checks_out": "अभी कोई वर्कट्री नहीं — Create {{version}} को चेकआउट करता है"
+      "no_worktree_yet_create_checks_out": "अभी कोई वर्कट्री नहीं — Create {{version}} को चेकआउट करता है",
+      "release_channel_tip_unresolved": "नए {{lane}} रिलीज़ की जाँच नहीं हो सकी: {{error}}"
     },
     "developer": {
       "agentBackendTab": {

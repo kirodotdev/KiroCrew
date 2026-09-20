@@ -11265,7 +11265,8 @@
       "rows_pending_many": "{{count}} worktree · {{pending}} da creare",
       "rows_pending_other": "{{count}} worktree · {{pending}} da creare",
       "release_rows_measured_by_version": "Le righe di release sono misurate per versione — vedi il badge",
-      "no_worktree_yet_create_checks_out": "Nessun worktree ancora — Create effettua il checkout di {{version}}"
+      "no_worktree_yet_create_checks_out": "Nessun worktree ancora — Create effettua il checkout di {{version}}",
+      "release_channel_tip_unresolved": "Non è stato possibile verificare le nuove release {{lane}}: {{error}}"
     },
     "developer": {
       "agentBackendTab": {

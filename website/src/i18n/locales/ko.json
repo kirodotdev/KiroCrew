@@ -10949,7 +10949,8 @@
       "reserved_name_on_a_branch": "브랜치에 있어 {{lane}} 릴리스가 이 이름을 사용할 수 없습니다 — 이름을 바꾸거나 제거하여 비우세요",
       "rows_pending_other": "워크트리 {{count}}개 · 생성 대기 {{pending}}개",
       "release_rows_measured_by_version": "릴리스 행은 버전으로 측정합니다 — 배지를 참조하세요",
-      "no_worktree_yet_create_checks_out": "아직 워크트리가 없습니다 — Create가 {{version}}을(를) 체크아웃합니다"
+      "no_worktree_yet_create_checks_out": "아직 워크트리가 없습니다 — Create가 {{version}}을(를) 체크아웃합니다",
+      "release_channel_tip_unresolved": "최신 {{lane}} 릴리스를 확인할 수 없습니다: {{error}}"
     },
     "developer": {
       "agentBackendTab": {

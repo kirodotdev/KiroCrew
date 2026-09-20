@@ -4695,6 +4695,7 @@
       "release_channel_would_create_at": "Create checks out the newest {{lane}} release, {{version}}, detached",
       "release_channel_pinned_at": "Pinned to the {{lane}} release channel at {{ref}}",
       "release_channel_unresolved": "The {{lane}} release channel could not be resolved: {{error}}",
+      "release_channel_tip_unresolved": "Could not check for newer {{lane}} releases: {{error}}",
       "release_channel_on_older_release": "On {{version}}; the {{lane}} channel tip is now {{tip}}",
       "release_channel_version_behind_tip": "{{version}} · latest {{tip}}",
       "release_channel_on_release_tip_unknown": "On {{version}}; the {{lane}} channel tip could not be resolved",

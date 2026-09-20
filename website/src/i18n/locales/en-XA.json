@@ -10764,7 +10764,8 @@
       "rows_pending_one": "[{{count}} ẁøŕķţŕèè · {{pending}} ţø çŕèàţè ···············]",
       "rows_pending_other": "[{{count}} ẁøŕķţŕèèş · {{pending}} ţø çŕèàţè ················]",
       "release_rows_measured_by_version": "[Ŕèĺèàşè ŕøẁş àŕè ɱèàşùŕèð ƀý ṽèŕşìøñ — şèè ţĥè ƀàðğè ··················]",
-      "no_worktree_yet_create_checks_out": "[Ñø ẁøŕķţŕèè ýèţ — Çŕèàţè çĥèçķş øùţ {{version}} ··················]"
+      "no_worktree_yet_create_checks_out": "[Ñø ẁøŕķţŕèè ýèţ — Çŕèàţè çĥèçķş øùţ {{version}} ··················]",
+      "release_channel_tip_unresolved": "[Çøùĺð ñøţ çĥèçķ ƒøŕ ñèŵèŕ {{lane}} ŕèĺèàşèş: {{error}} ···················]"
     },
     "developer": {
       "agentBackendTab": {

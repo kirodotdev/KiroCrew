@@ -11265,7 +11265,8 @@
       "rows_pending_many": "{{count}} worktrees · {{pending}} por crear",
       "rows_pending_other": "{{count}} worktrees · {{pending}} por crear",
       "release_rows_measured_by_version": "Las filas de release se miden por versión — mira la insignia",
-      "no_worktree_yet_create_checks_out": "Aún sin worktree — Create extrae {{version}}"
+      "no_worktree_yet_create_checks_out": "Aún sin worktree — Create extrae {{version}}",
+      "release_channel_tip_unresolved": "No se pudieron buscar nuevas releases de {{lane}}: {{error}}"
     },
     "developer": {
       "agentBackendTab": {

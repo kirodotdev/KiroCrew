@@ -10949,7 +10949,8 @@
       "reserved_name_on_a_branch": "位于分支上，因此 {{lane}} 发布无法使用此名称 — 重命名或移除它以释放该名称",
       "rows_pending_other": "{{count}} 个工作树 · {{pending}} 个待创建",
       "release_rows_measured_by_version": "发布行按版本衡量 — 请看徽标",
-      "no_worktree_yet_create_checks_out": "尚无工作树 — Create 会检出 {{version}}"
+      "no_worktree_yet_create_checks_out": "尚无工作树 — Create 会检出 {{version}}",
+      "release_channel_tip_unresolved": "无法检查更新的 {{lane}} 版本：{{error}}"
     },
     "developer": {
       "agentBackendTab": {

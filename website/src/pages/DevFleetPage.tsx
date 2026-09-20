@@ -2306,6 +2306,9 @@ export default function DevFleetPage() {
     const pr = prov[w.name]
     const provActive = !w.is_main && !!pr
     const channelErr = channelErrorFor(w)
+    // An adopted row (the worktree exists and holds a known release) uses a
+    // distinct notice: what failed is the tip check, not the whole resolve.
+    const isAdoptedChannelErr = !!channelFor(w)?.error
     return (
       <div key={w.name}>
         <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30, minWidth: 640 } as CSSProperties}>
@@ -2470,12 +2473,15 @@ export default function DevFleetPage() {
         {/* The sole error surface for a channel row: an ADOPTED row whose resolve()
             failed, OR the reserved directory whose HEAD could not be read
             (channelErrorFor folds both). A Badge title is not keyboard-reachable and
-            carries no agent hand-off, so every channel error routes here, matching
-            the placeholder row's ErrorNotice. */}
+            carries no agent hand-off, so every channel error routes here. On an
+            adopted row the notice names the tip check as what failed, distinguishing
+            it from the placeholder where nothing resolved. */}
         {channelErr ? (
           <div style={{ margin: '2px 0 8px 32px' }}>
             <ErrorNotice
-              message={i18nT('pages.devFleetPage.release_channel_unresolved', { lane: channelErr.lane, error: channelErr.error as string })}
+              message={isAdoptedChannelErr
+                ? i18nT('pages.devFleetPage.release_channel_tip_unresolved', { lane: channelErr.lane, error: channelErr.error as string })
+                : i18nT('pages.devFleetPage.release_channel_unresolved', { lane: channelErr.lane, error: channelErr.error as string })}
               askAgent
               testId={`release-channel-error-${channelErr.lane}`}
             />

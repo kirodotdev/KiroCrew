@@ -11107,7 +11107,8 @@
       "rows_pending_one": "{{count}}টি ওয়ার্কট্রি · {{pending}}টি তৈরি করতে বাকি",
       "rows_pending_other": "{{count}}টি ওয়ার্কট্রি · {{pending}}টি তৈরি করতে বাকি",
       "release_rows_measured_by_version": "রিলিজ সারি সংস্করণ দিয়ে মাপা হয় — ব্যাজ দেখো",
-      "no_worktree_yet_create_checks_out": "এখনও কোনো ওয়ার্কট্রি নেই — Create {{version}} চেকআউট করে"
+      "no_worktree_yet_create_checks_out": "এখনও কোনো ওয়ার্কট্রি নেই — Create {{version}} চেকআউট করে",
+      "release_channel_tip_unresolved": "নতুন {{lane}} রিলিজ পরীক্ষা করা যায়নি: {{error}}"
     },
     "developer": {
       "agentBackendTab": {

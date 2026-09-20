@@ -1219,7 +1219,8 @@ async def test_discard_drops_only_the_staging_record_and_spares_an_unmounted_wor
         ["git", "-C", str(primary), "worktree", "list", "--porcelain"]
     )
     assert rc == 0
-    assert str(staging) in listed and str(unrelated) in listed, "fixture: both records must exist"
+    listed_norm = listed.replace("\\", "/")
+    assert staging.as_posix() in listed_norm and unrelated.as_posix() in listed_norm, "fixture: both records must exist"
 
     monkeypatch.setattr(runtime, "_run_cmd", real_git)
     monkeypatch.setattr(worktree_ops, "_GIT_MUTATION_LOCK", asyncio.Lock())
@@ -1230,8 +1231,9 @@ async def test_discard_drops_only_the_staging_record_and_spares_an_unmounted_wor
         ["git", "-C", str(primary), "worktree", "list", "--porcelain"]
     )
     assert rc == 0
-    assert str(staging) not in listed, "the staging record is this call's to drop"
-    assert str(unrelated) in listed, "an unrelated worktree's record must survive the cleanup"
+    listed_norm = listed.replace("\\", "/")
+    assert staging.as_posix() not in listed_norm, "the staging record is this call's to drop"
+    assert unrelated.as_posix() in listed_norm, "an unrelated worktree's record must survive the cleanup"
 
 
 @pytest.mark.asyncio
