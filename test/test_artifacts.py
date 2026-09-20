@@ -328,6 +328,29 @@ class TestList:
         store.update("alpha", content="updated oldest artifact")
         assert [a.slug for a in store.list()] == ["alpha", "charlie", "bravo"]
 
+    def test_a_timestamp_tie_still_has_one_defined_order(
+        self, store: ArtifactStore, monkeypatch
+    ) -> None:
+        """Equal ``updated_at`` must not leave the order to the filesystem.
+
+        ``_now_iso`` is microsecond ISO, so two artifacts written inside one
+        microsecond carry the identical stamp. Sorting on ``updated_at`` alone is a
+        stable sort over equal keys, which preserves directory scan order and makes
+        "newest first" answer differently per platform and per filesystem -- Windows
+        CI failed ``test_artifacts_handlers.TestList.test_returns_items`` on exactly
+        that. The ``slug`` tie-break is what makes the answer total.
+        """
+        from kiro_crew import artifacts
+
+        monkeypatch.setattr(
+            artifacts, "_now_iso", lambda: "2026-01-01T00:00:00.000001+00:00"
+        )
+        # Created out of slug order, so passing cannot be an accident of insertion.
+        for name in ("bravo", "alpha", "charlie"):
+            store.create(name=name, content=name)
+
+        assert [a.slug for a in store.list()] == ["charlie", "bravo", "alpha"]
+
     def test_filter_by_tag(self, store: ArtifactStore) -> None:
         store.create(name="a", content="a", tags=["x"])
         store.create(name="b", content="a", tags=["y"])

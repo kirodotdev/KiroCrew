@@ -18,8 +18,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from windows_sim import replace_sharing_violation
 
+from kiro_crew import atomic_write as aw
 from kiro_crew import history as history_mod
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.chat_persistence import (
     _rehydrate_slot_from_history,
     _save_slot_to_history,
@@ -583,13 +586,80 @@ class TestHostileMetadataDoesNotBreakTheGate:
         log = _seed_log(tmp_path)
         _plant_raw_meta(log, KEY, '"consolidation_attempts": 100000000')
 
-        with history_mod.allow_on_loop_persist():
-            attempts, retry_at = log.record_consolidation_failure(
-                KEY, _CONSOLIDATION_BACKOFF_BASE_SECS, 86400.0, _span(log)
-            )
+        # Offloaded rather than wrapped in ``allow_on_loop_persist``: this write ends
+        # in ``replace_with_retry``, which by design refuses to retry a Windows
+        # sharing violation while ON the event loop, because retrying sleeps. A
+        # concurrent reader holding the destination is routine there, so an on-loop
+        # persist turns an ordinary contended rename into a hard failure -- this line
+        # is what Windows CI failed on. Production offloads this write, and
+        # ``on_event_loop`` states the rule: a caller earns the retry by offloading,
+        # not by declaring. Doing the same here tests the path production runs.
+        attempts, retry_at = await asyncio.to_thread(
+            log.record_consolidation_failure,
+            KEY,
+            _CONSOLIDATION_BACKOFF_BASE_SECS,
+            86400.0,
+            _span(log),
+        )
 
         assert attempts == 100000001
         assert retry_at == pytest.approx(time.time() + 86400.0, abs=5)
+
+
+class TestAContendedRenameNeedsTheWriteOffTheLoop:
+    """The metadata write ends in a rename Windows can refuse; offloading retries it.
+
+    ``_update_metadata_locked`` finishes on ``replace_with_retry``, which absorbs the
+    ``PermissionError`` a concurrent transcript READER causes on Windows -- but only
+    off the event loop, because retrying sleeps and sleeping on the loop would stall
+    every other session. Production earns the retry by offloading every session
+    mutator, exactly as ``on_event_loop`` documents. A test that instead drives the
+    mutator ON the loop under ``allow_on_loop_persist`` opts out of the retry, so one
+    routine contended rename fails it outright -- which is what Windows CI hit here.
+    """
+
+    @pytest.fixture
+    def _windows(self, monkeypatch):
+        """A Windows rename gate, with the bounded backoff made instant."""
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+
+    @pytest.mark.asyncio
+    async def test_offloaded_the_contended_write_still_lands(self, tmp_path, _windows):
+        """One faulted rename, then one that succeeds: the charge survives."""
+        log = _seed_log(tmp_path)
+        span = _span(log)
+
+        # Entered AFTER seeding so the simulator faults the write under test rather
+        # than the fixture's own appends.
+        with replace_sharing_violation(match="-retry.jsonl", times=1) as state:
+            attempts, _retry_at = await asyncio.to_thread(
+                log.record_consolidation_failure,
+                KEY,
+                _CONSOLIDATION_BACKOFF_BASE_SECS,
+                86400.0,
+                span,
+            )
+
+        assert attempts == 1
+        assert state["n"] == 2, (
+            "the simulator must have FAULTED the metadata rename and been retried -- "
+            "n < 2 means the retry never ran on the path under test"
+        )
+        assert log.get_metadata(KEY).get("consolidation_attempts") == 1
+
+    @pytest.mark.asyncio
+    async def test_on_the_loop_the_same_contention_is_fatal(self, tmp_path, _windows):
+        """Why the sibling offloads: on the loop the retry is refused, by design."""
+        log = _seed_log(tmp_path)
+        span = _span(log)
+
+        with replace_sharing_violation(match="-retry.jsonl", times=1):
+            with pytest.raises(PermissionError):
+                with history_mod.allow_on_loop_persist():
+                    log.record_consolidation_failure(
+                        KEY, _CONSOLIDATION_BACKOFF_BASE_SECS, 86400.0, span
+                    )
 
 
 class TestOnlyASentTurnConsumesTheCap:
