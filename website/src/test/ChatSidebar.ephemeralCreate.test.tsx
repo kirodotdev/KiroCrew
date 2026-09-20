@@ -206,7 +206,9 @@ describe('create-button caret menu: ephemeral chats', () => {
     // must preserve the factory default rather than omit the mode.
     renderSidebar()
     openCreateMenu()
-    fireEvent.click(await screen.findByText('New chat'))
+    // By role, not by text: the split button's main segment carries the same
+    // visible label, so `findByText` would match two nodes and throw.
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New chat' }))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     expect(mocks.createChatSlot.mock.calls[0][ARG_MEMORY_MODE]).toBe('persistent')
   })

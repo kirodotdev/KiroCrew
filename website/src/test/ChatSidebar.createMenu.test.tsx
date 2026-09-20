@@ -139,6 +139,17 @@ function openCreateMenu() {
   fireEvent.keyDown(caret, { key: 'Enter' })
 }
 
+/** Reach a menu ROW by role, never by text.
+ *
+ *  The split button's main segment is labelled "New chat" too, so a bare
+ *  `findByText('New chat')` matches the header span as well as this row and
+ *  throws on the ambiguity. The role scopes the query to the menu, and the
+ *  accessible name is the row's own label — the leading lucide icon
+ *  contributes no text. */
+function findCreateMenuItem(label: string) {
+  return screen.findByRole('menuitem', { name: label })
+}
+
 beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
@@ -163,7 +174,7 @@ describe('create-button caret menu', () => {
   it('lists "New chat" next to "New autopilot chat"', async () => {
     renderSidebar()
     openCreateMenu()
-    expect(await screen.findByText('New chat')).toBeTruthy()
+    expect(await findCreateMenuItem('New chat')).toBeTruthy()
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
   })
 
@@ -186,14 +197,13 @@ describe('create-button caret menu', () => {
     // the contrast between the two engineered modes.
     renderSidebar()
     openCreateMenu()
-    await screen.findByText('New chat')
-    // Assert on the menu ITEM (the role=menuitem ancestor), not the text node:
-    // "New chat" is a bare child of the menu container, so parentElement there
-    // is the whole menu and would sweep in every sibling's copy.
+    await findCreateMenuItem('New chat')
+    // Assert on the menu ITEM, not the text node: the label is a bare child of
+    // the menu container, so parentElement there is the whole menu and would
+    // sweep in every sibling's copy.
     for (const label of ['New chat', 'New folder']) {
-      const item = screen.getByText(label).closest('[role="menuitem"]')
-      expect(item).not.toBeNull()
-      expect(item?.textContent?.trim()).toBe(label)
+      const item = screen.getByRole('menuitem', { name: label })
+      expect(item.textContent?.trim()).toBe(label)
     }
   })
 
@@ -201,7 +211,7 @@ describe('create-button caret menu', () => {
     cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
     renderSidebar()
     openCreateMenu()
-    fireEvent.click(await screen.findByText('New chat'))
+    fireEvent.click(await findCreateMenuItem('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
     // createSlot passes the mode positionally; assert no call carried 'orchestrator'.
     for (const call of mocks.createChatSlot.mock.calls) {
@@ -284,7 +294,7 @@ describe('create-button caret menu', () => {
     localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
     renderSidebar()
     openCreateMenu()
-    await screen.findByText('New chat')
+    await findCreateMenuItem('New chat')
     expect(screen.queryByTestId('new-chat-on-crew')).toBeNull()
     expect(screen.queryByText('New chat on crew')).toBeNull()
   })
@@ -295,7 +305,7 @@ describe('create-button caret menu', () => {
     // an empty query cannot pass on a menu that simply failed to open.
     renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
     openCreateMenu()
-    await screen.findByText('New chat')
+    await findCreateMenuItem('New chat')
     expect(screen.queryByTestId('new-chat-on-crew')).toBeNull()
   })
 
@@ -405,7 +415,7 @@ describe('create-button caret menu', () => {
     // a dropped argument: the local entry DOES carry this machine's default.
     renderSidebar({ defaultAgent: 'planner' })
     openCreateMenu()
-    fireEvent.click(await screen.findByText('New chat'))
+    fireEvent.click(await findCreateMenuItem('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
     expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBe('planner')
   })
