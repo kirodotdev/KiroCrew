@@ -1033,7 +1033,33 @@ def _get_rss_mb(pid: int) -> float | None:
         return None
 
 
-def _iter_descendant_pids(pid: int, max_depth: int | None = None) -> list[int]:
+def _own_children(pid: int) -> list[int]:
+    """Direct children of *pid*, asked of the kernel one thread at a time."""
+    kids: list[int] = []
+    try:
+        entries = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return kids
+    for tid in entries:
+        try:
+            with open(f"/proc/{pid}/task/{tid}/children") as f:
+                tokens = f.read().split()
+        except OSError:
+            continue
+        for tok in tokens:
+            try:
+                kids.append(int(tok))
+            except ValueError:
+                continue
+    return kids
+
+
+def _iter_descendant_pids(
+    pid: int,
+    max_depth: int | None = None,
+    *,
+    children: "dict[int, list[int]] | None" = None,
+) -> list[int]:
     """Return ``[pid, *descendants]`` (Linux only), best-effort.
 
     Walks ``/proc/<pid>/task/<tid>/children`` breadth-first. Returns ``[pid]``
@@ -1045,6 +1071,14 @@ def _iter_descendant_pids(pid: int, max_depth: int | None = None) -> list[int]:
     carries each pid's own depth rather than the loop tracking a level, so a
     process reachable at two depths is counted once, at whichever it is reached
     first — the same single-visit rule the unbounded walk has.
+
+    ``children`` supplies a parent map (``platform_compat.proc_child_map``) to
+    read the edges from instead of asking the kernel per process. Same walk and
+    same rules; only where an edge comes from changes. It is for a caller that
+    needs MANY roots' trees in one pass: the kernel route costs one read per
+    thread of every process visited, which a per-root caller pays again on every
+    root, while one map answers all of them. A map that is missing a process
+    yields the root alone for it, exactly as an unreadable ``children`` file does.
     """
     order: list[int] = []
     visited: set[int] = set()
@@ -1057,23 +1091,9 @@ def _iter_descendant_pids(pid: int, max_depth: int | None = None) -> list[int]:
         order.append(p)
         if max_depth is not None and depth >= max_depth:
             continue
-        try:
-            entries = os.listdir(f"/proc/{p}/task")
-        except OSError:
-            continue
-        for tid in entries:
-            try:
-                with open(f"/proc/{p}/task/{tid}/children") as f:
-                    tokens = f.read().split()
-            except OSError:
-                continue
-            for tok in tokens:
-                try:
-                    cpid = int(tok)
-                except ValueError:
-                    continue
-                if cpid not in visited:
-                    queue.append((cpid, depth + 1))
+        for cpid in children.get(p, ()) if children is not None else _own_children(p):
+            if cpid not in visited:
+                queue.append((cpid, depth + 1))
     return order
 
 

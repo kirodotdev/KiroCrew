@@ -882,13 +882,23 @@ def _proc_subtree_sample(pid: Optional[int]) -> platform_compat.SubtreeSample:
     return platform_compat.proc_subtree_sample(pid, counts=True, needles=(STUB_MODULE,))
 
 
-def _subtree_cpu_jiffies(pid: int) -> int:
+def _subtree_cpu_jiffies(pid: int, *, pids: Optional[list[int]] = None) -> int:
     """Sum utime+stime across ``pid`` and its descendants (clock ticks).
 
     Asks the shared walker for the CPU reading alone, so the CPU subtree the
     Sessions session rows read is the same subtree the task rows describe, and
     the session rows pay no ``status`` read for an RSS figure they do not use.
+
+    ``pids`` is that subtree when the caller has ALREADY walked it, so the tree
+    is not enumerated a second time to total the same processes -- the same
+    hand-over ``_get_rss_tree_mb`` takes, and for the same reason: nearly all of
+    the cost is the enumeration, not the per-process read. It also makes the CPU
+    figure describe exactly the set the caller's other figures describe, where
+    two enumerations could disagree (the walker stops at ``_SUBTREE_MAX_PROCS``
+    and a caller's own walk need not).
     """
+    if pids is not None:
+        return platform_compat.proc_cpu_jiffies_for_pids(pids)
     return platform_compat.proc_subtree_sample(pid, rss=False, counts=False).jiffies
 
 

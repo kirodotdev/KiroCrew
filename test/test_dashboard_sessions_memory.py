@@ -65,9 +65,11 @@ def stub_proc(monkeypatch: pytest.MonkeyPatch) -> None:
     # the stub must tolerate that keyword. The walk-counting test below restores
     # the real function deliberately: this stub would hide the walk it performs.
     monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1525.0)
-    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [pid, pid + 1])
+    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid, **kw: [pid, pid + 1])
     monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: 0)
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
+    # One host parent map per poll feeds every row's walk; keep it off real /proc.
+    monkeypatch.setattr(sm, "proc_child_map", lambda: {})
     monkeypatch.setattr(sm, "_get_static_system_info", lambda: {"mem_total_gb": 48.0})
 
 
@@ -252,10 +254,11 @@ def test_one_descendant_walk_per_distinct_pid(monkeypatch: pytest.MonkeyPatch) -
     how the per-sample half went unnoticed. Three rows on two pids plus an
     unstarted one must be two walks.
 
-    Not counted here: the CPU reading traverses the subtree through a different
-    walker (``platform_compat.proc_subtree_sample``), which this test stubs out
-    via ``_subtree_cpu_jiffies``. This counter therefore bounds the RSS and
-    process-metadata pass only.
+    The CPU reading is counted here too, because it does not enumerate for
+    itself: it is handed the set this walk returned. A regression that drops
+    ``pids=`` there does not raise the count in THIS test (the walker it would
+    fall back to is a different function) -- that direction is pinned by
+    ``test_the_cpu_total_is_summed_over_the_walked_set``.
     """
     from kiro_crew.acp import runtime
     from kiro_crew.dashboard import session_memory as sm
@@ -263,7 +266,9 @@ def test_one_descendant_walk_per_distinct_pid(monkeypatch: pytest.MonkeyPatch) -
 
     walked: list[int] = []
 
-    def counting_walk(pid: int, max_depth: int | None = None) -> list[int]:
+    def counting_walk(
+        pid: int, max_depth: int | None = None, *, children: dict[int, list[int]] | None = None
+    ) -> list[int]:
         walked.append(pid)
         return [pid, pid + 1]
 
@@ -276,7 +281,8 @@ def test_one_descendant_walk_per_distinct_pid(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(sm, "_get_rss_tree_mb", runtime._get_rss_tree_mb)
     monkeypatch.setattr(sm.sys, "platform", "linux")
     monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
-    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: 0)
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
+    monkeypatch.setattr(sm, "proc_child_map", lambda: {})
     monkeypatch.setattr(usage, "slot_spend", lambda: {})
 
     rows = [
@@ -297,3 +303,179 @@ def test_one_descendant_walk_per_distinct_pid(monkeypatch: pytest.MonkeyPatch) -
     # was the duplicate one, not the one that produces the number.
     assert per_pid[7]["rss_mb"] == 12.0
     assert per_pid[7]["procs"] == 2
+
+
+def test_the_host_parent_map_is_built_once_per_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The host's parent map is read ONCE for the whole poll, and every row's
+    walk reads its edges from it.
+
+    The map is what replaced the per-root question to the kernel, which cost one
+    read per THREAD of every process visited -- so building it per ROW would put
+    the host scan on the very multiplier it was introduced to remove. Counted,
+    not timed, for the reason the walk counter above gives.
+
+    The second assertion is the one that makes the first mean anything: a map
+    built and then not handed down is a scan paid for and wasted, and it looks
+    identical to this one from the call count alone.
+    """
+    from kiro_crew.dashboard import session_memory as sm
+    from kiro_crew.dashboard.handlers import usage
+
+    builds: list[int] = []
+    host_map = {7: [71], 9: [91]}
+
+    def counting_map() -> dict[int, list[int]]:
+        builds.append(1)
+        return host_map
+
+    seen_maps: list[object] = []
+
+    def recording_walk(
+        pid: int, max_depth: int | None = None, *, children: dict[int, list[int]] | None = None
+    ) -> list[int]:
+        seen_maps.append(children)
+        return [pid, *(children or {}).get(pid, [])]
+
+    monkeypatch.setattr(sm, "proc_child_map", counting_map)
+    monkeypatch.setattr(sm, "_iter_descendant_pids", recording_walk)
+    monkeypatch.setattr(sm.sys, "platform", "linux")
+    monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1.0)
+    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid, **kw: 0)
+    monkeypatch.setattr(usage, "slot_spend", lambda: {})
+
+    rows = [
+        _row("dashboard:chat-1", 7),
+        _row("dashboard:chat-2", 7),  # co-tenant on the same pid
+        _row("dashboard:chat-3", 9),
+        _row("dashboard:chat-4", None),
+    ]
+    sampler = sm.SessionMemorySampler()
+    samples = sampler._blocking_sample(rows)
+
+    assert len(builds) == 1
+    # Handed to every row that walked, and it is the map that was built.
+    assert seen_maps == [host_map, host_map]
+    per_pid = samples["per_pid"]
+    assert isinstance(per_pid, dict)
+    # The tree came OUT of the map: pid 7 plus the one child the map gives it.
+    assert per_pid[7]["procs"] == 2
+
+
+def test_the_cpu_total_is_summed_over_the_walked_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CPU figure is totalled over the subtree the poll already walked, and
+    the subtree walker is not asked for a second enumeration.
+
+    This is the half the walk counter above cannot see: a regression that stops
+    handing ``pids=`` down falls back to ``proc_subtree_sample``, which walks the
+    tree itself and is a different function, so the count of THIS module's walks
+    would not move. Asserting the walker is never entered is what pins it.
+
+    ``_subtree_cpu_jiffies`` is left REAL here for the same reason the RSS path is
+    left real in the counter above: stubbing it is exactly what hides the
+    traversal under test.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew import subagent as sa
+    from kiro_crew.acp import runtime
+    from kiro_crew.dashboard import session_memory as sm
+    from kiro_crew.dashboard.handlers import usage
+
+    walker_calls: list[int] = []
+
+    def refuse_walk(pid: int, **kw: object) -> object:
+        walker_calls.append(pid)
+        raise AssertionError("the subtree walker must not be entered")
+
+    monkeypatch.setattr(platform_compat, "proc_subtree_sample", refuse_walk)
+    # One jiffy per pid, so the total names how many pids were summed.
+    monkeypatch.setattr(platform_compat, "_proc_cpu_jiffies", lambda pid: 1)
+    monkeypatch.setattr(sm.sys, "platform", "linux")
+    # Undo the module fixture's stubs for the two functions under test: stubbing
+    # either is exactly what hides the traversal this test is about.
+    monkeypatch.setattr(sm, "_subtree_cpu_jiffies", sa._subtree_cpu_jiffies)
+    monkeypatch.setattr(sm, "_iter_descendant_pids", runtime._iter_descendant_pids)
+    monkeypatch.setattr(sm, "proc_child_map", lambda: {7: [71, 72]})
+    monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid, **kw: 1.0)
+    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "")
+    monkeypatch.setattr(usage, "slot_spend", lambda: {})
+
+    sampler = sm.SessionMemorySampler()
+    # First poll seeds the CPU baseline; the second produces a rate from it.
+    sampler._blocking_sample([_row("dashboard:chat-1", 7)])
+    baseline = sampler._cpu_prev[7]
+    sampler._blocking_sample([_row("dashboard:chat-1", 7)])
+
+    assert walker_calls == []
+    # Three pids (the root and the map's two children), one jiffy each, on both
+    # polls -- so the total describes the set the row's other figures describe.
+    assert baseline[0] == 3
+    assert sampler._cpu_prev[7][0] == 3
+
+
+class TestTheWalkReadsItsEdgesFromTheMap:
+    """``_iter_descendant_pids(children=...)``: same walk, edges from a map.
+
+    Only where an edge comes from changes, so what must be pinned is that the
+    walk's own rules are untouched -- the depth bound, the single visit, and what
+    an absent process yields -- and that the map route never reads ``/proc``.
+    """
+
+    def test_it_returns_the_whole_subtree_from_the_map(self) -> None:
+        from kiro_crew.acp import runtime
+
+        tree = {1: [2, 3], 2: [4], 4: [5]}
+        assert sorted(runtime._iter_descendant_pids(1, children=tree)) == [1, 2, 3, 4, 5]
+
+    def test_it_does_not_touch_proc_when_given_a_map(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The whole point: a map route that still read per root would keep the
+        cost it was introduced to remove, and every other assertion here passes
+        either way."""
+        from kiro_crew.acp import runtime
+
+        def refuse(*_a: object, **_k: object) -> object:
+            raise AssertionError("the map route must not ask the kernel per root")
+
+        monkeypatch.setattr(runtime, "_own_children", refuse)
+        assert runtime._iter_descendant_pids(1, children={1: [2]}) == [1, 2]
+
+    def test_the_depth_bound_still_holds(self) -> None:
+        from kiro_crew.acp import runtime
+
+        tree = {1: [2], 2: [3], 3: [4]}
+        assert runtime._iter_descendant_pids(1, 0, children=tree) == [1]
+        assert sorted(runtime._iter_descendant_pids(1, 1, children=tree)) == [1, 2]
+        assert sorted(runtime._iter_descendant_pids(1, 2, children=tree)) == [1, 2, 3]
+
+    def test_a_pid_reachable_twice_is_visited_once(self) -> None:
+        """A damaged or looping map must terminate and count each pid once, the
+        same single-visit rule the kernel route has."""
+        from kiro_crew.acp import runtime
+
+        diamond = {1: [2, 3], 2: [4], 3: [4], 4: [1]}
+        order = runtime._iter_descendant_pids(1, children=diamond)
+        assert sorted(order) == [1, 2, 3, 4]
+        assert len(order) == len(set(order))
+
+    def test_a_process_absent_from_the_map_is_the_root_alone(self) -> None:
+        """What an unreadable ``children`` file yields on the kernel route."""
+        from kiro_crew.acp import runtime
+
+        assert runtime._iter_descendant_pids(99, children={1: [2]}) == [99]
+
+    def test_without_a_map_it_asks_the_kernel_as_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default path is unchanged: the RSS watchdog and every other caller
+        that names no map keep the walk they had."""
+        from kiro_crew.acp import runtime
+
+        asked: list[int] = []
+
+        def fake_children(pid: int) -> list[int]:
+            asked.append(pid)
+            return [pid + 1] if pid == 1 else []
+
+        monkeypatch.setattr(runtime, "_own_children", fake_children)
+        assert runtime._iter_descendant_pids(1) == [1, 2]
+        assert asked == [1, 2]
