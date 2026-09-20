@@ -95,6 +95,11 @@ COMPACT_WAIT_TIMEOUT_SECS = 300.0
 # investigation); the reaper still force-kills at the deadline.
 SUBAGENT_TIMEOUT_SECS = 10800
 
+# Tool-call budget for long subagent work. Shared by the config default, loader,
+# manager fallback and tool description; the wall-clock deadline still bounds a
+# run that makes little progress or spends a long time inside one tool.
+DEFAULT_SUBAGENT_MAX_TURNS = 1000
+
 # Load-time clamp for ``agent.subagent_timeout_secs``. Same reason as the other
 # resource knobs in ``_SECURITY_BOUNDED_FIELDS``: the value governs how long one
 # subagent may hold a concurrency slot, so an inflated on-disk value (a direct

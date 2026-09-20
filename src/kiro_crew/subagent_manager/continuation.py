@@ -676,6 +676,13 @@ class ContinuationCoordinator(ManagerComponent):
             if _captured_state is ...
             else self._inherited_context_groups_impl(conv_id, state=_captured_state)
         )
+        delegation = (
+            original.delegation
+            if original is not None
+            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
+                "delegation", {}
+            )
+        )
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -700,6 +707,7 @@ class ContinuationCoordinator(ManagerComponent):
             keep=True,
             cwd=cwd,
             conversation_key=conv_key,
+            delegation=dict(delegation or {}),
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,

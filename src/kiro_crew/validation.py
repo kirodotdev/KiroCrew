@@ -1077,6 +1077,7 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # that requires it lives in ``mcp_tools.spawn`` (task count) and
         # ``handlers.messaging.api_spawn`` (roster check); this only bounds it.
         FieldSpec("solo_reason", str, allowed=SOLO_SPAWN_REASONS),
+        FieldSpec("solo_details", str, max_len=MAX_MEDIUM_STRING),
         # Switchable context groups the sub-agent inherits. Explicit
         # ``default=True`` rather than the implicit ``None``: the semantic
         # default is "on", and without it an explicit JSON ``null`` cleans to
@@ -1146,6 +1147,7 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         # Same solo-spawn reason as spawn_run: required when ``agents`` holds
         # exactly one entry that names no agent_or_mode.
         FieldSpec("solo_reason", str, allowed=SOLO_SPAWN_REASONS),
+        FieldSpec("solo_details", str, max_len=MAX_MEDIUM_STRING),
     ],
 )
 

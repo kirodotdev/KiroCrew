@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ...subagent import (
         KiroCrewConfig,
         SubagentInfo,
+        _startup_memory_reserve_gb,
         _validate_agent,
         _validate_app_agent_ownership,
         _vet_spawn_governance,
@@ -186,6 +187,7 @@ class _GateMixin(ManagerComponent):
         *,
         crew: str = "",
         target_member: str | None = None,
+        delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
@@ -298,6 +300,10 @@ class _GateMixin(ManagerComponent):
 
         # --- Redact task once for all SubagentInfo storage (raw task kept for kiro-cli prompt) ---
         _redacted_task = redact_credentials(redact_exfiltration_urls(task)[0])[0]
+        delegation = {
+            key: redact_credentials(redact_exfiltration_urls(value)[0])[0]
+            for key, value in (delegation or {}).items()
+        }
 
         # Synchronous and yield-free with registration below: a spawn is either
         # visible to the updater's busy count before the pause, or rejected after
@@ -506,6 +512,7 @@ class _GateMixin(ManagerComponent):
             "keep": keep,
             "conversation_key": conversation_key,
             "app": app,
+            "delegation": delegation,
             "include_memory": include_memory,
             "include_lessons": include_lessons,
             "include_project": include_project,
@@ -608,6 +615,7 @@ class _GateMixin(ManagerComponent):
                 queued=True,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
+                delegation=dict(delegation or {}),
                 include_memory=include_memory,
                 include_lessons=include_lessons,
                 include_project=include_project,
@@ -632,9 +640,21 @@ class _GateMixin(ManagerComponent):
         # --- Memory guard: defer (durable) or refuse (legacy) while host memory
         # is critically low. ---
         try:
-            min_mem = KiroCrewConfig.load().agent.spawn_min_memory_gb
+            memory_cfg = KiroCrewConfig.load().agent
+            min_mem = memory_cfg.spawn_min_memory_gb
+            startup_cost = memory_cfg.subagent_cost_gb
         except Exception:
             min_mem = 4.0
+            startup_cost = 0.5
+        if min_mem > 0 and not _dispatch_now:
+            # RSS grows after a process starts. Reserve the unobserved part so
+            # a fast drain cannot repeatedly spend the same free memory before
+            # the next controller sample. Observed growth replaces reservation.
+            min_mem += _startup_memory_reserve_gb(
+                list(self._manager._agents.values()),
+                running_count=self._manager._running_count,
+                cost_gb=startup_cost,
+            )
         mem_ok, avail_gb = (True, -1.0) if _dispatch_now else check_memory_available(min_gb=min_mem)
         if not mem_ok:
             logger.warning(
@@ -842,6 +862,7 @@ class _GateMixin(ManagerComponent):
                 execution_context=execution,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
+                delegation=dict(delegation or {}),
                 include_memory=include_memory,
                 include_lessons=include_lessons,
                 include_project=include_project,
@@ -951,6 +972,7 @@ class _GateMixin(ManagerComponent):
                 queued=True,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
+                delegation=dict(delegation or {}),
                 include_memory=include_memory,
                 include_lessons=include_lessons,
                 include_project=include_project,
@@ -995,6 +1017,7 @@ class _GateMixin(ManagerComponent):
             batch_total=max(0, int(batch_total)),
             keep=keep,
             conversation_key=conversation_key,
+            delegation=dict(delegation or {}),
             include_memory=include_memory,
             include_lessons=include_lessons,
             include_project=include_project,

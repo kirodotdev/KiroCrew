@@ -1692,9 +1692,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/mcp-apps/call", handlers.api_mcp_apps_call)
     app.router.add_get("/api/spawn", handlers.api_spawn_list)
     app.router.add_post("/api/spawn/stop-all", handlers.api_spawn_stop_all)
-    # Fairness: the resume-hold and lanes routes (``handlers/spawn_resume.py``),
-    # registered before ``{agent_id}`` so ``/api/spawn/lanes`` is not read as
-    # a run id.
+    # Fairness: the resume-hold, lanes and adaptive routes
+    # (``handlers/spawn_resume.py``), registered before ``{agent_id}`` so
+    # ``/api/spawn/lanes`` and ``/api/spawn/adaptive`` are not read as run ids.
     setup_spawn_resume_routes(app)
     app.router.add_get("/api/spawn/{agent_id}", handlers.api_spawn_status)
     app.router.add_delete("/api/spawn/{agent_id}", handlers.api_spawn_delete)

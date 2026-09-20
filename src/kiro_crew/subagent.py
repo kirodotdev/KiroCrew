@@ -17,7 +17,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Container, Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from kiro_crew.acp.liveness import (
@@ -53,7 +53,11 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
-from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX, SUBAGENT_TIMEOUT_SECS
+from kiro_crew.constants import (
+    DEFAULT_SUBAGENT_MAX_TURNS,
+    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_TIMEOUT_SECS,
+)
 from kiro_crew.context import (
     CONTEXT_GROUP_LESSONS,
     CONTEXT_GROUP_MEMORY,
@@ -488,7 +492,7 @@ def _done_result(text: str) -> str:
 # ``constants`` because the MCP gateway's hard-wedge ceiling has to sit above
 # it (see ``mcp_gateway/backend.py``).
 _TIMEOUT_SECS = SUBAGENT_TIMEOUT_SECS
-_TURN_LIMIT = 100
+_TURN_LIMIT = DEFAULT_SUBAGENT_MAX_TURNS
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # Idle TTL for continuable conversations (keep=True): a conversation with no
 # run for this long has its session files + map entry deleted by the reaper.
@@ -838,25 +842,35 @@ def check_memory_available(
     ``platform_compat._linux_available_mib`` reads the same file the same
     way. The ``path`` keyword is keyword-only and exists for tests only;
     production callers always take the constant.
-    Returns (ok, available_gb).  On read failure returns (True, -1.0)
-    to avoid blocking spawns on non-Linux systems.
+    Native macOS/Windows readers handle the production path on those hosts.
+    Linux production reads also respect cgroup headroom. An explicit test path
+    always exercises the file reader. With no readable host memory or finite
+    cgroup limit, returns (True, -1.0).
     """
+    if path == "/proc/meminfo" and not platform_compat.IS_LINUX:
+        avail = (
+            _macos_available_memory_gb()
+            if platform_compat.IS_MACOS
+            else _windows_available_memory_gb() if platform_compat.IS_WINDOWS else -1.0
+        )
+        return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
+    avail = -1.0
     try:
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
-    except (OSError, UnicodeDecodeError):
-        # UnicodeDecodeError is a ValueError, not an OSError: without it a
-        # mangled read would escape a function whose contract is fail-open.
-        return (True, -1.0)
-    try:
         for line in text.splitlines():
             if line.startswith("MemAvailable:"):
                 kb = int(line.split()[1])
                 avail = kb / (1024 * 1024)
-                return (avail >= min_gb, round(avail, 2))
-    except (ValueError, IndexError):
-        return (True, -1.0)
-    return (True, -1.0)
+                break
+    except (OSError, ValueError, IndexError):
+        # A failed host read cannot discard a known container constraint.
+        pass
+    if path == "/proc/meminfo":
+        cgroup_gb = _cgroup_available_gb()
+        if cgroup_gb >= 0:
+            avail = cgroup_gb if avail < 0 else min(avail, cgroup_gb)
+    return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
 
 
 # Process-subtree readings come from ONE shared walker,
@@ -1047,7 +1061,7 @@ def _read_int_file(path: str) -> int | None:
     try:
         with open(path, encoding="ascii") as fh:
             txt = fh.read().strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     if txt == "max":  # cgroup v2 unlimited sentinel
         return None
@@ -1057,29 +1071,106 @@ def _read_int_file(path: str) -> int | None:
         return None
 
 
+def _cgroup_memory_roots() -> list[tuple[PurePosixPath, PurePosixPath, bool]]:
+    """Return (process directory, mount boundary, v2) for visible memory mounts."""
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as handle:
+            memberships = handle.read().splitlines()
+        with open("/proc/self/mountinfo", encoding="utf-8") as handle:
+            mounts = handle.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        memberships, mounts = [], []
+
+    groups: dict[bool, PurePosixPath] = {}
+    for line in memberships:
+        fields = line.split(":", 2)
+        if len(fields) != 3:
+            continue
+        if fields[0] == "0" and not fields[1]:
+            v2 = True
+        elif "memory" in fields[1].split(","):
+            v2 = False
+        else:
+            continue
+        membership = PurePosixPath(fields[2])
+        if membership.is_absolute() and ".." not in membership.parts:
+            groups[v2] = membership
+
+    roots = []
+    for line in mounts:
+        before, separator, after = line.partition(" - ")
+        fields, fs = before.split(), after.split()
+        if not separator or len(fields) < 6 or len(fs) < 3:
+            continue
+        v2 = fs[0] == "cgroup2"
+        if not v2 and not (fs[0] == "cgroup" and "memory" in fs[2].split(",")):
+            continue
+        group = groups.get(v2)
+        if group is None:
+            continue
+        # mountinfo escapes whitespace and backslashes in its path fields.
+        paths = [
+            PurePosixPath(
+                field.replace(r"\040", " ")
+                .replace(r"\011", "\t")
+                .replace(r"\012", "\n")
+                .replace(r"\134", "\\")
+            )
+            for field in fields[3:5]
+        ]
+        root, mount = paths
+        if not root.is_absolute() or not mount.is_absolute():
+            continue
+        try:
+            relative = group.relative_to(root)
+        except ValueError:
+            continue  # This bind mount does not expose our cgroup.
+        roots.append((mount / relative, mount, v2))
+
+    if not roots:
+        # Preserve the root-only probe on hosts without readable proc metadata.
+        for directory, v2 in (("/sys/fs/cgroup", True), ("/sys/fs/cgroup/memory", False)):
+            path = PurePosixPath(directory)
+            roots.append((path, path, v2))
+    return roots
+
+
 def _cgroup_available_gb() -> float:
-    """Container memory headroom (GB) = limit − current, or -1.0 if unlimited/unknown.
+    """Tightest visible cgroup headroom (GB), or -1.0 if unlimited/unknown.
 
     Reads cgroup v2 (``memory.max``/``memory.current``) then v1
-    (``memory.limit_in_bytes``/``memory.usage_in_bytes``). A sentinel-large
-    limit means unlimited. Returns -1.0 on unconstrained / non-Linux hosts so
-    the caller ignores the clamp (``dynamic-subagent-sizing.md`` §9).
+    (``memory.limit_in_bytes``/``memory.usage_in_bytes``) at the process's
+    cgroup and its visible ancestors. Each limit is paired with usage at the
+    SAME level, including siblings charged to a parent. A finite limit with
+    unknown usage contributes zero headroom, never zero usage. Ancestors
+    hidden above a mount cannot be measured.
     """
-    # cgroup v2
-    limit = _read_int_file("/sys/fs/cgroup/memory.max")
-    if limit is not None:
-        if limit >= _CGROUP_UNLIMITED:
-            return -1.0
-        current = _read_int_file("/sys/fs/cgroup/memory.current") or 0
-        return max(0.0, (limit - current) / (1024**3))
-    # cgroup v1
-    limit = _read_int_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-    if limit is not None:
-        if limit >= _CGROUP_UNLIMITED:
-            return -1.0
-        current = _read_int_file("/sys/fs/cgroup/memory/memory.usage_in_bytes") or 0
-        return max(0.0, (limit - current) / (1024**3))
-    return -1.0  # no cgroup memory controller
+    available = -1.0
+    for leaf, mount, v2 in _cgroup_memory_roots():
+        limit_name = "memory.max" if v2 else "memory.limit_in_bytes"
+        usage_name = "memory.current" if v2 else "memory.usage_in_bytes"
+        directory = leaf
+        while True:
+            # Older v1 kernels can disable descendant accounting per group.
+            if (
+                v2
+                or directory == leaf
+                or _read_int_file(str(directory / "memory.use_hierarchy")) == 1
+            ):
+                limit = _read_int_file(str(directory / limit_name))
+                current = _read_int_file(str(directory / usage_name))
+                if limit is not None and 0 <= limit < _CGROUP_UNLIMITED:
+                    # No spare capacity is established when usage is unknown.
+                    headroom = (
+                        max(0.0, (limit - current) / (1024**3))
+                        if current is not None and current >= 0
+                        else 0.0
+                    )
+                    available = headroom if available < 0 else min(available, headroom)
+            if directory == mount:
+                break
+            directory = directory.parent
+    return available
 
 
 def compute_max_subagents(cfg: KiroCrewConfig) -> int:
@@ -1107,23 +1198,15 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
     hard_cap = max(_LEGACY_DEFAULT_MAX, agent.subagent_auto_max)
     lo = _LEGACY_DEFAULT_MAX
 
-    avail_gb = _available_memory_gb()
-    if avail_gb <= 0:
+    terms = _host_terms(cfg)
+    if terms is None:
         # Memory unreadable (non-Linux / read error) — fail open.
         logger.info(
             "dynamic subagent cap = %d (memory unreadable; fail-open to legacy default)",
             lo,
         )
         return lo
-
-    buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
-    mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or 0.5
-    cpu_cost = read_learned_cost("cpu_cores") or agent.subagent_cpu_cost_cores or 1.0
-    pool_size = cfg.session.pool_size
-
-    mem_term = math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
-    cpu_count = os.cpu_count() or 1
-    cpu_term = math.floor((cpu_count * buf) / cpu_cost)
+    mem_term, cpu_term = terms
 
     candidate = min(mem_term, cpu_term)
     result = max(lo, min(candidate, hard_cap))
@@ -1147,6 +1230,88 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
         hard_cap,
     )
     return result
+
+
+def _host_terms(cfg: KiroCrewConfig) -> tuple[int, int] | None:
+    """``(mem_term, cpu_term)`` for this host, or None when memory is unreadable.
+
+    THE one place the sizing arithmetic lives. Both public readings are built on
+    it -- :func:`compute_max_subagents`, which clamps to ``subagent_auto_max``
+    and logs, and :func:`host_terms_subagent_cap`, which does neither -- so the
+    two can never drift apart, and the log line still gets each term separately
+    to name the bound that actually bound.
+    """
+    agent = cfg.agent
+    avail_gb = _available_memory_gb()
+    if avail_gb <= 0:
+        return None
+    buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
+    mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or 0.5
+    cpu_cost = read_learned_cost("cpu_cores") or agent.subagent_cpu_cost_cores or 1.0
+    pool_size = cfg.session.pool_size
+    mem_term = math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
+    cpu_count = os.cpu_count() or 1
+    cpu_term = math.floor((cpu_count * buf) / cpu_cost)
+    return mem_term, cpu_term
+
+
+def host_terms_subagent_cap(cfg: KiroCrewConfig, *, resident_agents: int = 0) -> int:
+    """What this host's MEMORY and CPU alone size the subagent cap at.
+
+    :func:`compute_max_subagents` without the ``subagent_auto_max`` clamp, and
+    without the sizing log line. Two readings of one host, sharing
+    :func:`_host_terms`; neither calls the other. Two callers need exactly that:
+
+    * ``compute_max_subagents``, which applies the clamp and logs;
+    * the adaptive controller's growth ceiling, which must NOT apply it. The
+      clamp stands in for the LLM provider's concurrency limit and is documented
+      as auto-sizing only -- ``subagent_auto_max``'s own help says "only applies
+      when max_subagents=0 ... Ignored when max_subagents is set explicitly",
+      and :func:`resolve_max_subagents` honours that. Applying it to the climb
+      would put a hard 32 under an explicit ``max_subagents=64``, so the user's
+      pin would be unreachable by construction on a host large enough for it --
+      the exact failure the climb exists to remove.
+
+    Floored at ``_LEGACY_DEFAULT_MAX`` when the host IS measured. ``0`` when
+    memory cannot be read -- "not measured", NOT the floor. The two callers
+    want different answers to an unreadable host: ``compute_max_subagents``
+    must still produce a cap, so it fails open to the floor; the controller
+    reads this figure only as a bound on how high the cap may climb, and the
+    floor (3) sits BELOW the fresh-start cap (``adaptive_initial``, 4), so
+    handing it the floor would deny every increase and hold the cap at 4 for
+    the life of the process.
+    ``Sample.host_cap`` already defines 0 as "leave the user's ceiling as the
+    only bound", and that is the only safe reading of a probe that failed.
+    The memory term is ADDITIONAL slots in currently available memory; the CPU
+    term is TOTAL capacity. Add already-resident managed agents to memory only,
+    using occupancy captured with this observation. Queued or unstarted work
+    has consumed no process memory and must not buy capacity. Cache the resulting
+    total, never add newer occupancy to an older memory observation.
+    """
+    terms = _host_terms(cfg)
+    if terms is None:
+        return 0
+    mem_term, cpu_term = terms
+    return max(_LEGACY_DEFAULT_MAX, min(mem_term + max(0, resident_agents), cpu_term))
+
+
+def _startup_memory_reserve_gb(
+    agents: list[SubagentInfo], *, running_count: int, cost_gb: float
+) -> float:
+    """Memory promised to cold dedicated starts but not observed in RSS yet.
+
+    Include the next start and claims awaiting registration. Queued and terminal
+    rows promise nothing; a yielded parent still owns its process. Confirmed
+    shared sessions do not launch another process and incur no dedicated-start
+    reservation. Until sharing is known, reserve the configured process cost.
+    """
+    live = [info for info in agents if not info.done and not info.queued]
+    dedicated = [info for info in live if not info._session_sharing]
+    expected = max([0.0, cost_gb, *(info.peak_rss_gb for info in dedicated)])
+    unregistered = max(0, running_count - sum(not info._slot_released for info in live))
+    return expected * (1 + unregistered) + sum(
+        max(0.0, expected - info.last_rss_gb) for info in dedicated
+    )
 
 
 def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
@@ -1316,6 +1481,7 @@ class SubagentInfo:
     # Batch/wave identity: set when this spawn is part of a multi-task wave
     # (spawn_run tasks=[...]) so scale plumbing can digest completions and
     # emit batch lifecycle events. Empty for standalone spawns.
+    delegation: dict[str, str] = field(default_factory=dict)
     batch_id: str = ""
     batch_total: int = 0
     # True when this member's per-agent injection was HELD for the wave digest
@@ -1872,14 +2038,17 @@ class SubagentManager:
             self._result_ttl_secs = int(KiroCrewConfig.load().agent.subagent_result_ttl_secs)
         except Exception:
             self._result_ttl_secs = 3600
-        # Spawn stagger interval — bounds the cold-start ramp rate so a high cap
-        # never bursts (dynamic-subagent-sizing.md §5.3).
+        # Spawn stagger interval — serializes cold starts so a high cap fills as
+        # a ramp rather than a burst (dynamic-subagent-sizing.md §5.3). It is a
+        # smoothing interval, not the memory guard: every spawn still clears
+        # ``spawn_min_memory_gb`` and the host budget, and the adaptive
+        # controller cuts the cap on real pressure.
         try:
             self._spawn_stagger_secs = max(
                 0.0, float(KiroCrewConfig.load().agent.subagent_spawn_stagger_secs)
             )
         except Exception:
-            self._spawn_stagger_secs = 2.0
+            self._spawn_stagger_secs = 0.25
 
         # Every limit captured above is a copy of config.json. The live watcher
         # pushes a rewrite at this object through ``reconfigure`` so a write from
@@ -2672,6 +2841,7 @@ class SubagentManager:
         *,
         crew: str = "",
         target_member: str | None = None,
+        delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
@@ -2707,6 +2877,7 @@ class SubagentManager:
             _child_registration=_child_registration,
             crew=crew,
             target_member=target_member,
+            delegation=delegation,
             _execution_context=_execution_context,
         )
         assert not isinstance(result, PreparedSpawn)

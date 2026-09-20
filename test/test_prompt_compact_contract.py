@@ -18,6 +18,8 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # A maintainer may raise a budget in a reviewed change when a new rule earns
 # its space. Preserve the operational clauses below rather than cutting them
 # to fit; their tests, not a size limit, check the retained text contracts.
+# The execution section includes reason evidence and the capability-dependent
+# parent-work boundary without removing Autopilot's approval/stage contracts.
 PROMPT_BYTE_CEILINGS = {"prompt.md": 40_725, "prompt-orchestrator.md": 23_448}
 
 
@@ -72,6 +74,36 @@ def test_each_prompt_keeps_its_own_output_and_host_boundaries(name: str) -> None
     )
     for command in ("git push origin <feature-branch>", "--bind 127.0.0.1 --directory PATH"):
         assert command in rules
+
+
+def test_solo_spawn_prohibition_survives_prompt_compaction() -> None:
+    """A compaction once dropped the explicit prohibition and left only a weak
+    "unless context isolation is needed", which made context isolation the
+    universal excuse for handing a whole task to one sub-agent. The licensing
+    vocabulary here must stay the closed one ``solo_spawn.py`` enforces, or the
+    prompt invites a spawn the gate refuses."""
+    for name in ("prompt.md", "prompt-orchestrator.md"):
+        text = _read(name)
+        section = (
+            _section(text, "### Subagent Orchestration")
+            if name == "prompt.md"
+            else _section(text, "### Step 2: Execute")
+        )
+        _require(
+            section,
+            r"Never forward the entire request to one equivalent worker merely to wait and relay",
+            r"Do focused work directly by default",
+            r"Do not invent tasks or switch models",
+            r"parent_parallel",
+            r"solo_details",
+            r"Only when its receipt confirms support.*one minute.*END YOUR TURN",
+            r"Blocking.*cannot support.*parent_parallel",
+            r"Yielding is not completion",
+            r"Await all batch outcomes",
+            r"bulk_data",
+            r"fresh_context",
+        )
+        assert "context isolation" not in section.lower(), (name, "retired licence returned")
 
 
 def test_cron_modes_and_session_ownership_remain_explicit() -> None:
@@ -242,7 +274,8 @@ def test_orchestrator_keeps_approval_scope_budgets_and_direct_work_exceptions() 
         r"Cancel.*abort the plan",
         r"once approved.*do not re-plan",
         r"END YOUR TURN immediately.*no tools.*until the user's Go / Go All",
-        r"single indivisible unit.*parent unless.*specialist/model or context isolation",
+        r"Do focused work directly by default",
+        r"Solo reasons:.*parent_parallel.*bulk_data.*fresh_context.*specialist.*user_requested",
         r"never dispatch work needing a still-running result",
         r"stage_timeout_seconds.*turn may START.*rather than hard-bounding",
         r"HALF that budget, capped at fifteen minutes",

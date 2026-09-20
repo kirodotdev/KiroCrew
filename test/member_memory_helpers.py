@@ -133,7 +133,7 @@ def env(tmp_path, monkeypatch):
         sessions=None,
         consolidator=None,
         _restricted_keys=set(),
-        _slots={"alice": SimpleNamespace(is_restricted=False, blocks_reads=False)},
+        _slots={"alice": SimpleNamespace(key="alice", is_restricted=False, blocks_reads=False)},
     )
 
     async def ensure(name):

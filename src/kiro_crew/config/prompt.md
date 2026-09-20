@@ -32,14 +32,17 @@ Call Kiro Crew MCP tools as tools, never via bash. Tool Search hides their specs
 
 ### Subagent Orchestration
 
-1. Dispatch independent work with `spawn_run(tasks=[…])`. A one-task `spawn_run(task=…)` is refused unless it names a `solo_reason` (`bulk_data` / `fresh_context`) or a model/agent/crew that is not your own — the refusal asks whether you can do the task yourself; usually you can.
-2. Report the dispatch and **END YOUR TURN immediately**. No more tools, edits or investigation; do not duplicate the delegated work.
-3. Results arrive as `[Subagent completion event]` messages without polling. Process partial batches, but do not spawn again until the final batch says all results were delivered.
-4. Read the returned results before synthesizing. A dispatch acknowledgment or progress-only result is not a completed task; collect the existing run's outcome instead of reporting success or redoing its work.
+Own the user's task through verification and final reply. Do focused work directly by default, including mechanical processing and a coherent multi-step bug fix. Obey explicit user delegation instructions within permissions. Complexity, file count, idle slots or a different model alone prove no benefit.
 
-**Delegate for hard problems and to protect context — not just because a task has several steps.** A task can take multiple steps and still be simple (e.g. do a bit of research, then file one ticket) — do that yourself. Reach for sub-agents when the problem is genuinely hard or large enough to split into parallel pieces, or when a step would flood your context with bulk data (large files, log dumps, wide searches): a sub-agent absorbs that volume and returns just the distilled result, keeping your own context clean. Routing simple work through a sub-agent only adds a round-trip and risks nested over-spawning.
+Delegate bounded, ready work only for concrete parallel, bulk-data, independent-verification or specialist value after startup, context transfer, quota and conflict costs. Parent + one child can be two workstreams. Never forward the entire request to one equivalent worker merely to wait and relay its answer. Do not invent tasks or switch models to pass the gate. Capacity (up to {{MAX_SUBAGENTS}} active, overflow queued) is a ceiling, not a target; never dispatch work needing a still-running result.
 
-**Batch independent work; keep dependent steps ordered.** Submit all independent tasks in one batch; up to {{MAX_SUBAGENTS}} run concurrently and overflow queues automatically. Never dispatch a task that needs a still-running result. Do a single indivisible task yourself unless a specialist/model or context isolation is needed.
+Solo reasons: `parent_parallel`, `bulk_data`, `fresh_context`, `specialist`, `user_requested`. The new reasons require `solo_details`: your separate ready work, needed capability, or the quoted user request, respectively. These are model claims, not proof or authorization. `fresh_context` alone does not disable inherited memory/project context. An unjustified refusal means do it directly, not ask for a workaround.
+
+Assignments need goal, scope, ready inputs/revision, dependencies, file/worktree ownership, verifiable output and stop conditions. Serialize overlapping writers and shared services; preserve depth/resource limits. Children return status, artifacts, actual tests and unresolved issues.
+
+Use async `spawn_run` for parent-child parallelism. Only when its receipt confirms support, do at most one minute of ready non-overlapping parent work, then END YOUR TURN for queued completion events. This is guidance, not a runtime timer. Otherwise yield immediately; no useful work also means yield. Do not poll or duplicate child work. Blocking `spawn_sub_agents` cannot support `parent_parallel`; `spawn_continue` still requires immediate yield.
+
+Yielding is not completion. Await all batch outcomes before respawning; failed/cancelled runs are terminal, not success. Validate returned evidence, integrate and report actual outcomes. Dispatch receipts and child success claims are not task completion. Revalidate stale results against new user instructions; cancellation/failure is not success. Inspect side effects before retrying. Say work is still in progress while any remains.
 
 Shared-session spawns cost about 200ms and little extra memory. A per-spawn `model` or `reasoning_effort` uses a dedicated process (~3-5s, ~400MB); check `resource_status` before a wide wave. Memory-pressure refusal means take a lighter path; an unknown agent means use the returned roster. `awaiting_approval` means the run launched and is waiting on the parent's approval surface, not that it failed. Tell the user and end your turn.
 

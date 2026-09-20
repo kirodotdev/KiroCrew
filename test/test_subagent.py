@@ -1404,6 +1404,13 @@ class TestEffectiveTurnLimit:
             default_turn_limit=default_turn_limit,
         )
 
+    def test_unconfigured_manager_has_finite_long_task_budget(self) -> None:
+        from kiro_crew.subagent import SubagentInfo
+
+        manager = SubagentManager(sessions=_mock_sessions(), ctx_builder=None)
+        assert manager._effective_turn_limit(SubagentInfo(id="long", task="test")) == 1000
+        assert manager._default_timeout == 10800
+
     def test_per_spawn_override_wins(self) -> None:
         from kiro_crew.subagent import SubagentInfo
 
@@ -1614,7 +1621,7 @@ class TestCheckMemoryAvailable:
         from kiro_crew.subagent import check_memory_available
 
         with patch("builtins.open", side_effect=PermissionError("denied")):
-            ok, avail = check_memory_available(path="/proc/meminfo")
+            ok, avail = check_memory_available(path=str(tmp_path / "meminfo"))
         assert ok is True
         assert avail == -1.0
 
@@ -1658,6 +1665,7 @@ class TestSpawnMemoryGuard:
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
@@ -1684,6 +1692,7 @@ class TestSpawnMemoryGuard:
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")

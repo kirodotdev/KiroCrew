@@ -101,16 +101,25 @@ pool default changes.
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap: max total seconds for semaphore wait + injection (20 minutes) |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
-| `_TURN_LIMIT` | 100 | Default tool-call budget per subagent (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
-| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). Surface-only — the idle badge itself never terminates or yields anything; the user closes it from the UX (per-row stop / Stop-all) and the 30-min `_TIMEOUT_SECS` ceiling still applies. A WATCHDOG stall (`EVENT_COMPLETE` with `error: tool stall`) is a different signal and IS acted on: see *Stop reason → state*. |
+| `_TURN_LIMIT` | 1000 | Default tool-call budget per subagent, from `constants.DEFAULT_SUBAGENT_MAX_TURNS` (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
+| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). Surface-only — the idle badge itself never terminates or yields anything; the user closes it from the UX (per-row stop / Stop-all) and the three-hour default `_TIMEOUT_SECS` ceiling still applies. A WATCHDOG stall (`EVENT_COMPLETE` with `error: tool stall`) is a different signal and IS acted on: see *Stop reason → state*. |
 | `_SYSTEM_PREFIX` | (string) | Injected before task text to prevent spawn recursion |
 | `COMPLETION_KEEP_DEFAULT_CHARS` | 3000 | Default character cap for the completion event injected into the parent session (configurable via `agent.completion_keep_chars`). Lives in `context_management.py` alongside the helper. |
 
 ### Turn Limit Resolution Chain
 
-Priority (highest wins): **per-spawn `max_turns`** → **config `agent.subagent_max_turns`** → **hardcoded default (100)**
+Priority (highest wins): **per-spawn `max_turns`** → **config `agent.subagent_max_turns`** → **shared default (1000)**
 
 A value of `0` means "not set" and falls through to the next level. Implemented as `SubagentManager._effective_turn_limit()`, shared by the enforcement path in `_run_inner()` and the timeout/reap error strings (`_timeout_context()`).
+
+The larger tool-call budget does not disable the three-hour default execution
+deadline, reaper, cancellation or provider stall handling. A missing config key
+automatically uses 1000 when the updated build loads. Every valid stored budget,
+including 100, remains authoritative. Older full-config saves did not record
+whether 100 was chosen or merely materialized, so the superseded-default registry
+reports that value without rewriting it. The existing `kirocrew config defaults
+--adopt agent.subagent_max_turns` command removes that pin when the operator chooses
+to follow the current default; `--keep` affirms it.
 
 ### Concurrency Auto-Sizing — Memory Probe (per platform)
 
@@ -120,6 +129,14 @@ available-memory term is read by `_available_memory_gb()`, which is dispatched
 per operating system (see `dynamic-subagent-sizing.md`):
 
 - **Linux** — `/proc/meminfo` `MemAvailable`, then clamped by cgroup headroom.
+  `/proc/self/cgroup` and `/proc/self/mountinfo` locate the process's v1/v2
+  memory controller, including bind mounts. The tightest readable headroom
+  across its cgroup and visible ancestors binds; each limit uses usage from
+  that same level. V1 ancestors bind when `memory.use_hierarchy` is enabled.
+  A finite limit with unreadable or invalid usage contributes zero headroom:
+  spare capacity cannot be established. Measured zero usage retains the full
+  limit as headroom. Missing discovery retains the conventional root-path
+  fallback; ancestors hidden above a mount cannot be measured.
 - **macOS** — reclaimable memory (free + inactive + speculative + purgeable
   pages) via the Mach `host_statistics64` syscall through `ctypes`/`libSystem`
   (`_macos_vm_reclaimable_pages`), combined with the `os.sysconf` page size.
@@ -136,10 +153,28 @@ warning + `config_bounds_clamped` SEL event, mirroring the > 64 ceiling clamp).
 Applies only to auto-sizing (`max_subagents=0`); an explicit `max_subagents` pin
 is unrestricted (any 0..64).
 
-Limitation: the per-spawn `spawn_min_memory_gb` admission gate
-(`check_memory_available`) still reads `/proc/meminfo` and so remains inert
-(fails open) on non-Linux hosts. Auto-sizing and the runtime gate are
-independent guards; unifying them is out of scope for the sizing probe.
+The per-spawn `spawn_min_memory_gb` admission gate (`check_memory_available`)
+uses the same cgroup headroom on Linux and native memory readers on macOS and
+Windows. A known cgroup bound still applies when the Linux host reading fails.
+Auto-sizing and the runtime gate are independent guards; readings fail open
+only when neither host memory nor a finite cgroup limit is available.
+
+When enabled, the per-spawn guard adds `_startup_memory_reserve_gb` to that
+floor: the next start, unregistered claims, and the gap between estimated cost
+and observed RSS of live dedicated workers. The estimate uses the greatest of
+zero, `subagent_cost_gb` and live dedicated peak RSS. Yielded parents retain their
+reservation; queued/terminal rows and confirmed shared sessions contribute none.
+This guards rapid admissions during delayed RSS growth without counting observed
+memory twice. The claim re-entry uses the reservation taken before its await.
+
+The adaptive growth bound uses `host_terms_subagent_cap(cfg,
+resident_agents=...)` rather than the auto-sizing clamp. Its memory term is
+additional headroom, so resident managed runs are added before taking the
+minimum with the total CPU term. The controller captures nonqueued, nonterminal
+PID-bearing runs with the host observation, including parents waiting without a
+lane slot. It caches that absolute capacity, never adds live occupancy to stale
+headroom. Auto-sizing's startup formula is unchanged. See
+[adaptive-concurrency](adaptive-concurrency.md#growth-ceiling-the-users-pin-and-the-hosts-own-figure).
 
 ## APIs
 
@@ -199,7 +234,14 @@ invariants:
   `_notify_cap_raised()` when the new cap exceeds the old one; it drains a
   non-empty queue through the pump, which re-checks the gate and honours the
   stagger interval, so freed capacity fills one start per
-  `subagent_spawn_stagger_secs`, never in a burst.
+  `subagent_spawn_stagger_secs` (default `0.25`), never in a burst. The interval
+  decides fill RATE, not concurrency: a cap of N fills in N x
+  `subagent_spawn_stagger_secs`, so the stagger is never the bound on how many
+  run. It is a smoothing interval and not the memory guard — every spawn
+  still clears `spawn_min_memory_gb` and the host budget, and the adaptive
+  controller cuts the cap on corroborated pressure. Raise it on a host (or
+  against a provider) where overlapping cold starts, not the cap, are the
+  bottleneck.
 - **A raise also reaches the gate that is not this manager's.** The same
   `_notify_cap_raised()` rings `set_cap_raise_listener`'s hook — the runner lane
   (TaskRunner steps, workflow `ctx.agent()` calls), which is bounded by
@@ -217,9 +259,16 @@ invariants:
   simply admits no new spawn until `_running_count` drains below the new cap on
   its own.
 
-The advisory cap the `spawn_run` tool description advertises (`mcp_tools/spawn.py`)
-re-resolves through the same `resolve_max_subagents(KiroCrewConfig.load())` on each
-tool listing, so the advertised and enforced numbers agree after a write.
+The advisory figure the `spawn_run` tool description advertises
+(`mcp_tools/spawn.py::schemas`) prefers the execution cap IN FORCE
+(`resource_status.adaptive_exec_cap`, the in-process controller registry) and
+falls back to `resolve_max_subagents(KiroCrewConfig.load())`, re-resolved on
+each tool listing and LABELLED as a ceiling, so the advertised and enforced
+numbers agree after a write and a ceiling is never presented as the live cap.
+The registry read is the only live path here: `schemas()` also runs on the
+gateway's own discovery cycle, where a loopback request would dial the gateway
+from inside the gateway. In a tool server the registry is empty, so the model
+sees the labelled ceiling and is pointed at `resource_status` for the live cap.
 
 ### `set_effective_cap(cap | None) -> int` — the adaptive-controller seam
 
@@ -1096,32 +1145,72 @@ All agents spawn at once. The tool returns immediately with agent IDs.
 Results arrive as `[Subagent completion event]` messages in the session,
 processed by the LLM automatically.
 
-**The solo gate.** One sub-agent for one task is a round-trip with no
-parallelism gain, so a one-task call is a handshake, not a straight dispatch.
-`spawn_run(task=...)` (and `spawn_sub_agents` with one entry) that names no
-`solo_reason` and no `model` / `agent` / `crew` is refused before any POST --
-nothing is spawned, and the result asks whether the caller can do the task
-itself. The caller either does the work in its own session, calls again with a
-`solo_reason` from the closed vocabulary in `solo_spawn.py` (`bulk_data`: the
-step would flood the caller's context with bulk output; `fresh_context`: the
-result would be wrong if the run saw this session's context), or names a
-model / agent / crew that genuinely differs from its own. The tool marks such a
-POST with `solo=true`; `/api/spawn` then compares the named agent against the
-parent session's RESOLVED template (never its member alias), the named model
-against a dashboard slot's pinned model, and the named crew against the
-parent's member selection, and refuses a match with `400 solo_spawn_unjustified`.
-An unknown parent fact fails open. `keep: true` alone is not a reason. All
-three outcomes are audited as `spawn.solo` (denied / allowed on a reason /
-allowed on a difference, with the ground). Batches of 2+ tasks and
-programmatic clients (the SDK, apps posting to `/api/spawn` directly, which
-never send `solo`) are not gated.
+The startup memory floor uses native Windows/macOS readings and Linux cgroup
+headroom. Fresh stream progress can earn a bounded extra execution slot without
+waiting for a whole long task to finish; see [adaptive-concurrency.md](adaptive-concurrency.md).
+
+**Delegation policy and the solo gate.** Focused work stays in the parent by
+default. Complexity, task count, idle capacity and another model name do not
+prove a benefit. Useful parallel progress includes a parent workstream plus one
+child. Bulk-data isolation, independent verification, a needed specialist or an
+explicit user request can justify one child even when the parent must wait.
+Never forward the whole request to an equivalent worker merely to relay it.
+
+`solo_spawn.py` owns the closed reason vocabulary and schema descriptions:
+`parent_parallel`, `bulk_data`, `fresh_context`, `specialist`, `user_requested`.
+The three new reasons require nonblank `solo_details`, describing respectively
+the parent's separate ready work and ownership, the needed capability, or the
+quoted user request. Legacy `bulk_data` and `fresh_context` payloads remain
+valid without details. A reason is a **model claim**, not runtime proof of value,
+independence or permission. `fresh_context` does not itself disable inherited
+memory or project context; use the existing context-group controls as needed.
+
+A model call containing one task, no reason and no different named worker still
+gets a recoverable refusal before any spawn. The caller should do the task
+directly or supply a real reason, without asking the user for a workaround.
+The gateway retains the existing `solo=true` roster comparison, unknown-parent
+fail-open behavior and `spawn.solo` audit. Direct SDK/API clients without that
+marker keep their previous behavior. Batches retain their count compatibility,
+but neither two tasks nor a different model excuses needless delegation.
+New reasons are validated on HTTP calls too. Reasons/details are redacted and
+stored as `delegation = {reason, details, source: "model_claim"}` in the existing
+run record and durable queue payload, and inherited on retry/continuation.
+No second database or semantic classifier is introduced.
+
+**Parent work and event delivery.** `POST /api/spawn` returns
+`parent_work_supported=true` only for a parent resolved to a dashboard-owned
+slot (including linked channels). `spawn_run` then allows one short step of
+ready, non-overlapping parent work, at most one minute, before yielding the
+turn. This is model guidance, not a runtime timer. Without that receipt, or
+without useful parent work, yield immediately. Channel-only, nested and
+background callers retain the immediate-yield boundary. Blocking
+`spawn_sub_agents` refuses `parent_parallel`; `spawn_continue` also retains its
+immediate-yield guidance. Do not duplicate delegated work or poll to stay busy.
+
+| Owner | Enforced behavior and evidence |
+|---|---|
+| `solo_spawn.py`, `validation.py`, `mcp_tools/spawn.py` | Shared reason/schema checks; inline parallel refusal; backward-compatible legacy payloads. |
+| `dashboard/handlers/messaging.py::api_spawn` | Validates details and actual parent slot; reports delivery capability and stores model-declared evidence. |
+| `subagent_manager/admission`, `subagent_persistence.py` | Existing capacity/queue/depth/cleanup rules remain authoritative; delegation metadata follows the run. |
+| `slack/gateway.py::_subagent_done` | Busy dashboard turns are awaited through `asyncio.shield`, then completion is injected or queued; the parent edit is not interrupted. Delivery retention starts on consumption. |
+
+The existing full-batch barrier remains: collect all terminal outcomes before
+new dispatch. A failed/cancelled child is terminal for the barrier, not a
+successful task. Parent verifies artifacts and actual execution evidence,
+revalidates stale results against new instructions, and checks side effects
+before retrying. Dispatch, yielding and a child's success claim are not final
+task completion. The default and Autopilot prompts share this policy while
+Autopilot keeps its existing approval/stage boundaries. Conductor skills retain
+their explicitly selected coordination role; this policy does not convert them
+into implementation workers.
 
 Parameters:
 - `task` (str): single task description -- gated; see "The solo gate"
 - `tasks` (list[str]): multiple tasks for parallel execution
-- `solo_reason` (str, optional): `bulk_data` or `fresh_context` -- why ONE task is being spawned alone; required for a one-task call that names no `model` / `agent` / `crew` other than the caller's own
+- `solo_reason` (str, optional): one of the five reasons above; required for an equivalent-worker solo model call.
+- `solo_details` (str, optional for legacy reasons): concrete benefit and ownership; required by the three new reasons and retained as model-declared evidence.
 - `cwd` (str, optional): absolute path to launch subagent in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`). Validated via realpath + prefix match. Pool skipped when cwd is set. These roots are a least-privilege allowlist and are never widened automatically: a persisted list whose roots all fail to exist on the host rejects every cwd, and the operator must edit `agent.subagent_cwd_allowed_roots` (or delete the key to take the shipped default). Neither the loader nor the guard stats the configured roots.
-- `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 100)
+- `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 1000)
 - `agent` (str, optional): agent name for the subagent
 - `reasoning_effort` (str, optional): per-call reasoning-effort override (`low`/`medium`/`high`/`xhigh`/`max`), batch-wide like `model`. Precedence: per-call value → `agent.role_efforts['subagent']` pin → provider default; `""`/absent changes nothing. Like a model/effort role pin, a non-empty value forces the dedicated-process path (the parent's shared runtime cannot switch effort per session), so a wide fan-out pays a full process per subagent — and that cost is paid even when the resolved model turns out not to support effort (the level is then dropped at the provider factory). Carried through the stagger queue and the retry endpoint like the context-group flags. NOT inherited by `spawn_continue` — a continuation resolves effort fresh (role pin, else default), the same parity as `model`. When the requested effort cannot take effect, the gateway says so: `/api/spawn` resolves the model the factory's effort gate will see (per-call value, else the subagent role pin, else the selected member's own model pin, the provider template's pin, and the global fallback) and returns an `effort_dropped` reason on the success response, which the tool renders as one attributed line per distinct verdict — subagents sharing an identical verdict (the usual case, since the value is batch-wide) are collapsed into a single line naming all of them, while differing verdicts keep their own attributed lines — including the default case where nothing is pinned and the model resolves to "auto". When the effort WILL apply, the response instead carries an `effort_applied` note naming the resolved model and the family-specific settings key (`reasoning` for GPT, `output_config` for Claude) it is delivered under, rendered the same way — so both outcomes of a requested effort are visible in the tool result. A role-pinned effort that will be dropped (no per-call effort involved) still surfaces in the gateway log at warning level, since the tool caller never asked for it — that warning is emitted by the provider factory's effort gate itself (`config/loader.py`), the single authority that drops the level, so one log line covers every surface that funnels through it (spawn, dashboard slot, cron) and cannot drift from the decision it reports on. The provider factory remains the single dropping authority; the report never rejects or alters a spawn. Per-TASK variation inside one call is deliberately not supported (see issue #2140).
 - `include_memory` / `include_lessons` / `include_project` (bool, optional, default `true`): which switchable context groups the subagent inherits, applied to every task in a batch spawn. All-on is byte-identical to the injection a normal session gets, so a caller that omits them changes nothing. `include_memory=false` drops preferences, projects, daily history, semantic and episodic memory, and prior-session provenance — the normal choice for fan-out whose task text is self-contained. `include_lessons=false` additionally drops the user's learned corrections and profile, so keep it on for any subagent that writes code, edits files, or runs git. `include_project=false` drops the docs pointer and the project-directory line. It also drops the injected steering block, but ONLY on the Claude Code backend: on the ACP/kiro backend `kiro-cli --agent` loads the agent's `resources` (including steering globs) itself, which Kiro Crew cannot suppress from here, so steering still reaches an ACP sub-agent regardless of this flag. The conduct group — critical output-format rules, date, agent identity, runtime, workspace identity, and the skills index — is never switchable, because a subagent without it cannot discover its own capabilities or format what it reports back. A subagent is told by name which groups were withheld (`[CONTEXT SCOPE]`) so it reports the gap rather than guessing. Resolved once at spawn, carried through the capacity-queue round-trip and `POST /api/spawn/{id}/retry` like `approval_mode`/`silent`/`keep`. `spawn_continue` does not take the flags but does **inherit** them from the run it continues: a continuation rebuilds session context (`get_or_create` reports `is_new=True` even when it restores the session via `session/load`), so without inheritance a scoped-down run would regain a group on its follow-up turn. See `memory-skills-hooks.md` § Switchable context groups for the section-by-section mapping.

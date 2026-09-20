@@ -10,7 +10,8 @@ to keep honest. The tool long-polls this endpoint; the answer is event-driven
 wait costs one held request, not a poll interval.
 
 ``/api/spawn/lanes`` exposes the fairness dispatcher's per-lane view for the
-Tasks/Health panel and ``kirocrew doctor``.
+Tasks/Health panel and ``kirocrew doctor``. ``/api/spawn/adaptive`` exposes the
+adaptive controller's snapshot for a reader outside the gateway process.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import math
 
 from aiohttp import web
 
+from kiro_crew import resource_status
 from kiro_crew.dashboard.state import DashboardState
 
 #: Longest server-side hold per request. The MCP client's GET timeout is 10 s;
@@ -90,6 +92,28 @@ async def api_spawn_resume(request: web.Request) -> web.Response:
     )
 
 
+async def api_spawn_adaptive(request: web.Request) -> web.Response:
+    """GET /api/spawn/adaptive -- the adaptive controller's snapshot, or ``{}``.
+
+    Exists for an OUT-OF-PROCESS reader. The controller lives in the gateway as
+    a module-level registry, so ``resource_status.adaptive_state()`` is empty in
+    an MCP tool server and the only number ``resource_status`` could otherwise
+    print is the configured ceiling -- while the cap in force may be 1.
+
+    Its own route under the ``/api/spawn`` prefix, which is on
+    ``_MIXED_INTERNAL_API_PATHS``, so a loopback ``X-Internal-Secret`` caller
+    reaches it with no allowlist change. ``/api/tasks/summary`` carries the same
+    object and is NOT reachable that way (it is in neither internal bucket, and
+    it also lists per-task session keys and lease owners, so admitting it would
+    mean widening an auth surface to read a number).
+
+    ``{}`` rather than 404/503 when no controller runs: "no controller here" is
+    an answer, and the caller already renders a missing state as "the cap could
+    not be read".
+    """
+    return web.json_response({"adaptive": resource_status.adaptive_state() or {}})
+
+
 async def api_spawn_lanes(request: web.Request) -> web.Response:
     """GET /api/spawn/lanes -- per-lane depth, running/waiting counts and the cap view."""
     state: DashboardState = request.app["state"]
@@ -102,8 +126,9 @@ async def api_spawn_lanes(request: web.Request) -> web.Response:
 
 
 def setup_spawn_resume_routes(app: web.Application) -> None:
-    """Register the resume-hold and lanes routes (under the ``/api/spawn`` prefix)."""
-    # ``lanes`` is a literal segment; the caller registers these BEFORE the
-    # ``/api/spawn/{agent_id}`` route so it is not read as a run id.
+    """Register the resume-hold, lanes and adaptive routes (under ``/api/spawn``)."""
+    # ``lanes`` and ``adaptive`` are literal segments; the caller registers these
+    # BEFORE the ``/api/spawn/{agent_id}`` route so neither is read as a run id.
     app.router.add_get("/api/spawn/lanes", api_spawn_lanes)
+    app.router.add_get("/api/spawn/adaptive", api_spawn_adaptive)
     app.router.add_get("/api/spawn/{agent_id}/resume", api_spawn_resume)

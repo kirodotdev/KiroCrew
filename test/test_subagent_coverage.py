@@ -15,7 +15,7 @@ import asyncio
 import contextlib
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -347,11 +347,11 @@ class TestCheckMemoryAvailable:
 
     def test_permission_error_fails_open(self) -> None:
         with patch("builtins.open", side_effect=PermissionError):
-            assert sa.check_memory_available() == (True, -1.0)
+            assert sa.check_memory_available(path="/test/meminfo") == (True, -1.0)
 
     def test_read_error_fails_open(self) -> None:
         with patch("builtins.open", side_effect=OSError):
-            assert sa.check_memory_available() == (True, -1.0)
+            assert sa.check_memory_available(path="/test/meminfo") == (True, -1.0)
 
     def test_malformed_line_fails_open(self, tmp_path: Path) -> None:
         f = tmp_path / "meminfo"
@@ -385,6 +385,13 @@ class TestReadIntFile:
 
 
 class TestCgroupAvailable:
+    @pytest.fixture(autouse=True)
+    def _fixed_cgroup_roots(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Calculation cases use fixed mounts, independent of the host's /proc."""
+        v2 = PurePosixPath("/sys/fs/cgroup")
+        v1 = PurePosixPath("/sys/fs/cgroup/memory")
+        monkeypatch.setattr(sa, "_cgroup_memory_roots", lambda: [(v2, v2, True), (v1, v1, False)])
+
     def _reader(self, values: dict[str, int | None]):
         return lambda path: values.get(path)
 
@@ -436,12 +443,22 @@ class TestCgroupAvailable:
         monkeypatch.setattr(sa, "_read_int_file", self._reader({}))
         assert sa._cgroup_available_gb() == -1.0
 
-    def test_usage_absent_treated_as_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("usage, expected", [(None, 0.0), (0, 2.0)])
+    def test_usage_unknown_is_distinct_from_zero(
+        self, monkeypatch: pytest.MonkeyPatch, usage: int | None, expected: float
+    ) -> None:
         gib = 1024**3
         monkeypatch.setattr(
-            sa, "_read_int_file", self._reader({"/sys/fs/cgroup/memory.max": 2 * gib})
+            sa,
+            "_read_int_file",
+            self._reader(
+                {
+                    "/sys/fs/cgroup/memory.max": 2 * gib,
+                    "/sys/fs/cgroup/memory.current": usage,
+                }
+            ),
         )
-        assert sa._cgroup_available_gb() == pytest.approx(2.0)
+        assert sa._cgroup_available_gb() == expected
 
 
 class TestAvailableMemoryGb:

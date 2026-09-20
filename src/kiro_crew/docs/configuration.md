@@ -161,7 +161,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
     "max_channels": 1,
     "max_channel_agents": 3,
     "max_subagents": 0,
-    "subagent_max_turns": 100,
+    "subagent_max_turns": 1000,
     "spawn_min_memory_gb": 4.0,
     "soft_stop_budget_secs": 10.0,
     "completion_keep": "head",
@@ -241,7 +241,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `agent.log_level` | Persistent log level for the `kiro_crew` logger, applied at startup. The `--verbose` CLI flag overrides it | `"WARNING"` |
 | `agent.soft_stop_budget_secs` | Seconds to wait for a cooperative cancel before hard-killing the session | `10.0` |
 | `agent.max_subagents` | Max concurrent subagents. `0` auto-sizes the cap at startup from host memory/CPU and a learned per-agent cost. A pin of 1 or 2 is raised to 3, because a cap below 3 would disable auto-sizing and still run under the default | `0` |
-| `agent.subagent_max_turns` | Default tool-call budget per subagent | `100` |
+| `agent.subagent_max_turns` | Default tool-call budget per subagent; stored user values are preserved on upgrade | `1000` |
 | `agent.spawn_min_memory_gb` | Minimum available memory (GB) to spawn a subagent (0 disables the check) | `4.0` |
 | `agent.completion_keep` | Which end of the subagent transcript to keep in the completion event injected into the parent session: `"head"`, `"tail"`, or `"both"` (head + middle marker + tail) | `"head"` |
 | `agent.completion_keep_chars` | Max characters retained in the completion event after applying `completion_keep`. `0` disables truncation. The full transcript stays on disk (see `subagent_result_ttl_secs`) | `3000` |

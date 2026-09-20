@@ -170,6 +170,26 @@ def adaptive_state() -> dict | None:
         return None
 
 
+def adaptive_exec_cap() -> int:
+    """The execution cap IN FORCE in this process, or ``0`` when unknown.
+
+    The number a caller sizing a fan-out needs: ``agent.max_subagents`` is a
+    ceiling the adaptive controller may be dispatching 1 at a time under. The
+    same registry read as :func:`adaptive_state` -- a dict lookup, no request --
+    so it is safe on every session-assembly path; outside the gateway it is 0
+    and the caller falls back to the configured ceiling, LABELLED as one. A
+    disabled controller leaves the user's max as the cap in force, so that is
+    what it reports; a paused dispatch (cap 0) reads as unknown, because "up to
+    0" is no fan-out guidance at all.
+    """
+    state = adaptive_state()
+    if not state:
+        return 0
+    key = "effective_exec_cap" if state.get("enabled", True) else "exec_ceiling"
+    cap = state.get(key)
+    return cap if isinstance(cap, int) and cap > 0 else 0
+
+
 def adaptive_summary_lines(state: dict | None = None) -> list[str]:
     """Effective caps and controller state, for the ``resource_status`` tool.
 
@@ -202,6 +222,14 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
         f"  Mode: {mode}   Execution cap: {exec_cap}/{ceiling}   "
         f"MCP spawn gate: {gate_cap}/{gate_ceiling}   Dispatch: {status}"
     )
+    # The host's own figure and the growth regime: without them "4/64" reads as
+    # an unexplained throttle. ``host_cap`` is what memory and CPU size the cap
+    # at right now, and it is the bound an increase climbs toward, so a low one
+    # is the answer to "why is the cap far below my max".
+    host_cap = state.get("host_cap")
+    if isinstance(host_cap, int) and host_cap > 0:
+        growth = "slow start (x2/window)" if state.get("slow_start") else "+1 per window"
+        lines.append(f"  Host cap (memory+CPU): {host_cap}   Growth: {growth}")
     last = state.get("last") or {}
     if last:
         signals = ",".join(last.get("signals") or []) or "none"

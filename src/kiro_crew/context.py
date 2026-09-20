@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import model_registry
+from kiro_crew import model_registry, resource_status
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
@@ -3010,23 +3010,33 @@ class ContextBuilder:
         """Resolve conditional template blocks in prompt text.
 
         Dashboard sessions get a short widget pointer; Slack/CLI get it stripped.
-        The ``{{MAX_SUBAGENTS}}`` token is replaced with the live resolved
-        concurrent sub-agent cap so the delegation guidance carries a concrete
-        number the model can fan out to with confidence. Resolved for every
-        transport (not just dashboard), before the widget-block branch.
+        The ``{{MAX_SUBAGENTS}}`` token is replaced with the concurrent
+        sub-agent cap IN FORCE, so the delegation guidance carries the number
+        the model can actually fan out to. ``agent.max_subagents`` is a ceiling
+        the adaptive controller may be dispatching 1 at a time under; the live
+        cap is a registry read (``resource_status.adaptive_exec_cap``), which
+        this gateway-process path can afford on every assembly. When no
+        controller runs here (the CLI, tests) the configured ceiling is used and
+        labelled as one. Resolved for every transport (not just dashboard),
+        before the widget-block branch.
         """
         if "{{MAX_SUBAGENTS}}" in prompt:
-            # Lazy import: kiro_crew.subagent imports this module, so a
-            # top-level import would cycle.
-            try:
-                from kiro_crew.subagent import (  # circular import: subagent -> context
-                    resolve_max_subagents,
-                )
+            cap = resource_status.adaptive_exec_cap()
+            if cap > 0:
+                figure = str(cap)
+            else:
+                # Lazy import: kiro_crew.subagent imports this module, so a
+                # top-level import would cycle.
+                try:
+                    from kiro_crew.subagent import (  # circular import: subagent -> context
+                        resolve_max_subagents,
+                    )
 
-                cap = resolve_max_subagents(KiroCrewConfig.load())
-            except Exception:
-                cap = 0
-            prompt = prompt.replace("{{MAX_SUBAGENTS}}", str(cap) if cap > 0 else "several")
+                    ceiling = resolve_max_subagents(KiroCrewConfig.load())
+                except Exception:
+                    ceiling = 0
+                figure = f"{ceiling} (configured ceiling)" if ceiling > 0 else "several"
+            prompt = prompt.replace("{{MAX_SUBAGENTS}}", figure)
 
         cfg = KiroCrewConfig.load()
 

@@ -1041,9 +1041,9 @@ class TestOpsMissionControlApiTool:
 
 
 class TestResourceStatusTool:
-    def _run(self, posture: str, *, cap: Any = 3):
+    def _run(self, posture: str, *, cap: Any = 3, state: Any = None, lines: Any = None):
         rstatus = SimpleNamespace(
-            posture=posture, summary_lines=lambda: ["Memory: 19G free", "Load: 1.2"]
+            posture=posture, summary_lines=lambda: list(lines or ["Memory: 19G free", "Load: 1.2"])
         )
         cfg = SimpleNamespace(load=staticmethod(lambda: object()))
         resolver = (
@@ -1054,20 +1054,61 @@ class TestResourceStatusTool:
         with patch("kiro_crew.resource_status.probe", return_value=rstatus):
             with patch("kiro_crew.mcp_tools.spawn.KiroCrewConfig", cfg):
                 with patch("kiro_crew.mcp_tools.spawn.resolve_max_subagents", resolver):
-                    return _call_tool_inner("resource_status", {})
+                    # A tool server owns no controller, so the live cap is an
+                    # API read; every case here pins what it returns rather
+                    # than reaching a gateway.
+                    with patch(
+                        "kiro_crew.mcp_tools.spawn._live_adaptive_state", return_value=state
+                    ):
+                        return _call_tool_inner("resource_status", {})
 
-    def test_the_probe_summary_and_cap_are_reported(self) -> None:
+    def test_the_live_cap_is_reported_when_the_gateway_answers(self) -> None:
+        """The cap IN FORCE, not the configured ceiling.
+
+        ``max_subagents`` is a ceiling: the adaptive controller can be
+        dispatching 1 at a time under it, so a caller deciding whether to fan
+        out needs the effective number, not the 64 it configured.
+        """
+        out = self._run(
+            "ample",
+            state={
+                "enabled": True,
+                "mode": "aimd",
+                "effective_exec_cap": 8,
+                "exec_ceiling": 64,
+                "spawn_gate_capacity": 4,
+                "gate_ceiling": 8,
+                "host_cap": 14,
+                "slow_start": True,
+                "last": {"action": "increase", "reason": "clean window earned x2 (slow start)"},
+            },
+        )
+        assert "Execution cap: 8/64" in out
+        assert "Host cap (memory+CPU): 14" in out
+        # With a live answer in hand the configured ceiling is not printed at all.
+        assert "Sub-agent ceiling: 3" not in out
+
+    def test_an_unreachable_gateway_labels_the_number_as_a_ceiling(self) -> None:
         out = self._run("ample")
         assert out.startswith("Memory: 19G free\nLoad: 1.2\n")
-        assert "  Concurrent sub-agent cap: 3" in out
+        assert "Sub-agent ceiling: 3 (configured max; the cap actually in force" in out
+
+    def test_an_in_process_block_is_not_rendered_twice(self) -> None:
+        """In the GATEWAY, ``summary_lines`` already appended the block."""
+        out = self._run(
+            "ample",
+            lines=["Memory: 19G free", "Adaptive concurrency (enforced beneath the user cap):"],
+        )
+        assert out.count("Adaptive concurrency") == 1
+        assert "Sub-agent ceiling" not in out
 
     def test_an_unreadable_config_omits_the_cap_line_instead_of_failing(self) -> None:
         out = self._run("ample", cap="raise")
-        assert "Concurrent sub-agent cap" not in out
+        assert "Sub-agent ceiling" not in out
         assert "ample headroom" in out
 
     def test_a_zero_cap_is_not_advertised(self) -> None:
-        assert "Concurrent sub-agent cap" not in self._run("ample", cap=0)
+        assert "Sub-agent ceiling" not in self._run("ample", cap=0)
 
     @pytest.mark.parametrize(
         "posture,needle",
@@ -1081,6 +1122,172 @@ class TestResourceStatusTool:
     )
     def test_each_posture_gets_its_own_guidance(self, posture: str, needle: str) -> None:
         assert needle in self._run(posture)
+
+
+class TestLiveAdaptiveState:
+    """How a tool server reaches gateway-process state at all."""
+
+    def _call(self):
+        from kiro_crew.mcp_tools.spawn import _live_adaptive_state
+
+        return _live_adaptive_state()
+
+    def test_the_in_process_registry_wins_and_costs_no_request(self) -> None:
+        with patch("kiro_crew.resource_status.adaptive_state", return_value={"host_cap": 9}):
+            with patch.object(mcp_core, "_get") as get:
+                assert self._call() == {"host_cap": 9}
+        get.assert_not_called()
+
+    def test_out_of_process_it_reads_the_gateway(self) -> None:
+        payload = {"adaptive": {"effective_exec_cap": 2, "exec_ceiling": 64}}
+        with patch("kiro_crew.resource_status.adaptive_state", return_value=None):
+            with patch.object(mcp_core, "_get", return_value=payload) as get:
+                assert self._call() == payload["adaptive"]
+        assert get.call_args.args[0] == "/api/spawn/adaptive"
+
+    @pytest.mark.asyncio
+    async def test_the_path_it_reads_is_actually_admitted_and_answers(self) -> None:
+        """Drive the REAL middleware and the REAL route with the REAL credential.
+
+        A mocked ``_get`` proves the parsing, never the auth. The predecessor of
+        this change read ``/api/tasks/summary``, which is in neither internal
+        bucket, so every call 403'd and the tool fell back to printing the
+        configured ceiling -- silently, because the failure is swallowed. Bucket
+        membership alone would not have caught a handler-level proof requirement
+        or a 503 either, so this asserts the status AND the key the caller reads.
+        """
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers import spawn_resume
+        from kiro_crew.dashboard.server import (
+            _MIXED_INTERNAL_API_PATHS,
+            _STRICT_INTERNAL_API_PATHS,
+        )
+        from kiro_crew.dashboard.token_auth import token_auth_middleware
+
+        secret = "s3cret"
+        app = web.Application(
+            middlewares=[
+                token_auth_middleware(
+                    internal_paths=_STRICT_INTERNAL_API_PATHS,
+                    mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+                    internal_secret=secret,
+                )
+            ]
+        )
+        app["state"] = SimpleNamespace(subagents=None)
+        spawn_resume.setup_spawn_resume_routes(app)
+        live = {"effective_exec_cap": 8, "exec_ceiling": 64, "host_cap": 14}
+        async with TestClient(TestServer(app)) as client:
+            with patch("kiro_crew.resource_status.adaptive_state", return_value=live):
+                resp = await client.get(
+                    "/api/spawn/adaptive", headers={"X-Internal-Secret": secret}
+                )
+                assert resp.status == 200, await resp.text()
+                assert (await resp.json())["adaptive"] == live
+            # No controller in this process is an ANSWER, not an error: the
+            # caller renders a missing state as "could not be read".
+            with patch("kiro_crew.resource_status.adaptive_state", return_value=None):
+                resp = await client.get(
+                    "/api/spawn/adaptive", headers={"X-Internal-Secret": secret}
+                )
+                assert resp.status == 200
+                assert (await resp.json())["adaptive"] == {}
+            # And the credential is still required.
+            assert (await client.get("/api/spawn/adaptive")).status in (401, 403)
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {"error": "unknown session"},
+            {"adaptive": None},  # controller not running in the gateway either
+            {},
+            "not a dict",
+        ],
+    )
+    def test_no_usable_answer_is_None_not_a_guess(self, answer: Any) -> None:
+        with patch("kiro_crew.resource_status.adaptive_state", return_value=None):
+            with patch.object(mcp_core, "_get", return_value=answer):
+                assert self._call() is None
+
+    def test_a_transport_failure_is_swallowed(self) -> None:
+        with patch("kiro_crew.resource_status.adaptive_state", return_value=None):
+            with patch.object(mcp_core, "_get", side_effect=OSError("refused")):
+                assert self._call() is None
+
+
+class TestSpawnCapHint:
+    """The fan-out guidance in the spawn tool descriptions.
+
+    ``agent.max_subagents`` is a ceiling the adaptive controller may be
+    dispatching 1 at a time under. A model told the ceiling queues work it
+    believes is running, so the descriptions prefer the cap IN FORCE and, when
+    this process cannot read one, label the configured number as a ceiling.
+    """
+
+    @staticmethod
+    def _spawn_run_description(*, live: int, ceiling: int) -> str:
+        from kiro_crew.mcp_tools import spawn
+
+        with (
+            patch("kiro_crew.resource_status.adaptive_exec_cap", return_value=live),
+            patch.object(spawn, "resolve_max_subagents", return_value=ceiling),
+            patch.object(spawn.KiroCrewConfig, "load", staticmethod(lambda: object())),
+        ):
+            return next(s for s in spawn.schemas() if s["name"] == "spawn_run")["description"]
+
+    def test_the_cap_in_force_is_advertised_when_this_process_owns_it(self) -> None:
+        desc = self._spawn_run_description(live=8, ceiling=64)
+        assert "up to 8 sub-agents concurrently right now" in desc
+        assert "64" not in desc
+        # The queue-and-drain rule still rides the live figure.
+        assert "Overflow queues automatically" in desc
+
+    def test_without_a_live_cap_the_ceiling_is_labelled_as_one(self) -> None:
+        desc = self._spawn_run_description(live=0, ceiling=64)
+        assert "configured sub-agent ceiling is 64" in desc
+        assert "cap actually in force may be lower" in desc
+        assert "You can run up to 64" not in desc
+        assert "Overflow queues automatically" in desc
+
+    def test_the_live_read_is_the_registry_and_never_a_request(self) -> None:
+        """``schemas()`` runs on the gateway's own discovery cycle, where a loopback
+        request would dial the gateway from inside the gateway."""
+        from kiro_crew.mcp_tools import spawn
+
+        with (
+            patch("kiro_crew.resource_status.adaptive_state", return_value=None),
+            patch.object(mcp_core, "_get") as get,
+            patch.object(spawn, "resolve_max_subagents", return_value=5),
+            patch.object(spawn.KiroCrewConfig, "load", staticmethod(lambda: object())),
+        ):
+            spawn.schemas()
+        get.assert_not_called()
+
+
+class TestAdaptiveExecCap:
+    """``resource_status.adaptive_exec_cap``: the cap in force, or 0."""
+
+    @staticmethod
+    def _cap(state: Any) -> int:
+        from kiro_crew.resource_status import adaptive_exec_cap
+
+        with patch("kiro_crew.resource_status.adaptive_state", return_value=state):
+            return adaptive_exec_cap()
+
+    def test_no_controller_here_is_zero(self) -> None:
+        assert self._cap(None) == 0
+        assert self._cap({}) == 0
+
+    def test_an_enabled_controller_reports_its_effective_cap(self) -> None:
+        assert self._cap({"enabled": True, "effective_exec_cap": 8, "exec_ceiling": 64}) == 8
+
+    def test_a_disabled_controller_leaves_the_user_max_in_force(self) -> None:
+        assert self._cap({"enabled": False, "effective_exec_cap": 4, "exec_ceiling": 64}) == 64
+
+    def test_a_paused_dispatch_is_unknown_not_zero_guidance(self) -> None:
+        assert self._cap({"enabled": True, "effective_exec_cap": 0, "paused": True}) == 0
 
 
 # ── issue_radar_record_investigation ────────────────────────────────────

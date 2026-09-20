@@ -16,7 +16,7 @@ kirocrew config set agent.max_subagents 8
 ```
 
 - `agent.max_subagents = 0` — **auto** (default): compute the cap at startup.
-- `agent.max_subagents >= 3` — explicit fixed cap.
+- `agent.max_subagents >= 3` — explicit ceiling; adaptive control may run below it.
 
 `max_subagents` accepts **0 (auto) or an integer >= 3**. A pin of 1 or 2 would
 silently disable auto-sizing *and* run below today's default of 3, so it is
@@ -31,6 +31,20 @@ change from the dashboard, the CLI or an editor never needs a restart. The
 host-safe auto cap (`0`) is measured when the value is resolved -- at boot and
 again on each such change -- not on a timer, so after the host's resources
 change it is re-measured by the next subagent-setting edit or a restart.
+
+For long-running work, new provider/tool stream activity can earn one additional
+slot after a clear observation window, without waiting for the task to finish.
+This probe requires queued work, measured host headroom and no provider throttle.
+An unchanged activity timestamp, a queued/stalled/parked run or an unreadable
+host probe cannot earn it. Successful completions still earn faster startup
+doubling; after pressure, growth remains bounded to one slot per clean window.
+The configured ceiling is never a command to start unnecessary workers.
+
+The configured ceiling and live growth bound are separate. The controller
+refreshes host headroom while running: memory headroom buys additional slots,
+so existing resident workers are added back to that memory term; CPU capacity
+is already a total. An explicit ceiling such as 64 is not clamped by the
+auto-sizing-only `subagent_auto_max`.
 
 ## How the Cap Is Computed
 
@@ -124,12 +138,20 @@ deliberate v1 simplification we may revisit.
 | `agent.subagent_cpu_cost_cores` | `1.0` | First-boot CPU-cost fallback (cores/agent) until learned |
 | `agent.subagent_auto_max` | `32` | Absolute ceiling on the computed cap (provider-concurrency stand-in) |
 | `agent.spawn_min_memory_gb` | `4.0` | Per-spawn admission gate (separate runtime guard, refuses a spawn when free memory is low) |
-| `agent.subagent_spawn_stagger_secs` | `2.0` | Delay between successive spawns (initial fill and queued drain), so a high cap never bursts on cold start |
+| `agent.subagent_spawn_stagger_secs` | `0.25` | Delay between successive spawns (initial fill and queued drain), so a high cap never bursts on cold start |
 | `session.pool_size` | `0` | Warm-pool size; reserved in the memory term when > 0 |
 
 The cap interacts with `spawn_min_memory_gb` but does not replace it: the cap is
 a startup count limit, while `spawn_min_memory_gb` is a real-time per-spawn
 memory floor. They are independent guards.
+When the memory floor is enabled, admission also reserves memory for the next
+start and for live dedicated workers whose RSS has not yet reached the larger of
+`subagent_cost_gb` and the live dedicated peak RSS. Claimed starts awaiting
+registration and parents waiting without a slot retain this reservation;
+confirmed shared sessions do not add a dedicated-process cost. Observed RSS
+replaces reserved memory, so it is not counted twice. This lets short spawn
+intervals fill available capacity without spending the same headroom repeatedly
+while processes warm up. It cannot predict allocations beyond the estimated cost.
 
 ## Notes
 
@@ -141,11 +163,18 @@ memory floor. They are independent guards.
   and passes the spawn-audit guard; Windows reads available memory via
   `GlobalMemoryStatusEx` (through `platform_compat.host_available_mib`) and has
   no cgroup clamp.
-- On a platform with no probe yet, and on any read failure, the memory reader
+- On a platform with no probe yet, or with no usable memory bound, the memory reader
   fails open and the cap falls back to the floor of 3 (`_LEGACY_DEFAULT_MAX`),
   not to the configured value.
-  NOTE: the per-spawn `spawn_min_memory_gb` admission gate still reads
-  `/proc/meminfo` and therefore remains inert (fails open) on non-Linux hosts —
-  auto-sizing and the runtime gate are independent guards.
+  The per-spawn memory guard uses the native reader on macOS and Windows, and
+  also respects Linux cgroup headroom even if the host memory read fails.
+- Linux cgroup headroom uses the process's memory-controller membership and
+  mount mapping, including nested systemd/container groups. The tightest
+  headroom at the group or a visible ancestor binds, accounting for siblings
+  in each parent's usage. A finite limit with unreadable or invalid usage
+  contributes zero headroom because spare capacity cannot be established;
+  measured zero usage retains the full limit. Missing or unlimited limits
+  leave the host-memory fallback intact. Ancestors hidden above the cgroup
+  mount cannot be measured.
 - Design rationale and worked examples:
   [`docs/system-specs/modules/subagent.md`](https://github.com/kirodotdev/KiroCrew/blob/main/docs/system-specs/modules/subagent.md).

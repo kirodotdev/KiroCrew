@@ -25,11 +25,32 @@ Rules, with fixed tuning constants owned by this module:
   into 6, then 4. Cooldown 30 s between decreases; the successes counted
   before a decrease are discarded on the track that was cut, and only there
   -- a track already at its floor keeps the successes it has earned.
-* **Increase** (additive). ``+1`` per track when the sample is clear on the
-  hysteresis side (lag < 100 ms, memory >= pressure line, no signal at all),
-  at least 30 s have passed since the last pressure AND since the last
-  increase, at least 20 successes landed since the last change, and demand is
-  at the current cap. Never above the ceiling.
+* **Increase**. Two regimes, one rule each, and the bound is
+  ``min(exec_ceiling, sample.host_cap)`` -- the user's pin AND what this host's
+  memory and CPU currently size the cap at (:attr:`~.signals.Sample.host_cap`,
+  ``subagent.host_terms_subagent_cap``). A host figure of 0 means "not measured"
+  and leaves the user's ceiling as the only bound; a host figure BELOW the live
+  cap withholds further increases and never cuts, because nothing is killed.
+
+  * **Slow start**, until this process meets its first corroborated pressure or
+    pause: ``x2`` per clean sample window (``slow_start_clean_secs``, 5 s),
+    once ``slow_start_successes`` (1) completions land and demand is at the
+    cap. A fresh gateway therefore reaches the host's own figure in a handful
+    of windows: a flat ``+1`` per ``increase_clean_secs`` (30 s) window from
+    the fresh-start 4 to a 64 ceiling is 60 windows, i.e. 30 minutes of clean
+    samples.
+  * **Congestion avoidance**, afterwards: ``+1`` per ``increase_clean_secs``
+    (30 s) window, once demand is at the cap and enough work has landed:
+    ``min(increase_successes, cap)`` completions on the exec track -- one full
+    wave of the CURRENT cap -- and ``increase_successes`` on the gate, whose
+    counter is backend inits rather than finished runs. Scaling the exec bar to
+    the CAP is what makes the first step off a floored cap affordable: a flat 20
+    made ``1 -> 2`` cost twenty serial runs, so a cap cut to the floor stayed
+    there.
+
+  Both regimes also require the sample to be clear on the hysteresis side
+  (lag < 100 ms, memory >= pressure line, no signal at all) and at least one
+  window since the last pressure. An idle track never drifts up.
 * **Pause and probe**. Severe pressure (memory below critical, or loop lag
   beyond 2 s) for two consecutive samples pauses dispatch: the exec cap goes
   to 0 grants and the gate to its floor. Running work is untouched. Once the
@@ -79,6 +100,12 @@ DEFAULT_DECREASE_FACTOR = 0.5
 DEFAULT_DECREASE_COOLDOWN_SECS = 30.0
 DEFAULT_INCREASE_CLEAN_SECS = 30.0
 DEFAULT_INCREASE_SUCCESSES = 20
+#: Slow start: on by default, ``x2`` per 5 s window on one completion, until
+#: this process meets its first corroborated pressure or pause.
+DEFAULT_SLOW_START = True
+DEFAULT_SLOW_START_CLEAN_SECS = 5.0
+DEFAULT_SLOW_START_SUCCESSES = 1
+DEFAULT_SLOW_START_FACTOR = 2
 DEFAULT_LAG_DECREASE_MS = 250.0
 DEFAULT_LAG_INCREASE_MS = 100.0
 DEFAULT_LAG_SEVERE_MS = 2000.0
@@ -101,6 +128,10 @@ class PolicyParams:
     decrease_cooldown_secs: float = DEFAULT_DECREASE_COOLDOWN_SECS
     increase_clean_secs: float = DEFAULT_INCREASE_CLEAN_SECS
     increase_successes: int = DEFAULT_INCREASE_SUCCESSES
+    slow_start: bool = DEFAULT_SLOW_START
+    slow_start_clean_secs: float = DEFAULT_SLOW_START_CLEAN_SECS
+    slow_start_successes: int = DEFAULT_SLOW_START_SUCCESSES
+    slow_start_factor: int = DEFAULT_SLOW_START_FACTOR
     mode: str = MODE_AIMD
     thresholds: Thresholds = field(default_factory=Thresholds)
 
@@ -113,6 +144,8 @@ class PolicyParams:
             raise ValueError("exec_ceiling must be >= 1")
         if not 0.0 < self.decrease_factor < 1.0:
             raise ValueError("decrease_factor must be in (0, 1)")
+        if self.slow_start_factor < 2:
+            raise ValueError("slow_start_factor must be >= 2")
 
     @property
     def exec_floor(self) -> int:
@@ -165,6 +198,12 @@ class AdaptivePolicy:
         self._paused = False
         self._probing = False
         self._severe_streak = 0
+        # Slow start is active only when config enables it and this process has
+        # not retired it after the first corroborated pressure or pause.
+        self._slow_start_retired = False
+        self._slow_start = bool(params.slow_start)
+        #: Last host figure seen, for the state snapshot only.
+        self._host_cap = 0
         self._last_decrease_at = _NEVER
         self._last_increase_at = _NEVER
         self._last_pressure_at = _NEVER
@@ -203,6 +242,11 @@ class AdaptivePolicy:
         return self._paused
 
     @property
+    def slow_start(self) -> bool:
+        """True while config enables slow start and this process has not retired it."""
+        return self._slow_start
+
+    @property
     def last_decision(self) -> Optional[Decision]:
         return self._last
 
@@ -212,6 +256,8 @@ class AdaptivePolicy:
             "effective_exec_cap": self._exec_cap,
             "exec_ceiling": self._p.exec_ceiling,
             "exec_floor": self._p.exec_floor,
+            "host_cap": self._host_cap,
+            "slow_start": self._slow_start,
             "spawn_gate_capacity": self._gate_cap,
             "gate_ceiling": self._p.gate_ceiling,
             "gate_floor": self._p.gate_floor,
@@ -229,8 +275,13 @@ class AdaptivePolicy:
         A lowered ceiling clamps the live cap; a raised one leaves it where it
         is (the process still has to earn the room). Switching to ``fixed``
         snaps both caps to their initial values on the next decision.
+
+        Slow start follows its config flag until this process observes its first
+        corroborated pressure or pause. That evidence retires slow start for the
+        process lifetime, so later config edits cannot revive it.
         """
         self._p = params
+        self._slow_start = bool(params.slow_start) and not self._slow_start_retired
         self._exec_cap = _clamp(
             self._exec_cap, 0 if self._paused else params.exec_floor, params.exec_ceiling
         )
@@ -250,6 +301,7 @@ class AdaptivePolicy:
             return self._emit(ACTION_FIXED, "fixed mode: caps pinned at their initial values", None)
 
         sample = replace(sample, gate_failures_in_window=self._windowed_gate_failures(sample))
+        self._host_cap = max(0, int(sample.host_cap))
         self._rebase_dropped_gate_successes(sample)
         report = classify(sample, self._p.thresholds)
         now = sample.t
@@ -270,6 +322,12 @@ class AdaptivePolicy:
             )
 
         if report.corroborated:
+            # Corroborated pressure is the evidence slow start was waiting for:
+            # from here on this process grows +1 at a time, never x2. Set before
+            # the cooldown check, so pressure the cooldown merely HOLDS still
+            # ends slow start -- the host said no either way.
+            self._slow_start_retired = True
+            self._slow_start = False
             if now - self._last_decrease_at < self._p.decrease_cooldown_secs:
                 return self._emit(ACTION_HOLD, "pressure inside the decrease cooldown", report)
             return self._decrease(sample, report)
@@ -336,6 +394,8 @@ class AdaptivePolicy:
         old_exec, old_gate = self._exec_cap, self._gate_cap
         self._paused = True
         self._probing = False
+        self._slow_start_retired = True
+        self._slow_start = False
         self._exec_cap = 0
         self._gate_cap = self._p.gate_floor
         self._last_decrease_at = sample.t
@@ -402,19 +462,40 @@ class AdaptivePolicy:
         now = sample.t
         if not report.clear_for_increase:
             return self._emit(ACTION_HOLD, "clear but inside the hysteresis band", report)
-        if now - self._last_pressure_at < p.increase_clean_secs:
+        window = p.slow_start_clean_secs if self._slow_start else p.increase_clean_secs
+        if now - self._last_pressure_at < window:
             return self._emit(ACTION_HOLD, "clear; waiting out the clean window", report)
-        if now - self._last_increase_at < p.increase_clean_secs:
+        if now - self._last_increase_at < window:
             return self._emit(ACTION_HOLD, "clear; one increase per window", report)
 
         changed = False
+        exec_target = self._growth_ceiling(sample)
         exec_successes = sample.completions - self._exec_success_base
+        completion_earned = exec_successes >= self._required_exec_successes(self._exec_cap)
+        # A long useful run need not FINISH before a second slot can open.
+        # Fresh stream progress buys only one exploratory slot, with measured
+        # host headroom and no provider throttle, after the same clean window.
+        # It never buys doubling or relaxes the independent init-gate bar.
+        progress_probe = (
+            sample.progressing > 0
+            and sample.queued > 0
+            and sample.running >= self._exec_cap
+            and sample.host_cap > self._exec_cap
+            and sample.free_mem_mb >= max(0.0, p.thresholds.mem_pressure_mb)
+            and not report.throttled_providers
+        )
+        probed = False
         if (
-            self._exec_cap < p.exec_ceiling
-            and exec_successes >= p.increase_successes
+            self._exec_cap < exec_target
+            and (completion_earned or progress_probe)
             and sample.demand >= self._exec_cap
         ):
-            self._exec_cap += 1
+            probed = not completion_earned
+            self._exec_cap = (
+                min(exec_target, self._exec_cap + 1)
+                if probed
+                else self._step_up(self._exec_cap, exec_target)
+            )
             self._exec_success_base = sample.completions
             changed = True
 
@@ -423,17 +504,80 @@ class AdaptivePolicy:
         gate_demand = gate.queued > 0 or gate.in_flight >= self._gate_cap
         if (
             self._gate_cap < p.gate_ceiling
-            and gate_successes >= p.increase_successes
+            and gate_successes >= self._required_gate_successes()
             and gate_demand
         ):
-            self._gate_cap += 1
+            self._gate_cap = self._step_up(self._gate_cap, p.gate_ceiling)
             self._gate_success_base = gate.successes
             changed = True
 
         if not changed:
             return self._emit(ACTION_HOLD, "clear; increase not yet earned or no demand", report)
         self._last_increase_at = now
-        return self._emit(ACTION_INCREASE, "clean window earned +1", report)
+        reason = (
+            "fresh progress with host headroom earned one exec probe"
+            if probed
+            else (
+                f"clean window earned x{p.slow_start_factor} (slow start)"
+                if self._slow_start
+                else "clean window earned +1"
+            )
+        )
+        return self._emit(ACTION_INCREASE, reason, report)
+
+    def _growth_ceiling(self, sample: Sample) -> int:
+        """How high an execution-cap increase may climb on THIS sample.
+
+        ``min(user ceiling, host cap)``. ``host_cap`` is what this host's memory
+        and CPU size the subagent cap at right now
+        (``subagent.host_terms_subagent_cap``); ``0`` means it was not measured
+        and leaves the user's ceiling alone. A host figure BELOW the live cap
+        only withholds the next increase -- it is never a cut, because a cut
+        cannot free work that is already running and the user's pin is the hard
+        ceiling.
+        """
+        ceiling = self._p.exec_ceiling
+        host = int(sample.host_cap)
+        if host > 0:
+            ceiling = min(ceiling, max(self._p.exec_floor, host))
+        return ceiling
+
+    def _required_exec_successes(self, cap: int) -> int:
+        """Completions since the last change that an exec increase must see.
+
+        Slow start asks for ``slow_start_successes`` -- one completion already
+        shows the host absorbing the current cap. Afterwards the bar is
+        ``min(increase_successes, cap)``: one full wave of the CURRENT cap. The
+        flat 20 it replaces is what made a floored cap permanent -- ``1 -> 2``
+        cost twenty serial runs, and every one of them ran alone.
+        """
+        if self._slow_start:
+            return max(1, self._p.slow_start_successes)
+        return max(1, min(self._p.increase_successes, cap))
+
+    def _required_gate_successes(self) -> int:
+        """The gate's bar, which is NOT scaled to its cap and NOT eased by slow start.
+
+        Backend inits land far faster than subagent runs finish and the gate
+        ceiling is 8, so ``increase_successes`` was never the barrier on this
+        track -- and the restart-rebase contract (a respawned daemon owes the
+        whole bar again on its fresh counter) is pinned against that number.
+
+        Slow start deliberately does not reach here. It exists to cross the
+        distance between a floored EXECUTION cap and the user's ceiling, which
+        is tens of steps; the gate's whole range is ``4 -> 8``, one doubling. Had
+        it applied, a single backend init inside one clean window would take the
+        gate to its ceiling and hand a respawned daemon its full capacity back
+        for one success -- a bar of 1, in the one place the contract above says
+        the bar must be the full number.
+        """
+        return max(1, self._p.increase_successes)
+
+    def _step_up(self, cap: int, ceiling: int) -> int:
+        """The next cap after an earned increase, bounded by *ceiling*."""
+        if self._slow_start:
+            return min(ceiling, max(cap + 1, cap * self._p.slow_start_factor))
+        return min(ceiling, cap + 1)
 
     # -- helpers -------------------------------------------------------------
 
@@ -528,6 +672,7 @@ def params_from_config(
         gate_initial=gate_initial,
         gate_floor=max(1, gate_floor),
         gate_ceiling=max(1, gate_ceiling),
+        slow_start=bool(_get("adaptive_slow_start", DEFAULT_SLOW_START)),
         mode=mode,
         thresholds=thresholds,
     )

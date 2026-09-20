@@ -107,6 +107,7 @@ def _mock_sessions(stream_factory) -> MagicMock:
     # would hand back coroutines nobody awaits.
     provider.context_window_tokens = lambda: 0
     provider.context_used_tokens = lambda: 0
+    provider.mcp_session_report = MagicMock(return_value=None)
     provider.stream = MagicMock(side_effect=stream_factory)
     sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
     sessions.release = MagicMock()
@@ -142,6 +143,28 @@ async def _spawn_and_wait(mgr: SubagentManager, task: str = "do work") -> Subage
         assert info is not None
         await mgr._tasks[info.id]
     return info
+
+
+@pytest.mark.asyncio
+async def test_default_budget_allows_work_past_one_hundred_tools():
+    from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+    async def stream(*_args, **_kwargs):
+        for request_id in range(101):
+            yield LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="read bounded input",
+                request_id=request_id,
+                tool_kind="mcp",
+            )
+        yield _text_event("verified result")
+        yield _complete_event()
+
+    manager = _manager(_mock_sessions(stream))
+    info = await _spawn_and_wait(manager)
+    assert info.error == ""
+    assert info.result == "verified result"
+    assert info.turns == 101
 
 
 # ── 1. Transient-backend retry ───────────────────────────────────────

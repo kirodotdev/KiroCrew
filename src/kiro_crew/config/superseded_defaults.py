@@ -297,6 +297,15 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#8891",
         auto_adopt=True,
     ),
+    # A stored 100 may be an intentional cost/turn cap. Value equality cannot
+    # distinguish that choice from a materialized default, so only an absent
+    # key follows the new budget automatically; the operator may adopt or keep.
+    SupersededDefault(
+        dotted_key="agent.subagent_max_turns",
+        old_default=100,
+        new_default=1000,
+        changed_in="#12203",
+    ),
 )
 
 

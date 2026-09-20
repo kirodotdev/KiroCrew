@@ -35,6 +35,7 @@ from kiro_crew.computer_use.types import (
 from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
+from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS as _DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
@@ -1413,8 +1414,26 @@ class AgentConfig:
         metadata=_meta(
             "Adaptive Initial Cap",
             "Execution cap a fresh gateway starts at, bounded by max_subagents. "
-            "The controller raises it one step per clean window once work "
-            "completes. Clamped to 1..64.",
+            "Healthy work and queued demand let the controller raise it; see "
+            "adaptive_slow_start for growth rules. Clamped to 1..64.",
+        ),
+    )
+    adaptive_slow_start: bool = field(
+        default=True,
+        metadata=_meta(
+            "Adaptive Slow Start",
+            "Until the gateway first meets corroborated host pressure, let the "
+            "execution cap DOUBLE per clear 5-second window (on one completion "
+            "and real demand) instead of climbing +1 per clear 30-second window, "
+            "bounded by max_subagents and by what this host's memory and CPU "
+            "size the cap at. The first pressure ends slow start for the life "
+            "of the process. Set false to climb +1 per clear 30-second window "
+            "from the start. Slow start earns an increase on one completion plus "
+            "real demand; congestion avoidance earns each +1 after one full wave "
+            "of the CURRENT cap completes (at most 20 runs). Alternatively, "
+            "fresh stream progress with queued work and measured headroom can "
+            "earn one probe slot per clear window without a completion; this "
+            "never earns doubling or relaxes the initialization gate.",
         ),
     )
     controller_sample_secs: int = field(
@@ -1596,15 +1615,21 @@ class AgentConfig:
         ),
     )
     subagent_spawn_stagger_secs: float = field(
-        default=2.0,
+        default=0.25,
         metadata=_meta(
             "SubAgent Spawn Stagger (seconds)",
             "Delay between successive subagent spawns (initial fill and queued "
-            "drain) to bound cold-start CPU/memory spikes.",
+            "drain) to bound cold-start CPU/memory spikes. Starts stay "
+            "serialized; the interval only decides how fast a wide fan-out "
+            "fills. Raise it if this "
+            "host or the model provider is the bottleneck -- a spawn still has "
+            "to clear spawn_min_memory_gb and the host budget, and the adaptive "
+            "controller cuts the cap on real pressure, so this is a smoothing "
+            "interval rather than the memory guard.",
         ),
     )
     subagent_max_turns: int = field(
-        default=100,
+        default=_DEFAULT_SUBAGENT_MAX_TURNS,
         metadata=_meta("SubAgent Max Turns", "Default tool-call budget per subagent."),
     )
     subagent_timeout_secs: int = field(

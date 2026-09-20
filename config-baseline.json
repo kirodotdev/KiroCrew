@@ -65,6 +65,7 @@
         "adaptive_concurrency_mode": "aimd",
         "adaptive_floor": 1,
         "adaptive_initial": 4,
+        "adaptive_slow_start": true,
         "controller_sample_secs": 5,
         "dependency_max_attempts": 20,
         "dependency_wait_deadline_secs": 3600,
@@ -81,8 +82,8 @@
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
-        "subagent_spawn_stagger_secs": 2.0,
-        "subagent_max_turns": 100,
+        "subagent_spawn_stagger_secs": 0.25,
+        "subagent_max_turns": 1000,
         "subagent_timeout_secs": 10800,
         "subagent_stall_idle_secs": 120,
         "completion_keep": "head",
@@ -932,10 +933,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Adaptive Initial Cap",
-      "help": "Execution cap a fresh gateway starts at, bounded by max_subagents. The controller raises it one step per clean window once work completes. Clamped to 1..64.",
+      "help": "Execution cap a fresh gateway starts at, bounded by max_subagents. Healthy work and queued demand let the controller raise it; see adaptive_slow_start for growth rules. Clamped to 1..64.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4
+    },
+    {
+      "path": "agent.adaptive_slow_start",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Adaptive Slow Start",
+      "help": "Until the gateway first meets corroborated host pressure, let the execution cap DOUBLE per clear 5-second window (on one completion and real demand) instead of climbing +1 per clear 30-second window, bounded by max_subagents and by what this host's memory and CPU size the cap at. The first pressure ends slow start for the life of the process. Set false to climb +1 per clear 30-second window from the start. Slow start earns an increase on one completion plus real demand; congestion avoidance earns each +1 after one full wave of the CURRENT cap completes (at most 20 runs). Alternatively, fresh stream progress with queued work and measured headroom can earn one probe slot per clear window without a completion; this never earns doubling or relaxes the initialization gate.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "agent.controller_sample_secs",
@@ -1173,10 +1188,10 @@
       "sensitive": false,
       "tags": [],
       "label": "SubAgent Spawn Stagger (seconds)",
-      "help": "Delay between successive subagent spawns (initial fill and queued drain) to bound cold-start CPU/memory spikes.",
+      "help": "Delay between successive subagent spawns (initial fill and queued drain) to bound cold-start CPU/memory spikes. Starts stay serialized; the interval only decides how fast a wide fan-out fills. Raise it if this host or the model provider is the bottleneck -- a spawn still has to clear spawn_min_memory_gb and the host budget, and the adaptive controller cuts the cap on real pressure, so this is a smoothing interval rather than the memory guard.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 2.0
+      "defaultValue": 0.25
     },
     {
       "path": "agent.subagent_max_turns",
@@ -1190,7 +1205,7 @@
       "help": "Default tool-call budget per subagent.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 100
+      "defaultValue": 1000
     },
     {
       "path": "agent.subagent_timeout_secs",
