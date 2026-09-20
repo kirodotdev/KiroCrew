@@ -10487,6 +10487,16 @@
         "sent_history": "histórico {{chars}} caracteres",
         "sent_label": "Enviado ao Jev",
         "sent_message": "mensagem {{chars}} caracteres"
+      },
+      "toolRiskBadge": {
+        "annotation_title": "O Jev olhou esta chamada e sinalizou-a. Isso não mudou nada sobre a chamada ter sido permitida: isso foi decidido pela configuração de permissões desta sessão, e a chamada pode ter sido recusada mesmo assim.",
+        "confidence_title": "A confiança do Jev na própria resposta, de 0 a 1",
+        "labelled_tier": "Jev: {{tier}}",
+        "rate_jev": "Jev",
+        "rate_right_jev": "O Jev avaliou o risco corretamente",
+        "rate_wrong_jev": "O Jev avaliou o risco de forma errada",
+        "tier_caution": "vale uma olhada",
+        "tier_risky": "arriscada"
       }
     },
     "chatPage": {
@@ -11344,7 +11354,9 @@
         "decisions_point_sampled": "Enquanto isto está ligado, o Jev responde em {{percent}} das suas sessões. As demais continuam com a regra de correspondência de palavras. Para alterar a proporção, defina decisions.bucket no config.json do seu diretório de dados do {{productName}} (~/.kiro/crew por padrão).",
         "decisions_point_sampled_all": "Enquanto isto está ligado, o Jev responde em todas as suas sessões. Para limitar a uma parte, defina decisions.bucket no config.json do seu diretório de dados do {{productName}} (~/.kiro/crew por padrão).",
         "decisions_config_unavailable": "Não foi possível ler as configurações, então este botão não é oferecido. Recarregue para tentar de novo.",
-        "decisions_save_failed": "Não foi possível salvar esta configuração. O botão voltou a mostrar o valor salvo."
+        "decisions_save_failed": "Não foi possível salvar esta configuração. O botão voltou a mostrar o valor salvo.",
+        "decisions_tool_args": "Enviar também os argumentos das chamadas para o Jev sinalizar as arriscadas",
+        "decisions_tool_args_desc": "Numa sessão que aprova as próprias chamadas de ferramenta, isto envia também o nome e os argumentos de cada chamada ao Jev, que põe uma nota nas que lhe parecem merecer atenção. As palavras-passe e chaves são substituídas antes de qualquer envio. Não muda quais chamadas são permitidas. Fica desligado até você ligá-lo, mesmo que o interruptor acima já esteja ligado."
       },
       "kiroSignInCard": {
         "title": "Login do Kiro",

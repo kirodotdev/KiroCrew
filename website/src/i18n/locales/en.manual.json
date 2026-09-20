@@ -4261,6 +4261,16 @@
         "sent_history": "history {{chars}} chars",
         "sent_label": "Sent to Jev",
         "sent_message": "message {{chars}} chars"
+      },
+      "toolRiskBadge": {
+        "annotation_title": "Jev looked at this call and flagged it. That changed nothing about whether the call was allowed: this session's own permission setting decided that, and the call may still have been refused.",
+        "confidence_title": "Jev's confidence in its own answer, from 0 to 1",
+        "labelled_tier": "Jev: {{tier}}",
+        "rate_jev": "Jev",
+        "rate_right_jev": "Jev read the risk right",
+        "rate_wrong_jev": "Jev read the risk wrong",
+        "tier_caution": "worth a look",
+        "tier_risky": "risky"
       }
     },
     "chatPage": {
@@ -6594,7 +6604,9 @@
         "decisions_point_sampled": "While this is on, Jev answers for {{percent}} of your sessions. The rest keep the word-matching rule. To change the share, set decisions.bucket in config.json in your {{productName}} data directory (~/.kiro/crew by default).",
         "decisions_point_sampled_all": "While this is on, Jev answers for all of your sessions. To narrow that to a share, set decisions.bucket in config.json in your {{productName}} data directory (~/.kiro/crew by default).",
         "decisions_config_unavailable": "Could not read the settings, so this switch is not offered. Reload to try again.",
-        "decisions_save_failed": "Could not save this setting. The switch is showing the saved value again."
+        "decisions_save_failed": "Could not save this setting. The switch is showing the saved value again.",
+        "decisions_tool_args": "Also send tool-call arguments so Jev can flag risky calls",
+        "decisions_tool_args_desc": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

@@ -48,8 +48,16 @@ const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentData> = 
   endpoint: enabled ? ENDPOINT : '',
   configured_endpoint: ENDPOINT,
   permits: enabled,
+  // The tool-argument egress scope. FALSE by default here on purpose: that is what
+  // a keystone recorded before the scope existed reads as, and it is the state the
+  // overwhelming majority of consented installs are in.
+  tool_args: false,
   ...overrides,
 })
+
+/** The tool-argument consent switch. Only drawn while the main switch is on. */
+const toolArgsSwitch = () =>
+  screen.getByRole('switch', { name: 'Also send tool-call arguments so Jev can flag risky calls' })
 
 /**
  * Stub all three reads: the governance answer that decides whether the card is
@@ -387,6 +395,103 @@ describe('Decisions (Jev) preview card', () => {
       expect(api.saveDecisionsConsent).toHaveBeenCalled()
     })
     expect(Object.keys(localStorage).filter(k => k.startsWith(PREVIEW_FLAG_PREFIX))).toEqual([])
+  })
+
+    describe('the tool-argument consent switch', () => {
+    it('is absent while the main switch is off, because nothing is sent at all then', async () => {
+      // A second egress control under an off switch would describe a state that
+      // cannot happen, and would invite a grant nothing could act on.
+      stubGateway({ enabled: false })
+      renderSection()
+      await waitFor(() => {
+        expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+      })
+      expect(screen.queryByRole('switch', { name: /tool-call arguments/ })).toBeNull()
+    })
+
+    it('appears unchecked once consent is on, for a keystone that never recorded it', async () => {
+      // The state every install consented before this scope existed is in: sending
+      // is allowed, tool arguments are not, and the card must draw exactly that
+      // rather than inferring the scope from the main switch.
+      stubGateway({ enabled: true })
+      renderSection()
+      await waitFor(() => {
+        expect(toolArgsSwitch()).toBeInTheDocument()
+      })
+      expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('false')
+    })
+
+    it('reflects a recorded scope', async () => {
+      stubGateway(consentOf(true, { tool_args: true }))
+      renderSection()
+      await waitFor(() => {
+        expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
+      })
+    })
+
+    it('grants the scope through the same consent route, with no new endpoint', async () => {
+      stubGateway({ enabled: true })
+      const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(
+        consentOf(true, { tool_args: true }),
+      )
+      renderSection()
+      await waitFor(() => {
+        expect(toolArgsSwitch()).toBeInTheDocument()
+      })
+      toolArgsSwitch().click()
+      await waitFor(() => {
+        // `enabled: true` rides along because the scope is only meaningful while the
+        // seam is on, and the reviewed address because consent binds to it.
+        expect(save).toHaveBeenCalledWith(true, ENDPOINT, true)
+      })
+    })
+
+    it('revokes it with an explicit false rather than by omission', async () => {
+      // Omission PRESERVES the recorded scope on this route, so a revoke has to send
+      // the boolean. A card that omitted it would leave the scope granted.
+      stubGateway(consentOf(true, { tool_args: true }))
+      const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
+      renderSection()
+      await waitFor(() => {
+        expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
+      })
+      toolArgsSwitch().click()
+      await waitFor(() => {
+        expect(save).toHaveBeenCalledWith(true, ENDPOINT, false)
+      })
+    })
+
+    it('leaves the scope unmentioned when the MAIN switch is flipped', async () => {
+      // The main switch says nothing about tool arguments, and the route preserves a
+      // recorded scope for an absent field. So an ordinary flip must send two
+      // arguments, not three: a third would make the main switch able to grant or
+      // erase an egress scope the owner did not touch.
+      stubGateway({ enabled: false })
+      const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
+      renderSection()
+      await waitFor(() => {
+        expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+      })
+      decisionsSwitch().click()
+      await waitFor(() => {
+        expect(save).toHaveBeenCalledWith(true, ENDPOINT)
+      })
+    })
+
+    it('states what the extra data is, and that it changes no permission', async () => {
+      stubGateway({ enabled: true })
+      renderSection()
+      await waitFor(() => {
+        expect(toolArgsSwitch()).toBeInTheDocument()
+      })
+      // Read off the whole rendered section: the description is a sibling of the
+      // switch inside SettingsToggle, and walking a fixed number of parents pins a
+      // DOM shape this test has no business asserting.
+      const body = document.body.textContent ?? ''
+      expect(body).toContain('name and arguments of each call')
+      expect(body).toContain('Passwords and keys are replaced')
+      expect(body).toContain('changes nothing about which tool calls are allowed')
+    })
   })
 
   describe('capabilities.decisions governance gate', () => {

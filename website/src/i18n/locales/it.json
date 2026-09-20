@@ -10487,6 +10487,16 @@
         "sent_history": "cronologia {{chars}} caratteri",
         "sent_label": "Inviato a Jev",
         "sent_message": "messaggio {{chars}} caratteri"
+      },
+      "toolRiskBadge": {
+        "annotation_title": "Jev ha guardato questa chiamata e l'ha segnalata. Questo non ha cambiato nulla sul fatto che la chiamata fosse permessa: lo ha deciso l'impostazione dei permessi di questa sessione, e la chiamata potrebbe essere stata rifiutata comunque.",
+        "confidence_title": "La fiducia di Jev nella propria risposta, da 0 a 1",
+        "labelled_tier": "Jev: {{tier}}",
+        "rate_jev": "Jev",
+        "rate_right_jev": "Jev ha valutato bene il rischio",
+        "rate_wrong_jev": "Jev ha valutato male il rischio",
+        "tier_caution": "vale un'occhiata",
+        "tier_risky": "rischiosa"
       }
     },
     "chatPage": {
@@ -11344,7 +11354,9 @@
         "decisions_point_sampled": "Finché è attivo, Jev risponde per il {{percent}} delle tue sessioni. Le altre mantengono la regola di corrispondenza delle parole. Per cambiare la quota, imposta decisions.bucket nel config.json della tua directory dati di {{productName}} (~/.kiro/crew per impostazione predefinita).",
         "decisions_point_sampled_all": "Finché è attivo, Jev risponde per tutte le tue sessioni. Per limitarlo a una quota, imposta decisions.bucket nel config.json della tua directory dati di {{productName}} (~/.kiro/crew per impostazione predefinita).",
         "decisions_config_unavailable": "Non è stato possibile leggere le impostazioni, quindi questo interruttore non viene offerto. Ricarica per riprovare.",
-        "decisions_save_failed": "Non è stato possibile salvare questa impostazione. L'interruttore mostra di nuovo il valore salvato."
+        "decisions_save_failed": "Non è stato possibile salvare questa impostazione. L'interruttore mostra di nuovo il valore salvato.",
+        "decisions_tool_args": "Invia anche gli argomenti delle chiamate così Jev segnala quelle rischiose",
+        "decisions_tool_args_desc": "In una sessione che approva da sé le proprie chiamate di strumento, questo invia a Jev anche il nome e gli argomenti di ogni chiamata, e Jev segnala quelle che gli sembrano da guardare. Password e chiavi vengono sostituite prima di inviare qualsiasi cosa. Non cambia quali chiamate sono permesse. È spento finché non lo accendi, anche se l'interruttore sopra è già acceso."
       },
       "kiroSignInCard": {
         "title": "Accesso a Kiro",

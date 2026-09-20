@@ -1330,6 +1330,15 @@ export interface ChatMessage {
    *  cannot check. The gateway stamps it under `meta` on both doors, and this
    *  top-level spelling is accepted as well, the split `kind` above has too. */
   decisions_strip?: unknown
+  /** One risk annotation the gateway stamped on a TOOL row when the Decisions
+   *  (Jev) seam answered `tool.risk` for that call. Typed `unknown` because the
+   *  shape is validated at the read, by `pages/chat/toolRiskRecord.ts` — the
+   *  badge draws nothing for a record it cannot check, and nothing for the `safe`
+   *  tier. An ANNOTATION: the permission decision was taken without it, so a
+   *  record never means the call was stopped or altered. Stamped under `meta` on
+   *  both doors; this top-level spelling is accepted too, as `decisions_strip`
+   *  and the split `kind` above are. */
+  decisions_tool_risk?: unknown
 }
 
 export interface SubagentActivity {

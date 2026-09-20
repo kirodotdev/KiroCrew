@@ -61,6 +61,16 @@ export interface DecisionsView {
    * see.
    */
   bucket: number | null
+  /**
+   * Whether the owner consented to sending TOOL-CALL ARGUMENTS — the extra egress
+   * category `tool.risk` needs, and the only thing that lets it run.
+   *
+   * Read from the keystone's own answer rather than inferred from `enabled`: a
+   * consent recorded before this scope existed reads `false` here, which is
+   * exactly the state its owner agreed to, and the second switch must draw that
+   * rather than a value it guessed.
+   */
+  toolArgs: boolean
 }
 
 const UNSUPPORTED: DecisionsView = {
@@ -69,6 +79,7 @@ const UNSUPPORTED: DecisionsView = {
   configuredEndpoint: '',
   endpointMoved: false,
   bucket: null,
+  toolArgs: false,
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -110,7 +121,13 @@ export function readBucket(config: unknown): number | null {
 export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
   const root = asRecord(body)
   if (!root || !('enabled' in root)) {
-    return { supported: false, enabled: false, configuredEndpoint: '', endpointMoved: false }
+    return {
+      supported: false,
+      enabled: false,
+      configuredEndpoint: '',
+      endpointMoved: false,
+      toolArgs: false,
+    }
   }
   const enabled = root.enabled === true
   const configuredEndpoint = typeof root.configured_endpoint === 'string' ? root.configured_endpoint : ''
@@ -118,7 +135,11 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
   // rather than re-deriving equality here, so the card and the gate cannot
   // disagree about whether anything is being sent.
   const endpointMoved = enabled && root.permits !== true
-  return { supported: true, enabled, configuredEndpoint, endpointMoved }
+  // An exact `true`, like `enabled` above: this field decides whether a new
+  // category of conversation content leaves the machine, so a truthy stand-in is
+  // not a deliberate yes. An older gateway omits it entirely and reads as off.
+  const toolArgs = root.tool_args === true
+  return { supported: true, enabled, configuredEndpoint, endpointMoved, toolArgs }
 }
 
 /** Combine the two reads into the card's one view. */

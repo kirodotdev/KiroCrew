@@ -105,6 +105,22 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Tool-call risk questions sent to the decision judge",
+        "decisions/points/tool_risk.py",
+        "The tool name, its arguments and the message excerpt that one `tool.risk` "
+        "question carries to the third-party judge. Unlike its sibling "
+        "`decisions/gate.py` -- which SCANS the same request and refuses the whole "
+        "call on a hit, emitting nothing -- this module scrubs, and the scrubbed "
+        "bytes are what leaves the machine: a credential in a tool argument is "
+        "ordinary (an `aws` command, a curl header), so refusing on it would mean "
+        "the seam never looks at the calls most worth looking at. Each field passes "
+        "the shared exfiltration-URL then credential chain and is clipped only "
+        "AFTER that, because clipping first can halve a secret into a fragment "
+        "neither redactor matches; a scanner that raises drops the field instead of "
+        "sending it. The gate then scans the placeholder, so a request it clears "
+        "carries no unredacted byte.",
+    ),
+    (
         "Member capability editor responses",
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "

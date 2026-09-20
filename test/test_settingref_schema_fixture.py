@@ -142,13 +142,29 @@ class TestDecisionsSettingCrossLayer:
         assert callable(handlers.api_decisions_consent_put)
 
     def test_the_frontend_live_point_is_a_point_the_backend_ships(self):
+        """The WHOLE registry, spelled out, and which of its points the card names.
+
+        Exact equality rather than membership, and that is the point of the test
+        rather than a detail of it: this is the list that decides what may send
+        conversation text off the machine, so a third point has to be a deliberate
+        edit HERE as well as in the gate. Membership would let the registry grow
+        with nobody asked, which is the ratchet this assertion is.
+
+        The ORDER is the claim on top of the count. The card names the point whose
+        answer is CONSUMED -- its copy is about the switch changing which skill a
+        message loads -- while the annotating point only describes a tool call the
+        permission policy has already answered. A card naming that one would
+        promise the switch changes a decision it does not touch.
+        """
         from kiro_crew.decisions.gate import DECISION_POINT_NAMES
+        from kiro_crew.decisions.points.tool_risk import POINT as ANNOTATION_POINT
 
         point = _ts_const(DECISIONS_READER_PATH.read_text(encoding="utf-8"), "DECISIONS_LIVE_POINT")
-        assert (
-            point,
-        ) == DECISION_POINT_NAMES, (
-            f"the card's point {point!r} differs from backend point names {DECISION_POINT_NAMES}"
+        assert DECISION_POINT_NAMES == (point, ANNOTATION_POINT), (
+            f"the card's point {point!r} plus the annotating point {ANNOTATION_POINT!r} "
+            f"no longer spell the backend registry {DECISION_POINT_NAMES}: a point was "
+            "added, removed or reordered, and a point is an egress path -- say here "
+            "which one the card is about"
         )
 
 

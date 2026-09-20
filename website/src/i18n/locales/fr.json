@@ -10487,6 +10487,16 @@
         "sent_history": "historique {{chars}} caractères",
         "sent_label": "Envoyé à Jev",
         "sent_message": "message {{chars}} caractères"
+      },
+      "toolRiskBadge": {
+        "annotation_title": "Jev a examiné cet appel et l'a signalé. Cela n'a rien changé à son autorisation : c'est le réglage d'autorisations de cette session qui en a décidé, et l'appel a pu être refusé malgré tout.",
+        "confidence_title": "La confiance de Jev dans sa propre réponse, de 0 à 1",
+        "labelled_tier": "Jev : {{tier}}",
+        "rate_jev": "Jev",
+        "rate_right_jev": "Jev a bien évalué le risque",
+        "rate_wrong_jev": "Jev a mal évalué le risque",
+        "tier_caution": "à regarder",
+        "tier_risky": "risqué"
       }
     },
     "chatPage": {
@@ -11344,7 +11354,9 @@
         "decisions_point_sampled": "Tant que c'est activé, Jev répond pour {{percent}} de vos sessions. Les autres conservent la règle de correspondance de mots. Pour modifier cette part, définissez decisions.bucket dans le config.json de votre répertoire de données {{productName}} (~/.kiro/crew par défaut).",
         "decisions_point_sampled_all": "Tant que c'est activé, Jev répond pour toutes vos sessions. Pour limiter cela à une part, définissez decisions.bucket dans le config.json de votre répertoire de données {{productName}} (~/.kiro/crew par défaut).",
         "decisions_config_unavailable": "Impossible de lire les réglages, ce commutateur n'est donc pas proposé. Rechargez pour réessayer.",
-        "decisions_save_failed": "Impossible d'enregistrer ce réglage. Le commutateur affiche à nouveau la valeur enregistrée."
+        "decisions_save_failed": "Impossible d'enregistrer ce réglage. Le commutateur affiche à nouveau la valeur enregistrée.",
+        "decisions_tool_args": "Envoyer aussi les arguments des appels pour que Jev signale les appels risqués",
+        "decisions_tool_args_desc": "Dans une session qui approuve elle-même ses appels d'outil, cela envoie en plus le nom et les arguments de chaque appel à Jev, qui signale ceux qui lui paraissent mériter un coup d'œil. Les mots de passe et les clés sont remplacés avant tout envoi. Cela ne change rien aux appels autorisés. Désactivé jusqu'à ce que vous l'activiez, même si l'interrupteur ci-dessus l'est déjà."
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",

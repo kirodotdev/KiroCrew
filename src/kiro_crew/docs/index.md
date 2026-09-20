@@ -46,7 +46,7 @@ index, first-time setup, and connecting messaging channels.
 | [Session Ledger](session-ledger.md) | A durable per-session record of goal, phase, and next step that survives context compaction |
 | [Browser Control](browser-control.md) | Drive a real web page from the dashboard's Browser panel: navigate, snapshot, click, type, screenshot |
 | [Computer Use](computer-use.md) | Read and drive native desktop applications through the accessibility layer; opt-in and off by default |
-| [Jev Skill Selection](decisions.md) | Let a small fast model choose the automatic skill for a sampled conversation, fall back to trigger matching whenever it cannot, and keep a basic log of the calls |
+| [Jev Decisions](decisions.md) | Let a small fast model choose the automatic skill for a sampled conversation, flag a risky tool call on its own card without changing any permission, fall back to what shipped whenever it cannot, and keep a basic log of the calls |
 
 ## Additional Features
 

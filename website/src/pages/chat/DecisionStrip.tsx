@@ -1,21 +1,13 @@
-import { memo, useId, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
-import { Check, ChevronRight, Puzzle, ThumbsDown, ThumbsUp } from 'lucide-react'
+import { memo, useId } from 'react'
+import { Check, ChevronRight, Puzzle } from 'lucide-react'
 
-import { api, type DecisionFeedbackSide, type DecisionVerdictValue } from '../../api/client'
-import { queryClient } from '../../api/queryClient'
 import ErrorNotice from '../../components/ErrorNotice'
-import { IconButton } from '../../components/ui'
 import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { DECISIONS_LIVE_POINT } from '../settings/decisionsPreview'
-import {
-  nextVerdict,
-  recordedVerdict,
-  rememberVerdict,
-  type DecisionStripRecord,
-} from './decisionRecord'
+import { type DecisionStripRecord } from './decisionRecord'
+import VerdictThumbs from './DecisionVerdictThumbs'
 import { useRowDisclosure } from './rowDisclosure'
 
 /** Two decimals, so `0.81` reads as a score and not as a rounded `0.8`. */
@@ -29,87 +21,6 @@ const confidence = (p: number) => fmtNumber(p, { minimumFractionDigits: 2, maxim
  */
 function names(list: string[]): string {
   return list.length > 0 ? fmtList(list, { type: 'unit' }) : i18nT('pages.chat.decisionStrip.no_skills')
-}
-
-/**
- * One reader's verdict on one side of the comparison.
- *
- * Two thumbs, and they are ONE control: the verdict is single-choice
- * (`right` | `wrong` | none), which is the case `max-two-buttons-per-row` names
- * as not counting toward its cap. Pressing the lit thumb takes the answer back,
- * so a misclick is undoable without a third control.
- *
- * `label` is VISIBLE and required, and it lives here rather than at the call
- * sites so neither pair can ship without one. A bare thumb beside a line of text
- * does not say what it rates, and an `aria-label` answers that for a screen
- * reader only — `IconButton` renders no text and no tooltip of its own, so each
- * button also carries its meaning as a `title`.
- *
- * The answer is kept only after the server took it. An optimistic flip would
- * have to be rolled back on a failure, and the strip has an honest alternative:
- * the pair is disabled while the request is in flight, and a failure renders
- * beside it rather than silently reverting.
- */
-function VerdictThumbs({
-  turnId,
-  side,
-  label,
-  rightLabel,
-  wrongLabel,
-}: {
-  turnId: string
-  side: DecisionFeedbackSide
-  label: string
-  rightLabel: string
-  wrongLabel: string
-}) {
-  const [verdict, setVerdict] = useState<DecisionVerdictValue>(() => recordedVerdict(turnId, side))
-  const mut = useMutation({
-    mutationFn: (next: DecisionVerdictValue) => api.sendDecisionsFeedback(turnId, next, side),
-    onSuccess: (_data, next) => {
-      rememberVerdict(turnId, side, next)
-      setVerdict(next)
-    },
-  }, queryClient)
-  const press = (pressed: 'right' | 'wrong') => mut.mutate(nextVerdict(verdict, pressed))
-
-  return (
-    <span className="inline-flex items-center gap-1 shrink-0">
-      <span className="shrink-0 opacity-75" data-testid={`decision-strip-rate-label-${side}`}>{label}</span>
-      <IconButton
-        aria-label={rightLabel}
-        title={rightLabel}
-        aria-pressed={verdict === 'right'}
-        variant={verdict === 'right' ? 'active' : 'default'}
-        disabled={mut.isPending}
-        onClick={() => press('right')}
-        data-testid={`decision-strip-right-${side}`}
-      >
-        <ThumbsUp className="lucide-inline" aria-hidden="true" />
-      </IconButton>
-      <IconButton
-        aria-label={wrongLabel}
-        title={wrongLabel}
-        aria-pressed={verdict === 'wrong'}
-        variant={verdict === 'wrong' ? 'active' : 'default'}
-        disabled={mut.isPending}
-        onClick={() => press('wrong')}
-        data-testid={`decision-strip-wrong-${side}`}
-      >
-        <ThumbsDown className="lucide-inline" aria-hidden="true" />
-      </IconButton>
-      {/* No `askAgent`: this row is drawn inside every transcript host,
-          including the panes and Crew Members threads whose composers hold an
-          unsent draft in local state, and the hand-off navigates away and
-          unmounts that subtree. Same reasoning as CompactionCard's failure
-          branch. */}
-      <ErrorNotice
-        message={mut.isError ? i18nT('pages.chat.decisionStrip.feedback_failed') : null}
-        variant="inline"
-        testId={`decision-strip-feedback-error-${side}`}
-      />
-    </span>
-  )
 }
 
 /** One labelled measurement in the expanded body. */
@@ -151,10 +62,9 @@ function Detail({ label, value }: { label: string; value: string }) {
  * Expansion survives the row being recycled out of the virtualised transcript
  * (`useRowDisclosure`); the thumbs survive it through their own store.
  *
- * The feedback mutation is handed the SHARED query client explicitly rather than
- * reading one out of context, for the reason `app-sdk/appQuery.ts` gives: this
- * row is drawn by `app-sdk/messageRenderers`, whose whole contract is that a host
- * may render a transcript outside the dashboard's React root.
+ * Both thumbs pairs are `DecisionVerdictThumbs`, shared with the tool card's risk
+ * badge, so what a press sends and what a failure looks like are one
+ * implementation rather than two.
  */
 const DecisionStrip = memo(function DecisionStrip({
   record,

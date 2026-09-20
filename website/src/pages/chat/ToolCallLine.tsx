@@ -4,6 +4,8 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
+import ToolRiskBadge from './ToolRiskBadge'
+import { readToolRiskRecord, toolRiskFieldOf } from './toolRiskRecord'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
@@ -170,6 +172,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const dispatch = useAppDispatch()
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
+  // Jev's risk annotation for this call, validated at the read. The raw field is
+  // returned off the message unchanged (`toolRiskFieldOf`), so the memo's
+  // dependency is stable across renders and this row pays one validation per
+  // record rather than one per repaint. `null` on every ordinary row.
+  const riskRecord = useMemo(() => readToolRiskRecord(toolRiskFieldOf(message)), [message])
   const simplified = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
 
@@ -1093,6 +1100,14 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           <ErrorNotice variant="inline" message={endWaitError} askAgent testId="wait-end-error" />
         </div>
       </StatusRow>
+
+      {/* Jev's risk annotation for this call, when the seam answered for it. A
+          SIBLING of the pill, drawn above the details panel: it describes the
+          call rather than its output, and it must be readable without expanding
+          anything. Absent on every ordinary row — `readToolRiskRecord` returns
+          null for a missing, unreadable or `safe` record — so a transcript
+          without the seam is byte-identical. */}
+      {riskRecord && <ToolRiskBadge record={riskRecord} />}
 
       <AnimatePresence initial={false}>
         {effectivelyExpanded && (

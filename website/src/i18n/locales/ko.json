@@ -10201,6 +10201,16 @@
         "sent_history": "기록 {{chars}}자",
         "sent_label": "Jev에 보냄",
         "sent_message": "메시지 {{chars}}자"
+      },
+      "toolRiskBadge": {
+        "annotation_title": "Jev가 이 호출을 보고 표시했습니다. 표시는 호출이 허용되었는지와 무관합니다. 그것은 이 세션의 권한 설정이 결정하며, 호출은 거부되었을 수도 있습니다.",
+        "confidence_title": "자기 답에 대한 Jev의 확신도, 0에서 1까지",
+        "labelled_tier": "Jev: {{tier}}",
+        "rate_jev": "Jev",
+        "rate_right_jev": "Jev가 위험을 맞게 봤어요",
+        "rate_wrong_jev": "Jev가 위험을 틀리게 봤어요",
+        "tier_caution": "한 번 볼 만함",
+        "tier_risky": "위험"
       }
     },
     "chatPage": {
@@ -11030,7 +11040,9 @@
         "decisions_point_sampled": "켜져 있는 동안 Jev가 세션의 {{percent}}에 답합니다. 나머지는 단어 일치 규칙을 그대로 씁니다. 비율을 바꾸려면 {{productName}} 데이터 디렉터리(기본값 ~/.kiro/crew)의 config.json에서 decisions.bucket을 설정하세요.",
         "decisions_point_sampled_all": "켜져 있는 동안 Jev가 모든 세션에 답합니다. 일부로 줄이려면 {{productName}} 데이터 디렉터리(기본값 ~/.kiro/crew)의 config.json에서 decisions.bucket을 설정하세요.",
         "decisions_config_unavailable": "설정을 읽을 수 없어 이 스위치를 제공하지 않습니다. 새로 고침한 뒤 다시 시도하세요.",
-        "decisions_save_failed": "이 설정을 저장할 수 없습니다. 스위치는 저장된 값으로 되돌아갔습니다."
+        "decisions_save_failed": "이 설정을 저장할 수 없습니다. 스위치는 저장된 값으로 되돌아갔습니다.",
+        "decisions_tool_args": "Jev가 위험한 호출을 표시할 수 있도록 호출 인자도 보내기",
+        "decisions_tool_args_desc": "도구 호출을 스스로 승인하는 세션에서는 각 호출의 이름과 인자도 Jev에 보내고, Jev는 한 번 볼 만하다고 판단한 호출에 표시를 남깁니다. 보내기 전에 비밀번호와 키는 대체됩니다. 어떤 호출이 허용되는지는 바뀌지 않습니다. 위 스위치가 켜져 있어도, 이 항목은 직접 켤 때까지 꺼져 있습니다."
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",

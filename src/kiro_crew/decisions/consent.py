@@ -56,12 +56,27 @@ STATE_KEY_ENDPOINT = "endpoint"
 #: conversation would be sent -- the same argument that put ``endpoint`` here.
 STATE_KEY_HISTORY_BUDGET = "history_budget_chars"
 
+#: Whether the owner consented to sending TOOL-CALL ARGUMENTS, the category
+#: ``tool.risk`` needs and ``skills.select`` does not. A separate leaf rather than a
+#: wider reading of ``enabled``, for the reason the history ceiling is one: consent
+#: is recorded against the text the owner reviewed -- a message excerpt and skill
+#: descriptions -- so a record written before this key existed authorizes exactly
+#: that and nothing more. Absent reads as NOT consented, which is what keeps every
+#: such record meaning what its owner agreed to.
+STATE_KEY_TOOL_ARGS = "tool_args"
+
 #: "Keep whatever ceiling is recorded" for :func:`save_enabled`. A distinct object,
 #: because ``0`` is a ceiling an owner may choose and no number can mean "not asked".
 #: Resolved inside the read-modify-write, so the value written comes from the same
 #: read the write is based on: a caller that resolved it first would hold a ceiling
 #: read before another writer lowered it, and hand that stale number back.
 KEEP_HISTORY_BUDGET: object = object()
+
+#: "Keep whatever tool-argument scope is recorded", on the same terms. A distinct
+#: object for the same reason: ``False`` is a scope an owner may choose, so no
+#: boolean can also mean "not asked", and it is resolved inside the lock so an
+#: enabling PUT cannot restore a scope a concurrent revoking PUT just cleared.
+KEEP_TOOL_ARGS: object = object()
 
 # Owner-only: the file records a security decision.
 _STATE_FILE_MODE = 0o600
@@ -138,6 +153,25 @@ def consented_history_budget(state: "dict | None" = None) -> int:
     return max(0, raw)
 
 
+def consented_tool_args(state: "dict | None" = None) -> bool:
+    """Whether the owner consented to sending tool-call arguments. Absent reads False.
+
+    Only a literal ``True`` consents. Absent, a string, ``1``, ``"true"`` and every
+    other truthy stand-in read as NOT consented -- the same exactness
+    :func:`is_enabled` applies to the switch itself, and for the same reason: this
+    value decides whether a new category of conversation content leaves the
+    machine, so a value nobody can read back as a deliberate yes is a no.
+
+    That default is the whole point of the key. Every consent recorded before it
+    existed was given against a request carrying the message excerpt and the
+    candidate descriptions; reading those records as permission to send tool
+    arguments would widen egress with no new choice, which is exactly what the
+    history ceiling prevents one field over.
+    """
+    data = load_state() if state is None else state
+    return data.get(STATE_KEY_TOOL_ARGS) is True
+
+
 def permits(endpoint: object, state: "dict | None" = None) -> bool:
     """Whether the keystone consents to sending to *endpoint*, exactly.
 
@@ -176,7 +210,13 @@ def read_state_strict() -> dict:
     return loaded
 
 
-def save_enabled(enabled: bool, *, endpoint: str, history_budget_chars: object = 0) -> dict:
+def save_enabled(
+    enabled: bool,
+    *,
+    endpoint: str,
+    history_budget_chars: object = 0,
+    tool_args: object = False,
+) -> dict:
     """Record *enabled* for *endpoint* atomically, owner-only; return the state written.
 
     Enabling records the endpoint the owner is consenting to -- the caller passes
@@ -204,6 +244,13 @@ def save_enabled(enabled: bool, *, endpoint: str, history_budget_chars: object =
     write. :data:`_SAVE_LOCK` is held across the read AND the write, which is what
     makes the paragraph above true rather than merely narrow -- the lowering PUT's
     ceiling survives the enable PUT that ran beside it, whichever order they took.
+
+    *tool_args* is the TOOL-ARGUMENT egress scope, recorded on exactly those terms:
+    written on enable, cleared on disable so a re-enable cannot inherit a scope
+    nobody re-reviewed, and defaulting to ``False`` so a caller that does not
+    mention tool arguments consents to none. :data:`KEEP_TOOL_ARGS` leaves a
+    recorded scope alone and is resolved inside the same lock, so an enabling PUT
+    cannot hand back a scope a revoking PUT had already cleared.
     """
     if not isinstance(enabled, bool):
         raise ValueError("enabled must be a bool")
@@ -213,6 +260,9 @@ def save_enabled(enabled: bool, *, endpoint: str, history_budget_chars: object =
             raise ValueError("history_budget_chars must be a whole number")
         if history_budget_chars < 0:
             raise ValueError("history_budget_chars cannot be negative")
+    keep_scope = tool_args is KEEP_TOOL_ARGS
+    if not keep_scope and not isinstance(tool_args, bool):
+        raise ValueError("tool_args must be a bool")
     target = normalize_endpoint(endpoint)
     if enabled and not target:
         raise ValueError("consent needs the endpoint it is given for")
@@ -220,8 +270,11 @@ def save_enabled(enabled: bool, *, endpoint: str, history_budget_chars: object =
         state: dict[str, Any] = dict(read_state_strict())
         if keep:
             history_budget_chars = consented_history_budget(state)
+        if keep_scope:
+            tool_args = consented_tool_args(state)
         state[STATE_KEY_ENABLED] = enabled
         state[STATE_KEY_ENDPOINT] = target if enabled else ""
         state[STATE_KEY_HISTORY_BUDGET] = history_budget_chars if enabled else 0
+        state[STATE_KEY_TOOL_ARGS] = tool_args is True if enabled else False
         atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
     return state

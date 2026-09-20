@@ -569,8 +569,15 @@ class TestGovernanceWithdrawsTheSeam:
 
 
 class TestPointName:
-    def test_the_shipped_vocabulary_is_one_point(self):
-        assert DECISION_POINT_NAMES == ("skills.select",)
+    def test_the_shipped_vocabulary_is_the_two_points(self):
+        """The whole allowlist, spelled out: a name reaches the provider or it does not.
+
+        Held as an exact tuple rather than a membership check, so adding a point is
+        a deliberate edit here as well as in the gate -- this is the list that
+        decides what may send conversation text off the machine, and a test that
+        only asked "is my name in it" would let one arrive unnoticed.
+        """
+        assert DECISION_POINT_NAMES == ("skills.select", "tool.risk")
 
     @pytest.mark.parametrize("unknown", ["skills.dedupe", "cron.novelty", "", "skills.Select"])
     def test_an_unknown_point_is_refused_even_when_enabled(
@@ -585,10 +592,29 @@ class TestPointName:
         assert log_home() == []
         assert "unknown point" in caplog.text
 
-    def test_every_shipped_name_is_admitted(self, install_impl):
+    def test_every_shipped_name_is_admitted(self, install_impl, monkeypatch):
+        """Each shipped point, given the egress scope its own request needs.
+
+        ``tool.risk`` carries tool-call arguments, so consent alone does not admit
+        it -- the keystone's ``tool_args`` scope does, and this test grants it rather
+        than dropping the point from the loop, because "every shipped name" is the
+        claim and a loop that skipped one would stop making it.
+        """
         install_impl(_RecordingOracle())
+        monkeypatch.setattr(consent_mod, "consented_tool_args", lambda *_a, **_kw: True)
         for name in DECISION_POINT_NAMES:
             assert is_enabled(name, config=_config()) is True
+
+    def test_the_annotating_point_is_refused_without_its_egress_scope(self, install_impl):
+        """Consent to SEND is not consent to send tool arguments.
+
+        The keystone this suite writes consents to the endpoint and records no scope,
+        which is the state every install consented before the scope existed is in.
+        ``skills.select`` is unaffected; ``tool.risk`` is inert.
+        """
+        install_impl(_RecordingOracle())
+        assert is_enabled("skills.select", config=_config()) is True
+        assert is_enabled("tool.risk", config=_config()) is False
 
 
 # ---------------------------------------------------------------------------

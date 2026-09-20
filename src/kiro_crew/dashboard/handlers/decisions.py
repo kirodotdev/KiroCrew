@@ -170,6 +170,11 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # -- those differ exactly when an agent has raised the config value, which is
         # the case this ceiling exists to make harmless.
         "history_budget_chars": consent.consented_history_budget(state),
+        # Whether the owner consented to sending TOOL-CALL ARGUMENTS. Reported so the
+        # card can show the second switch in the state actually recorded, rather than
+        # guessing from ``enabled``: a record written before this scope existed reads
+        # false here, which is what the card must draw for it.
+        "tool_args": consent.consented_tool_args(state),
     }
 
 
@@ -208,6 +213,13 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     ``provider.endpoint`` elsewhere; binding to what the server reads at PUT time
     would then consent to an address the owner never saw. A mismatch is ``409``
     and nothing is written; the card re-reads and shows the new address.
+
+    ``tool_args`` records whether the owner consented to sending TOOL-CALL
+    ARGUMENTS, the category ``tool.risk`` needs. Absent PRESERVES the recorded scope
+    and disabling clears it, exactly as the ceiling below behaves, so an ordinary
+    switch flip cannot grant or erase it by omission. Absent on a keystone that never
+    had it reads as false, which is what keeps a consent given before this scope
+    existed meaning only what its owner reviewed.
 
     ``history_budget_chars`` records the prior-conversation CEILING the owner
     reviewed, and it is here for the same reason ``endpoint`` is: the value in force
@@ -280,6 +292,24 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # A bool, or absent. Absent is handed on as ``KEEP_TOOL_ARGS`` rather than
+    # resolved here, for the same reason the budget is: the writer resolves it inside
+    # its own read-modify-write, so the scope written comes from the same read the
+    # write is based on. Reading it on this side would hold a value read before a
+    # concurrent PUT cleared it, and write that back -- restoring an egress scope
+    # somebody just revoked.
+    #
+    # Validated rather than coerced, and a truthy stand-in is refused: this value
+    # decides whether a new category of conversation content leaves the machine, so
+    # ``"true"`` and ``1`` are 400s rather than silent yeses.
+    tool_args = body.get("tool_args", consent.KEEP_TOOL_ARGS) if isinstance(body, dict) else False
+    if tool_args is not consent.KEEP_TOOL_ARGS and not isinstance(tool_args, bool):
+        await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
+        return web.json_response(
+            {"error": '"tool_args" must be true or false', "code": _CODE_INVALID_BODY},
+            status=400,
+        )
+
     # Bound to the endpoint the owner REVIEWED, checked against the one the
     # config names now. Equal: consent is for the address on screen, and the one
     # the gate will hold the config to afterwards. Different: the config moved
@@ -332,7 +362,11 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             )
     try:
         state = await asyncio.to_thread(
-            consent.save_enabled, enabled, endpoint=endpoint, history_budget_chars=budget
+            consent.save_enabled,
+            enabled,
+            endpoint=endpoint,
+            history_budget_chars=budget,
+            tool_args=tool_args,
         )
     except consent.ConsentCorruptError as exc:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="error", error="corrupt")
@@ -350,7 +384,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         outcome="granted" if enabled else "revoked",
         resources=(
             f"decisions_consent.json endpoint={endpoint} "
-            f"history_budget_chars={consent.consented_history_budget(state)}"
+            f"history_budget_chars={consent.consented_history_budget(state)} "
+            f"tool_args={consent.consented_tool_args(state)}"
         ),
     )
     return web.json_response(_payload(state, denied=withdrawn))

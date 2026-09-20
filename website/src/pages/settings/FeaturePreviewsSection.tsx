@@ -198,6 +198,11 @@ function DecisionsPreviewCard() {
     // The address on screen travels with the click, so consent binds to what the
     // owner reviewed; the gateway refuses (409) if config moved it meanwhile and
     // the refetch below then shows the new address.
+    //
+    // No `tool_args` here, deliberately: the main switch says nothing about tool
+    // arguments, and the route preserves a recorded scope for an absent field. So
+    // flipping this switch off and on again keeps whatever the owner chose about
+    // tool arguments, and the scope moves only when its own switch is used.
     mutationFn: (value: boolean) => api.saveDecisionsConsent(value, view.configuredEndpoint),
     // Refetch rather than trusting the value just sent: the server owns the
     // effective verdict.
@@ -208,6 +213,15 @@ function DecisionsPreviewCard() {
     // switch for as long as the refetch took — while `checked` still read the
     // pre-flip value. The flip looked like it had not taken, and a second click
     // wrote the same value again.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
+  })
+  // The tool-argument scope is a SECOND consent, so it is a second write: it sends
+  // `enabled: true` alongside, because the scope is only meaningful while the seam
+  // is on and the route records both under one lock. Its own pending state, so the
+  // two switches disable independently rather than one freezing the other.
+  const scopeMut = useMutation({
+    mutationFn: (value: boolean) =>
+      api.saveDecisionsConsent(true, view.configuredEndpoint, value),
     onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
   })
   // "Old gateway" and "could not read the settings" are different facts and must
@@ -264,6 +278,22 @@ function DecisionsPreviewCard() {
       >
         {i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
       </p>
+      {/* The tool-argument scope, and it is a CONSENT rather than a preference: it
+          widens what leaves the machine, which is why it is a switch of its own on
+          the keystone rather than a config value or a wider reading of the main
+          switch. Drawn only while the main switch is on -- off, nothing is sent at
+          all and a second egress control would describe a state that cannot
+          happen; and a consent recorded before this scope existed reads false
+          here, so an owner who never saw this switch has not granted it. */}
+      {view.enabled && (
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.decisions_tool_args')}
+          description={i18nT('pages.developer.featurePreviewsTab.decisions_tool_args_desc')}
+          checked={view.toolArgs}
+          onChange={v => scopeMut.mutate(v)}
+          disabled={loading || readFailed || !view.supported || mut.isPending || scopeMut.isPending}
+        />
+      )}
       {/* WHERE the messages go, as a fact beside the switch: consent is given for
           an address, and the gate holds the config to that address afterwards.
           Mono and untranslated -- it is a URL the reader may want to compare

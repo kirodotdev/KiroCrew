@@ -1,6 +1,6 @@
-# Jev skill selection
+# Jev decisions
 
-Jev can choose an automatic skill for a sampled conversation. When enabled, it receives a short message excerpt and a menu of eligible skill names and descriptions. It can also receive some of the conversation so far, but only if you ask for that. Its valid answer changes the selected skill; a timeout or failed request keeps the normal trigger-matching result. The feature is off by default.
+Jev can do two things for a sampled conversation: choose its automatic skill, and flag a risky tool call on the card that reports it. Only the first one decides anything -- see "Flagging risky tool calls" below. Skill selection: Jev can choose an automatic skill for a sampled conversation. When enabled, it receives a short message excerpt and a menu of eligible skill names and descriptions. It can also receive some of the conversation so far, but only if you ask for that. Its valid answer changes the selected skill; a timeout or failed request keeps the normal trigger-matching result. The feature is off by default.
 
 ## What changes
 
@@ -62,11 +62,37 @@ When a sampled turn asks Jev which skill to load, the reply that turn produces c
 
 The record travels with the message, not in a side channel, so it is there when you scroll back to that reply and there when a second window opens the same chat. It holds what trigger matching chose, what Jev chose, whether the two agreed, the probability Jev reported and a few counts about the menu it was given. It does not hold your message or the skill descriptions.
 
-Nothing in this version displays that record. The chat does not draw it, and you will not see a change in the interface: reading it back and showing it under the reply is a separate change. Until then the record is readable through the chat history the dashboard already serves, and through the log below.
+The chat draws that record as a one-line strip under the reply it belongs to. A reply with no record looks exactly as it always did, which is every reply while the switch is off. The record is also readable through the chat history the dashboard already serves, and through the log below.
 
 You can record whether a choice was right. The verdict is `right` or `wrong`, and it names which of the two answers you are judging -- Jev's or the normal trigger-matching one. Sending it again with a different verdict records the change of mind; sending it with the verdict spelled out as `null` takes your earlier one back. Leaving the field out altogether is refused instead, so a request that lost it does not read as taking a verdict back. Each of these appends one row to the day-file described below and never edits a row already there, so the log reads as a history rather than a current opinion. If the day-file is full the verdict is refused rather than quietly dropped, so a recorded verdict means a written one.
 
-This version has no button for that verdict. It is an owner-only request (`POST /api/decisions/feedback`), refused for anyone but the dashboard owner, for the same reason the Decisions switch is. The verdicts land in the same daily JSONL files as the decisions, so counting them is a `jq` job over `~/.kiro/crew/decisions/*.jsonl`.
+The thumbs on the strip are that button, and the thumbs on the risk badge below are the same one. Either way it is an owner-only request (`POST /api/decisions/feedback`), refused for anyone but the dashboard owner, for the same reason the Decisions switch is. The verdicts land in the same daily JSONL files as the decisions, so counting them is a `jq` job over `~/.kiro/crew/decisions/*.jsonl`.
+
+## Flagging risky tool calls
+
+In a session that approves its own tool calls, nothing stops to describe what is about to run. Jev can put a small note on those cards: **Jev: risky (0.88)** under the tool line, with a thumbs pair beside it.
+
+It is a note and only a note. Kiro Crew decides whether a tool call may run exactly as it did before, using your permission setting alone, and Jev is asked what it thinks alongside that. Nothing here changes who may run what, and nothing you can set here does either. The note is not a promise that the call went ahead: a security rule or one of your own hooks can still stop a call that carries one, and the audit log is where what happened is recorded. The one thing the note costs is a short wait -- Jev is asked before the next step of the turn is read, so a flagged call can be approved a moment later than it would have been. The wait is capped, and only sessions the switch covers pay it.
+
+You have to turn this on separately. The Decisions switch covers your message text and your skill descriptions; flagging tool calls also sends the name and arguments of each call, which is more than you agreed to when you turned that switch on. So there is a second switch under it -- **Also send tool-call arguments so Jev can flag risky calls** -- and it starts off, including for anyone who already had the main switch on before this existed. Turning the main switch off and on again keeps your answer to the second one; turning it off is what clears it.
+
+| Your session | What you see |
+|---|---|
+| The second switch is off | Nothing -- no tool arguments are sent and no notes appear |
+| Asks you before each tool call | Nothing new -- you are already reading the call |
+| Trusts the session, or YOLO, and Jev says `safe` | Nothing -- the card looks as it always did |
+| Trusts the session, or YOLO, and Jev says `caution` or `risky` | The note, with a score and thumbs |
+| Timeout, refusal or invalid answer | Nothing |
+
+A session that asks you is never annotated, because you are the one looking at the call. The note exists for the sessions where nobody is.
+
+Jev is asked about one call at a time, and at most twenty times in one turn. A turn that runs more tools than that keeps running normally; the calls past the twentieth simply carry no note, and the log says where the count stopped.
+
+What leaves the machine for one of these questions is the tool's name, its arguments and a short excerpt of the message that led to the call. Credentials and suspicious URLs in those arguments are replaced with a placeholder BEFORE the question is sent -- a key in an `aws` command is ordinary, and refusing to look at it would mean the note never appears on the calls most worth a second look. The same waiting time and the same cap apply as for skill selection, so a slow answer costs the note, not the call.
+
+The thumbs say whether Jev read the risk right. They are the same owner-only verdict described above, filed against that one call.
+
+Each answered call writes two rows in the log below: one for the question and one for the answer. A `safe` answer is recorded too, even though it draws nothing, so you can tell how often the note would have been wrong to appear. The rows name the tool, the tier, the score and which grant approved the call -- `trust`, `trust_scope` or `yolo`.
 
 ## Basic logs
 

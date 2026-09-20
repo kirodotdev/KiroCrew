@@ -421,6 +421,13 @@ export interface DecisionsConsentData {
   endpoint: string
   configured_endpoint: string
   permits: boolean
+  /**
+   * Whether the owner consented to sending TOOL-CALL ARGUMENTS — the extra egress
+   * category `tool.risk` needs. Absent on a gateway older than the scope, which
+   * reads as not consented; the keystone's own absent value reads the same way, so a
+   * consent recorded before this existed authorizes only what its owner reviewed.
+   */
+  tool_args?: boolean
 }
 
 /** Which side of a logged decision a reader's verdict is about. */
@@ -4901,8 +4908,14 @@ export const api = {
   getDecisionsConsent: () => get('/api/decisions/consent').then(j) as Promise<DecisionsConsentData>,
   // Enabling echoes the endpoint the card showed: the gateway binds consent to
   // that address and answers 409 if config.json moved it since the read.
-  saveDecisionsConsent: (enabled: boolean, endpoint?: string) =>
-    put('/api/decisions/consent', enabled ? { enabled, endpoint } : { enabled }).then(j) as Promise<DecisionsConsentData>,
+  // `toolArgs` is OMITTED when the caller does not pass one, and that omission is
+  // meaningful: the gateway preserves the recorded scope for an absent field, so
+  // an ordinary switch flip can neither grant nor erase it. Pass a boolean only
+  // when the owner acted on the tool-argument switch itself.
+  saveDecisionsConsent: (enabled: boolean, endpoint?: string, toolArgs?: boolean) =>
+    put('/api/decisions/consent', enabled
+      ? (toolArgs === undefined ? { enabled, endpoint } : { enabled, endpoint, tool_args: toolArgs })
+      : { enabled }).then(j) as Promise<DecisionsConsentData>,
   // One reader's verdict on one side of one decision, from the transcript's
   // decision strip. `verdict: null` takes an answer back, which is why the field
   // is nullable rather than absent — the server records the retraction.

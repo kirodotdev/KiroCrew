@@ -10487,6 +10487,16 @@
         "sent_history": "historial {{chars}} caracteres",
         "sent_label": "Enviado a Jev",
         "sent_message": "mensaje {{chars}} caracteres"
+      },
+      "toolRiskBadge": {
+        "annotation_title": "Jev miró esta llamada y la marcó. Eso no cambió nada sobre si la llamada estaba permitida: eso lo decidió el ajuste de permisos de esta sesión, y la llamada pudo haber sido rechazada igualmente.",
+        "confidence_title": "La confianza de Jev en su propia respuesta, de 0 a 1",
+        "labelled_tier": "Jev: {{tier}}",
+        "rate_jev": "Jev",
+        "rate_right_jev": "Jev acertó con el riesgo",
+        "rate_wrong_jev": "Jev falló con el riesgo",
+        "tier_caution": "conviene mirarla",
+        "tier_risky": "arriesgada"
       }
     },
     "chatPage": {
@@ -11344,7 +11354,9 @@
         "decisions_point_sampled": "Mientras esto está activado, Jev responde en el {{percent}} de tus sesiones. El resto conserva la regla de coincidencia de palabras. Para cambiar la proporción, ajusta decisions.bucket en el config.json de tu directorio de datos de {{productName}} (~/.kiro/crew por defecto).",
         "decisions_point_sampled_all": "Mientras esto está activado, Jev responde en todas tus sesiones. Para limitarlo a una parte, ajusta decisions.bucket en el config.json de tu directorio de datos de {{productName}} (~/.kiro/crew por defecto).",
         "decisions_config_unavailable": "No se pudieron leer los ajustes, por lo que este interruptor no se ofrece. Recarga para volver a intentarlo.",
-        "decisions_save_failed": "No se pudo guardar este ajuste. El interruptor muestra de nuevo el valor guardado."
+        "decisions_save_failed": "No se pudo guardar este ajuste. El interruptor muestra de nuevo el valor guardado.",
+        "decisions_tool_args": "Enviar también los argumentos de las llamadas para que Jev marque las arriesgadas",
+        "decisions_tool_args_desc": "En una sesión que aprueba sus propias llamadas de herramienta, esto envía además el nombre y los argumentos de cada llamada a Jev, que pone una nota en las que le parecen dignas de mirar. Las contraseñas y claves se sustituyen antes de enviar nada. No cambia qué llamadas están permitidas. Está apagado hasta que lo enciendas, aunque el interruptor de arriba ya esté encendido."
       },
       "kiroSignInCard": {
         "title": "Inicio de sesión en Kiro",

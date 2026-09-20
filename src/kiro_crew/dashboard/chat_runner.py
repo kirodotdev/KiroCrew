@@ -4102,6 +4102,75 @@ def _decisions_strip_meta(slot: _ChatSlot) -> dict | None:
     return {"decisions_strip": strip} if strip else None
 
 
+def _session_auto_approves(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether this session answers its own permission requests (trust or YOLO).
+
+    Read through the SAME two helpers the permission branch decides by, so the
+    annotation cannot claim a mode the approval path is not in. It asks a question
+    and authorises nothing: no caller of this function approves, rejects or delays
+    a tool call.
+    """
+    return _slot_is_trusted(slot) or state.is_yolo_active()
+
+
+async def _tool_risk_meta(
+    state: DashboardState,
+    slot: _ChatSlot,
+    event: "LLMEvent",
+    *,
+    session_key: str,
+    message: str,
+    calls_this_turn: int,
+) -> dict | None:
+    """One ``decisions_tool_risk`` record for this tool card, or ``None``.
+
+    An ANNOTATION on the row the transcript already appends for this call. It reads
+    the permission mode and changes no DECISION about it: it does not approve,
+    reject or re-order a permission request, and it is called from the ``tool_call``
+    branch, which contains no approval code at all. That is why "the approval is
+    byte-identical with the point on and off" is a property a test asserts rather
+    than a claim to trust (``test_decisions_tool_risk_card.py``).
+
+    It does cost TIMING, and that is stated rather than implied: the ``tool_call``
+    frame arrives BEFORE the permission request, so awaiting here delays when this
+    turn's next event -- often that request -- is read, by up to the point's own
+    wait budget. Bounded, sampled, and paid only by a session the seam is on for;
+    the alternative was an await beside ``approve_tool``, where the same cost would
+    buy a far weaker claim about the decision.
+
+    Only for a session that AUTO-APPROVES. A session that prompts puts the call in
+    front of the human, who is the annotation; adding a badge to a card they are
+    already judging would sit a second opinion beside a control. A trusting
+    session shows nobody anything, which is where a badge is the only signal.
+
+    ``None`` on every other path -- the seam off, the session unsampled, the turn
+    cap, a scrub, a timeout, a ``safe`` verdict -- so an ordinary tool row is
+    exactly the row this build appends today. Nothing here raises: the call is
+    already approved and an observation must not cost it.
+
+    The decisions package is imported INSIDE the function for the reason every
+    other caller does it: an ordinary turn with the seam off must not pull that
+    graph onto the tool-call path.
+    """
+    try:
+        if not _session_auto_approves(state, slot):
+            return None
+        from kiro_crew.decisions.points import tool_risk
+
+        record = await tool_risk.risk_record(
+            tool=event.tool_name or event.title or "",
+            arguments=event.tool_input or "",
+            message=message,
+            policy=_auto_approve_reason(slot, state.is_yolo_active()),
+            session_key=session_key,
+            calls_this_turn=calls_this_turn,
+        )
+        return {"decisions_tool_risk": record} if record else None
+    except Exception:  # pragma: no cover - an observation may not cost a call
+        logger.debug("decisions: could not annotate the tool card", exc_info=True)
+        return None
+
+
 def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
     """Append the redaction notice for an already-persisted body.
 
@@ -10660,8 +10729,26 @@ async def _run_chat(
                     "tool_call",
                     _tool_payload,
                 )
+                # AFTER the live ``tool_call`` broadcast above and BEFORE the
+                # row is appended: the pill the open tab draws is not delayed by
+                # the annotation, and the record reaches both doors -- the
+                # ``chat_message`` frame ``append`` broadcasts from inside the
+                # call, and the persisted transcript line -- from one write.
+                # Returns None for every session this seam is off or unsampled
+                # for, which is every session by default.
+                _tool_row_meta = _tool_meta(event)
+                _risk_meta = await _tool_risk_meta(
+                    state,
+                    slot,
+                    event,
+                    session_key=session_key,
+                    message=message,
+                    calls_this_turn=_turn_tool_calls,
+                )
+                if _risk_meta:
+                    _tool_row_meta = {**(_tool_row_meta or {}), **_risk_meta}
                 slot.append(
-                    "tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_meta(event)
+                    "tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_row_meta
                 )
                 sel().log_tool_invocation(
                     session_key=session_key,

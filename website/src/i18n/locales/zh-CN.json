@@ -10201,6 +10201,16 @@
         "sent_history": "历史 {{chars}} 字符",
         "sent_label": "发送给 Jev",
         "sent_message": "消息 {{chars}} 字符"
+      },
+      "toolRiskBadge": {
+        "annotation_title": "Jev 看过这次调用并做了标记。标记不会影响这次调用是否被允许：那由本会话自己的权限设置决定，而且这次调用仍可能已被拒绝。",
+        "confidence_title": "Jev 对自己答案的把握，取值 0 到 1",
+        "labelled_tier": "Jev：{{tier}}",
+        "rate_jev": "Jev",
+        "rate_right_jev": "Jev 判断的风险是对的",
+        "rate_wrong_jev": "Jev 判断的风险是错的",
+        "tier_caution": "值得看一眼",
+        "tier_risky": "有风险"
       }
     },
     "chatPage": {
@@ -11030,7 +11040,9 @@
         "decisions_point_sampled": "开启期间，Jev 为你 {{percent}} 的会话作答，其余仍按词语匹配规则处理。要调整比例，请在你的 {{productName}} 数据目录（默认 ~/.kiro/crew）下的 config.json 中设置 decisions.bucket。",
         "decisions_point_sampled_all": "开启期间，Jev 为你的全部会话作答。要缩小到一部分，请在你的 {{productName}} 数据目录（默认 ~/.kiro/crew）下的 config.json 中设置 decisions.bucket。",
         "decisions_config_unavailable": "无法读取设置，因此不提供此开关。请重新加载后再试。",
-        "decisions_save_failed": "无法保存此设置。开关已恢复为已保存的值。"
+        "decisions_save_failed": "无法保存此设置。开关已恢复为已保存的值。",
+        "decisions_tool_args": "同时发送工具调用的参数，让 Jev 标记有风险的调用",
+        "decisions_tool_args_desc": "在自动批准工具调用的会话里，每次调用的名称和参数也会发给 Jev；Jev 觉得值得看一眼，就给那次调用加上标记。发送前会替换掉密码和密钥。它不会改变哪些工具调用被允许。你打开它之前一直关着，即使上面那个开关已经打开。"
       },
       "kiroSignInCard": {
         "title": "Kiro 登录",
