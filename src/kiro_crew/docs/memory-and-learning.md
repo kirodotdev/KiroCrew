@@ -51,12 +51,21 @@ Updated alongside preferences.
 
 ### Daily History (`history/{date}.md`)
 
-Conversation summaries organized by date. Natural decay:
+Conversation summaries organized by date. What a READ returns decays with age:
 - Last 14 days: full detail (days 0–13)
 - 14–60 days: first entry per day + count
 - 61–180 days: date + entry count only
-- 181–365 days: retained on disk but not loaded into context
+- 181–365 days: retained on disk, not returned by a read
 - 365+ days: pruned automatically
+
+The tiers above govern a dated READ (`read_recent_history`), not search: the
+full-text index holds each history file's complete content, so `memory_recall`
+can still surface a line from a day the dated read would have collapsed to a
+count.
+
+A new session carries none of these bodies either way. It carries a bounded index
+of the last three days' headings, and the body arrives only when `memory_recall`
+asks for it.
 
 ### Lessons
 

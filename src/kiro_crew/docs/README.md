@@ -94,5 +94,7 @@ Three constraints make this tree different from `docs/`:
 
 Because every doc here reaches every user, keep the content task-oriented and free
 of internal design narration. An engineering note belongs in
-[`../../../docs/`](../../../docs/README.md) instead. Each doc's first paragraph is
+[`../../../docs/`](../../../docs/README.md) instead — for example
+[how the model's context is assembled](../../../docs/architecture/context-management.md),
+which cites private symbols and so lives there rather than here. Each doc's first paragraph is
 read verbatim as a feature description, so write it to stand alone.

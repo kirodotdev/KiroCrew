@@ -116,6 +116,10 @@ gracefully rather than failing the turn.
 - [MCP Apps](mcp-apps.md): render interactive MCP tool output (diagrams, viewers,
   forms) in chat, the two gates that enable it, what a server must declare, and why
   output stays plain text otherwise
+- [Context management](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/context-management.md):
+  what goes into the model's context — first-turn block order, per-turn additions,
+  sub-agents, custom agents, and Crew mode. A contributor document in the
+  repository, not part of this installed package
 - [Settings deep links](settings-deeplink.md): answer "where is that setting?" with
   a link that opens the tab and flashes the control, from the generated
   `settings-registry.generated.json` in this directory
