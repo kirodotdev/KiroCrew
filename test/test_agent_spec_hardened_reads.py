@@ -915,6 +915,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("list_agents", "unknown"),
         ("resolve_project_agent_name", "unknown"),
     ],
+    "kiro_crew/apps/builtins/auto_improvement/spine/crew_runner.py": [
+        ("auto_improvement_assignment", "unknown")
+    ],
     "kiro_crew/cli_doctor.py": [("doctor", "cli"), ("doctor", "cli"), ("doctor", "cli")],
     "kiro_crew/config/loader.py": [("load_config", "unknown")],
     "kiro_crew/connections/mint.py": [

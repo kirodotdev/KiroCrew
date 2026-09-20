@@ -211,8 +211,9 @@ class TestAgentRegistration:
         assert "@ghost/summon" in warning
         assert "my-agent" in warning
 
+    @pytest.mark.parametrize("managed_ref", ["@kirocrew-core", "@kirocrew-core/memory_recall"])
     def test_resolvable_at_grants_log_no_dangling_warning(
-        self, tmp_path, app_env, monkeypatch, caplog
+        self, tmp_path, app_env, monkeypatch, caplog, managed_ref
     ):
         """The four real resolution sources must not trip the diagnostic.
 
@@ -235,7 +236,7 @@ class TestAgentRegistration:
                     "mcpServers": {"own-srv": {"command": "echo", "args": []}},
                     "tools": [
                         "@own-srv/do_thing",
-                        "@kirocrew-core",
+                        managed_ref,
                         "@ambient-srv",
                         "@test-app:srv",
                     ],

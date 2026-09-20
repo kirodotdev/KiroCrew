@@ -2566,14 +2566,17 @@ class TestTheFallbackNeverBypassesAConfiguredProvider:
     def _choose(*, provider_available: bool, registered: bool, claude_present: bool):
         from unittest.mock import patch
 
+        from kiro_crew.apps.builtins.auto_improvement.backend import crew
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
         from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as ar
+        from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
 
         with (
             patch.object(
                 ar.SessionAgentRunner, "available", staticmethod(lambda: provider_available)
             ),
-            patch.object(ar.SessionAgentRunner, "ensure_agent_registered", lambda self: registered),
+            patch.object(crew, "build_runner", lambda **kwargs: CrewRunner(None, {})),
+            patch.object(CrewRunner, "ensure_agent_registered", lambda self: registered),
             patch.object(ar.AgentRunner, "available", staticmethod(lambda: claude_present)),
             # This class is about the SELECTION (provider vs subprocess vs offline), not the
             # sandbox, so the credential-confinement precondition is satisfied here; the gate
@@ -2659,7 +2662,7 @@ class TestTheFallbackNeverBypassesAConfiguredProvider:
 
     def test_a_registered_provider_is_preferred(self) -> None:
         chosen = self._choose(provider_available=True, registered=True, claude_present=True)
-        assert type(chosen).__name__ == "SessionAgentRunner"
+        assert type(chosen).__name__ == "CrewRunner"
 
     def test_nothing_available_is_offline(self) -> None:
         assert self._choose(provider_available=False, registered=True, claude_present=False) is None
@@ -2758,39 +2761,45 @@ class TestTheWatcherRefusesToRunWithoutEgressAcknowledgement:
 
 
 class TestTheLoopRunnerRefusesWithoutCredentialConfinement:
-    """The loop's authoring agent must not run with the operator's credential stores visible.
+    """The loop requires effective strict isolation or explicit risk acknowledgement.
 
-    The SUBPROCESS path spawns through `sandboxed_spawn_argv(mode="strict")` +
-    `strip_credential_env`, which hides `~/.aws`, `~/.gnupg`, `gh`/`gcloud`/`kube` config and
-    scrubs the token env. The PROVIDER path (`SessionAgentRunner`) drives a Kiro Crew session
-    instead, so isolation is whatever the gateway's `sandbox` setting provides — and that field
-    DEFAULTS TO "auto" (engages OS-level isolation and defers to kiro-cli's internal agent sandbox
-    on macOS when enabled). On a gateway with mode='off' set, a repository instruction reaching
-    the agent's auto-approved Bash (`python helper.py`) could read those stores and exfiltrate
-    over an unrestricted network.
-
-    `_build_runner` therefore runs OFFLINE (returns None — the same fail-closed answer it
-    already gives when the tool-restricted agent cannot be registered) unless the sandbox is
-    'auto' OR the operator has acknowledged the residual risk with
-    `acceptUnsandboxedAgentRisk`. Raised by the GPT review.
+    The provider inherits `agent.sandbox`, clamped by the governance floor. The
+    `cc` profile leaves SSH and GitHub CLI credentials visible; `auto` and
+    `standard` also expose AWS credentials. These modes require the operator's
+    explicit `acceptUnsandboxedAgentRisk` decision before unattended execution.
     """
 
-    def test_an_unconfined_sandbox_without_acknowledgement_refuses(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        "mode,floor,confined",
+        [
+            ("standard", None, False),
+            ("auto", None, False),
+            ("auto", "cc", False),
+            ("auto", "strict", True),
+        ],
+    )
+    @pytest.mark.parametrize("accept_risk", [False, True])
+    def test_requires_effective_strict_or_explicit_risk(
+        self, monkeypatch, mode, floor, confined, accept_risk
+    ) -> None:
+        from kiro_crew import sandbox
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
+        from kiro_crew.config import KiroCrewConfig
 
-        monkeypatch.setattr(R, "_unsandboxed_agent_accepted", lambda: False)
-        monkeypatch.setattr(R.store, "read_json", lambda *_a, **_k: {})
-        reason = R._credentials_are_unconfined()
-        assert reason, "an 'off'/unset sandbox with no acknowledgement must report unconfined"
-        assert "auto" in reason
-
-    def test_the_acknowledgement_opts_in(self, monkeypatch) -> None:
-        from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
-
+        config = KiroCrewConfig()
+        config.agent.sandbox = mode
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: config))
+        monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: floor)
         monkeypatch.setattr(
-            R.store, "read_json", lambda *_a, **_k: {"acceptUnsandboxedAgentRisk": True}
+            R.store, "read_json", lambda *_a, **_k: {"acceptUnsandboxedAgentRisk": accept_risk}
         )
-        assert R._credentials_are_unconfined() == "", "the explicit acknowledgement must opt in"
+        reason = R._credentials_are_unconfined()
+        if confined or accept_risk:
+            assert reason == ""
+        else:
+            assert repr(floor or mode) in reason
+            assert "sandbox.min_level governance floor of 'strict'" in reason
+            assert "acceptUnsandboxedAgentRisk" in reason
 
     def test_only_the_explicit_boolean_opts_in(self, monkeypatch) -> None:
         """A stray ``1``/``"yes"`` must not grant it — same `is True` contract as the watcher
@@ -2834,7 +2843,7 @@ class TestTheLoopRunnerRefusesWithoutCredentialConfinement:
             "the loop's runner does not check credential confinement, so a provider-driven "
             "agent can run with the operator's credential stores visible"
         )
-        assert src.index("_credentials_are_unconfined()") < src.index("SessionAgentRunner("), (
+        assert src.index("_credentials_are_unconfined()") < src.index("runner = build_runner("), (
             "the confinement check runs AFTER the runner is constructed — it must refuse first"
         )
 
@@ -2862,11 +2871,16 @@ class TestAgentRegistrationFailsClosed:
     """
 
     def test_runner_refuses_the_session_runner_when_registration_fails(self, monkeypatch) -> None:
+        from kiro_crew.apps.builtins.auto_improvement.backend import crew
+        from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import RunSupervisor
         from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as ar
+        from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
 
         monkeypatch.setattr(ar.SessionAgentRunner, "available", staticmethod(lambda: True))
-        monkeypatch.setattr(ar.SessionAgentRunner, "ensure_agent_registered", lambda self: False)
+        monkeypatch.setattr(crew, "build_runner", lambda **kwargs: CrewRunner(None, {}))
+        monkeypatch.setattr(CrewRunner, "ensure_agent_registered", lambda self: False)
+        monkeypatch.setattr(R, "_credentials_are_unconfined", lambda: "")
         # No subprocess fallback either, so the result must be "offline", never a runner
         # with an unscoped agent.
         monkeypatch.setattr(ar.AgentRunner, "available", staticmethod(lambda: False))
@@ -2878,18 +2892,21 @@ class TestAgentRegistrationFailsClosed:
         self, monkeypatch
     ) -> None:
         """The happy path must be untouched — this is a guard, not a new refusal."""
+        from kiro_crew.apps.builtins.auto_improvement.backend import crew
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import RunSupervisor
         from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as ar
+        from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
 
         monkeypatch.setattr(ar.SessionAgentRunner, "available", staticmethod(lambda: True))
-        monkeypatch.setattr(ar.SessionAgentRunner, "ensure_agent_registered", lambda self: True)
+        monkeypatch.setattr(crew, "build_runner", lambda **kwargs: CrewRunner(None, {}))
+        monkeypatch.setattr(CrewRunner, "ensure_agent_registered", lambda self: True)
         # This test is about REGISTRATION, not the sandbox: satisfy the credential-confinement
         # precondition so it exercises the path it names (see
         # TestTheLoopRunnerRefusesWithoutCredentialConfinement for the gate itself).
         monkeypatch.setattr(R, "_credentials_are_unconfined", lambda: "")
         got = RunSupervisor()._build_runner(stop_check=lambda: False)
-        assert isinstance(got, ar.SessionAgentRunner)
+        assert isinstance(got, CrewRunner)
 
     def test_the_watcher_builder_registers_before_returning(self) -> None:
         """Structural: the watcher path must call registration and honor its result."""

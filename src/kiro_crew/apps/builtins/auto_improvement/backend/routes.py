@@ -95,17 +95,9 @@ _CONFIG_WRITABLE = frozenset(
         # watchers only at repositories whose PR comments they would be willing to execute.
         # Same opt-in shape as `watcherAutoStart`. Raised by the GPT review.
         "watcherAcceptEgressRisk",
-        # Opt-in: acknowledge that the LOOP's authoring agent runs without this app's own
-        # strict credential masking. Default OFF, fail-closed. The subprocess path spawns
-        # through `sandboxed_spawn_argv(mode="strict")` + `strip_credential_env`, which hides
-        # `~/.aws`/`~/.gnupg`/`gh` stores; the PROVIDER path drives a Kiro Crew session
-        # instead, so isolation is whatever the gateway's `sandbox` setting gives — and only
-        # 'cc'/'strict' profiles hide credential directories from the agent. On a gateway
-        # with default 'auto'/'standard' (which exposes .aws/.ssh for workflow use), a
-        # repository instruction reaching the agent's auto-approved Bash could read those
-        # stores and exfiltrate. `runner._build_runner` therefore runs OFFLINE unless the
-        # sandbox is 'cc'/'strict' or this flag is set. Same one-time-consent shape as
-        # `watcherAcceptEgressRisk`. Raised by the GPT review.
+        # Explicit consent for unattended repository execution when the gateway's
+        # effective sandbox is below strict and credential stores remain visible.
+        # Default OFF. The runner checks this before creating member assignments.
         "acceptUnsandboxedAgentRisk",
         # Run budget. Safe to expose: these only ever SHRINK or grow how much work
         # one run does; none of them can retarget the repository or relax a gate.
@@ -1476,6 +1468,9 @@ def register_routes(app: web.Application) -> None:
         try:
 
             pr_watchers.attach_loop(asyncio.get_running_loop())
+            from .crew import attach_gateway
+
+            attach_gateway(_app.get("state"))
         except Exception:  # pragma: no cover - never break gateway startup
             logger.warning("%s: could not bind the watcher loop", store.APP_NAME, exc_info=True)
 

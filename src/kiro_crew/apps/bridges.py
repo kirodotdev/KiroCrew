@@ -632,7 +632,9 @@ def _materialize_managed_refs(agent_data: dict[str, Any]) -> None:
     from kiro_crew.agent import _MANAGED_MCP_SERVERS
 
     refs = {
-        t[1:] for t in agent_data.get("tools") or [] if isinstance(t, str) and t.startswith("@")
+        t[1:].split("/", 1)[0]
+        for t in agent_data.get("tools") or []
+        if isinstance(t, str) and t.startswith("@")
     }
     servers = agent_data.get("mcpServers") or {}
     for name, managed in _MANAGED_MCP_SERVERS.items():

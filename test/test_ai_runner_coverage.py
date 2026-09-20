@@ -21,6 +21,8 @@ touches a POSIX-only primitive.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import subprocess
 import sys
@@ -29,15 +31,19 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.apps.builtins.auto_improvement import profiles as profiles_mod
-from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
+from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup, crew
 from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
 from kiro_crew.apps.builtins.auto_improvement.backend import store
+from kiro_crew.apps.builtins.auto_improvement.spine import agent_discovery as discovery_mod
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as agent_runner_mod
 from kiro_crew.apps.builtins.auto_improvement.spine import driver as driver_mod
+from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
 
 WAIT_S = 10.0
 
@@ -396,27 +402,44 @@ class TestCredentialConfinement:
         self._config({"acceptUnsandboxedAgentRisk": True})
         assert R._unsandboxed_agent_accepted() is True
 
-    def _sandbox(self, monkeypatch: pytest.MonkeyPatch, mode: Any) -> None:
+    def _sandbox(
+        self, monkeypatch: pytest.MonkeyPatch, mode: Any, floor: str | None = None
+    ) -> None:
+        from kiro_crew import sandbox
         from kiro_crew.config import KiroCrewConfig
 
-        monkeypatch.setattr(
-            KiroCrewConfig, "load", staticmethod(lambda: SimpleNamespace(sandbox=mode))
-        )
+        config = KiroCrewConfig()
+        config.agent.sandbox = mode
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: config))
+        monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: floor)
 
-    @pytest.mark.parametrize("mode", ["cc", "strict", "  STRICT  "])
-    def test_credential_hiding_modes_are_confined(
+    @pytest.mark.parametrize("mode", ["auto", "off"])
+    def test_effective_strict_mode_is_confined(
         self, monkeypatch: pytest.MonkeyPatch, mode: str
     ) -> None:
-        self._sandbox(monkeypatch, mode)
+        self._sandbox(monkeypatch, mode, floor="strict")
         assert R._credentials_are_unconfined() == ""
 
-    @pytest.mark.parametrize("mode", ["auto", "standard", "off", "", None])
+    @pytest.mark.parametrize(
+        "mode,floor,reported_mode",
+        [
+            ("auto", None, "auto"),
+            ("auto", "standard", "auto"),
+            ("auto", "cc", "cc"),
+            ("standard", None, "standard"),
+            ("off", None, "off"),
+            ("", None, "unset"),
+            (None, None, "unset"),
+            ("  STRICT  ", None, "  STRICT  "),
+        ],
+    )
     def test_other_modes_are_refused_with_a_reason(
-        self, monkeypatch: pytest.MonkeyPatch, mode: Any
+        self, monkeypatch: pytest.MonkeyPatch, mode: Any, floor: str | None, reported_mode: str
     ) -> None:
-        self._sandbox(monkeypatch, mode)
+        self._sandbox(monkeypatch, mode, floor)
         reason = R._credentials_are_unconfined()
-        assert "requires 'cc' or 'strict'" in reason
+        assert f"the gateway sandbox is {reported_mode!r}" in reason
+        assert "requires a sandbox.min_level governance floor of 'strict'" in reason
         assert "acceptUnsandboxedAgentRisk" in reason
 
     def test_unreadable_config_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -491,47 +514,53 @@ class TestProgressSinks:
 # ── runner selection ─────────────────────────────────────────────────────────
 
 
-class _FakeSessionRunner:
-    """Stands in for ``SessionAgentRunner``: no provider, no session, no spawn."""
+class _FakeCrewRunner:
+    """Stands in for the member runner returned by ``crew.build_runner``."""
 
-    is_available = True
     registers = True
-    made: list[_FakeSessionRunner] = []
+    made: list[_FakeCrewRunner] = []
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
-        _FakeSessionRunner.made.append(self)
-
-    @classmethod
-    def available(cls) -> bool:
-        return cls.is_available
+        _FakeCrewRunner.made.append(self)
 
     def ensure_agent_registered(self) -> bool:
         return type(self).registers
 
 
 @pytest.fixture()
-def fake_session_runner(monkeypatch: pytest.MonkeyPatch) -> Any:
-    _FakeSessionRunner.made = []
-    _FakeSessionRunner.is_available = True
-    _FakeSessionRunner.registers = True
-    monkeypatch.setattr(agent_runner_mod, "SessionAgentRunner", _FakeSessionRunner)
-    return _FakeSessionRunner
+def fake_crew_runner(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from kiro_crew.apps.builtins.auto_improvement.backend import crew
+
+    monkeypatch.setattr(_FakeCrewRunner, "made", [])
+    monkeypatch.setattr(_FakeCrewRunner, "registers", True)
+    monkeypatch.setattr(crew, "build_runner", _FakeCrewRunner)
+    monkeypatch.setattr(
+        agent_runner_mod.SessionAgentRunner, "available", staticmethod(lambda: True)
+    )
+    return _FakeCrewRunner
 
 
 class TestBuildRunner:
     def test_offline_when_no_provider_is_available(
-        self, sup: Any, fake_session_runner: Any, caplog: pytest.LogCaptureFixture
+        self,
+        sup: Any,
+        fake_crew_runner: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        fake_session_runner.is_available = False
+        monkeypatch.setattr(
+            agent_runner_mod.SessionAgentRunner, "available", staticmethod(lambda: False)
+        )
         with caplog.at_level("WARNING"):
             assert sup._build_runner(stop_check=lambda: False) is None
         assert "no provider-backed agent runner available" in caplog.text
+        assert fake_crew_runner.made == []
 
     def test_offline_when_credentials_are_unconfined(
         self,
         sup: Any,
-        fake_session_runner: Any,
+        fake_crew_runner: Any,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -539,32 +568,117 @@ class TestBuildRunner:
         with caplog.at_level("WARNING"):
             assert sup._build_runner(stop_check=lambda: False) is None
         assert "refusing the provider-backed agent runner" in caplog.text
-        assert fake_session_runner.made == []
+        assert fake_crew_runner.made == []
 
     def test_offline_when_the_restricted_agent_cannot_be_registered(
         self,
         sup: Any,
-        fake_session_runner: Any,
+        fake_crew_runner: Any,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         monkeypatch.setattr(R, "_credentials_are_unconfined", lambda: "")
-        fake_session_runner.registers = False
+        fake_crew_runner.registers = False
         with caplog.at_level("WARNING"):
             assert sup._build_runner(stop_check=lambda: False) is None
         assert "running OFFLINE" in caplog.text
         # NOT the subprocess fallback: the provider's permission gate must not be bypassed.
-        assert len(fake_session_runner.made) == 1
+        assert len(fake_crew_runner.made) == 1
 
     def test_returns_the_provider_runner_when_confined(
-        self, sup: Any, fake_session_runner: Any, monkeypatch: pytest.MonkeyPatch
+        self, sup: Any, fake_crew_runner: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(R, "_credentials_are_unconfined", lambda: "")
         stop_check = sup._stop_check
         made = sup._build_runner(stop_check=stop_check)
-        assert isinstance(made, _FakeSessionRunner)
+        assert isinstance(made, _FakeCrewRunner)
         assert made.kwargs["stop_check"] is stop_check
         assert made.kwargs["on_activity"] == sup._on_agent_activity
+
+
+class TestScoutShellCapability:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stage", ["prepush", "discovery"])
+    async def test_git_request_is_available_but_only_review_can_approve_it(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, stage: str
+    ) -> None:
+        template_path = Path(agent_runner_mod.__file__).parents[1] / "agents" / "scout.json"
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+        assert "execute_bash" in template["tools"]
+        assert template["allowedTools"] == []
+
+        provider = SimpleNamespace(
+            approve_tool=AsyncMock(return_value=None),
+            reject_tool=AsyncMock(return_value=None),
+        )
+
+        async def stream(prompt):
+            yield SimpleNamespace(
+                kind=EVENT_PERMISSION_REQUEST,
+                tool_kind="execute_bash",
+                is_shell=True,
+                title="git diff",
+                request_id="git-diff",
+                raw_tool_params={"command": "git diff main...HEAD"},
+            )
+            text = "[]"
+            if stage == "prepush":
+                text = (
+                    "REVIEW: clean" if provider.approve_tool.await_count else "REVIEW: unavailable"
+                )
+            yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=text)
+            yield SimpleNamespace(kind=EVENT_COMPLETE)
+
+        provider.stream = stream
+        sessions = SimpleNamespace(
+            get_or_create=AsyncMock(return_value=(provider, True, False)),
+            release=Mock(),
+            remove=AsyncMock(return_value=None),
+        )
+        context = SimpleNamespace(
+            ensure_store=AsyncMock(return_value=None),
+            build_message=lambda prompt, *args, **kwargs: (prompt, None),
+        )
+        identities = await asyncio.to_thread(crew.ensure_team)
+        runtime = crew.GatewayRuntime(sessions, context, asyncio.get_running_loop())
+        runner = CrewRunner(runtime, identities)
+
+        if stage == "prepush":
+            driver = object.__new__(driver_mod.Driver)
+            driver.prepush_review = True
+            driver._agent_runner = runner
+            driver.clone = tmp_path
+            driver.log = logging.getLogger(__name__)
+            driver._build_test_pre_push_clean = Mock(return_value=(False, "review unavailable"))
+            verdict = await asyncio.wait_for(
+                asyncio.to_thread(driver._prepush_review_clean, target="feature", base_ref="main"),
+                timeout=WAIT_S,
+            )
+            assert verdict == (True, "prepush_review clean")
+            driver._build_test_pre_push_clean.assert_not_called()
+            provider.approve_tool.assert_awaited_once_with("git-diff")
+            provider.reject_tool.assert_not_awaited()
+        else:
+            surfaces = await asyncio.wait_for(
+                asyncio.to_thread(
+                    discovery_mod.discover_surfaces_via_agent,
+                    runner,
+                    clone=tmp_path,
+                    timeout_s=5,
+                ),
+                timeout=WAIT_S,
+            )
+            assert surfaces == []
+            provider.reject_tool.assert_awaited_once_with("git-diff")
+            provider.approve_tool.assert_not_awaited()
+            assert "not in the caller's allowed_tools" in caplog.text
+
+        sessions.get_or_create.assert_awaited_once()
+        allocation = sessions.get_or_create.await_args
+        assert allocation.kwargs["agent"] == template["name"]
+        assert allocation.kwargs["cwd"] == str(tmp_path)
+        sessions.release.assert_called_once_with(allocation.args[0])
+        sessions.remove.assert_awaited_once_with(allocation.args[0])
 
 
 # ── driver construction ──────────────────────────────────────────────────────

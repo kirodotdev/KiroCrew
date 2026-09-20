@@ -1019,10 +1019,8 @@ class TestShippedAgentsDoNotPreAuthorizeTools:
         - a HOST-MANAGED server — read from ``agent._MANAGED_MCP_SERVERS``
           itself, the registry ``bridges._materialize_managed_refs`` consults,
           so a renamed managed server fails here instead of un-mounting. The
-          materializer keys on the WHOLE remainder after ``@`` (``t[1:]``), so
-          only the bare ``@server`` form resolves — ``@kirocrew-core/tool``
-          would never be copied into the spec's ``mcpServers`` and must FAIL
-          this gate;
+          materializer resolves the server portion of both ``@server`` and
+          ``@server/tool``, preserving the original tool grants;
         - the owning app's NAMESPACED servers, ``<app>:<server>`` for every
           key in the manifest's ``mcpServers`` (``bridges._own_mcp_servers``
           injects these by prefix after ``_register_mcp_servers`` writes them).
@@ -1061,10 +1059,9 @@ class TestShippedAgentsDoNotPreAuthorizeTools:
                 grants_seen += 1
                 remainder = entry[1:]
                 server = remainder.split("/", 1)[0]
-                # Managed refs resolve on the WHOLE remainder (bare form only):
-                # _materialize_managed_refs matches `t[1:]` against the registry
-                # keys, so a per-tool managed ref never materializes.
-                if remainder in _MANAGED_MCP_SERVERS:
+                # Match the materializer's server lookup without widening the
+                # original per-tool grant.
+                if server in _MANAGED_MCP_SERVERS:
                     continue
                 if server not in resolvable:
                     offenders.append(f"{path}: {entry!r} (server {server!r})")

@@ -482,6 +482,12 @@ Writer: `apps/bridges.py::_apply_agent_mcp_policy`, `_mcp_json_path`,
 `dashboard/handlers/agents.py::_merge_unowned_servers` and
 `_drop_unbacked_app_entries` for the PUT side.
 
+App agent registration materializes a host-managed server for both a whole-server
+reference (`@kirocrew-core`) and a specific tool reference
+(`@kirocrew-core/memory_recall`). It resolves the server portion for its launch
+spec and preserves the original `tools` and `allowedTools` grants; requesting
+one tool never becomes a grant to the whole server.
+
 ## 2. Auto-approve is intersected with the governance ceiling
 
 A granted server normally lands in the agent's `allowedTools` (auto-approve):

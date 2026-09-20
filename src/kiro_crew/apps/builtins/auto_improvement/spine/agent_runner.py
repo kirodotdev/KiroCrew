@@ -497,7 +497,9 @@ def _requested_command(ev: object) -> str:
     return ""
 
 
-def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
+def _governance_denial(
+    ev: object, *, session_key: str, agent: str, tool_kind: str | None = None
+) -> str:
     """A deny reason from the PLATFORM's governance chokepoint, or "" to allow.
 
     The unattended runner had its OWN approval gate (the allowlist + shell denylist
@@ -527,7 +529,8 @@ def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
         # custom denied command was silently unenforced for the UNATTENDED agent — the one
         # caller that most needs it. Raised by the GPT review.
         manager = HookManager(hooks_config_from_config_dict(getattr(cfg, "hooks", {}) or {}))
-        tool_kind = getattr(ev, "tool_kind", "") or getattr(ev, "tool_purpose", "")
+        if tool_kind is None:
+            tool_kind = getattr(ev, "tool_kind", "") or getattr(ev, "tool_purpose", "")
         command = _requested_command(ev)
         result = manager.on_tool_call(
             (getattr(ev, "title", "") or tool_kind or "").strip(),
@@ -537,8 +540,9 @@ def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
             # The shared extraction threads every enforcement-relevant event field
             # (params, diff path, trusted MCP identity, and whatever comes next); the
             # three overrides are this runner's provider-agnostic readings of a stream
-            # that may not be an ``AcpEvent``: ``tool_kind`` falls back to
-            # ``tool_purpose``, ``command`` is recovered by ``_requested_command`` from
+            # that may not be an ``AcpEvent``: ``tool_kind`` shares the allowlist's
+            # resolved kind (direct callers retain the event fallback),
+            # ``command`` is recovered by ``_requested_command`` from
             # the raw params rather than ``AcpEvent.shell_command``, and ``is_shell`` is
             # taken from the EVENT, not derived from the command. `HookManager.on_tool_call`
             # denies when `is_shell and not command` — a shell tool whose command could
@@ -1281,6 +1285,11 @@ class SessionAgentRunner:
         self._provider_factory = cfg.create_provider_factory()
         return self._provider_factory
 
+    def _allows_tool(self, event: object, tool: str, allowed: list[str] | None) -> bool:
+        if getattr(event, "is_shell", False):
+            return _tool_permitted("Bash", allowed)
+        return _tool_permitted(tool, allowed)
+
     def _emit_activity(self, ev: dict) -> None:
         if self._on_activity is None:
             return
@@ -1346,6 +1355,8 @@ class SessionAgentRunner:
         t0,
         max_turns=0,
         allowed_tools=None,
+        session_key=None,
+        provider=None,
     ) -> AgentResult:
         # Build a provider for THIS task. The factory's FIRST positional is the
         # session_key (namespaces the provider's work dir); ``agent`` selects the
@@ -1366,18 +1377,21 @@ class SessionAgentRunner:
         # Stable across processes (Python's builtin hash() is per-run salted): the
         # session key only needs to be unique per worktree, not secret.
         digest = hashlib.sha256((cwd or self.agent_name).encode()).hexdigest()[:12]
-        session_key = f"auto-improvement-{digest}"
-        provider = None
+        session_key = session_key or f"auto-improvement-{digest}"
+        owns_provider = provider is None
+        cost = 0.0
+        cost_accounted = False
         try:
-            try:
-                provider = factory(session_key, agent=self.agent_name, cwd=cwd)
-            except TypeError:
-                # Older/other factories may not accept cwd / agent kwargs.
+            if owns_provider:
                 try:
-                    provider = factory(session_key, agent=self.agent_name)
+                    provider = factory(session_key, agent=self.agent_name, cwd=cwd)
                 except TypeError:
-                    provider = factory(session_key)
-            await provider.start()
+                    # Older/other factories may not accept cwd / agent kwargs.
+                    try:
+                        provider = factory(session_key, agent=self.agent_name)
+                    except TypeError:
+                        provider = factory(session_key)
+                await provider.start()
             text_parts: list[str] = []
             # Streamed assistant text arrives as MANY tiny provider chunks (often sub-word
             # token slivers like "ismatched-" / "ncation would"). Emitting one activity
@@ -1394,6 +1408,9 @@ class SessionAgentRunner:
             # path), not a duplicate. Fixes "⚙ read · Read File" (no filename): the initial
             # tool_call has empty rawInput; the path arrives in the refinement.
             announced_tool_detail: dict[str, str] = {}
+            # Kiro permission frames can omit kind. Retain the classification
+            # from the preceding tool_call with the SAME id, never its title.
+            announced_tool_kind: dict[str, str] = {}
             deadline = t0 + timeout_s
             full_prompt = (append_system + "\n\n" + prompt) if append_system else prompt
             # HARD WALL-CLOCK WATCHDOG (operator directive): a plain `async for` only checks
@@ -1414,8 +1431,10 @@ class SessionAgentRunner:
                 # The tool calls billed before an early return are real money — omitting
                 # them (the old behavior, which only accrued on success) made the ceiling
                 # under-count for timeout/max_turns, the EXPECTED common outcomes.
+                nonlocal cost_accounted
                 with self._cost_lock:
                     self._total_cost_usd += cost
+                cost_accounted = True
                 return AgentResult(
                     ok=ok,
                     error=error,
@@ -1442,8 +1461,11 @@ class SessionAgentRunner:
                     # In-turn stall exceeded the budget — force-cancel and harvest text.
                     return _finish(ok=False, error=f"timeout after {timeout_s}s")
                 kind = getattr(ev, "kind", "")
-                if getattr(ev, "cost_usd", 0.0):
-                    cost = float(ev.cost_usd) or cost
+                reported_cost = getattr(ev, "cost_usd", 0.0) or getattr(
+                    getattr(ev, "usage", None), "cost_usd", 0.0
+                )
+                if reported_cost:
+                    cost = float(reported_cost) or cost
                 if kind == EVENT_PERMISSION_REQUEST:
                     # AUTO-APPROVE EVERY tool/MCP the provider asks for — never block on a
                     # permission prompt (the subagent runs unattended; a blocked tool would
@@ -1462,7 +1484,11 @@ class SessionAgentRunner:
                     # approval landed out-of-order relative to the read loop, the agent never
                     # saw its tool result, and the run hung to the timeout. Inline await is
                     # the proven pattern and completes the turn.
-                    tool = getattr(ev, "tool_kind", "") or getattr(ev, "tool_purpose", "")
+                    tool = (
+                        getattr(ev, "tool_kind", "")
+                        or announced_tool_kind.get(getattr(ev, "tool_call_id", ""), "")
+                        or getattr(ev, "tool_purpose", "")
+                    )
                     rid = getattr(ev, "request_id", "")
                     # ENFORCE the caller's allowlist. `allowed_tools` was accepted by `run`
                     # and never forwarded here, so every request was granted whatever it
@@ -1474,7 +1500,9 @@ class SessionAgentRunner:
                     # — the enterprise ceiling, builtin denied rules, and sensitive-path
                     # (~/.aws/~/.ssh) blocks that the dashboard/Slack paths honor. This
                     # unattended runner must not rely only on the app-local checks below.
-                    gov = _governance_denial(ev, session_key=session_key, agent=self.agent_name)
+                    gov = _governance_denial(
+                        ev, session_key=session_key, agent=self.agent_name, tool_kind=tool
+                    )
                     if gov:
                         logger.warning("refusing tool %r — governance: %s", tool, gov)
                         await self._reject(provider, rid, tool=tool, session_key=session_key)
@@ -1494,7 +1522,7 @@ class SessionAgentRunner:
                             }
                         )
                         continue
-                    if not _tool_permitted(tool, allowed_tools):
+                    if not self._allows_tool(ev, tool, allowed_tools):
                         logger.warning("refusing tool %r — not in the caller's allowed_tools", tool)
                         await self._reject(provider, rid, tool=tool, session_key=session_key)
                         self._emit_activity(
@@ -1517,6 +1545,7 @@ class SessionAgentRunner:
                     tcid = getattr(ev, "tool_call_id", "") or ""
                     if tcid:
                         announced_tool_detail[tcid] = detail
+                        announced_tool_kind[tcid] = getattr(ev, "tool_kind", "") or ""
                     text_buf.flush()  # close the current thought before the tool line
                     self._emit_activity(
                         {"kind": "tool", "tool": getattr(ev, "tool_kind", "tool"), "detail": detail}
@@ -1562,7 +1591,10 @@ class SessionAgentRunner:
             text_buf.flush()  # emit any trailing partial line at turn end
             return _finish(ok=True)
         finally:
-            if provider is not None:
+            if not cost_accounted:
+                with self._cost_lock:
+                    self._total_cost_usd += cost
+            if provider is not None and owns_provider:
                 try:
                     await provider.shutdown()
                 except Exception:  # noqa: BLE001
@@ -1777,7 +1809,8 @@ def author_bug_fix(
         "not yours to fix and must be left alone.\n"
         "When you DO fix, reply with a one-line summary of the edit."
     )
-    res = runner.run(
+    role_runner = runner.for_role("implementation") if hasattr(runner, "for_role") else runner
+    res = role_runner.run(
         prompt,
         cwd=str(worktree),
         allowed_tools=["Bash", "Read", "Edit", "Write", "Grep", "Glob"],
@@ -1953,7 +1986,8 @@ def author_perf_fix(
         "wastes a reviewer's time and pollutes the measurement record.\n"
         "When you DO change something, reply with a one-line summary of the edit."
     )
-    res = runner.run(
+    role_runner = runner.for_role("implementation") if hasattr(runner, "for_role") else runner
+    res = role_runner.run(
         prompt,
         cwd=str(worktree),
         allowed_tools=["Bash", "Read", "Edit", "Write", "Grep", "Glob"],
