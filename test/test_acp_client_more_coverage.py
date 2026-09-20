@@ -313,7 +313,10 @@ class TestResolveSshAuthSock:
         monkeypatch.setattr(acp_client, "glob", types.SimpleNamespace(glob=_fake_glob))
         env: dict[str, str] = {}
         _resolve_ssh_auth_sock(env)
-        assert seen == ["/tmp/com.apple.launchd.*/Listeners"]
+        assert seen == [
+            "/tmp/com.apple.launchd.*/Listeners",
+            "/var/run/com.apple.launchd.*/Listeners",
+        ]
         assert "SSH_AUTH_SOCK" not in env
 
     def test_windows_is_a_noop(self, monkeypatch):

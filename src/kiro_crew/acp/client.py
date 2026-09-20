@@ -1685,7 +1685,10 @@ def _resolve_ssh_auth_sock(env: dict[str, str]) -> None:
         return  # already valid
 
     if sys.platform == "darwin":
-        patterns = ["/tmp/com.apple.launchd.*/Listeners"]
+        patterns = [
+            "/tmp/com.apple.launchd.*/Listeners",
+            "/var/run/com.apple.launchd.*/Listeners",
+        ]
     else:
         uid = os.getuid()
         patterns = [
