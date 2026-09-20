@@ -217,7 +217,7 @@ compaction fires often:
 
 - Reduce always-on skills, which consume context in every session
 - Check memory size: large preferences and project files eat into the budget
-- Enable `skills.lazy_load` so a large skills set injects only a ranked top-K
+- Keep `skills.lazy_load` on (the default) so a large skills set injects only a ranked top-K
   instead of the whole catalog
 - Lower `session.timeout_secs` to recycle sessions more often
 

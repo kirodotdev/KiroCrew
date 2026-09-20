@@ -1914,7 +1914,7 @@ class MessagingConfig:
 @dataclass
 class SkillsConfig:
     max_triggered: int = 0         # max skills loaded per message (>=0)
-    lazy_load: bool = False        # false = short skill_search entry; true = bounded usage-ranked index; neither expands background admission
+    lazy_load: bool = True         # true (default) = bounded usage-ranked index with paths and a families line; false = short eight-name skill_search entry; neither expands background admission
     # ... auto_create_from_sessions / auto_refine_on_deviation / extra_paths
 
 @dataclass
@@ -2686,9 +2686,11 @@ When `agent.model` is `"auto"` (default):
 ### Default context discovery
 
 `skills.max_triggered=0` disables per-message trigger injection, not discovery.
-The default entry shows up to eight usage-ranked names and short purposes plus
-`skill_search` guidance for short keywords. `lazy_load=true` selects a longer,
-bounded ranked index. Both preserve pinned instructions, confined project-body
+The default entry (`lazy_load=true`) is a bounded usage-ranked index carrying each
+skill's path, and one line naming the families it leaves out. `lazy_load=false`
+selects the shorter entry: up to eight usage-ranked names with short purposes plus
+`skill_search` guidance for short keywords. An agent with its own `skill://`
+mapping gets neither -- those skills arrive as complete instructions. Both preserve pinned instructions, confined project-body
 limits and explicit loading. Thread history scales with the model window
 independently of the fixed old-activity allowance; no additional config switches
 are introduced. The model window also derives the non-configurable protected-content

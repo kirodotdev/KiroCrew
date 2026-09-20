@@ -3083,10 +3083,45 @@ or authentication refusal never falls back to the costly legacy loop.
 
 Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can `cd` and run them.
 
-**Discovery (`skills.lazy_load`, default false):** startup and post-compaction
-assembly always use a bounded skills entry. OFF selects a short `skill_search`
-pointer for ordinary unmapped skills; ON selects the existing usage-ranked
-index within the same section allowance. Neither increases the shared background
+**Discovery (`skills.lazy_load`, default true):** startup and post-compaction
+assembly always use a bounded skills entry. ON (the default) selects the
+usage-ranked index, each row carrying the skill's path, with a
+`Families not shown:` line whenever rows are omitted; OFF selects the shorter
+`skill_search` pointer that names only the eight hottest skills. Both live inside
+the same section allowance. An agent with its own `skill://` mapping gets NEITHER
+surface: it named those skills itself, so they are delivered as complete
+instructions the way a pinned skill is, and an index over a hand-picked set would
+only point back at files already supplied while a search entry advertises the
+catalog that agent is scoped out of. Those bodies are bounded CUMULATIVELY at
+`MAPPED_SKILL_BODIES_CAP` (99,000 bytes, three background allowances): a mapping is
+one authoring act that can select any number of skills, and mapped bodies land in
+required content that no budget clips, so a `skill://**` glob would otherwise put a
+whole catalog into the prompt (2.19 MB on a 106-skill install, about 550k tokens) and
+fail it before the model reads anything. Admission follows the mapping's DECLARATION
+order, ranked by the FIRST glob that matches each skill, because the operator's own
+ordering is the only signal of which picks matter to this agent and a mapping is written
+as globs: ranking by exact path scores every glob-matched skill alike and hands the order
+to directory enumeration. Each body is charged the bytes it actually RENDERS, read
+during that pass rather than taken from the size the enumeration recorded: the stat
+happens before the read, so anything landing between them would admit a body on a
+measurement that no longer describes it. The cap bounds the whole mapped block, so the
+notice allowance and the block's own framing are reserved out of it rather than added on
+top, and once one body overflows the rest are deferred without being read. A skill delivered by its
+own `always: true` rule is neither charged nor deferred. What does not fit is named with
+its path under `### Mapped skills not included in full`, capped at
+`_MAPPED_NOTICE_MAX_NAMES` names AND `_MAPPED_NOTICE_MAX_BYTES`, then a count for the
+rest: a retained path carries no length bound of its own, so a dozen deeply nested ones
+would leave the notice as unbounded as the bodies it annotates. A mapped agent's on-demand set is EMPTY,
+not merely free of the deferred rows: a mapped confined skill would otherwise arrive as
+a body from the descriptor-pinned reader and as a discovery row for the same skill, and
+any row carries the catalog pointer that agent is scoped out of.
+
+Migration for an existing wide mapping: an operator whose glob matched many skills paid
+only an index before and now pays bodies up to the cap at every session start. Narrowing
+the glob to the skills that agent actually needs is the remedy, and the notice names what
+the cap deferred so the list is visible from the prompt itself. The loader reads the default from
+`SkillsConfig` rather than a second literal, so a `config.json` written without
+the key cannot answer with the opposite mode. Neither increases the shared background
 budget. Direct `get_context(budget=None)` remains available to explicit catalog
 readers, but is no longer the startup default. Pinned full instructions, confined
 project-body reads, native mapping gates, explicit `$skill` loads, trigger settings

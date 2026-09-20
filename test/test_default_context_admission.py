@@ -261,14 +261,18 @@ class TestAdmissionAndSkills:
             ),
         )
 
-    def test_default_discovery_is_short_and_full_skills_remain_loadable(self, rig):
+    def test_default_discovery_is_bounded_and_full_skills_remain_loadable(self, rig):
         builder, _, skills, _, _ = rig
         for i in range(80):
             seed_skill(skills._dir, f"procedure-{i}")
         text = builder.build_session_context()
-        assert "skill_search(query)" in text
-        shown = [i for i in range(80) if f"- procedure-{i}:" in text]
-        assert 0 < len(shown) <= 8
+        shown = [i for i in range(80) if f"- **procedure-{i}**:" in text]
+        assert 0 < len(shown) < 80
+        # The entry names what it drops, by count and by family, and points at the
+        # tool that reaches them.
+        assert f"{80 - len(shown)} more skill(s) not shown here" in text
+        assert "skill_search" in text
+        assert "Families not shown: procedure-* (" in text
         assert "[Skills:]" in text and "Synthetic procedure" not in text
         hidden = next(i for i in range(80) if i not in shown)
         matches = skills.search_skills(f"procedure-{hidden}")
@@ -277,6 +281,18 @@ class TestAdmissionAndSkills:
         matches = skills.search_skills("procedure-79")
         assert any(s["name"] == "procedure-79" for s in matches)
         assert "Synthetic procedure" in skills.load_skill("procedure-79")
+
+    def test_short_entry_names_at_most_eight_when_selected(self, rig):
+        """`skills.lazy_load = false` selects the shorter eight-name entry."""
+        _, _, skills, _, cfg = rig
+        for i in range(80):
+            seed_skill(skills._dir, f"procedure-{i}")
+        cfg.skills.lazy_load = False
+        text = skills.get_context(budget=4950, discovery_only=True)
+        assert "skill_search(query)" in text
+        shown = [i for i in range(80) if f"- procedure-{i}:" in text]
+        assert 0 < len(shown) <= 8
+        assert "Synthetic procedure" not in text
 
     def test_pinned_body_survives_budget_and_reinjection(self, rig):
         builder, _, skills, _, _ = rig
@@ -505,8 +521,12 @@ def test_agent_skill_search_entry_finds_omitted_catalog(rig, monkeypatch):
 
     builder, _, skills, _, _ = rig
     path = seed_skill(skills._dir, "notebookquartz")
+    for i in range(80):
+        seed_skill(skills._dir, f"filler-{i}")
     greeting, _ = builder.build_message("hi", True)
-    assert "skill_search(query)" in greeting
+    # The entry is bounded, so it names the tool that reaches what it omits.
+    assert "skill_search" in greeting
+    assert "more skill(s) not shown here" in greeting
     monkeypatch.setattr(
         mcp_core, "_get", lambda path, **kwargs: {"matches": skills.search_skills("notebookquartz")}
     )

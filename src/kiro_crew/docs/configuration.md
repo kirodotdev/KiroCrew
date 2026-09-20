@@ -480,7 +480,7 @@ member-memory sandbox is required.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `skills.max_triggered` | Maximum skills loaded per message (>=0) | `0` |
-| `skills.lazy_load` | Inject only a usage-ranked top-K of on-demand skills at session start and leave the long tail discoverable via search, so a large skills set cannot crowd out memory and lessons | `false` |
+| `skills.lazy_load` | Inject a usage-ranked top-K of on-demand skills at session start, plus one line naming the families it leaves out, and leave the tail discoverable via search, so a large skills set cannot crowd out memory and lessons. Set false for the shorter entry that names only the eight hottest skills | `true` |
 
 ### MCP Gateway
 

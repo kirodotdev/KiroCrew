@@ -151,6 +151,28 @@ def _namespace_groups(skills: list[dict]) -> list[tuple[str, int]]:
     )
 
 
+#: Labels on one family line. A bound rather than a budget trim, so the line
+#: cannot grow long enough to push a named skill (which carries the description,
+#: the only text saying what a skill does) out of a tight allowance.
+_FAMILY_LINE_MAX_LABELS = 6
+
+
+def _family_line(skills: list[dict]) -> str:
+    """One short line naming the families *skills* belong to, or ``""``.
+
+    Bounded at :data:`_FAMILY_LINE_MAX_LABELS` labels, with the rest reported as
+    a count, so the cost of this line does not scale with the catalog.
+    """
+    groups = _namespace_groups(skills)
+    if not groups:
+        return ""
+    shown, rest = groups[:_FAMILY_LINE_MAX_LABELS], groups[_FAMILY_LINE_MAX_LABELS:]
+    text = ", ".join(f"{label} ({count})" for label, count in shown)
+    if rest:
+        text += f", +{len(rest)} more"
+    return text
+
+
 def _matches_any(path: str, globs: list[str]) -> bool:
     """True if *path* matches any fnmatch glob in *globs*.
 
@@ -169,6 +191,34 @@ def _matches_any(path: str, globs: list[str]) -> bool:
     except OSError:
         return False
     return real != path and any(fnmatch.fnmatch(real, g) for g in globs)
+
+
+def _first_matching_glob(path: str, globs: list[str]) -> int:
+    """Index of the FIRST glob in *globs* that matches *path*, else ``len(globs)``.
+
+    A mapping is written as globs, so ordering mapped skills by an exact path
+    lookup ranks every glob-matched skill identically and the delivery order
+    collapses to directory enumeration. Ranking by the matching glob's position
+    keeps the operator's declared priority, which is the only signal of which
+    picks matter to that agent. Resolved form is tried the way
+    :func:`_matches_any` does, so a mapping written against a link target ranks
+    like the catalog path it matched.
+    """
+    if not path:
+        return len(globs)
+    for index, glob in enumerate(globs):
+        if fnmatch.fnmatch(path, glob):
+            return index
+    try:
+        real = str(Path(path).resolve(strict=True))
+    except OSError:
+        return len(globs)
+    if real == path:
+        return len(globs)
+    for index, glob in enumerate(globs):
+        if fnmatch.fnmatch(real, glob):
+            return index
+    return len(globs)
 
 
 # Lazy-load ranking (Mesh skill lazy-load): the session-start skills block only
@@ -229,6 +279,31 @@ _PROJECT_SKILL_MAX_DEPTH = 64
 # route all read through this one cap, so an oversized project SKILL.md is
 # skipped rather than loaded whole.
 PROJECT_SKILL_BODY_CAP = 24_750
+# Cumulative byte bound on the bodies an agent's own ``skill://`` mapping delivers.
+# A mapping is ONE authoring act that can select any number of skills, so a wide
+# glob would otherwise put the whole catalog into protected content, which is never
+# clipped to fit a budget: this host's 106 installed skills total 2.19 MB, about
+# 550k tokens, so the prompt fails before the model sees it. Three times the 33,000
+# background allowance is the same envelope every other protected contributor lives
+# in, and it admits the realistic mapping (the largest builtin SKILL.md is 91 KB,
+# the median 10 KB). Skills past the bound are NAMED with their paths instead, so
+# the agent can still read them. A per-skill ``always: true`` is a separate,
+# deliberate act per file and keeps its own behaviour.
+MAPPED_SKILL_BODIES_CAP = 99_000
+# How many omitted mapped skills the notice names before it summarizes the rest.
+# Bounded for the reason the family line is: a notice that grows with the catalog
+# would displace the bodies it is annotating.
+_MAPPED_NOTICE_MAX_NAMES = 12
+# And by bytes, because a retained path has no length bound of its own: a dozen
+# deeply nested ones would make the notice as unbounded as the bodies it annotates.
+_MAPPED_NOTICE_MAX_BYTES = 2_000
+# Bytes each delivered body costs BESIDE its own rendered text: the "\n\n---\n\n"
+# separator that joins it to the next part. The heading and the key are inside the
+# rendered text and are charged with it, so the whole delivery is measured on the
+# bytes that actually reach the prompt.
+_MAPPED_PART_JOINER_BYTES = 8
+# The "[Skills:]" opener and "[End of skills]" closer wrapping the whole block.
+_MAPPED_BLOCK_OVERHEAD_BYTES = 64
 
 # ── Auto skill creation ──
 
@@ -5308,8 +5383,10 @@ class SkillsLoader:
 
         ``discovery_only=True`` with an integer budget keeps pinned/confined
         instructions but replaces the ordinary index with a short search pointer.
-        Production uses this by default; explicit lazy-index preferences and
-        native-mapped sets retain the ranked index. Native gates live in context.py.
+        Production selects it with ``skills.lazy_load=false``; the default is the
+        ranked index. An agent with its own ``skill://`` mapping gets NEITHER: it
+        receives those skills' instructions, bounded cumulatively, with anything
+        past the allowance named by path. Native gates live in context.py.
 
         ``budget=None`` returns the legacy full-dump
         block — every on-demand skill summarized, unranked and untruncated,
@@ -5374,6 +5451,69 @@ class SkillsLoader:
         # keyed by "key" — there is no key/name mismatch here.
         pinned = set(self.get_always_skills(project_dir))
 
+        # An agent carrying its own ``skill://`` mapping named these skills itself,
+        # so the operator's choice replaces discovery: deliver the instructions in
+        # full and emit neither an index nor a search pointer. An index over a
+        # hand-picked set only tells the model to go read what it was already
+        # handed, and a search entry advertises the catalog this agent is
+        # deliberately scoped out of. Confined rows are untouched — they stay on
+        # the descriptor-pinned reader below — and a glob matches a global
+        # ``SKILL.md`` path, so a project skill does not reach this set.
+        #
+        # Bounded cumulatively, because ONE glob can select any number of skills
+        # while these bodies land in protected content that no budget clips. What
+        # does not fit is named with its path further down, so the mapping is
+        # honoured as far as it can be and visible beyond that.
+        mapped_deferred: list[dict] = []
+        mapped_parts: list[str] = []
+        if only is not None:
+            # Declaration order for BOTH admission and rendering, ranked by the first
+            # glob that matches: the operator's ordering is the only signal of which
+            # picks matter to this agent, and a mapping is written as globs, so an
+            # exact-path lookup would score every glob-matched skill alike and hand
+            # the order to directory enumeration.
+            #
+            # Charged on the bytes actually RENDERED, read here rather than on the
+            # size the enumeration recorded: that stat is TTL-cached, so a body
+            # rewritten larger inside the window would be admitted on a stale
+            # measurement and carry the block past a bound no budget clips. Once one
+            # body overflows, the rest are deferred WITHOUT being read.
+            spent = 0
+            overflowed = False
+            # The cap bounds the WHOLE mapped block, so the notice and the block's
+            # own framing are reserved out of it rather than added on top: what must
+            # not blow the prompt is everything delivered, not the bodies alone.
+            # Costs about two percent of the allowance when nothing is deferred,
+            # which buys a bound that holds without a second pass.
+            body_budget = (
+                MAPPED_SKILL_BODIES_CAP - _MAPPED_NOTICE_MAX_BYTES - _MAPPED_BLOCK_OVERHEAD_BYTES
+            )
+            for skill in sorted(
+                (s for s in all_skills if not s.get("confine_root")),
+                key=lambda s: _first_matching_glob(str(s.get("path", "")), only),
+            ):
+                key = str(skill["key"])
+                # An ``always: true`` skill is delivered by its own rule whatever the
+                # mapping does, so it is neither charged here nor ever named as
+                # deferred — being told to read a body that is already in the prompt
+                # is worse than silence.
+                if key in pinned:
+                    continue
+                if overflowed:
+                    mapped_deferred.append(skill)
+                    continue
+                content = self.load_skill(key, project_dir)
+                if not content:
+                    continue
+                rendered = f"### Skill: {key}\n\n{self.strip_frontmatter(content)}"
+                cost = len(rendered.encode("utf-8")) + _MAPPED_PART_JOINER_BYTES
+                if spent + cost > body_budget:
+                    overflowed = True
+                    mapped_deferred.append(skill)
+                    continue
+                spent += cost
+                mapped_parts.append(rendered)
+
         parts: list[str] = []
 
         # Pinned global skills: full content, always injected.
@@ -5387,6 +5527,11 @@ class SkillsLoader:
                 stripped = self.strip_frontmatter(content)
                 parts.append(f"### Skill: {s['key']}\n\n{stripped}")
 
+        # Mapped bodies follow, in the order the mapping declared them and already
+        # measured against the allowance. Rendered from that pass rather than
+        # re-walked here, so the bytes charged are the bytes delivered.
+        parts.extend(mapped_parts)
+
         # Keep confined pinned bodies on the descriptor-pinned, byte-capped
         # path. Their delivery allowance is separate from optional discovery.
         self._append_project_skill_bodies(
@@ -5395,6 +5540,34 @@ class SkillsLoader:
             project_dir,
             project_body_budget if project_body_budget is not None else budget,
         )
+
+        # Name what the mapping asked for and the cap could not deliver. Paths,
+        # not a search pointer: these are the agent's OWN skills, so it needs to
+        # reach them directly, and it is still scoped out of the catalog.
+        if mapped_deferred:
+            # Bounded by BYTES, not only by name count: a retained path has no
+            # length limit of its own, so twelve deeply nested ones would put an
+            # unbounded notice into content no budget clips.
+            listed: list[str] = []
+            notice_spent = 0
+            for skill in mapped_deferred[:_MAPPED_NOTICE_MAX_NAMES]:
+                entry = f"{skill['key']} ({skill['path']})"
+                # Bytes, for the same reason the body charge uses them.
+                entry_bytes = len(entry.encode("utf-8")) + 2
+                if notice_spent + entry_bytes > _MAPPED_NOTICE_MAX_BYTES:
+                    break
+                notice_spent += entry_bytes
+                listed.append(entry)
+            rest = len(mapped_deferred) - len(listed)
+            body = ", ".join(listed)
+            if rest > 0:
+                body += f", and {rest} more" if body else f"{rest} skill(s)"
+            parts.append(
+                "### Mapped skills not included in full\n\n"
+                f"The mapping selects more than the {MAPPED_SKILL_BODIES_CAP}-byte body "
+                "allowance delivers. Read one of these paths, or load it with "
+                f"$name, when the task needs it: {body}.\n"
+            )
 
         def wrap(items: list[str]) -> str:
             if not items:
@@ -5410,7 +5583,14 @@ class SkillsLoader:
         # allowance before optional entries. They are never clipped to fit it.
         optional_budget = max(0, budget - (len(required) if required_parts_out is None else 0))
         optional: list[str] = []
-        on_demand = [s for s in all_skills if s["key"] not in pinned or s.get("confine_root")]
+        # A mapped agent gets no discovery surface at all. Not just the deferred
+        # rows: a mapped CONFINED skill would otherwise arrive as a body from the
+        # descriptor-pinned reader AND as a discovery row for the same skill, and
+        # any row here carries the catalog pointer this agent is scoped out of.
+        if only is not None:
+            on_demand: list[dict] = []
+        else:
+            on_demand = [s for s in all_skills if s["key"] not in pinned or s.get("confine_root")]
         if on_demand and discovery_only:
             pointer = (
                 "## Skill discovery\n\n"
@@ -5432,17 +5612,11 @@ class SkillsLoader:
             # all listed spends the budget saying nothing and can crowd out a
             # family that is genuinely unreachable. A name that did not fit is
             # still hidden, so only an admitted one is excluded here.
-            groups = _namespace_groups([s for s in on_demand if str(s["key"]) not in named])
-            total_groups = len(groups)
-            while groups:
-                shown = ", ".join(f"{label} ({count})" for label, count in groups)
-                omitted = total_groups - len(groups)
-                tail = f", +{omitted} more" if omitted else ""
-                line = f"More families: {shown}{tail}\n"
+            groups = _family_line([s for s in on_demand if str(s["key"]) not in named])
+            if groups:
+                line = f"More families: {groups}\n"
                 if len(wrap([pointer + line])) <= optional_budget:
                     pointer += line
-                    break
-                groups = groups[:-1]
             if len(wrap([pointer])) <= optional_budget:
                 optional.append(pointer)
         elif on_demand:
@@ -5455,17 +5629,21 @@ class SkillsLoader:
                 "auto-load when your message matches their triggers.\n\n"
             )
 
-            def summary(lines: list[str]) -> str:
-                remaining = len(ranked) - len(lines)
-                footer = (
-                    [
-                        f"- _...and {remaining} more skill(s) not shown here. Find them "
+            def summary(lines: list[str], hidden: list[dict]) -> str:
+                # *hidden* is passed in rather than derived from the row count: the
+                # admission loop below SKIPS a row that does not fit and keeps
+                # trying later ones, so the admitted rows are not a prefix of
+                # `candidates` and a tail slice would name the wrong skills.
+                footer: list[str] = []
+                if hidden:
+                    footer.append(
+                        f"- _...and {len(hidden)} more skill(s) not shown here. Find them "
                         "with the `skill_search` tool (grep by keyword), the "
                         "`$skillname` inline token, or `cat` a known path._"
-                    ]
-                    if remaining
-                    else []
-                )
+                    )
+                    families = _family_line(hidden)
+                    if families:
+                        footer.append(f"- _Families not shown: {families}._")
                 return header + "\n".join(lines + footer)
 
             candidates = [
@@ -5474,18 +5652,26 @@ class SkillsLoader:
                 for s in ranked
             ]
             lines: list[str] = []
-            if len(wrap(optional + [summary(candidates)])) <= optional_budget:
+            hidden: list[dict] = []
+            if len(wrap(optional + [summary(candidates, [])])) <= optional_budget:
                 # A complete index needs no omission footer; reserve none when
                 # it fits, including the exact-fit boundary.
                 lines = candidates
             else:
-                for line in candidates:
-                    candidate = lines + [line]
+                admitted: list[int] = []
+                for index in range(len(candidates)):
+                    trial = admitted + [index]
+                    taken = set(trial)
+                    trial_hidden = [s for i, s in enumerate(ranked) if i not in taken]
                     # Charge wrappers, separators AND the actual footer. Never
                     # force an oversized first row into optional context.
-                    if len(wrap(optional + [summary(candidate)])) <= optional_budget:
-                        lines = candidate
-            block = summary(lines)
+                    trial_block = summary([candidates[i] for i in trial], trial_hidden)
+                    if len(wrap(optional + [trial_block])) <= optional_budget:
+                        admitted = trial
+                taken = set(admitted)
+                lines = [candidates[i] for i in admitted]
+                hidden = [s for i, s in enumerate(ranked) if i not in taken]
+            block = summary(lines, hidden)
             if len(wrap(optional + [block])) <= optional_budget:
                 optional.append(block)
 

@@ -489,10 +489,10 @@ EXPECTED_EXTENTS = {
     "[WORKSPACE IDENTITY]": 376,
     "[DOCUMENTATION]": 235,
     "[Memory —": 1249,
-    "[Skills:]": 310,
+    "[Skills:]": 400,
     "[Learned corrections": 320,
 }
-EXPECTED_TOTAL = 5796
+EXPECTED_TOTAL = 5886
 
 
 def test_session_context_char_extents(seeded: Seeded) -> None:
@@ -504,9 +504,14 @@ def test_session_context_char_extents(seeded: Seeded) -> None:
 
 
 def test_total_stays_under_the_production_ceiling(seeded: Seeded) -> None:
-    """The optional sections share one fixed allowance in either skills mode."""
+    """The optional sections share one fixed allowance in either skills mode.
+
+    Pinned on the DEFAULT mode: the bounded usage-ranked index. The shorter
+    eight-name entry is the opt-out, and it is smaller, so a payload inside the
+    allowance here is inside it there too.
+    """
     caps = ctx._resolve_caps(None)
-    assert KiroCrewConfig.load().skills.lazy_load is False
+    assert KiroCrewConfig.load().skills.lazy_load is True
     payload = _session_context(seeded)
     assert len(payload) <= caps.base == caps.max_context
 

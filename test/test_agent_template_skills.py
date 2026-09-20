@@ -665,5 +665,7 @@ class TestSessionContextGate:
         ctx = self._builder(fake_home, skills_root).build_session_context(
             agent="kirocrew", provider_type="claude_code"
         )
-        assert "skill_search(query)" in ctx
+        # The default entry is the bounded usage-ranked index; an unmapped agent
+        # gets it rather than a full catalog dump.
+        assert "## Available Skills" in ctx
         assert "alpha" in ctx and "beta" in ctx

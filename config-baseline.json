@@ -2480,7 +2480,7 @@
       "enumValues": null,
       "defaultValue": {
         "max_triggered": 0,
-        "lazy_load": false,
+        "lazy_load": true,
         "auto_create_from_sessions": false,
         "auto_refine_on_deviation": false,
         "auto_min_tool_calls": 5,
@@ -2519,10 +2519,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Lazy Skill Injection",
-      "help": "When true, show a bounded usage-ranked index of on-demand skills instead of the default short skill_search discovery entry. Both modes use the same Crew background budget, independent of model window size. Pinned instructions, native skill mappings, explicit loading and trigger gates are preserved.",
+      "help": "When true (the default), show a bounded usage-ranked index of on-demand skills, each with its path, plus a line naming the families the index leaves out. Set to false for the shorter entry that names only the eight hottest skills and points at skill_search for the rest. Both modes use the same Crew background budget, independent of model window size, and neither applies to an agent with its own skill:// mapping, which gets those skills' instructions instead of an index, prioritized by declaration order up to a cumulative body allowance; a mapping selecting more than that allowance has the rest named with their paths to read on demand. Pinned instructions, native skill mappings, explicit loading and trigger gates are preserved.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "skills.auto_create_from_sessions",
