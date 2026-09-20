@@ -145,20 +145,23 @@ function row(overrides: Record<string, unknown> = {}) {
 }
 
 /** Echoes the requested slug back as the thread's member — the happy path for
- *  any roster, so auto-open on mount resolves cleanly for whichever member is
- *  first. Cases that need a collision or a failure pass `thread`. */
+ *  any roster, so an open (a click, or the restore of a remembered member)
+ *  resolves cleanly for whichever member it names. Cases that need a collision
+ *  or a failure pass `thread`. */
 function echoThread(slug: string) {
   return Promise.resolve({ slot_key: 'member-' + slug, slug, member: slug, created: true })
 }
 
 /** Renders the page at the URL and lets the roster load. `thread` replaces
- *  the thread-endpoint mock BEFORE mount: the page opens a member on its own
- *  as soon as the roster is in, so a mock installed after render would miss
- *  that first POST. */
+ *  the thread-endpoint mock BEFORE mount: a remembered member (or a
+ *  ?member= URL) opens a thread as soon as the roster is in, so a mock
+ *  installed after render would miss that first POST. A fresh visit with
+ *  nothing remembered opens no one (#11763). */
 /**
  * Ceiling for a wait on the chat pane. `renderPage` returns once the roster
  * fetch has been ISSUED; the pane sits behind a real chain after that -- members
- * resolve, the roster commits, the auto-open effect POSTs `memberThread`, that
+ * resolve, the roster commits, the open (a remembered restore, a ?member= URL,
+ * or a click) POSTs `memberThread`, that
  * resolves, and the pane mounts. Under load (a shared host, coverage
  * instrumentation) that ran past the 1000ms default in one of four full runs; a
  * named ceiling, not a longer guess -- website/docs/testing.md.
@@ -218,9 +221,9 @@ function LocationProbe() {
 const currentUrl = () => screen.getByTestId('location-probe').textContent
 
 /* The open member's name also renders in the thread header (and the Crew summary tab),
- * so a bare screen query by name is ambiguous once anything is open — and
- * something is open from the first paint now. Scope name lookups to the
- * roster column. */
+ * so a bare screen query by name is ambiguous once a member is open (a click,
+ * a remembered restore, or a ?member= URL). Scope name lookups to the roster
+ * column. */
 const roster = () => within(screen.getByTestId('member-roster'))
 const rosterRow = async (name: string) =>
   within(await screen.findByTestId('member-roster')).findByText(name)
@@ -321,6 +324,10 @@ describe('MembersPage roster cache (React Query)', () => {
   })
 
   it('a second mount mounts the cached thread at once; the repair POST is re-issued but never waited on', async () => {
+    // A remembered member restores the thread on arrival (a fresh visit no
+    // longer auto-opens anyone, #11763); this test is about the cache on a
+    // second mount, not the arrival rule.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     const utils = await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     expect(api.memberThread).toHaveBeenCalledTimes(1)
@@ -337,6 +344,9 @@ describe('MembersPage roster cache (React Query)', () => {
   })
 
   it('a failed repair over a cached thread keeps the thread up and says the RECONNECT failed, not the open', async () => {
+    // A remembered member restores the thread on arrival (#11763); this test
+    // is about a failed REPAIR over a cached thread, not the arrival rule.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     const utils = await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     utils.rerender(<LocationProbe />)
@@ -427,6 +437,9 @@ describe('MembersPage thread', () => {
   })
 
   it('shows the concrete private memory refusal when opening a member conversation fails', async () => {
+    // A remembered member drives the restore that fails here (a fresh visit
+    // no longer auto-opens anyone, #11763); the failing POST is that restore.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     const rawReason = 'Private memory database is unreadable; restore the oncall backup. token=private-secret-value'
     const report = recordError({
       source: 'api', message: rawReason, status: 409, code: 'memory_unavailable',
@@ -514,8 +527,10 @@ describe('MembersPage thread', () => {
   })
 
   it('surfaces a visible error when thread creation fails', async () => {
-    // Installed BEFORE mount: the page opens the first member on its own, so
-    // the failing POST is the auto-open itself.
+    // Installed BEFORE mount: a remembered member restores on arrival (a
+    // fresh visit no longer auto-opens anyone, #11763), so the failing POST
+    // is that restore.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     await renderPage([row()], 'kirocrew', { thread: new Error('Create private memory in the member editor.') })
     expect(
       await screen.findByText(/Could not open this member's conversation/i),
@@ -542,6 +557,9 @@ describe('MembersPage thread', () => {
   })
 
   it('keeps a late failure of a previously selected member out of the active view', async () => {
+    // A remembered member restores alpha on arrival (a fresh visit no longer
+    // auto-opens anyone, #11763); this test needs a member open first.
+    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     let rejectA: (e: Error) => void = () => {}
     const pendingA = new Promise((_, reject) => {
       rejectA = reject
@@ -550,8 +568,8 @@ describe('MembersPage thread', () => {
       row({ name: 'alpha', slug: 'alpha' }),
       row({ name: 'beta', slug: 'beta' }),
     ])
-    // Let the page's own first open (alpha, first row) settle before queuing
-    // the one-shot responses, so the re-click below is the call that hangs.
+    // Let the page's restore of alpha settle before queuing the one-shot
+    // responses, so the re-click below is the call that hangs.
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     ;(api.memberThread as ReturnType<typeof vi.fn>)
       .mockReturnValueOnce(pendingA)
@@ -928,7 +946,10 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     // (a stale binding whose canonical key an ordinary slot now occupies). The
     // panel must not aim Side chat / Artifacts / Files at that occupant: with no
     // confirmed slot, only the slot-free Crew summary is on the strip and the
-    // + menu offers nothing slot-bound.
+    // + menu offers nothing slot-bound. A remembered member restores on
+    // arrival (a fresh visit no longer auto-opens anyone, #11763), so the
+    // refused open is that restore.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { thread: new Error('409') })
     await screen.findByText(/Could not open this member's conversation/i)
     expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
@@ -2447,17 +2468,19 @@ describe('MembersPage member edit entry (issue #9425)', () => {
 describe('resolveDefaultMember', () => {
   const ordered = [row({ name: 'alpha', slug: 'alpha' }), row({ name: 'beta', slug: 'beta' })]
 
-  it('default: nothing remembered -> the first row in display order', () => {
-    expect(resolveDefaultMember(null, ordered)?.name).toBe('alpha')
-    expect(resolveDefaultMember('', ordered)?.name).toBe('alpha')
+  it('nothing remembered -> undefined: a fresh visit opens no one', () => {
+    // No first-row fallback anymore (#11763): with no memory there is no
+    // member the user chose, so the page lands on the empty column.
+    expect(resolveDefaultMember(null, ordered)).toBeUndefined()
+    expect(resolveDefaultMember('', ordered)).toBeUndefined()
   })
 
   it('restore: the remembered member when it is still on the roster', () => {
     expect(resolveDefaultMember('beta', ordered)?.name).toBe('beta')
   })
 
-  it('stale: a remembered member that is gone falls back to the first row', () => {
-    expect(resolveDefaultMember('ghost', ordered)?.name).toBe('alpha')
+  it('stale: a remembered member that is gone resolves to undefined, not the first row', () => {
+    expect(resolveDefaultMember('ghost', ordered)).toBeUndefined()
   })
 
   it('an empty roster resolves to nothing, never throws', () => {
@@ -2468,19 +2491,38 @@ describe('resolveDefaultMember', () => {
 describe('MembersPage default member, memory and URL', () => {
   const alphaBeta = () => [row({ name: 'alpha', slug: 'alpha' }), row({ name: 'beta', slug: 'beta' })]
 
-  it('a fresh visit opens the first member in display order — never the empty column', async () => {
+  it('a fresh visit with nothing remembered opens no one — it lands on the roster, not the first row', async () => {
     await renderPage([
       row({ name: 'zeta-quiet', slug: 'zeta-quiet' }),
       row({ name: 'fresh-talker', slug: 'fresh-talker', last_active_ts: 200 }),
       row({ name: 'old-talker', slug: 'old-talker', last_active_ts: 100 }),
     ])
-    // No click: the most-recently-active member (the roster's first row) is
-    // opened on arrival, its thread mounted, and the URL says so.
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-fresh-talker')
-    expect(api.memberThread).toHaveBeenCalledWith('fresh-talker')
+    // No memory, no ?member=: the page must NOT prime the user on whichever
+    // row the 'recent' sort floated to the top (#11763). The 'Pick a member'
+    // empty pane shows, no thread is mounted for a default, the URL stays
+    // bare, and the memory is untouched — until the user chooses.
+    await screen.findByText(/Pick a member/i)
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    expect(api.memberThread).not.toHaveBeenCalled()
+    expect(currentUrl()).toBe('/members')
+    expect(localStorage.getItem(LAST_MEMBER_KEY)).toBeNull()
+    // A click opens the chosen member: the roster is fully interactive.
+    fireEvent.click(await rosterRow('old-talker'))
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-old-talker')
+    expect(api.memberThread).toHaveBeenCalledWith('old-talker')
+    expect(currentUrl()).toBe('/members?member=old-talker')
+    expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('old-talker')
+  })
+
+  it('a fresh visit WITH a remembered member still auto-opens it', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'beta')
+    await renderPage(alphaBeta())
+    // Returning users are unaffected: the remembered member is restored on
+    // arrival with no click, its thread mounted, and the URL rewritten.
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
+    expect(api.memberThread).toHaveBeenCalledWith('beta')
     expect(screen.queryByText(/Pick a member/i)).toBeNull()
-    expect(currentUrl()).toBe('/members?member=fresh-talker')
-    expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('fresh-talker')
+    expect(currentUrl()).toBe('/members?member=beta')
   })
 
   it('a refresh-frame refetch never reorders the roster; a membership change re-sorts it', async () => {
@@ -2537,16 +2579,20 @@ describe('MembersPage default member, memory and URL', () => {
     expect(currentUrl()).toBe('/members?member=beta')
   })
 
-  it('a remembered member that was deleted or renamed falls back to the first row, without an error', async () => {
+  it('a remembered member that was deleted or renamed lands on the empty pane, without an error', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'ghost')
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
+    // The remembered member is gone and the URL named no one, so there is
+    // nothing to restore and no first-row fallback (#11763): the page lands
+    // on the 'Pick a member' empty pane, the URL stays bare, and nothing is
+    // announced (nobody was named). The stale memory is left as-is until the
+    // user makes a new choice.
+    await screen.findByText(/Pick a member/i)
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    expect(api.memberThread).not.toHaveBeenCalled()
     expect(screen.queryByRole('alert')).toBeNull()
-    // Nobody was named, so nothing is announced: the memory just moves on.
     expect(screen.queryByTestId('member-gone-notice')).toBeNull()
-    // The stale memory is replaced by what is actually open.
-    expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('alpha')
-    expect(currentUrl()).toBe('/members?member=alpha')
+    expect(currentUrl()).toBe('/members')
   })
 
   it('a URL naming a member wins over the remembered one (shallow link)', async () => {
@@ -2558,26 +2604,26 @@ describe('MembersPage default member, memory and URL', () => {
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
   })
 
-  it('a URL naming a member that is gone falls back to the first row and SAYS so', async () => {
+  it('a URL naming a gone member with NOTHING remembered returns to the roster and SAYS so', async () => {
     await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=ghost' })
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
-    // The user asked for a specific member: the swap is announced above the
-    // thread (a status, not an error — the fallback did open something).
-    const notice = screen.getByTestId('member-gone-notice')
-    // Leads with the swap, names the gone member, and wears the warn tone —
-    // this line is what stops a message going to the wrong member.
-    expect(notice).toHaveTextContent(/^Showing alpha/)
+    // The user asked for a specific member, but there is nothing to stand in
+    // for them (no memory) — so the page returns to the roster with the notice
+    // rather than silently opening the first row (#11763). The empty pane
+    // shows and no thread is mounted.
+    const notice = await screen.findByTestId('member-gone-roster-notice')
     expect(notice).toHaveTextContent('“ghost” is no longer on the roster')
-    expect(notice.className).toContain('text-warn')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    expect(api.memberThread).not.toHaveBeenCalled()
+    await screen.findByText(/Pick a member/i)
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(currentUrl()).toBe('/members?member=alpha')
-    // The stand-in was the page's choice, not the user's, so it is NOT
-    // remembered: a dead link leaves the memory exactly as it found it.
+    expect(currentUrl()).toBe('/members')
+    // Nothing was opened, so nothing is remembered.
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBeNull()
-    // Opening another member retires the notice — and, being a choice, is remembered.
+    // Opening a member retires the notice — and, being a choice, is remembered.
     fireEvent.click(await rosterRow('beta'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta'))
-    expect(screen.queryByTestId('member-gone-notice')).toBeNull()
+    expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
   })
 
@@ -2602,13 +2648,76 @@ describe('MembersPage default member, memory and URL', () => {
 
   it('clicking a member writes the URL and the memory', async () => {
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
+    // A fresh visit with nothing remembered opens no one (#11763): the empty
+    // pane shows until the user picks a member.
+    await screen.findByText(/Pick a member/i)
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
     fireEvent.click(await rosterRow('beta'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta'))
     expect(currentUrl()).toBe('/members?member=beta')
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
     // The row reflects the selection the URL drove.
     expect(roster().getByText('beta').closest('button')).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('returning to a bare /members with nothing remembered takes the thread DOWN', async () => {
+    // A member CAN be open with nothing remembered: `safeSetItem` returns
+    // false when storage is denied (a locked-down embedding context, blocked
+    // cookies), so the click never persists and the later read is null. Denied
+    // for this one key so every other raw read in the shared providers still
+    // works — the page's own two storage calls are both on it.
+    const realGet = Storage.prototype.getItem
+    const realSet = Storage.prototype.setItem
+    const denyRead = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+    ) {
+      if (key === LAST_MEMBER_KEY) throw new DOMException('denied', 'SecurityError')
+      return realGet.call(this, key)
+    })
+    const denyWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (key === LAST_MEMBER_KEY) throw new DOMException('denied', 'SecurityError')
+      return realSet.call(this, key, value)
+    })
+    try {
+      ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: alphaBeta(), default_agent: 'kirocrew' })
+      ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
+      // The app's own return-to-the-list route: the crew editor exits to a
+      // BARE /members (KiroCrewAgentsPage), as does the rail's Crew Members row.
+      function ReturnToList() {
+        const nav = useNavigate()
+        return (
+          <button data-testid="return-to-list" onClick={() => nav('/members')}>
+            list
+          </button>
+        )
+      }
+      renderWithProviders(
+        <>
+          <MembersPage />
+          <ReturnToList />
+          <LocationProbe />
+        </>,
+        { route: '/members' },
+      )
+      fireEvent.click(await rosterRow('beta'))
+      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
+      fireEvent.click(screen.getByTestId('return-to-list'))
+      await waitFor(() => expect(currentUrl()).toBe('/members'))
+      // The URL names no one and there is nothing to restore, so the roster is
+      // the answer: a thread left standing here is one the user did not ask
+      // for, and the next message would go to it.
+      await waitFor(() => expect(screen.queryByTestId('chat-pane-stub')).toBeNull())
+      await screen.findByText(/Pick a member/i)
+      expect(roster().getByText('beta').closest('button')).not.toHaveAttribute('aria-current')
+    } finally {
+      denyRead.mockRestore()
+      denyWrite.mockRestore()
+    }
   })
 
   it('the open row scrolls itself into view, so a member opened by URL is never below the fold', async () => {
@@ -2634,7 +2743,10 @@ describe('MembersPage default member, memory and URL', () => {
   it('a link that outruns the cached roster waits for the refetch instead of calling the member gone', async () => {
     // The crew manager's create (#9513) invalidates the roster and lands here
     // with the NEW member's name while the cache still holds the pre-create
-    // list. That is not a gone member — it is a fetch in flight.
+    // list. That is not a gone member — it is a fetch in flight. A remembered
+    // member seeds the initial arrival (a fresh visit no longer auto-opens
+    // anyone, #11763); this test is about the in-flight link, not the arrival.
+    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: alphaBeta(), default_agent: 'kirocrew' })
     ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
     function Elsewhere() {
@@ -2697,9 +2809,13 @@ describe('MembersPage default member, memory and URL', () => {
     expect(screen.queryByTestId('member-gone-notice')).toBeNull()
   })
 
-  it('switching members holds ONE history entry: after walking two members, Back leaves the page in one press', async () => {
-    // Driven history, not a spy: a page before /members, a real push into
-    // it, real replaces while switching, and a real pop out of it.
+  it('the FIRST click from a bare desktop URL replaces too: Back still leaves the page in one press', async () => {
+    // A fresh visit with nothing remembered leaves the URL bare (#11763), so
+    // this is the one open that happens with no `?member=` yet. Above md it is
+    // not a navigation step — the roster and the thread sit side by side — so
+    // it must REPLACE, or Back would land on the bare roster instead of
+    // leaving the page. Below md that same click is the two-level step and
+    // does push (its own case in the below-md block).
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: alphaBeta(), default_agent: 'kirocrew' })
     ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
     function Elsewhere() {
@@ -2730,7 +2846,57 @@ describe('MembersPage default member, memory and URL', () => {
       { route: '/elsewhere' },
     )
     fireEvent.click(screen.getByTestId('go-members'))
-    // Arrival: the auto-open REPLACES the bare /members entry.
+    await screen.findByText(/Pick a member/i)
+    expect(currentUrl()).toBe('/members')
+    fireEvent.click(await rosterRow('beta'))
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
+    expect(currentUrl()).toBe('/members?member=beta')
+    // One Back: off the page. A pushed open would have left the bare roster
+    // entry behind it, costing a second press.
+    fireEvent.click(screen.getByTestId('history-back'))
+    await waitFor(() => expect(currentUrl()).toBe('/elsewhere'))
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+  })
+
+  it('switching members holds ONE history entry: after walking two members, Back leaves the page in one press', async () => {
+    // Driven history, not a spy: a page before /members, a real push into
+    // it, real replaces while switching, and a real pop out of it. A
+    // remembered member seeds the arrival auto-open — a fresh visit with
+    // nothing remembered no longer opens anyone (#11763), and this test is
+    // about the history shape of SWITCHING, so the restore stands in for the
+    // arrival that the auto-open used to provide.
+    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: alphaBeta(), default_agent: 'kirocrew' })
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
+    function Elsewhere() {
+      const nav = useNavigate()
+      return (
+        <button data-testid="go-members" onClick={() => nav('/members')}>
+          go
+        </button>
+      )
+    }
+    function BackProbe() {
+      const nav = useNavigate()
+      return (
+        <button data-testid="history-back" onClick={() => nav(-1)}>
+          back
+        </button>
+      )
+    }
+    renderWithProviders(
+      <>
+        <Routes>
+          <Route path="/elsewhere" element={<Elsewhere />} />
+          <Route path="/members" element={<MembersPage />} />
+        </Routes>
+        <BackProbe />
+        <LocationProbe />
+      </>,
+      { route: '/elsewhere' },
+    )
+    fireEvent.click(screen.getByTestId('go-members'))
+    // Arrival: the remembered-member restore REPLACES the bare /members entry.
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     expect(currentUrl()).toBe('/members?member=alpha')
     // Walk two members.
