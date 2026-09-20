@@ -128,6 +128,8 @@ _MAX_IDLE_SECS = 86400  # 24h
 _REARM_BACKOFF_SECS = 15
 _REARM_MAX_BACKOFF_SECS = 300  # 5m ceiling for the escalated re-arm delay
 _REARM_BACKOFF_MAX_SHIFT = 16  # clamp the 2**shift exponent
+_SETTLEMENT_WRITE_ATTEMPTS = 3
+_SETTLEMENT_RETRY_SECS = 0.2
 _MONITOR_RETRY_BACKOFF_SECS = 15
 _MONITOR_RETRY_MAX_BACKOFF_SECS = 300
 
@@ -891,6 +893,15 @@ class AutoNudgeService:
         self._on_fire = on_fire
         self._on_monitor_tick = on_monitor_tick
         self._loops: dict[str, NudgeLoop] = {}
+        # Rolled back in memory for the delivery window so a concurrent snapshot still
+        # records the claim; count AND timestamp, or the overlay persists a contradiction.
+        self._delivering_claim: dict[str, tuple[int, float]] = {}
+        #: loop id -> the claimed cycle that loaded unresolved, awaiting a
+        #: deliberate re-activation to settle it.
+        self._unreconciled_claim: dict[str, int] = {}
+        #: loop ids whose claim is held for a turn the fire path reported did NOT go out,
+        #: so reactivation retries the release rather than charging the reader for it.
+        self._undelivered_claim: set[str] = set()
         self._timers: dict[str, asyncio.Task] = {}
         # Loop ids whose re-arm was requested while their fire window was open.
         # Applied when the window closes (see _timer): a dashboard turn can
@@ -914,6 +925,9 @@ class AutoNudgeService:
         # fire callback runs the unattended turn INLINE, so cancelling it kills
         # the in-flight turn and loses its transcript and cycle bookkeeping.
         self._firing: set[str] = set()
+        # Loops whose DELIVERED terminal turn never reached disk. The reconciler
+        # must not rescue one: its rescue re-enters _on_fire and re-delivers.
+        self._settlement_owed: set[str] = set()
         # Loop ids owned by an administrative cleanup. Public mutations on the
         # same firing loop must not wait for the maintenance mutex: the cleanup
         # is waiting for that timer to finish, so waiting would invert the lock.
@@ -969,6 +983,10 @@ class AutoNudgeService:
         """
         with _locked_file(self._path, "r") as fh:
             data = json.load(fh)
+        # No turn is in flight across a load, so no claim can be owed.
+        self._delivering_claim = {}
+        # Re-derived below from each row's own marker, never carried across a load.
+        self._undelivered_claim = set()
         for raw in data.get("loops", []):
             try:
                 loop_values = {
@@ -1033,6 +1051,51 @@ class AutoNudgeService:
                 # Rotated on EVERY load: a human may have hand-edited the goal while we
                 # were down, so a pre-restart token must not authorise overwriting it.
                 loop.goal_token = new_goal_token()
+                # Owed in BOTH arms: a cap applied later is refused against ``cycle_count``, so
+                # committing an unconfirmed cycle is not inert even on an uncapped loop.
+                inflight = raw.get("inflight_cycle")
+                if isinstance(inflight, bool):
+                    # ``isinstance(True, int)`` is TRUE, so a stored boolean would read as
+                    # cycle 1 and spend a phantom cycle that no turn ever claimed.
+                    logger.warning(
+                        "AutoNudge: loop %s stored a non-integer cycle claim (%r); ignoring it",
+                        raw.get("id"),
+                        inflight,
+                    )
+                    inflight = None
+                    self._store_dirty = True
+                elif inflight is not None and not (
+                    isinstance(inflight, int) and inflight == loop.cycle_count + 1
+                ):
+                    # A claim names the cycle after the count stored beside it, so no other
+                    # value came from this writer; admitting one jumps the count to the cap.
+                    logger.warning(
+                        "AutoNudge: loop %s stored a cycle claim (%r) that does not follow its "
+                        "count (%d); ignoring it",
+                        raw.get("id"),
+                        inflight,
+                        loop.cycle_count,
+                    )
+                    inflight = None
+                    self._store_dirty = True
+                if inflight is not None:
+                    # The claim reaches disk BEFORE the turn it claims, so an unresolved one
+                    # cannot say whether the reader already received that turn.
+                    logger.warning(
+                        "AutoNudge: loop %s was interrupted mid-delivery on cycle %d — it is "
+                        "owed, not spent, and is held stopped until re-activated",
+                        raw.get("id"),
+                        inflight,
+                    )
+                    self._unreconciled_claim[loop.id] = inflight
+                    if raw.get("inflight_undelivered") is True:
+                        # The writer knew this turn never went out, so the charge is not owed.
+                        self._undelivered_claim.add(loop.id)
+                    loop.active = False
+                    # A reason the UI can render: without it a routine restart mid-fire
+                    # surfaced as an unexplained pause with only a log line behind it.
+                    loop.stopped_reason = "interrupted_cycle"
+                    self._store_dirty = True
                 if "monitor" in raw:
                     monitor_raw = raw["monitor"]
                     monitor_quarantined = False
@@ -1061,6 +1124,33 @@ class AutoNudgeService:
                         # restarts cannot mistake the inert payload for a typed
                         # controller record.
                         loop.monitor = None
+                        self._store_dirty = True
+                    if (
+                        loop.monitor is not None
+                        and loop.monitor.version == MONITOR_STATE_VERSION
+                        and loop.monitor.terminal_delivered is True
+                        and loop.monitor.terminal_pending
+                    ):
+                        # The turn REACHED the user before the settlement write failed, so
+                        # settling here is the recovery; firing would send it a second time.
+                        loop.monitor.outcome = (
+                            MonitorOutcome.SUCCESS
+                            if loop.monitor.terminal_pending == "success"
+                            else MonitorOutcome.BLOCKED
+                        )
+                        loop.monitor.stopped_reason = MONITOR_TERMINAL_REASON
+                        loop.monitor.stopped_at = time.time()
+                        loop.monitor.terminal_pending = ""
+                        loop.monitor.terminal_delivered = False
+                        loop.stopped_reason = MONITOR_TERMINAL_REASON
+                        loop.active = False
+                        if inflight is not None:
+                            loop.cycle_count = inflight
+                        logger.warning(
+                            "AutoNudge: loop %s delivered its final turn before the "
+                            "settlement write failed -- settling it instead of repeating it",
+                            loop.id,
+                        )
                         self._store_dirty = True
                     if loop.monitor is None:
                         pass
@@ -1375,11 +1465,49 @@ class AutoNudgeService:
         the serialization must happen there too — a worker thread iterating
         ``self._loops`` concurrently with a mutation would race. The returned
         payload is immutable-by-convention and safe to hand to an executor.
+        A cycle CLAIM persisted before a turn went out and rolled back in memory for the
+        delivery window rides this payload too, so a concurrent write cannot erase it.
         """
-        return {
+        payload: dict[str, Any] = {
             "version": _STORE_VERSION,
-            "loops": [self._serialize_loop(lp) for lp in self._loops.values()],
+            "loops": self._serialized_loops(),
         }
+        return payload
+
+    def _serialized_loops(
+        self,
+        *,
+        replace: dict[str, NudgeLoop] | None = None,
+        skip: set[str] | None = None,
+        extra: list[NudgeLoop] | None = None,
+    ) -> list[Any]:
+        """Build EVERY store payload's ``loops`` list, so no writer can omit a row.
+
+        A cycle CLAIM persisted before a turn went out is rolled back in memory for the
+        delivery window, and is invisible in ``_loops`` -- so any builder that walked
+        ``_loops`` directly erased it, which the monitor paths did by replacing the whole
+        store.
+        """
+        rows: list[Any] = []
+        for candidate in list(self._loops.values()) + list(extra or []):
+            if skip and candidate.id in skip:
+                continue
+            row = self._serialize_loop((replace or {}).get(candidate.id, candidate))
+            claimed = self._delivering_claim.get(candidate.id)
+            if claimed is not None:
+                # BESIDE the spent count, never inside it: a restart must be able to tell a
+                # claimed-but-undelivered cycle from a spent one. Disk-only, so no client sees it.
+                row["inflight_cycle"], row["last_fire_ts"] = claimed
+            elif candidate.id in self._unreconciled_claim:
+                # Carried from an earlier run: dropping it here would leave the next restart
+                # with no marker at all, and re-activation would then replay that turn.
+                row["inflight_cycle"] = self._unreconciled_claim[candidate.id]
+            if candidate.id in self._undelivered_claim and "inflight_cycle" in row:
+                # Disk-only, like the claim it qualifies: without it a restart cannot tell a
+                # turn that never went out from one whose delivery is merely unknown.
+                row["inflight_undelivered"] = True
+            rows.append(row)
+        return rows
 
     @staticmethod
     def _serialize_loop(loop: NudgeLoop) -> dict[str, Any]:
@@ -1454,6 +1582,12 @@ class AutoNudgeService:
                     logger.warning(
                         "AutoNudge: could not persist loaded-state repair", exc_info=True
                     )
+            # `_load` decides the interrupted-cycle hold off the event loop, before any
+            # of this is published, so the stop is announced here or not at all.
+            for held_id in self._unreconciled_claim:
+                held = self._loops.get(held_id)
+                if held is not None and not held.active:
+                    self._emit("updated", held)
             for loop in self._loops.values():
                 if loop.active:
                     self._arm_from_deadline(loop)
@@ -1782,12 +1916,10 @@ class AutoNudgeService:
                     await self._revoke_provider_credentials_before_removal(existing.id)
                 replacement_payload = {
                     "version": _STORE_VERSION,
-                    "loops": [
-                        self._serialize_loop(candidate)
-                        for candidate in self._loops.values()
-                        if existing is None or candidate.id != existing.id
-                    ]
-                    + [self._serialize_loop(loop)],
+                    "loops": self._serialized_loops(
+                        skip={existing.id} if existing is not None else None,
+                        extra=[loop],
+                    ),
                 }
                 try:
                     await self._write_monitor_snapshot_locked(replacement_payload)
@@ -1854,12 +1986,10 @@ class AutoNudgeService:
                     return False
                 payload = {
                     "version": _STORE_VERSION,
-                    "loops": [
-                        self._serialize_loop(candidate)
-                        for candidate in self._loops.values()
-                        if candidate.id != loop_id
-                    ]
-                    + ([self._serialize_loop(prior)] if prior is not None else []),
+                    "loops": self._serialized_loops(
+                        skip={loop_id},
+                        extra=[prior] if prior is not None else None,
+                    ),
                 }
                 try:
                     await self._write_monitor_snapshot_locked(payload)
@@ -2100,7 +2230,34 @@ class AutoNudgeService:
         logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
         return loop
 
-    async def _persist_locked(self) -> None:
+    async def _persist_locked(
+        self, before: Callable[[], Callable[[], None] | None] | None = None
+    ) -> None:
+        """Persist as a supervised, shielded task so cancellation cannot strand a write.
+
+        Same contract as ``add``/``update``: a caller cancelled while the executor
+        thread is still committing the snapshot must not release ``_lock``, because
+        the thread cannot be interrupted -- the claim lands on disk anyway, and a
+        later writer that acquired the freed lock can then land behind it.
+        """
+        inner: "asyncio.Task[None]" = asyncio.ensure_future(self._persist_locked_body(before))
+        self._inflight_adds.add(inner)
+
+        def _finish(t: "asyncio.Task[None]") -> None:
+            self._inflight_adds.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is None:
+                return
+            logger.warning("AutoNudge: detached persist failed", exc_info=exc)
+
+        inner.add_done_callback(_finish)
+        await asyncio.shield(inner)
+
+    async def _persist_locked_body(
+        self, before: Callable[[], Callable[[], None] | None] | None = None
+    ) -> None:
         """Snapshot under the service lock and write on a worker thread.
 
         The SINGLE async persistence path for post-arm mutations. Two properties
@@ -2116,8 +2273,16 @@ class AutoNudgeService:
           event loop.
         """
         async with self._lock:
-            payload = self._serialize_state()
-            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            # ``before`` mutates state that must reach disk in THIS snapshot and no earlier
+            # one, so it runs inside the lock -- and its undo runs if the write never lands.
+            undo = before() if before is not None else None
+            try:
+                payload = self._serialize_state()
+                await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            except BaseException:
+                if undo is not None:
+                    undo()
+                raise
 
     async def update(
         self,
@@ -2503,6 +2668,65 @@ class AutoNudgeService:
                 # a directive chose to run it again). Advancing the generation
                 # invalidates any in-flight stale completion keyed to the old one.
                 loop.config_generation += 1
+            owed = self._unreconciled_claim.get(loop.id)
+            spent_claim: int | None = None
+            settled_claim: tuple[int, float] | None = None
+            discharged_debt: tuple[str, bool, Any, Any, Any] | None = None
+            undelivered_restored = False
+            if owed is not None and loop.active:
+                known_undelivered = loop.id in self._undelivered_claim
+                # Settled, not replayed: whoever re-activated it accepted the interrupted
+                # cycle as spent, the only reading that cannot deliver the turn twice.
+                spent_claim = self._unreconciled_claim.pop(loop.id, None)
+                if known_undelivered:
+                    # EXCEPT when the fire path recorded that the turn never went out. Charging
+                    # it there drops the turn for good once the count reaches the cap.
+                    undelivered_restored = True
+                    self._undelivered_claim.discard(loop.id)
+                else:
+                    loop.cycle_count = max(loop.cycle_count, owed)
+                settled_claim = self._delivering_claim.pop(loop.id, None)
+                claim_monitor = loop.monitor
+                if (
+                    claim_monitor is not None
+                    and claim_monitor.terminal_pending
+                    and not known_undelivered
+                ):
+                    # Spending the cycle says the final turn reached its reader, so the debt
+                    # for that turn is discharged too; leaving it owed delivers it twice.
+                    discharged_debt = (
+                        claim_monitor.terminal_pending,
+                        claim_monitor.terminal_delivered,
+                        claim_monitor.outcome,
+                        claim_monitor.stopped_reason,
+                        claim_monitor.stopped_at,
+                    )
+                    # The SAME settlement the load-time recovery applies: clearing the debt
+                    # alone left a finished record armed, so its final turn went out again.
+                    claim_monitor.outcome = (
+                        MonitorOutcome.SUCCESS
+                        if claim_monitor.terminal_pending == "success"
+                        else MonitorOutcome.BLOCKED
+                    )
+                    claim_monitor.stopped_reason = MONITOR_TERMINAL_REASON
+                    claim_monitor.stopped_at = time.time()
+                    claim_monitor.terminal_pending = ""
+                    claim_monitor.terminal_delivered = False
+                    loop.stopped_reason = MONITOR_TERMINAL_REASON
+                    loop.active = False
+                if known_undelivered:
+                    logger.info(
+                        "AutoNudge: loop %s kept interrupted cycle %d owed — its turn never "
+                        "went out, so re-activation retries it rather than charging it",
+                        loop.id,
+                        owed,
+                    )
+                else:
+                    logger.info(
+                        "AutoNudge: loop %s reconciled interrupted cycle %d as spent",
+                        loop.id,
+                        owed,
+                    )
             # Deadline bookkeeping (BEFORE the snapshot below so it persists):
             # an interval change restarts an EXISTING countdown at the new
             # interval — the old deadline encodes the old cadence and honouring
@@ -2532,6 +2756,23 @@ class AutoNudgeService:
             except BaseException:
                 for field_name, value in previous.items():
                     setattr(loop, field_name, value)
+                if spent_claim is not None:
+                    # The failed write left ``inflight_cycle`` on disk, so dropping the
+                    # in-memory claim lets the next write erase it and replay the turn.
+                    self._unreconciled_claim[loop.id] = spent_claim
+                if undelivered_restored:
+                    # Its qualifier goes back with it, or the retry reads as a spent cycle.
+                    self._undelivered_claim.add(loop.id)
+                if settled_claim is not None:
+                    self._delivering_claim[loop.id] = settled_claim
+                if discharged_debt is not None and loop.monitor is not None:
+                    loop.monitor.terminal_pending = discharged_debt[0]
+                    loop.monitor.terminal_delivered = discharged_debt[1]
+                    # The settlement fields too: ``previous`` snapshots this record's own
+                    # attributes, and the monitor it holds is the SAME object mutated above.
+                    loop.monitor.outcome = discharged_debt[2]
+                    loop.monitor.stopped_reason = discharged_debt[3]
+                    loop.monitor.stopped_at = discharged_debt[4]
                 if claim_was_held:
                     # The retarget above dropped this loop's pending wake claim,
                     # because a claim earned by the OLD subject must not be spent on
@@ -2883,10 +3124,7 @@ class AutoNudgeService:
         """Serialize one staged monitor replacement without changing live state."""
         return {
             "version": _STORE_VERSION,
-            "loops": [
-                self._serialize_loop(replacement if candidate.id == loop.id else candidate)
-                for candidate in self._loops.values()
-            ],
+            "loops": self._serialized_loops(replace={loop.id: replacement}),
         }
 
     def _apply_staged_monitor(self, loop: NudgeLoop, staged: NudgeLoop) -> None:
@@ -3964,6 +4202,10 @@ class AutoNudgeService:
         wrote it and must survive the downgrade so an upgrade resumes the watch.
         Inertness is the local consequence, not a change of intent.
         """
+        if loop.id in self._settlement_owed:
+            # A delivered turn whose accounting never reached disk: arming it
+            # again re-enters the fire path and repeats that turn.
+            return
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
             logger.info(
@@ -4129,7 +4371,11 @@ class AutoNudgeService:
             # refuse every replacement watch on the slot forever.
             if not loop.active and not self._waits_for_terminal_completion(loop):
                 continue
-            if loop.id in self._firing or loop.id in self._maintenance_quiescing:
+            if (
+                loop.id in self._firing
+                or loop.id in self._maintenance_quiescing
+                or loop.id in self._settlement_owed
+            ):
                 continue
             monitor = loop.monitor
             if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
@@ -4894,6 +5140,38 @@ class AutoNudgeService:
         # on _persist_locked(), so the delivered cycle was never written and the
         # loop could run extra cycles after a restart. _run_fire_cycle owns the
         # window; this method is the body.
+        # CLAIMED SEPARATELY from the spent count: a claim records an unconfirmed delivery
+        # without charging it, so a cap is never spent by a turn that may not have landed.
+        claim_from = loop.cycle_count
+        claim_ts = loop.last_fire_ts
+        loop.last_fire_ts = time.time()
+        claimed_ts = loop.last_fire_ts
+        self._delivering_claim[loop.id] = (claim_from + 1, claimed_ts)
+        # The marker belongs to the cycle that set it. A re-arm after a failed release would
+        # otherwise label THIS turn as never sent, so a crash after it lands replays it.
+        self._undelivered_claim.discard(loop.id)
+        try:
+            await self._persist_locked()
+        except asyncio.CancelledError:
+            # The write above is shielded, so it may have COMMITTED this claim while
+            # delivery never ran. Say so on disk, or reactivation charges the turn.
+            self._undelivered_claim.add(loop.id)
+            try:
+                await self._persist_locked()
+            except asyncio.CancelledError:
+                pass
+            raise
+        except Exception:
+            loop.last_fire_ts = claim_ts
+            self._delivering_claim.pop(loop.id, None)
+            logger.error(
+                "AutoNudge: not firing loop %s -- the cycle claim could not be persisted, "
+                "so a delivered turn would repeat after a restart",
+                loop.id,
+                exc_info=True,
+            )
+            return
+        rollback_undurable = False
         try:
             delivered = await self._on_fire(loop)
         except Exception:
@@ -4957,6 +5235,7 @@ class AutoNudgeService:
                 # stays owed rather than being recorded or dropped.
                 self._pending_floor_tick.add(loop.id)
             self._persist_soon()
+        staged_delivery: tuple[int, float] | None = None
         if delivered:
             # BEFORE the settlement below, not after. That block carries a comment
             # forbidding an early RETURN precisely so this bookkeeping still runs --
@@ -4966,8 +5245,101 @@ class AutoNudgeService:
             # the news went uncounted. Recording a delivery that has already happened
             # cannot be wrong; deferring it past a re-raise can.
             self._rearm_fail_count.pop(loop.id, None)
-            loop.cycle_count += 1
-            loop.last_fire_ts = time.time()
+            # STAGED, not applied: the settlement below awaits with ``_lock`` free, so a rival
+            # persist would serialize a spent cycle while the terminal turn was still owed.
+            staged_delivery = (claim_from + 1, time.time())
+        else:
+            # Release the claim DURABLY before the re-arm: the detached persist promised
+            # only a fresh countdown, and a cancelled one strands a claim on disk.
+            loop.last_fire_ts = claim_ts
+            self._delivering_claim.pop(loop.id, None)
+            try:
+                await self._persist_locked()
+            except Exception as exc:
+                # Keep the claim so the marker stays on disk rather than reading as delivered,
+                # and keep its clock with it: memory and the retained marker must not disagree.
+                self._delivering_claim[loop.id] = (claim_from + 1, claimed_ts)
+                loop.last_fire_ts = claimed_ts
+                # This arm is the not-delivered branch, so the claim is owed rather than spent.
+                self._undelivered_claim.add(loop.id)
+                rollback_undurable = True
+                # Disk-only, and nothing writes after this arm returns: unretried, a restart
+                # reads the claim as merely unknown and charges a turn that never went out.
+                qualifier_error: BaseException | None = exc
+                for _try in range(_SETTLEMENT_WRITE_ATTEMPTS):
+                    try:
+                        await self._persist_locked()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as retry_exc:
+                        qualifier_error = retry_exc
+                        if _try + 1 < _SETTLEMENT_WRITE_ATTEMPTS:
+                            try:
+                                await asyncio.sleep(_SETTLEMENT_RETRY_SECS)
+                            except asyncio.CancelledError:
+                                break
+                    else:
+                        qualifier_error = None
+                        break
+                if qualifier_error is None:
+                    logger.warning(
+                        "AutoNudge: loop %s could not release its cycle claim (%s) — "
+                        "recorded as undelivered and not re-arming",
+                        loop.id,
+                        exc,
+                    )
+                else:
+                    logger.error(
+                        "AutoNudge: loop %s could not release its cycle claim (%s) nor record "
+                        "it undelivered (%s) — re-activation will charge the owed cycle",
+                        loop.id,
+                        exc,
+                        qualifier_error,
+                    )
+        # The window is closed either way -- memory and disk agree from here on. EXCEPT on a failed
+        # release write: the marker stays and the claim is PRESERVED until reactivation settles it.
+        if not rollback_undurable and staged_delivery is None:
+            self._delivering_claim.pop(loop.id, None)
+
+        def _commit_delivery() -> Callable[[], None] | None:
+            # Runs ONLY under ``_lock``, so the spent cycle, the charges and the settlement
+            # reach disk in one snapshot. Returns the undo for a write that never lands.
+            nonlocal staged_delivery
+            if staged_delivery is None:
+                return None
+            spent = staged_delivery
+            was = (loop.cycle_count, loop.last_fire_ts, self._delivering_claim.get(loop.id))
+            charged_wake = bool(claimed_wake and loop.monitor is not None)
+            charged_floor = bool(claimed_floor and loop.monitor is not None)
+            was_followup = loop.monitor.followup_ticks if loop.monitor is not None else 0
+            loop.cycle_count, loop.last_fire_ts = spent
+            staged_delivery = None
+            self._delivering_claim.pop(loop.id, None)
+            if charged_wake and loop.monitor is not None:
+                loop.monitor.wakes += 1
+                loop.monitor.followup_ticks = _WAKE_FOLLOWUP_TICKS
+            if charged_floor and loop.monitor is not None:
+                loop.monitor.floor_ticks += 1
+
+            def _undo() -> None:
+                # Both surfaces or neither: the claim is still on disk, so memory must keep
+                # owing the cycle too, or a restart re-fires a turn that already went out.
+                nonlocal staged_delivery
+                loop.cycle_count, loop.last_fire_ts, held = was
+                if held is not None:
+                    self._delivering_claim[loop.id] = held
+                if charged_wake and loop.monitor is not None:
+                    loop.monitor.wakes -= 1
+                    loop.monitor.followup_ticks = was_followup
+                if charged_floor and loop.monitor is not None:
+                    loop.monitor.floor_ticks -= 1
+                staged_delivery = spent
+
+            return _undo
+
+        # Fire-cycle scope, never the settlement block's: the persist below reads it
+        # whether or not that block ran.
+        resettle_owed = False
         if delivered and loop.monitor is not None and loop.monitor.terminal_pending:
             # The owed turn landed, so the watch can be closed now -- and only now.
             # Until this point the loop stayed live on purpose, so a refused fire
@@ -5057,16 +5429,44 @@ class AutoNudgeService:
                         # write left memory reporting a finish while the record
                         # still said active-and-owed, and the restart would deliver
                         # the final turn a second time.
-                        try:
-                            async with self._lock:
-                                await self._write_monitor_snapshot_locked()
-                        except asyncio.CancelledError:
-                            # Committed before the cancellation propagates, so the
-                            # user must hear it now or never -- a restart reads the
-                            # loop as settled and no longer owes a turn.
+                        undo_delivery: Callable[[], None] | None = None
+                        settle_error: BaseException | None = None
+                        backoff_cancelled: BaseException | None = None
+                        # Retried in place, never by re-arming: a re-arm re-enters the fire
+                        # path and re-delivers a turn the user already received.
+                        for _attempt in range(_SETTLEMENT_WRITE_ATTEMPTS):
+                            settle_error = None
+                            try:
+                                async with self._lock:
+                                    if undo_delivery is None:
+                                        undo_delivery = _commit_delivery()
+                                    await self._write_monitor_snapshot_locked()
+                            except asyncio.CancelledError:
+                                # Committed before the cancellation propagates, so the
+                                # user must hear it now: a restart reads this as settled.
+                                self._emit("expired", loop)
+                                raise
+                            except Exception as exc:
+                                settle_error = exc
+                                if _attempt + 1 < _SETTLEMENT_WRITE_ATTEMPTS:
+                                    try:
+                                        await asyncio.sleep(_SETTLEMENT_RETRY_SECS)
+                                    except asyncio.CancelledError as cancel:
+                                        # This backoff sits INSIDE the handler, so the
+                                        # clause above never sees its cancellation.
+                                        backoff_cancelled = cancel
+                                        break
+                            else:
+                                break
+                        if settle_error is None:
+                            monitor.terminal_delivered = False
+                            self._settlement_owed.discard(loop.id)
                             self._emit("expired", loop)
-                            raise
-                        except Exception:
+                        else:
+                            # The settlement never reached disk, so the delivery accounting
+                            # goes back with it rather than reading as spent in memory alone.
+                            if undo_delivery is not None:
+                                undo_delivery()
                             (
                                 monitor.terminal_pending,
                                 monitor.outcome,
@@ -5075,33 +5475,32 @@ class AutoNudgeService:
                                 loop.active,
                                 loop.stopped_reason,
                             ) = restore
-                            logger.exception(
+                            logger.error(
                                 "AutoNudge: could not persist the delivered terminal "
-                                "settlement for %s -- leaving the watch live so it "
-                                "retries",
+                                "settlement for %s after %d attempts -- leaving it "
+                                "unarmed so the delivered turn is never repeated; restart "
+                                "to settle it from the record on disk",
                                 loop.id,
+                                _SETTLEMENT_WRITE_ATTEMPTS,
+                                exc_info=settle_error,
                             )
-                        else:
-                            self._emit("expired", loop)
+                            # Suppresses the re-commit below AND the self-re-arm; the set
+                            # closes the third way -- the reconciler's rescue.
+                            self._settlement_owed.add(loop.id)
+                            # The fall-through persist below carries this to disk, so a
+                            # restart settles the debt instead of re-delivering the turn.
+                            monitor.terminal_delivered = True
+                            resettle_owed = True
+                        if backoff_cancelled is not None:
+                            # The unwind above lives only in memory, and the fall-through
+                            # persist is unreachable once this propagates.
+                            try:
+                                await self._persist_locked()
+                            except asyncio.CancelledError:
+                                pass
+                            raise backoff_cancelled
                 finally:
                     settle_lock.release()
-        if claimed_wake and delivered and loop.monitor is not None:
-            # The turn happened, so it is a wake, and only now does the agent own
-            # work the probe cannot see -- which is what the follow-up allowance
-            # protects. A refused fire falls through here uncharged.
-            #
-            # No persist call of its own: the delivered path below reaches
-            # ``await self._persist_locked()`` with no await in between, so these
-            # counters are already in the state that write serialises -- and that
-            # write is the stronger one, since it holds the lock and cannot be
-            # clobbered by a concurrent update()'s snapshot.
-            loop.monitor.wakes += 1
-            loop.monitor.followup_ticks = _WAKE_FOLLOWUP_TICKS
-        if delivered and claimed_floor and loop.monitor is not None:
-            # The floor's turn happened. No follow-up allowance goes with it: the floor
-            # exists to break a silence, not to protect work the agent had already
-            # started, so there is nothing in progress for a bypassed tick to shield.
-            loop.monitor.floor_ticks += 1
         if not delivered:
             # If the fire path already removed the loop (e.g. slot missing →
             # remove()), do NOT resurrect it with a fresh timer — that would
@@ -5120,6 +5519,11 @@ class AutoNudgeService:
                     "AutoNudge: loop %s was deactivated mid-fire — not re-arming",
                     loop.id,
                 )
+                self._rearm_fail_count.pop(loop.id, None)
+                return
+            if rollback_undurable:
+                # The claim is still on disk, so this cycle is already spent. Re-arming
+                # would keep firing into a store that cannot record the outcome.
                 self._rearm_fail_count.pop(loop.id, None)
                 return
             # Slot was busy mid-turn, or the fire callback errored. Do NOT end
@@ -5144,7 +5548,13 @@ class AutoNudgeService:
         # Persist through the shared locked+offloaded path so this bookkeeping
         # cannot be clobbered by a concurrent update()'s snapshot (and so the
         # fsync stays off the event loop).
-        await self._persist_locked()
+        try:
+            await self._persist_locked(before=None if resettle_owed else _commit_delivery)
+        except BaseException:
+            # The delivered cycle was never charged, so ANY re-arm repeats it past
+            # max_cycles until a later write settles the accounting.
+            self._settlement_owed.add(loop.id)
+            raise
         # At INFO, deliberately. Delivered fires used to be unlogged entirely,
         # so a loop that died and a loop with nothing to report were
         # byte-identical in the journal. One line per DELIVERED turn -- each of
@@ -5182,7 +5592,12 @@ class AutoNudgeService:
         # callback runs the turn inline, so the next fire lands idle_secs
         # after the previous turn finished; the busy-skip + backoff above
         # handles any overlap.
-        if is_channel_key(loop.slot_key) and loop.active and loop.id in self._loops:
+        if (
+            is_channel_key(loop.slot_key)
+            and loop.active
+            and loop.id in self._loops
+            and not resettle_owed
+        ):
             self._arm_from_deadline(loop)
 
     async def fire_now(self, loop_id: str) -> tuple["NudgeLoop | None", str, int]:
@@ -5208,7 +5623,7 @@ class AutoNudgeService:
         by typing. A manual trigger IS the user asking, so the condition the beat
         protects against is not present.
 
-        Three refusals, and each one is load-bearing rather than defensive:
+        Four refusals, and each one is load-bearing rather than defensive:
 
         * **Not registered** -> 404. Nothing to fire. This is also where the stop
           SENTINEL lands: it goes through ``remove``, so the loop is gone rather
@@ -5225,6 +5640,10 @@ class AutoNudgeService:
           ``notify_turn_complete``/``notify_user_input`` defer around, and the
           same answer the sibling immediate-trigger route gives for a run
           already in flight (``POST /api/crons/{id}/run`` -> 409).
+        * **Owes a settlement write** -> 409. A delivered cycle whose accounting
+          never reached disk. ``_arm_from_deadline`` and ``_reconcile_once`` both
+          refuse such a record, but this route arms through :meth:`_arm_timer`
+          directly and reached neither, so the delivered turn ran a second time.
 
         NO SUSPENSION POINT, and that is the design rather than an omission.
         ``async def`` for the caller's convenience, but nothing inside awaits, so
@@ -5266,6 +5685,15 @@ class AutoNudgeService:
             return None, "loop is not active", 409
         if loop_id in self._firing:
             return None, "loop is already firing", 409
+        if loop_id in self._settlement_owed:
+            # ``_arm_from_deadline`` and ``_reconcile_once`` refuse an owed record, but
+            # this route arms through ``_arm_timer`` and so reached neither.
+            return (
+                None,
+                "loop owes a settlement write for its last delivered cycle; restart the "
+                "gateway to settle it from the record on disk",
+                409,
+            )
         self._arm_timer(loop, delay=0.0)
         logger.info(
             "AutoNudge: loop %s brought forward by hand — cycle %d armed to run now",

@@ -1601,7 +1601,11 @@ async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path,
         assert "expired" not in events, "a finish must not be announced unpersisted"
         assert loop.monitor.terminal_pending == "success", "the debt stays owed"
         assert loop.monitor.outcome is None
-        assert loop.active is True, "and the watch stays live so it retries"
+        assert loop.active is True, "the record still says active"
+        assert loop.id in service._settlement_owed, (
+            "the in-place attempts are already spent, so re-arming would re-deliver a turn "
+            "the user received; membership here is what suppresses it"
+        )
     finally:
         service.stop()
 
