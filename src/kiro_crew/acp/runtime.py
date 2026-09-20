@@ -53,6 +53,7 @@ from kiro_crew.acp.client import (
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
     is_auth_failure_output,
+    is_sandbox_init_failure_output,
 )
 from kiro_crew.acp.harness import (
     HarnessAdapter,
@@ -147,6 +148,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
     wrap_argv_async,
+    wrapped_by_crew_sandbox,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_pid import (
@@ -1588,6 +1590,37 @@ class AcpRuntime:
         # stays observed for the life of this runtime, which is correct because
         # nothing about a rejected credential un-rejects itself mid-process.
         self._saw_auth_failure = False
+        # Latched sandbox-init-refusal observation, latched for the same reason
+        # and at the same sink as the auth latch above: the question ("why is this
+        # runtime dead?") is asked after the ring has already turned over on a
+        # chatty startup, and a re-scan that misses the line answers "not a
+        # sandbox problem" indistinguishably from a real negative.
+        #
+        # Its LIFETIME is narrower than the auth latch's, though, and deliberately:
+        # this one is a verdict about THIS CHILD'S STARTUP, and it is spent once
+        # startup has demonstrably SUCCEEDED -- which is the first session handle,
+        # not the ``initialize`` handshake. Startup continues past the handshake
+        # through ``session/new``, and a sandboxed MCP launcher that the child
+        # starts for that session can refuse there: closing the window at the
+        # handshake would leave every such refusal unclassified, on the very
+        # translation site (``create_session``) added to catch it.
+        #
+        # See the clear in ``_finish_create_session`` and the arming guard in
+        # ``_drain_stderr``.
+        self._saw_sandbox_init_failure = False
+        # Whether a session handle has ever been produced on this runtime. The
+        # startup window the latch above arms in, and the reason it is a separate
+        # flag from ``_initialized``: the handshake is the middle of startup, not
+        # its end.
+        self._first_session_ready = False
+        # Which isolation layer wrapped this runtime's child, recorded by
+        # ``_spawn_admitted`` off the argv its wrap returned. False until then --
+        # also the safe default for the classifier, since a spawn that never
+        # reached the wrap cannot have been refused by it.
+        self._sandbox_wrapped_by_crew = False
+        # The mask set this spawn asked for, so a trusted corroboration run can
+        # exercise the same mounts rather than a weaker profile.
+        self._sandbox_hidden_dirs: tuple[str, ...] = ()
         # Unroutable-frame drop accounting: (sessionId, method) → count since
         # the last flush, plus the monotonic timestamp of that flush (0.0 = no
         # window open yet; the first counted drop opens it). Written ONLY from
@@ -2183,6 +2216,13 @@ class AcpRuntime:
             extra_expose_files=plan.extra_expose_files,
             _prepare=wrap_argv,
         )
+        # Twin of acp/client.py's record: the wrap's own account of the branch it
+        # took, read before the cgroup scope below prepends its tokens. A later
+        # re-derivation from mode + platform + settings cannot match it -- the
+        # delegated branch still falls back to Crew's seatbelt for a masked spawn,
+        # and the audit-or-deny step can refuse a delegation after it was chosen.
+        self._sandbox_wrapped_by_crew = wrapped_by_crew_sandbox(argv)
+        self._sandbox_hidden_dirs = tuple(plan.extra_hidden_dirs)
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
         # No-op + loud warning where cgroup delegation is unavailable. --scope
@@ -2539,6 +2579,16 @@ class AcpRuntime:
             # cancellation reaches this arm.
             await self._snapshot_descendants(retry_when_empty=True)
         except BaseException:
+            # BEFORE the kill, which is the whole point of the ordering. The
+            # cleanup below cancels the stderr drain, and a line still in the pipe
+            # when it does is a line nobody will ever read -- so the caller's own
+            # settle finds the task already done and learns nothing. Draining here
+            # is the last moment the child's own account of why it could not start
+            # is still reachable, and a sandbox refusal is exactly the failure that
+            # arrives this way: the child writes its signature and closes stdout
+            # together. Bounded and swallowing (see ``settle_stderr``); this is
+            # already the failure path.
+            await self.settle_stderr()
             try:
                 # This death IS abnormal (failed spawn/handshake): kill()'s
                 # expected=False default keeps its log at WARNING.
@@ -4103,6 +4153,86 @@ class AcpRuntime:
         Reads the latch, not the ring buffer: see ``_saw_auth_failure``.
         """
         return self._saw_auth_failure
+
+    async def settle_stderr(self, timeout: float = 0.5) -> None:
+        """Give the stderr drain a bounded chance to finish before its latches are read.
+
+        The latches (:meth:`saw_sandbox_init_failure`, :meth:`saw_not_logged_in`)
+        are written by the ``_drain_stderr`` TASK, while a death is discovered on
+        the stdout side: ``_reader_loop`` sees EOF and ``_mark_dead`` fails the
+        pending ``initialize`` future SYNCHRONOUSLY. Both tasks become runnable
+        together -- which is the ordinary shape of a real refusal, since the child
+        writes its signature and closes stdout at once -- so a caller that reads a
+        latch straight off that failure can win the race and see ``False`` for a
+        line already in the pipe.
+
+        Bounded and swallowing, because the caller is already on a failure path:
+        the worst case of not settling is the generic error it would have produced
+        anyway, and no failure here may become a second failure. The same shape
+        and the same budget as ``AcpClient._read_message``'s own EOF drain.
+        """
+        task = self._stderr_task
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    def saw_sandbox_init_failure(self) -> bool:
+        """True if an OS sandbox told this runtime's child it could not initialize.
+
+        Lets callers translate a runtime death into ``AcpSandboxInitFailed`` -- a
+        non-retryable error naming the layer that refused and its switch --
+        instead of a generic process-death error the retry ladder then reproduces
+        on a host that will refuse identically. Parity with
+        :meth:`saw_not_logged_in`, including reading the latch rather than the
+        ring buffer.
+        """
+        return self._saw_sandbox_init_failure
+
+    @property
+    def sandbox_wrapped_by_crew(self) -> bool:
+        """Whether Kiro Crew's own sandbox wrapped this runtime's child.
+
+        The one fact a sandbox refusal's stderr cannot carry: WHICH layer to turn
+        off. A harness's internal sandbox nested inside Crew's wrap fails with the
+        harness's wording while the layer the operator must change is Crew's.
+        """
+        return self._sandbox_wrapped_by_crew
+
+    def redacted_stderr_tail(self) -> str:
+        """The retained stderr lines, newline-joined and redacted.
+
+        A SEPARATE reader from :meth:`death_summary`, which exists to be read by a
+        person: it folds the same lines onto one line behind a ``returncode``
+        prefix. Anything that classifies PER LINE -- the launcher's own refusal
+        test -- sees nothing in that shape, so it needs the lines as lines.
+
+        Redacted like every other path out of this buffer: child stderr is
+        untrusted subprocess output that can echo a credential. Empty for a
+        restricted session, which retains nothing.
+        """
+        if not self._stderr_lines:
+            return ""
+        tail = "\n".join(self._stderr_lines)
+        tail, _ = redact_exfiltration_urls(tail)
+        tail, _ = redact_credentials(tail)
+        return tail
+
+    @property
+    def sandbox_mode(self) -> str:
+        """The sandbox tier this runtime's child was spawned under."""
+        return self._sandbox_mode
+
+    @property
+    def sandbox_hidden_dirs(self) -> tuple[str, ...]:
+        """The extra path masks this spawn asked its sandbox for.
+
+        Read with :attr:`sandbox_mode` when a trusted corroboration run has to
+        rebuild the profile this spawn was actually refused under.
+        """
+        return self._sandbox_hidden_dirs
 
     def _exit_reason(self, rc: object) -> str:
         """The death reason for a process that exited: rc plus what it last said.
@@ -5869,6 +5999,18 @@ class AcpRuntime:
         # session live in the shared process with no handle returned to anyone.
         # Only a cancellation can reach this arm; the scan swallows its own
         # failures.
+        #
+        # Startup is over by this point: session/new has succeeded, which is the
+        # proof no sandbox refusal on the way here was fatal. So the startup latch
+        # is spent, and spending it -- rather than merely ceasing to arm it -- is
+        # what makes every consumer correct by construction: a translator reached
+        # after this can only ever see False, so none of them re-derives the window.
+        #
+        # First session only. A later session/new on a warm runtime is ordinary
+        # mid-life work, and a refusal its child prints then says nothing about
+        # whether the agent process can start.
+        self._first_session_ready = True
+        self._saw_sandbox_init_failure = False
         try:
             await self._snapshot_descendants()
         except BaseException:
@@ -6455,6 +6597,30 @@ class AcpRuntime:
                     # surfaced where it is actionable instead -- as AcpAuthRequired.
                     if not self._saw_auth_failure and is_auth_failure_output(text):
                         self._saw_auth_failure = True
+                    # Same sink, same reason as the auth latch: matched
+                    # unconditionally (not only when ``recording_allowed``), so a
+                    # restricted session that retains no stderr still gets the
+                    # actionable classification rather than a bare exit code.
+                    #
+                    # SCOPED TO THE PRE-INITIALIZE WINDOW, unlike the auth latch,
+                    # and the asymmetry is the point. A rejected credential does
+                    # not un-reject itself, so latching it for the runtime's life
+                    # is correct. This signature is not that: the child's OWN
+                    # sandbox can refuse mid-life when the HARNESS spawns a tool
+                    # subprocess, which says nothing about whether the agent
+                    # process can start. A life-long latch would turn the next
+                    # unrelated death -- a broken pipe, an OOM kill -- into a
+                    # permanent "your sandbox is broken", and permanently is
+                    # exactly how long the wrong verdict would last. A refusal
+                    # that genuinely stops the child from starting is always
+                    # printed before ``initialize`` completes, so the window that
+                    # matters closes there.
+                    if (
+                        not self._first_session_ready
+                        and not self._saw_sandbox_init_failure
+                        and is_sandbox_init_failure_output(text)
+                    ):
+                        self._saw_sandbox_init_failure = True
                     if self.recording_allowed:
                         logger.debug("stderr: %s", text[:200])
         except asyncio.CancelledError:

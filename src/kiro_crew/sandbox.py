@@ -7047,6 +7047,112 @@ def kiro_internal_sandbox_switch() -> tuple[str, str]:
     return _KIRO_INTERNAL_SETTINGS_PATH, _KIRO_INTERNAL_SANDBOX_KEY
 
 
+#: The two isolation layers an agent spawn can be wrapped by, as the names a
+#: diagnostic prints. Constants rather than literals at each raise site: the
+#: layer travels into an exception type, a log line and an operator-facing
+#: remedy, and three spellings of the same layer is how a remedy ends up naming
+#: the wrong switch.
+SANDBOX_LAYER_CREW = "kirocrew"
+SANDBOX_LAYER_HARNESS = "harness-internal"
+
+
+def wrapped_by_crew_sandbox(argv: "Sequence[str]") -> bool:
+    """Whether *argv* -- as returned by :func:`wrap_argv` -- runs the child
+    through Kiro Crew's OWN sandbox layer.
+
+    Read off the wrapped argv rather than re-deriving the decision from mode +
+    platform + settings, because that decision is not a single expression: the
+    delegated branch still falls back to Crew's seatbelt when the caller asks for
+    path masks a delegated sandbox cannot enforce, the governance floor can clamp
+    a requested ``off`` back up, and the audit-or-deny step can refuse a
+    delegation after it was chosen. A second copy of that reasoning would answer
+    differently from the wrap on exactly the hosts where the answer matters. The
+    argv is the wrap's own record of what it did.
+
+    Keys on the two things only Crew's wrappers put in an argv -- the
+    ``KIROCREW_SANDBOX_ACTIVE`` env assignment the macOS seatbelt wrap prepends,
+    and the generated launcher script the Linux namespace wrap execs. The
+    delegated and unconfined paths add neither (they prepend at most ``env -u``
+    scrub flags), so this is False for both, which is the point: on those paths
+    the only sandbox left in the chain belongs to the harness.
+    """
+    marker = f"{_IN_SANDBOX_MARKER}="
+    for token in argv:
+        if not isinstance(token, str):
+            continue
+        if token.startswith(marker):
+            return True
+        if os.path.basename(token).startswith(_SANDBOX_ARTIFACT_PREFIX):
+            return True
+    return False
+
+
+def sandbox_init_remediation(layer: str, *, corroborated: bool) -> str:
+    """What an operator must change to get past a sandbox that will not initialize.
+
+    **The switch that turns a layer OFF is emitted only on a CORROBORATED
+    verdict**, and that is the whole shape of this function. The signature that
+    reaches the caller is the dead child's own stderr, and that child is the
+    unverified binary the sandbox exists to contain: a planted one can print any
+    line it likes. A message that answered it with "run
+    ``kirocrew config set agent.sandbox off``" would let that binary talk the
+    operator into removing the isolation it is running under -- the same hazard
+    :func:`launcher_refusal` states for its own callers, answered the same way it
+    prescribes. *corroborated* must therefore come from
+    :func:`corroborate_launcher_refusal` (a real launcher run around a trusted
+    no-op, whose stderr no child wrote), never from the child's text.
+
+    Uncorroborated, the message still names the layer -- that comes from the argv
+    Kiro Crew itself built, not from the child -- and routes the operator to the
+    check that can reach a verdict, which is where the switch lives.
+
+    Corroboration exists for Crew's Linux launcher only. On macOS the probe
+    validates an ``(allow default)`` profile against a fixed system binary while
+    the real wrap applies the strict generated one, so a passing probe is not
+    evidence that the real wrap works and the uncorroborated branch is the honest
+    answer there. Closing that gap is the real-wrap self-test, tracked separately.
+
+    It follows that the HARNESS layer never gets a switch from here at all, whatever
+    *corroborated* says: the only trusted run available speaks to Crew's launcher,
+    so treating its verdict as evidence about the harness's own sandbox would be a
+    cross-layer inference -- and on that branch the harness's sandbox is the only
+    isolation the child had.
+    """
+    if layer == SANDBOX_LAYER_HARNESS:
+        # Names NO switch, and *corroborated* cannot change that -- which is the
+        # point of reading this branch before that flag. Corroboration re-runs
+        # KIRO CREW'S OWN launcher, so a verdict from it is evidence about Crew's
+        # layer and says nothing whatever about the harness's internal sandbox.
+        # Letting it unlock this switch would be a cross-layer inference: a host
+        # that cannot build Crew's namespace would hand the operator the key that
+        # turns off the OTHER sandbox -- and on this branch that sandbox is the
+        # only isolation the child had, so the one confirmed thing would be that
+        # isolation is gone. The remaining evidence is the agent's own output, and
+        # the agent is the unverified binary that sandbox exists to contain.
+        return (
+            "the agent reported its own sandbox refusing, and Kiro Crew did not wrap "
+            "this spawn -- so that sandbox is the only isolation this child had. The "
+            "report above is the agent's own output and Kiro Crew has NOT confirmed "
+            "it; check the host's sandbox support"
+        )
+    if not corroborated:
+        return (
+            "Kiro Crew wrapped this spawn in its own OS sandbox, but the refusal above "
+            "is the agent's own output and not a verdict on this host -- and Kiro Crew's "
+            "own trusted sandbox run covers its Linux launcher only, so it has NOT "
+            "confirmed the failure here. Check the host's sandbox support before turning "
+            "either layer off"
+        )
+    return (
+        "a trusted launcher run confirms this host refuses Kiro Crew's own OS sandbox: "
+        "run `kirocrew config set agent.sandbox off`, which spawns agents unconfined "
+        "WHERE GOVERNANCE PERMITS IT -- a governance floor clamps the mode back up and "
+        "the request has no effect. Where it does take, it removes Kiro Crew's "
+        "OS-level isolation for EVERY agent process (no credential-path masks, no "
+        "data-home seal); each unconfined spawn is recorded in the security event log"
+    )
+
+
 def delegated_workspace_exposes_sealed_target(
     work_dir: "str | os.PathLike[str] | None",
 ) -> str | None:

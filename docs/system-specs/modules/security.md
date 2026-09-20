@@ -309,6 +309,69 @@ composition failure propagates fail-closed. The capability probe
 (`_probe_sandbox_exec`) still runs only the trusted fixed `/usr/bin/true` target
 under `(allow default)`, never an edition-resolved or user-writable executable.
 
+#### A sandbox that refuses to initialize is classified, never retried and never downgraded
+
+A host whose sandbox cannot be built refuses the same way on every attempt, so the
+ACP reconnect budget — which exists for transport faults — buys nothing and hides
+the cause: the operator saw the agent process exit, while the reason sat on the
+child's stderr (`sandbox initialization failed: Operation not permitted`,
+`sandbox-exec: sandbox_apply: ...`, or one of the Linux launcher's own
+`sandbox: BLOCKED ...` prefixes).
+
+Both ACP transports detect that signature in the spawn/init window
+(`acp.client.is_sandbox_init_failure_output`) and raise `AcpSandboxInitFailed`, a
+non-retryable `AcpError` in the same family as `AcpAuthRequired` and
+`AcpToolGateUnroutable`: `transient` is a fixed `False`, so every retry ladder that
+reads the verdict off the exception stops on the first one, and `AcpClient` skips the
+second of its two init attempts outright. The detector is anchored on a sandbox token
+in each alternative — the burst's other lines (`Failed to spawn child process`,
+`Operation not permitted`) are ordinary output for a missing binary or a denied file,
+and matching those alone would make ordinary spawn failures permanent.
+
+**A restricted-memory session is the one exception, by design.** `AcpClient` reads its
+own stderr ring buffer, which such a session deliberately does not fill, so it cannot
+classify and keeps its retry rather than guessing. The shared runtime has no such gap:
+it latches per line at its drain, before retention is applied.
+
+**The latch is a verdict about one child's STARTUP, and it is spent when `initialize`
+completes.** A rejected credential does not un-reject itself, so the auth latch beside
+it is life-long; this one is not that. The harness's own sandbox can refuse when *it*
+spawns a tool subprocess long after the agent started fine, and a life-long latch would
+let that make the next unrelated death permanently "your sandbox is broken". Clearing it
+at the handshake — rather than only stopping the arming — is what makes every consumer
+correct by construction: the three startup translations in `providers/acp.py` read it
+before the handshake, and a per-turn path reached after it can only ever see `False`.
+
+The error names the layer that wrapped the spawn, from `sandbox.wrapped_by_crew_sandbox()`
+read off the argv the wrap returned — the wrap's own record of the branch it took, which
+no re-derivation from mode + platform + settings can match, because the delegated branch
+still falls back to Crew's seatbelt for a masked spawn and the audit-or-deny step can
+refuse a delegation after it was chosen. Signature alone cannot decide it: a harness
+sandbox nested inside Crew's wrap fails with the *harness's* wording while the layer to
+change is *Crew's*.
+
+**The switch that turns a layer off is emitted only on a corroborated verdict**, and
+this is the security boundary of the whole path. The signature arrives on the dead
+child's stderr, and that child is the unverified binary the sandbox exists to contain —
+so answering it with `kirocrew config set agent.sandbox off` would let a planted binary
+print one line and have Kiro Crew instruct the operator to remove the isolation it is
+running under. This is the hazard `launcher_refusal` states for its own callers, and it
+is answered the same way that function prescribes: `corroborate_launcher_refusal` re-runs
+the real launcher around a trusted no-op under the refused spawn's own mode and masks,
+and only *its* stderr — text no child wrote — unlocks the switch. Run off the event loop,
+like the first-run gate runs it. Corroboration exists for Crew's Linux launcher only, and the
+uncorroborated message says so rather than promising a verdict: on macOS the probe
+validates an `(allow default)` profile against a fixed system binary while the real wrap
+applies the strict generated one, so a passing probe is not evidence and pointing the
+operator at it would false-green exactly the failure they are looking at. The message
+names the layer, states that Kiro Crew has not confirmed the failure on this host, and
+stops there until the real-wrap self-test lands.
+
+Classification deliberately stops there. **There is no automatic fallback to an
+unconfined spawn** — that would turn a broken host into a silently unsandboxed agent,
+which this module refuses everywhere else too. The useful action is to fail fast and say
+which layer to look at, loudly.
+
 ### XPIA Hardening (`security.py` + `hooks.py`)
 
 The shared file readers authorize the opened regular-file descriptor before

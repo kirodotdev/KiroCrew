@@ -21,6 +21,7 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     model_is_unusable,
     resolve_pin_spelling,
+    sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -1038,6 +1039,16 @@ class AcpProvider(LLMProvider):
         try:
             await runtime.spawn()
         except AcpRuntimeError as exc:
+            # An OS sandbox that refused to build this child is checked FIRST and
+            # on all three of this module's startup paths: it is the narrower
+            # fact, it is deterministic (so the pool replacing the worker only
+            # reproduces it), and a child the sandbox would not start never got
+            # far enough to report a credential problem. The verdict comes from
+            # the shared translation so these paths cannot disagree with the
+            # per-turn one in session_provider.
+            sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
+            if sandbox_failure is not None:
+                raise sandbox_failure from exc
             # kiro-cli can exit during initialize when not authenticated —
             # surface an actionable login prompt (parity with AcpClient) rather
             # than a generic runtime-death error.
@@ -1169,6 +1180,9 @@ class AcpProvider(LLMProvider):
                     try:
                         await runtime.spawn()
                     except AcpRuntimeError as exc:
+                        sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
+                        if sandbox_failure is not None:
+                            raise sandbox_failure from exc
                         if runtime.saw_not_logged_in():
                             raise AcpAuthRequired(
                                 host_auth.signed_out_message(self._client.backend),
@@ -1185,6 +1199,9 @@ class AcpProvider(LLMProvider):
                         channel_id=self._owning_channel_id() or "",
                     )
                 except AcpRuntimeError as exc:
+                    sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
+                    if sandbox_failure is not None:
+                        raise sandbox_failure from exc
                     if runtime.saw_not_logged_in():
                         raise AcpAuthRequired(
                             host_auth.signed_out_message(self._client.backend),

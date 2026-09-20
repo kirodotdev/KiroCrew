@@ -235,20 +235,27 @@ from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
 from kiro_crew.recovery.ladder import LADDER as _LADDER
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
+    LAUNCHER_EXIT_PREFIXES,
     RLIMIT_PROFILE_SESSION_HOST,
+    SANDBOX_LAYER_CREW,
+    SANDBOX_LAYER_HARNESS,
     BoundWorkspaceMismatch,
     _forward_ssh_auth_sock,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
+    corroborate_launcher_refusal,
     create_subprocess_limited,
     delegated_workspace_exposes_sealed_target,
+    launcher_refusal,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
+    sandbox_init_remediation,
     scrub_agent_subprocess_env,
     wrap_argv,
     wrap_argv_async,
+    wrapped_by_crew_sandbox,
 )
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -2683,6 +2690,53 @@ class AcpAuthRequired(AcpError):  # noqa: N818
         self.auth_required = backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
 
 
+class AcpSandboxInitFailed(AcpError):  # noqa: N818
+    """An OS sandbox refused to initialize, so the agent child never started.
+
+    Non-retryable, for the reason :class:`AcpAuthRequired` and
+    :class:`AcpToolGateUnroutable` are: the refusal is a property of the host and
+    its configuration, so the respawn the reconnect ladder would make hits the
+    same wall, and every attempt costs a spawn plus a teardown before reporting
+    the same thing. ``transient`` is fixed ``False`` so the retry ladders that
+    read the verdict off the exception (``llm_helpers.acp_error_is_transient``,
+    and through it every consumer from the dashboard turn to a cron tick) stop on
+    the first one without any of them matching on wording.
+
+    A DISTINCT type rather than a flag on ``AcpProcessDied``, because the two
+    answer different questions. ``AcpProcessDied`` says the child is gone and
+    leaves whether to resubmit the turn to its own classification; this says the
+    child cannot be started at all until a human changes something.
+
+    The message names which of the two isolation layers wrapped the spawn and what
+    to do about it, and ``corroborated`` decides how far that goes: the switch that
+    turns a layer OFF is emitted only when a TRUSTED run reached that verdict, never
+    on the strength of the dead child's own stderr -- see
+    :func:`sandbox.sandbox_init_remediation`.
+
+    Deliberately NOT an automatic downgrade to an unconfined spawn. Falling back
+    to no isolation on a sandbox failure is refused by design -- it would turn a
+    broken host into a silently unsandboxed agent -- so the useful thing this can
+    do is fail fast and say which layer to look at, loudly.
+    """
+
+    def __init__(self, *, layer: str, detail: str = "", corroborated: bool = False) -> None:
+        # Layer and remedy are LOCALS folded into the message, not attributes: the
+        # message is what an operator and every error surface read, and a
+        # structured field with no reader is a promise nobody keeps.
+        remediation = sandbox_init_remediation(layer, corroborated=corroborated)
+        # ``detail`` is the child's own stderr, already redacted by the caller
+        # that captured it (both transports redact before retaining: the text is
+        # untrusted subprocess output that can echo a token, and this message
+        # reaches a session card, the security event log, and a cron job's
+        # persisted last_error).
+        said = f" -- {detail}" if detail.strip() else ""
+        super().__init__(
+            f"the {layer} sandbox failed to initialize, so the agent process could "
+            f"not start{said}. Retrying cannot fix this: {remediation}",
+            transient=False,
+        )
+
+
 class AcpToolGateUnroutable(AcpError):  # noqa: N818
     """The harness's tool calls would not reach Kiro Crew's PreToolUse gate.
 
@@ -2945,6 +2999,177 @@ def is_auth_failure_output(haystack: str) -> bool:
     if is_credential_propagation_delay(haystack):
         return False
     return bool(_RE_AUTH.search(haystack)) or _is_session_expired(haystack)
+
+
+# An OS sandbox that refused to initialize, read off the dead child's stderr.
+# Detected during spawn/init for the same reason the auth vocabulary above is: the
+# condition is DETERMINISTIC, so the respawn the reconnect ladder is about to make
+# reproduces it exactly, and the operator gets a generic "process exited" card
+# several failed attempts later instead of the one line that names the fix.
+#
+# Anchored on a sandbox token in every alternative, deliberately. The failure
+# arrives as a three-line burst whose other two lines are a bare spawn error
+# (``Failed to spawn child process`` / ``Invalid argument (os error 22)``) and a
+# bare errno (``Operation not permitted``) -- neither is sandbox-specific, both
+# are ordinary output for a missing binary, a bad interpreter or a denied
+# credential file, and matching either alone would latch a PERMANENT verdict onto
+# a class of deaths a respawn legitimately fixes. Whichever layer refused prints a
+# sandbox token of its own, so requiring one costs no coverage:
+#
+# * ``sandbox initialization failed`` / ``sandbox_apply`` -- Seatbelt's own
+#   refusal, printed by whichever process called it (the harness's internal
+#   sandbox, or ``sandbox-exec`` under Crew's wrap).
+# * ``sandbox-exec:`` -- the macOS wrapper Crew's own seatbelt path execs.
+# * Crew's Linux namespace launcher refusing after the spawn, classified by
+#   :func:`sandbox.launcher_refusal` rather than by its prefixes. The prefixes
+#   alone are the WRONG test: that function deliberately answers ``None`` for
+#   launcher lines that are not sandbox failures at all, and two of them are
+#   actively retryable -- ``FATAL ... did not publish`` is a failed parent/child
+#   pipe handshake it classifies as ``transient`` (it self-heals on the next
+#   spawn), and the hardlinked-credential refusal means the sandbox WORKED and
+#   found host state it must not paper over. Only its ``no_backend`` kind -- the
+#   host cannot build the sandbox -- is this signature. Classified per LINE
+#   because that function returns on its first matching line, so a hardlink line
+#   above a real ``unshare`` refusal would otherwise hide it.
+#
+# The EMITTER does not identify the responsible LAYER, which is why the raise site
+# supplies that separately -- see :func:`sandbox_init_failure`. A harness sandbox
+# nested inside Crew's wrap fails with the harness's own wording while the layer
+# to turn off is Crew's.
+_RE_SANDBOX_INIT_FAILURE = re.compile(
+    r"sandbox\s+initialization\s+failed|\bsandbox_apply\b|^\s*sandbox-exec:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def is_sandbox_init_failure_output(haystack: str) -> bool:
+    """True when *haystack* (a child's stderr) carries an OS-sandbox init refusal.
+
+    Shared by both ACP transports -- ``AcpClient`` reads its own stderr ring
+    buffer, ``AcpRuntime`` latches per line at its drain -- so the two cannot come
+    to disagree about what the signature IS, the same anti-drift reason
+    :func:`is_auth_failure_output` is one function.
+    """
+    if _RE_SANDBOX_INIT_FAILURE.search(haystack):
+        return True
+    for line in haystack.splitlines():
+        if not line.strip().startswith(LAUNCHER_EXIT_PREFIXES):
+            continue
+        classified = launcher_refusal(line)
+        if classified is not None and classified[0] == "no_backend":
+            return True
+    return False
+
+
+async def sandbox_init_failure(
+    detail: str,
+    *,
+    crew_wrap: bool,
+    mode: str = "",
+    extra_hidden_dirs: tuple[str, ...] = (),
+    corroboration_output: str = "",
+) -> "AcpSandboxInitFailed":
+    """Build the classified error for a spawn an OS sandbox refused.
+
+    *crew_wrap* is the one fact the stderr cannot carry: WHICH layer wrapped the
+    spawn. Callers read it from the argv their own wrap returned
+    (:func:`sandbox.wrapped_by_crew_sandbox`) rather than from the signature,
+    because a harness sandbox nested inside Crew's wrap prints the harness's
+    wording while the layer the operator must change is Crew's -- the field
+    reports this exists for were resolved by Crew's own switch, on stderr that
+    named the harness. When Crew's wrap is NOT in the chain the harness's own
+    sandbox is the only one left. Two layers, no third state: a spawn with neither
+    cannot produce this signature at all.
+
+    ASYNC because of the second question, which is the one that decides whether the
+    message may hand out a disable switch: does a TRUSTED run agree that the layer
+    refuses on this host? ``corroborate_launcher_refusal`` answers it by re-running
+    the real launcher around a trusted no-op, whose stderr no child wrote -- and it
+    blocks on a subprocess, so it goes off the loop exactly as the first-run gate
+    runs it. It answers ``None`` off Linux and for output carrying no launcher line,
+    and ``transient`` for a failed launcher readiness handshake; only its
+    ``no_backend`` verdict -- the host cannot build the sandbox -- corroborates.
+
+    *extra_hidden_dirs* is the refused spawn's own mask set so the trusted run
+    exercises the same mounts. Omitting it can only make the trusted run refuse
+    LESS, which withholds the switch rather than handing it out wrongly -- the safe
+    direction for a default.
+
+    *corroboration_output* is the stderr to CLASSIFY, separate from *detail* which
+    is the stderr to SHOW, because the two need different shapes. The launcher's
+    refusal is recognised per LINE, and a caller whose display string folds the tail
+    onto one line behind a summary prefix (the shared runtime's ``death_summary()``
+    does exactly that) would present nothing a line test can match -- corroboration
+    would silently never run and the switch would never be reachable. Defaults to
+    *detail*, which is the right answer for a caller holding the raw tail.
+    """
+    layer = SANDBOX_LAYER_CREW if crew_wrap else SANDBOX_LAYER_HARNESS
+    corroborated = False
+    to_classify = corroboration_output or detail
+    if launcher_refusal(to_classify) is not None:
+        verdict = await asyncio.to_thread(
+            functools.partial(
+                corroborate_launcher_refusal,
+                to_classify,
+                mode=mode or "strict",
+                extra_hidden_dirs=extra_hidden_dirs,
+            )
+        )
+        # ``no_backend`` ONLY. The same function answers ``("transient", ...)``
+        # for a failed launcher readiness handshake, which says nothing about the
+        # host and self-heals on the next spawn, so treating it as corroborated
+        # would hand out the disable switch for a condition that fixes itself.
+        # The identical test the signature detector applies to a launcher line,
+        # for the identical reason.
+        corroborated = verdict is not None and verdict[0] == "no_backend"
+    return AcpSandboxInitFailed(layer=layer, detail=detail, corroborated=corroborated)
+
+
+async def sandbox_init_failure_for_runtime(runtime: Any) -> "AcpSandboxInitFailed | None":
+    """The classified error when *runtime* observed a sandbox refusal, else ``None``.
+
+    ONE function for the three sites that translate a shared-runtime STARTUP
+    failure, so they cannot answer this differently. All three are in
+    ``providers/acp.py`` -- the first ``spawn()``, the resume respawn, and
+    ``create_session()`` -- and each already restates the auth translation inline.
+    A third restatement of THIS one is how one startup path ends up classifying
+    what another does not, which is the shape that let the shared-runtime startup
+    miss the latch entirely in the first place.
+
+    Three and not four: the per-turn death translation reads no latch, because the
+    latch is spent when ``initialize`` completes and a live session exists only
+    after that.
+
+    Duck-typed rather than annotated against ``AcpRuntime``: this module is below
+    the runtime in the import order and cannot name it.
+
+    Settles the stderr drain FIRST, and that is not a nicety. The latch is written
+    by the drain task, while the death that brings a caller here is discovered on
+    the stdout side and fails the pending ``initialize`` synchronously -- so both
+    are runnable at once and a straight read can see ``False`` for a line already
+    in the pipe. That is the ordinary shape of a real refusal, not a corner: the
+    child writes its signature and closes stdout together. Bounded and swallowing
+    (see :meth:`AcpRuntime.settle_stderr`), the same pattern ``AcpClient`` applies
+    at its own EOF. Because every caller asks this BEFORE the auth translation,
+    the settle covers that read too.
+    """
+    await runtime.settle_stderr()
+    if not runtime.saw_sandbox_init_failure():
+        return None
+    # The retained summary already carries the redacted stderr tail; it is empty
+    # on a restricted session, where the latch still fires and the remedy is what
+    # matters.
+    return await sandbox_init_failure(
+        runtime.death_summary() or "",
+        crew_wrap=runtime.sandbox_wrapped_by_crew,
+        mode=runtime.sandbox_mode,
+        extra_hidden_dirs=runtime.sandbox_hidden_dirs,
+        # The retained summary is what an operator READS -- one line, the tail
+        # folded behind a returncode prefix. Corroboration needs the lines
+        # themselves, so it gets them separately; passing the summary would leave
+        # the launcher's own refusal unrecognisable and the trusted run unmade.
+        corroboration_output=runtime.redacted_stderr_tail(),
+    )
 
 
 # Account/plan capacity is EXHAUSTED — terminal. Distinct from a throttle: a
@@ -4784,6 +5009,14 @@ class AcpClient:
         # claude-agent-acp to reject the response.
         self._permission_options: dict[str | int, dict[str, str]] = {}
         self._stderr_lines: deque[str] = deque(maxlen=20)
+        # Set by ``_spawn`` from the wrapped argv; only meaningful once a child
+        # has been spawned. False before that, which is also the safe default for
+        # the classifier: a spawn that never reached the wrap cannot have been
+        # refused by it.
+        self._sandbox_wrapped_by_crew: bool = False
+        # The mask set this spawn asked for, so a trusted corroboration run can
+        # exercise the same mounts rather than a weaker profile.
+        self._sandbox_hidden_dirs: tuple[str, ...] = ()
         self._jsonl_pos: int = 0  # track read position in session JSONL for tool results
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._last_activity: float = time.monotonic()
@@ -7621,6 +7854,14 @@ class AcpClient:
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
         )
+        # Which isolation layer this spawn actually got, recorded HERE from the
+        # argv the wrap returned -- the wrap's own record of the branch it took,
+        # which no later re-derivation from mode + platform + settings can match
+        # (see ``sandbox.wrapped_by_crew_sandbox``). Read back only when a
+        # sandbox-init refusal has to name the layer to turn off; the cgroup
+        # scope below prepends its own tokens, so the read happens before it.
+        self._sandbox_wrapped_by_crew = wrapped_by_crew_sandbox(argv)
+        self._sandbox_hidden_dirs = tuple(adapter_hidden_dirs)
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
         # No-op + loud warning where cgroup delegation is unavailable. --scope
@@ -8892,6 +9133,26 @@ class AcpClient:
                     self._reset_state()
                     raise
                 except (AcpTimeoutError, AcpError, OSError) as exc:
+                    # A sandbox that refused to initialize is DETERMINISTIC, so
+                    # the second attempt below would rebuild the same profile on
+                    # the same host and be refused identically -- paying a spawn
+                    # and a teardown to report the same thing later, with the one
+                    # line that names the fix buried in a generic exit card. Fail
+                    # fast with the layer named instead, exactly as the
+                    # ``AcpToolGateUnroutable`` arm above does for a
+                    # configuration refusal. Placed inside the generic handler
+                    # rather than as its own ``except`` clause because the
+                    # signature is on the CHILD's stderr, not on the exception:
+                    # the same refusal surfaces as an EOF ``AcpError``, as an
+                    # ``AcpTimeoutError`` when the child dies before answering
+                    # ``initialize``, and as an ``OSError`` on the write that
+                    # follows it.
+                    sandbox_failure = await self._sandbox_init_failure()
+                    if sandbox_failure is not None:
+                        _startup_outcome = "sandbox_init_failed"
+                        await self._cleanup_failed_live_spawn()
+                        self._reset_state()
+                        raise sandbox_failure from exc
                     if attempt == 0:
                         logger.warning("ACP init failed (%s), retrying with fresh process...", exc)
                         await self._cleanup_failed_live_spawn()
@@ -8925,6 +9186,59 @@ class AcpClient:
                 )
             except Exception:  # never let telemetry break session startup
                 logger.debug("session startup metric emit failed", exc_info=True)
+
+    async def _settle_stderr(self, timeout: float = 0.5) -> None:
+        """Bounded wait for the stderr drain, so its ring can be read consistently.
+
+        Same shape and budget as the EOF branch of :meth:`_read_message`, lifted
+        here because the other failure shapes that reach a classifier -- an
+        ``initialize`` timeout, an ``OSError`` on the write after the child died --
+        never pass through it.
+        """
+        task = self._stderr_task
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    async def _sandbox_init_failure(self) -> AcpSandboxInitFailed | None:
+        """The classified sandbox-init error for this child's stderr, or ``None``.
+
+        Reads the ring buffer rather than the exception: the refusal is printed by
+        the child (or by the wrapper that could not start it), and the exception
+        that reaches the caller is whatever transport symptom followed -- an EOF,
+        an ``initialize`` timeout, a broken pipe.
+
+        Returns ``None`` when nothing was retained, which is the case for a
+        restricted-memory session: stderr is not kept there by design, so this
+        cannot classify and must not guess. Those sessions keep today's retry
+        behaviour rather than getting a made-up verdict.
+
+        Settles the drain first, for the reason the EOF branch of
+        ``_read_message`` does: the ring is filled by the drain task while the
+        failure that brings us here can arrive from the stdout side or from a
+        timeout that never touched it, so a straight read can miss a line already
+        in the pipe. Bounded and swallowing -- this is already a failure path.
+        """
+        await self._settle_stderr()
+        if not self._stderr_lines:
+            return None
+        haystack = "\n".join(self._stderr_lines)
+        if not is_sandbox_init_failure_output(haystack):
+            return None
+        # The WHOLE tail, not its last line: the launcher's own refusal line is
+        # what corroboration keys on, and a burst can end on the child's generic
+        # "failed to spawn" instead.
+        detail, _ = redact_exfiltration_urls(haystack)
+        detail, _ = redact_credentials(detail)
+        return await sandbox_init_failure(
+            detail,
+            crew_wrap=self._sandbox_wrapped_by_crew,
+            mode=self._sandbox_mode,
+            extra_hidden_dirs=self._sandbox_hidden_dirs,
+        )
 
     async def shutdown(self) -> None:
         """Gracefully stop the ACP process."""

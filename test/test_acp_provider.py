@@ -831,6 +831,15 @@ class TestStartKiroRuntimeResume:
         mock_runtime.spawn = AsyncMock()
         mock_runtime.kill = AsyncMock()
         mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
+        # Answered explicitly alongside the auth latch: this module's three
+        # startup translations ask the sandbox latch first, and an unstubbed
+        # MagicMock answers truthy -- which would turn every generic startup
+        # failure in this file into a sandbox verdict.
+        mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        # The shared translation settles the stderr drain before it reads
+        # the latch, so this has to be awaitable: a plain MagicMock raises
+        # "object MagicMock can't be used in 'await' expression".
+        mock_runtime.settle_stderr = AsyncMock()
         boom = RuntimeError("session limit reached")
         mock_runtime.create_session = AsyncMock(side_effect=boom)
 
@@ -891,6 +900,8 @@ class TestKiroStartupMetric:
         mock_runtime.pid = 4321
         mock_runtime.spawn = AsyncMock(side_effect=spawn_exc)
         mock_runtime.saw_not_logged_in = MagicMock(return_value=bool(spawn_exc))
+        mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        mock_runtime.settle_stderr = AsyncMock()
         mock_runtime.kill = AsyncMock()
         mock_runtime.create_session = AsyncMock(return_value=mock_handle)
         rec = _CapturingRecorder()
@@ -937,6 +948,8 @@ class TestKiroStartupMetric:
         mock_runtime = MagicMock()
         mock_runtime.spawn = AsyncMock(side_effect=AcpRuntimeError("boom"))
         mock_runtime.saw_not_logged_in = MagicMock(return_value=True)
+        mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        mock_runtime.settle_stderr = AsyncMock()
         mock_runtime.kill = AsyncMock()
         rec = _CapturingRecorder()
         with (
@@ -992,6 +1005,8 @@ class TestFixBDeadRuntimeRespawn:
         new_runtime.is_alive = MagicMock(return_value=True)
         new_runtime.create_session = AsyncMock(return_value=new_handle)
         new_runtime.saw_not_logged_in = MagicMock(return_value=False)
+        new_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        new_runtime.settle_stderr = AsyncMock()
 
         provider._client._resume_session_id = "old-sess-id"
 
@@ -1195,6 +1210,8 @@ class TestToolSearchResumeCompatibility:
         runtime.spawn = AsyncMock()
         runtime.is_alive = MagicMock(return_value=True)
         runtime.saw_not_logged_in = MagicMock(return_value=False)
+        runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        runtime.settle_stderr = AsyncMock()
         runtime.kill = AsyncMock()
         runtime.load_session = AsyncMock(return_value=handle if load_succeeds else None)
         runtime.create_session = AsyncMock(return_value=handle)
