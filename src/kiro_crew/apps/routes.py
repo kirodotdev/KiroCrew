@@ -2700,6 +2700,20 @@ _UI_STREAM_CHUNK = 256 * 1024
 #: microseconds; 8 comfortably covers a dashboard loading assets in parallel.
 _UI_STREAM_SEMAPHORE = asyncio.Semaphore(8)
 
+#: Wall-clock ceiling on the body-writing phase of one UI-file response, and so
+#: on how long one client can hold a `_UI_STREAM_SEMAPHORE` permit while pacing
+#: the writes itself. Without a deadline the 8 permits are a head-of-line queue
+#: an UNAUTHENTICATED caller controls: 8 sockets that connect, take one chunk
+#: and then stop reading pin every permit (and descriptor) for as long as they
+#: stay connected, and every app UI on the host stops loading. The value
+#: matches `_BLOB_FETCH_TIMEOUT` in this file — 30s is the ceiling this module
+#: treats as a dead peer — and it is ~100x the budget a real transfer needs:
+#: `_UI_MAX_BYTES` is 8 MiB, so even the largest servable file finishes inside
+#: it at ~280 KB/s, over a loopback connection to the dashboard. Expiry stops
+#: the write loop; the enclosing `finally` still closes the descriptor, so the
+#: permit is released.
+_UI_STREAM_TIMEOUT = 30  # seconds
+
 
 def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str:
     """An OPEN validated descriptor for *file_path* under *name*'s ui/ root
@@ -2963,13 +2977,35 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 # `to_thread` hops on the shared default executor — no second
                 # acquisition here: a nested acquire under the same semaphore
                 # would deadlock once 8 holders each waited for a 9th permit.
-                while remaining > 0:
-                    chunk = await asyncio.to_thread(os.read, fd, min(_UI_STREAM_CHUNK, remaining))
-                    if not chunk:
-                        break
-                    remaining -= len(chunk)
-                    await resp.write(chunk)
-                await resp.write_eof()
+                # Bounded by wall clock as well as by `remaining`. The permit is
+                # held across this loop, so a client that stops draining its
+                # socket keeps it (and the descriptor) for as long as it stays
+                # connected, and 8 such clients wedge this route for every app
+                # UI on the host. The open stays OUTSIDE this scope on purpose:
+                # cancelling a `to_thread` call cannot recall a descriptor the
+                # worker thread already opened, so a deadline around the open
+                # would leak the fd it is meant to protect.
+                async with asyncio.timeout(_UI_STREAM_TIMEOUT):
+                    while remaining > 0:
+                        chunk = await asyncio.to_thread(
+                            os.read, fd, min(_UI_STREAM_CHUNK, remaining)
+                        )
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        await resp.write(chunk)
+                    await resp.write_eof()
+            except TimeoutError:
+                # The deadline expired mid-body. Headers are already sent, so
+                # stop writing and drop the connection: the client is left with
+                # a body short of the announced `Content-Length`, which is the
+                # right outcome for a reader that stopped accepting bytes.
+                # Abort discards buffered writes before aiohttp runs its
+                # post-handler `write_eof`; `force_close` only disables keep-alive.
+                transport = request.transport
+                if transport is not None and not transport.is_closing():
+                    transport.abort()
+                resp.force_close()
             except (ConnectionResetError, ConnectionAbortedError):
                 # A tab can close at any response boundary. The descriptor is
                 # still closed by the shielded finally below; the disconnect is
