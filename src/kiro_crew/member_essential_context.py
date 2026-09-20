@@ -501,6 +501,40 @@ def documents_for_member(
     return documents
 
 
+def _resource_pattern(path: Path, root: Path) -> str:
+    """The root-relative glob for an absolute declaration, in either root spelling.
+
+    A declaration and its root can name the SAME directory in two spellings. An
+    installer records an installed resource in its realpath spelling
+    (``file:///local/home/<user>/.aim/...``) while ``Path.home()`` stays the link
+    (``/home/<user>``) on a host whose home is reached through one, so the lexical
+    ``relative_to`` below reports a resource genuinely inside home as outside it
+    and refuses every absolute essential source on that host.
+
+    The lexical comparison is tried FIRST, so nothing already admitted changes.
+    The fallback compares against the same admitted spelling :func:`_matches` and
+    :func:`_read` already anchor on, which is why it widens no root: the pattern
+    it returns is still expanded under that one admitted root, and both reads
+    re-screen the result. It only lets a caller name the root it is already
+    confined to by its other spelling.
+
+    The DECLARATION itself is never resolved -- ``realpath`` on an unvalidated
+    caller path is itself the outbound probe a UNC target wants, the same
+    asymmetry :func:`_refuse_managed_source` documents.
+    """
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        pass
+    admitted_root = _admitted_root(root)
+    if admitted_root is None:
+        raise MemberEssentialContextError(f"Essential source {path}: outside {root}")
+    try:
+        return str(path.relative_to(admitted_root))
+    except ValueError as exc:
+        raise MemberEssentialContextError(f"Essential source {path}: outside {root}") from exc
+
+
 def _resource_paths(
     resources: list[str], source_root: Path, absolute_root: Path
 ) -> list[tuple[Path, Path]]:
@@ -515,12 +549,7 @@ def _resource_paths(
         path = Path(resource[7:]).expanduser()
         root = absolute_root if path.is_absolute() else source_root
         if path.is_absolute():
-            try:
-                pattern = str(path.relative_to(root))
-            except ValueError as exc:
-                raise MemberEssentialContextError(
-                    f"Essential source {path}: outside {root}"
-                ) from exc
+            pattern = _resource_pattern(path, root)
         else:
             pattern = str(path)
         for match in _matches(root, pattern):

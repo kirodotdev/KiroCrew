@@ -684,6 +684,53 @@ def test_symlinked_root_still_refuses_a_document_outside_it(env, tmp_path):
         essentials._read(outside, linked_root)
 
 
+@requires_symlinks
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows refuses a linked ANCESTOR by design (validate_file_path's "
+    "linked-ancestor gate), so a symlinked declared root is correctly rejected there; "
+    "the $HOME-symlink layout this admits is a POSIX arrangement.",
+)
+def test_absolute_resource_in_realpath_spelling_admits_under_a_linked_root(env, tmp_path):
+    """A realpath-spelled declaration must resolve against a link-spelled root.
+
+    An installer records an absolute ``file://`` resource in its realpath spelling
+    while the declared root stays the link, which is the ordinary ``$HOME`` layout
+    wherever ``/home/<user>`` points at another filesystem. The lexical
+    ``relative_to`` then called a resource genuinely inside the root outside it
+    and refused every absolute essential source on such a host.
+    """
+    from kiro_crew import member_essential_context as essentials
+
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(env.project, target_is_directory=True)
+    real = Path(os.path.realpath(str(linked_root))) / "declared-guide.md"
+    assert str(real) != str(linked_root / "declared-guide.md")
+    paths = essentials._resource_paths([f"file://{real}"], linked_root, linked_root)
+    assert paths, "a realpath-spelled resource under the linked root was refused"
+    match, root = paths[0]
+    assert "Declared guide" in essentials._read(match, root)
+
+
+@requires_symlinks
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows refuses a linked ANCESTOR by design (validate_file_path's "
+    "linked-ancestor gate), so a symlinked declared root is correctly rejected there; "
+    "the $HOME-symlink layout this admits is a POSIX arrangement.",
+)
+def test_absolute_resource_outside_a_linked_root_is_still_refused(env, tmp_path):
+    """Accepting the root's other spelling must not admit a sibling of the root."""
+    from kiro_crew import member_essential_context as essentials
+
+    outside = tmp_path / "outside-guide.md"
+    outside.write_text("OUTSIDE_SECRET", encoding="utf-8")
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(env.project, target_is_directory=True)
+    with pytest.raises(MemberEssentialContextError, match="outside"):
+        essentials._resource_paths([f"file://{outside}"], linked_root, linked_root)
+
+
 def test_owner_cleared_empty_anchors_are_valid_but_missing_source_refuses(env):
     env.memory._preferences_file.write_text("", encoding="utf-8")
     env.memory._projects_file.write_text("", encoding="utf-8")

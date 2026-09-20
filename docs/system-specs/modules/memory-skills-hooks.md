@@ -1125,7 +1125,13 @@ over-50-MiB execution prompt files are skipped, never truncated.
 A `..` segment that stays inside is valid; an escaping traversal or symlink
 is skipped with a debug log. Sensitive-path checks remain in force, and the
 essential reader also retains its managed-memory source refusal. Absolute
-`file://` prompts retain each reader's existing rules. Neither relative reader
+`file://` prompts retain each reader's existing rules. An absolute declared
+resource is accepted in either spelling of its declared root: the root is
+compared lexically first and then in the resolved spelling the reader already
+walks and reads under, so a resource recorded in its real path
+(`/local/home/<user>/...`) is admitted under a `$HOME` reached through a symlink
+(`/home/<user>`). The declaration itself is never resolved, and containment is
+still required against one root. Neither relative reader
 depends on the gateway process's working directory. When the
 execution template is the owner's template, its custom persona appears only in
 the per-turn essential envelope, not again in the session-start prompt. A
