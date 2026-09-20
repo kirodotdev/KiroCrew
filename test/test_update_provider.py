@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,6 +24,13 @@ from kiro_crew.platform.update_provider import (
     _trusted_path_env,
     resolve_provider,
 )
+
+#: A pid NO supported OS can allocate, so a mock carrying it cannot make a real
+#: process the target of a real signal. Every mock subprocess in this file uses
+#: it: the timeout and cancellation paths hand the mock to
+#: ``platform_compat.kill_and_reap``, which resolves ``proc.pid`` against the
+#: runner's live process table and SIGKILLs whatever owns it.
+_UNALLOCATABLE_PID = 99_999_999_999
 
 
 class TestUpdateCheckResult:
@@ -505,6 +514,22 @@ def _fake_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") ->
     than calling ``communicate()``, so the streams must be real readers; a bare
     MagicMock attribute is not awaitable. ``communicate`` is still stubbed for
     the cleanup paths that call it.
+
+    ``pid`` is a number NO supported OS can allocate, which is load-bearing
+    rather than cosmetic. The timeout and cancellation paths hand this mock to
+    ``platform_compat.kill_and_reap``, whose only handle on its target is that
+    integer: it resolves it against the runner's REAL process table and sends
+    SIGKILL. A plausible pid therefore signals whichever genuine process owns
+    that number. ``kill_process_tree``'s self-group refusal does not save it --
+    that refusal declines only the GROUP signal and then sends a pid-scoped
+    SIGKILL, which reaches a same-group process just as hard. Under pytest-xdist
+    the runner's own group is full of siblings, so the casualty is a worker: its
+    channel closes mid-batch and the shard reports whichever test it had been
+    sent, with no assertion and no traceback.
+
+    An unallocatable pid makes the lookup fail before any signal is composed.
+    ``TestCancellationKillsUpdaterChild`` already used this convention for the
+    same reason; this is the file's shared fixture adopting it.
     """
     proc = MagicMock()
     proc.returncode = returncode
@@ -513,8 +538,63 @@ def _fake_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") ->
     proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.wait = AsyncMock(return_value=returncode)
     proc.kill = MagicMock()
-    proc.pid = 4242
+    proc.pid = _UNALLOCATABLE_PID
     return proc
+
+
+class TestNoMockNamesAPidARealProcessCanOwn:
+    """A mock subprocess here must not carry a pid a live process can own.
+
+    The timeout and cancellation paths hand these mocks to
+    ``platform_compat.kill_and_reap``, and the only handle it has on its target
+    is the integer ``proc.pid``. It resolves that number against the runner's
+    REAL process table and sends SIGKILL, so a plausible pid signals whichever
+    genuine process owns it. ``kill_process_tree``'s self-group refusal is not a
+    defence: it declines only the GROUP signal and then sends a pid-scoped
+    SIGKILL, which reaches a same-group process just as hard. Under pytest-xdist
+    the runner's own group is full of sibling workers, so the casualty is a
+    worker -- its channel closes mid-batch and the shard reports whichever test
+    it had been sent, with no assertion and no traceback to explain it.
+
+    Running this file alone hides it: with 92 tests the process table is sparse,
+    the lookup raises, and the suppressed exception swallows the whole path.
+    """
+
+    def test_the_shared_fake_proc_cannot_name_a_real_process(self) -> None:
+        assert _fake_proc().pid == _UNALLOCATABLE_PID
+        # Above every pid_max any supported platform will allocate, so the
+        # lookup fails before a signal is composed.
+        assert _UNALLOCATABLE_PID > 2**32
+
+    def test_no_mock_in_this_file_assigns_an_allocatable_pid(self) -> None:
+        """The ratchet: a new mock written with a plausible pid fails here.
+
+        Matched on ANY attribute assignment and on the constructor kwarg, not on
+        a list of variable names. A pin keyed to ``proc``/``rt``/``p`` would let
+        the same mistake through under any other name, or through the kwarg form
+        of the same assignment, while still reading as though it covered them --
+        which is worse than no pin, because it reports coverage it does not have.
+
+        It scans this file, including this docstring, so the prose above names
+        the kwarg form without spelling a digit. That is the same trade every
+        grep-based gate in this repository makes, and the failure is loud.
+
+        Source-level on purpose. A behavioural check would have to reach the
+        kill path to observe the defect, which is the very thing that must not
+        happen on a runner shared with other tests.
+        """
+        source = Path(__file__).read_text(encoding="utf-8")
+        assigned = re.findall(r"^\s*\w+\.pid\s*=\s*(.+)$", source, re.MULTILINE)
+        assert assigned, "the attribute pattern found nothing -- it has drifted"
+        # Numeric literal only: a kwarg naming the constant is already covered by
+        # the allowed set, and a non-numeric kwarg cannot name a live process.
+        kwargs = re.findall(r"(?<![\w.])pid\s*=\s*(\d[\d_]*)", source)
+        allowed = {"_UNALLOCATABLE_PID", "1"}
+        offenders = [v.strip() for v in [*assigned, *kwargs] if v.strip() not in allowed]
+        assert not offenders, (
+            f"mock pid(s) a real process could own: {offenders}. Use "
+            "_UNALLOCATABLE_PID, or a reserved pid the kill helpers refuse outright."
+        )
 
 
 class TestCommandProviderNoShellAndTimeout:
@@ -825,9 +905,7 @@ class TestCancellationKillsUpdaterChild:
         child leaves its members running and can leave communicate() waiting on
         pipes those survivors hold."""
         proc = MagicMock()
-        # No supported OS can allocate this PID, so the host process table cannot
-        # make the fake child look like it shares the test runner's process group.
-        proc.pid = 99_999_999_999
+        proc.pid = _UNALLOCATABLE_PID
         proc.kill = MagicMock()
         proc.communicate = AsyncMock(return_value=(b"", b""))
         proc.stdout = _stream(b"")
