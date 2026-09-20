@@ -37,11 +37,32 @@ function windowsSystemToolPaths(
   });
 }
 
+/**
+ * Resolve a drive-letter Windows path through every junction and symlink on it,
+ * returning "" for any other spelling (UNC, `\\?\`, relative) or when resolution
+ * fails. Only drive-letter paths reach realpath: a UNC path names a network
+ * share, and resolving one would block the port-owner probe on remote I/O.
+ * `realpathSync.native` is the only Node realpath that follows NTFS junctions;
+ * the JS fallback merely normalizes. The long-path prefix Node may return is
+ * stripped so the result compares equal to the Win32 path CIM reports.
+ */
+function canonicalWindowsPath(candidate, realpathSync = fs.realpathSync.native) {
+  const value = String(candidate || "");
+  if (!/^[A-Za-z]:\\/.test(value)) return "";
+  try {
+    const resolved = String(realpathSync(value) || "");
+    return path.win32.normalize(resolved.replace(/^\\\\\?\\/, ""));
+  } catch {
+    return "";
+  }
+}
+
 function windowsGatewayExecutablePaths(
   gatewayBin,
   {
     pathEnv = process.env.Path || process.env.PATH || "",
     accessSync = fs.accessSync,
+    realpathSync = fs.realpathSync.native,
   } = {}
 ) {
   const bin = String(gatewayBin || "").replace(/\//g, "\\");
@@ -62,10 +83,12 @@ function windowsGatewayExecutablePaths(
     if (!resolved) return [];
   }
   const normalized = path.win32.normalize(resolved);
-  if (/\.cmd$/i.test(normalized)) {
-    return [path.win32.resolve(path.win32.dirname(normalized), "..", "python.exe")];
-  }
-  const trusted = [normalized];
+  // The bundled .cmd shim is never spawned itself: the launcher unwraps it and
+  // runs the interpreter at the tree root (gateway-supervisor.js), so that
+  // interpreter is the only executable the shim can put on the port.
+  const trusted = /\.cmd$/i.test(normalized)
+    ? [path.win32.resolve(path.win32.dirname(normalized), "..", "python.exe")]
+    : [normalized];
   if (
     /^kirocrew\.exe$/i.test(path.win32.basename(normalized))
     && /^scripts$/i.test(path.win32.basename(path.win32.dirname(normalized)))
@@ -78,7 +101,19 @@ function windowsGatewayExecutablePaths(
       path.win32.resolve(path.win32.dirname(normalized), "..", "python.exe")
     );
   }
-  return [...new Set(trusted.map((candidate) => path.win32.normalize(candidate)))];
+  // A Toolbox-style install reaches the bundle through a `current` junction.
+  // The launcher resolves its executables through that junction, but Windows
+  // reports a running process by the path the junction pointed at, so the two
+  // spellings of one file must both be trusted. Only resolutions that exist
+  // are added; a path that fails to resolve stays as spelled.
+  const withCanonical = [];
+  for (const candidate of trusted) {
+    const normalized = path.win32.normalize(candidate);
+    withCanonical.push(normalized);
+    const canonical = canonicalWindowsPath(normalized, realpathSync);
+    if (canonical) withCanonical.push(canonical);
+  }
+  return [...new Set(withCanonical)];
 }
 
 let WINDOWS_SYSTEM_TOOLS;
@@ -247,6 +282,7 @@ async function windowsTaskkill(
 }
 
 module.exports = {
+  canonicalWindowsPath,
   parseNetstatListenPids,
   windowsSystemToolPaths,
   windowsGatewayExecutablePaths,

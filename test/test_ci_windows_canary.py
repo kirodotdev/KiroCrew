@@ -141,6 +141,7 @@ def test_all_windows_consumers_keep_output_fallback_and_matrix_names(jobs, resol
         "backend-test-windows",
         "backend-test-windows-fail-closed",
         "e2e-boot-matrix",
+        "electron-test-windows",
     }
     for name in consumers:
         assert "changes" in jobs[name]["needs"]

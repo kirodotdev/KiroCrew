@@ -33,6 +33,7 @@ const {
   isKirocrewCommand,
 } = require("./gateway-stop");
 const {
+  canonicalWindowsPath,
   windowsGatewayExecutablePaths,
   windowsListenPids,
   windowsProcessCommand,
@@ -198,6 +199,12 @@ function createGatewaySupervisor({
   // whenever one reaches handoff, and whenever a monitored backend answers
   // again, so each incident gets its own budget.
   let reresolveAttempts = 0;
+  // Executables the CURRENT child was actually spawned from. findKirocrewBin
+  // re-probes on every call, so after a Toolbox `current` junction is repointed
+  // at a newer version it names a backend this shell never started; the child
+  // still running is the one spawned before the repoint, and it must keep
+  // classifying as ours (stop, liveness, port-owner) until it exits.
+  let spawnedExecutablePaths = [];
 
   /**
    * Can app.relaunch() still find something to re-exec? Electron relaunches
@@ -411,6 +418,8 @@ function createGatewaySupervisor({
     });
   }
 
+  const windowsRealpath = (candidate) => fs.realpathSync.native(candidate);
+
   function isTrustedWindowsGatewayCommand(command) {
     const gatewayBin = findKirocrewBin(
       fs,
@@ -420,7 +429,11 @@ function createGatewaySupervisor({
       dirname,
     );
     return isKirocrewCommand(command, {
-      trustedExecutablePaths: windowsGatewayExecutablePaths(gatewayBin),
+      trustedExecutablePaths: [
+        ...windowsGatewayExecutablePaths(gatewayBin, { realpathSync: windowsRealpath }),
+        ...spawnedExecutablePaths,
+      ],
+      canonicalizePath: (candidate) => canonicalWindowsPath(candidate, windowsRealpath),
     });
   }
 
@@ -808,6 +821,11 @@ function createGatewaySupervisor({
     });
     gatewayProcess = child;
     gatewayOwnership = "spawned";
+    if (IS_WIN) {
+      spawnedExecutablePaths = windowsGatewayExecutablePaths(spawnBin, {
+        realpathSync: windowsRealpath,
+      });
+    }
     if (typeof childOut === "number") {
       try { fs.closeSync(childOut); } catch { /* ignore */ }
     }
@@ -854,6 +872,7 @@ function createGatewaySupervisor({
         reresolveAttempts += 1;
         glog(`stale bundle (${cause} on bin=${bin}) — re-resolving the backend and respawning (attempt ${reresolveAttempts})`);
         gatewayProcess = null;
+        spawnedExecutablePaths = [];
         gatewayStartFailure = null;
         spawnGateway(resolve);
         return true;
@@ -866,6 +885,7 @@ function createGatewaySupervisor({
     child.on("error", (error) => {
       userError(`spawn ERROR code=${error.code || "?"} msg=${error.message}`);
       if (gatewayProcess !== child) return;
+      spawnedExecutablePaths = [];
       const giveUp = () => {
         gatewayStartFailure = { error: error.message, bundled };
         sendStatus(`Gateway failed: ${error.message}`);
@@ -886,6 +906,7 @@ function createGatewaySupervisor({
         userWarn("HINT: SIGKILL on a freshly-spawned bundled binary almost always means macOS Gatekeeper blocked an unsigned/quarantined nested executable. On the recipient's Mac run: xattr -cr <path to KiroCrew.app>");
       }
       if (!currentChild) return;
+      spawnedExecutablePaths = [];
       const giveUp = () => {
         if (!gatewayStartFailure) gatewayStartFailure = { code, signal, bundled };
         gatewayProcess = null;
@@ -905,7 +926,11 @@ function createGatewaySupervisor({
    */
   async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
     const gateway = gatewayProcess;
-    if (!gateway || gateway.exitCode !== null) { gatewayProcess = null; return; }
+    if (!gateway || gateway.exitCode !== null) {
+      gatewayProcess = null;
+      spawnedExecutablePaths = [];
+      return;
+    }
     glog("Stopping gateway gracefully...");
     // Resolve secrets at call time. The gateway accepts only the secret for its
     // current boot; trying every readable candidate prevents a stale copy from
@@ -930,6 +955,7 @@ function createGatewaySupervisor({
       killTreeFn: killGatewayTreeOnWindowsBounded,
     });
     gatewayProcess = null;
+    spawnedExecutablePaths = [];
   }
 
   function killGatewayTreeOnWindowsBounded(pid) {
@@ -1347,6 +1373,7 @@ function createGatewaySupervisor({
     // sweep before probing the port or descendants escape and retain locks.
     await killGatewayProcessTree(gatewayProcess, "SIGKILL");
     gatewayProcess = null;
+    spawnedExecutablePaths = [];
     let freed = true;
     let foreignHolder = false;
     let probeFailed = false;

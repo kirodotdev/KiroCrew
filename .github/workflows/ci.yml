@@ -2553,6 +2553,30 @@ jobs:
         working-directory: website/electron
         run: npm test
 
+  # The Linux job above fakes realpath and Win32_Process. The Windows port-owner
+  # identity (windows-port.js + gateway-stop.js) rests on two OS premises no
+  # fake can prove -- realpathSync.native follows an NTFS junction, and a
+  # process launched through a junction is matched however Win32_Process spells
+  # its ExecutablePath -- so those test files also run once on a real Windows
+  # host. No npm ci: the two modules under test require only the Node stdlib.
+  electron-test-windows:
+    name: Electron Shell Tests (Windows port identity)
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Windows port-identity tests
+        working-directory: website/electron
+        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js
+
   frontend-test:
     name: Frontend Tests
     needs: [changes, await-fast-gate]

@@ -683,6 +683,19 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
   `python -m kiro_crew` process. Localized listener-state text is ignored.
   SSH forwards and unrelated processes are never terminated, and a failed or
   timed-out `netstat` probe is treated as unknown rather than as a free port.
+- **`port-owner: :5476 held by NON-KiroCrew pid=...` naming our own
+  `python.exe`** - the launcher binds Windows gateway identity to the executable
+  path it resolved. An install reached through a directory junction (a Toolbox
+  `current` link) spells that path one way while Windows reports the running
+  process by the directory the junction resolved to, and a version directory
+  swapped under a running shell leaves a backend at a path the shell never
+  resolved. Both are recognised: every trusted path is compared after
+  `realpath` (junctions followed) on both sides, and the executables the
+  CURRENT child was spawned from stay trusted after the resolver moves on. A
+  `python.exe` the resolver never selected, at any other location, stays
+  foreign: the shell still adopts a same-family gateway there, but never claims
+  or kills it. Update to a build that includes this fix; until then, end every
+  `kirocrew` process in Task Manager and relaunch the app.
 - **`ModuleNotFoundError: No module named 'fcntl'`** — you installed a
   branch/commit that predates the Windows port. `fcntl` is a Unix-only Python
   stdlib module; it cannot be pip-installed on Windows. Update to a build that
