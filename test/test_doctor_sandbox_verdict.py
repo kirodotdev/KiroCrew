@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import cli_doctor, sandbox
+from kiro_crew import cli_doctor, platform_compat, sandbox
 from kiro_crew.service import apparmor
 from kiro_crew.service import linux as service_linux
 
@@ -44,6 +44,128 @@ def _arm_apparmor_denial(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sandbox, "unavailable_remedy", lambda: sandbox.REMEDY_APPARMOR_USERNS
     )
+
+
+def _arm_userns_denial(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the probe signals read as a NEWUSER denial from nested seccomp."""
+    monkeypatch.setattr(sandbox, "detect_backend", lambda config_mode="auto": "none")
+    monkeypatch.setattr(sandbox, "unavailable_kind", lambda: "no_backend")
+    monkeypatch.setattr(
+        sandbox,
+        "unavailable_reason",
+        lambda: "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)",
+    )
+    monkeypatch.setattr(
+        sandbox, "unavailable_remedy", lambda: sandbox.REMEDY_USERNS_DENIED
+    )
+    monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
+
+
+def _proc_self_reader(*, uid_map: str, status: str):
+    values = {"uid_map": uid_map, "status": status}
+    return lambda name: values[name]
+
+
+class TestUserNamespaceVantage:
+    """Only Kiro Crew's own agent-shell shape changes the host verdict."""
+
+    def test_confined_shell_reports_unverifiable_and_not_an_issue(
+        self, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        _arm_userns_denial(monkeypatch)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_read_linux_proc_self",
+            _proc_self_reader(
+                uid_map="  21646370   21646370          1\n",
+                status="CapEff:\t0000000000000000\nSeccomp:\t2\nSeccomp_filters:\t2\n",
+            ),
+            raising=False,
+        )
+
+        issues: list[str] = []
+        cli_doctor._doctor_sandbox(issues)
+
+        out = capsys.readouterr().out
+        assert "backend:     ⏭  cannot be verified from this shell" in out
+        assert "This shell is already confined" in out
+        assert "run `kirocrew doctor` from an unconfined shell" in out
+        assert "❌" not in out
+        assert issues == []
+
+    @pytest.mark.parametrize(
+        ("uid_map", "seccomp"),
+        [
+            pytest.param("         0          0 4294967295\n", 2, id="init-map"),
+            pytest.param("         0     100000      65536\n", 2, id="rootless-map"),
+            pytest.param(
+                "         0     100000      65536\n"
+                "     65536     200000      65536\n",
+                2,
+                id="multi-range-map",
+            ),
+            pytest.param(
+                "  21646370   21646370          1\n",
+                0,
+                id="identity-map-without-seccomp",
+            ),
+        ],
+    )
+    def test_other_kernel_shapes_keep_the_host_level_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys,
+        uid_map: str,
+        seccomp: int,
+    ) -> None:
+        _arm_userns_denial(monkeypatch)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_read_linux_proc_self",
+            _proc_self_reader(uid_map=uid_map, status=f"Seccomp:\t{seccomp}\n"),
+        )
+
+        issues: list[str] = []
+        cli_doctor._doctor_sandbox(issues)
+
+        out = capsys.readouterr().out
+        assert "backend:     ❌ none — unshare(CLONE_NEWUSER)" in out
+        assert "cannot be verified from this shell" not in out
+        assert issues == ["sandbox backend"]
+
+    def test_unconfined_shell_keeps_the_host_level_failure(
+        self, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        _arm_userns_denial(monkeypatch)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_read_linux_proc_self",
+            _proc_self_reader(
+                uid_map="         0          0 4294967295\n",
+                status="CapEff:\t0000000000000000\nSeccomp:\t0\nSeccomp_filters:\t0\n",
+            ),
+        )
+
+        issues: list[str] = []
+        cli_doctor._doctor_sandbox(issues)
+
+        out = capsys.readouterr().out
+        assert "backend:     ❌ none — unshare(CLONE_NEWUSER)" in out
+        assert "cannot be verified from this shell" not in out
+        assert issues == ["sandbox backend"]
+
+    def test_non_linux_vantage_does_not_read_procfs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(platform_compat, "IS_LINUX", False)
+
+        def unexpected_read(_name: str) -> str:
+            pytest.fail("non-Linux doctor must not read /proc")
+
+        monkeypatch.setattr(cli_doctor, "_read_linux_proc_self", unexpected_read)
+
+        assert cli_doctor._process_userns_vantage_confined() is None
 
 
 def _install_profile(

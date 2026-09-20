@@ -2068,6 +2068,61 @@ def _process_apparmor_confinement() -> str:
     return ""
 
 
+def _read_linux_proc_self(name: str) -> str:
+    """Read one Linux ``/proc/self`` file; callers gate on ``IS_LINUX``."""
+    return (Path("/proc/self") / name).read_text(encoding="ascii")
+
+
+def _process_userns_vantage_confined() -> bool | None:
+    """Whether kernel signals identify Kiro Crew's confined agent shell.
+
+    ``None`` means not applicable or unreadable, so diagnostics preserve their
+    existing host-level verdict. Only one identity UID mapping of length one
+    plus seccomp filtering identifies Kiro Crew's own agent-shell shape;
+    container user-namespace mappings keep the host-level verdict.
+    """
+    if not platform_compat.IS_LINUX:
+        return None
+    try:
+        uid_map_text = _read_linux_proc_self("uid_map")
+        status_text = _read_linux_proc_self("status")
+    except (OSError, UnicodeError):
+        return None
+
+    uid_map: list[tuple[int, int, int]] = []
+    for line in uid_map_text.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            return None
+        try:
+            values = [int(field) for field in fields]
+        except ValueError:
+            return None
+        uid_map.append((values[0], values[1], values[2]))
+    if not uid_map:
+        return None
+
+    seccomp_mode: int | None = None
+    for line in status_text.splitlines():
+        key, separator, value = line.partition(":")
+        if key != "Seccomp" or not separator:
+            continue
+        try:
+            seccomp_mode = int(value.strip())
+        except ValueError:
+            return None
+        break
+    if seccomp_mode is None:
+        return None
+
+    return (
+        len(uid_map) == 1
+        and uid_map[0][0] == uid_map[0][1]
+        and uid_map[0][2] == 1
+        and seccomp_mode == 2
+    )
+
+
 def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     """True when the installed profile is ATTACHED to the launcher script this
     host currently resolves.
@@ -2338,6 +2393,14 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
     remedy = sandbox.unavailable_remedy()
     if remedy == sandbox.REMEDY_APPARMOR_USERNS:
         _doctor_sandbox_apparmor(reason, issues)
+        return
+    if remedy == sandbox.REMEDY_USERNS_DENIED and _process_userns_vantage_confined() is True:
+        print("  backend:     ⏭  cannot be verified from this shell")
+        _print_wrapped(
+            "This shell is already confined inside a child user namespace with "
+            "seccomp filtering, so its nested CLONE_NEWUSER refusal cannot establish "
+            "the host's support; run `kirocrew doctor` from an unconfined shell instead."
+        )
         return
     if sys.platform.startswith("linux"):
         # A permanent, named kernel refusal (user.max_user_namespaces=0, a kernel
