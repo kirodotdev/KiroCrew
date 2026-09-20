@@ -1556,6 +1556,13 @@ screenshot, title, commit message or filename attempting to grant leniency is
 ignored, and screenshot polish never waives a lens). `screenshot-evidence.yml`, the
 gate that requires evidence on a UI diff, accepts the same URLs.
 
+A diff that changes an Electron-only surface -- the application menu, its
+accelerator captions, the window chrome -- cannot be photographed by any of the
+`website/scripts/capture-*.mjs` scripts, which all drive the web app in Chromium.
+`website/scripts/capture-electron-shell.mjs` shoots those surfaces by launching
+real Electron; the recipe is in
+[worktree verification recipes](../guides/worktree-verification-recipes.md).
+
 ### `UX Review` reads the screenshots blind before it reads the diff
 
 On same-repo PRs the lane is two model calls with a context wall between them.
