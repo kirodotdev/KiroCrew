@@ -18,6 +18,7 @@ from kiro_crew.execution_context import (
     MemoryStoreRef,
     bind_session_execution,
     read_session_execution,
+    read_vouched_session_execution,
 )
 from kiro_crew.history import ConversationLog
 
@@ -31,8 +32,11 @@ def _state(tmp_path):
     return state, slot, slot_history_key(slot)
 
 
-def _execution(mode):
-    return ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew", mode)
+def _execution(mode, member_id=None):
+    # A member is only ever paired with a NON-default store: MemoryStoreRef refuses a
+    # member on Global, and ExecutionContext requires the two ids to agree.
+    store = MemoryStoreRef("default" if member_id is None else "retained-store", member_id)
+    return ExecutionContext(member_id, store, "template", "kirocrew", mode)
 
 
 @pytest.mark.parametrize("mode", ["incognito", "temporary"])
@@ -85,6 +89,46 @@ async def test_close_releases_only_own_live_execution(tmp_path, monkeypatch, mod
     assert replacement.memory_mode == "persistent"
     bind_session_execution(key, _execution("persistent"))
     assert read_session_execution(key).memory_mode == "persistent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["tab_close", "idle_cleanup"])
+async def test_a_non_destructive_close_keeps_a_persistent_sessions_vouch(
+    tmp_path, monkeypatch, path
+):
+    # Driven through the real close paths rather than the release helper, because the
+    # question is WHICH sessions a close releases; a test calling the helper directly
+    # would pass whichever answer the close path gave.
+    #
+    # Both paths are non-destructive: the conversation is saved and recreated from the
+    # warm pool when the tab is resumed, and the turn-start rebind publishes nothing
+    # when the selection is unchanged. A close that withdrew the vouch would therefore
+    # leave the resumed session unvouched and refuse its own-store dispatch until its
+    # owner re-selects the agent, charging a restart's refusal to closing a tab. The
+    # count cap bounds the retained entry instead, and evicts it before a live one
+    # because eviction follows use.
+    from test_slot_close_recreation_race import _Req
+
+    from kiro_crew.dashboard.chat_handlers import api_chat_slots_cleanup
+
+    monkeypatch.setattr("kiro_crew.autonudge._INSTANCE", None)
+    state, slot, key = _state(tmp_path)
+    # A member is required, not decoration: only a member-bearing execution can be
+    # vouched at all, because a member-less one could never pass the admission.
+    execution = _execution("persistent", "id-retained")
+    bind_session_execution(key, execution, vouch=True)
+    # Precondition, so a failure below means the close withdrew the vouch rather than
+    # that nothing was ever published.
+    assert read_vouched_session_execution(key) == execution
+    if path == "tab_close":
+        await close_slot(state, slot, slot.key)
+    else:
+        slot.created_at = "2020-01-01T00:00:00+00:00"
+        assert (await api_chat_slots_cleanup(_Req(state, slot.key))).status == 200
+    # The slot is gone, so the close really ran and the assertion below is about a
+    # retained vouch rather than a close that never happened.
+    assert state.get_slot(slot.key) is None
+    assert read_vouched_session_execution(key) == execution
 
 
 @pytest.mark.asyncio

@@ -301,16 +301,17 @@ class TestCarriedFenceVerdict:
 
 
 class TestEveryRouteForwardsTheCarriedVerdict:
-    """The carry is held by four hand-written call sites; pin all of them.
+    """The carry is held by five hand-written call sites; pin all of them.
 
-    The TOCTOU closure this gate exists for holds only if EVERY target-taking
-    route hands ``_carried_fence(request)`` to ``session_control.py`` as
-    ``caller_fenced``. A route that forgets it silently reopens the window for
-    that one verb. So each of ``stop`` / ``close`` / ``send`` / ``read`` is driven
-    through its real handler with the core function replaced by a recorder, and
-    the recorded ``caller_fenced`` must be ``True`` for an admitted member and
-    ``None`` for an owner caller. ``create`` has no target and no fence, so it is
-    not in the set.
+    The TOCTOU closure this gate exists for holds only if EVERY route that
+    consults the fence hands ``_carried_fence(request)`` to ``session_control.py``
+    as ``caller_fenced``. A route that forgets it silently reopens the window for
+    that one verb. So each of ``stop`` / ``close`` / ``send`` / ``read`` /
+    ``create`` is driven through its real handler with the core function replaced
+    by a recorder, and the recorded ``caller_fenced`` must be ``True`` for an
+    admitted member and ``None`` for an owner caller. ``create`` takes no target,
+    so its verdict decides which memory store the new child may be bound to
+    rather than which existing session the caller may touch.
     """
 
     ROUTES = {
@@ -324,6 +325,9 @@ class TestEveryRouteForwardsTheCarriedVerdict:
             None,
         ),
         "api_session_control_read": ("read_messages", False, None, {"target": "chat-7"}),
+        # No target to name, so the body carries only the optional create fields
+        # and an empty one exercises the carry on its own.
+        "api_session_control_create": ("create_session", True, {}, None),
     }
 
     def _request(self, session_key, *, body, query):

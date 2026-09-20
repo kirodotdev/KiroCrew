@@ -261,7 +261,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Caller's own session is no longer open | 403 | Nothing to attribute the operation to |
 | Caller changed workspace while a creation was in flight | 403 | Creation resolves the workspace's project directory off-loop, so it suspends between authorizing the caller and allocating the slot. Both decisions that read the caller's workspace -- the memory boundary the child inherits, and whether the answering agent is bound to that workspace -- are invalidated by a move, and re-deciding the binding here is not available: it needs a config load, which must not run on the event loop |
 | Named agent does not resolve to a configured one | 403 | The resolver falls back to the default agent, which passes the workspace check because it is the caller's own default -- so no boundary is crossed, but the created session would store and advertise a name that is not what answers. `ResolvedBindings.requested_resolved` states that contract for callers that store the requested name. Refused rather than rewritten to the effective agent: nothing exists yet, so a corrected name costs one retry, whereas an existing slot keeps its stored name verbatim so a momentarily stale resolution cannot permanently rebind it |
-| Private caller selects another memory store, or its protected identity is unreadable | 403 | `memory_delegation_denied`; creation checks the canonical caller identity with `require_memory_delegation` before slot allocation or protected child binding. Same-store workers remain allowed; Global callers retain member assignment |
+| Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller is not ownership-fenced. Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
 | Caller changes history key, agent or memory store during creation | 400 | `caller_memory_changed`; the live caller must still match the identity checked before awaited preparation |
 | Target is the caller | 403 | A session controlling itself has no exit |
 | Target is unattended (`cron-*`, `workflow-*`) | 403 | A `workflow-<run_id>` slot is display-only and a cron's turns are driven by a schedule. Not exempted for a cron CALLER: a cron may create and drive its own children, never another job's tab |
@@ -363,10 +363,118 @@ delegation rules. Template and project choices do not select memory. The child's
 execution record is published before slot metadata, broadcast or provider startup.
 Publication failure retracts an idle empty child and reports the actual failure.
 
-Member scope is not a ban on cross-member delegation. The existing session-control
-switches, creator ownership fence, application scope and approval policy remain
-independent. Memory identity failure is explicit and never substitutes Global.
+Member scope is not itself the thing that bounds cross-member delegation — the
+authorization below is. The existing session-control switches, creator ownership
+fence, application scope and approval policy remain independent. Memory identity
+failure is explicit and never substitutes Global.
 Incognito and temporary children inherit the stricter retention mode.
+
+#### Who may bind a child to a private store
+
+Selecting an agent is a caller-supplied string, so it cannot itself authorize the
+private V2 store that agent names. `create_session` therefore authorizes the
+child's private binding ONCE, at the single point where every branch of agent
+resolution has produced its final route, and before the slot is allocated. Placing
+it per branch is what left the surface open: the explicit member selection, the
+inherited caller execution and the caller-agent fallback all reach a member store,
+so a check on one of them leaves the others.
+
+A private member store is reachable on two authorities and no others:
+
+- the store is the caller's OWN, which needs TWO sources to AGREE: this process's
+  own vouched identity for that session, and the session's durable execution
+  record. Neither alone is admissible. The record is metadata on the caller's own
+  transcript, so by itself it answers a question about the caller with the
+  caller's own claim. The vouched identity is written only by
+  `bind_session_execution`, which no session can reach, and only when the store it
+  publishes was established independently of that record — a publication that
+  carries the owner over FROM the record, as a provider template switch or a
+  dashboard fork does, does not vouch for it, because vouching a value the session
+  chose would make the two sources one. Claiming it is OPT-IN: the default is not to
+  vouch, so a binder that says nothing about provenance publishes the record and
+  claims no authority, and a caller that should have claimed it fails loudly at a
+  refused dispatch rather than quietly widening access. A member-LESS identity is never
+  vouched even when its caller asks: no member means the Global store, and the admission
+  identifies its caller by member, so the entry could never be admitted.
+  A record published elsewhere can also leave a vouched entry behind.
+  Agreement therefore fails closed against a forged
+  record and against a stale vouched entry alike. `slot.agent` and
+  `slot.memory_store` remain inadmissible, and not only because a later write can
+  change them: both are rehydrated from that same record on restore;
+- the caller is not ownership-fenced, which is the owner's own dashboard session.
+  This keeps the shipped capability: an owner reopening member conversations and
+  dispatching member workers.
+
+The vouched half is held in this process only, so a restart drops it while the durable
+records survive, and the own-store admission is refused until the owner re-selects the
+agent — which binds afresh through the durable path and vouches again. That deferral is
+deliberate rather than an oversight: nothing reachable on the rehydrate path can
+re-establish the authority safely, because every candidate resolves through something the
+session itself can influence. The record is written by the session; `slot.memory_store` is
+rehydrated from that record; the execution the selection path carries is built from it on
+the provider-switch path; and a config lookup there is keyed by that record's own
+`member_id`, so re-reading config agrees with a forged record by construction instead of
+checking it. Refusing is the fail-closed direction, an owner's own dispatch is unaffected,
+and the refusal is pinned by a regression test alongside the re-bind that clears it. The
+authenticated identity that would let a rehydrated session self-heal without an owner
+action is tracked separately as #12528.
+
+For an operator, the recovery is one owner action and nothing at restart time: a member
+session whose worker dispatch answers `memory_delegation_denied` after a gateway restart
+regains it as soon as its owner re-selects that member's agent on the slot, which binds
+afresh through the durable path and vouches again. The same action clears a refusal
+caused by cap eviction, since both reach the admission as an absent entry.
+Re-selecting the agent the slot already names is enough: the owner-facing switch
+records the selection with `replace`, so it re-binds rather than short-circuiting on an
+unchanged choice. Closing a tab is NOT such a trigger — a non-destructive close and an
+idle archive both retain a persistent session's vouch, because the conversation is
+recreated from the warm pool on resume and the turn-start rebind publishes nothing when
+the selection has not changed, so withdrawing there would charge a restart's refusal to
+closing a tab. The refusal
+the caller sees names neither store nor member, so it is the server-side cause line that
+tells an operator a dropped entry apart from a record that disagrees with what this
+process committed; a member cannot diagnose which it hit from the refusal alone.
+
+The vouched half is also BOUNDED, by one named count cap. The population is not the
+set of live sessions: every persistent `bind_session_execution` that establishes its
+own store vouches, and several
+of its callers mint a key per REQUEST rather than per session — a webhook that sends
+no `sessionKey` gets a per-second one, a task runner refine run gets one per run — so
+uptime alone would grow the map until the process restarted. Each such producer
+releases its own entry at teardown where it has one, and the cap is the backstop for
+the producers that do not. Passing the cap evicts the LEAST RECENTLY USED entry — a
+successful own-store admission refreshes its entry, so recency follows USE rather than
+birth and churn from the teardown-less producers falls on idle keys instead of on the
+member session still dispatching through its own. Eviction refuses that session's
+own-store admission until it binds again: the same deferral a restart
+carries, in the same fail-closed direction, and it never touches a durable record.
+Overflow is counted and reported, so an evicted entry is distinguishable from one
+never vouched — both read as absent. A refusal also records its CAUSE server-side —
+authority this process does not hold, against a record that disagrees with what it
+committed — so an operator can tell a restart-dropped or evicted entry from the forgery
+the agreement exists to refuse. The caller's own refusal still distinguishes neither,
+and the log names neither store nor member, so it is not a second disclosure channel
+for what the refusal withholds. Two bounds are declared, one per dimension the map
+adds: the entry COUNT, and the length of each retained STRING, since 4096 rows of an
+unbounded field is unbounded. The string bound is the repository's shared bound for
+names and ids, and an execution carrying an oversized field is DROPPED rather than
+truncated — a truncated identity would compare equal to the session that owns the
+shortened form. The retained key needs no bound of its own: the vouch runs strictly
+after the durable write, so the map cannot hold a key the record cannot carry.
+
+Everything `_caller_is_ownership_fenced` already treats as untrusted is refused
+with `memory_delegation_denied` (403): a cron slot, a member DM slot naming a PEER
+member's agent, and anything either of them created — the fenced caller's unfenced
+deputy. An app-token caller never reaches the route (`internal_secret_required`)
+and an app-scoped one cannot create at all. The refusal names neither the store nor
+the member, so it cannot confirm a guessed agent name.
+
+The verdict is the one the HTTP gate settled on the caller's verified scope,
+carried in as `caller_fenced` exactly as the other routes carry
+`precomputed_ownership_fenced`; absent, it is evaluated inline. It is only ever
+read as a REFUSAL, so a config record that stops saying "member" between admission
+and this check can turn a refusal into an admission the owner already holds, never
+the reverse.
 
 A session with native provider context cannot change members in place. An unused
 chat may select a member only with selection revision checks covering prewarming,
@@ -442,9 +550,10 @@ fence above reads the slot; a fold that builds the tree of sessions reads the cr
 #### A member-created worker can itself dispatch — the nested-conductor design
 
 Case (b) keys member identity on the STORE, and `create_session` binds a member's
-child to that member's own V2 store at birth (`_pin_private_agent_assignment`, the
-private-binding path above). So a worker the member spawned is ALSO on a member
-store, which means `_member_caller` case (b) is true for it too: with
+child to that member's own V2 store at birth (the execution record published in
+`_persist_birth`, admitted by the own-store authority above). So a worker the member
+spawned is ALSO on a member store, which means `_member_caller` case (b) is true for
+it too: with
 `agent.member_dispatch` on, a member-created worker passes the HTTP gate and
 `_member_bypass` and can `session_create` its own children — grandchildren of the
 original member — without the operator's global `session_control` switch. This is

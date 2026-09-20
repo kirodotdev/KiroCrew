@@ -5802,7 +5802,20 @@ class SlotCloseError(Exception):
 def _release_closed_execution(
     state: DashboardState, slot: "_ChatSlot", session_key: str, execution
 ) -> None:
-    """Release restricted identity after its last consumer and provider stop."""
+    """Release a restricted identity after its last consumer and provider stop.
+
+    A PERSISTENT session's vouch is deliberately retained across this close. The
+    close is non-destructive -- the conversation is saved and recreated from the
+    warm pool when the tab is resumed -- and the ordinary turn-start rebind
+    publishes nothing when the selection is unchanged, so withdrawing here leaves
+    a resumed member session unvouched and refuses its own-store dispatch until
+    its owner re-selects the agent. That refusal belongs to a restart, which
+    empties the map wholesale, not to closing a tab.
+
+    The retained population is bounded by the count cap rather than by a
+    withdrawal here, and eviction falls on the least recently USED entry, so a
+    closed session is the first entry reclaimed instead of a permanent row.
+    """
     from kiro_crew.execution_context import clear_session_execution
 
     if execution is not None and execution.memory_mode != "persistent":

@@ -681,7 +681,7 @@ class TestMemberChildExecutionContext:
         if member:
             caller.agent = "radar"
             caller.memory_store = execution.store.legacy_name
-            bind_session_execution(slot_history_key(caller), execution)
+            bind_session_execution(slot_history_key(caller), execution, vouch=True)
 
         def resolve(_cfg, name, *_args, **_kwargs):
             selected = resolve_member_execution(_cfg, name or "radar")
@@ -767,13 +767,19 @@ class TestMemberChildExecutionContext:
         child = state.get_slot(result["target"])
         assert read_session_execution(slot_history_key(child)).store == execution.store
 
-    @pytest.mark.parametrize("member", [False, True])
     def test_explicit_target_member_captures_selected_route(
-        self, tmp_path, monkeypatch, _fresh_create_budget, member
+        self, tmp_path, monkeypatch, _fresh_create_budget
     ):
+        # The GLOBAL caller only. "Global callers retain member assignment" is the
+        # documented half of this rule; its other half -- "Private caller selects
+        # another memory store ... 403 memory_delegation_denied. Same-store workers
+        # remain allowed" -- refuses the private caller, so a member reaching a
+        # PEER's store belongs with the refusals in
+        # `TestPrivateStoreCallerIsolation`, not here. This case was parametrized
+        # over both callers while nothing enforced the refusal half.
         from kiro_crew.execution_context import read_session_execution
 
-        state, caller, _ = self._prepare(tmp_path, monkeypatch, member=member)
+        state, caller, _ = self._prepare(tmp_path, monkeypatch, member=False)
         before = read_session_execution(slot_history_key(caller))
         result = asyncio.run(
             sc.create_session(state, caller_session_key=slot_history_key(caller), agent="peer")
@@ -843,3 +849,428 @@ class TestMemberChildExecutionContext:
         with pytest.raises(failure):
             asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
         assert state.creator_slot_count(caller.key) == 0
+
+
+class TestPrivateStoreCallerIsolation:
+    """A member's private store is reachable only on authority the caller holds.
+
+    Naming a member's agent is a caller-supplied string, so it cannot be the
+    authority for binding a child onto that member's private V2 store. Two
+    admissions, and nothing else: the store is the caller's OWN (read from its
+    protected execution record -- the same-store worker), or the caller is the
+    owner's own dashboard session. Every population the ownership fence already
+    treats as untrusted -- a cron slot, a member DM slot naming a PEER, and
+    anything either created -- is refused.
+
+    Both directions are pinned. The refusals are the fix; the admissions are the
+    shipped capability the fix must not remove, and a fix that refused them would
+    need an RFC.
+    """
+
+    def _prepare(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from member_memory_helpers import forget_declared_stores, write_member_home
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import ResolvedBindings
+        from kiro_crew.execution_context import resolve_member_execution
+        from kiro_crew.history import ConversationLog
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        write_member_home(tmp_path, "radar", "peer")
+        forget_declared_stores(monkeypatch)
+        state = _make_state(tmp_path)
+        state.conversation_log = ConversationLog()
+        cfg = KiroCrewConfig.load()
+
+        def resolve(_cfg, name, *_args, **_kwargs):
+            # A blank name resolves as a TEMPLATE binding on the global store, so
+            # an ordinary create stays ordinary: the private authorization must
+            # fire on the member selection and on nothing else.
+            if not name:
+                return ResolvedBindings(
+                    workspace_dir=Path("workspace"),
+                    memory_store_name="default",
+                    effective_memory_config={},
+                    kiro_agent="default",
+                    selection_kind="template",
+                    resolved_alias="",
+                )
+            selected = resolve_member_execution(_cfg, name)
+            return ResolvedBindings(
+                workspace_dir=Path("workspace"),
+                memory_store_name=selected.store.legacy_name,
+                effective_memory_config={},
+                kiro_agent=selected.template_id,
+                selection_kind="member",
+                resolved_alias=name,
+                execution_context=selected,
+            )
+
+        monkeypatch.setattr(sc, "resolve_agent_bindings", resolve)
+        monkeypatch.setattr(sc, "_workspace_name_for_dir", lambda *_: "default")
+        monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+        monkeypatch.setattr(sc, "member_dispatch_enabled", lambda: True)
+        return state, cfg
+
+    def _cron_caller(self, state):
+        """A cron job's own tab, with its owning job registered."""
+        jobs = list(state.crons.list_jobs.return_value or [])
+        jobs.append(SimpleNamespace(id="nightly", created_by="owner"))
+        state.crons.list_jobs.return_value = jobs
+        return state.get_or_create_slot(
+            "cron-nightly", linked_session_key="cron:nightly", origin=SlotOrigin.CRON
+        )
+
+    def _member_caller(self, state, cfg):
+        """A crew member's DM slot, bound to its own private store."""
+        from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
+
+        caller = _member_tab(state)
+        execution = resolve_member_execution(cfg, "radar")
+        caller.agent = "radar"
+        caller.memory_store = execution.store.legacy_name
+        bind_session_execution(slot_history_key(caller), execution, vouch=True)
+        return caller, execution
+
+    # ── refused: every population the ownership fence distrusts ──────────────
+
+    def test_a_cron_slot_cannot_select_a_members_agent(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        state, _cfg = self._prepare(tmp_path, monkeypatch)
+        caller = self._cron_caller(state)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+            )
+        assert error.value.code == "memory_delegation_denied"
+        assert error.value.status == 403
+        # The refusal must name neither the store nor the member: a caller that
+        # guessed an agent name must not have the guess confirmed for it.
+        assert "radar" not in error.value.message
+        assert "member-" not in error.value.message
+        # Refused BEFORE the allocation, so nothing is published or attributed.
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_a_cron_slot_cannot_reach_a_member_through_its_slot_agent(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The SECOND door on the same store: with no `agent` argument the child
+        # inherits `caller_slot.agent`, which is editable slot metadata. A check
+        # placed on the explicit-selection branch alone would leave this open.
+        state, _cfg = self._prepare(tmp_path, monkeypatch)
+        caller = self._cron_caller(state)
+        caller.agent = "radar"
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_an_agent_created_child_cannot_select_a_members_agent(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The deputy case. A created child has a plain `chat-` key, so a
+        # prefix-only test reads it as the owner's own tab; `_created_by` is what
+        # makes it fenced, and the authorization has to follow that and not the
+        # spelling -- otherwise a fenced caller buys the store one hop away.
+        state, _cfg = self._prepare(tmp_path, monkeypatch)
+        caller = state.get_or_create_slot("chat-9-1789000000")
+        caller._created_by = "cron-nightly"
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+            )
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_a_member_cannot_select_a_peers_agent(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # A private caller creates SAME-STORE workers. Its own store is an
+        # admission; a peer's is not, so having a private record is not authority
+        # over private memory in general.
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        caller, _execution = self._member_caller(state, cfg)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(state, caller_session_key=slot_history_key(caller), agent="peer")
+            )
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_a_carried_fence_verdict_refuses_on_its_own(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The verdict the HTTP gate settled on the caller's VERIFIED scope decides
+        # it, without the inline config read. Pinned with a caller the inline
+        # predicate would call UNFENCED, so only the carried value can produce the
+        # refusal -- which is what keeps a config write landing after admission
+        # from widening the surface.
+        state, _cfg = self._prepare(tmp_path, monkeypatch)
+        caller = state.get_or_create_slot("chat-11-1789000000")
+        monkeypatch.setattr(
+            sc, "_caller_is_ownership_fenced", lambda *_: pytest.fail("read the config record")
+        )
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(
+                    state,
+                    caller_session_key=slot_history_key(caller),
+                    agent="radar",
+                    caller_fenced=True,
+                )
+            )
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_a_forged_execution_record_does_not_grant_the_own_store_admission(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The own-store admission's AUTHORITY, which is the weight this whole
+        # narrowing rests on. A caller's execution record is metadata on its own
+        # transcript, so a fenced worker can name a peer's store there and
+        # `read_session_execution` will hand that claim back when this process
+        # holds no word of its own. Nothing vouches for it, so it is refused.
+        #
+        # Paired with the test below, which differs ONLY in who wrote the
+        # identity: there `bind_session_execution` commits it, so this process
+        # vouches and the same create is admitted. That pair is what isolates the
+        # vouched term from the record term.
+        from kiro_crew.execution_context import resolve_member_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        peer_execution = resolve_member_execution(cfg, "radar")
+        caller = state.get_or_create_slot("chat-31-1789000000")
+        caller._created_by = _MEMBER
+        caller.agent = "radar"
+        caller.memory_store = peer_execution.store.legacy_name
+        monkeypatch.setattr(sc, "read_session_execution", lambda *_a, **_k: peer_execution)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+            )
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_a_provider_template_switch_does_not_vouch_a_carried_over_store(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The third member of the pair above, and the one the pair did not cover.
+        # A provider template event republishes the session's execution by carrying
+        # the owner over from `prior` -- and `prior` is the record the session itself
+        # writes. So publishing it must not vouch for it: if it did, a fenced caller
+        # could forge its record to name a peer's store, trigger a template switch,
+        # and have this process vouch for the very claim the record term was supposed
+        # to be checked against, collapsing the admission's two sources into one.
+        from pathlib import Path
+
+        from kiro_crew import execution_context
+        from kiro_crew import session_agent_selection as sas
+        from kiro_crew.config.sections import ResolvedBindings
+        from kiro_crew.execution_context import (
+            bind_session_execution,
+            read_session_execution,
+            resolve_member_execution,
+        )
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        peer_execution = resolve_member_execution(cfg, "radar")
+        caller = state.get_or_create_slot("chat-33-1789000000")
+        caller._created_by = _MEMBER
+        caller.agent = "radar"
+        caller.memory_store = peer_execution.store.legacy_name
+        key = slot_history_key(caller)
+        # The forgery itself: the record names the peer's store and NOTHING vouches
+        # for it, which is all a session that can rewrite its own metadata achieves.
+        bind_session_execution(key, peer_execution, vouch=False)
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        # The switch resolves the NEW template through config, on the global store.
+        # The point of the test is that this resolved store is discarded in favour of
+        # the one carried from `prior`, so the resolved value must not be the peer's.
+        monkeypatch.setattr(
+            sas,
+            "resolve_agent_bindings",
+            lambda _cfg, name, *_a, **_k: ResolvedBindings(
+                workspace_dir=Path("workspace"),
+                memory_store_name="default",
+                effective_memory_config={},
+                kiro_agent=name,
+                selection_kind="template",
+                resolved_alias=name,
+            ),
+        )
+
+        sas.record_provider_agent_switch(cfg, key, "radar", "scout", str(tmp_path))
+
+        # The switch published, so the record still names the peer's store.
+        assert read_session_execution(key).store.legacy_name == peer_execution.store.legacy_name
+        # What it must NOT have done is vouch for it.
+        assert execution_context._VOUCHED_EXECUTIONS == {}
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(sc.create_session(state, caller_session_key=key, agent="radar"))
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_a_vouched_identity_admits_the_create_the_forgery_cannot(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The allow direction of the pair above. Same caller, same store, same
+        # agent; the one difference is that the identity is committed through
+        # `bind_session_execution`, so this process vouches for it and the record
+        # agrees. Without this twin the refusal above could be a blanket break
+        # rather than a conditional one.
+        from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        peer_execution = resolve_member_execution(cfg, "radar")
+        caller = state.get_or_create_slot("chat-32-1789000000")
+        caller._created_by = _MEMBER
+        caller.agent = "radar"
+        caller.memory_store = peer_execution.store.legacy_name
+        bind_session_execution(slot_history_key(caller), peer_execution, vouch=True)
+
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+        )
+        assert state.get_slot(result["target"]) is not None
+
+    def test_a_restart_drops_the_own_store_admission_until_a_fresh_bind(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The stated cost of holding this authority in process memory. A restart
+        # empties it while the durable record survives, and nothing on the rehydrate
+        # path can safely re-establish it: every value reachable there resolves
+        # through something the session itself can influence -- the record it writes,
+        # the slot store rehydrated from that record, and config looked up by that
+        # record's own member id. A re-read of any of them agrees with a forged
+        # record by construction rather than checking it.
+        #
+        # So the admission is refused until the owner re-selects the agent, which
+        # binds afresh. Pinned here so the property is stated rather than
+        # rediscovered, and because the refusal is the fail-closed direction.
+        from kiro_crew import execution_context
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        caller, _execution = self._member_caller(state, cfg)
+        execution_context._VOUCHED_EXECUTIONS.clear()
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+            )
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_a_fresh_bind_restores_the_own_store_admission_after_a_restart(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The other half of the pair above, and the reason it is a deferral rather
+        # than a lost capability: re-selecting the agent binds through the durable
+        # path, which vouches again, and the same dispatch is admitted. Without this
+        # twin the refusal above could be read as removing the capability outright.
+        from kiro_crew import execution_context
+        from kiro_crew.execution_context import bind_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        caller, execution = self._member_caller(state, cfg)
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        bind_session_execution(
+            slot_history_key(caller), execution, replace_existing=True, vouch=True
+        )
+
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+        )
+        assert state.get_slot(result["target"]) is not None
+
+    # ── admitted: the capability the narrowing must not remove ───────────────
+
+    def test_an_owners_dashboard_slot_still_selects_a_members_agent(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The shipped capability: an owner dispatching a member worker. Removing
+        # this would need an RFC, so the narrowing keeps it.
+        from kiro_crew.execution_context import read_session_execution
+
+        state, _cfg = self._prepare(tmp_path, monkeypatch)
+        caller = state.get_or_create_slot("chat-owner")
+
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+        )
+        child = state.get_slot(result["target"])
+        assert read_session_execution(slot_history_key(child)).member_id == "radar"
+
+    def test_a_member_still_creates_a_same_store_worker(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        from kiro_crew.execution_context import read_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        caller, execution = self._member_caller(state, cfg)
+
+        result = asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
+        child = state.get_slot(result["target"])
+        assert read_session_execution(slot_history_key(child)).store == execution.store
+
+    def test_a_member_may_name_its_own_agent_explicitly(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # Same-store, reached through the EXPLICIT selection branch rather than by
+        # inheritance: the admission is the store, not which branch resolved it.
+        from kiro_crew.execution_context import read_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        caller, execution = self._member_caller(state, cfg)
+
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+        )
+        child = state.get_slot(result["target"])
+        assert read_session_execution(slot_history_key(child)).store == execution.store
+
+    def test_a_fenced_caller_still_creates_an_ordinary_worker(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The authorization is about PRIVATE stores only. A cron creating an
+        # ordinary global-store worker is the cron operating model, and refusing
+        # it would break the surface rather than narrow it.
+        from kiro_crew.execution_context import read_session_execution
+
+        state, _cfg = self._prepare(tmp_path, monkeypatch)
+        caller = self._cron_caller(state)
+
+        result = asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
+        child = state.get_slot(result["target"])
+        assert child is not None
+        assert read_session_execution(slot_history_key(child)).member_id is None
+
+    def test_a_fenced_worker_still_dispatches_its_own_same_store_child(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The nested-conductor design, and the precise intersection the two
+        # authorities have to get right: the caller is FENCED (`_created_by` set by
+        # its own birth) AND the child is private. The own-store authority admits
+        # it, so a grandchild on the same member store is still reachable -- a fix
+        # that keyed only on the fence would kill recursive dispatch outright.
+        from kiro_crew.execution_context import bind_session_execution, read_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        _member, execution = self._member_caller(state, cfg)
+        worker = state.get_or_create_slot("chat-20-1789000000")
+        worker._created_by = _MEMBER
+        worker.agent = "radar"
+        worker.memory_store = execution.store.legacy_name
+        bind_session_execution(slot_history_key(worker), execution, vouch=True)
+
+        result = asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(worker)))
+        child = state.get_slot(result["target"])
+        assert read_session_execution(slot_history_key(child)).store == execution.store

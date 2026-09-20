@@ -93,10 +93,18 @@ def record_provider_agent_switch(config, session_key, prior_agent, new_agent, pr
             template_id=selected.kiro_agent,
             selection_name=new_agent if prior.member_id is None else prior.selection_name,
         )
-    return record_agent_selection(session_key, new_agent, selected)
+    # Carrying the owner over means carrying it out of the session's OWN record,
+    # which the session can rewrite, so this publication must not vouch for it.
+    # Without `vouch`, a caller that forges its record to name a peer's store and
+    # then triggers a template switch gets that store vouched here, and the
+    # own-store admission's two independent sources become one it controls. With no
+    # prior there is nothing carried and the store is the resolved one, so it stands.
+    return record_agent_selection(session_key, new_agent, selected, vouch=prior is None)
 
 
-def record_agent_selection(session_key, agent_name, bindings, *, replace=False, memory_mode=None):
+def record_agent_selection(
+    session_key, agent_name, bindings, *, replace=False, memory_mode=None, vouch=False
+):
     kind = getattr(bindings, "selection_kind", "")
     selected = agent_name or bindings.resolved_alias
     if kind not in ("member", "template") or not selected or not bindings.requested_resolved:
@@ -123,7 +131,10 @@ def record_agent_selection(session_key, agent_name, bindings, *, replace=False, 
             )
         else:
             if prior and prior.member_id:
+                # Same carried owner as the provider-switch path above, same reason
+                # not to vouch for it.
                 execution = dataclass_replace(prior, template_id=bindings.kiro_agent)
+                vouch = False
             else:
                 execution = ExecutionContext(
                     None,
@@ -137,10 +148,26 @@ def record_agent_selection(session_key, agent_name, bindings, *, replace=False, 
     if memory_mode is not None:
         execution = execution.with_mode(memory_mode)
     if prior == execution and not replace:
+        # Nothing to publish, and deliberately nothing vouched either. A session's
+        # own-store authority is held only in this process, so a restart drops it
+        # while the durable record survives -- and re-establishing it HERE cannot be
+        # done safely, because every value reachable on this path resolves through
+        # something the session itself can influence. The record is written by the
+        # session. The slot's store is rehydrated from that record. `execution` is
+        # built from it on the provider-switch path. And config is looked up by the
+        # record's own ``member_id`` a few lines above, so a config re-read agrees
+        # with a forged record by construction instead of checking it.
+        #
+        # A restart therefore drops the own-store admission until the owner
+        # re-selects the agent, which binds afresh through the durable path. That is
+        # the fail-closed direction, and a regression test pins the refusal so it is
+        # a stated property rather than something rediscovered later.
         return None
     execution = dataclass_replace(execution, selection_revision=uuid.uuid4().hex)
     # The comparison above is backed by the session record CAS during publication.
-    bind_session_execution(session_key, execution, replace_existing=True, expected=prior)
+    bind_session_execution(
+        session_key, execution, replace_existing=True, expected=prior, vouch=vouch
+    )
     bindings.execution_context = execution
     return prior.to_record() if prior else None, execution.to_record()
 

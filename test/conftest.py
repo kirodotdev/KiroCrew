@@ -1007,11 +1007,20 @@ def _reset_live_execution_records():
     def clear():
         for name, attribute in (
             ("kiro_crew.execution_context", "_LIVE_EXECUTIONS"),
+            ("kiro_crew.execution_context", "_VOUCHED_EXECUTIONS"),
             ("kiro_crew.subagent_persistence", "_LIVE_RUN_STATES"),
         ):
             module = sys.modules.get(name)
             if module is not None:
                 getattr(module, attribute).clear()
+        # The overflow throttle is scalar process state, not a container, so it
+        # needs its own reset. A test that leaves the flag ARMED makes the next
+        # test's first episode silent, which reads as a missing log line rather
+        # than as leaked state.
+        execution = sys.modules.get("kiro_crew.execution_context")
+        if execution is not None:
+            execution._vouched_overflow_reported = False
+            execution._vouched_overflow_count = 0
 
     clear()
     try:

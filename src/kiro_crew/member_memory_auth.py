@@ -34,7 +34,13 @@ def bind_private_session_store(session_key: str, memory_store: str) -> None:
         if current.store.store_id != memory_store or current.member_id is None:
             raise ValueError("The session already has another memory binding")
         return
-    bind_session_execution(session_key, execution_for_store(memory_store))
+    # Establishing, so it vouches. The store arrives as this function's ARGUMENT from
+    # trusted gateway code -- never read back from the session's own record -- and the
+    # early return above refuses to rebind a session that already has a record, so it
+    # cannot re-point an existing session at a peer's store. Without the
+    # vouch the session is published but unvouched, and its own-store dispatch is then
+    # refused with "cannot verify delegation within the caller's memory assignment".
+    bind_session_execution(session_key, execution_for_store(memory_store), vouch=True)
 
 
 def private_memory_store_for_session(session_key: str | None) -> str:

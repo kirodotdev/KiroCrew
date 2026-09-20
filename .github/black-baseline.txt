@@ -957,7 +957,6 @@ test/test_watchdog.py
 test/test_web_verify_downscale.py
 test/test_webapp_preview.py
 test/test_webapp_teardown_card_reset.py
-test/test_webhooks_api.py
 test/test_webhooks_auth_surface.py
 test/test_webhooks_event_loop.py
 test/test_webhooks_signing.py

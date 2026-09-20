@@ -248,6 +248,13 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             title=str(body.get("title") or ""),
             agent=str(body.get("agent") or ""),
             folder_id=str(body.get("folder_id") or ""),
+            # The fence verdict this request's admission already settled, for the
+            # same reason every other route forwards it as
+            # `precomputed_ownership_fenced`: `create_session` consults it after
+            # many suspensions, and the inline predicate re-derives member status
+            # from the mutable config record. Here it decides whether the child
+            # may be bound to a member's private store.
+            caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)

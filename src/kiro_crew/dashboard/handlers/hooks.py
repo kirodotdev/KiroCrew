@@ -24,7 +24,7 @@ from kiro_crew.agent import (
 from kiro_crew.agent_discovery import _read_agent_spec, list_agents
 from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.execution_context import ExecutionContext
+from kiro_crew.execution_context import ExecutionContext, clear_session_execution
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
@@ -1154,7 +1154,12 @@ async def _run_hook_inner(
             or prior.memory_mode != "persistent"
         ):
             raise ValueError("Hook session no longer matches its registered execution")
-        bind_session_execution(session_key, execution, replace_existing=True, expected=prior)
+        # Establishing: `execution` is the identity captured when the hook was
+        # registered, and the guard above refuses when the record disagrees with it,
+        # so a forged record raises here rather than being vouched.
+        bind_session_execution(
+            session_key, execution, replace_existing=True, expected=prior, vouch=True
+        )
 
     await asyncio.to_thread(bind_captured)
     if agent:
@@ -1441,6 +1446,21 @@ async def _run_hook_agent(
             state.sessions.release(session_key)
         except Exception:
             logger.exception("Hook session release failed: %s", session_key)
+        try:
+            # Withdraw this process's word on the hook's identity. Neither call
+            # below reaches it: `release` returns the slot and `SessionManager.reset`
+            # recycles the session without going near the execution maps. And the
+            # entry is always there to withdraw, because the hook path binds
+            # PERSISTENT only -- `_run_hook_inner` raises for any other mode -- so
+            # the bind leaves a vouched entry rather than a live carrier.
+            #
+            # Hook session keys are per-request by default (`hook:default:{ts}`),
+            # and per-event keys are the ordinary webhook pattern, so without this
+            # the map would gain one permanent entry per authenticated request and
+            # grow until the process restarted.
+            clear_session_execution(session_key)
+        except Exception:
+            logger.exception("Hook execution withdrawal failed: %s", session_key)
         try:
             await state.sessions.reset(session_key)
         except Exception:
