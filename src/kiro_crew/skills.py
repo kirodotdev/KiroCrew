@@ -16,10 +16,12 @@ import re
 import shutil
 import stat
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
+from contextvars import copy_context
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from itertools import zip_longest
+from itertools import batched, zip_longest
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterable, Iterator, NamedTuple
 
@@ -68,6 +70,10 @@ logger = logging.getLogger(__name__)
 
 
 SKILLS_DIR_NAME = "skills"
+# Filesystem latency dominates cold discovery. Bound both active readers and
+# submitted work so a large catalog cannot create one thread/future per skill.
+_CATALOG_READ_WORKERS = 8
+_CATALOG_READ_BATCH = 64
 #: Re-exported from ``trigger_match``, which owns the value and the grammar
 #: it belongs to. Kept as a module name because tests and call sites here
 #: reference it.
@@ -792,31 +798,6 @@ def _builtin_dir_app_name(pkg_dir: str) -> str | None:
         return None
 
 
-def _walk_mapping_tree(
-    base: Path, excluded: tuple[str, ...]
-) -> Iterator[tuple[str, list[str], list[str]]]:
-    """Prune catalog names before even following a directory entry's links."""
-    pending = [str(base)]
-    while pending:
-        directory = pending.pop()
-        dirs: list[str] = []
-        files: list[str] = []
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if _within_any(os.path.abspath(entry.path), excluded):
-                        continue
-                    try:
-                        (dirs if entry.is_dir() else files).append(entry.name)
-                    except OSError:
-                        continue
-        except OSError:
-            continue
-        yield directory, dirs, files
-        # The caller prunes and sorts dirs for containment and cycle detection.
-        pending.extend(os.path.join(directory, name) for name in reversed(dirs))
-
-
 def _iter_skill_files(
     base: Path,
     *,
@@ -849,85 +830,76 @@ def _iter_skill_files(
             results.append((str(rel).replace("\\", "/"), skill_file))
         return sorted(results, key=lambda item: item[0])
 
-    results = []
     if not base.exists():
-        return results
-    real_base = os.path.realpath(base)
-    # A skills-tree symlink into an app's own tree resolves outside ``base`` by
-    # construction — allow those provider roots, and nothing else.
-    allowed_roots = (real_base,) + _trusted_skill_roots()
-    seen_real: set[str] = set()
-    walk = (
-        _walk_mapping_tree(base, exclude_roots)
-        if exclude_roots
-        else os.walk(base, followlinks=True)
-    )
-    for dirpath, _dirs, files in walk:
-        if exclude_roots and _within_any(os.path.abspath(dirpath), exclude_roots):
-            _dirs.clear()
-            continue
-        real = os.path.realpath(dirpath)
+        return []
+    allowed_roots = (os.path.realpath(base),) + _trusted_skill_roots()
+
+    def probe(directory: Path) -> tuple[str | None, list[Path], Path | None]:
+        lexical = os.path.abspath(directory)
+        if exclude_roots and _within_any(lexical, exclude_roots):
+            return lexical, [], None
+        real = os.path.realpath(directory)
         if exclude_roots and _within_any(real, exclude_roots):
-            _dirs.clear()
-            continue
-        if real in seen_real:
-            _dirs.clear()  # prune this branch — symlink loop
-            continue
-        seen_real.add(real)
-        # Prune dot-directories (e.g. ``auto/.archive``, ``.pending``) so
-        # archived / pending / hub-state skills are never enumerated as live,
-        # trigger-matchable skills. Mutating ``_dirs`` in place prunes the walk.
-        # SORTED so enumeration is deterministic: ``bridges._register_skills``
-        # registers each app skill twice (``skills/<app>/<skill>`` and a flat
-        # ``skills/<skill>``), both resolving to one target, so the ``seen_real``
-        # guard keeps exactly one — and without a sort ``os.walk`` picks the
-        # winner in arbitrary ``scandir`` order, giving the same skill a
-        # different key on different machines.
-        _dirs[:] = sorted(
-            d
-            for d in _dirs
-            if not d.startswith(".")
-            and (
-                not exclude_roots
-                or not _within_any(os.path.abspath(os.path.join(dirpath, d)), exclude_roots)
-            )
-        )
-        # Path containment: stay inside the skills base, or inside a trusted
-        # skill-provider root reached through an app's registered symlink.
-        if not _within_any(real, allowed_roots):
-            _dirs.clear()
-            continue
-        # ``real`` IS the canonical spelling this walk just computed, so the
-        # fence is asked lexically against it (is_sensitive_resolved_path)
-        # instead of through is_sensitive_path, which would resolve the same
-        # path a second time via the ``mc-pathres`` pool. That pool is sized
-        # for the event loop, and this walk runs on worker threads over every
-        # directory and SKILL.md of every root -- a thousand entries on an
-        # install with a few provider packages -- so each redundant submission
-        # queued ahead of the loop's own resolutions. The decision is
-        # unchanged: same targets, same cache; the anchors are resolved on
-        # this thread rather than through the pool.
-        if is_sensitive_resolved_path(real):
-            _dirs.clear()  # never traverse into credential stores
-            continue
-        if "SKILL.md" in files:
-            skill_file = Path(dirpath) / "SKILL.md"
-            real_file = os.path.realpath(str(skill_file))
-            if exclude_roots and _within_any(real_file, exclude_roots):
+            return real, [], None
+        if not _within_any(real, allowed_roots) or is_sensitive_resolved_path(real):
+            return real, [], None
+        try:
+            with os.scandir(directory) as scan:
+                entries = list(scan)
+        except OSError:
+            # A failed alias has not visited its target. Another spelling may
+            # still enumerate it successfully, as with os.walk's error handling.
+            return None, [], None
+        children = []
+        has_skill = False
+        for entry in entries:
+            if exclude_roots and _within_any(os.path.abspath(entry.path), exclude_roots):
                 continue
-            if is_sensitive_resolved_path(real_file):
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                is_dir = False
+            if is_dir and not entry.name.startswith("."):
+                children.append(directory / entry.name)
+            elif not is_dir and entry.name == "SKILL.md":
+                has_skill = True
+        children.sort(key=lambda path: path.name)
+        skill_file = directory / "SKILL.md"
+        if not has_skill:
+            return real, children, None
+        real_file = os.path.realpath(skill_file)
+        if exclude_roots and _within_any(real_file, exclude_roots):
+            return real, children, None
+        if not _within_any(real_file, allowed_roots) or is_sensitive_resolved_path(real_file):
+            return real, children, None
+        return real, children, skill_file
+
+    results = []
+    seen_real: set[str] = set()
+    # Commit probes in sorted depth-first order, irrespective of completion
+    # order, so links sharing a target keep the same canonical skill key.
+    stack = [base]
+    pending: dict[Path, Future[tuple[str | None, list[Path], Path | None]]] = {}
+    with ThreadPoolExecutor(
+        max_workers=_CATALOG_READ_WORKERS, thread_name_prefix="skill-walk"
+    ) as pool:
+        while stack:
+            for directory in reversed(stack):
+                if len(pending) >= _CATALOG_READ_BATCH:
+                    break
+                if directory not in pending:
+                    pending[directory] = pool.submit(copy_context().run, probe, directory)
+            directory = stack.pop()
+            future = pending.pop(directory, None)
+            real, children, discovered_file = future.result() if future else probe(directory)
+            if real is None or real in seen_real:
                 continue
-            # Containment for the FILE, not just its directory. The directory
-            # check above cannot cover this: a symlinked SKILL.md sits inside a
-            # perfectly contained directory, and reading it parses attacker-
-            # controlled frontmatter (name/description/triggers) into the
-            # catalog and the injected skills index.
-            if not _within_any(real_file, allowed_roots):
-                continue
-            rel = skill_file.parent.relative_to(base)
-            name = str(rel).replace("\\", "/")
-            results.append((name, skill_file))
-    return sorted(results, key=lambda x: x[0])
+            seen_real.add(real)
+            if discovered_file is not None:
+                name = str(directory.relative_to(base)).replace("\\", "/")
+                results.append((name, discovered_file))
+            stack.extend(reversed(children))
+    return sorted(results, key=lambda item: item[0])
 
 
 # Skills RELOCATED into the kirocrew-dev/ folder (the Kiro Crew development
@@ -2702,6 +2674,7 @@ class SkillsLoader:
         """
         started = time.monotonic()
         cached_metadata = self._search_index.metadata_snapshot() if self._search_index else {}
+        snapshot_done = time.monotonic()
         changed_metadata: list[tuple[str, str, dict]] = []
         skill_reads = 0
         skills: list[dict] = []
@@ -2710,8 +2683,15 @@ class SkillsLoader:
             if _entries is None
             else _entries
         )
-        scan_ms = (time.monotonic() - started) * 1000
-        for name, skill_file, project_root, mapping_root in entries:
+        scanned = time.monotonic()
+
+        def read_entry(
+            entry: _ScopedSkillEntry,
+        ) -> tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int]:
+            name, skill_file, project_root, mapping_root = entry
+            fingerprint = ""
+            changed = None
+            reads = 0
             if project_root is not None:
                 meta, size_bytes = self._confined_frontmatter_and_size(skill_file, project_root)
             else:
@@ -2730,7 +2710,7 @@ class SkillsLoader:
                 if cached and cached[0] == fingerprint and cached[1].get("_catalog_key") == name:
                     meta = cached[1]
                 else:
-                    skill_reads += 1
+                    reads += 1
                     self._fm_cache.pop(str(skill_file), None)
                     meta = self._cached_frontmatter(
                         skill_file,
@@ -2740,10 +2720,36 @@ class SkillsLoader:
                     )
                     meta["_catalog_key"] = name
                     if fingerprint:
-                        changed_metadata.append((str(skill_file), fingerprint, meta))
+                        changed = (str(skill_file), fingerprint, meta)
                 if st is not None and meta:
                     self._fm_cache[str(skill_file)] = (st.st_mtime, meta)
                 size_bytes = st.st_size if st is not None else 0
+            return meta, size_bytes, fingerprint, changed, reads
+
+        def rows() -> Iterator[
+            tuple[
+                _ScopedSkillEntry,
+                tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int],
+            ]
+        ]:
+            if len(entries) < _CATALOG_READ_BATCH:
+                for entry in entries:
+                    yield entry, read_entry(entry)
+                return
+            with ThreadPoolExecutor(
+                max_workers=_CATALOG_READ_WORKERS, thread_name_prefix="skill-catalog"
+            ) as pool:
+                for batch in batched(entries, _CATALOG_READ_BATCH):
+                    futures = [
+                        pool.submit(copy_context().run, read_entry, entry) for entry in batch
+                    ]
+                    yield from zip(batch, (future.result() for future in futures))
+
+        for entry, (meta, size_bytes, fingerprint, changed, reads) in rows():
+            name, skill_file, project_root, mapping_root = entry
+            if changed is not None:
+                changed_metadata.append(changed)
+            skill_reads += reads
             skills.append(
                 {
                     # Internal: lets a later re-read (see _rank_key) reuse the root
@@ -2781,15 +2787,20 @@ class SkillsLoader:
                     "owned": self._owned_hint(skill_file),
                 }
             )
+        assembled = time.monotonic()
         if self._search_index and not self._search_index.store_metadata(changed_metadata):
             changed_paths = {path for path, _, _ in changed_metadata}
             for row in skills:
                 if row["path"] in changed_paths:
                     row["metadata_indexed"] = False
         logger.debug(
-            "skill catalog: %.2fms total, %.2fms scan, %d rows, %d metadata reads",
+            "skill catalog: %.2fms total, %.2fms snapshot, %.2fms scan, "
+            "%.2fms read/assemble, %.2fms persist, %d rows, %d metadata reads",
             (time.monotonic() - started) * 1000,
-            scan_ms,
+            (snapshot_done - started) * 1000,
+            (scanned - snapshot_done) * 1000,
+            (assembled - scanned) * 1000,
+            (time.monotonic() - assembled) * 1000,
             len(skills),
             skill_reads,
         )

@@ -2855,6 +2855,22 @@ Frontmatter is parsed line-by-line (`_parse_frontmatter`): only a column-0 `key:
 
 Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill name is the relative path from the skills root (e.g. `utils/tiny-url`).
 
+Cold discovery overlaps filesystem I/O through a bounded worker pool. Global
+directory probes are committed in sorted depth-first order, preserving the same
+winner for aliases and pruning cycles before descent. Confined project walks
+retain their descriptor-pinned traversal. Metadata reads use bounded batches,
+carry the caller's context variables, and join before returning; catalog size
+does not determine the number of threads or queued futures. The usage ledger
+stays on the calling thread. Prompt construction derives pinned instructions
+from the admitted metadata rows instead of scanning the catalog again. It still
+discovers every eligible skill and delivers required instructions on the first
+turn; a cold catalog is not silently treated as empty. Metadata term replacement
+uses a path index, so refreshing one skill does not scan every other skill's
+terms. Opening an existing cache adds this index without discarding its rows.
+Debug catalog logs separate snapshot loading, directory scanning, metadata
+assembly and index persistence. This reduces cold latency without promising a
+constant-time scan of an arbitrary filesystem.
+
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
 **Retired generated skill cleanup.** `skills.remove_retired_conductor_skill()`

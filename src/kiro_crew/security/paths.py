@@ -2088,6 +2088,9 @@ def _home_dir_targets_uncached(
 _HOME_TARGETS_TTL_SECS = 0.1
 # key -> (expiry_monotonic, targets)
 _home_targets_cache: dict[tuple[object, ...], tuple[float, set[str]]] = {}
+# Only off-loop bulk readers acquire this lock. Event-loop gates retain their
+# bounded resolver and must never wait for an inline filesystem rebuild.
+_home_targets_inline_lock = threading.Lock()
 
 
 class _ResolvedRoots(NamedTuple):
@@ -2335,7 +2338,23 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
     # reads file one root's targets under the other root's key — a fail-OPEN
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
-    roots = _resolve_root_anchors(str(Path.home())) if inline else _resolved_root_key()
+    if inline:
+        roots = _resolve_root_anchors(str(Path.home()))
+        cached = _home_targets_cache.get((tuple(home_dirs),) + roots)
+        if cached is not None and time.monotonic() < cached[0]:
+            return cached[1]
+        with _home_targets_inline_lock:
+            # Resolve after acquiring: a queued worker must not reuse anchors
+            # captured before another worker's potentially slow rebuild.
+            roots = _resolve_root_anchors(str(Path.home()))
+            return _cached_home_dir_targets(home_dirs, roots, inline=True)
+    return _cached_home_dir_targets(home_dirs, _resolved_root_key(), inline=False)
+
+
+def _cached_home_dir_targets(
+    home_dirs: list[str], roots: _ResolvedRoots, *, inline: bool
+) -> set[str]:
+    """Share the target cache while coalescing inline builders at the caller."""
     key = (tuple(home_dirs),) + roots
     now = time.monotonic()
     cached = _home_targets_cache.get(key)

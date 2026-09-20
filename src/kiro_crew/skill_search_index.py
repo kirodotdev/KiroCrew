@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS skill_meta_term (
     path TEXT NOT NULL,
     PRIMARY KEY (term, path)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS skill_meta_term_path ON skill_meta_term(path);
 """
 
 _DROP = """
