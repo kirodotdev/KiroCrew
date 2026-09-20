@@ -210,11 +210,17 @@ _DEEPSEEK_TOOLS_MODE = "native"
 
 #: Files re-exposed READ-ONLY inside a directory the mask hides, home-relative.
 #:
-#: A codex whose model provider is Bedrock AUTHENTICATES through ``~/.aws``: it
-#: reads ``~/.aws/config`` to find the ``credential_process``. With the whole
-#: directory masked every session fails at start with ``failed to load AWS
-#: credentials`` -- surfaced to the operator as an opaque ``Authentication
-#: required``. Re-exposing exactly this file is the cc tier's own Linux posture
+#: A harness whose model provider is Bedrock AUTHENTICATES through ``~/.aws``: it
+#: reads ``~/.aws/config`` to find the ``credential_process`` AND the profile's
+#: ``region``. With the whole directory masked every session fails -- codex at
+#: start with ``failed to load AWS credentials``, surfaced to the operator as an
+#: opaque ``Authentication required``; pi on every TURN, and worse, because its
+#: adapter reports the failed turn as an ordinary empty one (measured on pi-acp
+#: 0.0.33: the provider error ``Region is missing`` is recorded in pi's own
+#: session file while ``session/prompt`` still answers ``stopReason: end_turn``
+#: with no content and nothing on stderr), so the whole empty-response ladder
+#: runs and the operator is told to send the message again. Re-exposing exactly
+#: this file is the cc tier's own Linux posture
 #: (``_CC_EXPOSE_FILES``), applied here on BOTH platforms rather than excluding
 #: the leaf: ``~/.aws/credentials`` and ``~/.aws/sso/cache`` stay hidden from a
 #: child whose passive reads never reach the gate. Each backend carries the
@@ -256,8 +262,18 @@ _DEEPSEEK_TOOLS_MODE = "native"
 #: directory this mask hides, so "must sit under something masked" admits them
 #: equally. So this stays where adding an entry is visibly a change to a security
 #: control, made by the host, rather than a line in a driver's own declaration.
+#: Both entries are the SAME leaf for the same reason, and neither is a per-harness
+#: judgement about trust: a Bedrock-configured harness cannot resolve a region or a
+#: ``credential_process`` without this file, and the mask is not optional for it
+#: (:func:`enforce_sandbox_floor` refuses the session rather than dropping the mask).
+#: What stays denied is what carries the secret itself -- ``~/.aws/credentials`` and
+#: ``~/.aws/sso/cache`` -- so the narrowing, not the harness id, is what makes the
+#: entry defensible. A profile whose ``credential_process`` reaches a credential
+#: store this mask ALSO hides still fails, and correctly so: this entry buys the
+#: region and the profile block, never a second masked reader.
 ADAPTER_EXPOSED_CREDENTIAL_LEAVES: dict = {
     ACP_BACKEND_CODEX: (".aws/config",),
+    ACP_BACKEND_PI: (".aws/config",),
 }
 
 
