@@ -1857,12 +1857,27 @@ def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
     ``$HOME``.
 
     Never raises: an unresolvable data home yields nothing and the seal behaves exactly
-    as it did before this function existed.
+    as it did before this function existed. Neither does an ABSENT one -- a data home
+    that is not a directory returns no targets, because a host with no install at all is
+    deliberately not scaffolded here. The missing-parent refusal lives in
+    :func:`_materialize_sealable_ceilings`, and only for a leaf whose OWN parent tree is
+    present. Each ceiling is judged against the home that owns it: the crew-home leaves
+    against ``config_dir()``, the kiro agents leaf against kiro-cli's own home.
     """
     try:
         root = str(config_dir())
     except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
         logger.debug("could not resolve the crew data home for ceiling sealing", exc_info=True)
+        return ([], [])
+    if not os.path.isdir(root):
+        # An ABSENT data home is the documented skip, not a failure: there is no
+        # install to protect, and a host with no install at all is deliberately
+        # not scaffolded here (the absent-data-home contract). Creating a tree
+        # for it would fabricate governance state nobody asked for, so this
+        # returns nothing and the seal behaves exactly as it did before this
+        # function existed. The refusal below is for the opposite case -- a home
+        # that IS present with a ceiling leaf whose parent is missing, which is a
+        # genuine hole rather than an absent install.
         return ([], [])
     file_targets = [os.path.join(root, leaf) for leaf in _CREW_PRECREATE_READONLY_FILE_LEAVES]
     # Read-only ceilings AND hidden leaves: the seal needs the former to exist,
@@ -1876,12 +1891,23 @@ def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
         # readonly-target entry above): the Linux mount seal needs a directory
         # to bind, and an install may not have created it yet — an unsealed
         # absent dir would be creatable from inside the sandbox, placing
-        # forged specs where the next spawn resolves them. Gated on the crew
-        # data home existing so a host with no install at all is not
-        # scaffolded (the absent-data-home contract of the entries above).
-        agents_dir = kiro_agents_dir()
-        if os.path.isdir(root):
-            dir_targets.append(str(agents_dir))
+        # forged specs where the next spawn resolves them.
+        #
+        # Gated on ITS OWN parent rather than on the Kiro Crew data home `root`
+        # above: this leaf hangs off kiro-cli's home (``KIRO_HOME``, else
+        # ``~/.kiro``), a different resolver with a different lifecycle, and
+        # ``config_dir()`` mkdirs whatever it returns — so testing `root` here
+        # was true unconditionally and said nothing about this leaf. Read as
+        # "no kiro install" while the refusal in
+        # :func:`_materialize_sealable_ceilings` is about a PRESENT home whose
+        # intermediate is missing, it turned every host without a kiro install
+        # into a failed spawn. An absent ``~/.kiro`` is the documented skip, and
+        # ``~/.kiro/agents/*.json`` is out of scope for this ceiling anyway (see
+        # ``docs/system-specs/modules/governance.md``); a PRESENT one still
+        # refuses below if its own intermediate is missing.
+        agents_dir = str(kiro_agents_dir())
+        if os.path.isdir(os.path.dirname(agents_dir)):
+            dir_targets.append(agents_dir)
     except Exception:  # pragma: no cover - defensive, same posture as above
         logger.debug("could not resolve the kiro agents dir for sealing", exc_info=True)
     return (dir_targets, file_targets)
@@ -1900,10 +1926,15 @@ class SandboxCeilingUnsealable(RuntimeError):
     asked for the spawn. Those callers report a failed operation; none of them falls back
     to running the command unconfined, which is what makes refusing safe here.
 
-    The two states that reach it are both actionable by an operator, and the message
+    The three states that reach it are all actionable by an operator, and the message
     names the path for that reason: a DANGLING SYMLINK squatting a ceiling path (either
-    tampering, or a link whose destination went away), and a data home where creation
-    itself fails (a read-only mount, or a filesystem with no hardlink support).
+    tampering, or a link whose destination went away); a data home where creation
+    itself fails (a read-only mount, or a filesystem with no hardlink support); and a
+    ceiling leaf whose parent directory is missing under a home that IS present,
+    which cannot be created or published and would stay writable inside the sandbox.
+    An ABSENT home is not among them -- that is the documented skip in
+    :func:`_sealable_absent_ceilings`, not a refusal, and it is decided per ceiling
+    against the home that owns that ceiling.
     """
 
 
@@ -2129,6 +2160,27 @@ def _refuse_if_aliased_protected_leaf(target: str) -> None:
     raise SandboxCeilingUnsealable(
         f"the protected directory {safe_terminal_line(target)} is not a directory. It "
         "must be a real directory under this name for its mask to apply."
+    )
+
+
+def _warn_unsealed_ceiling_parent_missing(target: str, verb: str) -> None:
+    """Say WHY the spawn is being refused when the ceiling's PARENT is missing.
+
+    Its own message rather than :func:`_warn_unsealed_ceiling` with no errno,
+    because nothing was created or published in this case -- reporting
+    "publish failed" would name a syscall that was never attempted and send an
+    operator looking at a write path that was never the problem. The leaf's own
+    home is present here (an absent one is the documented skip, decided per
+    ceiling in :func:`_sealable_absent_ceilings`), so this is a real hole: the
+    leaf's parent is missing, so the leaf cannot be sealed and would stay
+    writable from inside the sandbox.
+    """
+    logger.warning(
+        "sandbox: REFUSING to launch — cannot %s the governance ceiling %s: its "
+        "parent is not a directory. mount(2) cannot seal a path that does not "
+        "exist, so proceeding would leave it writable inside the sandbox",
+        verb,
+        target,
     )
 
 
@@ -2475,8 +2527,11 @@ def _materialize_sealable_ceilings(established: list[str] | None = None) -> list
     notices. An unsealed ceiling is the one thing this function exists to prevent, so it
     refuses for the same reason ``_mount_or_die`` refuses a failed hiding mount.
 
-    Two states trigger it:
+    Three states trigger it:
 
+    * a **missing parent** for a ceiling path. Creating the parents would build
+      a writable ancestor the agent could rename through, so the safe answer is
+      to refuse rather than scaffold;
     * a **dangling symlink** squatting a ceiling path. ``os.path.exists`` follows
       symlinks, so it reads as absent to this function AND to the launcher's guard,
       while ``os.link`` refuses the name as ``EEXIST`` — the sandboxed process's write
@@ -2531,7 +2586,11 @@ def _materialize_sealable_ceilings(established: list[str] | None = None) -> list
                 _warn_if_alias_backed(target)
             continue
         if not os.path.isdir(os.path.dirname(target)):
-            continue
+            _warn_unsealed_ceiling_parent_missing(target, "create")
+            raise SandboxCeilingUnsealable(
+                f"cannot seal the governance ceiling {target}: its parent is not "
+                "a directory; it would stay writable inside the sandbox"
+            )
         try:
             # 0o700 needs no reassertion: a umask can only clear bits, never add them.
             os.mkdir(target, 0o700)
@@ -2572,7 +2631,11 @@ def _materialize_sealable_ceilings(established: list[str] | None = None) -> list
             _warn_if_alias_backed(target)
             continue
         if not os.path.isdir(parent):
-            continue
+            _warn_unsealed_ceiling_parent_missing(target, "publish")
+            raise SandboxCeilingUnsealable(
+                f"cannot publish the governance ceiling {target}: its parent is "
+                "not a directory; it would stay writable inside the sandbox"
+            )
         if _publish_empty_ceiling(target, parent):
             created.append(target)
             _note_established(established, target)
