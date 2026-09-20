@@ -4067,7 +4067,7 @@ function ChatInput({
           />
         )}
 
-        {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
+        {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-warn" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
         {/* The textarea fallback is seamless for typing (draft intact), but the
             failure itself must be user-visible, not only a console line: the
             person who opted into the editor should know they are no longer in

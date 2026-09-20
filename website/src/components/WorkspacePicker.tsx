@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { FolderOpen, ChevronRight, ChevronLeft } from 'lucide-react'
 import { api } from '../api/client'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -21,7 +22,10 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
   const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
   const [selectedDir, setSelectedDir] = useState('')
   const [wsName, setWsName] = useState('')
+  /** Client-side hint ("name is required"): not a failure, so not an ErrorNotice. */
   const [error, setError] = useState('')
+  /** The create request's failure, from the backend or the transport. */
+  const [requestError, setRequestError] = useState('')
   const [creating, setCreating] = useState(false)
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
@@ -46,7 +50,7 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
       const handler = (e: MouseEvent) => {
         if (dropRef.current && !dropRef.current.contains(e.target as Node) &&
             btnRef.current && !btnRef.current.contains(e.target as Node)) {
-          onOpenChange(false); setSelectedDir(''); setWsName(''); setError('')
+          onOpenChange(false); setSelectedDir(''); setWsName(''); setError(''); setRequestError('')
         }
       }
       document.addEventListener('mousedown', handler)
@@ -66,18 +70,19 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
     setWsName(dir.split('/').filter(Boolean).pop() || '')
     setInput(dir)
     setError('')
+    setRequestError('')
   }
 
   const create = async () => {
     const name = wsName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')
     if (!name) { setError(i18nT('components.workspacePicker.name_required')); return }
-    setCreating(true); setError('')
+    setCreating(true); setError(''); setRequestError('')
     try {
       const res = await api.createWorkspace({ name, dir: selectedDir }) as { ok?: boolean; error?: string }
-      if (res.error) { setError(res.error); setCreating(false); return }
+      if (res.error) { setRequestError(res.error); setCreating(false); return }
       onCreated(name)
       onOpenChange(false); setSelectedDir(''); setWsName('')
-    } catch { setError(i18nT('components.workspacePicker.failed_to_create_workspace')) }
+    } catch { setRequestError(i18nT('components.workspacePicker.failed_to_create_workspace')) }
     setCreating(false)
   }
 
@@ -92,8 +97,10 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
             <div className="p-3 flex flex-col gap-2">
               <div className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('components.workspacePicker.create_workspace')}</div>
               <div className="text-[13px] font-mono text-text truncate bg-bg-elevated rounded px-2 py-1.5 border border-border">{selectedDir}</div>
-              <input autoFocus type="text" aria-label={i18nT('components.workspacePicker.workspace_name')} placeholder={i18nT('components.workspacePicker.workspace_name_2')} value={wsName} onChange={e => { setWsName(e.target.value); setError('') }} {...ime.bindEnter({ onEnter: create, onEscape: () => { setSelectedDir(''); setWsName('') } })} className="bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent" />
-              {error && <div className="text-[11px] text-red-400">{error}</div>}
+              <input autoFocus type="text" aria-label={i18nT('components.workspacePicker.workspace_name')} placeholder={i18nT('components.workspacePicker.workspace_name_2')} value={wsName} onChange={e => { setWsName(e.target.value); setError(''); setRequestError('') }} {...ime.bindEnter({ onEnter: create, onEscape: () => { setSelectedDir(''); setWsName('') } })} className="bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent" />
+              {error && <div className="text-[11px] text-danger">{error}</div>}
+              {/* No hand-off: the workspace name in `wsName` and the chosen directory are unsaved until Create. */}
+              <ErrorNotice message={requestError} />
               <div className="flex gap-2 justify-end">
                 <button onClick={() => { setSelectedDir(''); setWsName('') }} className="px-3 py-1.5 text-[12px] text-muted hover:text-text rounded">{i18nT('components.workspacePicker.back')}</button>
                 <button onClick={create} disabled={creating} className="px-3 py-1.5 text-[12px] bg-accent text-accent-fg rounded hover:bg-accent/80 disabled:opacity-50">{creating ? i18nT('components.workspacePicker.creating') : i18nT('components.workspacePicker.create')}</button>

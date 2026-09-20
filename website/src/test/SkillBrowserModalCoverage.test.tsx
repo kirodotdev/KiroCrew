@@ -336,7 +336,7 @@ describe('SkillBrowserModal', () => {
     const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
     fireEvent.click(within(row).getByRole('button', { name: 'Install' }))
 
-    expect(await screen.findByText('Installing...')).toBeInTheDocument()
+    expect(await within(row).findByText('Installing...')).toBeInTheDocument()
     expect(mockApi.installDiscoveredSkill)
       .toHaveBeenCalledWith('skillsh', 'acme/widget-wrangler', { overwrite: undefined })
 
@@ -344,7 +344,7 @@ describe('SkillBrowserModal', () => {
       pending.settle(anInstall())
       await vi.advanceTimersByTimeAsync(0)
     })
-    expect(await screen.findByText('Installed')).toBeInTheDocument()
+    expect(await within(row).findByText('Installed')).toBeInTheDocument()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['skills'] })
     // Clicking the row after a local install must not re-offer Install.
     expect(within(row).queryByRole('button', { name: 'Install' })).not.toBeInTheDocument()
@@ -358,7 +358,7 @@ describe('SkillBrowserModal', () => {
 
     const row = await screen.findByRole('option', { name: 'widget-wrangler' })
     fireEvent.click(within(row).getByRole('button', { name: 'Install' }))
-    expect(await screen.findByText('Installed 4 files')).toBeInTheDocument()
+    expect(await within(row).findByText('Installed 4 files')).toBeInTheDocument()
   })
 
   it('a 409 collision offers Overwrite, which retries with overwrite: true', async () => {
@@ -370,13 +370,13 @@ describe('SkillBrowserModal', () => {
     const row = await screen.findByRole('option', { name: 'widget-wrangler' })
     fireEvent.click(within(row).getByRole('button', { name: 'Install' }))
 
-    expect(await screen.findByText('Exists', undefined, { timeout: 5_000 })).toBeInTheDocument()
+    expect(await within(row).findByText('Exists', undefined, { timeout: 5_000 })).toBeInTheDocument()
     mockApi.installDiscoveredSkill.mockResolvedValue(anInstall({ kind: 'updated' }))
     fireEvent.click(within(row).getByRole('button', { name: 'Overwrite' }))
 
     await waitFor(() => expect(mockApi.installDiscoveredSkill)
       .toHaveBeenLastCalledWith('skillsh', 'acme/widget-wrangler', { overwrite: true }))
-    expect(await screen.findByText('Installed')).toBeInTheDocument()
+    expect(await within(row).findByText('Installed')).toBeInTheDocument()
   })
 
   it('surfaces a non-409 install failure on the row', async () => {
@@ -387,7 +387,12 @@ describe('SkillBrowserModal', () => {
 
     const row = await screen.findByRole('option', { name: 'widget-wrangler' })
     fireEvent.click(within(row).getByRole('button', { name: 'Install' }))
-    expect(await screen.findByText('provider unavailable', undefined, { timeout: 5_000 })).toBeInTheDocument()
+    const notice = await within(row).findByRole('alert', undefined, { timeout: 5_000 })
+    expect(notice).toHaveTextContent('provider unavailable')
+    // Installing does not select the row, and the row hosts no hand-off: the
+    // detail pane's notice carries it once the row is selected.
+    expect(row).toHaveAttribute('aria-selected', 'false')
+    expect(within(row).queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
   })
 
   it('an already-installed result renders as Installed with no Install action', async () => {

@@ -465,7 +465,19 @@ Authoring a compiled (edition) theme end to end — CSS specificity against the
 core palette, module resolution, typechecking — is covered in
 [extension-seams § Authoring an edition](extension-seams.md#authoring-an-edition-the-build-pitfalls).
 
-## Checker (advisory)
+## Checkers
+
+Two are blocking, in the `eslint src/ --max-warnings 0` CI gate through
+`@shadcn/lint` (the `shadcn` block of `eslint.config.js`):
+`shadcn/no-raw-colors` reports a raw Tailwind palette class (`text-red-500`)
+or a literal color in an SVG `fill`/`stroke`/`stopColor` attribute, and
+`shadcn/no-unknown-classes` reports a color utility whose token was never
+declared (`bg-surface-2`) along with every other class Tailwind emits nothing
+for. Rule scope and the sanctioned exceptions are in
+[frontend-conventions § Styling](frontend-conventions.md#styling).
+
+The literal checker below covers what those rules do not read: `#hex` /
+`rgb()` literals in CSS and in `style={}` values.
 
 ```bash
 npm run lint:theme-colors          # report raw literals in src/ (exit 0)

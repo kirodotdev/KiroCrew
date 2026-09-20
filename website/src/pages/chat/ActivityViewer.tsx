@@ -35,8 +35,8 @@ import { normalizeModelKey } from '../../lib/model'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
-  tool: <Wrench size={12} className="text-amber-400" />,
-  done: <CheckCircle size={12} className="text-green-400" />,
+  tool: <Wrench size={12} className="text-warn" />,
+  done: <CheckCircle size={12} className="text-ok" />,
   error: <AlertCircle size={12} className="text-danger" />,
   stopped: <Square size={12} className="text-muted" />,
 } as const
@@ -375,7 +375,7 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   return (
     <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : 'border-warn/40 bg-warn/5'}`}>
       <div className="flex items-center gap-2 px-3 py-2">
-        <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-green-400" /> : <Lock size={15} className="text-muted" />}</span>
+        <span className="shrink-0 flex items-center">{isResolved ? <CheckCircle size={15} className="text-ok" /> : <Lock size={15} className="text-muted" />}</span>
         <span className="text-[13px] font-semibold text-text truncate min-w-0">{isResolved ? (decisionLabel[localDecision || ''] || i18nT('pages.chat.activityViewer.resolved')) : i18nT('pages.chat.activityViewer.approval_needed')}</span>
         <span className="text-[11px] text-muted/40 font-mono ml-auto shrink-0">{fmtTime(entry.ts)}</span>
       </div>
@@ -502,11 +502,13 @@ export { countDiffStats }
  * a trailing external-link arrow in the row's right slot. The whole row is the
  * anchor, so any part of it opens the link in a new tab. */
 function ResourceRow({ link }: { link: ExtractedLink }) {
+  /* eslint-disable shadcn/no-unknown-classes -- shadcn-ui/lint#38: the rule reads every member of a destructured initializer as a class */
   const { Icon, colorCls } = link.type === 'cr'
     ? { Icon: GitPullRequest, colorCls: 'text-accent' }
     : link.type === 'issue'
       ? { Icon: CircleDot, colorCls: 'text-ok' }
       : { Icon: LinkIcon, colorCls: 'text-muted' }
+  /* eslint-enable shadcn/no-unknown-classes */
   const typeLabel = resourceTypeLabel(link.type)
   let host = ''
   try { host = new URL(link.url).hostname.replace(/^www\./, '') } catch { host = link.url }

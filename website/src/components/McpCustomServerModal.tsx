@@ -245,7 +245,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         />
 
         {parsed && !parsed.ok && (
-          <span className="flex items-center gap-1 text-xs text-amber-400" role="alert">
+          <span className="flex items-center gap-1 text-xs text-warn" role="alert">
             <AlertTriangle size={13} aria-hidden="true" /> {parsed.error}
           </span>
         )}

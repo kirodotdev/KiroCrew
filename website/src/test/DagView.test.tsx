@@ -25,14 +25,14 @@ describe('DagView', () => {
   it('renders selected node indicator', () => {
     const nodes = [{ id: '1', title: 'Setup', status: 'passed' }]
     const { container } = render(<DagView nodes={nodes} edges={[]} onNodeClick={() => {}} selectedId="1" />)
-    const ring = container.querySelector('rect[stroke="var(--accent, #6366f1)"]')
+    const ring = container.querySelector('rect[stroke="var(--accent)"]')
     expect(ring).toBeInTheDocument()
   })
 
   it('renders pending edit dot', () => {
     const nodes = [{ id: '1', title: 'Setup', status: 'passed' }]
     const { container } = render(<DagView nodes={nodes} edges={[]} onNodeClick={() => {}} pendingEditIds={new Set(['1'])} />)
-    const pendingDot = container.querySelector('circle[fill="#f59e32"]')
+    const pendingDot = container.querySelector('circle[fill="var(--warn)"]')
     expect(pendingDot).toBeInTheDocument()
   })
 })

@@ -41,12 +41,11 @@ export function resetExpandedDiffFences(): void {
   expandedDiffFences.clear()
 }
 
-export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pathHint, streaming, foldKey }: {
+export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pathHint, foldKey }: {
   code: string
   complete: boolean
   onFileOpen?: (path: string) => void
   pathHint?: string
-  streaming?: boolean
   /** Stable identity for remembering the open state; omit to keep it local. */
   foldKey?: string
 }) {
@@ -119,7 +118,7 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
       )}
       <div id={regionId}>
         {expanded && (
-          <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} streaming={streaming} onFold={toggle} />
+          <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} onFold={toggle} />
         )}
       </div>
     </div>

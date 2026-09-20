@@ -137,6 +137,7 @@
   "devDependencies": {
     "@axe-core/react": "^4.10.1",
     "@playwright/test": "1.58.2",
+    "@shadcn/lint": "0.1.0",
     "@storybook/addon-a11y": "10.5.10",
     "@storybook/addon-themes": "10.5.10",
     "@storybook/react-vite": "10.5.10",

@@ -6,7 +6,7 @@ interface DagNode { id: string; title: string; status: string; task_type?: strin
 interface DagEdge { from: string; to: string }
 
 const STATUS_FILL: Record<string, string> = {
-  pending: '#6b7280', in_progress: '#f59e32', reviewing: '#f59e32', passed: '#22c55e', failed: '#ef4444', skipped: '#9ca3af', cancelled: '#9ca3af', cancelling: '#f59e32', paused: '#3b82f6', pausing: '#f59e32', blocked: '#eab308',
+  pending: 'var(--muted)', in_progress: 'var(--accent)', reviewing: 'var(--accent)', passed: 'var(--ok)', failed: 'var(--danger)', skipped: 'var(--muted)', cancelled: 'var(--muted)', cancelling: 'var(--accent)', paused: 'var(--info)', pausing: 'var(--accent)', blocked: 'var(--warn)',
 }
 const StatusDot = ({ color }: { color: string }) => <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
 /**
@@ -21,22 +21,28 @@ const StatusDot = ({ color }: { color: string }) => <span className="inline-bloc
  * the two views must not be able to drift apart. The rest have no existing key.
  */
 const STATUS_DOT: Record<string, { color: string; label: ReactNode; key: string }> = {
-  pending: { color: '#6b7280', get label() { return <><StatusDot color="#6b7280" /> {i18nT('pages.aidlc.dagView.pending')}</> }, key: 'pending' },
-  in_progress: { color: '#f59e32', get label() { return <><StatusDot color="#f59e32" /> {i18nT('pages.aidlc.dagView.running')}</> }, key: 'in_progress' },
-  reviewing: { color: '#f59e32', get label() { return <><StatusDot color="#f59e32" /> {i18nT('pages.aidlc.dagView.reviewing')}</> }, key: 'reviewing' },
-  passed: { color: '#22c55e', get label() { return <><StatusDot color="#22c55e" /> {i18nT('pages.aidlc.dagView.done')}</> }, key: 'passed' },
+  pending: { color: 'var(--muted)', get label() { return <><StatusDot color="var(--muted)" /> {i18nT('pages.aidlc.dagView.pending')}</> }, key: 'pending' },
+  in_progress: { color: 'var(--accent)', get label() { return <><StatusDot color="var(--accent)" /> {i18nT('pages.aidlc.dagView.running')}</> }, key: 'in_progress' },
+  reviewing: { color: 'var(--accent)', get label() { return <><StatusDot color="var(--accent)" /> {i18nT('pages.aidlc.dagView.reviewing')}</> }, key: 'reviewing' },
+  passed: { color: 'var(--ok)', get label() { return <><StatusDot color="var(--ok)" /> {i18nT('pages.aidlc.dagView.done')}</> }, key: 'passed' },
   failed: { color: 'var(--danger)', get label() { return <><StatusDot color="var(--danger)" /> {i18nT('pages.aidlc.phasedView.failed')}</> }, key: 'failed' },
-  skipped: { color: '#9ca3af', get label() { return <><SkipForward className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.skipped')}</> }, key: 'skipped' },
-  cancelled: { color: '#9ca3af', get label() { return <><Square className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.cancelled')}</> }, key: 'cancelled' },
-  cancelling: { color: '#f59e32', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.cancelling')}</> }, key: 'cancelling' },
-  paused: { color: '#3b82f6', get label() { return <><Pause className="lucide-inline" /> {i18nT('pages.aidlc.dagView.paused')}</> }, key: 'paused' },
-  pausing: { color: '#f59e32', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.pausing')}</> }, key: 'pausing' },
-  blocked: { color: '#eab308', get label() { return <><StatusDot color="#eab308" /> {i18nT('pages.aidlc.dagView.needs_approval')}</> }, key: 'blocked' },
+  skipped: { color: 'var(--muted)', get label() { return <><SkipForward className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.skipped')}</> }, key: 'skipped' },
+  cancelled: { color: 'var(--muted)', get label() { return <><Square className="lucide-inline" /> {i18nT('pages.aidlc.phasedView.cancelled')}</> }, key: 'cancelled' },
+  cancelling: { color: 'var(--accent)', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.cancelling')}</> }, key: 'cancelling' },
+  paused: { color: 'var(--info)', get label() { return <><Pause className="lucide-inline" /> {i18nT('pages.aidlc.dagView.paused')}</> }, key: 'paused' },
+  pausing: { color: 'var(--accent)', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.aidlc.dagView.pausing')}</> }, key: 'pausing' },
+  blocked: { color: 'var(--warn)', get label() { return <><StatusDot color="var(--warn)" /> {i18nT('pages.aidlc.dagView.needs_approval')}</> }, key: 'blocked' },
 }
+/** Typed nodes tint their card with the stroke token at 8% (`fillOpacity`),
+ *  which needs no `*-subtle` variant of the token. Both types share the
+ *  neutral `muted`: the icon says which type it is, and a type is not a state,
+ *  so it must not borrow a status color (warn reads as "needs approval" and
+ *  info as "paused" in the legend). */
 const TYPE_STYLE: Record<string, { fill: string; stroke: string; icon: ReactNode }> = {
-  fix: { fill: 'rgba(245,158,50,.08)', stroke: '#f59e32', icon: <Wrench size={16} /> },
-  checkpoint: { fill: 'rgba(59,130,246,.08)', stroke: '#3b82f6', icon: <Shield size={16} /> },
+  fix: { fill: 'var(--muted)', stroke: 'var(--muted)', icon: <Wrench size={16} /> },
+  checkpoint: { fill: 'var(--muted)', stroke: 'var(--muted)', icon: <Shield size={16} /> },
 }
+const TYPE_FILL_OPACITY = 0.08
 const NODE_W = 180, NODE_H = 56, GAP_X = 60, GAP_Y = 40, PAD = 40
 
 export default function DagView({ nodes, edges, onNodeClick, selectedId, pendingEditIds, approvalMap, onApprove }: {
@@ -88,13 +94,13 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
         <svg width={layout.width} height={layout.height}>
         <defs>
           <marker id="arrow" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
-            <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
+            <polygon points="0 0, 10 3.5, 0 7" fill="var(--muted)" />
           </marker>
           <linearGradient id="arcGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#f59e32" stopOpacity={0.2}/>
-            <stop offset="0%" stopColor="#f59e32" stopOpacity={1}><animate attributeName="offset" values="0;0.6;1;0" dur="2s" repeatCount="indefinite"/></stop>
-            <stop offset="0.2%" stopColor="#f59e32" stopOpacity={1}><animate attributeName="offset" values="0.2;0.8;1;0.2" dur="2s" repeatCount="indefinite"/></stop>
-            <stop offset="100%" stopColor="#f59e32" stopOpacity={0.2}/>
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.2}/>
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity={1}><animate attributeName="offset" values="0;0.6;1;0" dur="2s" repeatCount="indefinite"/></stop>
+            <stop offset="0.2%" stopColor="var(--accent)" stopOpacity={1}><animate attributeName="offset" values="0.2;0.8;1;0.2" dur="2s" repeatCount="indefinite"/></stop>
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.2}/>
           </linearGradient>
         </defs>
         {edges.map((e, i) => {
@@ -107,32 +113,35 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
           const d = `M${x1},${y1} C${x1},${cy1} ${x2},${cy2} ${x2},${y2}`
           const toActive = to.status === 'in_progress' || to.status === 'reviewing'
           return <g key={i}>
-            <path d={d} fill="none" stroke={STATUS_FILL[from.status] || '#6b7280'} strokeWidth={1.5} strokeDasharray="4 3" markerEnd="url(#arrow)" opacity={0.5} />
+            <path d={d} fill="none" stroke={STATUS_FILL[from.status] || 'var(--muted)'} strokeWidth={1.5} strokeDasharray="4 3" markerEnd="url(#arrow)" opacity={0.5} />
             {toActive && <>
-              <circle r={3} fill="#f59e32"><animateMotion dur="1.5s" repeatCount="indefinite" path={d}/></circle>
-              <circle r={3} fill="#f59e32" opacity={0.4}><animateMotion dur="1.5s" begin="0.5s" repeatCount="indefinite" path={d}/></circle>
+              <circle r={3} fill="var(--accent)"><animateMotion dur="1.5s" repeatCount="indefinite" path={d}/></circle>
+              <circle r={3} fill="var(--accent)" opacity={0.4}><animateMotion dur="1.5s" begin="0.5s" repeatCount="indefinite" path={d}/></circle>
             </>}
           </g>
         })}
         {layout.positioned.map(n => {
           const ts = TYPE_STYLE[n.task_type || '']
           const effectiveStatus = n.requires_approval && n.status === 'pending' ? 'blocked' : n.status
-          const stroke = ts?.stroke || STATUS_FILL[effectiveStatus] || '#6b7280'
+          const stroke = ts?.stroke || STATUS_FILL[effectiveStatus] || 'var(--muted)'
           const fill = ts?.fill || 'var(--card)'
+          const fillOpacity = ts ? TYPE_FILL_OPACITY : 1
           const icon = ts?.icon
-          const dotColor = STATUS_DOT[effectiveStatus]?.color || '#9ca3af'
+          const dotColor = STATUS_DOT[effectiveStatus]?.color || 'var(--muted)'
           const isSelected = n.id === selectedId
           const hasPendingEdit = pendingEditIds?.has(n.id)
           return (
             <g key={n.id} className="cursor-pointer" onClick={() => onNodeClick(n.id)}>
+              {/* Dashed, not just accent-coloured: a running node's stroke is accent
+                  too, so the dash pattern is what tells "selected" from "running". */}
               {isSelected && <rect x={n.x - 3} y={n.y - 3} width={NODE_W + 6} height={NODE_H + 6} rx={10}
-                fill="none" stroke="var(--accent, #6366f1)" strokeWidth={2} opacity={0.7} />}
+                fill="none" stroke="var(--accent)" strokeWidth={2} strokeDasharray="6 3" opacity={0.7} />}
               {approvalMap?.[Number(n.id)] && effectiveStatus === 'in_progress' && <rect x={n.x - 4} y={n.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={12}
-                fill="none" stroke="#eab308" strokeWidth={3}>
+                fill="none" stroke="var(--warn)" strokeWidth={3}>
                 <animate attributeName="opacity" values="0.8;0.3;0.8" dur="1.5s" repeatCount="indefinite"/>
               </rect>}
               <rect x={n.x} y={n.y} width={NODE_W} height={NODE_H} rx={8}
-                fill={fill} stroke={effectiveStatus === 'in_progress' ? 'url(#arcGrad)' : stroke} strokeWidth={effectiveStatus === 'in_progress' ? 2.5 : 2} />
+                fill={fill} fillOpacity={fillOpacity} stroke={effectiveStatus === 'in_progress' ? 'url(#arcGrad)' : stroke} strokeWidth={effectiveStatus === 'in_progress' ? 2.5 : 2} />
               {icon ? (
                 <foreignObject x={n.x + 6} y={n.y + 6} width={20} height={20}><div>{icon}</div></foreignObject>
               ) : (
@@ -146,12 +155,13 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
                   {n.title}
                 </div>
               </foreignObject>
-              {hasPendingEdit && <circle cx={n.x + NODE_W - 8} cy={n.y + 8} r={5} fill="#f59e32" stroke="var(--card)" strokeWidth={1.5} />}
+              {/* Same token as PhasedView's EDIT_DOT, so an unsaved edit looks the same in both views. */}
+              {hasPendingEdit && <circle cx={n.x + NODE_W - 8} cy={n.y + 8} r={5} fill="var(--warn)" stroke="var(--card)" strokeWidth={1.5} />}
               {approvalMap?.[Number(n.id)] && onApprove && effectiveStatus === 'in_progress' && (
                 <foreignObject x={n.x} y={n.y + NODE_H + 4} width={NODE_W} height={24}>
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
-                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'approve'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: '#22c55e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> {i18nT('pages.aidlc.dagView.approve')}</button>
-                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'reject'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><X size={10} /> {i18nT('pages.aidlc.dagView.deny')}</button>
+                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'approve'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--ok)', color: 'var(--ok-fg)', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> {i18nT('pages.aidlc.dagView.approve')}</button>
+                    <button onClick={e => { e.stopPropagation(); onApprove(Number(n.id), 'reject'); }} style={{ padding: '2px 10px', fontSize: 10, fontWeight: 600, background: 'var(--danger)', color: 'var(--danger-fg)', border: 'none', borderRadius: 4, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}><X size={10} /> {i18nT('pages.aidlc.dagView.deny')}</button>
                   </div>
                 </foreignObject>
               )}

@@ -64,7 +64,7 @@ import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import ResizeHandle from '../components/ResizeHandle'
-import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../components/SearchFilterBar'
+import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../components/SearchFilterBar'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_META_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../components/listShell'
 import { safeSetItem } from '../utils/safeStorage'
 import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
@@ -7995,12 +7995,8 @@ function ChatSidebar({
                   badge={filterCounts['unread']}
                 />
               </DropdownMenuTrigger>
-              {/* max-w keeps the menu inside a phone viewport. Radix sizes the
-                  popper wrapper to `max-content`, so the inline pickers' caption
-                  sentences (a phone renders them here instead of in a flyout)
-                  would otherwise stretch the menu past the screen edge. */}
-              <DropdownMenuContent align="end" className={FILTER_MENU_CONTENT_CLS}>
-                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{i18nT('pages.chatSidebar.filter')}</DropdownMenuLabel>
+              <FilterMenuContent align="end">
+                <FilterMenuLabel>{i18nT('pages.chatSidebar.filter')}</FilterMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
                   const slotCount = filterCounts[filterDef.key] ?? 0
@@ -8151,7 +8147,7 @@ function ChatSidebar({
                   )
                 })}
                 <DropdownMenuSeparator />
-                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{i18nT('pages.chatSidebar.sort_by')}</DropdownMenuLabel>
+                <FilterMenuLabel>{i18nT('pages.chatSidebar.sort_by')}</FilterMenuLabel>
                 {SORT_OPTIONS.map(o => (
                   <DropdownMenuItem
                     key={o.value}
@@ -8263,9 +8259,9 @@ function ChatSidebar({
                 {tagFilterRows.length > 0 && (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>
+                    <FilterMenuLabel>
                       {i18nT('pages.chatSidebar.tags')}
-                    </DropdownMenuLabel>
+                    </FilterMenuLabel>
                     {tagFilterRows.map(({ tag: t, count, selected }) => (
                       <DropdownMenuItem
                         key={t.id}
@@ -8362,7 +8358,7 @@ function ChatSidebar({
                     )}
                   </>
                 )}
-              </DropdownMenuContent>
+              </FilterMenuContent>
             </DropdownMenu>
           </>
         )}

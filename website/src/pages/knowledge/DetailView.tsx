@@ -218,7 +218,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       <Card className="!mb-3">
         <div className="text-[13px] font-semibold text-text-strong mb-1">{i18nT('pages.knowledge.detailView.content')}</div>
         {isMarkdownContent(item) ? (
-          <div className="text-[12px] text-text max-h-96 overflow-y-auto bg-bg-elevated rounded p-3 prose-sm">
+          <div className="text-[12px] text-text max-h-96 overflow-y-auto bg-bg-elevated rounded p-3">
             {/* MarkdownRenderer sanitizes rendered HTML output via rehypeSanitize plugin
                (MarkdownRenderer.tsx:192-210) — strips javascript:/data:/vbscript: URLs,
                event handler attributes, and dangerous tags (script/iframe/object/embed) */}

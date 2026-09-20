@@ -491,9 +491,37 @@ accessible outline suppressor, `backdrop-blur-xs` is the 4px blur, and the
 
 Colors come from CSS custom properties defined in `src/index.css`, including the
 semantic roles `--aim`, `--clarify`, and the `--diff-*` family. Never a hardcoded
-`#hex` / `rgb()` / `rgba()` literal; see
+`#hex` / `rgb()` / `rgba()` literal, and never a raw palette class
+(`text-green-500`, `bg-amber-400`): state colors are `text-ok` / `text-warn` /
+`text-danger` / `text-info`, and a running state is `text-accent`. See
 [theming-contract](theming-contract.md) for the variable set, the stable class
-hooks, and the checker.
+hooks, and the checkers.
+
+Three of those rules are enforced by `@shadcn/lint` inside the blocking
+`eslint src/ --max-warnings 0` gate (configured in `eslint.config.js`, the
+`shadcn` block):
+
+- `shadcn/no-raw-colors` — a palette class or a literal SVG `fill`/`stroke`
+  where a token belongs. Use the token; a logo whose colors are the artwork's
+  own gets a file-level override (see `KiroGhost.tsx`).
+- `shadcn/no-unknown-classes` — a class Tailwind emits no CSS for. Usually a
+  typo, a v3 spelling (`outline-none`, `resize-vertical`), or a class whose
+  stylesheet was deleted. A class that IS real but lives outside the theme's
+  import graph — an app stylesheet authored as a TS template string, a
+  selector hook a Playwright spec locates by — is listed in the rule's `allow`
+  with the file that owns it; the entry allows a name, it generates no CSS.
+- `shadcn/require-static-classes` — a `className` on a `ui/` primitive built
+  from a value the linter cannot read (an imported constant, a function call,
+  an array `join`). Keep the class strings in the file that applies them: a
+  shared class string becomes a small wrapper component (`FilterMenuLabel`),
+  a helper call gets a `cn(...)`.
+
+`shadcn/no-restyle` is deliberately off: ~300 call sites restyle `ui/`
+primitives today and the gate is a hard zero, so turning it on is a design
+decision (fix the sites or write per-component contracts), not a lint toggle.
+`no-inline-styles` and `no-arbitrary-values` stay off by design — inline
+`style={}` is the mandated method for apps, and translucent theme surfaces are
+`bg-[color-mix(…)]` because the color tokens carry no alpha channel.
 
 Built-in themes are picked in Settings, Display tab, and the choice syncs across
 instances. Each theme has a dark and a light block, and the default theme's

@@ -772,7 +772,7 @@ function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }:
           type="button"
           onClick={toggleCollapsed}
           aria-expanded={!collapsed}
-          className="flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-inherit font-inherit"
+          className="flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-inherit"
         >
           {collapsed ? <ChevronRight size={14} className="shrink-0 text-muted" /> : <ChevronDown size={14} className="shrink-0 text-muted" />}
           {i18nT('pages.artifactsPage.from_your_chats')}

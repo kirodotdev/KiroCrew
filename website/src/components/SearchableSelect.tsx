@@ -3,6 +3,7 @@ import { Check, ChevronDown, Search } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { cn } from '../lib/utils'
 
 import { i18nT } from '../i18n/t'
 
@@ -179,12 +180,12 @@ export default function SearchableSelect({
         disabled={disabled}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
-        className={[
+        className={cn(
           'flex items-center justify-between w-full px-3 py-2 rounded-md text-sm border border-border bg-bg-elevated text-text',
           'hover:border-border-strong transition-all cursor-pointer outline-hidden',
           'focus-visible:border-accent disabled:opacity-40 disabled:pointer-events-none',
-          className || '',
-        ].join(' ').trim()}
+          className,
+        )}
         style={style}
       >
         <span className="truncate text-left min-w-0">

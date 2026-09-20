@@ -147,9 +147,9 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
               {ps === 'running' ? (
                 <Loader2 size={12} className="text-accent animate-spin shrink-0" />
               ) : ps === 'ok' ? (
-                <CheckCircle2 size={12} className="text-green-500 shrink-0" />
+                <CheckCircle2 size={12} className="text-ok shrink-0" />
               ) : (
-                <XCircle size={12} className="text-red-500 shrink-0" />
+                <XCircle size={12} className="text-danger shrink-0" />
               )}
               <span className="truncate text-left flex-1">{title}</span>
               <span className="ml-auto text-[10px] text-muted tabular-nums shrink-0">
@@ -169,9 +169,9 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                       {a.ok === undefined ? (
                         <Loader2 size={12} className="text-accent animate-spin shrink-0" />
                       ) : a.ok ? (
-                        <CheckCircle2 size={12} className="text-green-500 shrink-0" />
+                        <CheckCircle2 size={12} className="text-ok shrink-0" />
                       ) : (
-                        <XCircle size={12} className="text-red-500 shrink-0" />
+                        <XCircle size={12} className="text-danger shrink-0" />
                       )}
                       <span className="font-mono truncate">{label}</span>
                       {lastTool && (
@@ -236,12 +236,12 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
       {status && status !== 'running' && status !== 'paused' && status !== 'failed' && (
         <div
           className={`text-[12px] rounded p-2 border ${
-            status === 'finished' ? 'border-green-500/30' : 'border-border'
+            status === 'finished' ? 'border-ok/30' : 'border-border'
           }`}
         >
           <div className="font-medium mb-1 flex items-center gap-1.5">
             {status === 'finished' ? (
-              <CheckCircle2 size={12} className="text-green-500" />
+              <CheckCircle2 size={12} className="text-ok" />
             ) : (
               <XCircle size={12} />
             )}

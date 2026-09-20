@@ -357,11 +357,11 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
                 {row.badge.active ? (
                   <Loader2 size={14} className="text-accent animate-spin shrink-0" />
                 ) : row.status === 'finished' ? (
-                  <CheckCircle2 size={14} className="text-green-500 shrink-0" />
+                  <CheckCircle2 size={14} className="text-ok shrink-0" />
                 ) : row.status === 'paused' ? (
                   <PauseCircle size={14} className="text-warn shrink-0" />
                 ) : row.status === 'failed' ? (
-                  <XCircle size={14} className="text-red-500 shrink-0" />
+                  <XCircle size={14} className="text-danger shrink-0" />
                 ) : (
                   <Ban size={14} className="text-muted shrink-0" />
                 )}

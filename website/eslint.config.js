@@ -3,6 +3,7 @@ import tsPlugin from '@typescript-eslint/eslint-plugin'
 import reactHooksPlugin from 'eslint-plugin-react-hooks'
 import jsxA11y from 'eslint-plugin-jsx-a11y'
 import approvalOneShotDecision from './eslint-rules/approval-one-shot-decision.js'
+import { plugin as shadcn } from '@shadcn/lint'
 
 export default [
   {
@@ -152,6 +153,102 @@ export default [
     files: ['src/**/*.test.{ts,tsx}', 'src/test/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-syntax': 'off',
+    },
+  },
+  {
+    // Design-system lint (@shadcn/lint). Reads the compiled Tailwind v4 theme
+    // from src/index.css via components.json, so "known" means "this project's
+    // Tailwind emits CSS for it" — custom @utility names and plain class
+    // selectors in the theme's import graph count, a typo does not.
+    //
+    // Three rules are on, all hard-zero like the rest of this file:
+    //   no-raw-colors           — palette colors (`text-green-500`) and literal
+    //                             SVG colors instead of theme tokens. This is the
+    //                             class-level half of scripts/check-theme-colors.mjs,
+    //                             which only sees CSS/hex literals.
+    //   no-unknown-classes      — a class Tailwind generates nothing for. Covers
+    //                             every utility; scripts/check-phantom-classes.mjs
+    //                             is scoped to color utilities.
+    //   require-static-classes  — a className built from an opaque value on a
+    //                             ui/ component; the other two rules cannot read it.
+    //
+    // no-restyle is NOT enabled: the tree carries ~300 call sites that restyle
+    // ui/ components (DropdownMenuItem, TableCell, …) and CI runs --max-warnings 0,
+    // so 'warn' would fail the build outright. Enabling it is a design decision
+    // (fix the sites or write per-component contracts), not a lint toggle.
+    // no-inline-styles and no-arbitrary-values are off by design: inline
+    // `style={}` is the mandated styling method for apps (docs/app-kit), and the
+    // theme's translucent surfaces are `bg-[color-mix(…)]` arbitrary values
+    // because the color tokens carry no alpha channel.
+    files: ['src/**/*.{ts,tsx}'],
+    plugins: { shadcn },
+    rules: {
+      'shadcn/no-raw-colors': ['error', {
+        // `fill-none` is `fill: none`, not a color; the rule reads any `fill-*`
+        // it does not recognise as a palette name.
+        allow: ['fill-none'],
+      }],
+      'shadcn/no-unknown-classes': ['error', {
+        // "Unknown" means the theme's import graph produces no CSS for it. Two
+        // kinds of class are real but invisible to that graph, and are allowed
+        // here by the stylesheet that defines them. An entry allows a NAME, it
+        // does not generate CSS: keep each one next to its defining file and
+        // delete it when that file goes.
+        allow: [
+          // Apps whose stylesheet is a TS template string injected as <style>,
+          // so no .css file exists for the linter to follow.
+          'cc-*', 'is-remove',   // apps/crew-companion/styles.ts + panel.css
+          'mc-fe-*',             // apps/file-explorer/styles.ts
+          'mdnb-*',              // apps/md-notebook/styles.ts
+          'sb-*',                // apps/spec-builder/inlineStyles.ts
+          'wc-*',                // apps/issue-radar/WelcomeCarousel.tsx <style>
+          'spin',                // components/PullRequestPanel.tsx <style>
+          // Selector hooks with no CSS by design: Playwright specs, tests and
+          // hooks/useMessageSearch.ts locate these elements by class.
+          'message-bubble', 'input-area', 'chat-container', 'session-agent-label', 'primary',
+          'pierre-editor-fallback',
+        ],
+      }],
+      'shadcn/require-static-classes': 'error',
+    },
+  },
+  {
+    // Component implementations compose their own cva()/variant helpers at the
+    // call site, which require-static-classes cannot resolve (the rule's own
+    // docs prescribe this override). The other two rules stay on here.
+    files: ['src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'shadcn/require-static-classes': 'off',
+    },
+  },
+  {
+    // The ghost mascot is artwork: its white and black are the drawing's own
+    // colors, shared with the Electron boot sequence, not a theme surface.
+    files: ['src/components/KiroGhost.tsx'],
+    rules: {
+      'shadcn/no-raw-colors': 'off',
+    },
+  },
+  {
+    // The Mochi renderer windows load neither Tailwind nor the theme tokens (see
+    // the native-<select> override above), so "does Tailwind emit this class" and
+    // "is this a theme color" have no meaning there: every class is a hook for
+    // its own inline <style> block.
+    files: ['src/apps/mochi/src/renderer/**/*.{ts,tsx}'],
+    rules: {
+      'shadcn/no-raw-colors': 'off',
+      'shadcn/no-unknown-classes': 'off',
+      'shadcn/require-static-classes': 'off',
+    },
+  },
+  {
+    // Tests pass throwaway class names (`custom-cls`, `seam-mark`) to assert that
+    // a component forwards className; nothing here renders to a user.
+    files: ['src/**/*.test.{ts,tsx}', 'src/test/**/*.{ts,tsx}'],
+    rules: {
+      'shadcn/no-raw-colors': 'off',
+      'shadcn/no-unknown-classes': 'off',
+      'shadcn/require-static-classes': 'off',
     },
   },
 ]

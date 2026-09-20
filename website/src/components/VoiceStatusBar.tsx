@@ -66,7 +66,7 @@ function renderNoticeText(notice: NonNullable<Props['notice']>) {
       <button
         type="button"
         onClick={action.onClick}
-        className="inline bg-transparent border-none p-0 m-0 font-inherit text-inherit text-left underline underline-offset-2 hover:text-text cursor-pointer"
+        className="inline bg-transparent border-none p-0 m-0 text-inherit text-left underline underline-offset-2 hover:text-text cursor-pointer"
       >
         {/* Word joiners: no line break may fall between a quote and the name. */}
         {notice.text.slice(start, at) + (start < at ? '\u2060' : '') + action.label + (end > at + action.label.length ? '\u2060' : '') + notice.text.slice(at + action.label.length, end)}

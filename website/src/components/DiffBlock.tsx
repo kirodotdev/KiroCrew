@@ -92,7 +92,7 @@ export function extractFilePath(code: string): { path: string; prefixStripped: b
  * path, making "relative spelling absent" meaningless as evidence. */
 const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
-export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, streaming, onFold }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; streaming?: boolean; onFold?: () => void }) {
+export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, onFold }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; onFold?: () => void }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   // Shares the app-wide `mc-diff-split` preference with the side panel and
@@ -243,7 +243,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
        wrapper because Pierre paints the title inside its shadow root — a native
        `title` resolves up the flat tree, so hovering the filename picks it up. */
     <div className="diff-block group/diff rounded-xl border border-border overflow-hidden" title={headerPath ?? undefined}>
-      <div className={`relative pierre-surface ${streaming ? 'ft-stream-block' : ''}`}>
+      <div className="relative pierre-surface">
         {/* Fold handle: a narrow chevron zone at the header's left edge — NOT
             the whole strip (the filename must stay inert for select/copy and
             its full-path tooltip) and NOT a member of the actions row

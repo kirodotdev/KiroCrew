@@ -665,7 +665,7 @@ export default function SideChat({ slot }: { slot: string }) {
                 <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '150ms' }} />
                 <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '300ms' }} />
               </span>
-              <span className="text-[12px] streaming-indicator">{i18nT('pages.chat.sideChat.thinking')}</span>
+              <span className="text-[12px]">{i18nT('pages.chat.sideChat.thinking')}</span>
             </div>
           ) : undefined,
         }}

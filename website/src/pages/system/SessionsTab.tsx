@@ -495,10 +495,15 @@ export default function SessionsTab({ planeStateRef }: Props) {
                 >
                   {row.getVisibleCells().map(cell => {
                     const isName = cell.column.id === 'name'
+                    // heatClass() picks one of the HEAT literals above; the lint
+                    // cannot read through the call, so the values are checked at
+                    // their declaration instead.
                     const heat =
                       cell.column.id === 'rssMb'
+                        // eslint-disable-next-line shadcn/require-static-classes -- see above
                         ? heatClass(r.rssMb, maxima.rssMb)
                         : cell.column.id === 'cpuCores'
+                          // eslint-disable-next-line shadcn/require-static-classes -- see above
                           ? heatClass(r.cpuCores, maxima.cpuCores)
                           : ''
                     if (cell.getIsPlaceholder()) return <TableCell key={cell.id} className={NUM} />
@@ -593,7 +598,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
                                   // column has a real declared width (columnDef `size`
                                   // + the <colgroup> above), which is what keeps the
                                   // name inside the cell the expander shares.
-                                  className="border-transparent bg-transparent px-0 py-0 text-left text-inherit font-inherit hover:underline min-w-0 shrink"
+                                  className="border-transparent bg-transparent px-0 py-0 text-left text-inherit hover:underline min-w-0 shrink"
                                 >
                                   {/* The folded badge beside it can clip a long name in the
                                       default column width; the full name rides on the clipped

@@ -123,9 +123,11 @@ function StateBadge({ status }: { status: string }) {
   // Same prototype-chain guard as `stateLabel`: `STATE_META['toString']` is a
   // function, which `??` would not replace, and destructuring it yields an
   // undefined `Icon` that crashes the render.
+  /* eslint-disable shadcn/no-unknown-classes -- shadcn-ui/lint#38: the rule reads every member of a destructured initializer as a class */
   const { color, Icon, spin } = Object.prototype.hasOwnProperty.call(STATE_META, status)
     ? STATE_META[status]
     : { color: 'text-muted', Icon: HelpCircle, spin: undefined }
+  /* eslint-enable shadcn/no-unknown-classes */
   return (
     <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded bg-bg-elevated inline-flex items-center gap-1 shrink-0 ${color}`} title={i18nT('apps.autoResearch.researchLabPage.status', { status })}>
       <Icon size={10} className={spin ? 'animate-spin motion-reduce:animate-none' : undefined} /> {stateLabel(status)}

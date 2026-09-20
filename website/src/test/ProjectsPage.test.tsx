@@ -745,7 +745,7 @@ describe('DagView', () => {
     expect(screen.getByText('No tasks to visualize')).toBeInTheDocument()
   })
 
-  it('renders all done nodes with green stroke for completed project', () => {
+  it('renders all done nodes with the ok-token stroke for a completed project', () => {
     const doneNodes = nodes.map(n => ({ ...n, status: 'passed', task_type: undefined }))
     const { container } = renderWithProviders(
       <DagView nodes={doneNodes} edges={edges} onNodeClick={vi.fn()} />
@@ -753,7 +753,7 @@ describe('DagView', () => {
     const rects = container.querySelectorAll('svg > g > rect')
     expect(rects.length).toBe(4)
     rects.forEach(rect => {
-      expect(rect.getAttribute('stroke')).toBe('#22c55e')
+      expect(rect.getAttribute('stroke')).toBe('var(--ok)')
     })
   })
 })

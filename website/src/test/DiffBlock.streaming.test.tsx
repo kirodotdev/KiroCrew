@@ -52,7 +52,7 @@ describe('DiffBlock streaming', () => {
     for (let end = 1; end <= fullPatch.length; end += 7) {
       const partial = fullPatch.slice(0, end)
       const { unmount } = render(
-        <DiffBlock code={partial} complete={false} streaming />,
+        <DiffBlock code={partial} complete={false} />,
       )
       await flush()
       unmount()

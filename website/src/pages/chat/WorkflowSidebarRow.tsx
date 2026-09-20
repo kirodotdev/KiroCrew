@@ -54,7 +54,7 @@ const WorkflowSidebarRow = memo(function WorkflowSidebarRow({ row }: { row: WfRu
           {row.status === 'running' ? (
             <LoaderIcon size={13} className="animate-spin text-accent shrink-0" />
           ) : row.status === 'finished' ? (
-            <CheckCircle size={13} className="text-green-500 shrink-0" />
+            <CheckCircle size={13} className="text-ok shrink-0" />
           ) : (
             <AlertCircle size={13} className="text-danger shrink-0" />
           )}

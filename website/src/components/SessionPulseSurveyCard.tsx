@@ -418,7 +418,7 @@ export default function SessionPulseSurveyCard({
                           value={feedback}
                           onChange={(e) => setFeedback(e.target.value)}
                           placeholder={t('components.sessionPulseSurveyCard.optional')}
-                          className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-hidden resize-vertical min-h-[60px]"
+                          className="w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-hidden resize-y min-h-[60px]"
                         />
                       </div>
 

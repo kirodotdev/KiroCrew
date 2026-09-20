@@ -59,11 +59,13 @@ function draftFrom(c: WebexConfigData): Draft {
 
 /** Status pill mirroring the Slack panel's connection states. */
 function StatusBadge({ config }: { config: WebexConfigData }) {
+  /* eslint-disable shadcn/no-unknown-classes -- shadcn-ui/lint#38: the rule reads every member of a destructured initializer as a class */
   const [dot, text, cls] = config.connected
     ? ['var(--ok)', i18nT('pages.settings.webexPanel.active'), 'text-ok']
     : config.configured
       ? ['var(--warn)', i18nT('pages.settings.webexPanel.not_active'), 'text-warn']
       : ['var(--muted)', i18nT('pages.settings.webexPanel.needs_setup'), 'text-muted']
+  /* eslint-enable shadcn/no-unknown-classes */
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />

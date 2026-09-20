@@ -116,7 +116,7 @@ export function SourceGroup({
         className="w-full flex items-center gap-2 px-3 py-2.5 bg-bg-elevated hover:bg-bg-hover text-left border-none cursor-pointer transition-colors"
       >
         {open ? <ChevronDown size={14} className="text-muted shrink-0" /> : <ChevronRight size={14} className="text-muted shrink-0" />}
-        <Icon size={14} className={isFolder ? 'text-amber-500 shrink-0' : 'text-accent shrink-0'} />
+        <Icon size={14} className={isFolder ? 'text-warn shrink-0' : 'text-accent shrink-0'} />
         <span className="text-[13px] font-medium text-text-strong truncate">{name}</span>
         <Badge variant="ok">{count}</Badge>
         {source?.summary_topic && <span className="text-[11px] text-muted truncate max-w-[300px]">{source.summary_topic}</span>}

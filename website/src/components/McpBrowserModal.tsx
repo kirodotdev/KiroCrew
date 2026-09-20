@@ -447,12 +447,12 @@ function InstallStatus({
     // A disabled install (required env unset) is surfaced distinctly: the
     // user still has a config step before the server can run.
     return phase.enabled ? (
-      <span className="flex items-center gap-1 text-xs text-green-400" role="status">
+      <span className="flex items-center gap-1 text-xs text-ok" role="status">
         <Check size={iconSize} aria-hidden="true" />
         {i18nT('components.mcpBrowserModal.installed')}
       </span>
     ) : (
-      <span className="flex items-center gap-1 text-xs text-amber-400" role="status">
+      <span className="flex items-center gap-1 text-xs text-warn" role="status">
         <Check size={iconSize} aria-hidden="true" />
         {i18nT('components.mcpBrowserModal.installed_disabled')}
       </span>
@@ -476,7 +476,7 @@ function InstallStatus({
   }
   if (installed) {
     return (
-      <span className="flex items-center gap-1 text-xs text-green-400">
+      <span className="flex items-center gap-1 text-xs text-ok">
         <Check size={iconSize} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.installed')}
       </span>
     )

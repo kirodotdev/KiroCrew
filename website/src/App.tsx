@@ -3450,8 +3450,8 @@ export default function App() {
           the strip it was summoned by, so hover and clicks land on the chrome's own
           surface handlers and the strip never has to resize or opt out of
           hit-testing — a hit target that changes under a resting pointer is what
-          made this flicker open/closed indefinitely. `focus-peek-strip` carries `-webkit-app-region:no-drag`, which
-          is load-bearing on the TOP one: Electron injects a 42px drag bar on
+          made this flicker open/closed indefinitely. `.focus-peek-top` / `.focus-peek-rail`
+          (index.css) carry `-webkit-app-region:no-drag`, which is load-bearing on the TOP one: Electron injects a 42px drag bar on
           document.body, and an ordinary div inside it becomes a window-drag
           region whose hover never reaches React. */}
       {focusActive && (
@@ -3460,14 +3460,14 @@ export default function App() {
             ref={topPeekTrigger}
             data-testid="focus-peek-top"
             aria-hidden="true"
-            className="focus-peek-strip focus-peek-top absolute left-0 right-0 top-0 z-[61]"
+            className="focus-peek-top absolute left-0 right-0 top-0 z-[61]"
             {...topPeek.triggerProps}
           />
           <div
             ref={railPeekTrigger}
             data-testid="focus-peek-rail"
             aria-hidden="true"
-            className="focus-peek-strip focus-peek-rail absolute left-0 bottom-0 z-[61]"
+            className="focus-peek-rail absolute left-0 bottom-0 z-[61]"
             // Starts below the top strip so the two tile the corner rather than
             // overlapping, where whichever won would be arbitrary.
             style={{ top: FOCUS_INSET }}
