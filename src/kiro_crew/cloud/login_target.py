@@ -60,14 +60,16 @@ def is_personal_account_type(account_type: str) -> bool:
 
 _LICENSES = frozenset({"free", "pro"})
 # Same shape ``auth/service.py`` accepts for an Identity Center region.
-_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d{1,2}$")
+_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d{1,2}\Z")
 # A syntactically valid DNS hostname: labels of letters/digits/hyphens, at least
 # two labels, a TLD that is not all digits. Deliberately NOT pinned to
 # ``<org>.awsapps.com`` -- see normalize_start_url.
 _HOSTNAME_RE = re.compile(
-    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$"
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]\Z"
 )
-_CONTROL_OR_SHELL_RE = re.compile(r"[\x00-\x1f\x7f\s\"'`$\\;&|<>(){}\[\]*?!~#]")
+# The \$ is a semantic no-op inside [...] but load-bearing: the anchor-contract
+# walk (test_regex_anchor_contract.py) flags an unescaped $ even in a class.
+_CONTROL_OR_SHELL_RE = re.compile(r"[\x00-\x1f\x7f\s\"'`\$\\;&|<>(){}\[\]*?!~#]")
 
 
 class LoginTargetError(ValueError):

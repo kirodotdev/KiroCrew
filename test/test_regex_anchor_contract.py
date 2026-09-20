@@ -21,6 +21,14 @@ This module guards the class two ways:
 
 When a NEW package gains client-facing validators, add it to
 ``_REQUEST_PATH_PACKAGES`` and its canonical patterns to ``_VALIDATORS``.
+
+Not every registered pattern is reachable with a trailing newline at its
+boundary: one routed through ``validation.validate_field`` (a ``FieldSpec``
+``pattern``) sits behind ``sanitize_string()``, which strips before matching,
+so for those entries ``\Z`` is defense-in-depth against a future raw call
+site rather than a measured boundary change. Patterns matched raw
+(``.match``/``.fullmatch`` on the unsanitized value) are the ones this
+contract tightens directly.
 """
 
 from __future__ import annotations
@@ -32,13 +40,18 @@ from types import ModuleType
 
 import pytest
 
+from kiro_crew import cloud
 from kiro_crew.apps.builtins.papyrus import backend as papyrus_backend
 from kiro_crew.apps.builtins.papyrus.backend import gitops, store
+from kiro_crew.cloud import config as cloud_config
+from kiro_crew.cloud import ec2, fargate_engine, login_target, ssm
+from kiro_crew.cloud.fargate import identity, runtask, taskdef
 
 #: Packages whose modules validate client-supplied input on a request path.
-#: The structural walk imports every module in each and inspects its
-#: module-level compiled patterns.
-_REQUEST_PATH_PACKAGES = (papyrus_backend,)
+#: The structural walk imports every module in each -- recursively, so a
+#: sub-package (``cloud/fargate/``) and any package added under a registered
+#: root later are covered without editing this file.
+_REQUEST_PATH_PACKAGES = (papyrus_backend, cloud)
 
 #: (pattern, canonical valid input) for every request-path validator. The
 #: behavioral half of the contract runs each through accept and reject cases.
@@ -48,21 +61,52 @@ _VALIDATORS = (
     pytest.param(gitops.GIT_URL_RE, "https://example.com/group/paper.git", id="git-url-url-form"),
     pytest.param(gitops.GIT_URL_RE, "git@example.com:group/paper.git", id="git-url-scp-form"),
     pytest.param(store.PROJECT_NAME_RE, "paper", id="project-name"),
+    pytest.param(cloud_config._TAG_RE, "my-crew-1", id="cloud-config-tag"),
+    pytest.param(ec2._TAG_RE, "my-crew-1", id="cloud-ec2-tag"),
+    pytest.param(ec2._REGION_RE, "us-east-1", id="cloud-ec2-region"),
+    pytest.param(ec2._CIDR_RE, "10.0.0.0/16", id="cloud-ec2-cidr"),
+    pytest.param(ec2._REPO_RE, "https://github.com/kirodotdev/KiroCrew.git", id="cloud-ec2-repo"),
+    pytest.param(ec2._REF_RE, "release/1.2", id="cloud-ec2-ref"),
+    pytest.param(ec2._PROFILE_SPEC.pattern, "default", id="cloud-ec2-profile"),
+    pytest.param(ec2._SUBNET_ID_RE, "subnet-0123456789abcdef0", id="cloud-ec2-subnet-id"),
+    pytest.param(fargate_engine._TAG_VALUE_RE, "kirocrew_launch-1", id="cloud-engine-tag-value"),
+    pytest.param(login_target._REGION_RE, "ap-southeast-2", id="cloud-login-region"),
+    pytest.param(login_target._HOSTNAME_RE, "example.awsapps.com", id="cloud-login-hostname"),
+    pytest.param(ssm._USERNAME_RE, "ec2-user", id="cloud-ssm-username"),
+    pytest.param(identity._CREW_RE, "my-crew", id="cloud-identity-crew"),
+    pytest.param(identity._PARTITION_RE, "aws-us-gov", id="cloud-identity-partition"),
+    pytest.param(identity._ACCOUNT_RE, "123456789012", id="cloud-identity-account"),
+    pytest.param(identity._REGION_RE, "us-east-1", id="cloud-identity-region"),
+    pytest.param(
+        identity._SECRET_NAME_RE, "kirocrew/crew/my-crew/gateway_token", id="cloud-identity-secret-name"
+    ),
+    pytest.param(identity._SECRET_SUFFIX_RE, "Ab12Cd", id="cloud-identity-secret-suffix"),
+    pytest.param(
+        identity._SECRET_TAIL_RE, "gateway_token-Ab12Cd", id="cloud-identity-secret-tail"
+    ),
+    pytest.param(runtask._TAG_VALUE_RE, "kirocrew_launch-1", id="cloud-runtask-tag-value"),
+    pytest.param(
+        taskdef._DIGEST_REF_RE,
+        "public.ecr.aws/kirocrew/crew@sha256:" + "0" * 64,
+        id="cloud-taskdef-digest-ref",
+    ),
 )
 
 #: A ``$`` that is a real anchor: preceded by an EVEN number of backslashes
 #: (``\$`` is a literal dollar; ``\\$`` is an escaped backslash then an
 #: anchor). Deliberately a heuristic: a literal ``$`` inside a character class
-#: would be flagged too -- that fails loud with a clear message, and no pattern
-#: in the walked packages needs one.
+#: is flagged too -- that fails loud with a clear message. One walked pattern
+#: carries such a literal: ``cloud/login_target.py``'s ``_CONTROL_OR_SHELL_RE``
+#: spells it ``\$`` (a semantic no-op inside ``[...]``) precisely so this
+#: heuristic does not flag it; do not "simplify" that escape away.
 _UNESCAPED_DOLLAR = re.compile(r"(?<!\\)(?:\\\\)*\$")
 
 
 def _package_modules(package: ModuleType) -> list[ModuleType]:
-    """Every module directly inside *package*, imported."""
+    """Every module inside *package*, recursively, imported."""
     return [
-        importlib.import_module(f"{package.__name__}.{info.name}")
-        for info in pkgutil.iter_modules(package.__path__)
+        importlib.import_module(info.name)
+        for info in pkgutil.walk_packages(package.__path__, prefix=f"{package.__name__}.")
     ]
 
 
@@ -106,3 +150,5 @@ class TestTrailingNewlineContract:
         walked = {m.__name__ for p in _REQUEST_PATH_PACKAGES for m in _package_modules(p)}
         assert gitops.__name__ in walked
         assert store.__name__ in walked
+        assert ec2.__name__ in walked
+        assert identity.__name__ in walked

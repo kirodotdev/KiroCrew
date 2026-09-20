@@ -40,7 +40,7 @@ DEFAULT_REGION = "us-east-1"
 #: the pattern below and the room reserved for a tag provisioning has not written yet -- and
 #: a second literal 51 in either would be free to drift from the other.
 _TAG_MAX_LEN = 51
-_TAG_RE = re.compile(rf"^[a-zA-Z0-9-]{{1,{_TAG_MAX_LEN}}}$")
+_TAG_RE = re.compile(rf"^[a-zA-Z0-9-]{{1,{_TAG_MAX_LEN}}}\Z")
 
 
 def tag_is_wellformed(tag: str) -> bool:

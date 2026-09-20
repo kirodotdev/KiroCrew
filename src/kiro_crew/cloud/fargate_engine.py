@@ -409,7 +409,7 @@ _STARTED_BY_PREFIX = "kirocrew-cloud-"
 #: The charset ``RunTask`` accepts for ``startedBy`` and a tag. The API rejects
 #: anything else at launch; refusing it here turns that deferred failure into one
 #: the operator reads at the point they can fix it.
-_TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
 
 
 def _started_by_for(tag: str) -> str:

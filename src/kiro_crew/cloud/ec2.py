@@ -72,9 +72,9 @@ _POLL_TIMEOUT = 60
 # Cap at 51 chars: the template names the IAM role/instance-profile
 # `kirocrew-ec2-${StackTag}` (13-char prefix), and IAM role names max out at 64,
 # so 13 + 51 = 64. A longer tag would fail role creation at deploy time.
-_TAG_RE = re.compile(r"^[a-zA-Z0-9-]{1,51}$")
+_TAG_RE = re.compile(r"^[a-zA-Z0-9-]{1,51}\Z")
 _TAG_SPEC = FieldSpec(name="tag", type=str, max_len=51, pattern=_TAG_RE)
-_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
+_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+\Z")
 _REGION_SPEC = FieldSpec(name="region", type=str, max_len=32, pattern=_REGION_RE)
 # The profile charset ('+' admitted for IAM Identity Center derived names,
 # leading '-' excluded so a value is never option-shaped, \Z anchor)
@@ -82,18 +82,18 @@ _REGION_SPEC = FieldSpec(name="region", type=str, max_len=32, pattern=_REGION_RE
 # (same idiom as deploy/handlers.py; cloud/ already depends on deploy via the
 # shared aws-bin resolver in cloud/aws.py).
 _PROFILE_SPEC = profiles_mod.PROFILE_SPEC
-_CIDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$")
+_CIDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}\Z")
 _CIDR_SPEC = FieldSpec(name="allow_ssh_cidr", type=str, max_len=18, pattern=_CIDR_RE)
 # repo/ref reach a `git clone --branch '<ref>' '<repo>'` in the instance
 # UserData; charset-validate them so a crafted value can't break out of the
 # single quotes and run as root on the box (defense in depth even though these
 # are not CLI-wired today).
-_REPO_RE = re.compile(r"^[A-Za-z0-9_.:/@+-]{1,255}$")
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.:/@+-]{1,255}\Z")
 _REPO_SPEC = FieldSpec(name="repo", type=str, max_len=255, pattern=_REPO_RE)
-_REF_RE = re.compile(r"^[A-Za-z0-9_./-]{1,128}$")
+_REF_RE = re.compile(r"^[A-Za-z0-9_./-]{1,128}\Z")
 _REF_SPEC = FieldSpec(name="ref", type=str, max_len=128, pattern=_REF_RE)
 # EC2 subnet ids are `subnet-` + 8 (EC2-Classic era) or 17 hex chars.
-_SUBNET_ID_RE = re.compile(r"^subnet-[0-9a-f]{8,17}$")
+_SUBNET_ID_RE = re.compile(r"^subnet-[0-9a-f]{8,17}\Z")
 _SUBNET_ID_SPEC = FieldSpec(name="subnet_id", type=str, max_len=24, pattern=_SUBNET_ID_RE)
 
 

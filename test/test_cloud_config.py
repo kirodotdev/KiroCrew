@@ -674,7 +674,7 @@ class TestCloudConfig:
         # lockstep with ec2._TAG_RE.
         from kiro_crew.cloud import ec2
 
-        assert ec2._TAG_RE.pattern == r"^[a-zA-Z0-9-]{1,51}$"  # the cap we mirror
+        assert ec2._TAG_RE.pattern == r"^[a-zA-Z0-9-]{1,51}\Z"  # the cap we mirror
         p = tmp_path / "cloud.json"
         p.write_text('{"profile": "dev", "region": "us-east-1", "last_tag": "%s"}' % ("a" * 60))
         cfg = CloudConfig.load(p)

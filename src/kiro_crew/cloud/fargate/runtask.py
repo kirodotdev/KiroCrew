@@ -136,7 +136,7 @@ STARTED_BY_MAX = 36
 #: The charset a correlation value uses, for ``startedBy`` and the launch tag. The
 #: API rejects anything else at launch, and a launch-time refusal is the deferred
 #: failure this module converts into a generation-time one.
-_TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
 
 
 @dataclass(frozen=True)

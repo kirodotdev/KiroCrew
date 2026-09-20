@@ -67,21 +67,21 @@ LOG_GROUP_PREFIX = "/kirocrew/crew/"
 #: never starting or ending with a hyphen. A trailing hyphen would make the
 #: derived role name end in ``--exec``, and a leading one is not a legal start
 #: for the resource names built from it.
-_CREW_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+_CREW_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
 
 #: An AWS partition: ``aws``, ``aws-cn``, ``aws-us-gov``.
-_PARTITION_RE = re.compile(r"^aws(?:-[a-z0-9]+)*$")
+_PARTITION_RE = re.compile(r"^aws(?:-[a-z0-9]+)*\Z")
 
 #: A 12-digit account id. Anything shorter or longer is not an account.
-_ACCOUNT_RE = re.compile(r"^[0-9]{12}$")
+_ACCOUNT_RE = re.compile(r"^[0-9]{12}\Z")
 
 #: A region name as it appears in an ARN.
-_REGION_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+_REGION_RE = re.compile(r"^[a-z0-9-]{1,32}\Z")
 
 #: A crew secret's canonical NAME, with no service suffix. This is the shape a
 #: caller states; the ARN is checked against it rather than searched for a split.
 _SECRET_NAME_RE = re.compile(
-    r"^" + re.escape(SECRET_NAME_PREFIX) + r"(?P<crew>[^/]+)/(?P<key>[A-Za-z0-9_]+)$"
+    r"^" + re.escape(SECRET_NAME_PREFIX) + r"(?P<crew>[^/]+)/(?P<key>[A-Za-z0-9_]+)\Z"
 )
 
 #: The suffix Secrets Manager appends to a secret's name in its complete ARN.
@@ -90,7 +90,7 @@ _SECRET_NAME_RE = re.compile(
 #: recovered. A role ARN is TOTALLY derivable, so :func:`parse_role_arn` can make
 #: the round-trip its own parse; there is no equivalent for this suffix, and a
 #: pattern that strips it must guess where the name ends.
-_SECRET_SUFFIX_RE = re.compile(r"^[A-Za-z0-9]{6}$")
+_SECRET_SUFFIX_RE = re.compile(r"^[A-Za-z0-9]{6}\Z")
 
 #: The SHAPE a crew secret's variable segment plus service suffix has. It refuses
 #: an ARN carrying no suffix at all. Checking the shape is not the same as
@@ -98,7 +98,7 @@ _SECRET_SUFFIX_RE = re.compile(r"^[A-Za-z0-9]{6}$")
 #: secret's complete ARN, and deliberately does not say which part is the
 #: variable. The first is a property of the string; the second needs the split
 #: point, which only a :class:`SecretRef` states.
-_SECRET_TAIL_RE = re.compile(r"^[A-Za-z0-9_]+-[A-Za-z0-9]{6}$")
+_SECRET_TAIL_RE = re.compile(r"^[A-Za-z0-9_]+-[A-Za-z0-9]{6}\Z")
 
 
 @dataclass(frozen=True)
