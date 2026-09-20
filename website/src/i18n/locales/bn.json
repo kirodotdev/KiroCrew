@@ -5915,6 +5915,9 @@
       "closing_terminal": "টার্মিনাল বন্ধ হচ্ছে…"
     },
     "chatInput": {
+      "auto_jev": "স্বয়ংক্রিয় (Jev)",
+      "auto_jev_desc": "Jev ঠিক করুক: এখনই কাজে লাগানো, নাকি পরে চালানো",
+      "auto_jev_enter": "স্বয়ংক্রিয় (Jev) — এখনই কাজে লাগানো হবে নাকি পরে চালানো হবে, Jev ঠিক করে (Enter)",
       "approval_hint_adjust": "অনুমোদন মোড সামঞ্জস্য করুন",
       "approval_hint_question": "প্রতিবার নিশ্চিত করতে ক্লান্ত?",
       "send_a_message_or_tap_the_mic_for_voice": "বার্তা পাঠান, বা ভয়েসের জন্য মাইকে ট্যাপ করুন",
@@ -10334,6 +10337,12 @@
         "moment_approval_decided": "অনুমোদনের উত্তর দেওয়া হয়েছে"
       },
       "decisionStrip": {
+        "steer_confidence": "আত্মবিশ্বাস {{p}}",
+        "steer_rate_label": "এই বাছাই",
+        "steer_chose_queue": "Jev বেছে নিয়েছে: এই টার্নের পরে চালানো",
+        "steer_chose_steer": "Jev বেছে নিয়েছে: এই টার্ন থামানো",
+        "steer_rate_right": "Jev সঠিক বেছে নিয়েছে",
+        "steer_rate_wrong": "Jev ভুল বেছে নিয়েছে",
         "agreed": "দুজনেই একই স্কিল বেছে নিয়েছে",
         "agreed_named": "Jev ও শব্দ মিলকরণ: {{names}}",
         "agreed_short": "একই বাছাই",

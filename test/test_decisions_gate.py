@@ -569,7 +569,7 @@ class TestGovernanceWithdrawsTheSeam:
 
 
 class TestPointName:
-    def test_the_shipped_vocabulary_is_the_two_points(self):
+    def test_the_shipped_vocabulary_is_the_shipped_points(self):
         """The whole allowlist, spelled out: a name reaches the provider or it does not.
 
         Held as an exact tuple rather than a membership check, so adding a point is
@@ -577,7 +577,7 @@ class TestPointName:
         decides what may send conversation text off the machine, and a test that
         only asked "is my name in it" would let one arrive unnoticed.
         """
-        assert DECISION_POINT_NAMES == ("skills.select", "tool.risk")
+        assert DECISION_POINT_NAMES == ("skills.select", "tool.risk", "message.steer")
 
     @pytest.mark.parametrize("unknown", ["skills.dedupe", "cron.novelty", "", "skills.Select"])
     def test_an_unknown_point_is_refused_even_when_enabled(

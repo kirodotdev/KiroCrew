@@ -1811,6 +1811,9 @@
       "terminal": "Terminal"
     },
     "chatInput": {
+      "auto_jev": "Auto (Jev)",
+      "auto_jev_desc": "Let Jev choose: act now, or run after",
+      "auto_jev_enter": "Auto (Jev) — Jev chooses whether to act now or run after (Enter)",
       "send_a_message_or_tap_the_mic_for_voice": "Send a message, or tap the mic for voice",
       "release_to_transcribe": "Release to transcribe",
       "hold_to_talk": "Hold to talk",
@@ -4251,6 +4254,12 @@
         "moment_approval_decided": "approval answered"
       },
       "decisionStrip": {
+        "steer_confidence": "confidence {{p}}",
+        "steer_rate_label": "This choice",
+        "steer_chose_queue": "Jev chose: run after this turn",
+        "steer_chose_steer": "Jev chose: interrupt this turn",
+        "steer_rate_right": "Jev chose the right handling",
+        "steer_rate_wrong": "Jev chose the wrong handling",
         "agreed": "Both picked the same skills",
         "agreed_named": "Jev and word match: {{names}}",
         "agreed_short": "same pick",

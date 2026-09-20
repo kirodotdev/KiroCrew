@@ -4,7 +4,7 @@ Jev can do two things for a sampled conversation: choose its automatic skill, an
 
 ## What changes
 
-Only automatic skill selection uses Jev. Skill deduplication and scheduled notifications do not change. Mandatory skills, custom-agent exclusions, project access rules and the automatic skill limit still apply.
+Two things use Jev: automatic skill selection, and -- only if you pick it on the send button -- what happens to a message you send while the assistant is still working (see "Letting Jev choose steer or queue" below). Skill deduplication and scheduled notifications do not change. Mandatory skills, custom-agent exclusions, project access rules and the automatic skill limit still apply.
 
 | State | Skill selection |
 |---|---|
@@ -93,6 +93,25 @@ What leaves the machine for one of these questions is the tool's name, its argum
 The thumbs say whether Jev read the risk right. They are the same owner-only verdict described above, filed against that one call.
 
 Each answered call writes two rows in the log below: one for the question and one for the answer. A `safe` answer is recorded too, even though it draws nothing, so you can tell how often the note would have been wrong to appear. The rows name the tool, the tier, the score and which grant approved the call -- `trust`, `trust_scope` or `yolo`.
+
+## Letting Jev choose steer or queue
+
+When you send a message while the assistant is still working, it can go two ways. **Steer** interrupts the work in progress with your text. **Queue** lets the work finish and runs your message after it. The split send button has always made you choose, and the choice is a guess about a reply you have not finished reading: a "and afterwards, bump the version" sent as a steer cuts the work in half, and a "stop, wrong file" sent as a queue arrives after the damage.
+
+With the Decisions switch on, that button offers a third mode, **Auto (Jev)**. Pick it and Jev makes that one choice for you, per message. Steer and Queue still do exactly what they did -- picking either of them asks nothing and sends nothing extra.
+
+The mode only appears while the switch is on, your fleet permits the feature, and a turn is actually running — a session that is busy only because background sub-agents are still working has no turn to interrupt, so there is nothing to decide. It is per session, like the Steer and Queue choice already is, and if consent is later withdrawn the button goes back to Steer on its own. ⌘↩ (Ctrl+Enter) still takes the other action for one message, which from this mode is a plain queue that asks nothing.
+
+| What you pick | What happens |
+|---|---|
+| Steer | Interrupts the work in progress. Nothing is sent to Jev |
+| Queue | Runs after the work in progress. Nothing is sent to Jev |
+| Auto (Jev), valid answer | Jev's choice of the two |
+| Auto (Jev), timeout, refusal or invalid answer | Steer, the button's own default |
+
+Auto applies only while a turn is actually running, and only to messages you send yourself: an app, an integration or a scheduled job is never decided for. Its request carries the message you just typed. It also carries a short extract of the turn in progress -- what you asked it and the newest thing it printed -- but only as far as the same `history_budget_chars` ceiling above allows, so at the default of `0` your new message is all that leaves the machine. Anything that looks like a credential or a data-collecting URL is removed from that extract first.
+
+The decision appears on your own message in the transcript: one line saying what Jev chose, how sure it was and how long it took, with the same thumbs you can use on a skill decision. It says the CHOICE rather than what then happened, because the two can differ — a chosen interruption cannot always be delivered, and the message then runs after the work in progress like a queued one. A message nobody decided for shows nothing.
 
 ## Basic logs
 

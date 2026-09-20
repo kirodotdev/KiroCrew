@@ -4152,7 +4152,7 @@ export const api = {
   updateTagColumn: (id: string, body: { name?: string; tag_ids?: string[]; mode?: 'any' | 'all' | 'none'; order?: number; include_untagged?: boolean }) => patch('/api/chat/tag-columns/' + encodeURIComponent(id), body).then(j),
   deleteTagColumn: (id: string) => del('/api/chat/tag-columns/' + encodeURIComponent(id)).then(j),
   reorderTagColumns: (ids: string[]) => fetch('/api/chat/tag-columns/order', { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ ids }) }).then(j),
-  sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean) => {
+  sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto') => {
     // theme_consent_sha is the WIRE TOKEN (two-tier consent). The client just
     // TRANSMITS the raw stored grant (see themeConsentSha) — the server verifies
     // content-binding, injecting the persona only when this token equals sha256
@@ -4173,6 +4173,13 @@ export const api = {
     // the fetch seam under the chat-core `sendTurn`, which every steer now
     // rides (there is no separate steer helper).
     //
+    // `'auto'` is the composer's third busy mode: the same intent to act NOW,
+    // with the choice between injecting and queueing handed to the gateway for
+    // this one message (`decisions/points/message_steer.py`). Sent as the literal
+    // string beside the boolean the two manual modes send, so a gateway that does
+    // not know the word reads a truthy flag and steers — which is exactly the
+    // fallback the decision itself has.
+    //
     // The response is handed back RAW (the chat-core transport reads the
     // receipt itself; a 4xx/5xx must resolve, not throw like `j`), but it still
     // runs the same auth recovery every `j`-parsed call has -- see
@@ -4180,7 +4187,7 @@ export const api = {
     // stale-owner session as a bare "refused" send. The steer helper this
     // replaced went through `j` and had both; the transport must not lose them.
     const themeConsent = themeConsentSha(colorTheme)
-    return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: true } : {}) }), signal }).then(sendResponseAuthRecovery)
+    return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: steer === 'auto' ? 'auto' : true } : {}) }), signal }).then(sendResponseAuthRecovery)
   },
   sessionsHealth: () => fetch('/api/sessions/health').then(j),
   // Durable task queue + capacity view (System > Services "Tasks & capacity").

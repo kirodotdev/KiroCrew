@@ -6009,6 +6009,9 @@
       "closing_terminal": "Fechando terminal…"
     },
     "chatInput": {
+      "auto_jev": "Automático (Jev)",
+      "auto_jev_desc": "Deixe o Jev escolher: agir agora ou executar depois",
+      "auto_jev_enter": "Automático (Jev) — o Jev escolhe entre agir agora ou executar depois (Enter)",
       "approval_hint_adjust": "Ajustar o modo de aprovação",
       "approval_hint_question": "Cansado de confirmar cada etapa?",
       "send_a_message_or_tap_the_mic_for_voice": "Envie uma mensagem ou toque no microfone para voz",
@@ -10477,6 +10480,12 @@
         "moment_approval_decided": "aprovação respondida"
       },
       "decisionStrip": {
+        "steer_confidence": "confiança {{p}}",
+        "steer_rate_label": "Esta escolha",
+        "steer_chose_queue": "O Jev escolheu: executar depois deste turno",
+        "steer_chose_steer": "O Jev escolheu: interromper este turno",
+        "steer_rate_right": "O Jev escolheu certo",
+        "steer_rate_wrong": "O Jev escolheu errado",
         "agreed": "Os dois escolheram as mesmas habilidades",
         "agreed_named": "Jev e correspondência de palavras: {{names}}",
         "agreed_short": "mesma escolha",

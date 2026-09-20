@@ -83,8 +83,13 @@ export interface SendTurnOptions {
    *  behind it (or, on an idle slot, skip the hold that parks a message behind
    *  still-running sub-agents). A flag of THIS endpoint -- `/api/chat` reads
    *  it -- not a new receipt shape: a steer comes back `dispatched`, `queued`
-   *  (demoted) or refused like any send, with `body.steered` saying which. */
-  steer?: boolean
+   *  (demoted) or refused like any send, with `body.steered` saying which.
+   *
+   *  `'auto'` carries the same intent with the steer-or-queue choice handed to
+   *  the gateway for this message (`decisions/points/message_steer.py`). Still not
+   *  a new receipt shape: the answer comes back as the `dispatched` of a steer or
+   *  the `queued` of a queue, which the two existing statuses already describe. */
+  steer?: boolean | 'auto'
   /** The active colour theme, so a widget the turn renders inherits it. Sent
    *  only by surfaces that own a theme (ChatPage); embeds and panes omit it. */
   colorTheme?: string

@@ -240,6 +240,7 @@ async def steer_into_running_turn(
     send_id: str | None = None,
     user_origin: bool = False,
     admission: dict | None = None,
+    decision_strip: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -282,6 +283,12 @@ async def steer_into_running_turn(
     constraint) rather than on the slot read this exists to remove. That matters
     because the LINKED exemption does not cover the case: a new outbound mirror is
     never exempt, since the author does not control mirror links.
+
+    ``decision_strip`` is the ``message.steer`` decision row that chose THIS path
+    (``decisions/points/message_steer.py``), stamped onto the persisted row as
+    ``meta.decisions_strip`` so the transcript carries the receipt for it. Absent
+    for every other caller and for a manual steer, which is what keeps their rows
+    byte-identical.
     """
     send_id = normalize_send_id(send_id)
     client = getattr(slot, "_acp_client", None)
@@ -607,6 +614,13 @@ async def steer_into_running_turn(
         STEER_STATE_CONSUMED if (not still_registered and _had_evidence) else STEER_STATE_WRITTEN
     )
     meta: dict[str, Any] = {"steer": True, "steerState": _state}
+    if decision_strip:
+        # The same field the assistant row's strip rides on, read by the same
+        # frontend reader. Stamped at APPEND time rather than written afterwards,
+        # for the reason `chat_runner._decisions_strip_meta` states: `append`
+        # broadcasts the live frame from inside the call, so a later write would
+        # persist a receipt the open tab never renders.
+        meta["decisions_strip"] = decision_strip
     if send_id:
         # Persist the client correlation id alongside the steer flag: the
         # transcript page is what mergePreservedThinking reads to resolve an
@@ -648,6 +662,7 @@ def queue_for_next_turn(
     directive_user_origin: bool = False,
     send_id: str | None = None,
     attachments: dict[str, list[str]] | None = None,
+    decision_strip: dict | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -673,6 +688,13 @@ def queue_for_next_turn(
     to a whitespace-bounded capture of the marker text and a path with a space
     (``/tmp/My Report.pdf``) came back as ``/tmp/My`` -- an attachment card that
     opens nothing. Stamping the lists onto the entry rides them onto the row.
+
+    *decision_strip* is the ``message.steer`` decision row that chose THIS path
+    (``decisions/points/message_steer.py``). It rides the entry meta for exactly
+    the reason the id and the attachment lists do: the drain unions entry meta onto
+    the row it appends, so this is the only way a QUEUED send's row carries the
+    receipt for the decision that queued it. Absent on every send that was not
+    decided, which keeps the entry's prior shape.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import containment_meta
@@ -682,6 +704,8 @@ def queue_for_next_turn(
         meta["sendId"] = send_id
     if attachments:
         meta.update(attachments)
+    if decision_strip:
+        meta["decisions_strip"] = decision_strip
     qid = slot.queue_append(
         message,
         meta=meta,

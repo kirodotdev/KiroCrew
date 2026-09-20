@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 #: Decision points this build ships; an absent name is refused. Lives with the
 #: seam, not in ``config.sections``: nothing in the config is keyed by point name,
 #: and keeping it here keeps the config loader off a hot path's import graph.
-DECISION_POINT_NAMES = ("skills.select", "tool.risk")
+DECISION_POINT_NAMES = ("skills.select", "tool.risk", "message.steer")
 
 #: Points whose request carries TOOL-CALL ARGUMENTS, and which therefore need the
 #: keystone's ``tool_args`` scope on top of consent itself

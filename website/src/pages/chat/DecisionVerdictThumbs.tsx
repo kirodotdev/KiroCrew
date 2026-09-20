@@ -1,9 +1,10 @@
 /**
  * One reader's verdict on one Jev answer, as a thumbs pair.
  *
- * Shared by both surfaces that rate a decision — the skill-selection strip under
- * an assistant reply (`DecisionStrip.tsx`) and the risk badge on a tool card
- * (`ToolRiskBadge.tsx`) — so the two cannot drift on what a press sends, what it
+ * Shared by every surface that rates a decision — the skill-selection strip under
+ * an assistant reply (`DecisionStrip.tsx`), the risk badge on a tool card
+ * (`ToolRiskBadge.tsx`) and the mid-turn handling line on a user row
+ * (`SteerDecisionLine.tsx`) — so they cannot drift on what a press sends, what it
  * remembers, or what a failure looks like. A second copy would be a second
  * chance to post the wrong `side`, and the log's summary is keyed on that field.
  *
@@ -13,7 +14,7 @@
  * so a misclick is undoable without a third control.
  *
  * `label` is VISIBLE and required, and it lives here rather than at the call
- * sites so neither surface can ship without one. A bare thumb beside a line of
+ * sites so no surface can ship without one. A bare thumb beside a line of
  * text does not say what it rates, and an `aria-label` answers that for a screen
  * reader only — `IconButton` renders no text and no tooltip of its own, so each
  * button also carries its meaning as a `title`.

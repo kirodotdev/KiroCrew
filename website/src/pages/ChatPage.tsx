@@ -81,6 +81,7 @@ import CollapsibleToolGroup from './chat/CollapsibleToolGroup'
 import { isSystemNoticeRow } from './chat/CompactionCard'
 import { decisionStripFieldOf } from './chat/decisionRecord'
 import { RowDisclosureProvider } from './chat/rowDisclosure'
+import { useJevAutoSend } from './chat/useJevAutoSend'
 import type { DisplayItem, TurnItem } from './chat/types'
 import { MeasureFarm } from '../hooks/virtualizer/MeasureFarm'
 import { useScrollManager } from './chat/useScrollManager'
@@ -1043,8 +1044,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // same transport -- `sendTurn` never rejects, so the outcome is read from the
   // receipt, not from an error callback.
   const steerMutation = useMutation({
-    mutationFn: ({ text, sendId, slot }: { text: string; sendId?: string; slot: string }) =>
-      sendTurn({ message: text, slot, steer: true, ...(sendId ? { meta: { sendId } } : {}) }),
+    // `auto` sends the same POST with `steer: 'auto'`: the gateway then chooses
+    // between injecting into the running turn and queueing for the next one
+    // (`decisions/points/message_steer.py`). The receipt policy below is unchanged,
+    // because the answer arrives as the `dispatched` of a steer or the `queued` of
+    // a queue -- both rulings `applySteerReceipt` already owns.
+    mutationFn: ({ text, sendId, slot, auto }: { text: string; sendId?: string; slot: string; auto?: boolean }) =>
+      sendTurn({ message: text, slot, steer: auto ? 'auto' : true, ...(sendId ? { meta: { sendId } } : {}) }),
     onSuccess: (receipt, { text, sendId, slot }) => {
       // Receipt policy for a steer, owned once in chat-core (issue #9457):
       // applySteerReceipt decides WHICH ruling applies; the adapter below is
@@ -2269,6 +2275,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // entry stays hidden until it says true — the endpoint is the authority, the
   // frontend never guesses (same posture as the mobile-connect rail row).
   const socialShareOn = dashCfg?.social_share_enabled === true
+  // Whether the split send button may offer `Auto (Jev)`: the fleet ceiling and
+  // the owner's consent, both the gateway's answers (see useJevAutoSend).
+  const jevAutoConsented = useJevAutoSend()
   // Connections cards own consent for the providers they render, so chat drops
   // the duplicate OAuth banner — but only while that gallery is reachable.
   const connectionsUiOn = useConnectionsUiEnabled()
@@ -5049,7 +5058,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the text inline via the 'steer_push' WS event. Composer, pending files,
   // paste blocks, and the per-slot drafts are all cleared HERE (not in
   // ChatInput) so text and attachments clear atomically.
-  const steer = useCallback(() => {
+  const steer = useCallback((opts?: { auto?: boolean }) => {
     if (!activeSlot) return
     // Nothing to inject into: the composer is busy purely because background
     // sub-agents are still running for this slot (spawn_run is fire-and-forget,
@@ -5149,7 +5158,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // and post-steer chunks would append to it (see lib/pendingChunkDrain.ts).
     drainPendingChunks()
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot })
+    // The optimistic bubble above stays a STEER bubble for an `auto` send: steer
+    // is the answer every refusal keeps, so it is the honest guess while the POST
+    // is in flight, and a queue answer replaces this row through the same
+    // `queue_push` reconcile a manual queue uses.
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true })
     // Staged session references are deliberately NOT part of steering: neither
     // carried into the payload nor cleared. Only the TEXT has a restore path
     // (steerMutation hands it back on a refused, failed or unconfirmed steer);
@@ -7585,6 +7598,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onSend={() => send()}
               canSteer={composerBusy}
               onSteer={steer}
+              // AND a turn actually running. `composerBusy` is also true when only
+              // background sub-agents are working, and there is no turn to decide
+              // ABOUT in that state: the send starts a fresh turn and the point
+              // never runs, so offering the mode there would promise a decision
+              // nothing makes.
+              jevAutoAvailable={jevAutoConsented && !!slotRunning}
               onFollowUpSend={(text?: string, sourceKeyAtClick?: string | null) => {
                 // Double-click and Send-now share dispatchPlanFollowUp with
                 // single-click (#6240). First-click row identity refuses a

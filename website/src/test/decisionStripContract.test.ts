@@ -23,19 +23,24 @@ import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 
-import { readDecisionStrip } from '../pages/chat/decisionRecord'
+import { readDecisionStrip, readSteerRecord } from '../pages/chat/decisionRecord'
 
 const SPEC = join(__dirname, '../../../docs/system-specs/modules/decisions.md')
 const SECTION = "## 8. The decision strip's record and feedback"
+const STEER_SECTION = '## 10. Mid-turn handling (`message.steer`)'
 
-/** The first fenced JSON block inside § 8. */
-function specFixture(): Record<string, unknown> {
+/** The first fenced JSON block inside *section*. */
+function specFixtureIn(section: string): Record<string, unknown> {
   const text = readFileSync(SPEC, 'utf-8')
-  const start = text.indexOf(SECTION)
-  if (start < 0) throw new Error(`${SECTION} is gone from ${SPEC} — the contract moved or was deleted`)
+  const start = text.indexOf(section)
+  if (start < 0) throw new Error(`${section} is gone from ${SPEC} — the contract moved or was deleted`)
   const fence = /```json\n([\s\S]*?)```/.exec(text.slice(start))
-  if (!fence) throw new Error(`no fenced json record under ${SECTION}`)
+  if (!fence) throw new Error(`no fenced json record under ${section}`)
   return JSON.parse(fence[1]) as Record<string, unknown>
+}
+
+function specFixture(): Record<string, unknown> {
+  return specFixtureIn(SECTION)
 }
 
 /** The feedback vocabulary the spec spells, as the strings the client sends.
@@ -157,6 +162,66 @@ describe('the record fixture in the decisions spec', () => {
     expect(JSON.stringify({ ...withoutLength, message_text: 'hi' })).toContain('message')
     expect(Object.keys(fixture)).toContain('message_chars')
     expect(typeof fixture.message_chars).toBe('number')
+  })
+})
+
+describe('the mid-turn handling fixture in the decisions spec', () => {
+  // Same hazard as § 8's, from the same direction: `readSteerRecord` fails safe by
+  // drawing nothing, which is byte-identical to a send nobody decided for. A field
+  // respelled on one side would make the line vanish rather than fail.
+  const fixture = specFixtureIn(STEER_SECTION)
+
+  it('is accepted by the reader, field for field', () => {
+    expect(readSteerRecord(fixture)).toEqual({
+      turnId: 'turn-91c3ab',
+      point: 'message.steer',
+      choice: 'queue',
+      p: 0.83,
+      latencyMs: 190,
+    })
+  })
+
+  it('names every key the reader needs, so a dropped promise is visible here', () => {
+    for (const key of ['turn_id', 'point', 'choice', 'p', 'latency_ms']) {
+      expect(Object.keys(fixture), `the spec fixture no longer carries ${key}`).toContain(key)
+    }
+  })
+
+  it('promises the baseline arm the LOG folds on, which the reader ignores', () => {
+    // It rides the record because the record IS the row, and the day-file fold
+    // reads it; the line does not, because it is `steer` on every row.
+    expect(Object.keys(fixture)).toContain('baseline')
+    expect(readSteerRecord(fixture)).not.toHaveProperty('baseline')
+  })
+
+  it('promises no error field, because a failed decision stamps no record', () => {
+    // The producer's own contract: a refusal takes the shipped steer path and
+    // writes nothing, so a receipt exists only for a decision that was made.
+    expect(Object.keys(fixture)).not.toContain('error')
+  })
+
+  it('is refused by the skill reader, and refuses the skill record in turn', () => {
+    // Two records on one field. Each must decline the other's shape rather than
+    // render it: a steer record read as a skill one would print two empty skill
+    // lists under a check mark saying the sides agreed.
+    expect(readDecisionStrip(fixture)).toBeNull()
+    expect(readSteerRecord(specFixture())).toBeNull()
+  })
+
+  it('carries no message text, description or activity — the bound the log sets', () => {
+    // `point` is dropped by exact key first: its VALUE is the identifier
+    // `message.steer`, so it would match the broad `message` needle below. The
+    // needle stays broad rather than narrowing to `"message"`, because a narrow one
+    // would admit a `message_text` carrying the conversation — the leak this
+    // asserts against.
+    const { point: _id, ...withoutPoint } = fixture
+    const serialized = JSON.stringify(withoutPoint).toLowerCase()
+    for (const forbidden of ['api_key', 'secret', 'prompt', 'message', 'description', 'content', 'activity']) {
+      expect(serialized, `the fixture leaks ${forbidden}`).not.toContain(forbidden)
+    }
+    // The teeth: masking is by key, so anything else naming a message still fails.
+    expect(JSON.stringify({ ...withoutPoint, message_text: 'hi' })).toContain('message')
+    expect(fixture.point).toBe('message.steer')
   })
 })
 

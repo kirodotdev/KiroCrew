@@ -20,8 +20,18 @@
  * consent would turn on egress from a value nobody wrote for it.
  */
 
-/** The one point this build consumes an answer for. */
+/** The point that chooses which skill a message loads. */
 export const DECISIONS_LIVE_POINT = 'skills.select'
+
+/**
+ * The point that chooses whether a message sent into a RUNNING turn steers it or
+ * queues for the next one.
+ *
+ * Named here, beside the skill point, because both are identifiers the gateway
+ * owns: the strip reader dispatches on them and the Decisions card names them, so
+ * a second spelling in either place would be a record nobody renders.
+ */
+export const DECISIONS_STEER_POINT = 'message.steer'
 
 /** Config path of the sampling share; the only decisions value the config PATCH accepts. */
 export const DECISIONS_BUCKET_PATH = 'decisions.bucket'

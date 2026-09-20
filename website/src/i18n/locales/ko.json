@@ -5821,6 +5821,9 @@
       "closing_terminal": "터미널을 닫는 중…"
     },
     "chatInput": {
+      "auto_jev": "자동 (Jev)",
+      "auto_jev_desc": "Jev가 선택: 지금 반영하거나 나중에 실행",
+      "auto_jev_enter": "자동 (Jev) — 지금 반영할지 나중에 실행할지 Jev가 결정합니다 (Enter)",
       "approval_hint_adjust": "승인 모드 조정",
       "approval_hint_question": "매번 확인하기 번거로우신가요?",
       "send_a_message_or_tap_the_mic_for_voice": "메시지를 보내거나 마이크를 눌러 음성 사용",
@@ -10191,6 +10194,12 @@
         "moment_approval_decided": "승인 응답"
       },
       "decisionStrip": {
+        "steer_confidence": "확신도 {{p}}",
+        "steer_rate_label": "이 선택",
+        "steer_chose_queue": "Jev의 선택: 이 턴 이후에 실행",
+        "steer_chose_steer": "Jev의 선택: 이 턴을 중단",
+        "steer_rate_right": "Jev의 판단이 맞음",
+        "steer_rate_wrong": "Jev의 판단이 틀림",
         "agreed": "양쪽이 같은 스킬을 골랐습니다",
         "agreed_named": "Jev와 단어 매칭: {{names}}",
         "agreed_short": "같은 선택",

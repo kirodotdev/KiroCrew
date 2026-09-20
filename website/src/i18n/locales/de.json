@@ -5915,6 +5915,9 @@
       "closing_terminal": "Terminal wird geschlossen…"
     },
     "chatInput": {
+      "auto_jev": "Automatisch (Jev)",
+      "auto_jev_desc": "Jev entscheiden lassen: jetzt handeln oder danach ausführen",
+      "auto_jev_enter": "Automatisch (Jev) — Jev entscheidet, ob jetzt gehandelt oder danach ausgeführt wird (Enter)",
       "approval_hint_adjust": "Genehmigungsmodus anpassen",
       "approval_hint_question": "Keine Lust, jeden Schritt zu bestätigen?",
       "send_a_message_or_tap_the_mic_for_voice": "Nachricht senden oder Mikrofon antippen für Sprache",
@@ -10334,6 +10337,12 @@
         "moment_approval_decided": "Freigabe beantwortet"
       },
       "decisionStrip": {
+        "steer_confidence": "Zuversicht {{p}}",
+        "steer_rate_label": "Diese Wahl",
+        "steer_chose_queue": "Jev hat gewählt: nach dieser Runde ausführen",
+        "steer_chose_steer": "Jev hat gewählt: diese Runde unterbrechen",
+        "steer_rate_right": "Jev hat richtig entschieden",
+        "steer_rate_wrong": "Jev hat falsch entschieden",
         "agreed": "Beide haben dieselben Skills gewählt",
         "agreed_named": "Jev und Wortabgleich: {{names}}",
         "agreed_short": "gleiche Auswahl",

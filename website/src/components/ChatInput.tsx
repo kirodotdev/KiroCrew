@@ -42,7 +42,7 @@ import { Btn, Slider } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
 import { consumeComposerRelease, COMPOSER_EXPAND_EVENT } from '../pages/chat/composerFocus'
-import BusySendButton, { useBusySendMode } from './BusySendButton'
+import BusySendButton, { useBusySendMode, type BusySendMode } from './BusySendButton'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from './ContextBar'
@@ -439,8 +439,19 @@ interface ChatInputProps {
   /** Act on the composer NOW rather than queueing: a mid-turn steer into the
    * running turn, or a fresh turn when only sub-agents are running. Reads the
    * composer text and pending files itself (ChatPage) and clears them
-   * atomically — ChatInput must NOT clear the value around this call. */
-  onSteer?: () => void
+   * atomically — ChatInput must NOT clear the value around this call.
+   *
+   * `auto` asks the GATEWAY to choose between steering and queueing for this one
+   * message (`steer: "auto"`, `decisions/points/message_steer.py`). It rides this
+   * callback rather than a second one because it is the same send down the same
+   * route: only the flag differs, and a host that ignores the argument keeps
+   * today's behaviour, which is the steer this callback has always meant. */
+  onSteer?: (opts?: { auto?: boolean }) => void
+  /** Whether the host may offer `Auto (Jev)` in the split button's mode picker:
+   * the gateway reports the Decisions seam as permitted by governance AND
+   * consented to. Defaults to false, so a surface that never asks cannot offer a
+   * mode the gateway would refuse to act on. */
+  jevAutoAvailable?: boolean
   /** How the BUSY composer offers its send. `'split'` (default): the
    * Steer/Queue split button with its per-slot mode picker — the main chat
    * and split-view panes. `'steer-only'`: the surface has no queue concept —
@@ -888,6 +899,7 @@ function ChatInput({
   onSend,
   canSteer,
   onSteer,
+  jevAutoAvailable = false,
   busyMode = 'split',
   disabled: disabledProp = false,
   placeholder = '',
@@ -1555,7 +1567,18 @@ function ChatInput({
   // silently queue from a surface that never shows that choice.
   const steerOnly = busyMode === 'steer-only'
   const busyChoiceAvailable = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer
-  const steerActive = busyChoiceAvailable && (steerOnly || busySendMode === 'steer')
+  // A stored `auto` from a session where the seam WAS available resolves back to
+  // the shipped default while it is not: consent can be withdrawn and a fleet can
+  // pin the seam off, and a mode kept on screen after that would send a flag the
+  // gateway refuses to act on — which is a steer either way, but one the sender
+  // was told was a decision.
+  const effectiveBusyMode: BusySendMode =
+    busySendMode === 'auto' && !jevAutoAvailable ? 'steer' : busySendMode
+  // `auto` is an ACTIVE steer: the send goes down the steer route carrying the
+  // flag, and the gateway decides there. Its fallback on every refusal is that
+  // same steer, so the composer's own reading of "acting now" is unchanged.
+  const steerActive = busyChoiceAvailable && (steerOnly || effectiveBusyMode !== 'queue')
+  const steerAuto = busyChoiceAvailable && !steerOnly && effectiveBusyMode === 'auto'
   /**
    * Fire the composer. `alternate === true` performs the OTHER busy action for
    * this one send — queue when the split button says steer, steer when it says
@@ -1578,9 +1601,12 @@ function ChatInput({
     if (voiceTranscribing) return
     const flip = alternate === true && busyChoiceAvailable && !steerOnly
     const steerNow = flip ? !steerActive : steerActive
-    if (steerNow && onSteer) onSteer()
+    // A flipped send never asks: the chord is the sender answering the question
+    // themselves for this one message, so handing it to the oracle anyway would
+    // ignore the only explicit instruction on the send.
+    if (steerNow && onSteer) onSteer(steerAuto && !flip ? { auto: true } : undefined)
     else onSend()
-  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, onSteer, onSend])
+  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend])
   const sendFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     if (!disabled) onFollowUpSend?.(text, sourceKeyAtClick)
   }, [disabled, onFollowUpSend])
@@ -4609,11 +4635,12 @@ function ChatInput({
                     </button>
                   ) : (
                   <BusySendButton
-                    mode={busySendMode}
+                    mode={effectiveBusyMode}
                     onModeChange={setBusySendMode}
                     onFire={fireComposer}
                     disabled={disabled}
                     altChordAvailable={sendOnEnter === 'enter'}
+                    autoAvailable={jevAutoAvailable}
                   />
                   )
                 ) : (
@@ -4641,11 +4668,12 @@ function ChatInput({
                 // in place (disabled) so the composer's shape does not jump
                 // when the first character lands.
                 <BusySendButton
-                  mode={busySendMode}
+                  mode={effectiveBusyMode}
                   onModeChange={setBusySendMode}
                   onFire={fireComposer}
                   disabled
                   altChordAvailable={sendOnEnter === 'enter'}
+                  autoAvailable={jevAutoAvailable}
                 />
               )
             ) : (<>

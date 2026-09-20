@@ -5821,6 +5821,9 @@
       "closing_terminal": "ターミナルを閉じています…"
     },
     "chatInput": {
+      "auto_jev": "自動 (Jev)",
+      "auto_jev_desc": "Jev に任せる: すぐ反映するか、後で実行するか",
+      "auto_jev_enter": "自動 (Jev) — すぐ反映するか後で実行するかを Jev が決めます (Enter)",
       "approval_hint_adjust": "承認モードを調整",
       "approval_hint_question": "毎回の確認が面倒ですか？",
       "send_a_message_or_tap_the_mic_for_voice": "メッセージを送信、またはマイクをタップして音声入力",
@@ -10191,6 +10194,12 @@
         "moment_approval_decided": "承認に回答"
       },
       "decisionStrip": {
+        "steer_confidence": "確信度 {{p}}",
+        "steer_rate_label": "この判断",
+        "steer_chose_queue": "Jev の判断: このターンの後に実行",
+        "steer_chose_steer": "Jev の判断: このターンを中断",
+        "steer_rate_right": "Jev の判断は正しい",
+        "steer_rate_wrong": "Jev の判断は誤り",
         "agreed": "どちらも同じスキルを選びました",
         "agreed_named": "Jev と単語マッチング: {{names}}",
         "agreed_short": "同じ選択",

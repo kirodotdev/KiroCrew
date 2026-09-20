@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowUpFromLine, Check, ChevronDown, Target } from 'lucide-react'
+import { ArrowUpFromLine, Check, ChevronDown, Sparkles, Target } from 'lucide-react'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { useAnchorRemeasure } from '../hooks/useAnchorRemeasure'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
@@ -10,8 +10,10 @@ import { i18nT } from '../i18n/t'
 
 /** Send behavior while the composer is BUSY — a running turn, or background sub-agents
  *  still running for the slot. 'steer' (default) acts on the text immediately (injecting
- *  into a live turn, or starting one); 'queue' defers it to the next turn. */
-export type BusySendMode = 'steer' | 'queue'
+ *  into a live turn, or starting one); 'queue' defers it to the next turn; 'auto' asks
+ *  the gateway to choose between those two for this message (`message.steer`), and is
+ *  offered only while the host says the Decisions seam is available. */
+export type BusySendMode = 'steer' | 'queue' | 'auto'
 
 export const BUSY_SEND_MODE_LS_KEY = 'mc-busy-send-mode'
 
@@ -33,14 +35,35 @@ export const BUSY_SEND_MODE_LS_KEY = 'mc-busy-send-mode'
 const BUSY_SEND_MODE_LABEL_KEY: Record<BusySendMode, string> = {
   steer: 'components.chatInput.steer',
   queue: 'components.chatInput.queue',
+  auto: 'components.chatInput.auto_jev',
 }
 const BUSY_SEND_MODE_DESC_KEY: Record<BusySendMode, string> = {
   steer: 'components.chatInput.steer_act_on_this_right_away_desc',
   queue: 'components.chatInput.queue_run_after_the_current_work_finishes_desc',
+  auto: 'components.chatInput.auto_jev_desc',
+}
+/**
+ * Catalog keys for the FIRE half's tooltip and accessible name, one per mode.
+ *
+ * Flat `Record`s indexed at the `i18nT()` call, for the reason the menu's maps
+ * above are: that is the only form `scripts/check-i18n-keys.mjs` resolves
+ * statically. Three modes now, so a nested ternary at the call site would carry
+ * the key inside an expression the gate cannot read.
+ */
+const FIRE_TITLE_KEY: Record<BusySendMode, string> = {
+  steer: 'components.chatInput.steer_act_on_this_as_soon_as_possible_enter',
+  queue: 'components.chatInput.queue_run_after_the_current_work_finishes_enter',
+  auto: 'components.chatInput.auto_jev_enter',
+}
+const FIRE_LABEL_KEY: Record<BusySendMode, string> = {
+  steer: 'components.chatInput.steer',
+  queue: 'components.chatInput.queue_message',
+  auto: 'components.chatInput.auto_jev',
 }
 const BUSY_SEND_MODES: Array<{ mode: BusySendMode; icon: React.ReactNode }> = [
   { mode: 'steer', icon: <Target size={15} /> },
   { mode: 'queue', icon: <ArrowUpFromLine size={15} /> },
+  { mode: 'auto', icon: <Sparkles size={15} /> },
 ]
 
 /** Storage key for one slot's preference. A slot-less consumer gets a scoped
@@ -52,13 +75,21 @@ function busySendModeKey(slotKey?: string | null): string {
   return `${BUSY_SEND_MODE_LS_KEY}:${slotKey || 'no-slot'}`
 }
 
+/** The stored spelling of a mode, or `'steer'` for anything this build does not
+ *  know. Unrecognised reads as the shipped default rather than as the last value
+ *  written: storage outlives a build, so a mode a future version adds must not
+ *  leave an older one sending with a flag its gateway never learned. */
+function asMode(stored: string | null): BusySendMode {
+  return stored === 'queue' || stored === 'auto' ? stored : 'steer'
+}
+
 export function readBusySendMode(slotKey?: string | null): BusySendMode {
   const scoped = safeGetItem(busySendModeKey(slotKey))
-  if (scoped !== null) return scoped === 'queue' ? 'queue' : 'steer'
+  if (scoped !== null) return asMode(scoped)
   // Migration fallback: before per-slot scoping the preference lived under the
   // unscoped key. A slot that has never chosen a mode inherits that value, so
   // an existing "queue" user keeps their default instead of being reset.
-  return safeGetItem(BUSY_SEND_MODE_LS_KEY) === 'queue' ? 'queue' : 'steer'
+  return asMode(safeGetItem(BUSY_SEND_MODE_LS_KEY))
 }
 
 /**
@@ -69,7 +100,7 @@ export function readBusySendMode(slotKey?: string | null): BusySendMode {
  * describes: sessions that made their own choice keep it, everyone else follows.
  */
 export function readBusySendDefault(): BusySendMode {
-  return safeGetItem(BUSY_SEND_MODE_LS_KEY) === 'queue' ? 'queue' : 'steer'
+  return asMode(safeGetItem(BUSY_SEND_MODE_LS_KEY))
 }
 
 export function setBusySendDefault(mode: BusySendMode): boolean {
@@ -138,12 +169,20 @@ export default function BusySendButton({
   onFire,
   disabled = false,
   altChordAvailable = false,
+  autoAvailable = false,
 }: {
   mode: BusySendMode
   onModeChange: (m: BusySendMode) => void
   /** Fire the currently selected mode with the composer's text. */
   onFire: () => void
   disabled?: boolean
+  /**
+   * Whether `Auto (Jev)` may be offered: the gateway reports the Decisions seam
+   * as permitted by governance AND consented to. Only the host knows, and it
+   * defaults to FALSE so a surface that never asks cannot offer a mode whose
+   * answer the gateway would refuse to make.
+   */
+  autoAvailable?: boolean
   /**
    * Whether ⌘↩ / Ctrl+Enter currently performs the OTHER action for one send.
    * Only the host knows (it depends on the send-key mode), and the menu must not
@@ -199,7 +238,7 @@ export default function BusySendButton({
 
   return (
     <div className="relative flex items-center" ref={splitRef}>
-      <div className={`flex items-stretch h-8 rounded-full overflow-hidden transition-colors ${mode === 'steer' ? 'bg-accent text-accent-fg' : 'bg-warn text-warn-fg'}`}>
+      <div className={`flex items-stretch h-8 rounded-full overflow-hidden transition-colors ${mode === 'queue' ? 'bg-warn text-warn-fg' : 'bg-accent text-accent-fg'}`}>
         {/* Only the fire half dims when disabled: the caret (mode toggle) stays
             live because picking steer-vs-queue before typing is a real workflow,
             and a dimmed control that still works would read as broken. */}
@@ -207,11 +246,12 @@ export default function BusySendButton({
           className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 hover:bg-black/15 transition-all text-inherit"
           onClick={onFire}
           disabled={disabled}
-          title={mode === 'steer' ? i18nT('components.chatInput.steer_act_on_this_as_soon_as_possible_enter') : i18nT('components.chatInput.queue_run_after_the_current_work_finishes_enter')}
-          aria-label={mode === 'steer' ? i18nT('components.chatInput.steer') : i18nT('components.chatInput.queue_message')}
+          title={FIRE_TITLE_KEY[mode] ? i18nT(FIRE_TITLE_KEY[mode]) : ''}
+          aria-label={FIRE_LABEL_KEY[mode] ? i18nT(FIRE_LABEL_KEY[mode]) : ''}
           data-testid="busy-send-button"
+          data-mode={mode}
         >
-          {mode === 'steer' ? <Target size={16} /> : <ArrowUpFromLine size={16} />}
+          {mode === 'queue' ? <ArrowUpFromLine size={16} /> : mode === 'auto' ? <Sparkles size={16} /> : <Target size={16} />}
         </button>
         <div className="w-px my-1.5 bg-current opacity-40" aria-hidden="true" />
         <button
@@ -241,7 +281,7 @@ export default function BusySendButton({
           className="fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]"
           style={{ left: Math.max(8, Math.min(menuRect.right - 250, window.innerWidth - 250 - 8)), bottom: window.innerHeight - menuRect.top + 8 }}
         >
-          {BUSY_SEND_MODES.map(({ mode: m, icon }) => (
+          {BUSY_SEND_MODES.filter(({ mode: m }) => m !== 'auto' || autoAvailable).map(({ mode: m, icon }) => (
             <button
               key={m}
               role="menuitemradio"
@@ -255,7 +295,7 @@ export default function BusySendButton({
               className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-hidden transition-colors cursor-pointer text-left border-none"
               data-testid={`busy-send-mode-${m}`}
             >
-              <span className={`shrink-0 ${m === 'steer' ? 'text-accent' : 'text-warn'}`}>{icon}</span>
+              <span className={`shrink-0 ${m === 'queue' ? 'text-warn' : 'text-accent'}`}>{icon}</span>
               <div className="min-w-0 flex-1">
                 <div className="text-[12px] font-medium text-text">{i18nT(BUSY_SEND_MODE_LABEL_KEY[m])}</div>
                 <div className="text-[11px] text-muted leading-snug">{i18nT(BUSY_SEND_MODE_DESC_KEY[m])}</div>
@@ -270,9 +310,13 @@ export default function BusySendButton({
               last option's description. */}
           {altChordAvailable && (
             <div className="text-[11px] text-muted px-2 pt-1.5 pb-1 border-t border-border mt-1">
-              {mode === 'steer'
-                ? i18nT('components.chatInput.alt_action_hint_queues', { chord: platformShortcut('Cmd+Enter') })
-                : i18nT('components.chatInput.alt_action_hint_steers', { chord: platformShortcut('Cmd+Enter') })}
+              {/* The chord takes the OTHER action for one send. From `queue` that
+                  is a steer; from `steer` and from `auto` it is a queue, because
+                  a one-off flip out of `auto` is the sender overriding the
+                  decision rather than asking for one. */}
+              {mode === 'queue'
+                ? i18nT('components.chatInput.alt_action_hint_steers', { chord: platformShortcut('Cmd+Enter') })
+                : i18nT('components.chatInput.alt_action_hint_queues', { chord: platformShortcut('Cmd+Enter') })}
             </div>
           )}
         </div>,

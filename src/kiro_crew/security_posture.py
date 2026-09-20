@@ -121,6 +121,23 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "carries no unredacted byte.",
     ),
     (
+        "Mid-turn handling decisions",
+        "decisions/points/message_steer.py",
+        "The running turn's own request and its newest assistant text and tool "
+        "activity, sent to the third-party judge that decides whether a message "
+        "typed into that turn interrupts it or waits for the next one. Unlike the "
+        "gate above it, this module EMITS its redacted bytes: the cleaned excerpt "
+        "is what leaves the machine, because refusing on it would turn 'the reply "
+        "quoted an env file' into 'the seam stopped deciding'. Both scanners run, "
+        "in the order credential-then-URL, over each half in FULL, and the clip to "
+        "the consented budget is taken AFTER them -- a cut placed first can halve a "
+        "secret, and a half is a fragment neither pattern matches, which is the "
+        "same order `tool_risk.scrubbed` states; a scanner that fails yields the empty "
+        "string rather than the input, and the gate's own scan still refuses the "
+        "whole request for a spelling this pass missed. Nothing else about the "
+        "turn is sent -- private reasoning is excluded at the read.",
+    ),
+    (
         "Member capability editor responses",
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "

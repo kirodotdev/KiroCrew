@@ -5821,6 +5821,9 @@
       "closing_terminal": "正在关闭终端…"
     },
     "chatInput": {
+      "auto_jev": "自动 (Jev)",
+      "auto_jev_desc": "由 Jev 决定：立即处理，或稍后执行",
+      "auto_jev_enter": "自动 (Jev) — 由 Jev 决定立即处理还是稍后执行 (Enter)",
       "approval_hint_adjust": "调整审批模式",
       "approval_hint_question": "不想每次都确认？",
       "send_a_message_or_tap_the_mic_for_voice": "发消息，或点麦克风用语音",
@@ -10191,6 +10194,12 @@
         "moment_approval_decided": "审批已回复"
       },
       "decisionStrip": {
+        "steer_confidence": "置信度 {{p}}",
+        "steer_rate_label": "此判断",
+        "steer_chose_queue": "Jev 的选择：本轮结束后执行",
+        "steer_chose_steer": "Jev 的选择：打断本轮",
+        "steer_rate_right": "Jev 判断正确",
+        "steer_rate_wrong": "Jev 判断错误",
         "agreed": "两边选出的技能相同",
         "agreed_named": "Jev 与词语匹配：{{names}}",
         "agreed_short": "选择相同",

@@ -1,11 +1,19 @@
 /**
  * The read model behind the transcript's decision strip.
  *
- * The gateway stamps one record on the assistant row that ends a turn whose
- * skill set was chosen by asking Jev (`decisions/points/skills_select.py`). The
- * strip renders that record and nothing else: it makes no request of its own to
- * learn what happened, so a transcript reloaded from disk and one that arrived
- * live say the same thing.
+ * The gateway stamps one record on the row a decision shaped. A turn whose skill
+ * set was chosen by asking Jev (`decisions/points/skills_select.py`) carries it on
+ * the ASSISTANT row that ends the turn; a message whose mid-turn handling was
+ * chosen (`decisions/points/message_steer.py`) carries it on that message's own
+ * USER row, because that is what the decision was about. Both render from the
+ * record and nothing else: neither makes a request of its own to learn what
+ * happened, so a transcript reloaded from disk and one that arrived live say the
+ * same thing.
+ *
+ * Which record a payload is comes from its own `point`, never from which fields
+ * happen to be present: an absent point reads as `skills.select`, which is what
+ * the only earlier producer stamped, and a named point this reader does not know
+ * draws nothing rather than being guessed at as the older shape.
  *
  * Every field is validated here rather than at the render site, for the reason
  * `decisionsPreview.ts` gives about consent: this payload names what left the
@@ -28,7 +36,7 @@
  */
 import type { DecisionFeedbackSide, DecisionVerdictValue } from '../../api/client'
 import type { ChatMessage } from '../../types'
-import { DECISIONS_LIVE_POINT } from '../settings/decisionsPreview'
+import { DECISIONS_LIVE_POINT, DECISIONS_STEER_POINT } from '../settings/decisionsPreview'
 
 /** A skill the answer named that the gate then refused, with its own score. */
 export interface DecisionStripDropped {
@@ -196,6 +204,69 @@ export function readDecisionStrip(raw: unknown): DecisionStripRecord | null {
     latencyMs: asCount(root.latency_ms),
     dropped,
     error,
+  }
+}
+
+/**
+ * One mid-turn handling decision, as the line on the user row prints it.
+ *
+ * `point` is `message.steer` and is what tells this record from the skill one, so
+ * it is kept rather than derived: the discriminator has to survive into the
+ * rendered value, or the renderer would have to re-sniff fields.
+ */
+export interface SteerDecisionRecord {
+  /** Identifies the decision this line is about; the feedback POST's subject. */
+  turnId: string
+  /** Always `message.steer`. */
+  point: typeof DECISIONS_STEER_POINT
+  /** Which path Jev chose: `steer` (interrupt the running turn) or `queue`. */
+  choice: 'steer' | 'queue'
+  /** Jev's own confidence, or `null` when the answer carried none. */
+  p: number | null
+  /**
+   * How long the decision took, in whole milliseconds.
+   *
+   * There is no `error` field, and its absence is the producer's contract rather
+   * than an omission here: a `message.steer` decision that FAILED takes the
+   * shipped steer path and stamps no record at all, so a receipt exists only for
+   * a decision that was actually made.
+   */
+  latencyMs: number
+}
+
+/** The two paths a `message.steer` record may name. Any other value is not one. */
+const STEER_CHOICES = ['steer', 'queue'] as const
+
+/**
+ * Validate one raw mid-turn handling record. `null` means "draw nothing".
+ *
+ * `choice` is required and is held against the two paths the gateway offers,
+ * unlike the model point's open tier list: this value names one of exactly two
+ * shipped code paths, so a third would describe a branch that does not exist
+ * rather than one this reader has not learned about yet.
+ *
+ * The record's `baseline` is deliberately NOT read: it is `steer` on every row --
+ * the one arm a refusal keeps -- so a line printing it would print the same word
+ * forever, which is the furniture this file's own rule excludes. It stays on the
+ * logged row, where a `jq` fold over the day-files uses it.
+ */
+export function readSteerRecord(raw: unknown): SteerDecisionRecord | null {
+  const root = asRecord(raw)
+  if (!root) return null
+  if (typeof root.point === 'string' && root.point && root.point !== DECISIONS_STEER_POINT) return null
+  const turnId = typeof root.turn_id === 'string' ? root.turn_id : ''
+  if (!turnId) return null
+  const raw_choice = typeof root.choice === 'string' ? root.choice.trim() : ''
+  const choice = STEER_CHOICES.find(name => name === raw_choice)
+  if (!choice) return null
+  const rawP = root.p
+  const p = typeof rawP === 'number' && Number.isFinite(rawP) && rawP >= 0 && rawP <= 1 ? rawP : null
+  return {
+    turnId,
+    point: DECISIONS_STEER_POINT,
+    choice,
+    p,
+    latencyMs: asCount(root.latency_ms),
   }
 }
 

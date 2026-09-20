@@ -5915,6 +5915,9 @@
       "closing_terminal": "टर्मिनल बंद हो रहा है…"
     },
     "chatInput": {
+      "auto_jev": "स्वतः (Jev)",
+      "auto_jev_desc": "Jev चुने: अभी लागू करें, या बाद में चलाएँ",
+      "auto_jev_enter": "स्वतः (Jev) — Jev तय करता है कि अभी लागू करें या बाद में चलाएँ (Enter)",
       "approval_hint_adjust": "अनुमोदन मोड समायोजित करें",
       "approval_hint_question": "हर बार पुष्टि करते-करते थक गए?",
       "send_a_message_or_tap_the_mic_for_voice": "संदेश भेजें, या वॉइस के लिए माइक टैप करें",
@@ -10334,6 +10337,12 @@
         "moment_approval_decided": "अनुमोदन का उत्तर दिया"
       },
       "decisionStrip": {
+        "steer_confidence": "भरोसा {{p}}",
+        "steer_rate_label": "यह चुनाव",
+        "steer_chose_queue": "Jev ने चुना: इस बारी के बाद चलाएँ",
+        "steer_chose_steer": "Jev ने चुना: इस बारी को रोकें",
+        "steer_rate_right": "Jev का चुनाव सही था",
+        "steer_rate_wrong": "Jev का चुनाव गलत था",
         "agreed": "दोनों ने एक ही स्किल चुनीं",
         "agreed_named": "Jev और शब्द मिलान: {{names}}",
         "agreed_short": "एक ही पसंद",

@@ -25,6 +25,7 @@ import ChatFooter from '../pages/chat/ChatFooter'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
 import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
+import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
@@ -400,6 +401,9 @@ export default function ChatPane({
   // Quick Send parity with ChatPage: same query key, so the cache is shared
   // with the page and no extra request is made for a pane.
   const { data: dashCfg } = useQuery<{ quick_send?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
+  // Whether the split send button may offer `Auto (Jev)`: the fleet ceiling and
+  // the owner's consent, both the gateway's answers (see useJevAutoSend).
+  const jevAutoConsented = useJevAutoSend()
   // Follow-up bar layout: the same persisted setting ChatPage reads, kept live
   // the same way (ChatPage.tsx's reload listener) — a pane is long-lived, so a
   // one-shot read would leave it on the old layout after the user changes the
@@ -910,7 +914,7 @@ export default function ChatPane({
   // kiro-cli's steer channel is TEXT-ONLY, so attachments ride as ChatPage's
   // steer sends them — inlined by prepareSendPayload (images as markdown, other
   // files as `[attached_file N]` tokens), the same wire shape doSend now uses.
-  const doSteer = useCallback(() => {
+  const doSteer = useCallback((opts?: { auto?: boolean }) => {
     // Nothing to inject into: busy purely because background sub-agents are
     // still running (the parent turn already ended). Same intent — act on
     // this now — so start a real turn through the normal send path with the
@@ -949,7 +953,11 @@ export default function ChatPane({
     // Cleared HERE (not in ChatInput) so text and attachments clear atomically.
     setInput('')
     setPendingFiles([])
-    void sendTurn({ message: txt, slot: slotKey, steer: true, meta: steerMeta }).then((receipt) => {
+    // `auto` hands the steer-or-queue choice to the gateway for this message
+    // (`decisions/points/message_steer.py`); the receipt policy below is unchanged,
+    // because a decided send still comes back as a steer's `dispatched` or a
+    // queue's `queued`.
+    void sendTurn({ message: txt, slot: slotKey, steer: opts?.auto === true ? 'auto' : true, meta: steerMeta }).then((receipt) => {
       // Receipt policy, owned once in chat-core (issue #9457) -- the same
       // rulings as ChatPage's steerMutation. applySteerReceipt decides WHICH
       // ruling; the adapter below is this pane's HOW.
@@ -1575,6 +1583,10 @@ export default function ChatPane({
           // `steer-only` host gets a plain send that steers.
           canSteer={busy}
           onSteer={doSteer}
+          // AND a turn actually running: `busy` also covers a slot whose
+          // sub-agents are still working, where the send starts a fresh turn and
+          // there is no running turn for the point to decide about.
+          jevAutoAvailable={jevAutoConsented && running}
           busyMode={busyMode}
           autoFocusKey={slotKey}
           agentName={paneAgentName}

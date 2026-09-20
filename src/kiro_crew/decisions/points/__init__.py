@@ -1,7 +1,12 @@
 """Business adapters for the Jev decision seam.
 
-``skills.select`` is the sole adapter. An exact offered key selects a skill,
-an explicit no-skill answer selects none, and a refusal keeps trigger matching.
+Two adapters. ``skills.select`` picks the skill a message loads: an exact offered
+key selects one, an explicit no-skill answer selects none, and a refusal keeps
+trigger matching. ``message.steer`` decides whether a message sent into a RUNNING
+turn steers it or queues for the next one, and a refusal takes the steer path the
+composer has always defaulted to. Each adapter's refusal is the shipped behaviour,
+never a third outcome.
+
 The core package owns transport, sampling and diagnostic logging.
 """
 

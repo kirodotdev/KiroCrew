@@ -6009,6 +6009,9 @@
       "closing_terminal": "Fermeture du terminal…"
     },
     "chatInput": {
+      "auto_jev": "Automatique (Jev)",
+      "auto_jev_desc": "Laisser Jev choisir : agir maintenant ou exécuter ensuite",
+      "auto_jev_enter": "Automatique (Jev) — Jev choisit d'agir maintenant ou d'exécuter ensuite (Entrée)",
       "approval_hint_adjust": "Régler le mode d'approbation",
       "approval_hint_question": "Fatigué de confirmer chaque étape ?",
       "send_a_message_or_tap_the_mic_for_voice": "Envoyer un message ou appuyer sur le micro pour la voix",
@@ -10477,6 +10480,12 @@
         "moment_approval_decided": "validation tranchée"
       },
       "decisionStrip": {
+        "steer_confidence": "confiance {{p}}",
+        "steer_rate_label": "Ce choix",
+        "steer_chose_queue": "Jev a choisi : exécuter après ce tour",
+        "steer_chose_steer": "Jev a choisi : interrompre ce tour",
+        "steer_rate_right": "Jev a fait le bon choix",
+        "steer_rate_wrong": "Jev a fait le mauvais choix",
         "agreed": "Les deux ont choisi les mêmes compétences",
         "agreed_named": "Jev et correspondance de mots : {{names}}",
         "agreed_short": "même choix",

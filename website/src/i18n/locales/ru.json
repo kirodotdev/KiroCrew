@@ -6103,6 +6103,9 @@
       "closing_terminal": "Закрытие терминала…"
     },
     "chatInput": {
+      "auto_jev": "Автоматически (Jev)",
+      "auto_jev_desc": "Пусть Jev решит: действовать сейчас или выполнить после",
+      "auto_jev_enter": "Автоматически (Jev) — Jev решает, действовать сейчас или выполнить после (Enter)",
       "approval_hint_adjust": "Настроить режим одобрения",
       "approval_hint_question": "Надоело подтверждать каждый шаг?",
       "send_a_message_or_tap_the_mic_for_voice": "Отправьте сообщение или нажмите микрофон для голоса",
@@ -10620,6 +10623,12 @@
         "moment_approval_decided": "подтверждение дано"
       },
       "decisionStrip": {
+        "steer_confidence": "уверенность {{p}}",
+        "steer_rate_label": "Этот выбор",
+        "steer_chose_queue": "Jev выбрал: выполнить после этого хода",
+        "steer_chose_steer": "Jev выбрал: прервать этот ход",
+        "steer_rate_right": "Jev выбрал верно",
+        "steer_rate_wrong": "Jev выбрал неверно",
         "agreed": "Оба выбрали одни и те же навыки",
         "agreed_named": "Jev и совпадение слов: {{names}}",
         "agreed_short": "выбор совпал",

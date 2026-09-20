@@ -306,6 +306,82 @@ def _deny_app_yolo(request_app: str, operation: str) -> web.Response:
     )
 
 
+#: Row-meta keys a REQUEST may never supply, because the gateway mints them and a
+#: surface reads them as the gateway's own claim. ``decisions_strip`` is a Jev
+#: decision receipt with a verdict control attached (``decisions/points/
+#: message_steer.py``, ``website/src/pages/chat/SteerDecisionLine.tsx``), so a
+#: caller-supplied one would render a decision nobody made.
+RESERVED_ROW_META_KEYS = frozenset({"decisions_strip"})
+
+#: The ``steer`` value that means "let Jev choose between the two paths" rather
+#: than naming one. A STRING beside the boolean the two manual modes send, so the
+#: manual wire is untouched: ``steer: true`` still steers and an absent flag still
+#: queues, byte for byte, whatever this build decides about ``auto``.
+STEER_AUTO = "auto"
+
+
+def steer_is_auto(value: object) -> bool:
+    """Whether a send's ``steer`` flag asks Jev to choose the path.
+
+    Only the exact string, case- and space-insensitively. A boolean ``True`` is a
+    MANUAL steer and must never read as auto: that flag is what every existing
+    client sends, and reading it as a request to decide would put an oracle on a
+    path the sender already answered.
+    """
+    return isinstance(value, str) and value.strip().lower() == STEER_AUTO
+
+
+async def decided_message_handling(slot: Any, message: str) -> tuple[bool, dict | None]:
+    """Ask ``message.steer`` whether *message* queues instead of steering.
+
+    Returns ``(queues, record)``: whether to take the QUEUE path, and the decision
+    row to stamp on the persisted user row (``None`` when nothing was decided, or
+    when the row itself was refused).
+
+    A BOOLEAN rather than the point's choice string, so the caller holds no copy of
+    that vocabulary and cannot drift from it: every refusal -- the seam off, the
+    session unsampled, a timeout, an answer outside the two options, a failed
+    import -- is ``False``, which is the steer path a manual Steer and the
+    composer's default have always taken.
+
+    Called for a send the dashboard's own human made while a turn is running, and
+    nowhere else (the busy branch's ``not request_app`` conjunct): an app token, an
+    integration or a cron has nobody watching the reply, and every such send
+    already falls through to the fail-closed queue. Consent and sampling are the
+    seam's own gates, re-checked inside ``decide``.
+
+    Never raises except cancellation. The seam may cost an observation and must
+    never cost a send.
+    """
+    try:
+        # Imported HERE, not at module scope: this module is on the gateway's boot
+        # path and the decisions package is optional, off by default, and pulls the
+        # config loader in behind it.
+        from kiro_crew.decisions.points import message_steer
+
+        session_key = effective_session_key(slot)
+        decided = await message_steer.steer_or_queue(
+            message,
+            session_key=session_key,
+            # The live list, sliced and read off the loop by the point; nothing is
+            # written back.
+            rows=getattr(slot, "messages", ()) or (),
+        )
+        if decided is None:
+            return False, None
+        # The row is written BEFORE the path is taken, and the receipt is stamped
+        # only when it landed: the strip's thumbs POST this turn id, so a receipt
+        # from a row `append` refused would invite a verdict about a decision the
+        # log does not hold. Off the loop -- the append locks a file.
+        record = await asyncio.to_thread(message_steer.record_outcome, session_key, decided)
+        return decided.get("choice") == message_steer.CHOICE_QUEUE, record
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("message.steer: taking the shipped default", exc_info=True)
+        return False, None
+
+
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE."""
     state: DashboardState = request.app["state"]
@@ -320,6 +396,20 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_meta = body.get("meta")  # knowledge/files/pastes metadata from frontend
     if not isinstance(user_meta, dict):
         user_meta = None
+    else:
+        # The row's decision receipt is SERVER-minted and must never be one a
+        # caller can write. `meta` rides verbatim onto the persisted user row
+        # (`_redact_meta` redacts string values; it is not an allowlist) and onto
+        # the queue entry, and the transcript renders `meta.decisions_strip` as a
+        # Jev decision with a verdict control whose POST names the turn id in it.
+        # So an app token or any other caller could otherwise stamp a decision
+        # nobody made and file feedback against it. Dropped HERE, where the field
+        # enters, so every downstream user of `user_meta` -- the dispatch row, the
+        # busy-slot queue entry, the sub-agent hold -- is covered by one gate
+        # rather than each remembering.
+        user_meta = {k: v for k, v in user_meta.items() if k not in RESERVED_ROW_META_KEYS}
+        if not user_meta:
+            user_meta = None
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -699,7 +789,34 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # start a concurrent turn. The orchestrating flag keeps it on the queue
         # path (steer is unavailable between stages, so it falls through to the
         # queue below and is held until the plan ends).
-        if body.get("steer") and not request_app:
+        # `steer: "auto"` is the composer's third mode: the sender asked Jev which
+        # of the two shipped paths this message takes. Decided HERE, above both
+        # branches, because the answer chooses between them -- and only here, where
+        # a turn IS running (this branch's own condition) and the send is the
+        # session's own human, are the point's preconditions already established.
+        #
+        # Resolved before the steer `if` rather than inside it, so the steer block
+        # below keeps its exact shape: the only thing `auto` changes about it is one
+        # more conjunct on its condition and the receipt it stamps.
+        _auto_strip: dict | None = None
+        _auto_queues = False
+        if steer_is_auto(body.get("steer")) and not request_app:
+            # The turn the question is ABOUT, captured before the await. The
+            # decision is a provider round-trip, so the turn it describes can end
+            # while it is in flight -- and an answer about a turn that is gone is
+            # not an answer about this send: "interrupt what it is doing" names
+            # work that finished, and a successor turn is a different subject.
+            # On a change the send takes the manual steer path (this branch's own
+            # default) and carries NO receipt, because the decision that was made
+            # is not about the turn the message now reaches. The row is still in
+            # the log, where it belongs -- the receipt is what would misattribute
+            # it.
+            _turn_before = slot.task
+            _auto_queues, _auto_strip = await decided_message_handling(slot, message)
+            if slot.task is not _turn_before:
+                _auto_queues = False
+                _auto_strip = None
+        if body.get("steer") and not request_app and not _auto_queues:
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -727,6 +844,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # that -- a new outbound mirror is never exempt, because the author
                 # does not control mirror links -- so the composer needs the stamp too.
                 admission=_containment_meta(state, slot),
+                # The receipt for an `auto` send that was decided; absent for a
+                # manual steer, which is what keeps that row byte-identical.
+                decision_strip=_auto_strip,
             )
             if outcome == STEER_STEERED:
                 return web.json_response({"ok": True, "steered": True})
@@ -794,6 +914,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             directive_user_origin=not bool(request_app),
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
             attachments=attachment_meta(user_meta),
+            # The receipt travels whichever way the send went, including the one
+            # case where the two disagree: `auto` answered steer and the steer was
+            # UNAVAILABLE, so this path runs with a record saying steer. That is the
+            # truth of the decision, and the row's own `steerState` is what says how
+            # the delivery ended -- a receipt withheld there would lose the only
+            # record that a decision was made at all.
+            decision_strip=_auto_strip,
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
