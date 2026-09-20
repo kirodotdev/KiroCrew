@@ -9527,6 +9527,23 @@ async def _run_chat(
         # here — build_message maps these bounds to their final position itself.
         user_typed_message = message
         user_typed_len = len(user_typed_message)
+        # The crew log turn ordinal is resolved HERE, above the @prompt expansion
+        # gate, rather than only at the emit block below. A blocked or oversized
+        # expansion returns before that block, so computing it there left a refused
+        # expansion with no crew log entry at all -- neither the accepted input nor
+        # the refusal. Resolving it now lets the refusing branch record the same
+        # pair the dispatch gates already do: the ``message/received`` for the
+        # accepted input and a ``turn/refused`` naming the reason. Nothing between
+        # here and the emit block appends a durable row or advances
+        # ``_disk_older_durable_count`` (the mid-turn clear that does is inside the
+        # stream loop, far below), so this single computation is exactly what the
+        # accepted path would otherwise have read -- the emit block reuses it rather
+        # than recomputing it. `durable_row_count` is the SHARED counting rule every
+        # site that sets or advances that base uses, so the ordinal cannot disagree
+        # with the base about which rows are durable.
+        _crew_log_turn_no = int(
+            getattr(slot, "_disk_older_durable_count", 0) or 0
+        ) + durable_row_count(slot.messages)
         # A quick prompt is a REPLACING expansion, the same class as @prompt: the
         # instruction the model receives is injected content, not the user's typing,
         # so none of it is attributable to them. This flag drives the FALLBACK
@@ -9573,6 +9590,31 @@ async def _run_chat(
                 )
                 slot.append("system", f"🔒 Prompt blocked — {label}.", "msg msg-info")
                 state.push_slots_update()
+                # Append-only the session's log (flag-gated, fail-soft). This gate
+                # returns above the normal emit block, so without these two calls a
+                # refused expansion would leave the accepted turn with no entry at
+                # all. Record the accepted input and then a ``turn/refused`` naming
+                # the reason -- the same pair every dispatch gate below writes for
+                # ``not_authorized`` and its siblings. The composed request does not
+                # exist yet here, so ``request/configured`` and ``context/composed``
+                # are deliberately NOT written: the contract on a refusal is the
+                # accepted input plus the refusal, not facts derived from a request
+                # that was never assembled.
+                crew_log_emit.on_message_received(
+                    _crew_log_sid,
+                    _crew_log_turn_no,
+                    role="user",
+                    text=user_typed_message,
+                    source=telemetry_channel_of(session_key),
+                    attachments=_attachments,
+                )
+                crew_log_emit.on_turn_refused(
+                    _crew_log_sid,
+                    _crew_log_turn_no,
+                    _status,
+                    _crew_log_actor,
+                    depth=_prompt_depth,
+                )
                 return
             elif _status == "not_found":
                 sel().log_tool_invocation(
@@ -10272,10 +10314,11 @@ async def _run_chat(
         # has to be threaded through either path.
         # `durable_row_count` is the SHARED counting rule every site that sets or
         # advances that base uses, so the ordinal cannot disagree with the base
-        # about which rows are durable.
-        _crew_log_turn_no = int(
-            getattr(slot, "_disk_older_durable_count", 0) or 0
-        ) + durable_row_count(slot.messages)
+        # about which rows are durable. It is resolved ONCE, above the @prompt
+        # expansion gate (see the hoist there), and reused here: nothing between
+        # the two points appends a durable row or advances the base, so the value
+        # this path reads is the value the refusal branch already recorded against.
+        # Recomputing it here would be the same expression twice.
 
         # Append-only the session's log: what the request was configured as, what
         # the gateway put in front of the model, and the body it accepted. All

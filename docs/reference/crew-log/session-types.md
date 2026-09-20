@@ -190,7 +190,7 @@ attracts a repair closer.
 |---|---|---|---|---|
 | `turn` | int | required | Turn ordinal. | |
 | `actor` | string | required | Who caused the turn. Same folding as `turn/started`. | `user`, `app`, `crew`, `cron`, `autonudge`, `subagent`, `gateway`, `other` |
-| `reason` | string | required | Which gate refused. The writer records the caller's value without constraining it. | `not_authorized`, `gateway_closing`, `stopped_before_dispatch` |
+| `reason` | string | required | Which gate refused. The writer records the caller's value without constraining it. | `not_authorized`, `gateway_closing`, `stopped_before_dispatch`, `replay_superseded_before_dispatch`, `blocked`, `too_large` |
 | `depth` | int | required | Prompt depth. | |
 
 **Invariants** — No `turn/completed` follows it for that ordinal.
@@ -288,7 +288,9 @@ The body of a message the gateway accepted into this session.
 **Kind and `src`** — `session`; `src` is `gateway`.
 
 **When written** — Before the dispatch gates, so a refused turn still shows what
-was said.
+was said. A turn a gate refuses — including a blocked or oversized `@prompt`
+expansion — writes this entry and then a [`turn/refused`](#turnrefused), the same
+pair every dispatch gate records.
 
 **Pairing** — None, but on an oversize body it cites its
 [`message/chunk`](#messagechunk) entries and is written in the same batch as them.
@@ -462,19 +464,24 @@ there are no blocks to tally.
 | `chars` | int | required | Total characters. | |
 | `tokens` | int | required | Estimated tokens. | |
 | `tokens_estimated` | bool | required | Always `true`. | `true` |
-| `step` | int | optional | Model call ordinal. Omitted when 0. | |
+| `step` | int | optional | Model call ordinal. Omitted when 0. A turn-opening composition is written before the first `step/started`, so it is step-less; join it to the turn's FIRST model call. | |
 
 **Invariants** — `tokens` is an estimate derived from `chars`, which is why
 `tokens_estimated` is written on every entry rather than only when it is true.
 Blocks with no classification are folded into a single `other` source, so `sources`
-does not enumerate every injected block by name.
+does not enumerate every injected block by name. A step-less `context/composed`
+belongs to its turn's first model call: the context is composed once, in front of
+the call that opens as step 1, and the entry is written before that opener, so it
+cannot carry the ordinal without dropping below the `message/received` it is derived
+from.
 
 ```json
 {"type":"context/composed","seq":9,"time":1789000000140,"src":"gateway","data":{"turn":3,"sources":[{"kind":"system","chars":4000,"tokens":1000},{"kind":"other","chars":1200,"tokens":300}],"chars":5200,"tokens":1300,"tokens_estimated":true}}
 ```
 
 **Reader hint** — Do not report these token numbers as billed usage. The billed
-figures are on [`turn/completed`](#turncompleted).
+figures are on [`turn/completed`](#turncompleted). An entry with no `step` is the
+turn's opening composition; attribute it to the turn's first model call.
 
 **Since** — #10091.
 
@@ -495,14 +502,19 @@ again at each transition from a tool group back to text.
 | `step` | int | required | Model call ordinal, from 1. | |
 
 **Invariants** — Steps are numbered within a turn, so `(turn, step)` identifies a
-model call.
+model call. The boundary is DERIVED from a tool group followed by fresh text, the
+only per-call transition the stream exposes, so a step MAY cover consecutive
+tool-only model calls: a turn that calls tools, is called again with their results
+and calls more tools, speaking only at the end, shows one such transition and folds
+those calls into one step.
 
 ```json
 {"type":"step/started","seq":14,"time":1789000000220,"src":"gateway","data":{"turn":3,"step":1}}
 ```
 
-**Reader hint** — Step count per turn is the cheapest measure of how much
-tool-calling a turn did.
+**Reader hint** — Step count per turn is a LOWER BOUND on the turn's model calls,
+not an exact count: consecutive tool-only calls may share one step. Use `call_index`
+on the tool entries to order every tool call regardless of how the steps fell.
 
 **Since** — #10091.
 
@@ -601,7 +613,11 @@ closes still-open calls at a tool-group boundary or at turn end; crash repair.
 **Invariants** — `status: "unknown"` means the writer could not observe the
 outcome, not that the tool failed. Both `cancelled` and `canceled` occur, because the
 word is the backend's and is not normalized on the way in. A sweep close carries
-`result_bytes: 0` and no `result_hash`.
+`result_bytes: 0` and no `result_hash`. Exactly one `tool/completed` is written per
+`call_id`: the first terminal frame settles the call, and a later terminal frame for
+the same id — the two update parsers can each emit one — writes nothing. A terminal
+frame for a call whose `tool/called` was never recorded still gets its closer, so an
+unmatched completion is a real close rather than a dropped one.
 
 ```json
 {"type":"tool/completed","seq":18,"time":1789000000400,"src":"acp","data":{"turn":3,"call_id":"c-01","name":"read","server":"","status":"completed","call_index":1,"step":1,"elapsed_ms":90,"result_hash":"1a3c9e02","result_bytes":512}}

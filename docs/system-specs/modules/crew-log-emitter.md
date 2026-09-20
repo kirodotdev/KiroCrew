@@ -204,6 +204,28 @@ writing either first puts a derived fact at a lower seq than its cause -- contex
 composed for a message the log has not yet admitted arrived. All three still precede
 the dispatch gates, so a refused turn shows what was asked.
 
+`context/composed` carries no `step` at this site. It is written before the turn's
+first `step/started`, so no model call has been announced yet, and giving it one
+would mean either emitting it after that opener -- which drops it below
+`message/received`, the very inversion this ordering rule forbids -- or minting a
+step before the first call really opened. So the entry stays step-less, and the
+join is a READER rule rather than a field: **a `context/composed` with no `step`
+belongs to its turn's first model call.** A turn composes its context once, in
+front of the call that `step/started` then opens as step 1, so the first call is the
+only one a step-less composition can name. A later composition, if one is ever
+emitted per call, would carry its own `step`; the step-less form is specifically the
+turn-opening one.
+
+The refusal gates keep the front half of this order and drop the derived half. A
+turn a gate refuses -- an unauthorized dispatch, a gateway closing, a stop before
+dispatch, a superseded replay, or a **blocked or oversized `@prompt` expansion** --
+writes `message/received` for the accepted input and then `turn/refused` naming the
+reason, and writes NEITHER `request/configured` NOR `context/composed`: those are
+derived from a request that a refused turn never assembled. The `@prompt` expansion
+gate returns before the request is composed, the same as every other refusal gate,
+so it records the same pair rather than nothing -- the accepted input a reader most
+needs to see beside the refusal is still there.
+
 ### `session/closed` is a teardown, not the end of the file
 
 A forced reset -- the model-switch route called with `skip_running` false -- tears a
@@ -228,7 +250,10 @@ What the teardown must not do is erase state its live turns still need. The clea
 drops the config echo baseline and the attempt counts -- what a successor must not
 inherit -- and, of the open tool calls, only those whose turn is already gone. Dropping
 all of them left a live turn's calls open for the life of the file, because its own
-`close_open_tool_calls` then found nothing to close.
+`close_open_tool_calls` then found nothing to close. The settle-once markers a call
+leaves behind are swept on that same rule -- only for turns already gone -- so a closed
+session leaves neither the open-call registry nor its settle markers behind, while a
+turn still running keeps its own markers to suppress its own late duplicate frames.
 
 The cached HANDLE follows the same rule, and with write ownership bound to it the rule
 is load-bearing rather than tidy: a forced reset tears the session down mid-turn, so
@@ -370,6 +395,37 @@ done, and the turn's terminal event. The closer carries `result_bytes: 0` and no
 `result_hash`, because the tool genuinely produced no bytes -- a different claim from
 "the payload was not recorded", which is an absent field.
 
+A call settles exactly ONCE, and the guard is in the emitter's lifecycle rather than
+at a call site. The two update parsers feed ONE consumer, so either can produce the
+terminal frame and both can produce one for the same `tool_call_id`; a duplicate is
+therefore ordinary rather than exceptional. `on_tool_completed` records each
+`(session, call_id)` it closes in a settled set and writes at most one
+`tool/completed` for it: the FIRST terminal frame writes the closer, and a LATER
+frame for a call this emitter already settled adds nothing. The absence of an open
+`tool/called` record is NOT the same signal -- the first frame pops that record, so a
+missing record cannot distinguish "already settled by us" from "never opened". A
+frame for a call whose `tool/called` was never seen -- neither open nor settled --
+still gets its closer, with empty name and server and no elapsed, because a call the
+stream reports finishing is a fact even when its opener was missed. `close_open_tool_calls`
+marks the calls it sweeps settled too, so a terminal frame arriving after the sweep
+closed a call does not double-write. The settled set is pruned on the same lifecycle as
+the open-call registry: a turn's markers are dropped when its live record is released.
+
+Its CAP, though, is its own rather than the module's shared never-evict-a-live-turn
+rule, and the reason is the same one that separates the child pins from turn liveness.
+Every other map holds state a later event of the SAME turn reads back -- a handle, a
+step ordinal, an open call's start time -- so evicting one mid-turn corrupts that turn's
+record, and the shared rule lets a store overshoot instead. A settle marker carries only
+"a closer for this id is already written", and one accumulates per call COMPLETED where
+an open-call record is popped by its own completion, so under the shared rule a turn that
+makes more calls than the cap would grow the map for as long as it runs. So this map
+trims its OLDEST entries at the cap and COUNTS what it dropped in the log. The frames a
+marker suppresses are two parsers reading one terminal frame, so a duplicate arrives
+beside its original: the youngest markers are the ones doing the work and the oldest are
+the ones worth spending. The residual is bounded and visible -- it takes the cap's worth
+of later calls settling before a duplicate arrives, and it reports itself when it
+happens.
+
 ## Shutdown reports what landed, and names what did not
 
 `drain_for_shutdown()` returns True only when the buffer is empty AND no batch is in
@@ -431,6 +487,21 @@ tools' results. `step/started` fires immediately after `turn/started`, once the 
 AUTHORIZED, and again at each such transition; `step/completed` fires at the next
 transition and, for the turn's last call, beside `EVENT_COMPLETE`. An entry produced when
 no step has been announced omits `step` rather than claiming a model call nobody observed.
+
+Deriving the boundary from text-after-tools has a limit that is a property of the
+stream, and the format states it rather than pretending otherwise: **a single step
+MAY cover consecutive tool-only model calls.** When the model calls tools, is called
+again with their results and calls MORE tools, and only speaks at the end -- read,
+then edit, then read again, summarising once -- the stream shows one tool group
+followed by one run of text, so the only observable transition fires once and the two
+model calls collapse into one step. Separating them would take a per-call boundary
+REPORTED on the stream -- an attempt id beside each opened call -- which the ACP
+surface does not carry today; adding it is an adapter-surface change held for a later
+pass rather than landed here. Until then a reader MUST NOT read the step count as a
+count of model calls: it is a lower bound. The tools of such a run still order
+correctly by `call_index`, which counts every tool call regardless of how the steps
+fell, so no tool is lost -- only the model-call boundary between two tool-only calls
+is not observable.
 
 Written any earlier, the first step would land on refused turns too. `turn/started` waits
 for the permit, shutdown and stop-before-dispatch gates for exactly that reason, and a

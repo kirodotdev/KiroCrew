@@ -574,6 +574,130 @@ def test_a_received_message_is_recorded_even_when_the_turn_is_then_refused():
     assert "turn/started" not in kinds
 
 
+@pytest.mark.parametrize("reason", ["blocked", "too_large"])
+def test_a_refused_prompt_expansion_records_the_input_and_the_refusal(reason):
+    # A blocked or oversized @prompt expansion returns before the normal emit
+    # block, so without the reorder it left the accepted turn with NO entry. It
+    # now records the same pair every dispatch gate does: the accepted input, then
+    # a turn/refused naming the reason -- and nothing derived from a request the
+    # refused turn never assembled.
+    _open_session()
+    emit.on_message_received(SESSION, 1, role="user", text="@secret run it", source="dashboard")
+    emit.on_turn_refused(SESSION, 1, reason, "user", depth=0)
+    assert emit.flush()
+    received = [e for e in _body() if e["type"] == "message/received"]
+    refused = [e for e in _body() if e["type"] == "turn/refused"]
+    assert len(received) == 1
+    assert received[0]["data"]["text"] == "@secret run it"
+    assert len(refused) == 1
+    assert refused[0]["data"]["reason"] == reason
+    kinds = [e["type"] for e in _body()]
+    assert "turn/started" not in kinds
+    assert "request/configured" not in kinds
+    assert "context/composed" not in kinds
+
+
+def test_an_accepted_expansion_records_the_input_exactly_once():
+    # The accepted path is unchanged: one message/received, no turn/refused. The
+    # refusal reorder must not double-write on the path the gate did not take.
+    _open_session()
+    emit.on_message_received(SESSION, 1, role="user", text="hello", source="dashboard")
+    emit.on_turn_started(SESSION, 1, "user")
+    assert emit.flush()
+    received = [e for e in _body() if e["type"] == "message/received"]
+    assert len(received) == 1
+    assert [e["type"] for e in _body() if e["type"] == "turn/refused"] == []
+
+
+def test_chat_runner_records_the_input_and_refusal_on_a_blocked_expansion():
+    # The reorder lives in _run_chat: the blocked/too_large @prompt branch must
+    # emit on_message_received then on_turn_refused, mirroring the not_authorized
+    # gate. Asserted structurally rather than by driving the whole runner.
+    import ast
+
+    from kiro_crew.dashboard import chat_runner
+
+    tree = ast.parse(inspect.getsource(chat_runner))
+    src = inspect.getsource(chat_runner)
+    assert "🔒 Prompt blocked" in src
+
+    def _emit_attr(node, name):
+        # A crew_log_emit.<name>(...) call, however the module is aliased.
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == name
+        )
+
+    def _string_in(node, needle):
+        return any(
+            isinstance(c, ast.Constant) and isinstance(c.value, str) and needle in c.value
+            for c in ast.walk(node)
+        )
+
+    # Find every statement block (an if/elif body, orelse, loop or with body) that
+    # appends the "Prompt blocked" notice, and confirm the refusal pair lives IN
+    # THAT SAME block -- not merely somewhere in the 9000-line function. A refactor
+    # that moved the refusal elsewhere, or dropped the paired message/received,
+    # must fail this.
+    blocks = []
+    for node in ast.walk(tree):
+        for body in (getattr(node, "body", None), getattr(node, "orelse", None)):
+            if not isinstance(body, list):
+                continue
+            for stmt in body:
+                if (
+                    isinstance(stmt, ast.Expr)
+                    and _string_in(stmt.value, "🔒 Prompt blocked")
+                    and body not in blocks
+                ):
+                    blocks.append(body)
+
+    assert blocks, "no block appends the '🔒 Prompt blocked' notice"
+
+    def _co_located(block):
+        received_at = None
+        refused_at = None
+        for i, stmt in enumerate(block):
+            if not isinstance(stmt, ast.Expr):
+                continue
+            call = stmt.value
+            if _emit_attr(call, "on_message_received"):
+                received_at = i
+            elif _emit_attr(call, "on_turn_refused") and any(
+                ast.unparse(a) == "_status" for a in call.args
+            ):
+                refused_at = i
+        return received_at is not None and refused_at is not None and received_at < refused_at
+
+    assert any(_co_located(block) for block in blocks), (
+        "the blocked/too_large branch must emit on_message_received then "
+        "on_turn_refused(_status, ...) in the SAME block as the 'Prompt blocked' "
+        "notice"
+    )
+
+
+def test_a_step_less_context_composed_is_written_for_the_first_call(tmp_path):
+    # on_context_composed is emitted before the first step/started, so it carries
+    # no step. The join is a reader rule -- a step-less composition belongs
+    # to the turn's first model call -- and the entry is still written and still
+    # ordered after the message it was derived from.
+    _open_session()
+    emit.on_message_received(SESSION, 1, role="user", text="do it", source="dashboard")
+    emit.on_context_composed(SESSION, 1, blocks={"system": 400})
+    emit.on_step_started(SESSION, 1)
+    assert emit.flush()
+    body = _body()
+    kinds = [e["type"] for e in body]
+    composed = [e for e in body if e["type"] == "context/composed"]
+    assert len(composed) == 1
+    assert "step" not in composed[0]["data"], "the turn-opening composition is step-less"
+    # Ordering invariant: the composition is written after the message it derives
+    # from and before the first model call opens.
+    assert kinds.index("message/received") < kinds.index("context/composed")
+    assert kinds.index("context/composed") < kinds.index("step/started")
+
+
 def test_attachments_are_identifiers_not_refs():
     # An attachment is not a crew log unit, so it cannot be cited by a Ref -- the
     # same reason a tool call id lives in data.
@@ -1017,6 +1141,191 @@ def test_a_completion_reuses_both_of_its_calls_ordinals():
     done = [e["data"] for e in _body() if e["type"] == "tool/completed"][-1]
     assert done["step"] == 1
     assert done["call_index"] == 1
+
+
+# --- a tool call settles exactly once --------------------------------------
+
+
+def test_a_second_terminal_frame_for_the_same_call_writes_no_second_closer():
+    # Both update parsers can emit a status-only terminal frame for one tool, so
+    # two frames for the same call_id is ordinary. The first settles the call; the
+    # second must add nothing, or one call ends up with two tool/completed entries.
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_step_started(SESSION, 1)
+    emit.on_tool_called(SESSION, 1, name="fs_read", call_id="c1")
+    emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
+    emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
+    assert emit.flush()
+    closers = [e for e in _body() if e["type"] == "tool/completed"]
+    assert len(closers) == 1
+    # The one that landed is the FIRST frame: it kept the remembered identity.
+    assert closers[0]["data"]["name"] == "fs_read"
+
+
+def test_a_terminal_frame_for_a_never_opened_call_still_gets_its_closer():
+    # The absence of a tool/called is NOT the same as "already settled by us": a
+    # result for a call whose opener was never recorded is a real close and must
+    # be written, with empty name/server and no elapsed.
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_tool_completed(SESSION, 1, call_id="never-opened", status="completed")
+    assert emit.flush()
+    closers = [e for e in _body() if e["type"] == "tool/completed"]
+    assert len(closers) == 1
+    data = closers[0]["data"]
+    assert data["call_id"] == "never-opened"
+    assert data["name"] == ""
+    assert data["server"] == ""
+    assert "elapsed_ms" not in data
+
+
+def test_a_frame_after_the_group_sweep_closed_the_call_writes_nothing():
+    # close_open_tool_calls IS the closer at a tool-group boundary, so it marks the
+    # calls it sweeps settled. A terminal frame arriving after the sweep is a
+    # duplicate and must not double-write.
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_step_started(SESSION, 1)
+    emit.on_tool_called(SESSION, 1, name="fs_read", call_id="c1")
+    assert emit.close_open_tool_calls(SESSION, 1, status="completed") == 1
+    emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
+    assert emit.flush()
+    closers = [e for e in _body() if e["type"] == "tool/completed"]
+    assert len(closers) == 1
+    # The sweep's closer, not the late frame's.
+    assert closers[0]["data"]["result_bytes"] == 0
+
+
+def test_settle_once_holds_for_a_terminal_frame_from_either_parser():
+    # The guard is in on_tool_completed, the ONE consumer both parsers feed, so a
+    # frame produced by _dispatch and a frame produced by the AcpClient parser
+    # settle the same call identically: the first writes the closer, the second
+    # (whichever parser it came from) writes nothing.
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.types import EVENT_TOOL_RESULT, JsonRpcMessage
+
+    # Parser A: the shared _dispatch terminal-frame builder.
+    parser_a = _tool_result_event(None)
+    assert parser_a.kind == EVENT_TOOL_RESULT
+
+    # Parser B: the AcpClient tool_call_update parser, same terminal frame shape.
+    client = AcpClient()
+    msg = JsonRpcMessage(
+        params={
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-measured",
+                "status": "completed",
+            }
+        }
+    )
+    parser_b = client._extract_tool_call_update(msg)
+    assert parser_b is not None and parser_b.kind == EVENT_TOOL_RESULT
+
+    def _record(event) -> None:
+        emit.on_tool_completed(
+            SESSION,
+            1,
+            call_id=event.tool_call_id,
+            status=event.tool_status,
+            result=event.tool_output,
+            result_digest=event.tool_output_digest,
+            result_bytes=event.tool_output_bytes,
+        )
+
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    _record(parser_a)
+    _record(parser_b)
+    assert emit.flush()
+    closers = [e for e in _body() if e["type"] == "tool/completed"]
+    assert len(closers) == 1, "the two parsers' frames wrote two closers for one call"
+
+
+def test_a_settled_call_can_be_reopened_and_reclosed_in_a_later_turn():
+    # Settled markers are pruned when a turn's live record is released, so the same
+    # call_id reused in a later turn settles again rather than being dropped as a
+    # stale duplicate.
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_tool_completed(SESSION, 1, call_id="reused", status="completed")
+    emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
+    emit._forget_turn(SESSION, 1)
+    emit.on_turn_started(SESSION, 2, "user")
+    emit.on_tool_completed(SESSION, 2, call_id="reused", status="completed")
+    assert emit.flush()
+    closers = [e["data"] for e in _body() if e["type"] == "tool/completed"]
+    assert [c["turn"] for c in closers] == [1, 2]
+
+
+def test_a_closed_sessions_settled_markers_are_released():
+    # on_session_closed sweeps the session's orphaned _tool_started entries; its
+    # settled markers ride the SAME lifecycle, so a marker whose turn is already
+    # gone from _live must be swept too and not left to the bound alone. A marker
+    # of a turn still running is left for that turn's own _release_live.
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_tool_completed(SESSION, 1, call_id="c1", status="completed")
+    emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
+    emit._forget_turn(SESSION, 1)
+    # The turn is gone from _live but its marker was already pruned by the turn
+    # release, so seed a fresh orphan directly to prove the close sweep also fires.
+    emit._settled_tools[(SESSION, "orphan")] = 1
+    assert (SESSION, "orphan") in emit._settled_tools
+    emit.on_session_closed(SESSION, "reset")
+    assert emit.flush()
+    assert (SESSION, "orphan") not in emit._settled_tools
+
+
+def test_the_settled_markers_stay_under_their_cap_inside_one_live_turn():
+    # A marker accumulates per call COMPLETED, where an open-call record is popped by
+    # its own completion, so the module's shared never-evict-a-live-turn rule would
+    # let this map grow for the whole of a turn that makes more calls than the cap.
+    # This map trims its OLDEST instead: the duplicate frames a marker suppresses
+    # come from two parsers reading one terminal frame, so the youngest markers are
+    # the ones doing the work.
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    assert SESSION in emit._pinned, "the turn must be pinned for this to mean anything"
+    total = emit._MAX_PENDING_TOOLS + 20
+    for n in range(total):
+        emit.on_tool_completed(SESSION, 1, call_id=f"c{n}", status="completed")
+    assert emit.flush()
+    assert len(emit._settled_tools) <= emit._MAX_PENDING_TOOLS
+    # The oldest went and the youngest stayed.
+    assert (SESSION, "c0") not in emit._settled_tools
+    assert (SESSION, f"c{total - 1}") in emit._settled_tools
+    # Every call still got exactly one closer: trimming a marker drops the guard for
+    # a possible LATER duplicate, never an entry that was already written.
+    closers = [e for e in _body() if e["type"] == "tool/completed"]
+    assert len(closers) == total
+
+
+# --- a step may cover consecutive tool-only calls ---------------------------
+
+
+def test_the_step_boundary_is_derived_and_may_cover_consecutive_tool_only_calls():
+    # The ACP stream exposes only the tool-group-to-text transition, so a turn that
+    # calls tools, is called again with their results and calls MORE tools -- text
+    # only at the end -- shows one transition and the two model calls collapse into
+    # one step. The format documents this as a lower bound rather than pretending
+    # the step count is a model-call count; every tool still orders by call_index.
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    step = emit.on_step_started(SESSION, 1)
+    assert step == 1
+    emit.on_tool_called(SESSION, 1, name="read", call_id="c1")
+    emit.on_tool_called(SESSION, 1, name="edit", call_id="c2")
+    # A second tool-only model call with no intervening text produces no new
+    # step/started: the runner only opens one at a text transition.
+    emit.on_tool_called(SESSION, 1, name="read", call_id="c3")
+    assert emit.flush()
+    steps = [e for e in _body() if e["type"] == "step/started"]
+    assert len(steps) == 1, "a documented limitation: consecutive tool-only calls share a step"
+    calls = [e["data"] for e in _body() if e["type"] == "tool/called"]
+    assert [c["step"] for c in calls] == [1, 1, 1]
+    assert [c["call_index"] for c in calls] == [1, 2, 3]
 
 
 # --- tool payload accounting ---------------------------------------------

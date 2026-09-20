@@ -389,6 +389,21 @@ _pinned: "dict[str, int]" = {}
 #: call left open by one turn and closed under the next one's ordinal is a
 #: false statement about a turn that never used the tool.
 _tool_started: "OrderedDict[tuple[str, str], tuple[float, str, str, int, int, int]]" = OrderedDict()
+#: (session, call_id) -> the turn the call was settled in. A tool call settles
+#: exactly ONCE: the first terminal frame writes its closer, and a later frame for
+#: the same id must add nothing. Both update parsers can emit a status-only result
+#: for one terminal frame, so two closers for the same call is a live hazard rather
+#: than a corner case. Popping ``_tool_started`` alone cannot tell "already settled
+#: by us" from "never opened" -- both find no started record -- so this set records
+#: the calls this emitter has closed. A frame whose id is in here is dropped; a
+#: frame whose id is in NEITHER map is a call whose ``tool/called`` was never
+#: recorded and still gets its closer, with empty name/server/elapsed as before.
+#: Pruned on the SAME lifecycle as ``_tool_started``: per turn in ``_release_live``,
+#: for a closed session's orphaned turns in ``on_session_closed``, and wholesale in
+#: ``reset_caches``. Its CAP is its own, ``_bound_settled_tools``, because a marker
+#: accumulates per completed call where a started record is popped by one, so the
+#: shared never-evict-a-live-turn rule would leave this map growing for a whole turn.
+_settled_tools: "OrderedDict[tuple[str, str], int]" = OrderedDict()
 #: session -> the appends waiting to be written, in the order they were made.
 #: Producers only ever append here; the writer prepends a batch it could not
 #: write. Keyed per session because each session is a separate file, so one slow
@@ -745,6 +760,7 @@ def reset_caches() -> None:
         _live.clear()
         _pinned.clear()
         _tool_started.clear()
+        _settled_tools.clear()
         _last_config.clear()
         _attempts.clear()
         _child_origin.clear()
@@ -2036,6 +2052,13 @@ def _release_live(session_id: str, turn: int) -> None:
     global _live_overage_reported
     if _live.pop((session_id, int(turn)), None) is None:
         return
+    # The turn is gone, so its settled-tool markers can go too: a later frame for
+    # one of its calls can only be a duplicate of a closer already written, and the
+    # turn's own state is what a duplicate would have keyed on. Pruning here keeps
+    # ``_settled_tools`` on the same lifecycle as ``_tool_started`` rather than
+    # relying on the bound alone.
+    for key in [k for k, t in _settled_tools.items() if k[0] == session_id and t == int(turn)]:
+        _settled_tools.pop(key, None)
     remaining = _pinned.get(session_id, 0) - 1
     if remaining > 0:
         _pinned[session_id] = remaining
@@ -2148,6 +2171,37 @@ def _bound_unpinned(
             what,
             len(store),
             limit,
+        )
+
+
+def _bound_settled_tools() -> None:
+    """Trim ``_settled_tools`` to its cap, OLDEST first. Called with ``_lock`` held.
+
+    This map is the one exception to :func:`_bound_unpinned`'s never-evict-a-live-turn
+    rule, and what an entry MEANS is why. Every other map holds state a later event of
+    the same turn has to read back -- a handle, a step ordinal, an open call's start
+    time -- so evicting one mid-turn corrupts that turn's own record, which is why the
+    shared rule lets a store overshoot instead. A settle marker carries only "a closer
+    for this id is already written", and the frames it suppresses come from two parsers
+    reading the SAME terminal frame, so a duplicate arrives beside its original. The
+    youngest markers are therefore the ones doing the work and the oldest are the ones
+    worth spending. Under the shared rule the map would instead grow for the whole of
+    any turn that makes more calls than the cap, since the turn stays pinned and no
+    marker is popped until it ends -- unlike ``_tool_started``, whose entries are popped
+    by each call's own completion. The cost of a dropped marker is bounded and visible:
+    at worst a second ``tool/completed`` for a call whose duplicate frame arrives after
+    the cap's worth of later calls have settled.
+    """
+    dropped = 0
+    while len(_settled_tools) > _MAX_PENDING_TOOLS:
+        _settled_tools.popitem(last=False)
+        dropped += 1
+    if dropped:
+        logger.debug(
+            "session log dropped %d settled tool marker(s) at the %d cap: a "
+            "duplicate terminal frame for one of them would write a second closer",
+            dropped,
+            _MAX_PENDING_TOOLS,
         )
 
 
@@ -2310,6 +2364,15 @@ def close_open_tool_calls(
             for (sid, call_id), started in list(_tool_started.items())
             if sid == session_id and started[5] == int(turn)
         ]
+        # The sweep IS this call's closer, so mark each one settled: a terminal
+        # frame arriving after the sweep closed the call must not write a second
+        # ``tool/completed``. Same settle-once rule as ``on_tool_completed``, so a
+        # late duplicate is dropped there once its id is in this set.
+        for call_id, _ in stale:
+            _settled_tools[(session_id, call_id)] = int(turn)
+            _settled_tools.move_to_end((session_id, call_id))
+        if stale:
+            _bound_settled_tools()
     closed = 0
     for call_id, started in stale:
         began, name, server, call_index, step, _ = started
@@ -3453,7 +3516,23 @@ def on_tool_completed(
     step = 0
     if call_id:
         with _lock:
+            # A tool call settles exactly ONCE. Both update parsers can produce a
+            # status-only terminal frame for the same id, so a second frame arriving
+            # after the first closed the call must add NOTHING -- otherwise one call
+            # gets two ``tool/completed`` entries. The distinction that matters is
+            # "already settled by us" (drop) versus "never opened" (still write): a
+            # missing ``_tool_started`` record alone cannot separate them, because
+            # the first frame POPS that record, so a settled set records the ids this
+            # emitter has closed. A frame whose id is in ``_settled_tools`` is a
+            # duplicate and returns here; a frame whose id is in neither map is a
+            # call whose ``tool/called`` we never saw, which still gets its closer
+            # with empty name/server and no elapsed, exactly as before.
+            if (session_id, call_id) in _settled_tools:
+                return
             started = _tool_started.pop((session_id, call_id), None)
+            _settled_tools[(session_id, call_id)] = int(turn)
+            _settled_tools.move_to_end((session_id, call_id))
+            _bound_settled_tools()
         if started is not None:
             began, called_name, called_server, called_index, called_step, _ = started
             elapsed_ms = max(0, int((time.monotonic() - began) * 1000))
@@ -4168,6 +4247,19 @@ def on_session_closed(session_id: str, reason: str) -> None:
                 if k[0] == session_id and (session_id, rec[5]) not in _live
             ]:
                 _tool_started.pop(tool_key, None)
+            # Sweep this session's settled markers on the SAME rule, so a closed
+            # session leaves neither map behind: a marker whose turn is already gone
+            # from ``_live`` can only match a late duplicate of a closer already
+            # written, and the successor that reuses the id must settle its own
+            # calls afresh. Markers of turns still running are left to their own
+            # ``_release_live`` so a mid-teardown turn still suppresses its own
+            # duplicates.
+            for settled_key in [
+                k
+                for k, t in _settled_tools.items()
+                if k[0] == session_id and (session_id, t) not in _live
+            ]:
+                _settled_tools.pop(settled_key, None)
 
     _write(
         session_id,
