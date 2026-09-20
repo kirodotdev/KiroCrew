@@ -161,7 +161,9 @@ def test_dead_pid_baselines_are_pruned() -> None:
 @pytest.fixture()
 def stub_proc(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sm.sys, "platform", "linux")
-    monkeypatch.setattr(sm, "_get_rss_tree_mb", lambda pid: {7: 3238.0, 8: 843.0}.get(pid, 0.0))
+    monkeypatch.setattr(
+        sm, "_get_rss_tree_mb", lambda pid, **kw: {7: 3238.0, 8: 843.0}.get(pid, 0.0)
+    )
     monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [pid, pid + 100, pid + 200])
     monkeypatch.setattr(sm, "_read_cmdline", lambda pid: "python -m kiro_crew.mcp_gateway.stub")
     monkeypatch.setattr(sm, "_subtree_cpu_jiffies", lambda pid: 0)
@@ -276,7 +278,7 @@ async def test_tasks_are_passed_through_and_history_records_the_total(stub_proc:
 async def test_a_dying_pid_does_not_fail_the_whole_page(
     stub_proc: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(pid: int) -> float:
+    def boom(pid: int, **kw: object) -> float:
         raise OSError("vanished")
 
     monkeypatch.setattr(sm, "_get_rss_tree_mb", boom)
