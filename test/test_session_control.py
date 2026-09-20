@@ -2547,12 +2547,15 @@ async def test_an_inter_stage_send_queues_instead_of_racing_the_plan(tmp_path):
     """Between a plan's stages the target is busy even though `running` says no.
 
     Each stage's `_run_chat` closes its own turn, so `slot.running` reads False in
-    the gap while the plan is still live. `enqueue_or_run_prompt` gates on `running`
-    alone, so handing it the prompt there starts a SECOND turn racing the plan, with
-    no recovery once two turns own the same slot. Every producer that must not do
-    that reads `slot.running or slot._in_stage_execution`, and this one now does too.
+    the gap while the plan is still live. Handing the prompt to a gate that read
+    `running` alone started a SECOND turn racing the plan, with no recovery once two
+    turns own the same slot. Every producer that must not do that reads
+    `slot.running or slot._in_stage_execution`, and `enqueue_or_run_prompt` -- the
+    admission point this path delivers through -- now does too, so this path needs no
+    branch of its own.
 
-    Mutation guard: drop the `_in_stage_execution` branch and this starts a turn.
+    Mutation guard: drop `or self._in_stage_execution` from the gate in
+    `state.enqueue_or_run_prompt` and this starts a turn.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -5549,26 +5552,49 @@ def test_the_post_rpc_regate_warms_the_config_first():
     )
 
 
-def test_the_inter_stage_append_persists_before_returning_success():
+@pytest.mark.asyncio
+async def test_the_inter_stage_append_persists_before_returning_success(tmp_path):
     """An acknowledged prompt must not live only in memory.
 
-    The inter-stage branch queues the prompt and the function then returns a success
+    A mid-plan send queues the prompt and the function then returns a success
     receipt. Until the plan's drain reaches it the queue is its only record, so a
     restart inside the ordinary flush interval loses a message the sender was told had
     landed. Every other producer that appends and reports success writes immediately.
 
-    Mutation guard: remove the `start_queue_persist` call and the append stands alone.
+    Asserted on BEHAVIOUR, not on the order of two lines in this module's source: the
+    append and the write both moved into `state.enqueue_or_run_prompt` when the
+    inter-stage branch here was deleted in favour of the central gate, and a
+    source-text pin would have reported that as a lost guarantee rather than a moved
+    one. What the sender is owed is the write, wherever it is started from.
+
+    Mutation guard: remove the `start_queue_persist` call from
+    `enqueue_or_run_prompt`'s queue branch and no write starts here.
     """
-    src = Path(sc.__file__).read_text(encoding="utf-8")
-    send = src[src.index("async def send_to_target") :]
-    send = send[: send.index("\ndef read_messages")]
-    append_at = send.index("slot.queue_append(prompt, meta=containment_meta(state, slot))")
-    tail = send[append_at:]
-    persist_at = tail.index("start_queue_persist(state, slot)")
-    started_at = tail.index("started = False")
-    assert persist_at < started_at, (
-        "the immediate queue write must follow the append and precede the success "
-        f"bookkeeping: persist={persist_at} started={started_at}"
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    # The inter-stage shape exactly: no task in flight, plan still executing.
+    target.task = None
+    target._in_stage_execution = True
+    flushed: list = []
+    state.flush_slot_now = lambda slot: flushed.append(slot)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="acknowledged, so it must be durable",
+    )
+
+    assert out["started"] is False, "the prompt was queued, so a receipt was given"
+    # Started, not awaited, and it runs in an executor.
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if flushed:
+            break
+    assert flushed == [target], (
+        "the immediate queue write must have been started for the slot whose queue "
+        f"now holds the acknowledged prompt: {flushed}"
     )
 
 

@@ -1916,6 +1916,41 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
             await slot.runners[-1](state, slot, slot.prompts[-1])
         self.assertEqual([m for m in slot.messages if m["role"] == "error"], [])
 
+    async def test_a_dispatch_between_a_plans_stages_queues(self):
+        """``dispatch_crew_turn`` relies on the admission point, so the gate is the gate.
+
+        Its own docstring states the reliance -- "``enqueue_or_run_prompt`` queues
+        instead of racing when the crew is mid-turn" -- and it carries no mid-plan
+        check of its own. Between a plan's stages ``slot.running`` reads False while
+        the plan is still live, so gating on ``running`` alone would put a crew turn
+        alongside the plan, with no recovery once two turns own one slot.
+
+        Driven through a REAL ``_ChatSlot``, not this module's ``_FakeSlot``: the
+        fake implements its own admission, so a test through it would pass on the
+        double's rule rather than on the product's.
+
+        Mutation guard: drop ``or self._in_stage_execution`` from the gate and this
+        starts a turn.
+        """
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        slot = _ChatSlot(key="chat-1")
+        # The inter-stage shape: nothing in flight, plan still executing.
+        slot.task = None
+        slot._in_stage_execution = True
+        state = mock.MagicMock()
+        state._background_tasks = set()
+
+        started = cr.dispatch_crew_turn(state, slot, "advance one item")
+
+        self.assertFalse(started, "a mid-plan crew dispatch must be queued")
+        self.assertIsNone(slot.task, "and must not open a turn alongside the plan")
+        self.assertEqual(
+            [q["content"] for q in slot._queue],
+            ["advance one item"],
+            "the prompt is held for the plan's own drain",
+        )
+
 
 # ── unblock signal detection (pure) ─────────────────────────────────────────
 

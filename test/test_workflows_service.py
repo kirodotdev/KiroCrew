@@ -1354,6 +1354,7 @@ class _IntgSlot:
         self.linked_session_key = ""
         self.title = ""
         self.running = False
+        self._in_stage_execution = False
         self.turns: list[str] = []  # prompts that started an agent turn
 
     def append(self, role, content, cls="", ts="", *, broadcast=True, meta=None):
@@ -1365,7 +1366,12 @@ class _IntgSlot:
 
     def enqueue_or_run_prompt(self, prompt, run_chat_coro, state) -> bool:
         # Mirror the real state.py primitive: busy -> queue (False), else run (True).
-        if self.running:
+        # Busy is ``running or _in_stage_execution``: between a plan's stages
+        # ``running`` reads False while the plan is still live, and the real gate
+        # holds the prompt there rather than starting a turn alongside the plan. A
+        # double that mirrored ``running`` alone would keep passing after the real
+        # gate regressed.
+        if self.running or self._in_stage_execution:
             return False
         self.append("user", prompt, "msg msg-u")
         self.turns.append(prompt)
@@ -1446,6 +1452,48 @@ async def test_finished_run_busy_slot_queues_turn(monkeypatch) -> None:
     assert any(m["role"] == "assistant" for m in origin.messages)
     assert started == [False]
     assert origin.turns == []
+
+
+async def test_workflow_auto_turn_queues_between_a_plans_stages(tmp_path) -> None:
+    """The workflow auto-turn carries no mid-plan gate, so the admission point is it.
+
+    ``_wf_on_done``'s ``_auto_turn`` (``dashboard/server.py``) hands the prompt
+    straight to ``enqueue_or_run_prompt`` and records no intent to interrupt a plan
+    -- it reads the return value only to log "started" or "queued", so the queued
+    outcome is the one it is already written for. Between a plan's stages
+    ``slot.running`` reads False while the plan is still live, so gating on
+    ``running`` alone would start a SECOND turn alongside it.
+
+    Driven through a REAL ``_ChatSlot``, not this module's slot double: the double
+    reimplements the gate, so a test through it would pass on its own copy of the
+    rule rather than on the product's.
+
+    Mutation guard: drop ``or self._in_stage_execution`` from the gate and this
+    starts a turn.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot(key="chat-1")
+    # The inter-stage shape: nothing in flight, plan still executing.
+    slot.task = None
+    slot._in_stage_execution = True
+    dstate = MagicMock()
+    dstate._background_tasks = set()
+    started: list[bool] = []
+
+    # The auto-turn's own shape, prompt text and all.
+    def _auto_turn(s, snap) -> None:
+        prompt = f"[Workflow `{snap.get('name')}` finished] interpret the result above."
+        started.append(s.enqueue_or_run_prompt(prompt, AsyncMock(), dstate))
+
+    _auto_turn(slot, {"name": "demo"})
+
+    assert started == [False], "a mid-plan workflow result must be queued, not started"
+    assert slot.task is None, "and no turn may be opened alongside the plan"
+    assert len(slot._queue) == 1, "the prompt is held for the plan's own drain"
+    assert "interpret the result above" in slot._queue[0]["content"]
 
 
 # --------------------------------------------------------------------------- #
