@@ -813,6 +813,57 @@ class TestSessionSharingParentReset:
         assert result is mock_runtime  # reused, not re-spawned
 
     @pytest.mark.asyncio
+    async def test_get_subagent_runtime_attributes_the_dead_runtime_reap(self, monkeypatch):
+        """Reaping the dead companion runtime before respawning must say WHO
+        ended it. Unattributed, it logged the reported line —
+        ``AcpRuntime dead (PID n): killed [returncode=None]`` at WARNING with
+        no caller — which an operator cannot tell from an external killer."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+
+        sm = SessionManager(KiroCrewConfig.load())
+        sm._get_session_agent = lambda k: "kirocrew"  # type: ignore[assignment]
+
+        dead = MagicMock()
+        dead.is_alive.return_value = False
+        dead.kill = AsyncMock()
+        sm._subagent_runtimes["dashboard:slot1"] = dead
+
+        class _LiveRuntime:
+            def __init__(self, agent=None, **kwargs):
+                pass
+
+            async def spawn(self):
+                pass
+
+            def is_alive(self):
+                return True
+
+        monkeypatch.setattr("kiro_crew.acp.runtime.AcpRuntime", _LiveRuntime)
+        await sm.get_subagent_runtime("dashboard:slot1")
+
+        dead.kill.assert_awaited_once()
+        assert dead.kill.await_args.kwargs.get("reason")
+
+    @pytest.mark.asyncio
+    async def test_release_subagent_runtime_attributes_the_teardown(self):
+        """The release path names itself too: every AcpRuntime kill site does,
+        so no death line in the gateway log is left without a caller."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import SessionManager
+
+        sm = SessionManager(KiroCrewConfig.load())
+        runtime = MagicMock()
+        runtime.kill = AsyncMock()
+        sm._subagent_runtimes["dashboard:slot1"] = runtime
+        sm._subagent_runtime_locks["dashboard:slot1"] = asyncio.Lock()
+
+        await sm.release_subagent_runtime("dashboard:slot1")
+
+        runtime.kill.assert_awaited_once()
+        assert runtime.kill.await_args.kwargs.get("reason")
+
+    @pytest.mark.asyncio
     async def test_get_subagent_runtime_retries_once_on_spawn_failure(self, monkeypatch):
         """get_subagent_runtime retries spawn once on AcpRuntimeDead (parity with
         get_bg_session): the first spawn dies, the second succeeds -> live runtime.

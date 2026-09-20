@@ -486,7 +486,7 @@ class _BatchRuntimeHolder:
             # Deliberate pool teardown (batch drain / force_shutdown). The
             # reap-a-dead-one caller is covered too: _mark_dead refuses the
             # INFO downgrade when the process already exited on its own.
-            await rt.kill(expected=True)
+            await rt.kill(expected=True, reason="review pool teardown")
         except Exception:
             logger.debug("code-review-sage runtime kill error", exc_info=True)
 

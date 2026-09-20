@@ -604,7 +604,9 @@ class TestGetBgSessionRespawn:
             async def create_session(self, **kwargs):
                 return SimpleNamespace(session_id="sid-fresh")
 
-            async def kill(self) -> None:  # pragma: no cover — replacement only
+            async def kill(  # pragma: no cover — replacement only
+                self, *, expected: bool = False, reason: str = ""
+            ) -> None:
                 return None
 
         with patch.object(runtime_mod, "AcpRuntime", _FakeRuntime):

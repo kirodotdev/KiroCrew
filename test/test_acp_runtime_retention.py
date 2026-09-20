@@ -39,7 +39,10 @@ async def test_runtime_shutdown_diagnostics_respect_retention(mode, expected, ca
     assert runtime.saw_not_logged_in()
     error = pending.exception()
     assert isinstance(error, AcpRuntimeDead)
-    assert "returncode=None" in runtime.death_summary()
+    # The child is still running, so no exit status has been read. The
+    # lifecycle fact is retained as a labelled status, never as a bare None
+    # (see AcpRuntime._returncode_label).
+    assert "returncode=<not reaped>" in runtime.death_summary()
     if mode == "persistent":
         assert CANARY in caplog.text
         assert CANARY in exit_reason

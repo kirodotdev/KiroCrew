@@ -321,7 +321,7 @@ class BackgroundSessionRuntime:
                 remaining.append(runtime)
                 continue
             try:
-                await runtime.kill(expected=True)  # drained displacement teardown
+                await runtime.kill(expected=True, reason="drained displacement teardown")
                 logger.info("Reaped a drained displaced _bg runtime (PID %s)", runtime.pid)
             except Exception:
                 logger.warning("Failed to reap a drained _bg runtime; will retry", exc_info=True)
@@ -387,7 +387,7 @@ class BackgroundSessionRuntime:
                 cause,
             )
             try:
-                await runtime.kill(expected=True)  # deliberate displacement teardown
+                await runtime.kill(expected=True, reason="deliberate displacement teardown")
             except Exception:
                 logger.warning(
                     "Displacement kill failed; parking the runtime for the reaper",

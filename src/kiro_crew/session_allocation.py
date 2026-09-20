@@ -493,7 +493,9 @@ class SessionAllocationService:
                     return existing
                 if existing is not None:
                     try:
-                        await existing.kill()
+                        await existing.kill(
+                            reason="reaping a dead shared subagent runtime before respawn"
+                        )
                     except Exception:
                         self._deps.logger.debug(
                             "get_subagent_runtime: dead runtime kill failed for %s",
@@ -537,7 +539,7 @@ class SessionAllocationService:
             runtime = self._subagent_runtimes.pop(parent_session_key, None)
         if runtime is not None:
             try:
-                await runtime.kill(expected=True)
+                await runtime.kill(expected=True, reason="subagent runtime released")
             except Exception:
                 self._deps.logger.warning(
                     "Failed to kill subagent runtime for %s",

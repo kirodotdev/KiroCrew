@@ -2199,6 +2199,223 @@ async def test_unexpected_process_exit_still_warns_with_diagnostic_shape(caplog)
     assert "stderr_tail: <none>" in msg
 
 
+# ── A returncode nobody could read yet is labelled, never printed as None ─────
+#
+# ``_kill_inner`` marks the death BEFORE it signals, so pending waiters learn of
+# it first. ``_mark_dead`` then reads ``returncode`` on a process that has not
+# been reaped, and the line it wrote was indistinguishable from a child killed
+# by a signal whose status was never captured: ``killed [returncode=None]
+# stderr_tail: <none>`` — the shape an operator chasing an external killer had
+# to work from. The status is labelled at mark time and filled in once the reap
+# lands.
+
+
+def _reap_records(caplog):
+    """The post-reap amendment records, selected by the raw log template."""
+    return [r for r in caplog.records if str(r.msg).startswith("AcpRuntime reaped after kill")]
+
+
+@pytest.mark.asyncio
+async def test_kill_of_live_runtime_labels_the_unreaped_returncode(caplog, monkeypatch):
+    """A live runtime killed by a caller has no exit status at mark time. The
+    death line must say so rather than print a bare ``returncode=None``, which
+    reads as "died by signal, status unknown" — the wrong suspect."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    assert proc.returncode is None  # live: nothing has reaped it
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(reason="displaced by a new allocation")
+
+    msg = _death_records(caplog)[0].getMessage()
+    assert "returncode=<not reaped>" in msg
+    assert "returncode=None" not in msg
+    assert "displaced by a new allocation" in msg
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("expected", "level"), [(False, "WARNING"), (True, "INFO")])
+async def test_kill_amends_the_summary_once_the_reap_completes(
+    expected, level, caplog, monkeypatch
+):
+    """The status IS knowable after the reap. It is written into the retained
+    summary — which outlives the log, riding AcpProcessDied into a turn's error
+    and a cron's last_error — and logged at the death's own severity, so an
+    operator filtering one level never sees the death without the code."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+
+    async def _wait():
+        proc.returncode = -15  # the SIGTERM this kill just sent
+        return proc.returncode
+
+    proc.wait = _wait
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(expected=expected, reason="warm mint teardown")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert "[returncode=-15]" in summary
+    assert "<not reaped>" not in summary
+    assert "returncode=None" not in summary
+    assert "warm mint teardown" in summary
+    reaped = _reap_records(caplog)
+    assert [r.levelname for r in reaped] == [level]
+    assert "returncode=-15" in reaped[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_reap_amendment_leaves_the_stderr_tail_untouched(caplog, monkeypatch):
+    """The amendment rebuilds the line from its parts, so a child stderr line
+    that happens to carry this format's own ``[returncode=...]`` shape is
+    carried through verbatim. Editing the composed text instead would rewrite
+    that tail as an exit status -- the diagnostic destroying its own evidence,
+    in the one string that outlives the log."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    echoed = "child said [returncode=<not reaped>] on its way out"
+    rt._stderr_lines = [echoed]
+
+    async def _wait():
+        proc.returncode = -15
+        return proc.returncode
+
+    proc.wait = _wait
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(reason="displaced by a new allocation")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert summary.endswith(f"stderr_tail: {echoed}")
+    assert "[returncode=-15]" in summary
+    # Exactly one status field, and the child's copy is not it.
+    assert summary.count("[returncode=") == 2
+    assert summary.count("[returncode=-15]") == 1
+
+
+@pytest.mark.asyncio
+async def test_reap_amendment_leaves_the_reason_untouched(caplog, monkeypatch):
+    """The REASON can carry child text too, and it sits BEFORE the status field:
+    ``_exit_reason`` appends the child's last stderr line, and a reader-crash
+    reason embeds an exception message. So bounding a text rewrite to the first
+    hit is not enough either — the first hit can be inside the reason."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    poisoned = "reader crash: boom [returncode=<not reaped>] while draining"
+    rt._mark_dead(poisoned)  # a death already recorded, status not yet read
+
+    async def _wait():
+        proc.returncode = -15
+        return proc.returncode
+
+    proc.wait = _wait
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(reason="reaping a dead runtime")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert summary.startswith(poisoned)
+    assert summary.endswith("[returncode=-15] stderr_tail: <none>")
+
+
+@pytest.mark.asyncio
+async def test_no_amendment_when_the_status_was_already_known(caplog, monkeypatch):
+    """A process that exited on its own is marked WITH its code, so nothing is
+    owed after the reap — not even when the stderr tail happens to carry the
+    unread-status shape. Deciding this from the summary's text rather than from
+    the status actually recorded would answer yes on that tail."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    proc.returncode = 1  # already exited: the status was read at mark time
+    rt._stderr_lines = ["child said [returncode=<not reaped>] on its way out"]
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(reason="reaping a dead runtime")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert "[returncode=1]" in summary
+    assert _reap_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_kill_keeps_the_label_when_no_status_ever_arrives(caplog, monkeypatch):
+    """Both waits can time out (a child wedged in uninterruptible sleep), and
+    the status is then still unknown. ``<not reaped>`` must stay: nothing may
+    claim a code that was never observed."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    # The signal delivery itself is covered by the tree-kill tests; this one is
+    # about what the summary says when the reap window closes empty.
+    monkeypatch.setattr(rt, "_signal_tree", AsyncMock(return_value={}))
+    rt._KILL_TERM_TIMEOUT = 0.01
+    rt._KILL_REAP_TIMEOUT = 0.01
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    proc.wait = _never
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(reason="failed session setup cleanup")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert "[returncode=<not reaped>]" in summary
+    assert _reap_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_death_of_a_never_spawned_runtime_says_no_process(caplog, monkeypatch):
+    """No process to ask is a third answer, distinct from both a real code and
+    an unreaped one — and it is the state the reported kill site was in."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    rt._process = None  # spawn never completed
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(reason="reaping a dead shared subagent runtime before respawn")
+
+    msg = _death_records(caplog)[0].getMessage()
+    assert "returncode=<no process>" in msg
+    assert "returncode=None" not in msg
+
+
+@pytest.mark.asyncio
+async def test_reader_crash_on_a_running_child_does_not_print_returncode_none(caplog):
+    """The label is not kill-only. A reader crash or a broken pipe kills the
+    RUNTIME while the child is still running, so the status is unread on those
+    paths too — and the same bare ``None`` reached the log from them."""
+    import logging
+
+    rt, _, _ = _make_runtime()
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        rt._mark_dead("reader crash: boom")
+
+    msg = _death_records(caplog)[0].getMessage()
+    assert "returncode=<not reaped>" in msg
+    assert "returncode=None" not in msg
+    assert "returncode=None" not in (rt.death_summary() or "")
+
+
 # ── process-exit reason carries the child's last stderr line ──────────────────
 # A bare ``rc=1`` was all the chat error card showed when every sandboxed
 # spawn started failing because the runtime tmpfs had run out of inodes. The

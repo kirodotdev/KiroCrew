@@ -69,8 +69,11 @@ async def test_close_all_keeps_cross_boundary_teardown_order(cfg: KiroCrewConfig
     await worker_started.wait()
     manager._background_tasks.add(owned_task)
 
-    async def kill_bg(*, expected: bool) -> None:
+    async def kill_bg(*, expected: bool, reason: str = "") -> None:
         assert expected is True
+        # Mirrors AcpRuntime.kill(): close_all attributes its teardown, and a
+        # double that refuses ``reason`` swallows the call as a TypeError.
+        assert reason == "graceful shutdown"
         events.append("background-runtime-killed")
 
     manager._bg_runtime = SimpleNamespace(kill=kill_bg)

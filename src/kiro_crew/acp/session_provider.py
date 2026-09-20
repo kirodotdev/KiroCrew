@@ -252,9 +252,11 @@ class AcpSessionProvider(LLMProvider):
                     try:
                         await self._handle.destroy()
                     finally:
-                        await self._runtime.kill(expected=True)
+                        await self._runtime.kill(
+                            expected=True, reason="provider shutdown (non-persistent)"
+                        )
                 else:
-                    await self._runtime.kill(expected=True)
+                    await self._runtime.kill(expected=True, reason="provider shutdown")
             except Exception:
                 logger.debug("AcpSessionProvider.shutdown: runtime kill failed", exc_info=True)
         else:

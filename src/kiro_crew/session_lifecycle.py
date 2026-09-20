@@ -818,7 +818,7 @@ class SessionLifecycleService:
             if runtime.has_active_or_initializing_sessions():
                 return False
             try:
-                await runtime.kill(expected=True)  # deliberate logout teardown
+                await runtime.kill(expected=True, reason="deliberate logout teardown")
             except Exception:
                 logger.warning(
                     "Failed to retire the background runtime after an identity change",
@@ -1196,7 +1196,7 @@ class SessionLifecycleService:
             owner._draining_bg_runtimes = []
         for bg_runtime in bg_doomed:
             try:
-                await bg_runtime.kill(expected=True)  # graceful shutdown
+                await bg_runtime.kill(expected=True, reason="graceful shutdown")
             except Exception:
                 logger.debug("close_all: _bg runtime kill failed", exc_info=True)
         for key in list(owner._subagent_runtimes):

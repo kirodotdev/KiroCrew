@@ -642,6 +642,7 @@ class _FakeRuntime:
         self._active = active
         self._initializing = initializing
         self.killed = 0
+        self.kill_reasons: list[str] = []
 
     @property
     def uses_kiro_identity_store(self) -> bool:
@@ -655,8 +656,12 @@ class _FakeRuntime:
     def has_active_or_initializing_sessions(self) -> bool:
         return self._active or self._initializing
 
-    async def kill(self, *, expected: bool = False) -> None:
+    async def kill(self, *, expected: bool = False, reason: str = "") -> None:
+        # Mirrors the real signature: a double that refuses ``reason`` turns an
+        # attributed kill into a swallowed TypeError, which the sweep logs as a
+        # failed teardown instead of performing one.
         self.killed += 1
+        self.kill_reasons.append(reason)
 
 
 class TestStoreRelocation:
@@ -1268,6 +1273,7 @@ class TestRetirementCoverage:
         await smap.retire_kiro_identity_sessions()
 
         assert kiro_runtime.killed == 1
+        assert kiro_runtime.kill_reasons == ["subagent runtime released"]
         assert other_runtime.killed == 0
         assert "parent-other" in smap._subagent_runtimes
 

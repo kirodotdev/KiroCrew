@@ -90,8 +90,9 @@ class FakeRuntime:
     async def spawn(self):
         self.spawned = True
 
-    async def kill(self, *, expected: bool = False):
+    async def kill(self, *, expected: bool = False, reason: str = ""):
         self.killed = True
+        self.kill_reason = reason
 
     async def create_session(self, cwd=None, agent=None):
         self._seq += 1

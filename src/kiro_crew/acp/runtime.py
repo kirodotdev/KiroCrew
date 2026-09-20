@@ -1566,6 +1566,17 @@ class AcpRuntime:
         self._entitlement_probe_result: list[dict[str, str]] = []
         self._dead = False
         self._death_summary: str | None = None
+        # The composed summary's parts, so the post-reap amendment rebuilds the
+        # line instead of editing its text -- a tail carrying this format's own
+        # shape must never be mistaken for the status field.
+        self._death_reason = ""
+        self._death_label = ""
+        self._death_tail = ""
+        # Severity _mark_dead settled on, after its refuse-the-downgrade
+        # guard. The post-reap amendment logs at the SAME severity, so an
+        # operator filtering on WARNING never sees the death without the
+        # exit code that followed it.
+        self._death_expected = False
         self._last_activity: float = 0.0
         self._stderr_lines: list[str] = []
         # Latched auth-failure observation. ``_stderr_lines`` is a 20-line ring,
@@ -2962,6 +2973,9 @@ class AcpRuntime:
                     await asyncio.shield(escalate())
                     raise
                 await escalate()
+            # Before the handle is dropped: the death line above was
+            # written pre-signal and says returncode=<not reaped>.
+            self._note_reaped_after_kill(self._process.returncode)
             self._process = None
             # The id names the process that just ended; the next spawn mints its
             # own, and nothing may answer with this one in between.
@@ -4065,6 +4079,61 @@ class AcpRuntime:
             reason = f"{reason} — {_ENOSPC_HINT}"
         return reason
 
+    # Rendered in place of a returncode that is not knowable YET. Both say
+    # "no exit status", and an operator reading only the log cannot tell them
+    # from a signal-killed child whose status was never captured -- which is
+    # exactly the report this labelling answers.
+    _RC_NOT_REAPED = "<not reaped>"
+    _RC_NO_PROCESS = "<no process>"
+
+    def _returncode_label(self) -> str:
+        """This runtime's exit status for the death log, or why there is none.
+
+        ``_kill_inner`` marks the death BEFORE it signals and reaps (pending
+        waiters must learn of the death first), so every kill of a live
+        runtime reads ``returncode is None`` here. So does a reader crash or a
+        broken pipe on a child that is still running, and a never-spawned
+        runtime has no process to ask at all. None of the three is "died by
+        signal, status unknown", so none of them prints a bare ``None``.
+        """
+        if self._process is None:
+            return self._RC_NO_PROCESS
+        rc = self._process.returncode
+        return self._RC_NOT_REAPED if rc is None else str(rc)
+
+    def _compose_death_summary(self, reason: str, rc: str, tail: str) -> None:
+        """Retain the one-line attribution ``death_summary()`` hands out.
+
+        The parts are kept alongside it so the post-reap amendment can
+        RECOMPOSE the line from them. Rewriting the composed text instead
+        would search the child's stderr tail as well, and a tail that happened
+        to carry this method's own ``[returncode=...]`` shape would be edited
+        into an exit status -- the diagnostic corrupting the evidence it exists
+        to carry.
+        """
+        self._death_reason = reason
+        self._death_tail = tail
+        self._death_summary = f"{reason} [returncode={rc}] stderr_tail: {tail}"
+
+    def _note_reaped_after_kill(self, rc: object) -> None:
+        """Fill in the exit status the kill path's death line could not know.
+
+        Called once the reap has completed, while the process handle is still
+        held. The retained summary is amended because it OUTLIVES the log --
+        it rides ``AcpProcessDied`` into a turn's error and a cron's
+        ``last_error`` -- and one line is logged at the death's own severity
+        so the gateway log holds the code too. Silent when the status is still
+        unknown (both waits timed out): ``<not reaped>`` is then still true.
+        """
+        if rc is None or self._death_summary is None:
+            return
+        if self._death_label != self._RC_NOT_REAPED:
+            return
+        self._death_label = str(rc)
+        self._compose_death_summary(self._death_reason, self._death_label, self._death_tail)
+        log = logger.info if self._death_expected else logger.warning
+        log("AcpRuntime reaped after kill (PID %s): returncode=%s", self._pid, rc)
+
     def _mark_dead(self, reason: str, *, expected: bool = False) -> None:
         """Mark runtime dead, fail all pending requests, poison all session queues.
 
@@ -4086,6 +4155,7 @@ class AcpRuntime:
         # watcher) and kill()s before the reader loop has marked the death.
         if expected and self._process is not None and self._process.returncode is not None:
             expected = False
+        self._death_expected = expected
         # Release the sweep-protection shield on ANY death path (EOF, rc!=0,
         # stdout overrun, reader crash, broken pipe) — not just kill(). Otherwise
         # the dead PID lingers in _PROTECTED_PIDS forever and, after PID reuse,
@@ -4099,7 +4169,7 @@ class AcpRuntime:
                 )
         # Diagnostic context: process returncode + tail of captured stderr so
         # operators can tell an OOM/crash from a clean exit without DEBUG logs.
-        rc = self._process.returncode if self._process else None
+        rc = self._returncode_label()
         if self.recording_allowed:
             tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
         else:
@@ -4119,7 +4189,8 @@ class AcpRuntime:
         # Retain the summary for death_summary(): consumers that learn of the
         # death only through a poisoned queue (a live turn's frame wait) can
         # then attach WHO/WHY to their own error instead of raising bare.
-        self._death_summary = f"{reason} [returncode={rc}] stderr_tail: {tail}"
+        self._death_label = rc
+        self._compose_death_summary(reason, rc, tail)
         log = logger.info if expected else logger.warning
         log(
             "AcpRuntime dead (PID %s): %s [returncode=%s] stderr_tail: %s",
