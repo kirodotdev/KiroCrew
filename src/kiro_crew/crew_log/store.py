@@ -573,11 +573,13 @@ def unit_dir_for(kind: str, unit_id: str) -> "Path | None":
         return None
 
 
-def unit_dirs(kind: str, *, limit: int, exclude: "Collection[str]" = ()) -> tuple[list[Path], bool]:
+def unit_dirs(
+    kind: str, *, limit: int, exclude: "Collection[str]" = ()
+) -> tuple[list[Path], bool, bool]:
     """Up to *limit* unit directories under *kind*'s root, in the directory's own
-    order, and whether at least one more exists; ``([], False)`` when none. A
-    directory whose name is in *exclude* is neither listed nor counted: the
-    caller already holds it.
+    order, whether at least one more exists, and whether the listing FAILED.
+    ``([], False, False)`` when there are none. A directory whose name is in
+    *exclude* is neither listed nor counted: the caller already holds it.
 
     The enumeration for the one reader that looks ACROSS units (the session
     tree, :mod:`kiro_crew.crew_log.tree`). Bounded in WORK, not only in what it
@@ -589,29 +591,37 @@ def unit_dirs(kind: str, *, limit: int, exclude: "Collection[str]" = ()) -> tupl
     order rather than the names: for the tree that is the right trade, since
     the live sessions' logs are admitted by name ahead of this listing and the
     closed sessions' logs it lists do not decide anything a row on screen shows.
-    ``([], False)`` alike for an absent root, for a root the store refuses
-    (:func:`_checked_crew_log_root`) and for one that cannot be listed: a reader
-    of many units reports the units it can prove, and a root it cannot vouch
-    for proves none. A linked entry is skipped for the reason
-    :func:`unit_header_slot` skips one -- it answers for a directory outside
-    the tree.
+
+    An absent root lists nothing and is NOT a fault: a store with no root for
+    this kind holds no units, and an answer without them is the whole truth. A
+    root the store refuses, and one whose listing raises, both set the third
+    value: those roots hold units this call cannot prove, and the difference
+    between "none" and "none I could read" is the difference between a complete
+    answer and a confident wrong one. The fault is reported from the read that
+    failed rather than left to a caller's second look, which cannot see a
+    failure that surfaced PART WAY through -- ``iterdir`` yields as it goes, so
+    an error after the first entry escapes any probe that draws one entry and
+    stops. Whatever was already in hand is returned WITH the fault rather than
+    discarded: those directories were read, and the flag says the answer is
+    short. A linked entry is skipped for the reason :func:`unit_header_slot`
+    skips one -- it answers for a directory outside the tree.
     """
     excluded = frozenset(exclude)
     kept: list[Path] = []
     try:
         root = _checked_crew_log_root(kind)
         if not root.is_dir():
-            return [], False
+            return [], False, False
         for child in root.iterdir():
             if child.name in excluded or is_link(child) or not child.is_dir():
                 continue
             if len(kept) >= max(0, limit):
                 # One past the limit is all the caller needs to know.
-                return kept, True
+                return kept, True, False
             kept.append(child)
     except (CrewLogError, OSError):
-        return [], False
-    return kept, False
+        return kept, False, True
+    return kept, False, False
 
 
 def oldest_segment(directory: Path) -> Path | None:

@@ -551,20 +551,24 @@ def test_unit_dirs_neither_lists_nor_counts_an_excluded_name() -> None:
     for sid, slot in (("a-sid", "chat-1"), ("b-sid", "chat-2"), ("c-sid", "chat-3")):
         _opened(_log(sid, slot), slot)
     everything = {_store_name(sid) for sid in ("a-sid", "b-sid", "c-sid")}
-    listed, more = crew_store.unit_dirs(lg.KIND_SESSION, limit=1, exclude={_store_name("a-sid")})
+    listed, more, faulted = crew_store.unit_dirs(
+        lg.KIND_SESSION, limit=1, exclude={_store_name("a-sid")}
+    )
+    assert faulted is False
     assert len(listed) == 1 and listed[0].name in everything - {_store_name("a-sid")}
     assert more is True
     # Excluding all but one leaves exactly that one and nothing more.
-    listed, more = crew_store.unit_dirs(
+    listed, more, faulted = crew_store.unit_dirs(
         lg.KIND_SESSION, limit=5, exclude=everything - {_store_name("b-sid")}
     )
+    assert faulted is False
     assert [d.name for d in listed] == [_store_name("b-sid")]
     assert more is False
     # A limit of zero lists nothing and still says whether anything exists: the
     # caller filled its cap with named units and wants to know if the store
     # holds more.
-    assert crew_store.unit_dirs(lg.KIND_SESSION, limit=0) == ([], True)
-    assert crew_store.unit_dirs(lg.KIND_SESSION, limit=0, exclude=everything) == ([], False)
+    assert crew_store.unit_dirs(lg.KIND_SESSION, limit=0) == ([], True, False)
+    assert crew_store.unit_dirs(lg.KIND_SESSION, limit=0, exclude=everything) == ([], False, False)
 
 
 # ── store helpers ──────────────────────────────────────────────────────────
@@ -606,6 +610,28 @@ def test_read_head_tells_a_missing_second_line_from_a_damaged_one() -> None:
         crew_store.read_head(handle.path.parent / "absent.jsonl")
 
 
+def test_a_damaged_announce_record_is_a_fault_every_time_it_is_served(monkeypatch) -> None:
+    # The announce record is THERE and unreadable, so what it said about this
+    # session's creator is unknown rather than absent. Serving that as "no creator"
+    # is what stops the ancestor rule dropping a supervising conductor. The verdict
+    # is cached -- the bytes cannot become readable -- but it stays a fault, which a
+    # cached absence would not be.
+    handle = _log("c-sid", "chat-2")
+    handle.path.write_bytes(handle.path.read_bytes().split(b"\n", 1)[0] + b"\n{not json\n")
+    scanner = SessionTree()
+    assert scanner.reading().incomplete is True
+    reads: list[Path] = []
+    real = tree.read_head
+
+    def _counting(path: Path):
+        reads.append(path)
+        return real(path)
+
+    monkeypatch.setattr(tree, "read_head", _counting)
+    assert scanner.reading().incomplete is True
+    assert reads == []
+
+
 def test_a_damaged_first_entry_is_refused_once_not_read_every_scan(monkeypatch) -> None:
     handle = _log("c-sid", "chat-2")
     handle.path.write_bytes(handle.path.read_bytes().split(b"\n", 1)[0] + b"\n{not json\n")
@@ -638,15 +664,15 @@ def test_oldest_segment_prefers_the_head_and_falls_back_to_the_lowest_numbered(
 
 
 def test_unit_dirs_lists_only_real_directories_under_a_real_root(tmp_path: Path) -> None:
-    assert crew_store.unit_dirs(lg.KIND_SESSION, limit=8) == ([], False)
+    assert crew_store.unit_dirs(lg.KIND_SESSION, limit=8) == ([], False, False)
     _opened(_log("p-sid", "chat-1"), "chat-1")
     root = crew_store.crew_log_root(lg.KIND_SESSION)
     (root / "stray.txt").write_bytes(b"")
     outside = tmp_path / "outside"
     outside.mkdir()
     (root / "linked").symlink_to(outside, target_is_directory=True)
-    kept, more = crew_store.unit_dirs(lg.KIND_SESSION, limit=8)
-    assert ([p.name for p in kept], more) == ([_store_name("p-sid")], False)
+    kept, more, faulted = crew_store.unit_dirs(lg.KIND_SESSION, limit=8)
+    assert ([p.name for p in kept], more, faulted) == ([_store_name("p-sid")], False, False)
 
 
 def test_unit_dirs_stops_one_candidate_past_the_limit(monkeypatch) -> None:
@@ -669,12 +695,12 @@ def test_unit_dirs_stops_one_candidate_past_the_limit(monkeypatch) -> None:
         return real(path)
 
     monkeypatch.setattr(crew_store, "is_link", _watching)
-    kept, more = crew_store.unit_dirs(lg.KIND_SESSION, limit=2)
-    assert len(kept) == 2 and more is True
+    kept, more, faulted = crew_store.unit_dirs(lg.KIND_SESSION, limit=2)
+    assert len(kept) == 2 and more is True and faulted is False
     assert len(examined) == 3
     # A limit no population reaches keeps everything, with nothing left over.
     examined.clear()
-    kept, more = crew_store.unit_dirs(lg.KIND_SESSION, limit=100)
+    kept, more, faulted = crew_store.unit_dirs(lg.KIND_SESSION, limit=100)
     assert sorted(p.name for p in kept) == sorted(
         _store_name(s) for s in ("a-sid", "b-sid", "c-sid", "d-sid")
     )

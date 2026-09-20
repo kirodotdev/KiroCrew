@@ -49,7 +49,12 @@ from pathlib import Path
 from typing import Any, Final
 
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
-from kiro_crew.crew_log.store import oldest_segment, read_head, unit_dir_for, unit_dirs
+from kiro_crew.crew_log.store import (
+    oldest_segment,
+    read_head,
+    unit_dir_for,
+    unit_dirs,
+)
 from kiro_crew.session_ledger import _store_name
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
 
@@ -98,6 +103,26 @@ class TreeNode:
     slot: str
     parent_slot: str | None
     cycle: bool
+
+
+@dataclass(frozen=True)
+class TreeReading:
+    """One scan's nodes, and whether that scan saw every unit the store holds.
+
+    The two travel together on purpose. A reader that only DISPLAYS lineage can
+    ignore ``incomplete`` -- a missing edge renders as "no creator known", which
+    is what it looked like before this reader existed. A reader that DECIDES on
+    an edge cannot: dropping a candidate because it is an ancestor, on a tree
+    whose edge for that candidate was lost to a transient read fault, is a
+    confident wrong answer rather than a missing one.
+
+    ``incomplete`` is computed in the call that produced ``nodes`` rather than
+    left on the tree, for the reason :class:`SessionTree` is shared: a flag read
+    in a second, unlocked call can belong to another reader's scan.
+    """
+
+    nodes: dict[str, TreeNode]
+    incomplete: bool
 
 
 def fold_tree(records: Iterable[OpenedRecord]) -> dict[str, TreeNode]:
@@ -221,6 +246,30 @@ def opened_record(
     )
 
 
+def header_unreadable(segment: Path) -> bool:
+    """Whether "no header" means the header could not be READ.
+
+    ``read_head`` answers an over-cap or unparseable line 1 with the same "no
+    header" it gives a file whose header has not been written yet: the emitter
+    creates the file and appends in two writes, and a read can land between them.
+    Caching that absence as a verdict is what makes the difference matter -- a
+    cached ``None`` is re-served on every later scan while the file's identity
+    holds, so a damaged header would be reported complete for as long as the
+    file exists.
+
+    The two are told apart by asking whether the file holds any BYTES. An empty
+    file is the transient; bytes that produced no header are damage. A header
+    that parsed and was then REFUSED is neither -- that one was read, and the
+    answer it gave is the refusal.
+    """
+    try:
+        return segment.stat().st_size > 0
+    except OSError:
+        # Gone between the read and this question: retention, which is an
+        # absence, and the caller's own next scan finds the unit evicted.
+        return False
+
+
 def _bounded(value: Any, limit: int) -> bool:
     """Whether *value* is a non-empty string of at most *limit* characters."""
     return isinstance(value, str) and 0 < len(value) <= limit
@@ -245,6 +294,13 @@ class _Head:
     ino: int
     size: int
     record: OpenedRecord | None
+    #: Set when this unit's head was JUDGED DAMAGED rather than read. Cached like
+    #: any other verdict so a planted bad line costs one read, and reported every
+    #: time it is served: a damaged announce record says nothing about the session's
+    #: creator, and serving that as "no creator" is what stops the ancestor rule
+    #: dropping a supervising conductor -- a confident wrong holder on an answer
+    #: that calls itself complete.
+    faulted: bool = False
 
 
 class SessionTree:
@@ -291,6 +347,17 @@ class SessionTree:
     def records(self, preferred: Iterable[str] = ()) -> list[OpenedRecord]:
         """One record per provable session log on disk, unordered.
 
+        Drops whether the scan faulted. :meth:`reading` is the caller that keeps
+        it; this one stays for callers that only want the records.
+        """
+        return self._records_with_fault(preferred)[0]
+
+    def _records_with_fault(
+        self, preferred: Iterable[str] = ()
+    ) -> tuple[list[OpenedRecord], bool, bool]:
+        """:meth:`records`, plus whether any unit's bytes could not be READ, plus
+        whether the population ran past the cap.
+
         *preferred* names unit ids (the live sessions' ACP session ids) whose
         logs are admitted FIRST, whatever their place in the store's order: the
         rows on screen are what the tree is folded for, so past the cap it is
@@ -305,9 +372,15 @@ class SessionTree:
         stats is bounded by the cap whether or not a log exists for an id -- and
         a gateway running more than the cap in live logged sessions does lose
         lineage on the rows past it.
+
+        The fault bit is accumulated HERE, inside the lock that did the reading,
+        and returned rather than stored. One tree serves every reader in the
+        process, so a bit left on the instance could be read by a second,
+        unlocked call and describe another reader's scan.
         """
         out: list[OpenedRecord] = []
         seen: set[str] = set()
+        faulted = False
         with self._lock:
             # Live sessions' units first, by name: one stat each to find them,
             # at most TREE_UNIT_CAP stats however many ids the caller names.
@@ -320,32 +393,59 @@ class SessionTree:
             # Then the store's own order for the rest of the cap. The listing
             # stops one candidate past what it was asked for, so a scan never
             # walks, holds or counts more than the cap.
-            listed, self._over_cap = unit_dirs(
+            listed, over_cap, listing_faulted = unit_dirs(
                 KIND_SESSION, limit=TREE_UNIT_CAP - len(named), exclude=seen
             )
+            self._over_cap = over_cap
+            if listing_faulted:
+                # Reported by the read that FAILED. A probe of our own cannot
+                # stand in for it: `iterdir` yields as it goes, so a failure after
+                # the first entry escapes anything that draws one entry and stops,
+                # and even a full re-read answers for a different moment.
+                faulted = True
             for directory in listed:
                 seen.add(directory.name)
             for directory in named + listed:
-                record = self._read(directory)
+                record, read_faulted = self._read(directory)
+                faulted = faulted or read_faulted
                 if record is not None:
                     out.append(record)
             # Evict what this scan did not admit: a unit that is gone, and one
             # that fell past the cap because the population grew in front of it.
             for gone in [name for name in self._heads if name not in seen]:
                 del self._heads[gone]
-        return out
+        return out, faulted, over_cap
 
-    def _read(self, directory: Path) -> OpenedRecord | None:
-        """One unit's record, from the cache when its segment is unchanged.
-        Caller holds the lock."""
+    def _read(self, directory: Path) -> tuple[OpenedRecord | None, bool]:
+        """One unit's record, from the cache when its segment is unchanged, and
+        whether the read FAULTED. Caller holds the lock.
+
+        The two values are different facts and a caller needs both. No record
+        because this unit has none -- no segment, or a create whose announce has
+        not landed -- is the store answering. No record because the bytes could
+        not be read is the store failing to answer, and only that makes a scan
+        see less than the store holds. Blurring them would let a lineage edge
+        vanish on a transient fault while the answer built from it still called
+        itself complete.
+        """
         name = directory.name
         segment = oldest_segment(directory)
         if segment is None:
-            return None
+            # `oldest_segment` answers an unreadable DIRECTORY with None, the same
+            # answer it gives for a unit that genuinely has no segment. Probe which
+            # one this is, on the empty path only: a directory that cannot be listed
+            # is a fault, one that is absent or truly empty is the store answering.
+            try:
+                next(iter(directory.iterdir()), None)
+            except FileNotFoundError:
+                return None, False
+            except OSError:
+                return None, True
+            return None, False
         try:
             stat = segment.stat()
         except OSError:
-            return None
+            return None, True
         cached = self._heads.get(name)
         if (
             cached is not None
@@ -354,7 +454,7 @@ class SessionTree:
             and cached.ino == stat.st_ino
             and cached.size <= stat.st_size
         ):
-            return cached.record
+            return cached.record, cached.faulted
         try:
             header, entry, announced = read_head(segment)
         except OSError:
@@ -362,14 +462,60 @@ class SessionTree:
             # moment's I/O fault, or a unit retention removed between the stat
             # and the open. The next scan reads it again, or finds it gone and
             # evicts it.
-            return None
+            return None, True
         if header is not None and not announced:
             # The create landed, the announce has not: nothing to cache.
             self._heads.pop(name, None)
-            return None
+            return None, False
+        if announced and entry is None:
+            # The announce record is THERE and could not be read as an entry, so
+            # what it said about this session's creator is unknown -- not absent. A
+            # missing creator edge is the one shape that stops the ancestor rule
+            # dropping a supervising conductor, so serving damage as "no creator" is
+            # a confident wrong holder on an answer that calls itself complete.
+            #
+            # Cached as a JUDGED fault rather than dropped: the log is append-only,
+            # so those bytes cannot become readable and re-reading them every scan
+            # buys nothing -- but the verdict is a fault every time it is served,
+            # which a cached absence would not be.
+            self._heads[name] = _Head(
+                segment, stat.st_dev, stat.st_ino, stat.st_size, None, faulted=True
+            )
+            return None, True
+        if header is None and header_unreadable(segment):
+            # Bytes that produced no header. Nothing is cached for it: a cached
+            # absence is re-served on every later scan while the file's identity
+            # holds, which would turn one damaged header into a permanent silent
+            # omission on a reading that calls itself complete.
+            self._heads.pop(name, None)
+            return None, True
         record = opened_record(directory, header, entry)
         self._heads[name] = _Head(segment, stat.st_dev, stat.st_ino, stat.st_size, record)
-        return record
+        return record, False
+
+    def reading(self, preferred: Iterable[str] = ()) -> TreeReading:
+        """The tree as of this scan, WITH whether that scan saw the whole store.
+
+        Prefer this over :meth:`snapshot` wherever the answer is folded into
+        something a consumer acts on. ``incomplete`` is true when a unit's bytes
+        could not be read, when the population ran past :data:`TREE_UNIT_CAP`,
+        or when the fold itself failed -- three ways of saying a lineage edge may
+        be missing, which for a reader that DROPS a candidate on the strength of
+        an edge is the difference between a right answer and a confident wrong
+        one.
+
+        The flag travels IN the reading rather than on the instance, and is taken
+        from the same call that produced the nodes. One tree serves every reader
+        in the process, so a flag read in a second, unlocked call could belong to
+        another reader's scan, and the caller would render a partial lineage as a
+        complete one.
+        """
+        try:
+            records, faulted, over_cap = self._records_with_fault(preferred)
+            return TreeReading(nodes=fold_tree(records), incomplete=faulted or over_cap)
+        except Exception:  # pragma: no cover -- defensive; the store calls are guarded
+            logger.warning("session tree scan failed; reporting no lineage", exc_info=True)
+            return TreeReading(nodes={}, incomplete=True)
 
     def snapshot(self, preferred: Iterable[str] = ()) -> dict[str, TreeNode]:
         """The tree as of this scan: :func:`fold_tree` over :meth:`records`,
@@ -379,12 +525,12 @@ class SessionTree:
         and a store fault must not take the page down. The fault is logged and
         the tree is reported empty, which every consumer renders as "no
         creator known", the same as before this reader existed.
+
+        Drops the completeness of the scan. That is right for a page that shows
+        lineage as decoration and wrong for anything that DECIDES on an edge:
+        use :meth:`reading` there.
         """
-        try:
-            return fold_tree(self.records(preferred))
-        except Exception:  # pragma: no cover -- defensive; the store call sites are guarded
-            logger.warning("session tree scan failed; reporting no lineage", exc_info=True)
-            return {}
+        return self.reading(preferred).nodes
 
 
 def parent_payload(

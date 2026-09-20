@@ -726,13 +726,318 @@ fold reddens CI with the bump named in the failure. One global number over a
 per-fold one is deliberate: it over-retires, and over-retiring costs a refold
 while under-retiring serves a wrong number.
 
-## 8. Deliberately not here
+## 8. The pull-request holders -- the second fold across logs
+
+`crew_log/holders.py`. The session tree above answers "who created whom". This
+answers "which session is holding pull request X", and it is a separate reader
+because neither the tree nor a single log's fold can answer it alone: the
+question needs the references (a scan of prose) AND the lineage (the tree's
+fold), combined under one rule.
+
+**Why recency alone is wrong, and why the rule lives here.** A reader that takes
+the session with the newest mention gets the wrong answer whenever a conductor is
+involved: a conductor names the pull request every time it checks on the worker it
+dispatched through `session_create`, so by recency it owns every row it supervises
+and the worker actually holding the work is never named. Mention count does not
+rescue it -- a conductor patrolling on a timer out-mentions a worker that pushed
+twice. So the lineage is applied BEFORE the ranking (`fold_holders`, pure):
+
+1. The candidates for a reference are the sessions whose text NAMED it.
+2. Any candidate that is an ANCESTOR of another candidate is dropped. A conductor
+   supervising a worker that named the same pull request is that worker's
+   ancestor, so it leaves the running. A conductor that named a pull request NO
+   descendant of its own named is NOT dropped: it is then the only session that
+   knows about it, and reporting nobody would be worse than reporting the session
+   that actually spoke.
+3. The newest mention among the survivors wins, ties falling to the larger count
+   and then to the slot key, so two scans of the same files agree.
+
+Ancestry is the TREE's relation and not a second opinion about it: an edge is
+followed only where `fold_tree` followed it -- onto a slot with a log of its own
+-- and a slot the fold marked as lying on a cycle is never walked through. That is
+why this module imports the tree instead of re-reading `session/opened`: two
+readers with two folds would disagree about who created whom, and a person moving
+between the pages that use them would see two answers. The answer carries the
+owner's CITED creator even where the tree could not follow that citation, for the
+same reason `TreeNode` retains it -- the citation is the child's own record, not
+the fold's verdict on it.
+
+**What counts as a reference.** Text entries only: `message/received.text`,
+`message/sent.text` and `message/chunk.delta`. Tool arguments are hashed in this
+store (section 2), so a pull request named only inside a tool call is not
+recoverable from the log and is deliberately not guessed at. ONE spelling is read:
+the full pull-request URL, whose `/pull/<number>` path says the number is a pull
+request. The short forms are both refused. A bare `#number` names no repository,
+and numbers are per-repository, so it would join a session to whichever repository
+happened to share it. `owner/repo#number` names a repository and still does not
+say what the number IS: the forge spells an issue and a pull request identically
+in that form, and only an API call it cannot make could tell them apart, so
+reading it would attribute a holder to an issue -- a reference to a pull request
+that does not exist. A wrong kind, like a wrong owner, is worse than no answer.
+
+The number must END its own path token, and the scheme must BEGIN one. The pattern
+is applied to arbitrary prose and matches anywhere in it, so each end needs the
+same boundary: without the trailing one, `/pull/123abc` -- which addresses no pull
+request -- reads as a reference to 123, and without the leading one
+`xhttps://github.com/o/r/pull/42`, an ordinary typo, matches one character in and
+names a pull request the text does not address. One refused class covers both: the
+characters that CONTINUE a token, being letters, digits, `_`, `-`, `~` and the `%`
+of an escape. Everything else ends or leads a token and is not read, which keeps
+`/pull/123/files`, `/pull/123#discussion_r1`, `/pull/123.diff`, a link at the end of
+a sentence, and one led by a space, a bracket or a quote. The trailing refusal
+includes a following DIGIT, so a run longer than the number bound cannot be re-cut
+into a shorter valid number to satisfy the boundary: it arrives whole at the bound
+that refuses it.
+
+A repository's identity is CASE-INSENSITIVE at the forge, so owner and repository
+are lowercased where a reference is constructed. That is one place rather than
+two: normalising in the parser and again in each lookup lets a later call site
+forget, and the failure is silent both ways -- two casings of one pull request fold
+as two references, and a caller spelling it differently finds no holder for a
+reference that was found.
+
+A reference is stitched across an oversize body's slices. A body too large for one
+line is written as a run of `message/chunk` entries (section 2), and a URL can
+straddle any two of them, so scanning each slice alone loses it while reporting a
+complete answer. Each slice therefore carries forward the tail of the slice before
+it, `REFERENCE_STITCH_CHARS` of it, which is longer than the longest reference the
+bounds below admit. The carry is kept with the segment's read position, so a scan
+that stopped on its byte budget resumes the stitch rather than dropping the pair it
+stopped between. It is reset at every record that does not continue the same run --
+a different `turn` or `step`, an entry of another type, the citing entry itself --
+because two unrelated bodies joined end to end could spell a reference that
+neither of them contains, and a fabricated holder is the same defect as a lost one
+wearing the other sign.
+
+A run of slices with NOTHING after it is held rather than folded. The store writes a
+body's slices and the entry citing their seqs as one group, so a run with anything
+after it was completed, and a TRAILING run is a group whose citing entry never
+landed -- `store._orphan_chunk_offset` calls exactly that run unreachable and drops
+it, because no entry names those seqs and the message the body belongs to has no
+record at all. Folding it would report a holder for a message with no record, and
+report it complete. The run is HELD and not discarded: its references accumulate
+apart from the segment, and they are kept ACROSS scans rather than for the duration
+of one read, so a scan that caught a group mid-write folds it on the next call.
+Discarding would lose an ordinary oversize body's references for good, which is a
+worse answer than the one the hold prevents; rewinding the read position to the
+run's first slice instead would stall the scan outright, because a body can be
+larger than a whole scan's byte budget and every later scan would re-read the same
+bytes without ever reaching the citing entry. The position advances past a held
+run; what is held is what it contributed.
+
+A record this reader SKIPPED does not close a run. A damaged but terminated line
+carries no type, so it says nothing about whether the citing entry landed, and
+treating it as the end of the group commits exactly the unreachable slices the hold
+is for.
+
+Each name is bounded too, at the forge's own limits (39 characters for an
+owner, 100 for a repository), and that bound is a RETENTION bound rather than a
+parsing nicety: a reference is cached for as long as its segment exists and the
+cache bounds only the COUNT per segment, so without it one entry of untrusted
+prose is a single 60 KiB reference and a segment's worth would pin tens of
+megabytes in a scanner every reader shares.
+
+**Bounds.** Unlike the tree, this reader cannot answer from a log's head, because
+a reference can be named on any line. It is bounded by RESUMING instead. Each
+segment's read position is cached with that segment's identity, so an untouched
+segment costs one `stat` and a live session's appends cost only the bytes
+appended -- `SCAN_BYTES_PER_SEGMENT` of them per scan, so a cold log of any size
+is absorbed over several scans rather than blocking one. A scan that left bytes
+unread says so, so a partial answer never reads as a complete one, and the unit
+listing is the tree's own capped listing, so the two readers admit the same
+population. That completeness flag travels IN the reading the scan returns
+(`ReferenceReading`, `HolderReading`) and is computed under the same lock that
+produced the data. It is deliberately not a property of the scanner: one scanner
+instance serves every reader in the process, so a flag read in a second, unlocked
+call could be another reader's, and a truncated answer would then be handed over
+labelled complete. Over the unit cap counts as incomplete for the same reason a
+byte budget does -- a truncated set of units and a truncated set of bytes both
+mean the answer is not the whole store. A store fault is reported as an empty
+answer that is incomplete, because "nothing was readable" and "nobody holds
+anything" are different facts and only the second is safe to render. The same rule
+runs one level down: a unit whose segments could not be listed, a segment whose
+bytes could not be read, and a header that could not be read all make the reading
+incomplete, while a header that WAS read and refused does not, and neither does a
+segment retention deleted off the front -- its entries are gone from the store, so
+an answer without them is complete.
+
+A fault must never arrive as an ABSENCE, and the store's own helpers are where that
+happens. A segment whose `stat` FAILS is the same rule at file level: the listing
+just returned it, so the file is there and could not be read. Only
+`FileNotFoundError` is the absence -- retention took the entries with it -- and every
+other error is a fault. Asking `exists()` instead answers False for both, reporting a
+readable-but-unread segment as one retention removed.
+
+An announce record that is THERE and unreadable is the same rule in the lineage
+fold: what it said about the session's creator is unknown rather than absent, and a
+missing creator edge is the one shape that stops the ancestor rule dropping a
+supervising conductor. The verdict is CACHED -- the log is append-only, so those
+bytes cannot become readable and re-reading them every scan buys nothing -- and it is
+served as a fault every time, which a cached absence would not be.
+
+The store REFUSING to name a unit is the same fault, and it costs that unit alone.
+The refusal is not an `OSError`, so it left the reference fold entirely and the outer
+guard answered with no holders at all -- one unreadable unit throwing away every
+healthy unit's work. It is reachable two ways. A header can hold an id the store will
+not address, since a unit directory is named with a readable fold of the id plus a
+digest of the whole of it and the fold turns a path separator into `_`, so a
+hand-written directory and header can agree on the name while the id stays unusable.
+And the root itself can be refused, for a data home this process may not read, which
+has nothing to do with the id.
+
+EVERY segment's own header is checked against the unit holding it, not just the
+oldest. A segment's session is otherwise taken from the DIRECTORY, so a file whose
+header names another session has its entries folded into this one's mentions while the
+reading calls itself complete -- a holder for work the session never touched. The
+oldest segment is already refused that way when its id does not fold back to its
+directory, which is what leaving the rest unchecked made uneven. The check reads the
+header from the same open file as the records rather than from a second look at the
+path, since a separate read leaves a window in which the file the header vouched for
+is not the file whose records are folded. A refusal is permanent, like a record that
+could not be delivered: the answer is a property of the bytes, so re-reading reaches
+the same one. A first record still being WRITTEN never reaches the check -- it has no
+terminator, so the read stops on it as an append in flight.
+
+Ancestry is walked to a bound of the NUMBER OF NODES, which is the longest simple
+path there can be, and repeats are refused separately. A fixed floor is wrong in the
+one direction that matters: a chain deeper than it stops the walk, the candidate is
+not recognised as an ancestor, and it survives the descendant filter to win on
+recency -- a wrong holder on an answer that still calls itself complete.
+
+A fault is reported by the read that FAILED, never by a second look. `unit_dirs`
+returns whether its listing failed alongside what it listed, and both folds take that
+flag: a reader of its own cannot stand in for it, because `iterdir` yields as it goes,
+so an error surfacing after the first entry escapes any probe that draws one entry and
+stops, and even a full re-listing answers for a different moment than the listing did.
+Whatever the listing had in hand is returned WITH the fault rather than discarded:
+those directories were read, and the flag says the answer is short.
+
+An ABSENT root is not a fault: a store with no sessions directory holds no sessions,
+and an answer without them is the whole truth. A root the store REFUSES is one,
+because resolving it is itself a read, and the refusal happens inside the listing
+call, so it arrives as that call's own fault.
+
+The same rule holds one level down, where `oldest_segment` answers an unreadable unit
+directory with the value it gives a unit that has no segment. Both folds probe there,
+on the empty path only so the ordinary case pays nothing, through one shared helper --
+two copies of that judgement would be the two folds disagreeing again.
+
+A header that could not be READ is the same rule one layer in, and the cache is
+what gives it teeth. `read_head` answers an over-cap or unparseable line 1 with the
+same "no header" it gives a file whose header has not been written yet, and that
+second case is an ordinary transient: the emitter creates the file and appends the
+opening record in two writes, so a read can land between them. The tree CACHES its
+per-unit verdict, so blurring the two turns one damaged header into a silent
+omission re-served on every later scan for as long as the file's identity holds.
+The two are told apart by asking whether the file holds any BYTES, and a faulted
+header is not cached at all. A header that parsed and was then refused is neither
+case: it was read, and the refusal is the answer it gave.
+
+Segments missing off the FRONT and missing from the MIDDLE are different facts.
+Retention deletes whole segments off the front, and those entries are gone from
+the store, so an answer without them is the whole truth available and is complete.
+A segment gone from the middle is damage: the entries around it are still here, so
+the sequence itself says some are absent, and the store puts each segment's
+first-seq in its NAME so a reader can tell the two apart from the listing alone.
+Seq runs contiguously inside one segment, so the segment following one whose
+highest entry is `max_seq` must start at `max_seq + 1`; a higher start is the
+hole, and the reading says incomplete. The number is read from the entries this
+scan already framed rather than derived from a count of them, because only the
+records know how the writer numbers a segment's header -- a count-based rule
+reported an ordinary rollover as damage, which is worse than the hole it finds.
+A segment this scan did not finish is not judged at all: its highest seq is short
+by whatever went unread, and not finishing already makes the reading incomplete.
+
+This reader asks the framing layer for records INTACT, and stops a segment at the
+first one that cannot be delivered. The alternative -- a reader that skips such a
+record -- drops it in full, terminator included, so its bytes never reach the scan
+and cannot appear in what the scan counts as consumed. Any position cached past it
+is short of the record, and every later scan reads the records after it again and
+adds their mentions a second time, inflating the very count the fold breaks ties
+on. There is no trustworthy position to cache past a record the reader never saw,
+so the segment contributes nothing, the reading says incomplete, and the segment is
+not read again: the abort repeats identically, and the log is append-only, so
+nothing ahead of that record will ever be rewritten. The writer refuses to produce
+an over-cap record, so reaching this at all means the file was written by something
+else.
+
+The question "was this unit retired between the scans" is asked of the UNIT, never
+of its slot. A slot present in the lineage says only that SOME unit holds it now,
+and a slot is reused the moment a new session takes the vacancy, so a probe keyed
+on the slot skips exactly the retirement it is looking for whenever the vacancy was
+filled -- which in Crew Mode is the normal case rather than the exception.
+
+The window is applied on the way OUT and never while caching. A read position
+advances on the bytes CONSUMED, not on the records kept, so filtering while
+caching would step past a record without storing it and no later scan could
+recover it -- one windowed call would permanently hide those references from every
+unwindowed reader sharing the scanner, and report the result as complete.
+
+For the same reason there is NO per-call narrowing of which entry types are
+scanned. `since` needs no extra cache key, because a moment is already stored per
+reference, so it can be applied on the way out. An entry-type filter cannot: the
+cache stores a reference, not the type that produced it, so narrowing on the way
+out would need the cache keyed by type and triple what it retains, and narrowing
+the SCAN instead would poison the shared cache exactly as a cached window would.
+`TEXT_TYPES` is always what is read.
+
+A unit RETIRED between the two scans is the one race the flags above do not cover,
+because neither half faults. Its mention is captured by the reference scan while
+its lineage node is missed by the later one, and a mention with no node is the one
+shape that defeats the ancestor rule -- the candidate cannot be dropped as anyone's
+descendant, so a supervising conductor survives the filter and wins on recency.
+A missing node alone does not establish it, since the ordinary cause is a log with
+no `session/opened` record at all; what separates them is whether the unit is still
+there. So the probe is one existence check per mentioning slot that has no node,
+usually none at all. Reordering the two scans is not the fix it appears to be:
+taking the lineage first trades a retirement for a unit ADDED in the same window,
+which leaves the same shape, and a session appearing is constant while a retention
+deletion is rare.
+
+The cache is validated exactly as the tree's
+head cache is and for the same reasons: the store never rewrites a written line,
+so bytes already read are immutable while the segment exists, and `(st_dev,
+st_ino)` alone is not an identity because a filesystem hands a freed inode number
+to the next file it creates. A segment SHORTER than the position we read to is not
+the file we read, whatever its inode says. A frame with no terminator is the tail
+of an append in flight: it is neither parsed nor counted, so the next scan reads
+those bytes again once they are complete.
+
+The completeness a holder answer carries is BOTH scans': this section's references
+and section 6's lineage. The lineage half matters more here than anywhere else the
+tree is read. A lineage read that faulted drops one unit's creator record silently,
+so a conductor stops being recognised as its worker's ancestor, the ancestor rule
+stops dropping it, and the conductor -- which by recency almost always wins -- is
+reported as the holder. That is a confident WRONG owner rather than a missing one,
+and it is why the tree reports the completeness of its own scan
+(`SessionTree.reading`) rather than only its nodes. `snapshot` keeps returning the
+nodes alone for the pages that render lineage as decoration, where a missing edge
+reads as "no creator known" and costs nothing.
+
+**The readers.** Both are synchronous and blocking by construction: they list
+directories and read files. A caller on an event loop hands the scan to a worker
+thread. The scanner guards its own state with a lock, so nothing further is needed
+to share one instance between callers.
+
+## 9. Deliberately not here
 
 - **A savepoint that survives a segment rollover.** `origin` carries the newest
   segment's inode, so a log that rolls over retires its savepoints once. No writer
   creates a second segment today, and whoever adds one has to revisit `log_origin`
   anyway -- the in-memory bundle reuses the same identity and has the same
   weakness. The cost of leaving it is one cold fold per rollover.
+
+- **An app-facing grant for the holder projection.** A `permissions.prHolders`
+  key and an `AppContext` reach would be public app-kit schema: once released a
+  third-party manifest may declare it, so the payload shape is fixed from that
+  moment and a first consumer wanting a different one gets a version rather than a
+  fix. No in-tree consumer exists yet, so nothing would exercise the shape it
+  committed to. The grant lands with the first consumer that reads through it,
+  where the shape is answerable rather than guessed.
+- **A savepoint on disk for THIS fold.** Section 7's savepoints carry a fold's
+  state beside the log it came from; this scan's state is a per-segment read
+  position and reference set held in memory and keyed by session, which is
+  already the shape such a file would carry, so persistence stays additive.
 - **Crew-kind folds.** No crew writer exists.
 - **Subagent lineage and fork pointers.** A `subagent/spawned` entry's `ref` is
   resolved on the page like any other citation. The session tree (section 6)
