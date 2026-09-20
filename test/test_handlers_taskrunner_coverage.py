@@ -49,6 +49,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_update_task,
 )
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun
 
 # A URL whose oversized query payload trips the (domain-agnostic) exfiltration
@@ -872,12 +873,23 @@ class TestPlan:
         assert runner._plan_task is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("exc", [FileNotFoundError("missing spec"), ValueError("empty input")])
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            FileNotFoundError("missing spec"),
+            ValueError("empty input"),
+            # A descriptor-gate refusal and an oversize spec are the caller's to
+            # see: the message names what was withheld instead of a bare 500.
+            PermissionError("Spec file refused by the file gate: /w/spec.md"),
+            FileTooLargeError("File exceeds 50 MB safety cap"),
+        ],
+    )
     async def test_expected_errors_are_400(self, tmp_path: Path, exc: Exception) -> None:
         runner = _runner(tmp_path)
         runner.plan = AsyncMock(side_effect=exc)
         resp = await api_taskrunner_plan(_request(_state(runner), json_body={"input": "x"}))
         assert resp.status == 400
+        assert _body(resp)["error"] == str(exc)
         assert _body(resp)["error"] == str(exc)
 
 

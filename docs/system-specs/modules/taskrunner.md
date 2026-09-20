@@ -170,6 +170,20 @@ are normalized as the text-mode read they replace did. Every refusal, like every
 error, becomes an empty prefix, so admission is no oracle for whether a path is
 protected.
 
+The prefix is not the only spec read the gate covers. Every read of a task spec goes
+through the one gated reader, `_read_spec_text(path, max_chars)`: the bounded
+4000-character placeholder prefix above, and the whole-spec reads in `TaskRunner.run()`
+and `TaskRunner.plan(source="file")`. The whole-spec reads pass no byte cap of their
+own and are bounded by the gate's own `hooks.MAX_FILE_BYTES`; a spec past that cap
+raises `hooks.FileTooLargeError` rather than coming back as a silent prefix. Where the
+placeholder prefix maps a refusal to an empty prefix, a refusal of a whole-spec read
+raises `PermissionError`, so the run fails rather than proceeding on a spec the gate
+withheld — the alternative is the aliased target's bytes in the LLM prompt, the
+persisted run and the review context. The two reads share one function so the gate
+cannot hold at one and lapse at the other, and in both `within_root` is derived from the
+canonical path (`hooks.validate_file_path`), not from the spelling the caller hands over,
+so a `~` or a relative path names the same directory the descriptor lands in.
+
 Saved definitions whose immutable `format` is `task-plan` are invoked through
 `TaskRunner.start_workflow_definition`. The saved YAML is parsed exactly; it is
 not re-decomposed by an LLM. The resulting project then follows the normal

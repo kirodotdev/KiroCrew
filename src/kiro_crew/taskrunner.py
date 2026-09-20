@@ -27,7 +27,7 @@ from kiro_crew.execution_context import (
     execution_from_record,
 )
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import safe_read_file_bytes_nolink
+from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.llm_helpers import stream_and_collect_json
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -252,48 +252,120 @@ def _resolve_workspace_dir(raw: str) -> str:
     return resolved
 
 
-def _read_spec_prefix(path: str, max_chars: int) -> str:
-    """Read and normalize a bounded spec prefix on a worker thread.
+def _read_spec_text(path: str, max_chars: int | None) -> str | None:
+    """Read and normalize spec text through the descriptor gate.
 
-    *path* has already passed ``hooks.validate_file_path``, but that judged the
-    NAME; re-opening the name would read whatever inode the name points at by
-    then. A hardlink alias shares its target's inode under an innocent name, so
-    every name-based check passes while the bytes belong to the target. The read
-    therefore goes through ``hooks.safe_read_file_bytes_nolink``: it opens FIRST
-    (refusing a link at the final component), ``fstat``s that one descriptor and
-    refuses ``st_nlink > 1``, a non-regular inode, and a sensitive or out-of-root
-    real path, then reads that same descriptor. ``within_root`` is the spec's own
-    directory, which also pins the opened inode on Windows where ``O_NOFOLLOW``
-    does not exist.
+    A caller may hold a *path* that passed ``hooks.validate_file_path``, but that
+    judges the NAME; re-opening the name reads whatever inode the name points at
+    by then. A hardlink alias shares its target's inode under an innocent name,
+    so every name-based check passes while the bytes belong to the target. The
+    read therefore goes through ``hooks.safe_read_file_bytes_nolink``: it opens
+    FIRST (refusing a link at the final component), ``fstat``s that one
+    descriptor and refuses ``st_nlink > 1``, a non-regular inode, and a sensitive
+    or out-of-root real path, then reads that same descriptor. ``within_root`` is
+    the spec's own directory, which also pins the opened inode on Windows where
+    ``O_NOFOLLOW`` does not exist.
 
-    Returns ``""`` for anything the gate refuses or cannot read — the same empty
-    prefix the caller already substitutes for an unreadable spec, so a refusal
-    tells a caller nothing about whether a path is protected.
+    ``max_chars`` asks for a bounded prefix, cut to fit. ``None`` asks for the
+    whole spec, bounded by the gate's own ``hooks.MAX_FILE_BYTES``, where a file
+    past that cap raises ``hooks.FileTooLargeError`` instead of yielding a silent
+    prefix.
+
+    Returns ``None`` for anything the gate refuses or cannot read. Every spec
+    read shares this one function, so the gate holds at all of them: a read that
+    skipped it would place the aliased target's bytes in the LLM prompt, the
+    persisted run and the review context.
     """
-    # A UTF-8 code point is at most four bytes, so this many bytes always holds
-    # at least ``max_chars`` characters; the bound stays in characters below.
-    read_limit = 4 * max_chars
+    # ``within_root`` is derived from the CANONICAL path: a caller may hand over
+    # ``~/specs/task.md`` or a path relative to the process directory, and the
+    # root has to name the same directory the descriptor lands in.
+    canonical = validate_file_path(path)
+    if canonical is None:
+        try:
+            sel().log_tool_invocation(
+                session_key="taskrunner",
+                source="taskrunner",
+                tool_name="spec_read_validate",
+                outcome="denied",
+                metadata={
+                    "raw": path,
+                    "reason": "name_validation_rejected",
+                    "bounded": max_chars is not None,
+                },
+            )
+        except Exception:
+            logger.debug("SEL audit for spec name rejection failed", exc_info=True)
+        return None
+    read_limit: int | None
+    if max_chars is None:
+        read_limit = None
+        allow_truncate = False
+    else:
+        # A UTF-8 code point is at most four bytes, so this many bytes always
+        # holds at least ``max_chars`` characters; the bound stays in characters
+        # below.
+        read_limit = 4 * max_chars
+        allow_truncate = True
     raw = safe_read_file_bytes_nolink(
-        path,
-        within_root=os.path.dirname(path),
+        canonical,
+        within_root=os.path.dirname(canonical),
         max_bytes=read_limit,
-        allow_truncate=True,
+        allow_truncate=allow_truncate,
     )
     if raw is None:
-        return ""
-    # The decode is strict, as the text-mode read it replaces was: invalid
-    # UTF-8 raises and the caller maps it to "". The gate returns at most
-    # ``read_limit`` bytes without saying whether it cut, so a full-length
-    # result is the one case that may end mid code point through no fault of
-    # the file; there the tail is held back (``final=False``), which loses
-    # nothing — every complete character before a cut at ``read_limit`` bytes
-    # lies at or past index ``max_chars`` and is dropped by the bound below. A
-    # shorter result is the whole file and is finalized, so an incomplete
-    # sequence at EOF is the malformed spec it is, not a silently shorter one.
-    text = codecs.getincrementaldecoder("utf-8")().decode(raw, final=len(raw) < read_limit)
-    # Universal newlines, as the text-mode read normalized them.
+        try:
+            sel().log_tool_invocation(
+                session_key="taskrunner",
+                source="taskrunner",
+                tool_name="spec_read_validate",
+                outcome="denied",
+                metadata={
+                    "raw": path,
+                    "resolved": canonical,
+                    "reason": "descriptor_gate_rejected",
+                    "bounded": max_chars is not None,
+                },
+            )
+        except Exception:
+            logger.debug("SEL audit for spec descriptor rejection failed", exc_info=True)
+        return None
+    try:
+        sel().log_tool_invocation(
+            session_key="taskrunner",
+            source="taskrunner",
+            tool_name="spec_read_validate",
+            outcome="allowed",
+            metadata={"raw": path, "resolved": canonical, "bounded": max_chars is not None},
+        )
+    except Exception:
+        logger.debug("SEL audit for spec read acceptance failed", exc_info=True)
+    # The decode is strict, as a text-mode read is: invalid UTF-8 raises, and a
+    # bounded caller maps that to "". A truncating read returns at most
+    # ``read_limit`` bytes without saying whether it cut, so a full-length result
+    # is the one case that may end mid code point through no fault of the file;
+    # there the tail is held back (``final=False``), which loses nothing — every
+    # complete character before a cut at ``read_limit`` bytes lies at or past
+    # index ``max_chars`` and is dropped by the bound below. Any other result is
+    # the whole file and is finalized, so an incomplete sequence at EOF is the
+    # malformed spec it is, not a silently shorter one.
+    cut_possible = allow_truncate and len(raw) == read_limit
+    text = codecs.getincrementaldecoder("utf-8")().decode(raw, final=not cut_possible)
+    # Universal newlines, as a text-mode read normalizes them.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return text[:max_chars].strip()
+    if max_chars is not None:
+        text = text[:max_chars]
+    return text.strip()
+
+
+def _read_spec_prefix(path: str, max_chars: int) -> str:
+    """Read a bounded spec prefix on a worker thread.
+
+    Returns ``""`` for anything the gate refuses or cannot read — the same empty
+    prefix the caller substitutes for an unreadable spec, so a refusal tells a
+    caller nothing about whether a path is protected.
+    """
+    text = _read_spec_text(path, max_chars)
+    return "" if text is None else text
 
 
 def _decompose_yaml_with_audit(
@@ -1020,7 +1092,9 @@ class TaskRunner:
             p = Path(spec_path)
             if not p.exists():
                 raise FileNotFoundError(f"Spec not found: {spec_path}")
-            content = p.read_text(encoding="utf-8").strip()
+            content = await asyncio.to_thread(_read_spec_text, str(p), None)
+            if content is None:
+                raise PermissionError(f"Spec file refused by the file gate: {spec_path}")
             if not content:
                 raise ValueError("Spec file is empty")
             decompose_input = spec_content = original_input = content
@@ -1470,11 +1544,19 @@ class TaskRunner:
     ) -> Project:
         self._require_workflow_ready()
         spec_path = Path(spec_path)
-        if input_content is None and not spec_path.exists():
-            raise FileNotFoundError(f"Spec not found: {spec_path}")
-        spec_content = (
-            input_content if input_content is not None else spec_path.read_text(encoding="utf-8")
-        ).strip()
+        if input_content is not None:
+            spec_content = input_content.strip()
+        else:
+            if not spec_path.exists():
+                raise FileNotFoundError(f"Spec not found: {spec_path}")
+            # The whole file goes into the LLM prompt, the persisted run and the
+            # review context, so it is read through the same descriptor gate as
+            # the planning prefix. A refusal fails the run: proceeding on a
+            # refused spec is what puts an aliased sensitive file's bytes there.
+            gated = await asyncio.to_thread(_read_spec_text, str(spec_path), None)
+            if gated is None:
+                raise PermissionError(f"Spec file refused by the file gate: {spec_path}")
+            spec_content = gated
         if not spec_content:
             raise ValueError("Spec file is empty")
         if not task_id:

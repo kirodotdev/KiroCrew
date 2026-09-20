@@ -14,6 +14,7 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
+from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.task_planner import plan_to_yaml
 from kiro_crew.taskrunner import WorkflowInitializing
@@ -661,7 +662,9 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except asyncio.CancelledError:
         return web.json_response({"error": "Planning was cancelled."}, status=400)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, PermissionError, FileTooLargeError, ValueError) as exc:
+        # A descriptor-gate refusal or an oversize spec is the caller's problem to
+        # see, not a bare 500: the message names what was withheld.
         return web.json_response({"error": str(exc)}, status=400)
     finally:
         state.task_runner._plan_task = None
