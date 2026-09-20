@@ -1982,6 +1982,41 @@ def test_a_late_first_record_from_a_retired_unit_does_not_freeze_the_order():
     assert sl.read_state(SLOT)["goal"] == "the live conversation"
 
 
+def test_an_append_that_did_not_land_does_not_publish_the_units_precedence():
+    """A refused or still-queued append must not pin its unit ahead of the successor.
+
+    The order file's whole claim is that among units which have recorded, the one
+    recording right now holds the newest entry. A unit whose append was refused, or is
+    still queued, has NOT recorded, so publishing its precedence there asserts
+    something untrue -- and the rewrite is fsynced immediately, so no crash is needed
+    for the wrong order to survive. A successor resuming with no ledger content of its
+    own would then fold the retired unit's stale goal and phase as current and act on
+    it, which is the inversion the ordering machinery exists to prevent.
+
+    The fault is injected on the OBSERVATION rather than on the append, which makes
+    this strictly harder than the real case: the retired entry really is in its log
+    here, so the fold has it available and still must not let it win.
+    """
+    _unit(SESSION)  # the unit the slot has since replaced
+    _unit(LATER_SESSION)
+    sl.record(SLOT, session_id=LATER_SESSION, goal="the live conversation")
+    assert sl._recorded_unit_order(SLOT) == (LATER_SESSION,)
+
+    # The delayed request from the retired session records, but its append is not
+    # observed to land: this unit's own newest seq does not move.
+    real = sl._unit_last_seq
+    sl._unit_last_seq = lambda unit_id: 0  # type: ignore[assignment]
+    try:
+        sl.record(SLOT, session_id=SESSION, goal="from the retired session")
+    finally:
+        sl._unit_last_seq = real  # type: ignore[assignment]
+
+    # Precedence was NOT published, so the successor keeps it.
+    assert sl._recorded_unit_order(SLOT) == (LATER_SESSION,)
+    sl._fold_cache.clear()
+    assert sl.read_state(SLOT)["goal"] == "the live conversation"
+
+
 def test_a_unit_recording_repeatedly_is_not_rewritten_into_the_log_twice():
     """The ordinary path stays a bare read: already last means nothing to write.
 

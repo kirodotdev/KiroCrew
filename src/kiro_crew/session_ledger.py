@@ -953,7 +953,6 @@ def record_update(
     # refusal would be attributed here, so refusing on it would reject a good write.
     # The loss is logged, surfaced by ``dropped_writes()``, and superseded by the next
     # update, which re-reads the base from disk.
-    _note_unit_order(slot_key, session_id)
     drained = crew_log_emit.flush(timeout=_APPEND_FLUSH_SECONDS)
     # THIS UNIT's own log has to have grown, which is the part the process-wide
     # refusal counter cannot say. A counter that did not move proves only that no
@@ -963,6 +962,23 @@ def record_update(
     # same conversation writing twice at once -- rather than any session anywhere.
     landed = _unit_last_seq(session_id) > seq_before
     durable = drained and landed and crew_log_emit.dropped_writes() == refused_before
+    # PUBLISH PRECEDENCE ONLY ONCE THIS UNIT'S LOG HAS ACTUALLY GROWN. This call must
+    # stay AFTER ``landed`` is computed, and the order is load-bearing rather than
+    # stylistic: the order file's whole claim is "among units that have recorded, the
+    # one recording right now holds the newest entry", and a refused or still-queued
+    # append means this unit did NOT record. Moving it last on that path pins a
+    # RETIRED unit ahead of its successor, and the rewrite is fsynced immediately, so
+    # no crash is needed for the wrong order to persist -- a successor resuming with
+    # no ledger content of its own then folds the retired unit's stale goal and phase
+    # as current and acts on it. That is the inversion this file exists to prevent.
+    #
+    # Gated on ``landed`` rather than ``durable`` deliberately. ``durable`` also
+    # requires ``drained`` and an unmoved refusal counter, and that counter is
+    # PROCESS-WIDE, so a concurrent session's refusal would suppress a precedence
+    # note this unit had genuinely earned. ``landed`` is exactly the fact the file
+    # asserts: this unit's own newest seq moved.
+    if landed:
+        _note_unit_order(slot_key, session_id)
     if not drained:
         logger.warning(
             "ledger: the crew log writer did not drain within %.1fs; this update is "
