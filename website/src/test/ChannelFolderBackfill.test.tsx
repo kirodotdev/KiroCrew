@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ChannelFolderBackfill, type BackfillReport } from '../pages/settings/ChannelFolderBackfill'
+import { isAuthBannerShown, __resetAuthRecoveryStateForTests } from '../api/client'
 import en from '../i18n/locales/en.json'
+// The transport's own recovery copy is hand-authored, so it lives in the manual
+// catalog rather than in the codemod-regenerated `en.json`. A repo guard keeps a
+// key out of both files at once, so this is the one place it can be read from.
+import enManual from '../i18n/locales/en.manual.json'
 import de from '../i18n/locales/de.json'
 import es from '../i18n/locales/es.json'
 import fr from '../i18n/locales/fr.json'
@@ -37,12 +42,36 @@ function report(over: Partial<BackfillReport> = {}): BackfillReport {
   }
 }
 
-function answer(body: unknown, ok = true, status = 200) {
-  return vi.fn().mockResolvedValue({
-    ok,
+/** A `Response`-shaped stub.
+ *
+ *  `headers` and `text` are not decoration. The panel's request goes through the
+ *  shared API client now, and its failure path reads the auth-challenge header and
+ *  the body text off the response. A stub carrying only `ok`/`status`/`json` raises
+ *  a TypeError inside the transport, which reaches the card as a complaint about a
+ *  missing property instead of the refusal the server actually sent.
+ *
+ *  `ok` is DERIVED from the status here, as a real `Response` derives it, so a
+ *  stub cannot claim a success status and a failure flag at once. */
+function response(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
+  return {
+    ok: status >= 200 && status < 300,
     status,
-    json: () => Promise.resolve(body),
-  })
+    url: 'http://localhost:6776/api/channel-folders/backfill',
+    headers: { get: (k: string) => headers[k] ?? headers[k.toLowerCase()] ?? null },
+    json: () => Promise.resolve().then(() => (typeof body === 'string' ? JSON.parse(body) : body)),
+    text: () => Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body)),
+  } as unknown as Response
+}
+
+/** A fetch stub that gives every call the same answer. `ok` picks the default
+ *  status so the existing call sites read unchanged; `response` is what decides
+ *  the flag. */
+function answer(body: unknown, ok = true, status = ok ? 200 : 500) {
+  return vi.fn().mockResolvedValue(response(status, body))
 }
 
 function renderButton(props: Partial<Parameters<typeof ChannelFolderBackfill>[0]> = {}) {
@@ -706,5 +735,168 @@ describe('backfill copy is consistent across plural variants', () => {
         expect(value, `${locale}:${key}`).not.toContain('{{failed}}')
       }
     }
+  })
+})
+
+/**
+ * What an EXPIRED session sees when it clicks the button (issue #12127).
+ *
+ * The panel used to issue its own `fetch`, which reaches none of the shared
+ * transport's session-expiry recovery: no `X-Session-Key`, no silent refresh, no
+ * re-auth banner, and an error message built from the gateway's own reason text.
+ * A signed-out user was therefore told a generic failure and given no way to sign
+ * back in, while every sibling settings panel raised the banner.
+ *
+ * These cases assert the three observable halves of that recovery, each of which
+ * is produced only by going through the client: the header on the request, the
+ * banner in the document, and the sign-in instruction on the card.
+ */
+describe('ChannelFolderBackfill on an expired session', () => {
+  /** The auth challenge the gateway answers an API call with once the dashboard
+   *  session no longer authenticates: 403 carrying `X-Auth-Required`, and a body
+   *  whose `error` names the CRYPTOGRAPHIC reason -- accurate, and useless to a
+   *  user, which is why the transport substitutes its own message. */
+  const AUTH_CHALLENGE_BODY = { error: 'invalid signature', code: 'forbidden' }
+
+  /** The backfill call is denied; the silent refresh that follows it comes back
+   *  terminal, which is what takes the recovery all the way to the banner. A
+   *  transient refresh failure deliberately does NOT banner, so 401 is the case
+   *  that makes the end of the pipeline observable. */
+  function denyWithExhaustedRefresh() {
+    const fetchMock = vi.fn((url: string) =>
+      Promise.resolve(
+        url === '/api/auth/refresh'
+          ? response(401, 'revoked')
+          : response(403, AUTH_CHALLENGE_BODY, { 'X-Auth-Required': 'true' }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  const banner = () => document.getElementById('mc-session-expired')
+
+  beforeEach(() => {
+    __resetAuthRecoveryStateForTests()
+  })
+
+  afterEach(() => {
+    __resetAuthRecoveryStateForTests()
+    vi.unstubAllGlobals()
+  })
+
+  it('sends the session-key header the server-side ephemeral gate reads', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(response(200, report())))
+    vi.stubGlobal('fetch', fetchMock)
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/channel-folders/backfill')
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-Session-Key']).toBeTruthy()
+  })
+
+  it('attempts the silent refresh instead of failing the click outright', async () => {
+    const fetchMock = denyWithExhaustedRefresh()
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything()),
+    )
+  })
+
+  it('raises the re-auth banner once the refresh comes back terminal', async () => {
+    denyWithExhaustedRefresh()
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    await waitFor(() => expect(banner()).not.toBeNull())
+    expect(isAuthBannerShown()).toBe(true)
+    // The banner is only worth raising for what it carries: the command that
+    // mints a fresh token, and somewhere to paste the result.
+    expect(banner()?.querySelector('code')?.textContent).toBe('kirocrew token')
+    expect(banner()?.querySelector('input')).not.toBeNull()
+  })
+
+  it('names signing in on the card, not the gateway reason or the generic failure', async () => {
+    denyWithExhaustedRefresh()
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    const notice = await screen.findByTestId('session-folder-backfill-error')
+    expect(notice.textContent).toBe(enManual.api.client.session_expired_sign_in_again)
+    // Not the cryptographic reason, which describes HMAC verification and names
+    // nothing the user can do.
+    expect(notice.textContent).not.toContain('invalid signature')
+    // And not the panel's own sentence, which prescribes retrying -- a retry
+    // cannot succeed until the session is replaced, so offering it is the whole
+    // defect.
+    expect(notice.textContent).not.toContain(
+      en.pages.settings.botChannelPanel.backfill_unavailable,
+    )
+  })
+
+  it('keeps a non-auth 403 on its own prose, with no banner', async () => {
+    // The endpoint's own loopback refusal is a 403 too, and it carries NO
+    // `X-Auth-Required`. It is a permission denial rather than a lapsed session:
+    // its sentence already names the remedy, and a re-auth banner beside it would
+    // send the user to fix something that is not broken. The transport keys on the
+    // header rather than the status, and this is the control that proves it.
+    const remote = {
+      error: 'Filing runs only on the computer that hosts this dashboard.',
+      code: 'read_only_remote',
+    }
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(response(403, remote))))
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    const notice = await screen.findByTestId('session-folder-backfill-error')
+    expect(notice.textContent).toBe(remote.error)
+    expect(banner()).toBeNull()
+    expect(isAuthBannerShown()).toBe(false)
+  })
+
+  it('falls back to the panel sentence when a refusal carries no human message', async () => {
+    // An edge or proxy failure answers an HTML document, which has no `error` field
+    // to unwrap. The transport reports `HTTP 502` for that, which says less than
+    // the panel's own sentence, so the panel keeps supplying it -- exactly as it
+    // did while it read the body itself.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(response(502, '<!doctype html><html><body>502</body></html>'))),
+    )
+    renderButton()
+
+    fireEvent.click(screen.getByRole('button'))
+
+    const notice = await screen.findByTestId('session-folder-backfill-error')
+    expect(notice.textContent).toBe(en.pages.settings.botChannelPanel.backfill_unavailable)
+    expect(notice.textContent).not.toContain('502')
+  })
+
+  it('clears a banner left by an earlier lapse when a later run succeeds', async () => {
+    denyWithExhaustedRefresh()
+    const view = renderButton()
+    // Named rather than taken by role alone: once the banner is up the document
+    // holds its dismiss control too, and a bare role query matches both.
+    const click = () => fireEvent.click(screen.getByRole('button', { name: /existing sessions/i }))
+    click()
+    await waitFor(() => expect(banner()).not.toBeNull())
+    view.unmount()
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(response(200, report()))))
+    renderButton()
+    click()
+
+    await waitFor(() => expect(banner()).toBeNull())
+    expect(isAuthBannerShown()).toBe(false)
   })
 })

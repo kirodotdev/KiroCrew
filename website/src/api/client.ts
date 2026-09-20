@@ -2733,6 +2733,39 @@ export type ExternalRegistryRow = {
   review?: string
 }
 
+/** One moved conversation, as `POST /api/channel-folders/backfill` reports it. */
+export interface ChannelFolderBackfillMoved {
+  key: string
+  title: string
+  label: string
+}
+
+/** The report `POST /api/channel-folders/backfill` answers with.
+ *
+ *  The endpoint's report IS its response body and the settings panel renders
+ *  exactly these fields, so anything added here has to be kept true on every
+ *  path through the handler.
+ *
+ *  Typed HERE rather than in the panel that renders it because the request itself
+ *  belongs on this transport. The panel used to issue its own `fetch`, which
+ *  carried no `X-Session-Key` and reached none of the recovery `j` runs, so an
+ *  expired session was reported as a generic failure with no way to sign back in
+ *  (#12127).
+ */
+export interface ChannelFolderBackfillReport {
+  folder_name: string
+  moved: ChannelFolderBackfillMoved[]
+  /** Which non-success outcome this was, `''` on a plain pass. Carried on a 200
+   *  as well: the endpoint answers 200 with a reason, because "nothing to do" is
+   *  a normal result the panel has to render rather than an error. */
+  reason: string
+  remaining: number
+  /** How many of `remaining` are outstanding because their write FAILED rather
+   *  than because the run hit its cap. The two need different copy: one says
+   *  click again to continue, the other says something went wrong. */
+  failed: number
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -4042,6 +4075,20 @@ export const api = {
   reorderChatFolders: (orders: { id: string; order: number }[]) =>
     post('/api/chat/folders/reorder', { orders }).then(j),
   deleteChatFolder: (id: string) => del('/api/chat/folders/' + encodeURIComponent(id)).then(j),
+  /** File a channel's EXISTING conversations into the folder its settings name.
+   *
+   *  On this transport rather than the panel's own `fetch`, which is what every
+   *  sibling settings panel already does and what the panel gains by it: the
+   *  `X-Session-Key` header, `checkSessionExpired`'s silent refresh and re-auth
+   *  banner, and an `ApiError` whose message is the sign-in instruction instead of
+   *  the gateway's cryptographic reason. Raw `fetch` reaches none of that, so an
+   *  expired session was told the panel's generic failure sentence and given no
+   *  way to sign back in (#12127).
+   *
+   *  A 4xx is reserved for a request that was never actionable; every other
+   *  outcome arrives as a 200 whose `reason` says which it was. */
+  backfillChannelFolder: (namespace: string) =>
+    post('/api/channel-folders/backfill', { namespace }).then(j) as Promise<ChannelFolderBackfillReport>,
   setSlotFolder: (slot: string, folderId: string | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/folder', { folder_id: folderId || '' }).then(j),
   setSlotColor: (slot: string, colorIndex: number | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: colorIndex }).then(j),
   /** Set a custom per-session color (#rrggbb). The backend clears color_index

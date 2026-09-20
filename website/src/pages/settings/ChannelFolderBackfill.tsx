@@ -1,31 +1,49 @@
 import { useState } from 'react'
 import { Check, ChevronDown, ChevronUp, FolderInput } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
+import {
+  api,
+  ApiError,
+  friendlyErrText,
+  type ChannelFolderBackfillReport,
+} from '../../api/client'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 
-/** One moved conversation, as the endpoint reports it. */
-interface BackfillMoved {
-  key: string
-  title: string
-  label: string
-}
-
 /** The report `POST /api/channel-folders/backfill` answers with.
  *
- *  Exactly what this panel renders. The endpoint's report IS its response body,
- *  so anything added here has to be kept true on every path through the handler
- *  for the sake of a reader that does not exist yet. */
-export interface BackfillReport {
-  folder_name: string
-  moved: BackfillMoved[]
-  reason: string
-  remaining: number
-  /** How many of `remaining` are there because their write FAILED rather than
-   *  because the run hit its cap. The two need different copy: one says click
-   *  again to continue, the other says something went wrong. */
-  failed: number
+ *  Declared on the API client, which owns the wire type now that the request goes
+ *  through the shared transport, and re-exported under the name this component has
+ *  always published so its readers and tests keep one import. */
+export type BackfillReport = ChannelFolderBackfillReport
+
+/** What a failed run says.
+ *
+ *  An auth-expired denial keeps the TRANSPORT's message. `apiFailure` has already
+ *  replaced the gateway's cryptographic reason ("invalid signature") with the
+ *  localized sign-in instruction, and the re-auth banner is up beside it, so
+ *  putting this panel's own sentence there would hide the one action that
+ *  recovers -- the defect this component had while it issued its own `fetch`
+ *  (#12127).
+ *
+ *  Every other rejection keeps its message when the body carried a human one. The
+ *  handler answers `{error, code}` on all of its refusals and the transport
+ *  unwraps that, so the sentence the user reads is unchanged from before. When the
+ *  body carried none -- an edge HTML page, an empty 500 -- this falls back to the
+ *  panel's own sentence, which is what the raw-`fetch` version did; without it the
+ *  transport's `HTTP 502` would be shown instead. The question is put to
+ *  `friendlyErrText`, the same function the transport used to decide, rather than
+ *  re-deciding it here from the status. */
+function backfillErrorMessage(e: unknown): string {
+  const unavailable = i18nT('pages.settings.botChannelPanel.backfill_unavailable')
+  if (e instanceof ApiError) {
+    if (e.authRequired) return e.message || unavailable
+    return friendlyErrText(e.status, e.body) || unavailable
+  }
+  // A transport-level rejection (the request never reached the gateway) keeps its
+  // own message, exactly as it did before.
+  return e instanceof Error && e.message ? e.message : unavailable
 }
 
 /** Moved sessions named individually, the first {@link NAMED_LIMIT} of them up
@@ -60,19 +78,10 @@ export function ChannelFolderBackfill(props: {
     // The previous report is dropped BEFORE the request, not after it returns: a
     // stale "moved 3" sitting under a spinner reads as the current run's result.
     setReport(null)
-    void fetch('/api/channel-folders/backfill', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ namespace }),
-    })
-      .then(async r => {
-        const body = (await r.json().catch(() => null)) as BackfillReport | { error?: string } | null
-        if (!r.ok) {
-          throw new Error(
-            (body && 'error' in body && body.error) || i18nT('pages.settings.botChannelPanel.backfill_unavailable'),
-          )
-        }
-        setReport(body as BackfillReport)
+    void api
+      .backfillChannelFolder(namespace)
+      .then(answer => {
+        setReport(answer)
         // The gateway pushes a slots update for every OPEN tab it re-placed, so
         // the live sidebar moves on its own. These two cover what that push does
         // not: a conversation with no open tab (it only exists in History), and a
@@ -88,7 +97,7 @@ export function ChannelFolderBackfill(props: {
         // `state.push_slots_update()` whenever it touched a live slot, so the
         // refresh this reached for is already on its way.
       })
-      .catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : String(e)))
+      .catch((e: unknown) => setError(backfillErrorMessage(e)))
       .finally(() => setPending(false))
   }
 
