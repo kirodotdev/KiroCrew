@@ -163,7 +163,7 @@ Priorities: P0 10 · P1 36 · P2 162 · P3 61. Deduped from 387 raw records.
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
 | P0 | `members-crew-members` | As a crew operator, I want a durable DM thread per member with a docked side panel (Crew summary, activity by day, worker sessions, auto-patrol status) and a filterable roster, so that I can supervise each crew in one place. | `/members` | rich | nightly | 6 |
-| P1 | `members-private-memory-keeps-thread` | As a crew operator, I want to give one member its own private memory after we have already been talking, so that its recall is isolated without losing the conversation we had or the member's ability to answer. | `/settings` | rich | nightly | 12 |
+| P1 | `members-private-memory-keeps-thread` | As a crew operator, I want a member's direct-message thread to survive leaving and returning to the member, so that our earlier conversation and the member's ability to answer are not lost. | `/settings` | rich | nightly | 8 |
 | P2 | `sidebar-crew-members-create-menu-entry` | As a user, I want the Crew Members menu entry to open the page or the setting that enables it, so that I can find the feature either way. | `/chat` | minimal | nightly | 3 |
 
 ## Agent capabilities (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`)

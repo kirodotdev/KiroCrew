@@ -1982,10 +1982,10 @@
     {
       "id": "members-private-memory-keeps-thread",
       "feature": "members",
-      "title": "Switch a member to private memory after chatting; the DM thread keeps its history and still answers",
-      "user_story": "As a crew operator, I want to give one member its own private memory after we have already been talking, so that its recall is isolated without losing the conversation we had or the member's ability to answer.",
+      "title": "A member's DM thread survives leaving and returning; it keeps its history and still answers",
+      "user_story": "As a crew operator, I want a member's direct-message thread to survive leaving and returning to the member, so that our earlier conversation and the member's ability to answer are not lost.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members > member row > DM thread (send a message, get a reply) > member edit panel > Memory store field > Create private memory > confirm dialog > back to the DM thread > send again",
+      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members > Nova Sky > DM thread (send a message, get a reply) > leave to another rail item > back to Crew Members > Nova Sky > send again",
       "preconditions": {
         "seed": "rich",
         "members": [
@@ -1994,15 +1994,14 @@
         "feature_flags": [
           "mc-preview-crew"
         ],
-        "notes": "The member starts on the shared default store so the Memory store field offers Create private memory. The member's project is the seeded workspace root, which contains a memory/ directory: the second message exercises the private-memory essential-context path against that layout. Fake ACP backend answers both messages."
+        "notes": "The seeded member keeps its store; a member's memory is fixed at creation and its binding is immutable (PUT /api/agents changing memory_store returns 409 member_memory_immutable), so there is no store-switch control to touch. The check is that the DM thread persists across navigation and still answers on the fake ACP backend, which replies to both messages."
       },
       "runnable": "nightly",
-      "estimated_steps": 12,
-      "rationale": "Two-surface flow (DM thread, member edit panel) with a confirm dialog and two model turns; the assertions that matter are pixel-level: the earlier bubble is still on screen after the switch and no error bubble replaced the reply.",
+      "estimated_steps": 8,
+      "rationale": "Navigate-away-and-return flow over the DM thread with two model turns; the assertions that matter are pixel-level: the earlier bubble is still on screen after returning and no error bubble replaced the reply.",
       "source": [
         "website/src/pages/members/MembersPage.tsx",
         "website/src/pages/KiroCrewAgentsPage.tsx",
-        "src/kiro_crew/member_essential_context.py",
         "src/kiro_crew/members.py"
       ],
       "priority": "P1",
