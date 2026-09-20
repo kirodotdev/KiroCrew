@@ -697,6 +697,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # gateway's own writers open these paths directly and do NOT route through this
     # gate, so legitimate startup/spawn writes still work.
     "run",
+    # Pi gate artifacts have asymmetric readers. The OS mask deliberately excludes
+    # this directory from an enforced harness's credential mask so its child can exec
+    # the launcher and read the sealed extension. This floor still keeps the agent's
+    # own file tools out; the controls cover different readers rather than cancelling.
+    "pi-gate",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.

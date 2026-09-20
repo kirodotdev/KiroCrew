@@ -348,6 +348,54 @@ class TestTheReconciliationIsComplete:
         assert not hidden & visible
         assert not readonly & visible
 
+    def test_every_non_hidden_leaf_is_classified_for_a_foreign_child(self) -> None:
+        """A new VISIBLE/READONLY leaf must be classified before it can ship.
+
+        ``adapter_hidden_credential_dirs`` masks the whole read-gate floor for an
+        ENFORCED harness and then subtracts ``crew_host_runtime_leaves()``. So every
+        leaf this module lets a sandboxed process read is one of two things to a
+        FOREIGN harness's child: safe to hand over, or a credential to keep back.
+
+        The two lists are written out rather than one being the complement of the
+        other, and this is the pin that makes that pay. Under a complement an
+        unclassified leaf would default to READABLE and reach a self-approving
+        third-party binary with nothing reading as wrong. Here it appears in neither
+        list, this fails, and the author has to choose a side.
+
+        Both directions are asserted. Completeness catches the leaf nobody
+        classified; disjointness catches the leaf classified twice, where the mask's
+        contents would otherwise depend on which list won.
+        """
+        source = set(sandbox._CREW_SANDBOX_VISIBLE_LEAVES) | set(sandbox._CREW_READONLY_LEAVES)
+        readable = set(sandbox._CREW_CHILD_READABLE_LEAVES)
+        withheld = set(sandbox._CREW_CHILD_WITHHELD_LEAVES)
+
+        assert not readable & withheld, (
+            "a crew leaf is both child-readable and withheld: " f"{sorted(readable & withheld)}"
+        )
+        assert source - (readable | withheld) == set(), (
+            "unclassified crew leaf(es) -- a sandboxed process may read them, so each "
+            "must be declared either safe for a foreign harness's child or withheld "
+            f"as credential-bearing: {sorted(source - (readable | withheld))}"
+        )
+        assert (readable | withheld) - source == set(), (
+            "classified leaf(es) that no disposition list declares, so the "
+            f"classification covers nothing: {sorted((readable | withheld) - source)}"
+        )
+
+    def test_the_child_readable_set_is_exactly_what_the_accessor_publishes(self) -> None:
+        """The pin above governs the accessor, not just the constant beside it.
+
+        ``crew_host_runtime_leaves()`` is what ``tool_gate`` actually subtracts from
+        the mask. If it ever stopped returning the pinned list -- recomputing a
+        complement, filtering, or reordering into a different set -- the pin would go
+        on passing while the mask changed underneath it.
+        """
+        assert set(sandbox.crew_host_runtime_leaves()) == set(sandbox._CREW_CHILD_READABLE_LEAVES)
+        assert not set(sandbox.crew_host_runtime_leaves()) & set(
+            sandbox._CREW_CHILD_WITHHELD_LEAVES
+        )
+
     def test_the_gateway_launcher_is_a_top_level_readonly_leaf(self) -> None:
         """A nested leaf can be bypassed by renaming its writable parent.
 

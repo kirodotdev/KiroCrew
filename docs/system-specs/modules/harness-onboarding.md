@@ -239,11 +239,13 @@ fixed sequence that the next such harness repeats verbatim rather than rediscove
    in `.gitattributes` as well; the normalization is what keeps the property off a
    repo-config line. Editing the extension is a deliberate two-file edit (bytes and
    pin), and the test that hashes both renderings to the pinned digest is the ratchet.
-2. **Seal a copy** into the sandbox run directory (read-only, per gateway process,
-   rewritten when the bytes differ) and **refuse the temp-dir fallback**
-   (`_pi_gate_run_dir`): the package path is agent-writable on a source install,
-   and a shared directory is rewritable by any same-UID process between seal and
-   exec. Teach the run-dir sweep the artifact family (owner-PID rule, never age).
+2. **Seal a copy** into a dedicated owner-only `pi-gate` directory (read-only
+   inside every sandbox, per gateway process, rewritten when the bytes differ) and
+   **refuse any shared-directory fallback** (`_pi_gate_artifact_dir`): the package path
+   is agent-writable on a source install. Exclude the artifact leaf through the
+   adapter's per-backend `adapter_hidden_credential_dirs` vocabulary, while the
+   credential-bearing `run` directory stays masked from the harness. Teach the
+   artifact sweep the family (owner-PID rule, never age).
 3. **Load it through a launcher** the adapter is told to run in place of the harness
    (its own override variable, `PI_ACP_PI_COMMAND` for pi-acp), written under
    `mkstemp` and published only after the mode change.
@@ -282,8 +284,12 @@ How your harness signs in is one frozen `AgentAuthDeclaration` in
 [agent-host-contract.md](agent-host-contract.md). **That is the whole auth cost.**
 Everything else is a projection of that one literal: the read-gate floor that
 fences your credential and re-anchors it under your own override variables
-(`security/paths.py`), the sandbox credential mask and the single leaf it spares so
-your own child can still authenticate (`agent_sdk/tool_gate.py`), the
+(`security/paths.py`), the sandbox credential mask and the two things it spares —
+the single leaf your own child authenticates with, and the Crew runtime leaves any
+child must reach, `sandbox.crew_host_runtime_leaves()` (`agent_sdk/tool_gate.py`).
+Declare the first; never widen the second. A leaf added to a sandbox disposition
+list has to be classified as child-readable or credential-bearing, and a pin fails
+until it is — so do not reach for the mask to make your harness start. The
 the logout-recycle answer `backends_retired_by_host_logout()`, the `AcpAuthRequired` text
 an operator reads when a session cannot start, the `auth` object on
 `GET /api/acp-backends` (`dashboard/handlers/acp_backend_status.py`), and the

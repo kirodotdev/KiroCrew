@@ -237,7 +237,6 @@ from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
-    _ensure_run_dir,
     _forward_ssh_auth_sock,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
@@ -1099,34 +1098,51 @@ def pi_gate_extension_path() -> str:
     )
 
 
-def _pi_gate_run_dir() -> str:
-    """The sandbox run directory the gate artifacts may live in, or a refusal.
+def _pi_gate_artifact_dir() -> str:
+    """Create the owner-only pi gate artifact directory, or refuse the session.
 
-    ``sandbox._ensure_run_dir`` falls back to the system temp directory when the
-    configured ``<config_dir>/run`` cannot be created, and logs a warning. Every
-    sandbox launcher tolerates that: a launcher in a shared directory is a
-    liveness risk, not a security one. The gate artifacts are different -- the
-    sealed extension and the launcher are what make this harness ENFORCED, and a
-    copy in a world-writable directory can be re-chmodded and rewritten by any
-    process of the same UID between the seal and the exec, the agent's own tools
-    included. So the fallback is refused here, narrowly, rather than changed in the
-    shared helper: a harness whose compensating control cannot be placed does not
-    start, the same posture the sandbox floor takes when the credential mask
-    cannot be applied. Blocking (creates the directory); callers run it off the
-    loop.
+    The launcher and sealed extension are the compensating control that makes this
+    harness enforced. They therefore live in a dedicated directory containing no
+    credentials, under a real owner-only leaf that cannot fall back to a shared
+    temporary directory. Symlinks and Windows junctions are refused because either
+    can redirect writes into an agent-chosen location. Blocking (creates and validates
+    the directory); callers run it off the loop.
+
+    This is where the leaf is materialized and where its no-follow check lives, rather
+    than on ``sandbox``'s shared sealable-ceiling lists, because that walk runs on every
+    Linux spawn whatever the backend is: an entry there would let this adapter's
+    directory refuse an unrelated session. Every pi spawn reaches this function before
+    the sandbox is built, so the read-only seal still finds a directory to bind.
     """
-    run_dir = _ensure_run_dir()
-    expected = str(config_dir() / "run")
-    if os.path.realpath(run_dir) != os.path.realpath(expected):
+    lexical_home = os.path.abspath(os.path.normpath(str(config_dir())))
+    expected = os.path.join(lexical_home, "pi-gate")
+    canonical_expected = os.path.join(os.path.realpath(lexical_home), "pi-gate")
+    try:
+        os.makedirs(expected, mode=0o700, exist_ok=True)
+        info = os.lstat(expected)
+        if not stat.S_ISDIR(info.st_mode) or platform_compat.is_link_or_junction(expected):
+            raise OSError("path is not a real directory")
+        if not platform_compat.IS_WINDOWS:
+            os.chmod(expected, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+            info = os.stat(expected)
+        resolved = os.path.realpath(expected)
+    except OSError as exc:
         raise AcpToolGateUnroutable(
             f"{acp_tool_gate.label_for(ACP_BACKEND_PI)} routes tool calls through a gate "
-            "extension Kiro Crew seals into its own run directory, but that directory "
-            f"could not be created or secured ({expected}) and the only alternative is a "
-            "shared temporary directory, where the sealed gate could be rewritten before "
-            "the harness loads it. Fix the permissions or free space under the Kiro Crew "
-            "config directory to select this harness."
+            "extension Kiro Crew seals into its own artifact directory, but that "
+            f"directory could not be created or secured ({expected}: {exc}). Fix the "
+            "permissions or free space under the Kiro Crew config directory to select "
+            "this harness."
+        ) from exc
+    owner_only = platform_compat.IS_WINDOWS or stat.S_IMODE(info.st_mode) == 0o700
+    if resolved != canonical_expected or not owner_only:
+        raise AcpToolGateUnroutable(
+            f"{acp_tool_gate.label_for(ACP_BACKEND_PI)} routes tool calls through a gate "
+            "extension Kiro Crew seals into its own artifact directory, but that "
+            f"directory is not a real owner-only leaf ({expected}). Fix its permissions "
+            "to select this harness."
         )
-    return run_dir
+    return expected
 
 
 def _pi_gate_extension_bytes(payload: bytes) -> bytes:
@@ -1145,8 +1161,8 @@ def _seal_pi_gate_extension() -> str:
 
     Reads the packaged file, refuses unless its SHA-256 is
     :data:`PI_GATE_EXTENSION_SHA256`, and writes the verified bytes to a read-only
-    file in the owner-only sandbox run directory -- the directory the agent's file
-    tools are fenced from and every sandbox tier exposes for exec. The copy is
+    file in the owner-only pi gate artifact directory -- the directory the agent's
+    file tools are fenced from and every sandbox tier exposes for exec. The copy is
     rewritten whenever its bytes differ from the verified ones, so a copy touched
     between spawns is replaced rather than loaded. Cached per process and inputs
     like the launcher.
@@ -1171,8 +1187,8 @@ def _seal_pi_gate_extension() -> str:
             f"pinned ({digest[:12]}… vs {PI_GATE_EXTENSION_SHA256[:12]}…); a session "
             "cannot start on a gate whose code this build did not ship. Reinstall Kiro Crew."
         )
-    run_dir = _pi_gate_run_dir()
-    sealed = os.path.join(run_dir, f"kirocrew_pi_gate_{os.getpid()}.ts")
+    artifact_dir = _pi_gate_artifact_dir()
+    sealed = os.path.join(artifact_dir, f"kirocrew_pi_gate_{os.getpid()}.ts")
     try:
         with open(sealed, "rb") as fh:
             if fh.read() == payload:
@@ -1180,7 +1196,7 @@ def _seal_pi_gate_extension() -> str:
     except OSError:
         pass
     fd, tmp = tempfile.mkstemp(
-        dir=run_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=".tmp"
+        dir=artifact_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -1214,9 +1230,9 @@ def _pi_gate_launcher_body(pi_bin: str, extension_path: str) -> str:
 def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
     """Write (once per process and inputs) the launcher and return its path.
 
-    Lives in the sandbox run directory -- the same owner-only directory the sandbox
-    launchers live in, which every sandbox tier exposes to the child because the
-    child has to exec a launcher out of it. Written under a unique ``mkstemp`` name
+    Lives in the owner-only pi gate artifact directory, which the sandbox exposes
+    read-only because the child has to exec this launcher and read the sealed gate
+    extension. Written under a unique ``mkstemp`` name
     that is published to the cache only after the write and the mode change have
     finished, so a concurrent spawn never reads a half-written file, and cached so
     N sessions share one launcher rather than leaving N files behind.
@@ -1227,10 +1243,10 @@ def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
     cached = _pi_gate_launcher_cache.get(key)
     if cached and os.path.isfile(cached):
         return cached
-    run_dir = _pi_gate_run_dir()
+    artifact_dir = _pi_gate_artifact_dir()
     suffix = ".cmd" if platform_compat.IS_WINDOWS else ".sh"
     fd, tmp = tempfile.mkstemp(
-        dir=run_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=suffix
+        dir=artifact_dir, prefix=f"kirocrew_pi_gate_{os.getpid()}_", suffix=suffix
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:

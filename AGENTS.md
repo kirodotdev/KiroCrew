@@ -113,6 +113,10 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   pin, not a regex, is what keeps the ceiling un-disableable. One residual worth
   carrying: `sel_hmac.key` is `VISIBLE`, so the SEL audit key has no OS fence; closing
   that means moving its in-sandbox reader behind the gateway, never another matcher.
+  An ENFORCED harness is the one exception — `tool_gate`'s credential mask keeps that
+  leaf, and the other credential-bearing crew leaves, from a foreign child
+  (`sandbox._CREW_CHILD_WITHHELD_LEAVES`), which is why the features whose
+  in-sandbox readers need them do not work there.
 - **Governance is `POLICY ∩ PROFILE`, tightest-wins**, enforced at Kiro Crew's OWN
   PreToolUse gate even when the kiro agent config granted the call. The evaluator
   is scope-name-agnostic, so adding a scope is a `SCOPE_CATALOG` data change, never

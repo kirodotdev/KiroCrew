@@ -67,18 +67,22 @@ logger = logging.getLogger(__name__)
 # Any file older than this threshold is garbage regardless of PID liveness.
 _LAUNCHER_MAX_AGE_SECONDS = 3600
 
-#: Run-directory artifact families the sweep reclaims, by filename prefix ->
-#: accepted suffixes. Every family tags the writing process's PID right after the
-#: prefix. ``kirocrew_sandbox_``: per-spawn launchers and Seatbelt profiles,
-#: consumed once at exec. ``kirocrew_pi_gate_``: the pi tool-gate launcher and
-#: the sealed extension copy (``acp/client.py``), written once per gateway
-#: process and reused by its later spawns.
+#: Artifact families the sweep reclaims, by filename prefix -> accepted
+#: suffixes. Every family tags the writing process's PID after the prefix.
 _SANDBOX_ARTIFACT_PREFIX = "kirocrew_sandbox_"
+_PI_GATE_ARTIFACT_PREFIX = "kirocrew_pi_gate_"
+# Named ONCE because two sweeps accept this family: the run dir still holds artifacts
+# written before they moved, and the gate dir holds the current ones. Two spellings could
+# drift and leave one of those directories unswept. ``.tmp`` is the mkstemp stage both pi
+# artifacts pass through before publication.
+_PI_GATE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".sh", ".cmd", ".ts", ".tmp")
 _RUN_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
     _SANDBOX_ARTIFACT_PREFIX: (".sb", ".py"),
-    # ``.tmp`` is the mkstemp stage both pi artifacts are written under before
-    # the rename; a crash between the two leaves it behind under the same PID.
-    "kirocrew_pi_gate_": (".sh", ".cmd", ".ts", ".tmp"),
+    # The run sweep accepts pi artifacts as well as sandbox launchers.
+    _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
+}
+_PI_GATE_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
 }
 
 # Bind-mount SOURCES staged by the namespace launcher (empty dirs/files bound
@@ -511,6 +515,21 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # ``open(..., "w")``, however the write is spelled. Absent-file coverage is the
     # pre-create list below, because a name nothing occupies is a name an agent creates.
     "cloud_launch_state.json",
+    # The pi gate launcher and sealed extension must be readable and executable by
+    # the enforced harness's child, but never writable by it. The launcher cache
+    # accepts an existing path after ``isfile`` without re-verifying its content, so
+    # a writable child could plant the launcher a later session executes.
+    #
+    # On the precreate and no-follow lists above as well, for the same two reasons
+    # ``playwright-cli`` is: ``mount(2)`` cannot seal an absent path, so a leaf left off
+    # them stays WRITABLE in-sandbox until pi first runs, and the mounted NAME has to
+    # stay the real directory because the gateway later execs out of it. Those lists are
+    # walked identically for every backend and carry no per-adapter branch, so an
+    # unsafe state here refuses the spawn exactly as it does for any other entry.
+    # ``acp/client.py``'s ``_pi_gate_artifact_dir`` re-checks the same states on the pi
+    # spawn path, before the sandbox is built, so a pi session refuses with a message
+    # that names the directory it actually resolves.
+    "pi-gate",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -596,6 +615,229 @@ def _crew_home_entries(leaves: tuple[str, ...]) -> list[str]:
 _CREW_HIDDEN_DIRS: list[str] = _crew_home_entries(_CREW_HIDDEN_LEAVES)
 #: Exposed read-only in every mode.
 _CREW_READONLY_TARGETS: list[str] = _crew_home_entries(_CREW_READONLY_LEAVES)
+
+
+#: Leaves NO foreign harness's child may read by default, even though a sandboxed
+#: process may. Absent from :data:`_CREW_CHILD_READABLE_LEAVES` and therefore kept in
+#: the enforced adapter's OS credential mask.
+#:
+#: Two reasons put a leaf here, and the distinction matters to anyone adding one.
+#: Almost every entry carries a live credential or a capability, so no child should
+#: ever read it. One entry instead belongs to a SINGLE harness, so a blanket grant
+#: would be too wide: it is withheld here and handed back to that one harness by
+#: ``tool_gate.adapter_hidden_credential_dirs``, which keys its gate-artifact
+#: exclusion on the backend. "Withheld" therefore means "not granted to everyone",
+#: not always "secret".
+#:
+#: Paired with that list rather than derived from it. Neither is the complement of
+#: the other at runtime: both are written out, and
+#: ``test_sandbox_governance_mask`` pins that together they cover
+#: ``_CREW_SANDBOX_VISIBLE_LEAVES | _CREW_READONLY_LEAVES`` exactly and do not
+#: overlap. That pin is the whole point -- see :data:`_CREW_CHILD_READABLE_LEAVES`.
+#:
+#: Every entry carries a live credential or a capability, so handing it to a
+#: third-party binary that self-approves its own passive reads is the exact class
+#: that mask exists to compensate for. The first-class path's own disposition is
+#: looser (``AGENTS.md`` records ``sel_hmac.key`` as a knowingly-carried VISIBLE
+#: residual with no OS fence), and widening that residual from Crew-shipped binaries
+#: to any enforced harness is a decision an operator makes, not one a mask change
+#: inherits. Closing it properly means moving each in-sandbox reader behind the
+#: gateway -- never a looser mask.
+#:
+#: ``run`` is here for the same reason and needs one extra fact, because
+#: :data:`_CREW_SANDBOX_VISIBLE_LEAVES` says the child "cannot exec if it is masked".
+#: That is true of the tier's OWN mask and not of this one: the Linux launcher
+#: bind-mounts the empty dirs AFTER it is already running and only then execs
+#: (``fork -> unshare(CLONE_NEWUSER) -> unshare(CLONE_NEWNS) -> bind -> exec``), so a
+#: masked ``run`` never blocks the launcher that lives in it. It blocks only a child
+#: that execs a SECOND artifact out of ``run`` from inside the namespace. The answer
+#: for such a child is to move its artifact to a credential-free leaf of its own,
+#: never to expose ``run`` and with it ``run/gateway-<port>.secret``, which
+#: ``config.loader.read_local_secret`` resolves BEFORE the shared ``.local_secret``.
+#:
+#: The pi gate is exactly that child, and it takes that answer: its launcher and
+#: sealed extension live under their own ``pi-gate`` leaf, so a pi session starts with
+#: ``run`` masked. Keeping ``run`` masked is what makes such a leaf the answer;
+#: exposing it to unbreak one harness would hand the gateway credential to four.
+_CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
+    # The per-listener gateway credential (``run/gateway-<port>.secret``).
+    "run",
+    # The SEL trust root and the audit key inside it.
+    "trust",
+    "sel_hmac.key",
+    # The dashboard internal-API bearer secret.
+    ".local_secret",
+    # Capability-bearing job state: a cron entry carries the session key its run
+    # executes under, so a readable store leaks that key and a writable one mints work.
+    "crons.json",
+    # Durable cross-session capability, and the reason this entry reads as a
+    # surprise: the leaf name says "bindings", but a binding FILE carries the raw
+    # session key it binds (``member_memory_auth.bind_private_session_store`` writes
+    # ``{"version": 1, "session_key": <raw>, "memory_store": ...}``), under both
+    # ``sessions/<digest>/`` and ``pids/``. So reading the directory hands over every
+    # member's key, not a digest of one, and a leaked session key stays usable.
+    "member-memory-bindings",
+    # The SEL audit log and its rotation directory. Withheld for the WRITE side above
+    # all: ``_CREW_SANDBOX_VISIBLE_LEAVES`` keeps these read-write precisely so an
+    # in-sandbox MCP server can append, and a foreign harness with the same access can
+    # rewrite or truncate the record of its own actions. Losing the append makes an
+    # audit-or-deny write fail, which DENIES the action it was auditing -- the safe
+    # direction, and the reason this is a withhold rather than a carve-out.
+    "security_events.jsonl",
+    "security_events.d",
+    # Both admission stores hold ``trust_keys``: signer -> SHARED SECRET, verified with
+    # ``hmac.new`` plus ``compare_digest`` (``apps/admission.py``). A child that reads
+    # one can sign a manifest or a policy that admission then accepts, so these are
+    # credential files rather than the plain ceilings they resemble. Withholding them
+    # costs in-sandbox app admission, in the safe direction: an empty
+    # ``app_admission.json`` reads as deny-all and an empty ``admission_policy.json``
+    # refuses to compose, so an app is turned away rather than admitted unchecked.
+    "admission_policy.json",
+    "app_admission.json",
+    # Every other readable leaf can name the in-sandbox reader that breaks without it.
+    # This one cannot: the gateway owns both the writes and the reads, so nothing in a
+    # sandbox needs it. The seal beside it answers a WRITE ("not a cross-member
+    # confidentiality boundary" is a statement about rewriting a learning authority),
+    # and that argument does not carry to a read by a foreign harness, whose passive
+    # reads are the very thing this mask compensates for -- they reach no gate and
+    # leave no record. One member's silo holding another's preferences and lessons is
+    # worth a denial that costs nothing.
+    "memory_stores",
+    # The governance ceiling, its trust root, and every policy or consent document
+    # beside them. Withheld as one family because they share one reader and one risk:
+    # each is an INPUT TO AN AUTHORIZATION DECISION that an in-sandbox process makes,
+    # and an enforced harness's child reads them through a channel that reaches no gate
+    # and leaves no record. Hiding them costs in-sandbox governance resolution, and it
+    # costs it CLOSED: the launcher binds an empty file, an empty ceiling document makes
+    # ``boot_platform()`` raise, and an empty consent record reads as consent withheld,
+    # so a session refuses rather than proceeding ungoverned. That is the same direction
+    # the rest of this list takes, which is why they sit together.
+    "security_policy.json",
+    "profiles",
+    "denied_commands.json",
+    "computer_use.json",
+    "oauth_endpoints.json",
+    "decisions_consent.json",
+    "file_delivery_consent.json",
+    "ssh_auth_sock_consent.json",
+    # The paid-AWS consent grant. Unlike its sibling consent records this one stores
+    # IDENTIFIERS as well as a decision -- ``Grant.to_dict`` writes ``account`` and
+    # ``arn`` -- so a read tells a foreign child which AWS account and caller identity
+    # the owner works as. It sits on the read+write keystone floor, so no in-sandbox
+    # reader had it before this change either: the app backend that consults it is not
+    # an enforced-harness child. Withholding it costs nothing that worked.
+    "aws_service_consent.json",
+    # The ONE entry here that holds no secret. It carries the launcher and sealed
+    # extension of a single harness's tool gate, and only that harness's child has to
+    # execute them, so the grant is made per backend in
+    # ``tool_gate.adapter_hidden_credential_dirs`` rather than to every child here.
+    # Withheld from the shared set for reach, not for secrecy: a leaf no other child
+    # needs is a leaf no other child should get, and the narrower grant says which one
+    # does. The read gate still fences it from the agent's own file tools, and the
+    # read-only and no-follow seals still stop any child replacing what it execs.
+    #
+    # The literal, not ``tool_gate.PI_GATE_ARTIFACT_LEAF``: that module resolves this
+    # one lazily to avoid a load-time cycle, so importing its constant here would
+    # close the cycle from the other side. The seal lists above spell it the same way.
+    "pi-gate",
+)
+
+#: Leaves an ENFORCED harness's child MAY read. The other half of the pair above.
+#:
+#: Written out rather than computed as "everything not withheld", because the two
+#: spellings fail in opposite directions and only one of them fails safely.
+#:
+#: A complement would make classification OPTIONAL: a credential-bearing leaf added
+#: later to :data:`_CREW_SANDBOX_VISIBLE_LEAVES` or :data:`_CREW_READONLY_LEAVES`
+#: would land in the child-readable set by default and be handed to a foreign harness
+#: -- silently, because nothing reads as wrong and no test knows the leaf exists. A
+#: docstring asking the next author to check the withhold list is not a control.
+#:
+#: Written out, classification is MANDATORY: a new leaf appears in neither list, the
+#: completeness pin in ``test_sandbox_governance_mask`` fails, and the author has to
+#: say which side it belongs on. The drift a hand-maintained list normally invites is
+#: exactly what that pin converts from silent into loud, which is why duplicating the
+#: names here costs nothing real.
+#:
+#: So the default direction is the point. Before this pair existed a forgotten leaf
+#: stayed masked and broke a boot, which someone notices. Under a complement it would
+#: be exposed, which nobody notices.
+_CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
+    # The browser launcher an agent browser command must read and execute. The only
+    # entry here the read gate also fences, so the only one whose exclusion changes
+    # what an enforced child can open; the rest are already outside the mask.
+    "playwright-cli",
+    # Authorization and lineage records an in-sandbox reader resolves. Read-only
+    # sealed for the same reason: a forged entry decides a later grant.
+    "apps/.dev-grants.json",
+    "settings_seeds.json",
+    "agent_model_state.json",
+    "agent_model_state.json.lock",
+    # Gateway-owned run records, read to restore app authorization on a cold
+    # continuation. The risk they carry is a rewritten app owner, not a read, and the
+    # read-only seal is what answers it. Classified for completeness rather than for
+    # effect: this leaf is not on the read-gate floor, so the mask never covers it and
+    # neither classification changes what any child can open.
+    "subagents",
+    # The decision log. Same shape as the entry above, and for the reason this module
+    # gives it: read stays open on purpose, every legitimate writer is the gateway
+    # outside the sandbox, and nothing writes a decision row from inside one. Also off
+    # the read-gate floor, so the mask never covered it either way.
+    "decisions",
+    # The operator's cloud configuration and the launch record beside it. Neither holds
+    # a credential (``CloudConfig`` documents the file as the operator's own, with none),
+    # and in-sandbox code READS both: the provisioner selector resolves the Fargate block
+    # and every ``cloud`` verb reaches the record through ``LaunchState.load``. What they
+    # carry is a WRITE risk -- the image a launch runs, the stack a destroy resolves --
+    # and the read-only seal above is what answers it. Withholding them would mask a read
+    # the product depends on and buy nothing.
+    "cloud.json",
+    "cloud_launch_state.json",
+)
+
+
+def crew_host_runtime_leaves() -> tuple[str, ...]:
+    """Crew-home leaves an ENFORCED harness's child may read, per this module.
+
+    :data:`_CREW_CHILD_READABLE_LEAVES` verbatim -- the half of this module's
+    non-hidden crew leaves that holds no credential: the governance ceilings, the
+    opt-out and consent records, the browser launcher, the authorization sidecars.
+    Its sibling :data:`_CREW_CHILD_WITHHELD_LEAVES` carries the rest, and
+    ``test_sandbox_governance_mask`` pins the pair complete and disjoint against
+    ``_CREW_SANDBOX_VISIBLE_LEAVES | _CREW_READONLY_LEAVES``, so a leaf added to
+    either source list must be classified before it can ship.
+
+    Two of the withheld entries are counter-intuitive on their names alone, which is
+    why the pin exists rather than a convention: ``member-memory-bindings`` stores raw
+    session keys rather than digests, and ``run`` holds the per-listener gateway
+    credential next to the launcher. "Sounds like metadata" is not a classification.
+
+    Published for the ONE caller that builds a second, independent mask over the same
+    data home -- ``agent_sdk.tool_gate.adapter_hidden_credential_dirs``, the OS
+    credential mask an enforced adapter is confined by. That mask projects the whole
+    READ-GATE floor, and the floor covers a Crew runtime artifact for a different
+    reason than a credential: it stops the AGENT'S OWN FILE TOOLS from opening one,
+    while Crew's writers open it directly. Handed to a sandbox as a deny list, the
+    same entry hides the artifact from the CHILD -- which is not the reader the floor
+    was aiming at, and is the reader these lists exist to serve.
+
+    Hiding a ceiling is the sharpest case, because it is not merely lost: an empty
+    bind over ``security_policy.json`` makes ``boot_platform()`` raise, so every
+    in-sandbox Crew process under an enforced harness stops booting on exactly the
+    governed hosts that set one.
+
+    Subtracting these is not a hole. An unenforced harness's child already sees every
+    leaf that remains (those harnesses get no mask at all), each readonly entry is
+    independently re-sealed read-only by ``wrap_argv``, and the read gate still fences
+    all of them from the agent's own file tools. The two controls keep covering
+    different readers.
+
+    Derived from the lists, never re-spelled. A hand-copied list would drift the
+    moment a leaf is added above, and the drift is silent in the safe-looking
+    direction: the new leaf keeps its mask entry and the enforced harnesses alone
+    lose it.
+    """
+    return _CREW_CHILD_READABLE_LEAVES
 
 
 def _resolved_kiro_agents_targets() -> list[str]:
@@ -1008,6 +1250,10 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # which is the state of every install that has never sampled a decision, and
     # leaves exactly the name an agent would create in order to forge a verdict.
     "decisions",
+    # Pi's gate launcher and sealed extension. Materialised here rather than only by
+    # the adapter so the directory is a read-only mountpoint before ANY sandbox starts,
+    # including the first pi spawn on a fresh install.
+    "pi-gate",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -1020,6 +1266,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "subagents",
     "member-memory-bindings",
     "decisions",
+    "pi-gate",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 #: Read-only FILE leaves whose NAME must remain the sealed name, for the same reason
@@ -1063,6 +1310,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed decision log",
         "the agent could append a feedback row the owner's summary counts as a "
         "verdict nobody gave",
+    ),
+    "pi-gate": (
+        "sealed pi gate runtime",
+        "the agent could plant the launcher a later pi session execs out of",
     ),
 }
 assert set(_DELEGATED_OVERLAP_LEAF_REASONS) == set(_CREW_NOFOLLOW_READONLY_FILE_LEAVES) | set(
@@ -7198,7 +7449,7 @@ def _parse_pid_segment(pid_str: str) -> int | None:
 
 
 def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = None) -> int:
-    """Remove orphan sandbox files from <config_dir>/run/ and legacy /tmp.
+    """Remove orphan sandbox files from runtime artifact directories and legacy /tmp.
 
     A file is removed when EITHER:
       - The tagged PID is dead (os.kill probe fails), OR
@@ -7229,51 +7480,98 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
     now = time.time()
     if legacy_dir is None:
         legacy_dir = _LEGACY_LAUNCHER_DIR
-    run_dir = str(data_home / "run")
+    artifact_dirs = (
+        (str(data_home / "run"), _RUN_DIR_ARTIFACTS),
+        (str(data_home / "pi-gate"), _PI_GATE_DIR_ARTIFACTS),
+    )
     removed = 0
 
-    # ── Sweep <config_dir>/run/ (PID + age) ──
-    if os.path.isdir(run_dir):
-        for entry in os.listdir(run_dir):
-            prefix = next((p for p in _RUN_DIR_ARTIFACTS if entry.startswith(p)), None)
-            if prefix is None:
-                continue
-            suffix = next((x for x in _RUN_DIR_ARTIFACTS[prefix] if entry.endswith(x)), None)
-            if suffix is None:
-                continue
-            filepath = os.path.join(run_dir, entry)
-            # Age check first — handles the spawner-PID design flaw. Not for the
-            # pi gate artifacts: those are written once per gateway process and
-            # REUSED by every later spawn of that process, so their age says
-            # nothing, and the PID in their name is the owner's own.
-            try:
-                mtime = os.stat(filepath).st_mtime
-            except OSError:
-                continue
-            if prefix == _SANDBOX_ARTIFACT_PREFIX and (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+    # ── Sweep runtime artifact directories (PID + age) ──
+    for artifact_dir, families in artifact_dirs:
+        artifact_fd: int | None = None
+        try:
+            if platform_compat.IS_WINDOWS:
+                # Windows has no os-level pinned-directory primitive, so this
+                # check-then-act arm retains an accepted replacement window.
+                if platform_compat.is_link_or_junction(artifact_dir):
+                    logger.warning(
+                        "Refusing to sweep linked or non-directory artifact directory: %s",
+                        artifact_dir,
+                    )
+                    continue
+                if not os.path.isdir(artifact_dir):
+                    continue
+                entries = os.listdir(artifact_dir)
+            else:
                 try:
-                    os.remove(filepath)
-                    removed += 1
-                except OSError:
-                    pass
-                continue
-            # Fresh file — fall back to PID liveness check
-            middle = entry[len(prefix) : -len(suffix)]
-            pid = _parse_pid_segment(middle.split("_", 1)[0])
-            if pid is None:
-                continue
-            # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
-            # TERMINATES the target process on Windows (see platform_compat).
-            try:
-                alive = platform_compat.pid_exists(pid)
-            except OverflowError:
-                alive = False  # absurd pid digits from a corrupt filename — stale
-            if not alive:
+                    artifact_fd = os.open(
+                        artifact_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                except OSError as exc:
+                    if exc.errno == errno.ENOENT:
+                        continue
+                    if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                        logger.warning(
+                            "Refusing to sweep linked or non-directory artifact directory: %s",
+                            artifact_dir,
+                        )
+                        continue
+                    raise
+                with os.scandir(artifact_fd) as iterator:
+                    entries = [entry.name for entry in iterator]
+
+            for entry in entries:
+                prefix = next((p for p in families if entry.startswith(p)), None)
+                if prefix is None:
+                    continue
+                suffix = next((x for x in families[prefix] if entry.endswith(x)), None)
+                if suffix is None:
+                    continue
+                filepath = os.path.join(artifact_dir, entry)
+                # Age check first — handles the spawner-PID design flaw. Not for the
+                # pi gate artifacts: those are written once per gateway process and
+                # REUSED by every later spawn of that process, so their age says
+                # nothing, and the PID in their name is the owner's own.
                 try:
-                    os.remove(filepath)
-                    removed += 1
+                    if artifact_fd is None:
+                        mtime = os.stat(filepath).st_mtime
+                    else:
+                        mtime = os.stat(entry, dir_fd=artifact_fd, follow_symlinks=False).st_mtime
                 except OSError:
-                    pass
+                    continue
+                if prefix == _SANDBOX_ARTIFACT_PREFIX and (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+                    try:
+                        if artifact_fd is None:
+                            os.remove(filepath)
+                        else:
+                            os.unlink(entry, dir_fd=artifact_fd)
+                        removed += 1
+                    except OSError:
+                        pass
+                    continue
+                # Fresh file — fall back to PID liveness check
+                middle = entry[len(prefix) : -len(suffix)]
+                pid = _parse_pid_segment(middle.split("_", 1)[0])
+                if pid is None:
+                    continue
+                # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
+                # TERMINATES the target process on Windows (see platform_compat).
+                try:
+                    alive = platform_compat.pid_exists(pid)
+                except OverflowError:
+                    alive = False  # absurd pid digits from a corrupt filename — stale
+                if not alive:
+                    try:
+                        if artifact_fd is None:
+                            os.remove(filepath)
+                        else:
+                            os.unlink(entry, dir_fd=artifact_fd)
+                        removed += 1
+                    except OSError:
+                        pass
+        finally:
+            if artifact_fd is not None:
+                os.close(artifact_fd)
 
     # ── Sweep legacy /tmp/kirocrew_sandbox_*.py (age only, no PID segment) ──
     if os.path.isdir(legacy_dir):
