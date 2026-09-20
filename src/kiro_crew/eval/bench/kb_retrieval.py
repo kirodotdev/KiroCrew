@@ -222,11 +222,24 @@ class KBQuery:
 
 @dataclass(frozen=True)
 class KBGoldenSet:
-    """A frozen golden set: the corpus plus the labeled queries."""
+    """A frozen golden set: the corpus plus the labeled queries.
+
+    ``label_revision`` counts the label corrections the set has absorbed since
+    it was authored under its ``name``: ``None`` for a set whose gold labels are
+    the author's originals, ``1`` after the first correction, and so on. It is
+    an integer rather than a date or a free-form tag because two revisions must
+    order unambiguously ("does this print carry the newer labels?") and the
+    value must be greppable in the JSON (``"label_revision": 1``). A present
+    ``0`` is refused: it would spell "unrevised" a second way and let two
+    files that mean the same thing print differently. Every edit to a gold label
+    under an existing name bumps it, so the printed header (see
+    :func:`format_kb_report`) can tell two reports on the same corpus name apart.
+    """
 
     name: str
     docs: tuple[KBDoc, ...]
     queries: tuple[KBQuery, ...]
+    label_revision: int | None = None
 
     def validate(self) -> None:
         """Refuse a set that cannot yield an interpretable number.
@@ -318,6 +331,18 @@ class KBGoldenSet:
             raise KBGoldenSetError(
                 f"golden set 'name' must contain only printable text: {path_display}"
             )
+        label_revision = raw.get("label_revision")
+        # bool is an int subclass, so `true` would otherwise parse as revision 1
+        # and print a label state the file never declared.
+        if label_revision is not None and (
+            isinstance(label_revision, bool)
+            or not isinstance(label_revision, int)
+            or label_revision < 1
+        ):
+            raise KBGoldenSetError(
+                "golden set 'label_revision' must be an integer >= 1 when present "
+                f"(omit it for unrevised labels), got {label_revision!r}: {path_display}"
+            )
 
         docs_raw = raw.get("docs", [])
         queries_raw = raw.get("queries", [])
@@ -337,6 +362,7 @@ class KBGoldenSet:
             name=name,
             docs=tuple(KBDoc.from_raw(d) for d in docs_raw),
             queries=tuple(KBQuery.from_raw(q) for q in queries_raw),
+            label_revision=label_revision,
         )
         gs.validate()
         return gs
@@ -371,6 +397,14 @@ class KBRetrievalReport:
     embedder_id: str
     k_values: tuple[int, ...]
     results: list[KBQueryResult] = field(default_factory=list)
+    #: The golden set's ``label_revision``, carried so the printed header names
+    #: the labels the numbers were scored against, not just the corpus.
+    label_revision: int | None = None
+
+    @property
+    def golden_set_identity(self) -> str:
+        """Corpus name plus label revision, as the report header prints it."""
+        return format_kb_golden_identity(self.golden_set, self.label_revision)
 
     def _answerable(self) -> list[KBQueryResult]:
         return [r for r in self.results if not r.is_abstention]
@@ -437,6 +471,21 @@ def _mean(xs: Sequence[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
+def format_kb_golden_identity(name: str, label_revision: int | None) -> str:
+    """Render the corpus identity a report header prints.
+
+    The name alone cannot tell two reports apart once a gold label under that
+    name is corrected, so the revision travels with it: ``kb_golden_v2 (label
+    revision 1)``. A set without the field prints ``kb_golden_v1 (unrevised
+    labels)`` -- spelled out rather than left bare, so a print made from
+    unrevised labels is visibly distinct from one made from revised labels and
+    from an archived print that predates the field.
+    """
+    if label_revision is None:
+        return f"{name} (unrevised labels)"
+    return f"{name} (label revision {label_revision})"
+
+
 def golden_set_dir() -> Path:
     """Directory holding the packaged golden sets."""
     return Path(__file__).resolve().parent / "data"
@@ -451,22 +500,40 @@ def default_golden_set_path() -> Path:
     than its size -- each of its gold documents is the only one in that corpus
     using its topic's vocabulary, so matching a single term wins. v2 carries
     competing distractors, and the legs separate on it: keyword-only
-    (deterministic: FTS5 + graph, no model) scores nDCG@3 0.825 / MRR@3 0.804 /
-    MAP@3 0.772, against 0.903 / 0.887 / 0.869 for the semantic leg measured with
-    ``qwen3-embedding:0.6b``, and ``multi_hop`` recall_all@3 reads 0.400 keyword
+    (deterministic: FTS5 + graph, no model) scores nDCG@3 0.834 / MRR@3 0.804 /
+    MAP@3 0.781, against 0.917 / 0.887 / 0.885 for the semantic leg measured with
+    ``qwen3-embedding:0.6b``, and ``multi_hop`` recall_all@3 reads 0.250 keyword
     versus 1.000 semantic. MAP separates the two legs more widely than either
-    companion (0.097, against 0.078 nDCG and 0.083 MRR), which is the multi-gold
+    companion (0.104, against 0.083 nDCG and 0.083 MRR), which is the multi-gold
     ranking signal it exists to expose. Re-measure the semantic triple after a
     model or quantization change; only the keyword triple is reproducible from
     the corpus alone.
+
+    The gold labels are blind-audited rather than author-asserted: three
+    annotators on separate model families relabelled all 46 queries from an
+    anonymized packet (ids masked, classes and gold sets withheld, corpus
+    order shuffled), agreeing with the file on 43, 42 and 40 of 46. Agreement is
+    evidence the questions are unambiguous, NOT proof the labels are right --
+    every annotator was a language model, so a shared blind spot reads as
+    consensus. Externally-anchored relevance judgments are the standing gap.
 
     Consequence for anyone comparing runs: a v1 report and a v2 report measure
     DIFFERENT corpora and their metrics are not comparable. Nothing mechanical
     stops that comparison -- ``bench kb-retrieval`` PRINTS its report and writes no
     file (it has no ``--out-dir``), and ``bench compare`` only diffs saved
     memory-retrieval reports, so it never sees a KB run at all. The one guard is
-    the corpus name in the printed header (``KB retrieval eval: kb_golden_v2``):
-    read it before putting two of these numbers side by side.
+    the corpus identity in the printed header, and the corpus NAME alone is not
+    enough of one: the blind audit's two label corrections change v2's gold
+    labels under the unchanged name ``kb_golden_v2``, so a print scored against
+    the original labels (keyword nDCG@3 0.825, ``multi_hop`` recall_all@3 0.400)
+    and one scored against the corrected labels (0.834, 0.250) differ by a
+    labelling change, not by retriever movement. The header therefore carries
+    the set's ``label_revision`` beside the name -- ``KB retrieval eval:
+    kb_golden_v2 (label revision 1)`` -- and a print made from the original
+    labels reads either the bare name or ``(unrevised labels)``. Two prints are
+    comparable only when both name AND revision match; read both before putting
+    two of these numbers side by side, and bump ``label_revision`` with every
+    gold-label edit under an existing name.
     """
     return golden_set_dir() / "kb_golden_v2.json"
 
@@ -632,6 +699,7 @@ def run_kb_retrieval(
             golden_set=golden.name,
             embedder_id=resolved_id,
             k_values=k_values,
+            label_revision=golden.label_revision,
         )
         for q in golden.queries:
             hits = retriever.search(q.question, limit=limit)
@@ -672,9 +740,14 @@ def run_kb_retrieval(
 
 
 def format_kb_report(report: KBRetrievalReport, *, k: int = 3) -> str:
-    """Render a human-readable summary at cut-off ``k``."""
+    """Render a human-readable summary at cut-off ``k``.
+
+    The first line is the corpus identity -- name AND label revision -- because
+    it is the only guard against differencing two prints that measure different
+    things (see :func:`default_golden_set_path`).
+    """
     lines: list[str] = []
-    lines.append(f"KB retrieval eval: {report.golden_set}")
+    lines.append(f"KB retrieval eval: {report.golden_set_identity}")
     lines.append(f"embedder: {report.embedder_id}")
     head = report.headline(k)
     lines.append("")
