@@ -1,9 +1,8 @@
 /**
  * Screenshot harness for the Git panel's capped-listing and unavailable states.
  *
- * Runs the REAL built SPA (website/dist) with /api/** answered from fixtures,
- * reusing capture-footer-git-status.mjs's approach: the git endpoints are
- * fixtured per state and `dashboard.auto_open_git_panel` opens the panel
+ * Runs the REAL built SPA (website/dist) with /api/** answered from fixtures:
+ * the git endpoints are fixtured per state and `dashboard.auto_open_git_panel` opens the panel
  * without a click.
  *
  * Three frames, one per state the panel must tell apart:
