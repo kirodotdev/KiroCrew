@@ -2287,7 +2287,8 @@ def _seed_attempts(session_id: str, log: Any) -> None:
     """
     highest: dict[int, int] = {}
     try:
-        for entry in log.iter_from(1):
+        # Like read_page, this best-effort scan keeps readable records; folds still refuse seq damage.
+        for entry in log.iter_from(1, strict_seq=False):
             if entry.type != "turn/started":
                 continue
             turn = entry.data.get("turn")

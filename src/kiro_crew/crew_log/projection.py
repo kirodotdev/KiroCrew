@@ -64,6 +64,7 @@ from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
 from kiro_crew.crew_log.store import (
     CrewLog,
+    segment_paths,
     session_units_for_slot,
     unit_header_created_at,
 )
@@ -436,6 +437,19 @@ class SessionProjections:
     #: "nothing on disk", which is what an unpersisted bundle must claim.
     saved_seq: int = 0
 
+    #: A size fingerprint of the WHOLE segment set, captured beside ``origin``:
+    #: the byte sum across every segment the walk would read, with the segment
+    #: count folded in so a segment appearing or vanishing cannot cancel against
+    #: another's growth. A reusable bundle may skip walking the log only while
+    #: this still matches; ``None`` keeps bundles created before this field safe
+    #: by forcing one validating walk before their next O(1) poll.
+    size: int | None = None
+
+    #: The newest modification time across the same segment set as ``size``. It
+    #: detects an in-place same-size rewrite that size alone cannot distinguish;
+    #: ``None`` keeps older bundles safe by forcing one validating walk.
+    mtime_ns: int | None = None
+
     def projection(self, name: str) -> Projection:
         """One rendered projection, or raise ``bad_data`` for an unknown name."""
         return projection_of(self.checkpoints[require_name(name)])
@@ -472,8 +486,8 @@ def open_session_log(session_id: str) -> CrewLog | None:
     return CrewLog.open(KIND_SESSION, session_id)
 
 
-def log_origin(handle: CrewLog) -> str | None:
-    """The crew log file's creation identity for *handle*, or ``None``.
+def _log_identity(handle: CrewLog) -> tuple[str | None, int | None, int | None]:
+    """The crew log file's creation identity, size and mtime from stat calls alone.
 
     A reuse (:func:`fold_session` ``since=``) folds new bytes onto a cached
     checkpoint only when the file it folds now is the SAME one the checkpoint
@@ -485,27 +499,63 @@ def log_origin(handle: CrewLog) -> str | None:
     only colliding case -- itself near-impossible). This catches what the seq
     guard cannot: a recreated log that has already grown PAST the cached seq.
     ``None`` is "unknown identity" and never matches, so a header without the
-    field or a stat failure falls back to the safe full rebuild.
+    field or a stat failure falls back to the safe full rebuild. Size and mtime
+    together also prevent a same-size in-place rewrite from taking the unchanged
+    fast path. A successful stat still returns both when the header lacks
+    ``created_at``.
 
-    BOTH signals are read from the file on disk on every call, and neither comes
-    from *handle*'s own parsed header. That header was parsed when the handle was
-    opened, so it keeps answering for the file that existed then -- which would
-    leave this comparing device and inode alone across exactly the recreation it
-    exists to catch, and a just-freed inode is commonly handed straight back.
+    BOTH identity signals are read from the file on disk on every call, and
+    neither comes from *handle*'s own parsed header. That header was parsed when
+    the handle was opened, so it keeps answering for the file that existed then --
+    which would leave this comparing device and inode alone across exactly the
+    recreation it exists to catch, and a just-freed inode is commonly handed
+    straight back.
+
+    The size and mtime cover EVERY segment the walk would read, not only the
+    newest one that ``handle.path`` names: size is the sum and mtime the newest
+    across the segment set, with the count folded into the sum so a whole
+    segment appearing or vanishing (rotation, retention) can never cancel out
+    against another's growth. The fingerprint must cover exactly what the walk
+    consumes -- a fingerprint narrower than the walk is how each round of this
+    guard's history got the same finding back in a new spelling -- and it stays
+    stat-only, because reading file contents per poll is the cost the fast path
+    exists to avoid. A segment vanishing between the listing and its stat is a
+    file set in motion, and reads as "unknown": the fold then walks, which is
+    the safe answer to a moving target.
+    """
+    created_at = unit_header_created_at(handle.kind, handle.id)
+    try:
+        stat = handle.path.stat()
+        total_size = 0
+        newest_mtime = 0
+        segments = segment_paths(handle.kind, handle.id)
+        for segment in segments:
+            seg_stat = segment.stat()
+            total_size += seg_stat.st_size
+            newest_mtime = max(newest_mtime, seg_stat.st_mtime_ns)
+        # The count rides in the size so "one segment of N bytes" and "two
+        # segments of N bytes total" cannot fingerprint alike even at one stat's
+        # granularity, and an empty listing stays distinct from an unstatable one.
+        total_size = total_size + (len(segments) << 48)
+    except OSError:
+        return None, None, None
+    if created_at is None:
+        return None, total_size, newest_mtime
+    return f"{created_at}:{stat.st_dev}:{stat.st_ino}", total_size, newest_mtime
+
+
+def log_origin(handle: CrewLog) -> str | None:
+    """The crew log file's creation identity for *handle*, or ``None``.
+
+    The identity half of :func:`_log_identity` -- see there for what the value
+    means and why it is read from disk on every call.
 
     Public because the on-disk savepoints (:mod:`kiro_crew.crew_log.checkpoint`)
     record this same value and must compare it the same way. Two spellings of "is
     this the same log" would be free to disagree, and the one that said yes too
     often would fold a retired file's state onto a live one's bytes.
     """
-    created_at = unit_header_created_at(handle.kind, handle.id)
-    if created_at is None:
-        return None
-    try:
-        stat = handle.path.stat()
-    except OSError:
-        return None
-    return f"{created_at}:{stat.st_dev}:{stat.st_ino}"
+    return _log_identity(handle)[0]
 
 
 def fold_session(
@@ -596,7 +646,7 @@ def _fold_attempt(
     if handle is None:
         return (empty_session(session_id, wanted), True, None, None)
     last_seq = handle.last_seq
-    origin = log_origin(handle)
+    origin, size, mtime_ns = _log_identity(handle)
     # What the pass trusted about the file before reading it, so the same two things
     # can be asked again afterwards. The savepoint is held rather than a copy of its
     # digest: re-running the load is what re-checks it, and that keeps one routine
@@ -692,10 +742,30 @@ def _fold_attempt(
     if not reused_cached_state and savepoints.write_is_earned(last_seq, saved_seq):
         prefix_seen = savepoints.prefix_witness(handle, last_seq)
     from_seq = min((cp.last_seq for cp in base.values()), default=0) + 1
-    if from_seq > last_seq:
+    if from_seq > last_seq and (
+        not reused_cached_state
+        or (
+            since is not None
+            and since.size is not None
+            and since.size == size
+            and since.mtime_ns is not None
+            and since.mtime_ns == mtime_ns
+        )
+    ):
         # No entries were read, but the bundle still describes the identity and the
         # prefix seen before this check. Recheck both so a recreation or interior
         # damage during the call retries cold instead of serving retired state.
+        #
+        # A pass standing on an in-memory cached bundle carries no prefix digest
+        # (see ``reused_cached_state``), so identity alone is all ``held_still``
+        # can recheck for it -- and identity survives an in-place rewrite that
+        # regresses the tail seq back to the bundle's position. The segment-set
+        # size and mtime fingerprint read beside the identity closes that gap:
+        # they may skip the validating walk only while both still match what the
+        # bundle recorded, and ``None`` (a bundle from before these fields) never
+        # matches, which costs one validating walk before that bundle's next O(1)
+        # poll. A pass that did NOT reuse a cached bundle is covered by the
+        # digest machinery instead, so it keeps the fast return unconditionally.
         return (
             SessionProjections(
                 session_id=session_id,
@@ -703,6 +773,8 @@ def _fold_attempt(
                 checkpoints=base,
                 origin=origin,
                 saved_seq=saved_seq,
+                size=size,
+                mtime_ns=mtime_ns,
             ),
             held_still(),
             handle,
@@ -734,6 +806,8 @@ def _fold_attempt(
             checkpoints=grown,
             origin=origin,
             saved_seq=saved_seq,
+            size=size,
+            mtime_ns=mtime_ns,
         ),
         held_still(),
         handle,

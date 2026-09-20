@@ -60,6 +60,7 @@ contributed, and none of the three below reads the prefix at all.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import Iterable, Mapping
@@ -348,12 +349,13 @@ def save(
         # and seq -- but the bundle must not claim a savepoint the folds that failed
         # do not have, or the next read would skip the write they are still owed.
         return bundle
-    return SessionProjections(
-        session_id=bundle.session_id,
-        last_seq=bundle.last_seq,
-        checkpoints=bundle.checkpoints,
-        origin=bundle.origin,
-        saved_seq=min(cp.last_seq for cp in bundle.checkpoints.values()),
+    # ``replace`` rather than a field-by-field rebuild: this function's only edit
+    # is ``saved_seq``, and naming the other fields here would silently drop any
+    # field it does not know about -- the caller's size and mtime stamps are what
+    # let its next no-growth poll skip the validating walk, and losing them here
+    # would charge one full-file read per savepoint write for nothing.
+    return dataclasses.replace(
+        bundle, saved_seq=min(cp.last_seq for cp in bundle.checkpoints.values())
     )
 
 

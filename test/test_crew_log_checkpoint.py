@@ -431,11 +431,20 @@ def test_an_unchanged_tail_still_rechecks_the_log_identity(monkeypatch):
     seen = _spy_on_reads(monkeypatch)
     calls: list[int] = []
 
-    def moved_once(_handle):
-        calls.append(len(calls) + 1)
-        return "before-recreation" if len(calls) == 1 else "settled-recreation"
+    # ``_log_identity`` is the one seam every identity read goes through now:
+    # the before-pass read takes it directly, and the savepoint load and the
+    # after-pass recheck reach it through ``log_origin``'s delegation. Only the
+    # FIRST read lies -- the savepoint resume and the recheck must see the real
+    # file, exactly as when each held its own unpatched copy.
+    truth = crew_log._log_identity
 
-    monkeypatch.setattr(crew_log, "log_origin", moved_once)
+    def moved_once(handle):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            return ("before-recreation", None, None)
+        return truth(handle)
+
+    monkeypatch.setattr(crew_log, "_log_identity", moved_once)
     resumed = crew_log.fold_session(SESSION)
 
     # The first attempt resumed at the unchanged tail and read nothing, so without
@@ -1312,7 +1321,10 @@ def test_a_log_recreated_mid_fold_is_folded_again_rather_than_spliced(monkeypatc
     _grow(handle, 3, first=_LONG_TURNS + 1)
     reads: list[int] = []
     real = CrewLog.iter_from
-    truth = crew_log.log_origin
+    # ``_log_identity`` is the one seam every identity read goes through --
+    # the before-pass read directly, the savepoint load and the after-pass
+    # recheck via ``log_origin``'s delegation.
+    truth = crew_log._log_identity
     seen: list[None] = []
 
     def recreate_once(self, from_seq=1, *args, **kwargs):
@@ -1327,10 +1339,10 @@ def test_a_log_recreated_mid_fold_is_folded_again_rather_than_spliced(monkeypatc
         seen.append(None)
         # Different only while the first pass is in flight, so the second attempt
         # sees a settled file and its bundle is the one served.
-        return f"swapped-{len(seen)}" if len(seen) <= 2 else truth(target)
+        return (f"swapped-{len(seen)}", None, None) if len(seen) <= 2 else truth(target)
 
     monkeypatch.setattr(CrewLog, "iter_from", recreate_once)
-    monkeypatch.setattr(crew_log, "log_origin", moved)
+    monkeypatch.setattr(crew_log, "_log_identity", moved)
     bundle = crew_log.fold_session(SESSION, ("status",))
 
     assert reads, "the fold did not read the file, so nothing was exercised"
@@ -1343,7 +1355,9 @@ def test_a_log_changing_identity_on_every_pass_reports_it_as_unknown(monkeypatch
     """Two races in a row: the value is served, and nothing may reuse or persist it."""
     _long_log()
     counter = iter(range(100))
-    monkeypatch.setattr(crew_log, "log_origin", lambda _target: f"moved-{next(counter)}")
+    monkeypatch.setattr(
+        crew_log, "_log_identity", lambda _target: (f"moved-{next(counter)}", None, None)
+    )
 
     bundle = crew_log.fold_session(SESSION, ("status",))
 

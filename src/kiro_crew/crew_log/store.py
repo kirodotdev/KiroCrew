@@ -2120,7 +2120,13 @@ class CrewLog:
             return None
         return None
 
-    def iter_from(self, seq: int = 1, *, known: Collection[str] | None = None) -> Iterator[Entry]:
+    def iter_from(
+        self,
+        seq: int = 1,
+        *,
+        known: Collection[str] | None = None,
+        strict_seq: bool = True,
+    ) -> Iterator[Entry]:
         """Every entry from *seq* onward, OLDEST first -- the shape a fold wants.
 
         *known* is the reader DECLARING the types it can interpret, and passing
@@ -2143,8 +2149,40 @@ class CrewLog:
         and yielding across it would hand a fold a hole it cannot see. A gap at the
         FRONT is not damage: that is retention, so a first segment starting above 1
         is read as it stands.
+
+        Every WALKED entry -- including the ones below *seq* that are never
+        yielded -- must carry a seq strictly greater than the entry before it.
+        A duplicate or backward seq is refused with ``bad_data``, the same
+        verdict :func:`~kiro_crew.crew_log.projection.advance` gives it, so an
+        incremental read and a fold from the start agree on a damaged file
+        instead of one refusing and the other silently skipping the record.
+        The append-only writer cannot produce a non-advancing seq, so one in
+        the file is external damage, not history. A forward GAP stays
+        tolerated: inside one file it is a damaged line ``_iter_entries``
+        skipped on purpose, and this check deliberately does not harden into
+        a contiguity requirement.
+
+        *strict_seq* is that refusal, and ``False`` is for the RENDERING
+        callers only: a page shows history to a human, so refusing every
+        intact line of a unit because one damaged line exists elsewhere in it
+        would take the history away exactly when damage makes it most worth
+        reading. A caller that FOLDS state must keep the default -- tolerating
+        a non-advancing seq there is how two reads of the same bytes disagree,
+        which is the defect this parameter's default closes.
         """
+        walked = 0
         for entry in self._iter_segments():
+            if entry.seq <= walked:
+                if strict_seq:
+                    raise CrewLogError(
+                        f"entry {entry.seq} is at or below the previously read "
+                        f"entry's seq {walked}; a duplicate or backward seq is "
+                        "damage the append-only writer cannot produce",
+                        code=CODE_BAD_DATA,
+                        field="seq",
+                    )
+            else:
+                walked = entry.seq
             if entry.seq < seq:
                 continue
             if known is not None and entry.type not in known:
@@ -2727,6 +2765,7 @@ def _open_tail(
     """
     open_turn: Any = None
     last_time = 0
+    last_walked = 0
     calls: dict[str, dict[str, Any]] = {}
     approvals: dict[str, dict[str, Any]] = {}
     children: dict[str, dict[str, Any]] = {}
@@ -2740,6 +2779,19 @@ def _open_tail(
                 if entry is None:
                     skipped = skipped or reason
                     continue
+                if entry.seq <= last_walked:
+                    # A non-advancing seq is damage the append-only writer cannot
+                    # produce (the same verdict ``iter_from`` and ``advance`` give
+                    # it). This fold feeds a MUTATION: ``_scan_tail`` takes the
+                    # newest line's seq, so a backward tail lowers the closers'
+                    # first seq onto records that already exist -- a repair here
+                    # would amplify the damage before any reader refuses it.
+                    skipped = skipped or (
+                        f"entry {entry.seq} at record {index} is at or below the "
+                        f"previously read entry's seq {last_walked}"
+                    )
+                    continue
+                last_walked = entry.seq
                 last_time = entry.time
                 data = entry.data if isinstance(entry.data, dict) else {}
                 if entry.type == "turn/started":

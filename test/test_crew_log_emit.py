@@ -1440,6 +1440,23 @@ def test_a_rerun_immediately_after_a_resume_does_not_reuse_the_attempt():
     ), f"the rerun reused the attempt: {starts[1]['data']}"
 
 
+def test_the_attempt_seed_keeps_readable_counts_before_a_backward_tail():
+    _open_session()
+    emit.on_turn_started(SESSION, 7, "user", attempt=2)
+    emit.on_turn_completed(SESSION, 7, stop_reason="end_turn")
+    assert emit.flush()
+    emit.reset_caches()
+
+    path = _log_path()
+    started = path.read_bytes().splitlines(keepends=True)[2]
+    with open(path, "ab") as damaged:
+        damaged.write(started)
+
+    emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7")
+    assert emit.flush()
+    assert emit._next_attempt(SESSION, 7) == 3
+
+
 def test_the_turn_closer_is_the_last_entry_of_its_turn():
     # `turn/completed` is the one entry whose POSITION carries meaning. A reader
     # folding in order treats it as the turn's boundary, so a `message/sent`

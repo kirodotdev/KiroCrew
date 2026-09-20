@@ -75,7 +75,10 @@ def read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
             "refs_unresolved": 0,
         }
     # No vocabulary: a page renders history, so an unfamiliar line is shown
-    # rather than made to refuse the lines around it.
+    # rather than made to refuse the lines around it. ``strict_seq=False`` for
+    # the same reason: a non-advancing seq is damage a FOLD must refuse, but a
+    # page that raised on it would take every intact line of the unit away from
+    # the operator exactly when damage makes the history most worth reading.
     #
     # ``handle.last_seq`` is this instance's own cached figure -- the store's
     # docstring says it is authoritative only for its OWN appends -- and a reader
@@ -88,7 +91,7 @@ def read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
     # it stops paging with entries left unread.
     observed_last = handle.last_seq
     entries: list[Any] = []
-    for entry in handle.iter_from(start):
+    for entry in handle.iter_from(start, strict_seq=False):
         if entry.seq > observed_last:
             observed_last = entry.seq
         if entry.seq <= end:

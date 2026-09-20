@@ -10,6 +10,8 @@ batch implementation would be free to break.
 from __future__ import annotations
 
 import json
+import os
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -718,6 +720,206 @@ def test_fold_session_continues_from_an_earlier_bundle():
     second = crew_log.fold_session(SESSION, since=first)
     assert second.last_seq > first.last_seq
     assert second.projection("usage").value == crew_log.fold_usage(_entries(handle))
+
+
+def test_fold_session_incremental_refuses_a_backward_seq_like_a_fold_from_the_start():
+    """A non-advancing seq in the tail refuses BOTH ways -- never one way only.
+
+    The append-only writer cannot produce a duplicate or backward seq, so one
+    in the file is external damage. A fold from the start refuses it in
+    ``advance``. Without the walked-entry guard, an incremental read drops the
+    record below its resume seq unexamined and folds on -- two reads of the
+    same bytes disagree and a reader cannot tell which answer it is getting.
+    The guard in ``iter_from`` makes the incremental read refuse the same
+    damage with the same code.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    bundle = crew_log.fold_session(SESSION)
+
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
+    last_line = path.read_bytes().splitlines(keepends=True)[-1]
+    with open(path, "ab") as damaged:
+        damaged.write(last_line)  # byte-identical copy: the last seq appears twice
+    _turn(handle, 2)  # a real turn past the damage, so the incremental read walks over it
+
+    with pytest.raises(CrewLogError) as from_start:
+        crew_log.fold_session(SESSION)
+    with pytest.raises(CrewLogError) as incremental:
+        crew_log.fold_session(SESSION, since=bundle)
+
+    assert from_start.value.code == lg.CODE_BAD_DATA
+    assert incremental.value.code == lg.CODE_BAD_DATA
+
+
+def test_fold_session_incremental_refuses_a_backward_tail_after_real_growth():
+    """A regressed physical tail cannot hide valid growth from a cached fold."""
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    bundle = crew_log.fold_session(SESSION)
+
+    _turn(handle, 2)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
+    earlier_line = next(
+        line
+        for line in path.read_bytes().splitlines(keepends=True)
+        if json.loads(line).get("seq") == bundle.last_seq
+    )
+    with open(path, "ab") as damaged:
+        damaged.write(earlier_line)
+
+    with pytest.raises(CrewLogError) as from_start:
+        crew_log.fold_session(SESSION)
+    with pytest.raises(CrewLogError) as incremental:
+        crew_log.fold_session(SESSION, since=bundle)
+
+    assert from_start.value.code == lg.CODE_BAD_DATA
+    assert incremental.value.code == lg.CODE_BAD_DATA
+
+
+def test_fold_session_incremental_refuses_same_size_rewrite_of_folded_seq():
+    """A same-size rewrite behind the resume point must invalidate the cache."""
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    bundle = crew_log.fold_session(SESSION)
+
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
+    before = path.stat()
+    lines = path.read_bytes().splitlines(keepends=True)
+    damaged = json.loads(lines[-2])
+    damaged["seq"] = json.loads(lines[-3])["seq"]
+    replacement = (
+        json.dumps(damaged, ensure_ascii=True, separators=(",", ":"), sort_keys=False).encode()
+        + b"\n"
+    )
+    assert len(replacement) == len(lines[-2])
+    lines[-2] = replacement
+    path.write_bytes(b"".join(lines))
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    assert path.stat().st_size == before.st_size
+
+    with pytest.raises(CrewLogError) as incremental:
+        crew_log.fold_session(SESSION, since=bundle)
+
+    assert incremental.value.code == lg.CODE_BAD_DATA
+
+
+def test_fold_session_incremental_refuses_older_segment_seq_regression():
+    """A seq regression in a NON-newest segment must invalidate the fast path.
+
+    ``handle.path`` names only the newest segment, so a fingerprint taken from
+    it alone never sees an older segment move -- the fast return would serve the
+    cached bundle while a cold fold refuses the log. The fingerprint covers the
+    whole segment set for exactly this case.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    _turn(handle, 2)
+    del handle
+
+    # Split the single-segment log into two valid segments: the head keeps the
+    # early records, ``log.<first_seq>.jsonl`` carries the tail. Each segment
+    # begins with the header line, as the raw walks expect.
+    head = lg.crew_log_path(lg.KIND_SESSION, SESSION)
+    lines = head.read_bytes().splitlines(keepends=True)
+    header, records = lines[0], lines[1:]
+    keep, moved = records[: len(records) // 2], records[len(records) // 2 :]
+    first_moved_seq = json.loads(moved[0])["seq"]
+    head.write_bytes(header + b"".join(keep))
+    (head.parent / f"log.{first_moved_seq}.jsonl").write_bytes(header + b"".join(moved))
+
+    handle = CrewLog.open(lg.KIND_SESSION, SESSION)
+    bundle = crew_log.fold_session(SESSION, log=handle)
+
+    # Regress a seq INSIDE the older segment, same byte length, and touch only
+    # that older file -- the newest segment never changes, which is what the
+    # newest-only fingerprint could not see.
+    before = head.stat()
+    old_lines = head.read_bytes().splitlines(keepends=True)
+    damaged = json.loads(old_lines[-1])
+    damaged["seq"] = json.loads(old_lines[-2])["seq"] if len(old_lines) > 2 else damaged["seq"]
+    replacement = (
+        json.dumps(damaged, ensure_ascii=True, separators=(",", ":"), sort_keys=False).encode()
+        + b"\n"
+    )
+    assert len(replacement) == len(old_lines[-1])
+    old_lines[-1] = replacement
+    head.write_bytes(b"".join(old_lines))
+    os.utime(head, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+    with pytest.raises(CrewLogError) as incremental:
+        crew_log.fold_session(SESSION, since=bundle)
+
+    assert incremental.value.code == lg.CODE_BAD_DATA
+
+
+def test_fold_session_unchanged_fast_path_does_not_walk_entries(monkeypatch):
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    bundle = crew_log.fold_session(SESSION)
+    calls = 0
+    original = CrewLog.iter_from
+
+    def counting(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(CrewLog, "iter_from", counting)
+    unchanged = crew_log.fold_session(SESSION, since=bundle)
+
+    assert unchanged == bundle
+    assert calls == 0
+
+
+def test_fold_session_old_bundle_without_size_walks_once(monkeypatch):
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    bundle = crew_log.fold_session(SESSION)
+    old_bundle = replace(bundle, size=None)
+    calls = 0
+    original = CrewLog.iter_from
+
+    def counting(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(CrewLog, "iter_from", counting)
+    refreshed = crew_log.fold_session(SESSION, since=old_bundle)
+
+    assert refreshed.projection("usage") == bundle.projection("usage")
+    assert refreshed.size is not None
+    assert refreshed.mtime_ns is not None
+    assert calls == 1
+
+
+def test_fold_session_old_bundle_without_mtime_walks_once(monkeypatch):
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    bundle = crew_log.fold_session(SESSION)
+    old_bundle = replace(bundle, mtime_ns=None)
+    calls = 0
+    original = CrewLog.iter_from
+
+    def counting(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(CrewLog, "iter_from", counting)
+    refreshed = crew_log.fold_session(SESSION, since=old_bundle)
+
+    assert refreshed.projection("usage") == bundle.projection("usage")
+    assert refreshed.mtime_ns is not None
+    assert calls == 1
 
 
 def test_fold_session_rebuilds_when_the_log_is_shorter_than_the_bundle():
