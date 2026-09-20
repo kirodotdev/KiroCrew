@@ -412,7 +412,10 @@ def test_skill_search_reads_project_bodies_only_under_the_body_cap(rig, tmp_path
     assert str(huge_path) not in skills._fm_cache
     assert all(key != "huge" for key, _ in reads)
     assert ("small", skills_mod.PROJECT_SKILL_BODY_CAP) in reads
-    assert ("big-global", None) in reads
+    # An unconfined body is served by the term index, so the search does not read
+    # it through the loader at all; "big-global" in `names` above is what proves
+    # it is still matched. The project body cap stays a confined-only rule.
+    assert all(key != "big-global" for key, _ in reads)
 
 
 @pytest.mark.asyncio

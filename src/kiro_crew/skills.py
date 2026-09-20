@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from kiro_crew import hooks as hooks_module
 from kiro_crew import pinned_fs, skill_trust
@@ -54,6 +54,11 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.skill_search_index import (
+    SKILL_SEARCH_INDEX_FILENAME,
+    SkillSearchIndex,
+    body_fingerprint,
+)
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
 from kiro_crew.skills_script_validator import validate_scripts
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
@@ -93,6 +98,57 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {
     os.rename,
     os.rmdir,
 }.issubset(os.supports_dir_fd)
+
+
+def _body_term_hits(content: str, terms: Iterable[str]) -> int:
+    """How many of *terms* the body carries, by the SAME rule the index uses.
+
+    Tokenized, then prefix-matched per token, because the persisted index answers
+    that way: it stores `recall_terms` output and matches a query term against
+    stored terms it prefixes. A plain substring scan here would score the two paths
+    differently, so whether a skill ranked at all would depend on which path
+    answered for it -- and both can answer inside ONE search, since the index hands
+    individual keys back for a direct read.
+
+    Concretely, substring scoring let `rollback` match a body whose only occurrence
+    is inside `scrollback`; the index calls that a near miss, and so does this.
+    """
+    body_terms = recall_terms(content)
+    if not body_terms:
+        return 0
+    return sum(1 for term in terms if any(bt.startswith(term) for bt in body_terms))
+
+
+def _namespace_groups(skills: list[dict]) -> list[tuple[str, int]]:
+    """Family label and member count for the skills the discovery entry omits.
+
+    Eight names out of a thousand skills describe what the operator used lately,
+    not what the machine can do, and the tail is reachable only by a search whose
+    keywords the model has to guess. A family label plus its size is the cheapest
+    thing that answers "is there anything here about X": one short line, flat in
+    the number of skills, and phrased in the same vocabulary the keys use, so
+    ``app-* (40)`` is already a usable query.
+
+    The label is the key's FIRST segment — the directory for a nested key
+    (``kirocrew-dev/babysit`` -> ``kirocrew-dev/``), otherwise the leading hyphen
+    token (``web-verify`` -> ``web-*``). One rule, so the line cannot reorder
+    itself as skills are added. A family of one is left out: its label would carry
+    no more than the name already does.
+    """
+    counts: dict[str, int] = {}
+    for skill in skills:
+        key = str(skill.get("key", ""))
+        if "/" in key:
+            label = key.split("/", 1)[0] + "/"
+        elif "-" in key:
+            label = key.split("-", 1)[0] + "-*"
+        else:
+            continue
+        counts[label] = counts.get(label, 0) + 1
+    return sorted(
+        ((label, count) for label, count in counts.items() if count > 1),
+        key=lambda pair: (-pair[1], pair[0]),
+    )
 
 
 def _matches_any(path: str, globs: list[str]) -> bool:
@@ -2068,6 +2124,18 @@ class SkillsLoader:
                 exc_info=True,
             )
             self._usage = None
+        # Term index behind `search_skills`'s body fallback, in the same home as
+        # the usage ledger. Best-effort for the same reason: an unusable index
+        # only costs the search its old per-file read path.
+        self._search_index: SkillSearchIndex | None
+        try:
+            self._search_index = SkillSearchIndex(self._dir.parent / SKILL_SEARCH_INDEX_FILENAME)
+        except Exception:  # pragma: no cover — index is best-effort
+            logger.warning(
+                "skill-search-index: init failed; search reads bodies from disk",
+                exc_info=True,
+            )
+            self._search_index = None
         # `skills.extra_paths` is a set of source ROOTS, so it is pushed rather than
         # read at use: re-resolving every root (a realpath plus a sensitivity check
         # per entry) on every message is exactly the cost the iter-cache exists to
@@ -5353,10 +5421,28 @@ class SkillsLoader:
             # Equal usage ranks fall back to key order so the eight names shown
             # do not depend on directory iteration order.
             by_key = sorted(on_demand, key=lambda s: s["key"])
+            named: set[str] = set()
             for skill in sorted(by_key, key=self._rank_key, reverse=True)[:8]:
                 line = f"- {skill['key']}: {self._short_desc(skill['description'])[:100]}\n"
                 if len(wrap([pointer + line])) <= optional_budget:
                     pointer += line
+                    named.add(str(skill["key"]))
+            # Families last, and only over what was NOT named: the line exists to
+            # cover what the entry hides, so repeating a family whose members are
+            # all listed spends the budget saying nothing and can crowd out a
+            # family that is genuinely unreachable. A name that did not fit is
+            # still hidden, so only an admitted one is excluded here.
+            groups = _namespace_groups([s for s in on_demand if str(s["key"]) not in named])
+            total_groups = len(groups)
+            while groups:
+                shown = ", ".join(f"{label} ({count})" for label, count in groups)
+                omitted = total_groups - len(groups)
+                tail = f", +{omitted} more" if omitted else ""
+                line = f"More families: {shown}{tail}\n"
+                if len(wrap([pointer + line])) <= optional_budget:
+                    pointer += line
+                    break
+                groups = groups[:-1]
             if len(wrap([pointer])) <= optional_budget:
                 optional.append(pointer)
         elif on_demand:
@@ -5544,6 +5630,69 @@ class SkillsLoader:
             cut = cut[:space]
         return cut.rstrip() + suffix
 
+    def _body_hits(
+        self,
+        skills: list[dict],
+        terms: Iterable[str],
+        live_keys: list[str],
+        project_dir: str | Path | None,
+    ) -> dict[str, int]:
+        """How many query *terms* each skill's BODY carries, keyed by skill key.
+
+        Unconfined bodies answer from the persisted term index, so the cost tracks
+        the query rather than the corpus. A confined project body is never indexed
+        (see :mod:`kiro_crew.skill_search_index`) and is read through the capped
+        descriptor-pinned reader exactly as before. An unusable index sends the
+        unconfined half back to that same reader, so a search never depends on the
+        database being present or writable.
+
+        The index may also decline INDIVIDUAL keys -- a body its hardened reader
+        refuses, or one past its size ceiling. Those read directly here, so a file
+        the index will not store is exactly as searchable as it was before the
+        index existed, and one such file does not cost the whole catalog its
+        bounded path.
+        """
+        hits: dict[str, int] = {}
+        confined = [s for s in skills if s.get("confine_root")]
+        unconfined = [s for s in skills if not s.get("confine_root")]
+        fallback = list(confined)
+        indexed: dict[str, int] | None = None
+        if unconfined and self._search_index is not None:
+            rows: list[tuple[str, str, str]] = []
+            for skill in unconfined:
+                path = str(skill.get("path", ""))
+                fingerprint = body_fingerprint(path)
+                if fingerprint is not None:
+                    rows.append((str(skill["key"]), path, fingerprint))
+            deferred = self._search_index.sync(rows, live_keys=live_keys)
+            if deferred is not None:
+                answered = [s for s in unconfined if str(s["key"]) not in deferred]
+                indexed = self._search_index.body_hits([str(s["key"]) for s in answered], terms)
+                if indexed is not None:
+                    # Only once the index answered: a failed lookup sends every
+                    # unconfined skill below, and a key must not be read twice.
+                    fallback += [s for s in unconfined if str(s["key"]) in deferred]
+        if indexed is None:
+            fallback += unconfined
+        else:
+            hits.update({key: count for key, count in indexed.items() if count})
+        for skill in fallback:
+            # A confined project body is read only under the same byte cap the
+            # context path uses; a larger file is skipped, never loaded whole.
+            # Global skills keep their unbounded body grep.
+            max_bytes: int | None = None
+            if skill.get("confine_root"):
+                if int(skill.get("size_bytes", 0)) > PROJECT_SKILL_BODY_CAP:
+                    continue
+                max_bytes = PROJECT_SKILL_BODY_CAP
+            content = (
+                self.load_skill(str(skill["key"]), project_dir, max_bytes=max_bytes) or ""
+            ).lower()
+            count = _body_term_hits(content, terms)
+            if count:
+                hits[str(skill["key"])] = count
+        return hits
+
     def search_skills(
         self, query: str, limit: int = 20, *, project_dir: str | Path | None = None
     ) -> list[dict]:
@@ -5551,9 +5700,10 @@ class SkillsLoader:
 
         Scores each skill by how many query terms appear in its key / name /
         description; only when the metadata misses entirely does it fall back to
-        grepping the skill body (bounded cost, and only on an explicit tool
-        call — never per message). Results are ranked by match strength then
-        usage, capped at *limit*. Does NOT record usage — searching is not using.
+        the skill body, which answers from the persisted term index rather than by
+        reading files (bounded cost, and only on an explicit tool call — never per
+        message). Results are ranked by match strength then usage, capped at
+        *limit*. Does NOT record usage — searching is not using.
         """
         q = (query or "").strip().lower()
         if not q:
@@ -5568,28 +5718,29 @@ class SkillsLoader:
             if not s.get("repo_scope")
             or self._repo_scope_satisfied(str(s["repo_scope"]), project_dir)
         ]
-        for s in _dedupe_identical_skills(visible):
+        rows = _dedupe_identical_skills(visible)
+        meta_missed: list[dict] = []
+        for s in rows:
             hay = f"{s['key']} {s['name']} {s['description']}".lower()
             meta_hits = sum(1 for t in terms if t in hay)
-            body_hits = 0
             if meta_hits == 0:
-                # A confined project body is read only under the same byte cap the
-                # context path uses; a larger file is skipped, never loaded whole.
-                # Global skills keep their unbounded body grep.
-                max_bytes: int | None = None
-                if s.get("confine_root"):
-                    if int(s.get("size_bytes", 0)) > PROJECT_SKILL_BODY_CAP:
-                        continue
-                    max_bytes = PROJECT_SKILL_BODY_CAP
-                content = (
-                    self.load_skill(s["key"], project_dir, max_bytes=max_bytes) or ""
-                ).lower()
-                body_hits = sum(1 for t in terms if t in content)
-            total = meta_hits * 10 + body_hits
-            if total <= 0:
+                meta_missed.append(s)
                 continue
             usage = self._usage.score(s["key"])[0] if self._usage else 0.0
-            scored.append((total, usage, s))
+            scored.append((meta_hits * 10, usage, s))
+        if meta_missed:
+            body_hits = self._body_hits(
+                meta_missed,
+                terms,
+                [str(s["key"]) for s in rows if not s.get("confine_root")],
+                project_dir,
+            )
+            for s in meta_missed:
+                count = body_hits.get(str(s["key"]), 0)
+                if count <= 0:
+                    continue
+                usage = self._usage.score(s["key"])[0] if self._usage else 0.0
+                scored.append((count, usage, s))
         scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
         return [s for _, _, s in scored[:limit]]
 

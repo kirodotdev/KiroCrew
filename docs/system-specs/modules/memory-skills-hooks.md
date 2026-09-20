@@ -3091,11 +3091,86 @@ budget. Direct `get_context(budget=None)` remains available to explicit catalog
 readers, but is no longer the startup default. Pinned full instructions, confined
 project-body reads, native mapping gates, explicit `$skill` loads, trigger settings
 and byte-identical deduplication are preserved. No final slicing may cut pinned
-instructions or the discovery footer.
+instructions or the discovery footer. The OFF pointer names the eight
+usage-ranked skills and then, on one line, the FAMILIES the tail holds —
+`More families: app-* (40), kirocrew-dev/ (4)`. The label is the key's first
+segment (a nested key's directory, otherwise its leading hyphen token) and a
+family of one is omitted, so the line stays flat in the number of skills and is
+phrased in the vocabulary a `skill_search` query uses. Eight names describe what
+the operator used lately; the families describe what the machine can do, which is
+the half that degrades as a catalog grows. Names are admitted first: a name
+carries the description, the only text saying what a skill does, so it outranks
+the coverage hint when the allowance is tight.
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
 **`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using. Scope is **locally installed skills only**.
+
+**Term index (`skill_search_index.py`, `SkillSearchIndex`):** the body half of that
+fallback answers from a SQLite term index at `skill_search_index.sqlite3`
+(`SKILL_SEARCH_INDEX_FILENAME`, beside the usage ledger), not by reading files. Read
+from disk, the fallback cost one file read per skill on every call, so the query that
+needs the body most — one matching no metadata — was the one that read every
+`SKILL.md` present, at a cost following total body bytes rather than the number of
+matches. The index stores each skill's distinct body terms, from the same
+`recall_terms` tokenizer the query goes through. Indexed bodies are admitted through
+`safe_read_file_bytes_nolink`, so a link, hardlink, sensitive target, non-regular file
+or file swapped between validation and open cannot place terms in SQLite. Rows use a
+`device:inode:ctime_ns:mtime_ns:size` fingerprint: the added inode identity and change
+time distinguish a same-path replacement that preserves modification time and byte
+size, while keeping the warm path metadata-only. These properties are load-bearing:
+
+- **Confined project bodies are never indexed.** A project skill is read through the
+  descriptor-pinned reader under `PROJECT_SKILL_BODY_CAP`, and its text belongs to
+  that checkout; a home-level copy of its terms would outlive the grant and be
+  visible to a session that never opened the project. Those skills keep the
+  read-at-search path, bounded by the project's own skill count.
+- **Prefix, not free substring.** A stored term matches a query term that is its
+  prefix, so `deploy` still reaches a body saying `deployment`, and the range scan
+  replaces the corpus-sized read. The exclusive upper bound is the term with its
+  last code point incremented (skipping the surrogate block, `None` above the
+  maximum), not a high sentinel: `\uffff` encodes as `EF BF BF` while an astral
+  character starts at `F0`, so a sentinel bound sorted BELOW the astral terms it
+  was meant to include. A query term strictly INSIDE a body word stops matching:
+  the query is tokenized the same way, so that case is a near-miss rather than a
+  hit — `rollback` no longer matches a body whose only occurrence is inside
+  `scrollback`.
+- **One lock-guarded connection.** The connection is opened with
+  `check_same_thread=False` and every public method takes an `RLock`. A skill
+  search legitimately arrives on different threads (the dashboard route hands it
+  to a thread, the MCP tool runs in its own subprocess), and because a raise
+  latches the index unusable, a thread-bound connection would drop every later
+  search back to reading files for the life of the process.
+- **The tokenizer is part of the key.** Stored terms are `recall_terms` output, so a
+  change in how it splits or normalizes leaves rows a new query can no longer match —
+  a miss, with nothing raised and nothing logged. `tokenizer_signature()` hashes the
+  tokenizer's ANSWER on a fixed probe and sits beside the schema version, so a
+  mismatch drops and rebuilds without any future editor having to remember a bump.
+  Hashing its source was rejected: a comment or a rename would discard every row for
+  no behavioural reason.
+- **Both paths score alike.** The direct read tokenizes and prefix-matches through
+  `_body_term_hits`, the same rule the index applies, because both can answer inside
+  one search. A substring scan on the read side would make a skill's rank depend on
+  which side answered for it.
+- **A declined body costs only itself.** `sync` answers with the SET OF KEYS it
+  will not store — a body the hardened reader refuses, or one past the 1 MB
+  ceiling — and the caller reads exactly those through `load_skill`, the same
+  unconfined path a global body took before an index existed. Two things follow.
+  A hardlinked or otherwise refused `SKILL.md` stays as searchable as it was,
+  rather than reading as a body with no terms; and one pathological file does not
+  send a whole catalog back to reading every body on every search, which is the
+  cost this index exists to remove. Stale terms for such a key are deleted and no
+  fingerprint is stored, so the refusal is retried rather than cached.
+- **Best effort.** A read-only home or a corrupt file makes every method return
+  `None` and the search reads bodies exactly as before, so discovery never depends
+  on the database being writable. A BUSY or locked database is the one failure that
+  does NOT latch: another process holding the write lock past the two-second
+  timeout says nothing about this file's health, and latching there would spend the
+  rest of the process reading every body over one contended moment. Deleting the
+  file costs one re-index; a schema bump drops and rebuilds rather than migrating.
+
+Ranking is unchanged — a metadata hit still scores ten times a body hit, and a term
+is still counted once per skill.
 
 **Direct reads.** The model reaches most skills by reading `SKILL.md` itself — a
 file-read tool, or `cat` in a shell — which bypasses the loader and so recorded
