@@ -622,6 +622,30 @@ class TestRuntimeRootIdentity:
         assert r._child_pids == {}
 
     @pytest.mark.asyncio
+    async def test_a_root_recycled_during_the_walk_writes_nothing(self, tmp_path):
+        """The identity held when the walk began and was gone before the write.
+
+        The root can exit while the walk runs; a write keyed on the first check
+        alone would persist whatever tree the number now leads. Asserting on the
+        writer, not the file, is what makes deleting the second check fail this.
+        """
+        r = _snapshot_runtime()
+        answers = iter([True, False])
+        r._root_identity_holds = lambda: next(answers)  # type: ignore[method-assign]
+
+        with (
+            patch("kiro_crew.acp.runtime._get_child_pids", return_value=[200, 300]),
+            patch("kiro_crew.acp.runtime._replace_child_pids") as write,
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+        ):
+            await r._snapshot_descendants()
+
+        write.assert_not_called()
+        assert r._child_pids == {}
+
+    @pytest.mark.asyncio
     async def test_an_unrecorded_root_identity_records_nothing(self, tmp_path):
         """Nothing to compare means the tree cannot be proven ours."""
         r = _snapshot_runtime()
