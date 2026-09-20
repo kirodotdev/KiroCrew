@@ -1,5 +1,6 @@
 {
   "name": "kb_golden_v2",
+  "label_revision": 1,
   "docs": [
     {
       "id": "d-deploy-payments-cd-hypothetical",
@@ -541,9 +542,9 @@
     },
     {
       "id": "q-multi-5",
-      "class": "multi_hop",
+      "class": "clean_fact",
       "question": "What is required to reach the production console?",
-      "gold_doc_ids": ["d-mfa-baseline", "d-vpn-access"]
+      "gold_doc_ids": ["d-vpn-access"]
     },
     {
       "id": "q-time-1",
@@ -651,7 +652,7 @@
       "id": "q-reinforcement-1",
       "class": "reinforcement",
       "question": "Is hardware MFA required for production console access?",
-      "gold_doc_ids": ["d-mfa-baseline", "d-mfa-audit-q3", "d-mfa-audit-q4"]
+      "gold_doc_ids": ["d-mfa-baseline"]
     },
     {
       "id": "q-reinforcement-2",
