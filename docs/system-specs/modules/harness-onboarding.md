@@ -284,8 +284,12 @@ How your harness signs in is one frozen `AgentAuthDeclaration` in
 [agent-host-contract.md](agent-host-contract.md). **That is the whole auth cost.**
 Everything else is a projection of that one literal: the read-gate floor that
 fences your credential and re-anchors it under your own override variables
-(`security/paths.py`), the sandbox credential mask and the single leaf it spares so
-your own child can still authenticate (`agent_sdk/tool_gate.py`), the
+(`security/paths.py`), the sandbox credential mask and the two things it spares —
+the single leaf your own child authenticates with, and the Crew runtime leaves any
+child must reach, `sandbox.crew_host_runtime_leaves()` (`agent_sdk/tool_gate.py`).
+Declare the first; never widen the second. A leaf added to a sandbox disposition
+list has to be classified as child-readable or credential-bearing, and a pin fails
+until it is — so do not reach for the mask to make your harness start. The
 the logout-recycle answer `backends_retired_by_host_logout()`, the `AcpAuthRequired` text
 an operator reads when a session cannot start, the `auth` object on
 `GET /api/acp-backends` (`dashboard/handlers/acp_backend_status.py`), and the

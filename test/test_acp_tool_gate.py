@@ -35,11 +35,19 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_ROUTING,
+    ACP_BACKENDS_KNOWN,
     Routing,
     permission_config_for,
     routing_for,
 )
-from kiro_crew.security import sensitive_home_dirs
+from kiro_crew.agent_sdk.tool_gate import PI_GATE_ARTIFACT_LEAF
+from kiro_crew.sandbox import (
+    _CREW_CHILD_WITHHELD_LEAVES,
+    _CREW_READONLY_LEAVES,
+    _CREW_SANDBOX_VISIBLE_LEAVES,
+    crew_host_runtime_leaves,
+)
+from kiro_crew.security import crew_home_prefixes, sensitive_home_dirs
 
 AGENT_SPEC_BACKENDS = (ACP_BACKEND_KIRO, ACP_BACKEND_KAS)
 
@@ -213,8 +221,12 @@ def test_mask_covers_the_whole_read_gate_floor() -> None:
     masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
     home = os.path.expanduser("~")
     own = set(gate.ADAPTER_OWN_CREDENTIAL_LEAVES[ACP_BACKEND_CODEX])
+    # The two declared exclusions, subtracted rather than special-cased: the
+    # adapter's own token, and Crew's own runtime artifacts and ceilings, whose
+    # sandbox disposition ``sandbox`` owns (``_host_runtime_targets`` below).
+    excused = own | set(_host_runtime_leaves())
     for leaf in sensitive_home_dirs():
-        if leaf in own:
+        if leaf in excused:
             continue
         assert os.path.join(home, *leaf.split("/")) in masked, (
             f"{leaf} is on the read-gate floor but readable by the codex child; "
@@ -864,3 +876,286 @@ def test_sandbox_preflight_retains_the_windows_remedy(
     assert "Settings → Agent Backend" in msg
     assert _GENERIC_SANDBOX_REMEDY not in msg
     assert "sandbox_allow_unsandboxed_exec" not in msg
+
+
+# ── Ratchet: the mask must not hide what the child has to reach ───────────────
+#
+# The class this pins was found on pi and is not pi's: the mask projects the whole
+# READ-GATE floor, and the floor covers a Crew runtime artifact to keep the AGENT'S
+# FILE TOOLS out of it, not to keep the CHILD out. Handed to a sandbox as a deny
+# list, the same entry hid the directory the pi child had to exec its gate launcher
+# out of -- the child saw an empty dir and every pi session was refused with exit
+# 126. The audit that followed found the same collision on every ENFORCED harness,
+# over every further leaf ``sandbox`` itself declares the child must reach. No count is
+# written down here: the set is derived, a literal would be one more thing to drift,
+# and ``test_the_declared_child_reachable_set_is_not_empty`` is what keeps it honest.
+#
+# So this is a per-BACKEND sweep over the whole roster, not a pi regression test: a
+# new harness inherits the mask by declaring an enforced routing, and inherits the
+# collision with it unless something fails here first.
+
+
+def _host_runtime_leaves() -> tuple[str, ...]:
+    """Crew-home-relative leaves, each spelled with every data-home prefix.
+
+    The projection ``adapter_hidden_credential_dirs`` performs, repeated here from
+    the same two sources rather than from its output: reading the answer off the
+    thing under test would pass on any answer at all.
+    """
+    return tuple(
+        f"{prefix}/{leaf}" for prefix in crew_home_prefixes() for leaf in crew_host_runtime_leaves()
+    )
+
+
+def _host_runtime_targets() -> tuple[str, ...]:
+    """Every ANCHOR the mask projects a crew leaf under, not just ``expanduser("~")``.
+
+    ``sandbox_credential_targets`` emits the logical home AND the resolved one,
+    because a host whose home is a symlink (``/home/u`` -> ``/local/home/u``) reaches
+    the same file by two spellings and a deny list denies only what it is handed. A
+    sweep that checked one spelling would report a leaf excluded while the other
+    spelling stayed masked -- and on a developer host the two differ, so the weaker
+    sweep passes exactly where the bug would live.
+    """
+    logical = os.path.expanduser("~")
+    anchors = {logical, os.path.realpath(logical)}
+    return tuple(
+        os.path.join(anchor, *leaf.split("/"))
+        for anchor in sorted(anchors)
+        for leaf in _host_runtime_leaves()
+    )
+
+
+@pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
+def test_no_backends_mask_hides_a_path_its_child_must_reach(backend) -> None:
+    """For EVERY harness in the roster, over every artifact ``sandbox`` declares.
+
+    Parametrized on the production roster, so a harness added later is swept with
+    no edit here. An unenforced harness gets an empty mask and passes trivially --
+    that is the posture, not a gap, and the enforced rows below are what carry the
+    assertion.
+    """
+    masked = set(gate.adapter_hidden_credential_dirs(backend))
+    for target in _host_runtime_targets():
+        assert target not in masked, (
+            f"{backend or 'kiro'}'s credential mask hides {target}, which "
+            "sandbox.crew_host_runtime_leaves() declares the child must be able to "
+            "read. This is the class that refused every pi session: the child sees "
+            "an empty directory and fails where the artifact should be."
+        )
+
+
+def test_the_declared_child_reachable_set_is_not_empty() -> None:
+    """Vacuity guard: an empty declaration would make the sweep above pass on anything.
+
+    Two separate ways it could empty out -- the sandbox list going away, or the
+    prefix projection returning nothing -- so both ends are asserted.
+    """
+    assert crew_host_runtime_leaves(), "sandbox declares no child-reachable crew leaves"
+    assert crew_home_prefixes(), "no crew data-home prefixes to project the leaves through"
+    assert len(_host_runtime_targets()) >= 2 * len(crew_host_runtime_leaves())
+
+
+@pytest.mark.parametrize("backend", ENFORCED_BACKENDS)
+@pytest.mark.parametrize(
+    "leaf",
+    (
+        # The browser launcher an agent browser command must exec. The governance,
+        # policy and consent documents are NOT here: each is an input to an
+        # authorization decision, so they are withheld and the withheld-leaf test
+        # pins them instead.
+        "playwright-cli",
+    ),
+)
+def test_named_child_reachable_leaves_stay_out_of_every_enforced_mask(backend, leaf) -> None:
+    """The leaves with a named in-sandbox reader, pinned one by one.
+
+    Named as well as derived for the reason the credential leaves above are: the
+    derivation would keep passing if a leaf were dropped from
+    ``crew_host_runtime_leaves()`` as well, and these are the ones whose loss has a
+    concrete consequence a reader can check -- a 403 on every internal call, an
+    unresolvable session identity, a composition abort, an unexecutable launcher.
+    """
+    masked = set(gate.adapter_hidden_credential_dirs(backend))
+    home = os.path.expanduser("~")
+    for prefix in crew_home_prefixes():
+        target = os.path.join(home, *f"{prefix}/{leaf}".split("/"))
+        assert target not in masked, f"{backend} hides {target} from its own child"
+
+
+@pytest.mark.parametrize("backend", ENFORCED_BACKENDS)
+@pytest.mark.parametrize(
+    "leaf",
+    (
+        ".aws",
+        ".ssh",
+        ".gnupg",
+        ".netrc",
+        ".git-credentials",
+        # Crew's own SECRETS, as opposed to its runtime artifacts. The exclusion
+        # above must not reach these: they have no in-sandbox reader, and the whole
+        # point of the mask is that a self-approving child cannot open them.
+        ".kiro/crew/.env",
+        ".kiro/crew/token_signing.key",
+        ".kiro/crew/.vault",
+        ".kirocrew/.env",
+        ".kirocrew/token_signing.key",
+        ".kirocrew/.vault",
+    ),
+)
+def test_the_exclusion_does_not_widen_into_a_credential(backend, leaf) -> None:
+    """The other direction: what the mask still has to deny, after the subtraction.
+
+    Without this the sweep above could be satisfied by excluding everything. Both
+    crew data-home spellings are named for the crew secrets, because the projection
+    that excused the runtime leaves walks the same two prefixes.
+    """
+    masked = set(gate.adapter_hidden_credential_dirs(backend))
+    target = os.path.join(os.path.expanduser("~"), *leaf.split("/"))
+    assert target in masked, f"{backend}'s mask no longer denies {target}"
+
+
+def test_the_child_reachable_set_survives_a_relocated_data_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """``KIROCREW_HOME`` moves the artifacts, and the exclusion has to move with them.
+
+    The mask re-anchors every crew leaf under the override (that is what makes it
+    deny a relocated secret at all), so an exclusion that only spelled the two
+    default prefixes would hide the launcher and the gateway credential again on
+    exactly the managed hosts that set the override -- the failure back in a
+    configuration nobody runs locally.
+
+    Asserted in both directions on the same mask: the runtime artifacts are absent
+    under the relocated root, and a crew SECRET is still present under it. One
+    without the other passes if the whole re-anchor stopped happening.
+    """
+    relocated = tmp_path / "relocated-crew"
+    monkeypatch.setenv("KIROCREW_HOME", str(relocated))
+    masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
+
+    assert any(
+        str(relocated) in entry for entry in masked
+    ), "the relocated data home is not re-anchored at all; the rest proves nothing"
+
+    for leaf in crew_host_runtime_leaves():
+        target = os.path.join(str(relocated), *leaf.split("/"))
+        assert target not in masked, (
+            f"a relocated data home re-masked {target}, which sandbox declares the "
+            "child must reach -- the exclusion must follow the override the mask does"
+        )
+
+    for secret in (".env", "token_signing.key"):
+        assert os.path.join(str(relocated), secret) in masked, (
+            f"{secret} is readable under a relocated data home; the exclusion has "
+            "widened past Crew's runtime artifacts into its secrets"
+        )
+
+
+# ── The other half of the ruling: the leaves the child is DENIED ─────────────
+#
+# The audit that produced the sweep above also found that the pre-fix mask hid two
+# DIFFERENT kinds of thing, and only one of them should come back. A ceiling or a
+# consent record holds no secret and its in-sandbox reader needs it. A live
+# credential is exactly what this mask exists to keep from a harness that
+# self-approves its own passive reads, and the fact that the first-class path is
+# looser (``AGENTS.md`` carries ``sel_hmac.key`` as a VISIBLE residual with no OS
+# fence) is not a licence to widen that residual to every enforced harness.
+#
+# So these five stay masked, and the features whose in-sandbox readers need them stay
+# broken under an enforced harness until those readers move behind the gateway. They
+# are broken TODAY, so withholding them is not a regression -- excluding them would
+# have been a new exposure.
+
+
+def _granted_per_backend(leaf: str, backend: str) -> bool:
+    """Whether a WITHHELD leaf is handed to *backend* alone by a narrower grant.
+
+    Read off the production rule rather than restated: ``adapter_hidden_credential_dirs``
+    excludes the gate-artifact leaf only for the backend whose child execs the launcher
+    there. Restating the pair here would let the test and the mask drift into agreeing
+    about different things.
+    """
+    return leaf == PI_GATE_ARTIFACT_LEAF and backend == ACP_BACKEND_PI
+
+
+@pytest.mark.parametrize("backend", ENFORCED_BACKENDS)
+@pytest.mark.parametrize("leaf", _CREW_CHILD_WITHHELD_LEAVES)
+def test_a_withheld_leaf_leaves_the_mask_only_by_a_narrower_grant(backend, leaf) -> None:
+    """Each withheld leaf, per enforced harness, under both data-home spellings.
+
+    Most of them carry a live credential or a capability and no child may read them:
+
+    * ``run`` holds ``run/gateway-<port>.secret``, which
+      ``config.loader.read_local_secret`` resolves BEFORE the shared
+      ``.local_secret`` -- so exposing the directory hands over the same credential
+      masking the shared file was meant to withhold;
+    * ``trust`` and ``sel_hmac.key`` hold the SEL audit key;
+    * ``.local_secret`` is the dashboard internal-API bearer secret;
+    * ``crons.json`` carries the session key a job runs under;
+    * ``member-memory-bindings`` stores raw session keys rather than digests.
+
+    The gate-artifact leaf is the exception, and asserted in BOTH directions here
+    rather than skipped: the one harness whose child execs the launcher must reach it,
+    and every OTHER enforced harness must not. A skip would leave the second half
+    unpinned, which is the half that keeps the narrower grant narrow.
+    """
+    masked = set(gate.adapter_hidden_credential_dirs(backend))
+    readable = set(crew_host_runtime_leaves())
+    floor = set(sensitive_home_dirs())
+    home = os.path.expanduser("~")
+    granted = _granted_per_backend(leaf, backend)
+
+    # What this change actually controls is the EXCLUSION, so that is asserted for
+    # every withheld leaf without exception: a withheld leaf must never be published
+    # as child-readable, whatever the floor does.
+    assert leaf not in readable, f"{leaf!r} is withheld yet published as child-readable"
+
+    for prefix in crew_home_prefixes():
+        spelling = f"{prefix}/{leaf}"
+        target = os.path.join(home, *spelling.split("/"))
+        if granted:
+            assert target not in masked, (
+                f"{backend} must be able to reach {target}: its child execs Crew's "
+                "launcher out of that leaf, and a masked directory is what refused "
+                "every one of its sessions before."
+            )
+        elif spelling in floor:
+            assert target in masked, (
+                f"{backend}'s credential mask no longer denies {target}. Either the "
+                "leaf carries a live credential the child-reachable exclusion must "
+                "never reach, or it belongs to one other harness and this one has no "
+                "business reading it."
+            )
+        else:
+            # The mask is a projection of the READ-GATE floor, so it can only deny a
+            # leaf the floor names. A leaf the floor covers for WRITE alone is absent
+            # from the projection, and asserting a denial here would be asserting
+            # something this mask cannot perform for any backend. Withholding it still
+            # matters -- the exclusion check above is unconditional -- so the leaf is
+            # kept out of the child-readable set rather than quietly reclassified.
+            assert target not in masked, (
+                f"{target} is absent from the read-gate floor, so the mask cannot "
+                "deny it; if it appears here the floor changed and this leaf's "
+                "classification needs re-deciding rather than re-asserting"
+            )
+
+
+def test_the_withheld_leaves_are_really_on_the_lists_they_subtract_from() -> None:
+    """A typo here would withhold nothing and read exactly like a deliberate choice.
+
+    Every withheld entry must be a leaf one of the two source lists actually declares,
+    or the subtraction is a no-op: the leaf was never in the union, the exclusion never
+    covered it, and this file's own assertions would still pass because the mask denies
+    it for the ordinary reason. Pinned so the withhold list cannot rot into decoration.
+    """
+    declared = set(_CREW_SANDBOX_VISIBLE_LEAVES) | set(_CREW_READONLY_LEAVES)
+    for leaf in _CREW_CHILD_WITHHELD_LEAVES:
+        assert leaf in declared, (
+            f"{leaf!r} is withheld from the child-reachable set but no sandbox list "
+            "declares it, so the withhold subtracts nothing"
+        )
+    assert not set(_CREW_CHILD_WITHHELD_LEAVES) & set(crew_host_runtime_leaves()), (
+        "a leaf is both withheld and published as child-reachable; the two sets must "
+        "not overlap or the mask's contents depend on iteration order"
+    )
