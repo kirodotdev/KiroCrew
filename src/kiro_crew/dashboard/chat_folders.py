@@ -349,6 +349,54 @@ def _folders_with_history_counts(state: DashboardState) -> list[dict]:
     return [{**f, "history_count": counts.get(f["id"], 0)} for f in state._folders]
 
 
+def note_folder_filed(state: DashboardState, folder_id: str) -> None:
+    """Record that a session was durably filed into *folder_id* by hand.
+
+    Occupancy evidence for :func:`arrival_folders.discard_arrival_folders`, whose
+    own guard reads LIVE slots: a person files a session into a folder, the tab
+    closes, the slot is popped out of that mapping, and the row it points at then
+    looks unoccupied to a concurrent import's rollback. That import created the
+    row moments earlier, so the rollback would delete a placement an archived
+    session still names, leaving a dangling ``folder_id``. This set is what the
+    rollback consults instead, and it is written HERE -- past the durable save, so
+    a placement that was refused records nothing.
+
+    Held in memory on *state* rather than stamped on the folder. An arrival row is
+    deliberately indistinguishable from a hand-made one, so a flag on the row
+    would have to be written for EVERY destination and would leave bookkeeping on
+    ordinary folders that a successful import is supposed to leave clean. Memory
+    is also the right lifetime: the rollback this protects runs seconds later in
+    this same process, and a restart has no in-flight import to roll back. The set
+    holds ids, so it is bounded by the number of distinct folders filed into
+    rather than by how often they are filed.
+
+    An id is never dropped. Moving the session out again leaves the row spared,
+    which errs toward keeping a folder the person can delete themselves over
+    deleting one something still points at.
+
+    Attached to *state* lazily, with the same defensive pair the rollback's own
+    live-slot read uses, so the attribute costs nothing on a state that never
+    files a session anywhere.
+    """
+    if not folder_id:
+        return
+    ids = getattr(state, "_folders_filed_into", None)
+    if not isinstance(ids, set):
+        ids = set()
+        setattr(state, "_folders_filed_into", ids)
+    ids.add(str(folder_id))
+
+
+def folder_ids_filed_into(state: DashboardState) -> set[str]:
+    """Folder ids a session was durably filed into during this process's life.
+
+    A copy, so a caller reading it inside its own store transaction cannot edit
+    the record by accident. Empty when nothing has been filed.
+    """
+    ids = getattr(state, "_folders_filed_into", None)
+    return set(ids) if isinstance(ids, set) else set()
+
+
 async def _unhide_folder(state: DashboardState, folder_id: str) -> bool:
     """Clear a folder's `hidden` flag when a session re-engages it.
 
@@ -1796,6 +1844,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )
+        # The placement is durable from here, so it is safe to claim the row is
+        # occupied. Inside the lock, in the same span as the save it attests to:
+        # recorded outside it, a refused save could still leave the claim behind.
+        note_folder_filed(state, folder_id)
     state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(

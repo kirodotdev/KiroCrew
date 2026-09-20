@@ -4398,6 +4398,43 @@ def _save_slot_to_history(
         raise
 
 
+def session_transcript_remains(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether a transcript file is still on disk for this slot's key.
+
+    A narrower question than :func:`session_was_deleted`, and a different one.
+    That probe answers "may I republish this slot's content", and collapses three
+    outcomes into ``True``: the file is GONE, the file belongs to a NEW
+    incarnation, and existence is UNVERIFIABLE. Collapsing them is right there,
+    because all three refuse the copy.
+
+    A caller that has already written a transcript and is now refusing needs the
+    distinction, because it decides what it may TRUTHFULLY say. Only "gone" lets
+    it report that nothing was kept; the other two leave a file on disk that it
+    must neither claim to have removed nor delete — a new incarnation belongs to
+    somebody else, and an unverifiable read names nothing it can safely unlink.
+
+    Fails CLOSED toward "something remains": any stat failure other than
+    ``FileNotFoundError`` answers ``True``, because the dangerous direction here
+    is claiming a clean slate that may not exist. A store with no path resolver
+    answers ``False`` — there is no file it can name, so there is nothing to
+    disclose.
+
+    Lock-free and a point-in-time reading, exactly like the witness beside it.
+    """
+    if not state.conversation_log:
+        return False
+    path_fn = getattr(state.conversation_log, "_path", None)
+    if path_fn is None:
+        return False
+    try:
+        path_fn(slot_history_key(slot)).stat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     """True when this slot's session was permanently deleted out from under it.
 
