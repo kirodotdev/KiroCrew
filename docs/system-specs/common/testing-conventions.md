@@ -7,13 +7,19 @@
 
 ## File Layout
 
-```
-test/
-├── test_acp_types.py     # ACP type dataclasses
-├── test_acp_client.py    # ACP client (mocked subprocess)
-├── test_config.py        # Config loader
-└── test_cli.py           # CLI commands
-```
+Backend tests live under the roots `setup.cfg` pins in `testpaths`
+(`test` plus `src/kiro_crew/apps/builtins`): pytest recurses into
+`test`, so nested `test/<pkg>/test_*.py` files are collected too (for
+example `test/metrics/`, `test/e2e/`, `test/integration/`), alongside
+helper subdirectories that hold shared fixtures rather than tests (for
+example `test/workflows/`). What distinguishes a top-level
+`test/test_<module>.py` is not whether nested files are collected but
+the `scripts/leaf_test_scope.py` CI fast path: only `test/test_*.py`
+files count as *leaves* there (`_LEAF_NAME`, `scripts/leaf_test_scope.py`
+lines 120-123), which limits that fast path without stopping collection
+of nested files. Placement is enforced by the `testpaths-coverage` gate
+(`scripts/check_testpaths_coverage.py`). A file
+outside those roots is never collected, so it stays green by omission.
 
 ## Patterns
 
