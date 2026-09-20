@@ -13915,6 +13915,109 @@ class TestSlotTaskNoneGuard:
             assert resp.status == 200
             state.sessions.stop_turn.assert_called_once()
 
+
+class TestStopIfPid:
+    """``?if_pid=`` makes a stop conditional on the runtime the caller SAMPLED.
+
+    The System Monitor row is a sample; the confirm dialog can outlive the slot's
+    conversation. A mismatch must refuse (409 ``stale_row``) BEFORE any side
+    effect, so a replacement turn is never aborted by a stop aimed at its
+    predecessor. Absent ``if_pid`` keeps the route exactly as before.
+    """
+
+    @pytest.mark.asyncio
+    async def test_matching_pid_stops(self, tmp_path: Path) -> None:
+        state = _make_state(tmp_path)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.get_running_loop().create_future()
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.provider_identity_for_session",
+            return_value=(4242, "inst-a"),
+        ) as resolve:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/stop?if_pid=4242&if_instance=inst-a")
+                assert resp.status == 200
+        state.sessions.stop_turn.assert_called_once()
+        # Resolved against the turn's own cancel target, not a re-derived key.
+        resolve.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mismatched_pid_is_refused_before_any_side_effect(self, tmp_path: Path) -> None:
+        state = _make_state(tmp_path)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.get_running_loop().create_future()
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.provider_identity_for_session",
+            return_value=(9999, "inst-b"),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/stop?if_pid=4242&if_instance=inst-a")
+                assert resp.status == 409
+                body = await resp.json()
+                assert body["code"] == "stale_row"
+                assert body["ok"] is False
+        state.sessions.stop_turn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reused_pid_with_a_new_instance_is_stale(self, tmp_path: Path) -> None:
+        """OS pid reuse: the replacement runtime inherited the sampled pid. The
+        pid check alone would pass; the per-spawn instance id is what refuses."""
+        state = _make_state(tmp_path)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.get_running_loop().create_future()
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.provider_identity_for_session",
+            return_value=(4242, "inst-successor"),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/stop?if_pid=4242&if_instance=inst-a")
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "stale_row"
+        state.sessions.stop_turn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_current_runtime_is_also_stale(self, tmp_path: Path) -> None:
+        """The sampled runtime is gone and nothing replaced it: still a mismatch."""
+        state = _make_state(tmp_path)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.get_running_loop().create_future()
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.provider_identity_for_session", return_value=None
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/stop?if_pid=4242&if_instance=inst-a")
+                assert resp.status == 409
+        state.sessions.stop_turn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_integer_pid_is_a_400(self, tmp_path: Path) -> None:
+        state = _make_state(tmp_path)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.get_running_loop().create_future()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/stop?if_pid=abc")
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "bad_request"
+        state.sessions.stop_turn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_absent_if_pid_never_consults_the_registry(self, tmp_path: Path) -> None:
+        state = _make_state(tmp_path)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.get_running_loop().create_future()
+        with patch("kiro_crew.dashboard.chat_handlers.provider_identity_for_session") as resolve:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/stop")
+                assert resp.status == 200
+        resolve.assert_not_called()
+        state.sessions.stop_turn.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_delete_with_real_task_cancels(self, tmp_path: Path) -> None:
         state = _make_state(tmp_path)
@@ -17937,6 +18040,47 @@ class TestStopTurnSlotState:
         # Backend escalated to a hard kill anyway.
         assert force_called == [True]
         assert slot._stop_state == "idle"
+        slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_conditional_monitor_stop_during_soft_pending_withholds_escalation(
+        self, tmp_path, monkeypatch
+    ):
+        """A System Monitor row stop (``?if_pid=&if_instance=``) that lands while
+        a chat-issued soft stop is already pending is NOT a second decision --
+        the operator confirmed against a sampled row, not after watching the
+        soft stop fail. It must neither hard-kill nor clear the slot's queued
+        prompts; it falls through to the withheld-escalation no-op."""
+        state = self._make_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.task = asyncio.ensure_future(asyncio.sleep(999))
+        slot._stop_state = "soft_pending"
+        slot._queue.extend(["queued-1", "queued-2"])
+
+        force_called = []
+
+        async def fake_stop_turn(
+            key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
+        ):
+            force_called.append(force)
+            return "hard"
+
+        state.sessions.stop_turn = fake_stop_turn
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.provider_identity_for_session",
+            return_value=(4242, "inst-a"),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/s1/stop?if_pid=4242&if_instance=inst-a")
+                assert resp.status == 200
+
+        # No escalation: stop_turn was never asked to kill, the queue survives,
+        # and the pending soft stop is left to resolve on its own.
+        assert force_called == []
+        assert list(slot._queue) == ["queued-1", "queued-2"]
+        assert slot._stop_state == "soft_pending"
         slot.task.cancel()
 
     @pytest.mark.asyncio

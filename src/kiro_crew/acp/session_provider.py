@@ -603,6 +603,10 @@ class AcpSessionProvider(LLMProvider):
         self._session_key = session_key
         self._channel_id = channel_id
         self._runtime._crew_agent = crew_agent
+        # The pooled session was created before any chat owned it; name the
+        # owner now so the resource monitor attributes this runtime to the
+        # claiming chat rather than showing it as an anonymous worker.
+        self._runtime.bind_session_owner(self._handle.session_id, session_key)
         self._handle.rebind_watchdog(crew_agent, settings=watchdog)
         self._runtime._last_activity = time.monotonic()
         # Parity with AcpClient.rekey: the handle's prompt stats describe the

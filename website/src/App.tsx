@@ -98,6 +98,10 @@ const SessionsPage = lazy(() => import('./pages/SessionsPage'))
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
 import LogsPage from './pages/LogsPage'
+// Lazy: /monitor is a standalone operator surface not needed at startup; its
+// table, sort and confirm code otherwise rides the eager App chunk (the bundle
+// gate's App budget is the ceiling this respects).
+const SystemMonitorPage = lazy(() => import('./pages/SystemMonitorPage'))
 import HooksPage from './pages/HooksPage'
 import WebhooksPage from './pages/WebhooksPage'
 import CapabilitiesPage from './pages/CapabilitiesPage'
@@ -4730,6 +4734,7 @@ export default function App() {
             <Route path="/connections" element={<Navigate to="/capabilities?tab=mcp" replace />} />
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/logs" element={<LogsPage />} />
+            <Route path="/monitor" element={<ErrorBoundary><Suspense fallback={null}><SystemMonitorPage /></Suspense></ErrorBoundary>} />
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />

@@ -25,8 +25,10 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.resource_monitor import ResourceSampler, ResourceSnapshot
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.state import (
     DashboardState,
 )
@@ -40,6 +42,8 @@ from kiro_crew.safety_override import (
     safety_override,
     until_shutdown_permitted,
 )
+from kiro_crew.security import redact
+from kiro_crew.sel import sel
 from kiro_crew.stats import Stats
 
 logger = logging.getLogger(__name__)
@@ -900,3 +904,239 @@ async def api_governance_channels(request: web.Request) -> web.Response:
     loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(governance_executor(), _collect_channel_governance)
     return web.json_response(data)
+
+
+# ── Chat resource monitor (task 3.1) ─────────────────────────────────────────
+#
+# One authenticated GET fronts the request-driven ``ResourceSampler``. The
+# sampler is a MODULE SINGLETON, not a per-request object, because its whole
+# contract depends on state carried between calls: the CPU-delta baseline (a
+# first observation has no delta) and the staleness cache (a poll inside the
+# interval must serve the previous walk, not re-walk /proc). A fresh sampler per
+# request would report ``cpu_pct=None`` forever and defeat the cache — the two
+# things Requirements 4.3 and 1.4 turn on.
+#
+# The sampler stays dashboard-agnostic: it never imports DashboardState or
+# SubagentManager. This handler injects both couplings as plain callables — a
+# slot resolver (session key -> dashboard slot name) and a subagent lookup
+# (runtime -> the manager's record for a dedicated subagent) — so the sampler
+# core depends only on function types.
+_chat_resource_sampler: ResourceSampler | None = None
+
+
+def _dashboard_slot_resolver(state: DashboardState):
+    """Build the ``session key -> slot name`` resolver the sampler classifies chats with.
+
+    Delegates to ``dashboard_slot_key`` — the same helper that answers "which tab
+    displays this session?" everywhere else — so the monitor's notion of "this
+    runtime is a chat" cannot drift from the rest of the dashboard. Returns ``""``
+    for a session with no open tab (a channel, a background run), which the
+    sampler reads as "not a chat" and leaves classified as a worker.
+    """
+
+    def _resolve(session_key: str) -> str | None:
+        try:
+            slot = dashboard_slot_key(session_key)
+        except Exception:
+            logger.debug("slot resolve failed for %s", session_key, exc_info=True)
+            return None
+        return slot or None
+
+    return _resolve
+
+
+def _subagent_lookup_for(state: DashboardState):
+    """Build the ``runtime -> SubagentInfo`` lookup for dedicated subagent runs.
+
+    A dedicated subagent runs in its own process, and its ``SubagentInfo`` records
+    that child's pid (``_pid``). Matching on pid is the one coupling that does not
+    depend on session-key plumbing: the sampler already has the runtime's root pid,
+    so a dedicated run is the manager record whose ``_pid`` equals it. Shared-runtime
+    subagents keep no dedicated pid and so never match here — exactly right, since
+    their usage must ride the host runtime's entry rather than split out (Req 2.2).
+
+    Only LIVE, DEDICATED records are candidates. ``all_agents`` also holds finished
+    runs (``done`` / ``reaped``) whose pid the kernel may since have handed to an
+    unrelated live runtime, and session-sharing records, whose ``_pid`` (when set)
+    is the HOST runtime's — matching either would relabel a chat or worker as a
+    one-run subagent and offer a Stop that cancels the wrong thing.
+
+    Returns ``None`` when subagents are unavailable or no record owns the runtime's
+    pid, which the sampler reads as "not a dedicated subagent".
+    """
+    manager = getattr(state, "subagents", None)
+
+    def _lookup(runtime: object) -> object | None:
+        if manager is None:
+            return None
+        pid = getattr(runtime, "pid", None)
+        if not isinstance(pid, int):
+            return None
+        try:
+            agents = manager.all_agents
+        except Exception:
+            logger.debug("subagent roster read failed", exc_info=True)
+            return None
+        for info in agents:
+            if getattr(info, "_pid", None) != pid:
+                continue
+            if getattr(info, "done", False) or getattr(info, "reaped", False):
+                continue
+            if getattr(info, "_session_sharing", False):
+                continue
+            return info
+        return None
+
+    return _lookup
+
+
+def _get_chat_resource_sampler(state: DashboardState) -> ResourceSampler:
+    """Return the process-wide :class:`ResourceSampler`, creating it once.
+
+    The singleton is built lazily on first request rather than at import so the
+    sampler is never constructed on a gateway that no client ever polls, and so the
+    dashboard-specific resolvers (which need the live ``DashboardState``) are wired
+    from a request rather than at module load. The state-derived resolvers are
+    rebound on the existing sampler if it already exists, so a state swap in tests
+    cannot pin the sampler to a stale dashboard.
+    """
+    global _chat_resource_sampler
+
+    resolver = _dashboard_slot_resolver(state)
+    lookup = _subagent_lookup_for(state)
+    if _chat_resource_sampler is None:
+        _chat_resource_sampler = ResourceSampler(
+            slot_resolver=resolver,
+            subagent_lookup=lookup,
+        )
+    else:
+        # Keep the CPU-delta baseline and cache, but point the couplings at the
+        # current state (cheap; the callables close over it).
+        _chat_resource_sampler._slot_resolver = resolver
+        _chat_resource_sampler._subagent_lookup = lookup
+    return _chat_resource_sampler
+
+
+def _chat_stop_pending_for(state: DashboardState, slot_name: str) -> bool:
+    """True while dashboard slot *slot_name* has a stop in flight.
+
+    ``stop_slot_turn`` records ``soft_pending`` on the slot when a cooperative
+    cancel is accepted and ``killing`` while the hard kill runs; a SECOND stop
+    request in either state escalates to the kill (and drops the slot's queued
+    prompts) by design. The monitor's row therefore carries this so the page can
+    keep its Stop control locked until the slot is idle again -- read per
+    response, like the title, because the state changes between polls. A
+    missing / under-construction slot answers False.
+    """
+    try:
+        slot = state.get_slot(slot_name)
+    except Exception:
+        logger.debug("slot lookup failed for %s", slot_name, exc_info=True)
+        return False
+    if slot is None:
+        return False
+    return (getattr(slot, "_stop_state", "idle") or "idle") != "idle"
+
+
+def _chat_title_for(state: DashboardState, slot_name: str) -> str:
+    """The redacted display title of dashboard slot *slot_name*, or ``""``.
+
+    The sampler labels a chat entry with its session key (all its resolver hands
+    back is the slot name); the title the user actually recognises lives on the
+    ``_ChatSlot``. It is read here, per response, rather than baked into the
+    sampler's cached snapshot, so a title that lands between polls (the LLM titler
+    finishing, a rename) shows on the very next poll. Redacted the same way the
+    sidebar redacts titles, so a secret pasted as a first message never reaches
+    the monitor either. A missing / under-construction slot yields ``""`` and the
+    caller keeps the sampler's label.
+    """
+    try:
+        slot = state.get_slot(slot_name)
+    except Exception:
+        logger.debug("slot lookup failed for %s", slot_name, exc_info=True)
+        return ""
+    if slot is None:
+        return ""
+    title = getattr(slot, "display_title", "") or ""
+    if not title:
+        return ""
+    # security.redact runs the exfiltration-URL pass then the credential pass --
+    # the same two passes, in the same order, the sidebar's title path applies.
+    return redact(title)
+
+
+def _serialize_snapshot(
+    snapshot: ResourceSnapshot, state: DashboardState | None = None
+) -> dict[str, object]:
+    """Serialize a :class:`ResourceSnapshot` to snake_case JSON.
+
+    ``asdict`` already yields snake_case keys for the dataclass, so the only
+    reshaping is turning each entry's ``pids`` frozenset into a SORTED list — a set
+    is not JSON-serializable, and a deterministic order makes the payload stable
+    across polls (a churning order would defeat any client-side diffing) — and,
+    when *state* is given, replacing each chat entry's ``label`` with the slot's
+    current display title (see :func:`_chat_title_for`). Every other field passes
+    through unchanged, including the ``None``s the UI renders as an em dash and the
+    ``captured_at`` / ``interval_s`` the poller reads (Req 4.4).
+    """
+    data = asdict(snapshot)
+
+    for entry in data.get("entries", []):
+        pids = entry.get("pids")
+        if pids is not None:
+            entry["pids"] = sorted(pids)
+        entry["stop_pending"] = False
+        if state is not None and entry.get("kind") == "chat" and entry.get("slot"):
+            title = _chat_title_for(state, str(entry["slot"]))
+            if title:
+                entry["label"] = title
+            entry["stop_pending"] = _chat_stop_pending_for(state, str(entry["slot"]))
+        # Every label is externally sourced prose -- a chat title derived from the
+        # user's first message, a subagent's task text, a worker's name -- so each
+        # passes the shared exfiltration-URL + credential chain before egress, not
+        # just the chat title (which _chat_title_for already redacted; redact is
+        # idempotent on its own output).
+        label = entry.get("label")
+        if isinstance(label, str) and label:
+            entry["label"] = redact(label)
+    return data
+
+
+async def api_chat_resources(request: web.Request) -> web.Response:
+    """GET /api/system/chat-resources — per-chat resource attribution snapshot.
+
+    Serves the most recent :class:`ResourceSnapshot` (the sampler's own cache
+    decides fresh-vs-cached, so a poll faster than the interval never re-walks
+    /proc — Req 4.3). Auth is the shared dashboard middleware's job, exactly like
+    the sibling ``/api/system`` GET; a sampler failure returns a JSON 500 in the
+    same shape the system routes use rather than crashing the endpoint.
+
+    Dashboard-only: the snapshot names every live chat's title and every
+    subagent's task, so an app whose ``permissions.api`` grants ``/api/system``
+    (a bare prefix admits every child route) must not read it. Same audited
+    refusal ``spawn/stop-all`` uses.
+    """
+    state: DashboardState = request.app["state"]
+    request_app = request.get("app", "")
+    if "app" not in request or request_app:
+        sel().log_api_access(
+            caller=request_app or "unknown",
+            operation="system.chat_resources",
+            outcome="denied",
+            source="app_isolation",
+            resources="dashboard-only per-chat resource snapshot",
+            error="app tokens cannot read other chats' runtime metadata",
+        )
+        return web.json_response(
+            {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
+        )
+    sampler = _get_chat_resource_sampler(state)
+    try:
+        snapshot = await sampler.snapshot()
+    except Exception:
+        logger.warning("chat-resources snapshot failed", exc_info=True)
+        return web.json_response(
+            {"error": "resource snapshot failed", "code": "resource_snapshot_failed"},
+            status=500,
+        )
+    return web.json_response(_serialize_snapshot(snapshot, state))

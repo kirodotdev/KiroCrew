@@ -675,12 +675,30 @@ class CancellationCoordinator(ManagerComponent):
             # all: `spawn` builds its queued SubagentInfo and returns it without
             # registering. Unqueueing prevents startup; the synthetic terminal
             # report keeps its parent and batch accounting from waiting forever.
-            queued = self._manager._unqueue(agent_id)
+            #
+            # This method is a coroutine on the gateway loop (the DELETE and
+            # cancel routes await it), so the persisted row is cancelled through
+            # the writer-thread seam first and the result handed to ``_unqueue``,
+            # which then skips its own SYNCHRONOUS ``taskq_cancel_queued`` -- the
+            # same shape ``cancel_for_teardown`` uses, for the same reason: a
+            # contended task store must not stall the loop
+            # (``no-sync-store-call-from-a-coroutine``).
+            stored = await self._manager._admission.taskq_cancel_queued_async(agent_id)
+            queued = self._manager._unqueue(agent_id, stored=stored, store_cancelled=True)
             if queued is not None:
                 logger.info("Cancelled queued subagent %s before it started", agent_id)
                 self._manager._report_queued_stop(queued)
                 return True
-            return False
+            # Start race: the drain may have launched this run DURING the await
+            # above, in which case it is live rather than queued and ``_unqueue``
+            # rightly found nothing. Re-read the live table before
+            # answering -- a False here is the caller's signal that nothing is
+            # left to stop, and must not be returned while the run continues
+            # (``a-refusal-is-not-a-commit``). A run that is live now falls
+            # through to the live path below.
+            info = self._manager._agents.get(agent_id)
+            if not info or info.done:
+                return False
         info.user_stopped = True
         # Neutral semantics live in the RECORD, not just the live event: a user
         # stop leaves ``error`` unset so every consumer (reconnect snapshots,

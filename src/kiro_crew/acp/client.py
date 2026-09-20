@@ -55,7 +55,7 @@ from kiro_crew import (
     platform_compat,
 )
 from kiro_crew import sel as sel_module
-from kiro_crew.acp import seed_provenance
+from kiro_crew.acp import runtime_registry, seed_provenance
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     DRAIN_YIELD_AFTER_S,
@@ -4874,6 +4874,9 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
+        # ``time.monotonic()`` at spawn completion; the resource monitor's uptime
+        # source, mirroring ``AcpRuntime.spawn_monotonic``. None until spawned.
+        self._spawn_monotonic: float | None = None
         self._start_time: str | None = None  # start identity for PID-recycle detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
@@ -6450,6 +6453,39 @@ class AcpClient:
         # the claiming session's first tool call is exactly what happens in
         # between. Fire-and-forget; offloads its own file I/O.
         schedule_session_token_publish(self._stub_session_token, session_key)
+
+    # ── resource-monitor identity (parity with AcpRuntime) ────────────────────
+    # A direct client is one process serving one session, so it presents the same
+    # read-only surface the sampler reads off a shared runtime: ``pid`` for the
+    # process tree, ``agent`` / ``spawn_monotonic`` for the row's label and uptime,
+    # and ``session_owners`` mapping its single ACP session to the Kiro Crew
+    # session key that owns it (so the row resolves to the chat, not a worker).
+
+    @property
+    def pid(self) -> int | None:
+        return self._pid
+
+    @property
+    def agent(self) -> str:
+        return self._agent or ""
+
+    @property
+    def spawn_monotonic(self) -> float | None:
+        return self._spawn_monotonic
+
+    @property
+    def session_owners(self) -> dict[str, str]:
+        """``{acp_session_id: kiro_crew_session_key}`` for this client's one session.
+
+        Empty before ``session/new`` has answered (no session id yet). The owner
+        is the ``session_key`` handed to ``__init__`` / ``rekey``; ``""`` while a
+        pooled client has not been claimed, which the sampler reads as a worker.
+        """
+        sid = self._session_id
+        if not isinstance(sid, str) or not sid:
+            return {}
+        skey = self._session_key
+        return {sid: skey if isinstance(skey, str) else ""}
 
     @property
     def session_identity_token(self) -> str:
@@ -8038,6 +8074,13 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        self._spawn_monotonic = time.monotonic()
+        # Join the live-runtime registry the resource monitor enumerates. A
+        # direct client (claude and every other non-runtime backend) owns one
+        # process per session and shares no AcpRuntime, so without this the chat
+        # is missing from the monitor and its process folds into the gateway's
+        # remainder. _reset_state() discards it on every teardown path.
+        runtime_registry.register(self)
         # Minted with the process it names, random rather than pid-derived: a
         # pid can be reused by the OS, and the start-time disambiguator is not
         # readable on every platform, so equality on a fresh random id is the
@@ -8540,8 +8583,12 @@ class AcpClient:
         # Save PIDs before clearing state — needed for untracking
         saved_pid = None if platform_compat.IS_WINDOWS else self._pid
         saved_child_pids = self._child_pids
+        # Leave the live-runtime registry before the pid is forgotten, so the
+        # resource monitor never walks a /proc tree for a process that is gone.
+        runtime_registry.discard(self)
         self._process = None
         self._pid = None
+        self._spawn_monotonic = None
         # The instance id names the process that just ended; a replacement spawn
         # mints its own, so nothing may keep answering with this one in between.
         self._process_instance = ""

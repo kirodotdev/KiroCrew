@@ -482,6 +482,34 @@ class TestBatchIdentity:
         assert events[0][2]["outcome"] == "stopped"
 
     @pytest.mark.asyncio
+    async def test_queued_cancel_that_loses_the_start_race_cancels_the_live_run(self):
+        """The queued path awaits the store before unqueueing; if the drain starts
+        the run during that await, ``_unqueue`` finds nothing -- and the answer
+        must then come from the live table, not be a False while the run goes on
+        (a refusal is not a commit)."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._queue = [{"task": "racy", "_preassigned_id": "q-race", "parent_session_key": "d:1"}]
+        mgr._emit_queue_depth = MagicMock()
+        mgr._force_reap = AsyncMock()
+
+        async def store_cancel_then_drain_starts_it(_self, agent_id, **_kw):
+            # Simulates the drain winning during the await: the run leaves the
+            # queue and appears live before the store answers.
+            mgr._queue = []
+            mgr._agents[agent_id] = SubagentInfo(id=agent_id, task="racy")
+            return None
+
+        with patch.object(
+            type(mgr._admission),
+            "taskq_cancel_queued_async",
+            store_cancel_then_drain_starts_it,
+        ):
+            assert await mgr.cancel("q-race") is True
+        mgr._force_reap.assert_awaited_once()
+        assert mgr._force_reap.await_args.kwargs["reason"] == "user_stop"
+        assert mgr._agents["q-race"].user_stopped is True
+
+    @pytest.mark.asyncio
     async def test_stop_parent_removes_its_queued_agents_before_start(self):
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         mgr._queue = [

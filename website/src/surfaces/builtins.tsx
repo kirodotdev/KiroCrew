@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot, Activity } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
@@ -187,6 +187,30 @@ registerBuiltinSurface({
   labelKey: 'nav.artifacts',
   icon: <Component size={16} />,
   group: 'Main',
+})
+
+// System Monitor — the Chat Resource Monitor. A task-manager style view of live
+// per-chat / per-subagent / gateway resource usage plus host headroom, backed by
+// the authenticated `GET /api/system/chat-resources` snapshot. It is an operator
+// destination in the Main group, registered the same way as the other static
+// system-adjacent surfaces (Schedule, Artifacts).
+//
+// `labelKey` reuses the page's own `monitor.title` catalog key rather than
+// minting a `nav.*` twin: the rail row and the page it opens are one
+// destination, so a second key would be two names for one thing that could
+// drift per locale — the same reasoning the promotable Capabilities sub-items
+// use for reusing their panel's keys. `label` and `group` go through
+// `surfaceMachineValue()` because `group` is a `SurfaceGroup` union member and
+// `label` is the English fallback `surfaceLabel()` never reads while `labelKey`
+// resolves — neither is user-visible copy, and the strict i18n config inspects
+// ALL-CAPS module constants.
+registerBuiltinSurface({
+  navId: 'monitor',
+  route: '/monitor',
+  label: surfaceMachineValue('System Monitor'),
+  labelKey: 'monitor.title',
+  icon: <Activity size={16} />,
+  group: surfaceMachineValue('Main'),
 })
 
 // Knowledge is not a main-rail surface BY DEFAULT: it lives as a tab inside

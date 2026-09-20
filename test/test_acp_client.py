@@ -738,6 +738,40 @@ class TestAcpClientSessionKey:
         assert names[0] != names[1]
 
     @pytest.mark.asyncio
+    async def test_spawn_registers_the_direct_client_for_the_resource_monitor(self, tmp_path):
+        """A direct client owns its process outright (no AcpRuntime), so it must
+        join the live-runtime registry itself the moment spawn assigns a pid --
+        otherwise a claude-backed chat is missing from the System Monitor and its
+        process folds into the gateway's remainder. Uptime starts here too."""
+        from kiro_crew.acp import runtime_registry
+
+        client = AcpClient(work_dir=tmp_path, session_key="dashboard:chat-1")
+        runtime_registry.discard(client)
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/kiro-cli", "acp"], None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.acp.client.browser_socket_env", return_value={}),
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 24680
+            mock_proc.returncode = None
+            mock_exec.return_value = mock_proc
+            try:
+                await client._spawn()
+                assert client in runtime_registry.live_runtimes()
+                assert client.pid == 24680
+                assert client.spawn_monotonic is not None
+            finally:
+                await _stop_stderr_drain(client)
+                runtime_registry.discard(client)
+
+    @pytest.mark.asyncio
     async def test_spawn_keeps_an_operator_set_browser_session(self, tmp_path, monkeypatch):
         """An operator who named a session means that one browser."""
         monkeypatch.setenv("PLAYWRIGHT_CLI_SESSION", "chrome")

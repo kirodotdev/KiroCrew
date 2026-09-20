@@ -178,6 +178,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "identifiers are left intact because the panel keys its rows by them.",
     ),
     (
+        "System Monitor row labels",
+        "dashboard/handlers_system.py",
+        "Every row label on the resource monitor snapshot "
+        "(`GET /api/system/chat-resources`): a chat's display title, a subagent's task "
+        "text, a worker's name. A title is derived from the user's first message and a "
+        "task is the spawning agent's own prose, so a pasted secret or exfiltration URL "
+        "can sit in either; each label passes the shared exfiltration-URL + credential "
+        "chain (`security.redact`) before serialization. Every other field on the "
+        "snapshot is a number, a pid, an enum the sampler minted itself, or a bounded "
+        "identifier the gateway minted (session key, slot id, subagent id, agent name).",
+    ),
+    (
         "Memory recovery responses",
         "dashboard/handlers/memory_admin.py",
         "Retired episode text and supersession references, plus backup and restore "

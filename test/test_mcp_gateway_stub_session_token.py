@@ -892,6 +892,7 @@ def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(
 
     class _Handle:
         stub_session_token = TOKEN_A
+        session_id = "acp-shared-1"
 
         def rebind_watchdog(self, *_a: Any, **_k: Any) -> None:
             pass
@@ -901,17 +902,25 @@ def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(
             def reset_context_state() -> None:
                 pass
 
+    owner_binds: list[tuple[str, str]] = []
+
     class _Runtime:
         _mcp_gateway_socket = "/tmp/kirocrew-gw.sock"
         pid = 4242
         _crew_agent = ""
         _last_activity = 0.0
 
+        def bind_session_owner(self, session_id: str, session_key: str) -> None:
+            owner_binds.append((session_id, session_key))
+
     provider = sp_mod.AcpSessionProvider.__new__(sp_mod.AcpSessionProvider)
     provider._handle = _Handle()
     provider._runtime = _Runtime()
     provider.rekey(PARENT_KEY, None, "", None)
     assert pushed == [(4242, PARENT_KEY, TOKEN_A)]
+    # The claim also names the owner on the runtime's session map, so the
+    # resource monitor attributes this runtime to the claiming chat.
+    assert owner_binds == [("acp-shared-1", PARENT_KEY)]
 
 
 #: Every ``create_session`` call that opens a session on a runtime SHARED with

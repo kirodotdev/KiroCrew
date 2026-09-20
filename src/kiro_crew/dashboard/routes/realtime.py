@@ -44,6 +44,10 @@ def register(app: web.Application) -> None:
     # Status / system
     app.router.add_get("/api/status", handlers.api_status)
     app.router.add_get("/api/system", handlers.api_system)
+    # Per-chat resource attribution ("task manager") snapshot. A read like
+    # /api/system above and behind the same dashboard auth; the sampler's own
+    # cache bounds its cost so a fast poll never re-walks /proc.
+    app.router.add_get("/api/system/chat-resources", handlers.api_chat_resources)
     app.router.add_get("/api/system/session-storage", handlers.api_session_storage)
     # The inventory list and its per-row detail. Registered before the {uid} route
     # so the literal path cannot be swallowed by the pattern.

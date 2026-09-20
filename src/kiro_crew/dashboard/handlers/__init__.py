@@ -14,6 +14,7 @@ from typing import Any
 # Imports accessed by submodules via late-binding (_h.X pattern)
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path  # noqa: F401
 from kiro_crew.dashboard.handlers_system import (  # noqa: F401
+    api_chat_resources,
     api_compliance_yolo_status,
     api_governance_channels,
     api_sso_ttl,
@@ -355,6 +356,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_profile,
     api_slack_reactions,
     api_spawn,
+    api_spawn_cancel,
     api_spawn_continue,
     api_spawn_delete,
     api_spawn_list,

@@ -2028,6 +2028,167 @@ async def test_mark_dead_is_idempotent():
     assert q["sA"].empty()
 
 
+# ── Runtime registry wiring (the resource-monitor enumeration seam) ──
+#
+# The chat resource monitor walks every live AcpRuntime. spawn() must join the
+# registry the instant it has a pid, and _mark_dead() must leave it on any death
+# path, so the sampler never walks a /proc tree for a runtime that is either not
+# yet spawned or already dead. These pin the two call sites without changing any
+# spawn/kill semantics.
+
+
+def test_mark_dead_discards_from_runtime_registry():
+    """A death path removes the runtime from the live registry."""
+    from kiro_crew.acp import runtime_registry
+
+    rt, _, _ = _make_runtime()
+    runtime_registry.register(rt)
+    assert rt in runtime_registry.live_runtimes()
+
+    rt._mark_dead("simulated EOF")
+
+    assert rt not in runtime_registry.live_runtimes()
+
+
+def test_mark_dead_registry_discard_is_idempotent():
+    """A second _mark_dead (or discarding an absent runtime) never raises."""
+    from kiro_crew.acp import runtime_registry
+
+    rt, _, _ = _make_runtime()
+    runtime_registry.register(rt)
+    rt._mark_dead("first")
+    rt._mark_dead("second")  # no-op — must not raise trying to re-discard
+    assert rt not in runtime_registry.live_runtimes()
+
+
+def test_sampler_identity_accessors_expose_runtime_state():
+    """The read-only accessors the resource sampler reads reflect runtime state.
+
+    pid / agent / spawn_monotonic / session_keys / is_subagent_owner are the
+    minimal identity surface the sampler consumes; each must mirror the private
+    field it wraps without exposing the private attribute.
+    """
+    rt = AcpRuntime(work_dir="/tmp", agent="reviewer")
+
+    # Pre-spawn: no pid, no spawn instant, no sessions, not a subagent owner.
+    assert rt.pid is None
+    assert rt.spawn_monotonic is None
+    assert rt.session_keys == []
+    assert rt.is_subagent_owner is False
+    assert rt.agent == "reviewer"
+
+    rt._pid = 12321
+    rt._spawn_monotonic = 999.5
+    rt._session_queues["sA"] = asyncio.Queue()
+    rt._session_queues["sB"] = asyncio.Queue()
+
+    assert rt.pid == 12321
+    assert rt.spawn_monotonic == 999.5
+    assert sorted(rt.session_keys) == ["sA", "sB"]
+    # session_keys returns a fresh copy — mutating it must not touch the runtime.
+    rt.session_keys.append("leak")
+    assert sorted(rt.session_keys) == ["sA", "sB"]
+
+    rt._subagent_owner = "sA"
+    assert rt.is_subagent_owner is True
+    rt._subagent_owner = None
+    assert rt.is_subagent_owner is False
+
+
+def test_agent_accessor_defaults_to_empty_string():
+    """A runtime constructed without an agent reports "" rather than None."""
+    rt = AcpRuntime(work_dir="/tmp", agent=None)
+    assert rt.agent == ""
+
+
+@pytest.mark.asyncio
+async def test_spawn_registers_runtime_at_pid_assignment(monkeypatch):
+    """spawn() joins the live registry the moment it has a pid.
+
+    The registration sits right after ``self._pid = self._process.pid``, before
+    the handshake. We let the real spawn run up to the point just past that
+    assignment, capture the registry membership there, then abort — proving a
+    runtime is enumerable as soon as it owns a process, not only once fully
+    initialized.
+    """
+    import kiro_crew.acp.runtime as runtime_mod
+    from kiro_crew.acp import runtime_registry
+
+    class _StopSpawn(Exception):
+        pass
+
+    proc = MagicMock()
+    proc.pid = 393939
+    proc.stdout = MagicMock()
+    proc.stderr = None
+    proc.returncode = None
+    proc.wait = AsyncMock(return_value=0)
+
+    async def _fake_exec(*_args, **_kwargs):
+        return proc
+
+    async def resolve_kiro_bin(*, environ=None, home=None):
+        return "/fake/kiro"
+
+    # finish_suspended_spawn runs on the executor immediately after the pid is
+    # assigned and the runtime is registered. Snapshot the registry there, then
+    # abort so the handshake never runs.
+    seen: dict[str, object] = {}
+
+    def _capture_then_stop(process, pid, *, label):
+        seen["registered"] = process_rt in runtime_registry.live_runtimes()
+        seen["pid"] = pid
+        raise _StopSpawn()
+
+    client_mod = _spawn_client_mod()
+    monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", resolve_kiro_bin)
+    monkeypatch.setattr(
+        runtime_mod,
+        "wrap_argv",
+        lambda argv, mode, strip_python_env=False, is_kiro_cli=None, **_kw: (argv, None),
+    )
+    monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
+    monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
+    monkeypatch.setattr(runtime_mod, "finish_suspended_spawn", _capture_then_stop)
+    # Keep the failed-spawn reap away from the host and out of the PID files.
+    monkeypatch.setattr(runtime_mod.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(runtime_mod.platform_compat, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(runtime_mod, "_untrack_pid", lambda p: None)
+    monkeypatch.setattr(runtime_mod, "_untrack_session_pid", lambda p: None)
+    # Patch the seam spawn actually calls (runtime's imported
+    # create_subprocess_limited) rather than asyncio.create_subprocess_exec: on
+    # Windows the call is routed through create_windows_cleanup_owned_process ->
+    # sandbox.create_subprocess_limited, which never reaches the asyncio name.
+    monkeypatch.setattr(runtime_mod, "create_subprocess_limited", _fake_exec)
+
+    # The Windows cleanup-owner wrapper pins the child's real process handle
+    # (identity via the Win32 handle) and, when it cannot, parks the state in the
+    # module-global pending-cleanup registry before raising. A MagicMock has no
+    # handle, so on Windows that path fires and its leftover registry entry then
+    # leaks into later tests. This test is about the REGISTRY, not the Windows
+    # pin, so call the factory directly on every platform.
+    async def _passthrough(factory):
+        return await factory()
+
+    monkeypatch.setattr(
+        runtime_mod.platform_compat, "create_windows_cleanup_owned_process", _passthrough
+    )
+
+    process_rt = AcpRuntime(sandbox_mode="auto")
+    try:
+        with pytest.raises(_StopSpawn):
+            await process_rt.spawn()
+
+        assert seen["pid"] == proc.pid
+        assert seen["registered"] is True, "runtime was not registered at pid assignment"
+        # The spawn aborted after registration, so its failure guard ran
+        # kill() -> _mark_dead -> discard, leaving the registry clean again.
+        assert process_rt not in runtime_registry.live_runtimes()
+    finally:
+        runtime_registry.discard(process_rt)
+
+
 # ── Death-log severity: deliberate teardown vs genuine death ──
 #
 # A warm-pool TTL recycle tears runtimes down via kill() on a schedule; logging
@@ -12568,3 +12729,35 @@ async def test_managed_readiness_keeps_external_wire_roster(kas_readiness_wire, 
                 start.cancel()
             await asyncio.gather(start, return_exceptions=True)
         await _stop_reader(reader_task)
+
+
+def test_session_owners_track_registered_sessions_and_claims():
+    """The runtime keeps ``{acp_session_id: kiro_crew_session_key}`` beside its
+    session queues: recorded at registration, re-pointed by a warm-pool claim,
+    and dropped with the queue. ``session_keys`` stays the ACP ids — the two
+    accessors answer different questions and the resource monitor needs the
+    owner one (a dashboard slot resolves a session KEY, never an ACP id)."""
+    import asyncio
+
+    rt = AcpRuntime(sandbox_mode="auto")
+    # Registration shape mirrors _finish_create_session / load_session.
+    rt._session_queues["acp-1"] = asyncio.Queue()
+    rt._session_owners["acp-1"] = "dashboard:chat-a"
+    rt._session_queues["acp-2"] = asyncio.Queue()
+    rt._session_owners["acp-2"] = ""  # pooled, unclaimed
+    assert rt.session_keys == ["acp-1", "acp-2"]
+    assert rt.session_owners == {"acp-1": "dashboard:chat-a", "acp-2": ""}
+
+    # A warm-pool claim names the owner; an id this runtime does not host is ignored.
+    rt.bind_session_owner("acp-2", "dashboard:chat-b")
+    rt.bind_session_owner("acp-nope", "dashboard:chat-z")
+    assert rt.session_owners == {"acp-1": "dashboard:chat-a", "acp-2": "dashboard:chat-b"}
+
+    # Snapshot semantics: mutating the returned dict does not touch the runtime.
+    rt.session_owners["acp-1"] = "tampered"
+    assert rt.session_owners["acp-1"] == "dashboard:chat-a"
+
+    # Unregistering the session drops the owner with the queue.
+    rt.unregister_session("acp-1")
+    assert rt.session_owners == {"acp-2": "dashboard:chat-b"}
+    assert "acp-1" not in rt._session_owners

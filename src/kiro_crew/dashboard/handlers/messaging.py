@@ -1280,6 +1280,55 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     )
 
 
+async def api_spawn_cancel(request: web.Request) -> web.Response:
+    """POST /api/spawn/cancel — cancel ONE dedicated subagent run by agent id.
+
+    The pinned stop path the resource monitor's subagent rows call: the snapshot
+    carries each dedicated run's ``subagent_id`` precisely so the page can target
+    this route by id, rather than by the slot ``stop-all`` uses. It is a thin
+    delegation to ``SubagentManager.cancel(agent_id)`` (async, ``bool``) — the same
+    cancellation path ``DELETE /api/spawn/{agent_id}`` runs for a managed run — so
+    the monitor reuses the existing termination semantics, adding no new backend.
+
+    A missing/blank ``agent_id`` is a 400; a run that was already finished cancels
+    to ``false`` (still a 200 — the request was well formed and the run is gone,
+    which is the outcome the caller wanted). Subagents unavailable is a 503, the
+    same code ``stop-all`` uses for that condition.
+    """
+    state: DashboardState = request.app["state"]
+    request_app = request.get("app", "")
+    if "app" not in request or request_app:
+        # Dashboard-only, like stop-all: an app whose `permissions.api` grants
+        # `/api/spawn` must not be able to cancel a run it did not start.
+        _sel().log_api_access(
+            caller=request_app or "unknown",
+            operation="spawn.cancel",
+            outcome="denied",
+            source="app_isolation",
+            resources="dashboard-only subagent cancellation",
+            error="app tokens cannot cancel dashboard subagent runs",
+        )
+        return web.json_response(
+            {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
+        )
+    if not state.subagents:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"},
+            status=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    agent_id = body.get("agent_id") if isinstance(body, dict) else None
+    if not isinstance(agent_id, str) or not agent_id:
+        return web.json_response(
+            {"error": "agent_id is required", "code": "invalid_agent_id"}, status=400
+        )
+    cancelled = await state.subagents.cancel(agent_id)
+    return web.json_response({"ok": True, "cancelled": cancelled})
+
+
 # ── Sessions / Notifications ──
 
 

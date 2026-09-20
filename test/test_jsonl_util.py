@@ -688,6 +688,7 @@ _KERNEL_PSEUDO_FILE_READERS = {
     ("platform_compat.py", "/proc/locks"),
     ("platform_compat.py", "/proc/<pid>/status"),
     ("acp/runtime.py", "/proc/<pid>/status"),
+    ("acp/resource_monitor.py", "/proc/meminfo"),
     ("sandbox.py", "/proc/<pid>/mountinfo"),
 }
 # Fenced from agent file tools by security._CREW_SECRET_LEAVES, so it is outside

@@ -356,6 +356,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # agent-influenced, and the binary is resolved through
         # platform_compat.trusted_system_bin (a vetted absolute path), not PATH.
         "acp/runtime.py::_ps_process_table",
+        # The System Monitor's macOS sampler reads the SAME fixed argv
+        # (`ps -Ao pid=,ppid=,rss=`) as a stream so it can stop after
+        # MAX_HOST_TABLE_ROWS lines and reap the child, rather than buffering
+        # the whole table as _ps_process_table does. Identical trust profile:
+        # no shell, no cwd, no arguments, a 2s per-line deadline, and the
+        # binary from platform_compat.trusted_system_bin -- nothing an agent
+        # controls reaches the argv.
+        "acp/resource_monitor.py::_ps_rows",
         # (_bootstrap.py::_self_heal removed — the console-entry self-heal now
         # delegates its install to dep_sync.sync_or_reinstall, so the spawn lives
         # at that key below and an entry here would be stale.)

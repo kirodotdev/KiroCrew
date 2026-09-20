@@ -27,9 +27,10 @@ import uuid
 import weakref
 from collections import deque
 from pathlib import Path
-from typing import Any, Awaitable, Callable, NamedTuple, TypeVar
+from typing import Any, Awaitable, Callable, Iterable, NamedTuple, TypeVar
 
 from kiro_crew import acp_tool_gate, agent_scratch, platform_compat
+from kiro_crew.acp import runtime_registry
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
     attach_kas_custom_agents,
@@ -1035,24 +1036,62 @@ def _get_rss_mb(pid: int) -> float | None:
         return None
 
 
-def _own_children(pid: int) -> list[int]:
-    """Direct children of *pid*, asked of the kernel one thread at a time."""
+#: Widest a pid can print (``pid_max`` tops out at 4194304, seven digits) plus
+#: its separating whitespace: the byte budget per token when a children read is
+#: bounded by a token count.
+_PID_TOKEN_BYTES = 8
+
+
+def _own_children(pid: int, limit: int | None = None) -> list[int]:
+    """Direct children of *pid*, asked of the kernel one thread at a time.
+
+    ``limit`` bounds the answer at the READ, not after it: each thread's
+    ``children`` line is read only as far as ``limit`` more tokens can reach
+    (``_PID_TOKEN_BYTES`` per token, one extra so a token the cut may have split
+    can be discarded rather than misparsed) and collection stops at ``limit``
+    pids, so a fork storm under one parent costs the caller at most ``limit``
+    ints however many children the kernel would list. ``None`` is unbounded.
+
+    The thread directory is walked with ``os.scandir`` -- one entry at a time,
+    stopping as soon as ``limit`` is reached -- rather than listed up front, so
+    a thread-heavy process does not cost the caller a materialized TID list
+    either; nothing here is held that the bound does not cover.
+    """
     kids: list[int] = []
+    if limit is not None and limit <= 0:
+        return kids
     try:
-        entries = os.listdir(f"/proc/{pid}/task")
+        task_dir = os.scandir(f"/proc/{pid}/task")
     except OSError:
         return kids
-    for tid in entries:
-        try:
-            with open(f"/proc/{pid}/task/{tid}/children") as f:
-                tokens = f.read().split()
-        except OSError:
-            continue
-        for tok in tokens:
+    with task_dir:
+        for entry in task_dir:
+            if limit is not None and len(kids) >= limit:
+                break
+            tid = entry.name
             try:
-                kids.append(int(tok))
-            except ValueError:
+                with open(f"/proc/{pid}/task/{tid}/children") as f:
+                    if limit is None:
+                        tokens = f.read().split()
+                    else:
+                        budget = (limit - len(kids) + 1) * _PID_TOKEN_BYTES
+                        chunk = f.read(budget)
+                        tokens = chunk.split()
+                        if len(chunk) == budget and chunk and not chunk[-1].isspace():
+                            # The cut may have landed mid-pid: that token is not
+                            # trustworthy, and the budget's spare token covers it.
+                            tokens.pop()
+            except OSError:
                 continue
+            for tok in tokens:
+                if limit is not None and len(kids) >= limit:
+                    break
+                try:
+                    kids.append(int(tok))
+                except ValueError:
+                    continue
+            if limit is not None and len(kids) >= limit:
+                break  # before the next TID is even fetched from the kernel
     return kids
 
 
@@ -1061,6 +1100,7 @@ def _iter_descendant_pids(
     max_depth: int | None = None,
     *,
     children: "dict[int, list[int]] | None" = None,
+    max_pids: int | None = None,
 ) -> list[int]:
     """Return ``[pid, *descendants]`` (Linux only), best-effort.
 
@@ -1074,6 +1114,18 @@ def _iter_descendant_pids(
     process reachable at two depths is counted once, at whichever it is reached
     first — the same single-visit rule the unbounded walk has.
 
+    ``max_pids`` bounds the walk in SIZE: it stops once that many pids are in
+    the order, and reads each visited pid's children only as far as the
+    remaining capacity (``_own_children(limit=...)``, or a slice of the map), so
+    the order, the visited set, the frontier and every per-pid children read
+    are each held to ``max_pids`` however large the tree. A process tree has one
+    parent per pid, so the result is exactly the first ``min(tree, max_pids)``
+    pids in walk order; a caller that asks for one more than its cap learns
+    whether the tree exceeded the cap from the length alone. ``None`` is
+    unbounded. It is for a caller whose root is agent-controlled (a runaway
+    agent can fork without limit) and must not let that population size its
+    own memory.
+
     ``children`` supplies a parent map (``platform_compat.proc_child_map``) to
     read the edges from instead of asking the kernel per process. Same walk and
     same rules; only where an edge comes from changes. It is for a caller that
@@ -1086,6 +1138,8 @@ def _iter_descendant_pids(
     visited: set[int] = set()
     queue: list[tuple[int, int]] = [(pid, 0)]
     while queue:
+        if max_pids is not None and len(order) >= max_pids:
+            break
         p, depth = queue.pop()
         if p in visited:
             continue
@@ -1093,7 +1147,27 @@ def _iter_descendant_pids(
         order.append(p)
         if max_depth is not None and depth >= max_depth:
             continue
-        for cpid in children.get(p, ()) if children is not None else _own_children(p):
+        if max_pids is None:
+            kids: "Iterable[int]" = (
+                children.get(p, ()) if children is not None else _own_children(p)
+            )
+        else:
+            # Remaining capacity bounds the READ of this pid's children, not just
+            # which of them are enqueued: a fork storm under one parent must not
+            # be listed in full to be truncated (bound-at-the-read).
+            remaining = max_pids - len(order) - len(queue)
+            if remaining <= 0:
+                # Capacity is spoken for by what is already queued: read no more
+                # children, but keep draining the frontier into the order.
+                continue
+            kids = (
+                children.get(p, ())[:remaining]
+                if children is not None
+                else _own_children(p, limit=remaining)
+            )
+        for cpid in kids:
+            if max_pids is not None and len(order) + len(queue) >= max_pids:
+                break
             if cpid not in visited:
                 queue.append((cpid, depth + 1))
     return order
@@ -1561,6 +1635,14 @@ class AcpRuntime:
         # (e.g. session/prompt response signals turn completion and must reach the session)
         self._routed_requests: dict[int, str] = {}
         self._session_queues: dict[str, asyncio.Queue[JsonRpcMessage | None]] = {}
+        # ACP session id -> the Kiro Crew session key that OWNS it. The queue map
+        # above is keyed by the protocol's own ``sessionId`` (an opaque id minted
+        # by ``session/new``), which nothing outside the wire layer can resolve;
+        # the resource monitor attributes a runtime to a chat by the dashboard's
+        # logical key, so the owner handed to ``create_session`` / ``load_session``
+        # is retained here and re-pointed by ``bind_session_owner`` on a warm-pool
+        # claim. Empty string while the owner is not yet known (a pooled worker).
+        self._session_owners: dict[str, str] = {}
         # OAuth notifications can precede the session/new or session/load
         # response that reveals which queue to register. Stage only those
         # frames while an init is active, then transfer the matching session's
@@ -1733,6 +1815,86 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def agent(self) -> str:
+        """The kiro agent template this runtime's process was spawned with.
+
+        Read-only view of the value handed to ``__init__`` (a kiro template
+        name, a DIFFERENT namespace from the Kiro Crew crew identity). The
+        resource sampler labels an entry with it; ``""`` when the runtime was
+        constructed without one.
+        """
+        return self._agent or ""
+
+    @property
+    def spawn_monotonic(self) -> float | None:
+        """``time.monotonic()`` captured when the spawn completed (``None`` before).
+
+        Read-only view of the same instant ``_is_stale`` measures age against,
+        so the sampler derives uptime from it rather than storing a second
+        clock that could disagree.
+        """
+        return self._spawn_monotonic
+
+    @property
+    def session_keys(self) -> list[str]:
+        """The session ids currently registered on this runtime.
+
+        A snapshot copy of the ``_session_queues`` keys — the sessions this
+        multiplexed runtime is serving right now. A fresh list so the caller can
+        iterate it without racing a concurrent register/unregister. These are the
+        ACP protocol's ``sessionId`` values; for the Kiro Crew session KEYS that
+        own them read :attr:`session_owners`.
+        """
+        return list(self._session_queues)
+
+    @property
+    def session_owners(self) -> dict[str, str]:
+        """``{acp_session_id: kiro_crew_session_key}`` for every registered session.
+
+        A snapshot copy. The value is ``""`` for a session whose owner is not yet
+        known (a warm-pool worker before its claim). This is the seam the resource
+        monitor resolves a runtime to a dashboard chat through — the ACP id in
+        :attr:`session_keys` is opaque to the dashboard.
+        """
+        owners = self._owner_map()
+        return {sid: owners.get(sid, "") for sid in self._session_queues}
+
+    def _owner_map(self) -> dict[str, str]:
+        """The owner map, created on first touch.
+
+        ``__init__`` creates it, but several tests build a runtime with
+        ``AcpRuntime.__new__`` and hand-set only ``_session_queues``; a missing map
+        must read as "no owners known", never as an AttributeError on the
+        session-registration path.
+        """
+        owners = self.__dict__.get("_session_owners")
+        if owners is None:
+            owners = self._session_owners = {}
+        return owners
+
+    def bind_session_owner(self, session_id: str, session_key: str) -> None:
+        """Record (or re-point) the Kiro Crew session that owns ACP session *session_id*.
+
+        Called at session creation/load with the owner passed in, and again on a
+        warm-pool claim (``AcpSessionProvider.rekey``) when a pre-spawned session
+        acquires its owner. A session id this runtime does not host is ignored:
+        the map only ever describes live queues.
+        """
+        if session_id in self._session_queues:
+            self._owner_map()[session_id] = session_key or ""
+
+    @property
+    def is_subagent_owner(self) -> bool:
+        """True when a registered session owns this runtime's backend subagents.
+
+        Mirrors ``_subagent_owner`` (the sole session that consumed a
+        ``subagent/list_update`` announce): a dedicated subagent runtime has one
+        set, an ordinary chat/background runtime does not. The sampler reads this
+        to classify an entry as a subagent run rather than a chat.
+        """
+        return self._subagent_owner is not None
 
     @property
     def process_instance(self) -> str:
@@ -2422,6 +2584,12 @@ class AcpRuntime:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Join the live-runtime registry the moment this spawn has a pid: this
+        # is the universal enumeration seam the resource monitor walks. Every
+        # failure path from here on runs kill() -> _mark_dead, which calls
+        # discard(self), so registering at the pid assignment (rather than after
+        # the handshake) never leaks a runtime that failed to initialize.
+        runtime_registry.register(self)
         # The same token the child carries in its environment (minted above, so
         # it could be passed in); random, not pid-derived, so it cannot
         # false-match a later spawn that the OS handed a recycled pid.
@@ -4391,6 +4559,12 @@ class AcpRuntime:
         if self._dead:
             return
         self._dead = True
+        # Leave the live-runtime registry on every death path. WeakSet membership
+        # would eventually drop a garbage-collected runtime on its own, but the
+        # runtime object routinely outlives its process (a warm-pool slot, a
+        # handle a caller still holds), so an explicit discard is what keeps the
+        # resource monitor from sampling a /proc tree for an already-dead pid.
+        runtime_registry.discard(self)
         # A process that already exited on its own is a genuine death being
         # reaped, not a teardown this caller initiated — refuse the downgrade
         # regardless of call site. This closes the race where a replacement
@@ -4561,6 +4735,7 @@ class AcpRuntime:
     def unregister_session(self, session_id: str) -> None:
         """Unregister a session queue (called by AcpSessionHandle.destroy)."""
         self._session_queues.pop(session_id, None)
+        self._owner_map().pop(session_id, None)
         # Clean up any pending routed requests for this session
         stale = [k for k, v in self._routed_requests.items() if v == session_id]
         for k in stale:
@@ -5686,6 +5861,7 @@ class AcpRuntime:
                 payload_snapshot=payload_snapshot,
                 late_adopter=late_adopter,
                 memory_mode=memory_mode,
+                owner_session_key=session_key,
             )
             if collector is None:
                 permit.release()
@@ -5702,6 +5878,7 @@ class AcpRuntime:
             resp,
             buffered_init=buffered_init,
             memory_mode=memory_mode,
+            owner_session_key=session_key,
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
@@ -5737,6 +5914,7 @@ class AcpRuntime:
         payload_snapshot: Any,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None",
         memory_mode: str = "persistent",
+        owner_session_key: str = "",
     ) -> StartCollector | None:
         """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -5786,6 +5964,7 @@ class AcpRuntime:
                     resp,
                     buffered_init=collector.take_init_frames(session_id),
                     memory_mode=memory_mode,
+                    owner_session_key=owner_session_key,
                     agent=agent,
                     crew_agent=crew_agent,
                     kas_agents=kas_agents,
@@ -5893,6 +6072,7 @@ class AcpRuntime:
         projected_sources: dict[str, str],
         payload_snapshot: Any,
         memory_mode: str = "persistent",
+        owner_session_key: str = "",
     ) -> AcpSessionHandle:
         """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -5900,10 +6080,14 @@ class AcpRuntime:
         :class:`StartCollector`. ``buffered_init`` comes from whichever holder
         staged the frames while this id was unknown: the runtime's in-flight
         scope on the direct path, the collector on an adoption.
+        ``owner_session_key`` is the Kiro Crew session that owns the new ACP
+        session (``create_session``'s ``session_key``), recorded so the runtime
+        can be attributed to that chat; empty for a not-yet-claimed pool worker.
         """
         # Register session queue
         queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
         self._session_queues[session_id] = queue
+        self._owner_map()[session_id] = owner_session_key or ""
         for msg in buffered_init:
             queue.put_nowait(msg)
 
@@ -6375,6 +6559,7 @@ class AcpRuntime:
         # queue, so this reorder is safe.
         queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
         self._session_queues[resume_sid] = queue
+        self._owner_map()[resume_sid] = session_key or ""
         for msg in buffered_init:
             queue.put_nowait(msg)
 

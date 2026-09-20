@@ -2807,6 +2807,11 @@ export const api = {
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
   sessionStorage: () => get('/api/system/session-storage').then(j) as Promise<SessionStorageReport>,
+  /** Chat Resource Monitor snapshot — per-chat/subagent/gateway usage plus host
+   *  headroom. Served from the gateway's cached sample, so rapid polling never
+   *  re-walks process trees. */
+  chatResources: () =>
+    get('/api/system/chat-resources').then(j) as Promise<import('../pages/SystemMonitorPage').MonitorSnapshot>,
   sessionStorageCleanup: (olderThanDays: number, dryRun = false) =>
     post('/api/system/session-storage/cleanup', { older_than_days: olderThanDays, dry_run: dryRun })
       .then(j) as Promise<SessionStorageCleanup>,
@@ -4085,6 +4090,20 @@ export const api = {
   deleteChatSlot: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot)).then(j),
   cleanupSessions: (maxInactiveDays: number, activeSlot?: string, dryRun?: boolean) => post('/api/chat/slots/cleanup', { max_inactive_days: maxInactiveDays, active_slot: activeSlot || '', dry_run: !!dryRun }).then(j) as Promise<{ ok: boolean; archived: number; keys: string[]; failed: string[]; dry_run?: boolean; count?: number; active_is_stale?: boolean }>,
   stopChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop').then(j),
+  /** Stop a slot's turn ONLY if it still runs on the runtime the caller
+   *  sampled (the System Monitor row): its pid AND its per-spawn instance id,
+   *  since the OS reuses pids. The backend answers 409 `stale_row` when the
+   *  slot has moved on to a different runtime since the sample, so a confirm
+   *  dialog left open cannot abort a replacement conversation's work. */
+  stopChatSlotIfPid: (slot: string, pid: number, instance: string) =>
+    post(
+      '/api/chat/slots/' +
+        encodeURIComponent(slot) +
+        '/stop?if_pid=' +
+        encodeURIComponent(String(pid)) +
+        '&if_instance=' +
+        encodeURIComponent(instance),
+    ).then(j),
   stopChatSlotForce: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop?force=true').then(j),
   cancelQueuedMessage: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId)).then(j),
   editQueuedMessage: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId), { content }).then(j),
@@ -4298,6 +4317,10 @@ export const api = {
   spawnStatus: (id: string, opts?: { signal?: AbortSignal }) => fetch('/api/spawn/' + encodeURIComponent(id), opts).then(j),
   spawnDelete: (id: string) => del('/api/spawn/' + encodeURIComponent(id)).then(j),
   spawnStopAll: (slot: string) => post('/api/spawn/stop-all', { slot }).then(j),
+  /** Cancel one dedicated subagent run by its agent id. Fronts
+   *  `SubagentManager.cancel(agent_id)`; the monitor's per-subagent stop targets
+   *  this so a single runaway run can be ended without stopping its siblings. */
+  spawnCancel: (agentId: string) => post('/api/spawn/cancel', { agent_id: agentId }).then(j),
   spawnRetry: (id: string) => post('/api/spawn/' + encodeURIComponent(id) + '/retry', {}).then(j),
   approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
   resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),

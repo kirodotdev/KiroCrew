@@ -28,6 +28,7 @@ from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_sdk.resource_monitor import provider_identity_for_session
 from kiro_crew.apps import permissions as app_permissions
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
@@ -4785,8 +4786,48 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     denied = _app_cancel_denied(request, slot, "chat_stop", cancel_key)
     if denied is not None:
         return denied
+    # A stop issued from a SAMPLE (the System Monitor row) names the runtime it
+    # saw: ``if_pid`` plus ``if_instance`` (the runtime's per-spawn id). Between
+    # the snapshot that drew the row and the operator's confirm the slot may have
+    # moved on -- conversation reset, a new turn on a different runtime -- and a
+    # stop by slot alone would abort that replacement work. Compare against the
+    # runtime hosting the turn NOW; refuse on any mismatch so the page re-reads
+    # instead of stopping a conversation it never sampled. The instance is what
+    # makes the check hold across OS pid reuse: a successor can inherit its
+    # predecessor's pid, never its instance id. Absent for every other caller
+    # (the chat's own Stop acts on what it shows).
+    if_pid = request.query.get("if_pid", "")
+    conditional = bool(if_pid)
+    if conditional:
+        try:
+            expected_pid = int(if_pid)
+        except ValueError:
+            return web.json_response(
+                {"error": "if_pid must be an integer", "code": "bad_request"}, status=400
+            )
+        expected_instance = request.query.get("if_instance", "")
+        current = provider_identity_for_session(cancel_key)
+        if current is None or current != (expected_pid, expected_instance):
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "the sampled conversation is no longer what this slot is running",
+                    "code": "stale_row",
+                },
+                status=409,
+            )
     force = request.query.get("force", "").lower() == "true"
-    return web.json_response(await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key))
+    # A conditional (sampled) stop is never a second DECISION: the operator
+    # confirmed against a row, not after watching a soft stop fail to take. If
+    # it lands while a chat-issued soft stop is already pending, escalating would
+    # hard-kill and clear the slot's queued prompts -- so escalation is withheld
+    # exactly as ``session_control.stop_target`` withholds it for an RPC retry.
+    # A slot that is running still gets stopped; only the escalation is refused.
+    return web.json_response(
+        await stop_slot_turn(
+            state, slot, force=force, cancel_key=cancel_key, escalate=not conditional
+        )
+    )
 
 
 async def api_chat_slot_continue(request: web.Request) -> web.Response:

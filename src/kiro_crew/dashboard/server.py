@@ -1711,6 +1711,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/mcp-apps/call", handlers.api_mcp_apps_call)
     app.router.add_get("/api/spawn", handlers.api_spawn_list)
     app.router.add_post("/api/spawn/stop-all", handlers.api_spawn_stop_all)
+    # Cancel ONE dedicated subagent run by id (the resource monitor's per-row
+    # subagent stop). A literal path registered before the ``{agent_id}`` pattern
+    # below so ``cancel`` is never read as a run id.
+    app.router.add_post("/api/spawn/cancel", handlers.api_spawn_cancel)
     # Fairness: the resume-hold, lanes and adaptive routes
     # (``handlers/spawn_resume.py``), registered before ``{agent_id}`` so
     # ``/api/spawn/lanes`` and ``/api/spawn/adaptive`` are not read as run ids.
