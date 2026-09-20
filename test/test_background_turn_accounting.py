@@ -84,6 +84,34 @@ class TestBackgroundTurnAccounting(unittest.IsolatedAsyncioTestCase):
         # (slot_key, model, event, provider).
         self.assertEqual(persist.await_args.args[3], "acp")
 
+    async def test_the_row_names_the_model_that_served_the_turn(self):
+        """Left blank the row lands with model="" and the Spend panel's per-model
+        split files the credits under "unknown" — spend recorded, but unattributable
+        to a model. The value is available here: the crew log in the same block
+        reads it off the client."""
+        client = _Client()
+        client.served_model = "claude-haiku-4.5"
+        sessions = _Sessions(client)
+        with patch(_USAGE_TARGET) as persist:
+            async with background_turn(sessions, task="consolidation") as c:
+                c.begin_turn(3.5)
+
+        # Positional, matching persist_token_record_async's signature
+        # (slot_key, model, event, provider).
+        self.assertEqual(persist.await_args.args[1], "claude-haiku-4.5")
+
+    async def test_an_unreadable_served_model_still_defers_to_model_source(self):
+        """A client that cannot say what served the turn must not have a guess put
+        in its place: the row keeps deferring to ``model_source``, which is what
+        preserves read_turn_model's distinction between "auto" and "not reported"."""
+        sessions = _Sessions(_Client())  # no served_model attribute at all
+        with patch(_USAGE_TARGET) as persist:
+            async with background_turn(sessions, task="consolidation") as c:
+                c.begin_turn(1.25)
+
+        self.assertEqual(persist.await_args.args[1], "")
+        self.assertIs(persist.await_args.kwargs["model_source"], sessions._bg_client)
+
     async def test_a_non_default_backend_is_named_through_the_wrapper_chain(self):
         """The resolver only recognises a provider handed to it directly, and the
         shared background session wraps one behind ``_sess.provider``."""
