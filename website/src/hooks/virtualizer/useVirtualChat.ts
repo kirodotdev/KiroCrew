@@ -3933,12 +3933,21 @@ export function useVirtualChat<T>(
     isSticky,
   ])
 
-  // ---- Debug probe (zero behavior change) ----
+  // ---- Debug probe (dev builds only, zero behavior change) ----
   // Exposes window.__vcSnapshot() for diagnosing scroll/geometry bugs (e.g.
   // the blank-space-after-jump regression). Call it in devtools the moment the
   // bug is visible to dump live geometry + a cached-vs-DOM height comparison.
-  // Harmless in prod (a single tiny global); install last-mount-wins.
+  // Install last-mount-wins.
+  //
+  // DEV ONLY. "Harmless in prod (a single tiny global)" was the earlier pin and
+  // it undersold what the global DOES: called, it reports the session id and
+  // the whole transcript's shape, and it console.logs and console.tables them
+  // unconditionally. That is a diagnostic surface a release build has no reader
+  // for, reachable from any page script. `import.meta.env.DEV` is statically
+  // replaced at build time, so the probe leaves the production bundle entirely
+  // rather than being installed and left unused.
   useEffect(() => {
+    if (!import.meta.env.DEV) return
     if (typeof window === 'undefined') return
     const snapshot = () => {
       const el = scrollerRef.current
