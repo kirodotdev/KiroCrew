@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -85,9 +86,12 @@ from kiro_crew.monitoring.models import (
     retained_outcome_blocks_rearm,
 )
 from kiro_crew.monitoring.registry import REVIEW_READY, kind_supports_objective
-from kiro_crew.platform import redact_via_context
+from kiro_crew.platform import (
+    PlatformCompositionError,
+    redact_via_context,
+)
 from kiro_crew.probes import targets
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +124,21 @@ _NUDGES_FILE = "autonudge.json"
 _STORE_VERSION = 1
 _MIN_IDLE_SECS = 15
 _MAX_IDLE_SECS = 86400  # 24h
+
+
+#: Exempt from the egress scrub: a scrubbed id addresses nothing. ``_load`` REFUSES a
+#: row whose id or slot_key changes when scrubbed, so the exemption cannot leak one.
+ADDRESSING_FIELDS = frozenset({"id", "slot_key"})
+
+
+class _RefusedAddressing(Exception):
+    """Carries the refused field NAME only, so no store value reaches a log."""
+
+    def __init__(self, field: str) -> None:
+        super().__init__(field)
+        self.field = field
+
+
 # Re-arm delay after a skipped/failed fire so a busy slot or a transient fire
 # error can't silently orphan the loop. The delay escalates exponentially per
 # consecutive failure (base << streak) up to _REARM_MAX_BACKOFF_SECS, and is
@@ -381,13 +400,37 @@ def enabled() -> bool:
     return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
 
 
-def scrub_loop_text(value: Any) -> Any:
+@functools.cache
+def _numeric_loop_fields() -> frozenset[str]:
+    """The ``NudgeLoop`` fields declared ``int``/``float``/``bool``.
+
+    Derived at CALL time rather than module scope: ``scrub_loop_text`` is defined above
+    the class, so the annotations do not exist yet at import -- which is why this was
+    once a hand-written set kept honest by a drift test. Deriving removes the second
+    copy instead of policing it. Cached because every serialized field consults it.
+    """
+    return frozenset(
+        name
+        for name, spec in NudgeLoop.__dataclass_fields__.items()
+        if str(spec.type).replace("'", "") in {"int", "float", "bool"}
+    )
+
+
+def scrub_loop_text(value: Any, field: str | None = None) -> Any:
     """Credential-scrub one serialized ``NudgeLoop`` field value.
 
-    ``None`` passes through untouched, because ``str(None)`` would turn an absent value
-    into a message that reads like content. Everything else is scrubbed through
-    ``platform.redact_via_context``, coerced with ``str()`` first when not already a
-    string -- coerced rather than blanked so the operator can still see the bad row.
+    Shared by every reader of a nudge loop, so one projection rule serves all of
+    them. ``field`` is the dataclass field name the value came from; it defaults
+    to ``None``, which coerces rather than exempting.
+
+    ``None`` passes through untouched, so an absent value does not become the
+    string ``"None"``. A value in a DECLARED NUMERIC field
+    (``_numeric_loop_fields()``) passes through untouched when it really is
+    numeric, because clients compare and do arithmetic on it; a numeric field
+    carrying non-numeric text is still coerced and scrubbed. A string goes
+    through ``platform.redact_via_context``, an empty one as-is. Anything else is
+    coerced with ``str()`` and scrubbed, which removes a credential while leaving
+    the value inspectable.
     """
     if value is None:
         return value
@@ -395,6 +438,8 @@ def scrub_loop_text(value: Any) -> Any:
         if not value:
             return value
         return redact_via_context(value)
+    if field in _numeric_loop_fields() and isinstance(value, (bool, int, float)):
+        return value
     return redact_via_context(str(value))
 
 
@@ -914,6 +959,9 @@ class AutoNudgeService:
         # fire callback runs the unattended turn INLINE, so cancelling it kills
         # the in-flight turn and loses its transcript and cycle bookkeeping.
         self._firing: set[str] = set()
+        # Raw store rows ``_load`` refused; written back verbatim by
+        # ``_serialize_state`` so a survivors-rewrite cannot drop them.
+        self._refused_rows: list[dict] = []
         # Loop ids owned by an administrative cleanup. Public mutations on the
         # same firing loop must not wait for the maintenance mutex: the cleanup
         # is waiting for that timer to finish, so waiting would invert the lock.
@@ -969,6 +1017,10 @@ class AutoNudgeService:
         """
         with _locked_file(self._path, "r") as fh:
             data = json.load(fh)
+        self._refused_rows = []
+        # An EMPTY store never reaches the scrub, so a host whose policy cannot compose
+        # would start rather than fail closed. NOT scrub_loop_text(""): it short-circuits.
+        redact_via_context("")
         for raw in data.get("loops", []):
             try:
                 loop_values = {
@@ -976,6 +1028,11 @@ class AutoNudgeService:
                     for key in raw
                     if key in NudgeLoop.__dataclass_fields__ and key != "monitor"
                 }
+                # Served UNSCRUBBED, so refuse ahead of the repairs that log the raw id.
+                for _addr in ADDRESSING_FIELDS:
+                    _raw_addr = loop_values.get(_addr)
+                    if scrub_loop_text(_raw_addr, field=_addr) != _raw_addr:
+                        raise _RefusedAddressing(_addr)
                 # ``gate`` decides whether a loop may be observation-gated, and a
                 # stored value that is not a bool is not a decision: the STRING
                 # "false" is truthy, so passing it through would gate a loop that
@@ -1254,8 +1311,7 @@ class AutoNudgeService:
                     # makes elsewhere: a value the authorized write path would have
                     # rejected is not invented back by keeping a shrunk remnant,
                     # and the row falls back to the full message.
-                    scrubbed, _ = redact_exfiltration_urls(loop.banner)
-                    scrubbed, _ = redact_credentials(scrubbed)
+                    scrubbed = scrub_loop_text(loop.banner, field="banner")
                     if len(loop.banner) > MAX_BANNER_CHARS or len(scrubbed) > MAX_BANNER_CHARS:
                         scrubbed = ""
                     if scrubbed != loop.banner:
@@ -1272,8 +1328,7 @@ class AutoNudgeService:
                 # ``message`` is the payload the model receives and has no
                 # fallback row, and its 8000-char limit is a write-path concern.
                 if isinstance(loop.message, str) and loop.message:
-                    scrubbed_msg, _ = redact_exfiltration_urls(loop.message)
-                    scrubbed_msg, _ = redact_credentials(scrubbed_msg)
+                    scrubbed_msg = scrub_loop_text(loop.message, field="message")
                     if scrubbed_msg != loop.message:
                         loop.message = scrubbed_msg
                         self._store_dirty = True
@@ -1297,6 +1352,19 @@ class AutoNudgeService:
                     )
                     loop.active = True
                     self._store_dirty = True
+            except PlatformCompositionError:
+                # Not a malformed row: skipping a well-formed one DELETES it, because a
+                # repair on any other row makes ``start`` rewrite the store from survivors.
+                raise
+            except _RefusedAddressing as refused:
+                # A skip DELETES the row: a repair elsewhere makes ``start`` rewrite the
+                # store from the live set, which a held row is deliberately not in.
+                self._refused_rows.append(raw)
+                logger.warning(
+                    "AutoNudge: holding back a stored loop whose %s is unusable",
+                    refused.field,
+                )
+                continue
             except Exception:
                 logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
                 continue
@@ -1378,7 +1446,7 @@ class AutoNudgeService:
         """
         return {
             "version": _STORE_VERSION,
-            "loops": [self._serialize_loop(lp) for lp in self._loops.values()],
+            "loops": [self._serialize_loop(lp) for lp in self._loops.values()] + self._refused_rows,
         }
 
     @staticmethod
@@ -1686,6 +1754,7 @@ class AutoNudgeService:
             async with self._lock:
                 if admission_check is not None and not admission_check():
                     raise NudgeAdmissionRefused("session changed before monitor arm committed")
+                self._refuse_if_reserved(None, slot_key)
                 existing = self._find_by_slot(slot_key)
                 if expected_existing_monitor_id is not None:
                     existing_monitor = existing.monitor if existing is not None else None
@@ -1897,6 +1966,7 @@ class AutoNudgeService:
         """
         if requested is None:
             return uuid.uuid4().hex[:8]
+        self._refuse_if_reserved(requested, None)
         if requested in self._loops:
             raise MonitorUpdateConflict(f"loop id {requested!r} is already in use")
         return requested
@@ -1962,6 +2032,7 @@ class AutoNudgeService:
             # One loop per slot — replace any existing loop on this slot.
             # persist=False: the offloaded write below persists the combined
             # removal+add atomically, avoiding a duplicate blocking save here.
+            self._refuse_if_reserved(None, slot_key)
             existing = self._find_by_slot(slot_key)
             restore_existing_provider_credentials = False
             if existing:
@@ -3522,6 +3593,10 @@ class AutoNudgeService:
         """Persist a monitor transition without releasing ``_lock`` mid-write."""
         if payload is None:
             payload = self._serialize_state()
+        elif self._refused_rows:
+            # A caller-built payload enumerates the LIVE set only, so writing it verbatim
+            # drops the rows _load held back. Copy: the caller still owns its own dict.
+            payload = {**payload, "loops": [*payload.get("loops", ()), *self._refused_rows]}
         future = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
         cancelled = False
         while not future.done():
@@ -3730,6 +3805,20 @@ class AutoNudgeService:
             await self._persist_staged_monitor_locked(loop, staged)
             self._cancel_timer(loop.id)
         self._emit("updated", loop)
+
+    def _refuse_if_reserved(self, loop_id: str | None, slot_key: str | None) -> None:
+        """Refuse addressing a row held back at load still owns.
+
+        A held row is absent from ``_loops``, so a check keyed on the live set reads
+        its id and slot as free -- and both arm once the held field is repaired. The
+        refusal names the FIELD, never the value: a held row's addressing is
+        credential-shaped by definition, and this message reaches a 409 body.
+        """
+        for raw in self._refused_rows:
+            if loop_id is not None and raw.get("id") == loop_id:
+                raise MonitorUpdateConflict("that loop id is held by a refused loop")
+            if slot_key is not None and raw.get("slot_key") == slot_key:
+                raise MonitorUpdateConflict("that slot is held by a refused loop")
 
     def _find_by_slot(self, slot_key: str) -> NudgeLoop | None:
         """The loop bound to *slot_key*, which may be a binding key OR a tab name.

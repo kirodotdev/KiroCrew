@@ -133,6 +133,7 @@ from kiro_crew.dashboard.cron_inject import (
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import (
     _redact_monitor_value,
+    _scrub_serialized_field,
     compose_nudge_body,
     render_nudge_message,
 )
@@ -7809,16 +7810,21 @@ class GatewayOrchestrator:
                         notified_monitor_terminals.add(terminal_key)
                         _schedule_terminal_notification(loop, terminal_key)
             if self.dashboard_state and loop is not None:
+                # The SAME rule the REST readers use, not a second copy: this broadcast
+                # reaches every dashboard client, and producers skip the arm-time scrub.
                 loop_payload: dict[str, Any] = {
-                    "id": loop.id,
-                    "slot_key": loop.slot_key,
-                    "message": loop.message,
-                    "idle_secs": loop.idle_secs,
-                    "max_cycles": loop.max_cycles,
-                    "max_runtime_secs": loop.max_runtime_secs,
-                    "cycle_count": loop.cycle_count,
-                    "active": loop.active,
-                    "last_fire_ts": loop.last_fire_ts,
+                    key: _scrub_serialized_field(key, value)
+                    for key, value in (
+                        ("id", loop.id),
+                        ("slot_key", loop.slot_key),
+                        ("message", loop.message),
+                        ("idle_secs", loop.idle_secs),
+                        ("max_cycles", loop.max_cycles),
+                        ("max_runtime_secs", loop.max_runtime_secs),
+                        ("cycle_count", loop.cycle_count),
+                        ("active", loop.active),
+                        ("last_fire_ts", loop.last_fire_ts),
+                    )
                 }
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
@@ -7826,7 +7832,9 @@ class GatewayOrchestrator:
                         monitor_state_public_dict(loop.monitor)
                     )
                     loop_payload["next_due_ts"] = loop.next_due_ts
-                    loop_payload["stopped_reason"] = loop.stopped_reason
+                    loop_payload["stopped_reason"] = _scrub_serialized_field(
+                        "stopped_reason", loop.stopped_reason
+                    )
                 broadcast = (
                     self.dashboard_state.broadcast_ws_owners
                     if is_structured_monitor_loop(loop)

@@ -9,9 +9,9 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import ADDRESSING_FIELDS, binding_key_for
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop
+from kiro_crew.autonudge import is_structured_monitor_loop, scrub_loop_text
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
@@ -23,6 +23,7 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     authorize_and_update_monitor,
     authorize_and_update_nudge,
     resolve_stop_sentinel,
+    scrub_policy_unavailable,
 )
 from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers.source_providers import (
@@ -55,7 +56,7 @@ from kiro_crew.monitoring.registry import (
     kind_supports_objective,
     publicly_armable_kinds,
 )
-from kiro_crew.platform import redact_via_context
+from kiro_crew.platform import PlatformCompositionError, redact_via_context
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import ledger_key, render_snapshot
 
@@ -115,14 +116,49 @@ def _redact_monitor_value(value: Any) -> Any:
     return value
 
 
+def _scrub_serialized_field(key: str, value: Any) -> Any:
+    """The ONE per-field projection rule, shared by every reader of a loop.
+
+    Two arms project a loop: ``_serialize`` and the reducing arm of
+    ``_serialize_for_legacy_reader``. Both call HERE rather than assembling a payload of
+    their own, because a second independent assembly serves raw whatever this rule
+    scrubs -- and ``stopped_reason`` is the field that exposes: agent-supplied free
+    text, neither withheld nor mapped out of the reduced row, on a route with no owner
+    gate.
+
+    Two exemptions. ADDRESSING_FIELDS is the SERVICE's set rather than a local copy,
+    because two copies could drift the hole open. ``monitor`` is settled by the caller
+    from the typed record rather than from ``asdict``'s raw mapping, so the legacy pop
+    stays authoritative.
+    """
+    if key in ADDRESSING_FIELDS or key == "monitor":
+        return value
+    return scrub_loop_text(value, field=key)
+
+
 def _serialize(loop: Any) -> dict[str, Any]:
-    payload = asdict(loop)
+    """Serialize a loop for the REST surface, credential-scrubbing its text.
+
+    DENYLIST, not allowlist: every field is scrubbed unless named in
+    ``ADDRESSING_FIELDS``, so a free-text field added to ``NudgeLoop`` later is
+    covered without a scrub of its own. Non-string values are NOT skipped -- an
+    agent-written store has no type discipline, so an ``isinstance(value, str)``
+    early-out would serve a list of credentials verbatim. Redaction is
+    shape-based and idempotent, so ordinary text round-trips unchanged.
+
+    ``monitor`` alone routes to a DIFFERENT redactor, which walks its nested
+    state in place; ``scrub_loop_text`` would flatten the mapping into one string
+    and destroy the shape the dashboard parses.
+    """
+    out = asdict(loop)
+    for key, value in out.items():
+        out[key] = _scrub_serialized_field(key, value)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
-        payload.pop("monitor", None)
+        out.pop("monitor", None)
     else:
-        payload["monitor"] = _redact_monitor_value(monitor_state_public_dict(loop.monitor))
-    return payload
+        out["monitor"] = _redact_monitor_value(monitor_state_public_dict(loop.monitor))
+    return out
 
 
 def _serialize_monitor(loop: Any) -> dict[str, Any]:
@@ -257,7 +293,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
     # field on the dataclass is ``monitor``, and it is withheld. A test pins the
     # surviving key set so a new field cannot silently join or skip this route.
     payload = {
-        field.name: getattr(loop, field.name)
+        field.name: _scrub_serialized_field(field.name, getattr(loop, field.name))
         for field in fields(loop)
         if field.name not in _MONITOR_WITHHELD_LEGACY_FIELDS
     }
@@ -266,7 +302,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
         value: Any = monitor
         for attr in path:
             value = getattr(value, attr)
-        payload[name] = value
+        payload[name] = _scrub_serialized_field(name, value)
     return payload
 
 
@@ -293,7 +329,7 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         "last_fire_ts": loop.last_fire_ts,
         "created_ts": loop.created_ts,
         "next_due_ts": loop.next_due_ts,
-        "stopped_reason": loop.stopped_reason,
+        "stopped_reason": _scrub_serialized_field("stopped_reason", loop.stopped_reason),
         "has_banner": bool(loop.banner),
     }
 
@@ -477,6 +513,42 @@ def _monitor_config(
     )
 
 
+def _read_scrub_unavailable() -> web.Response:
+    """A READ that cannot scrub refuses, matching the write paths' audited 503.
+
+    ``_serialize_for_legacy_reader`` runs every served field through the fail-closed
+    redaction shim, so a host that declares a credential policy it cannot compose made
+    these routes raise while rendering -- a 500 with a traceback, where the same
+    condition on a write is a deliberate 503. Answering alike keeps "the projection
+    cannot scrub" one diagnosable state instead of two.
+    """
+    return web.json_response(
+        {
+            "error": (
+                "Safety checks are temporarily unavailable, so loops cannot be listed. "
+                "If this keeps happening, restart Kiro Crew."
+            ),
+            "code": "scrub_policy_unavailable",
+        },
+        status=503,
+    )
+
+
+def _ok_serialized(key: str, payload_fn: Any) -> web.Response:
+    """Render a mutation's reply, answering 503 when the projection cannot scrub.
+
+    The projection raises on a host whose credential policy will not compose, and it
+    runs AFTER the mutation has committed and been audited as a success -- so an
+    unguarded site answers 500 for work that actually happened, which is the
+    anti-pattern the write-path preflight removes. Every serializing route goes
+    through here so a new one cannot reintroduce it.
+    """
+    try:
+        return web.json_response({"ok": True, key: payload_fn()})
+    except PlatformCompositionError:
+        return _read_scrub_unavailable()
+
+
 async def api_autonudge_list(request: web.Request) -> web.Response:
     """GET /api/autonudge — list every loop, structured monitors included.
 
@@ -490,7 +562,14 @@ async def api_autonudge_list(request: web.Request) -> web.Response:
     svc = _autonudge_get()
     if svc is None:
         return web.json_response({"enabled": False, "loops": []})
-    loops = [_serialize_for_legacy_reader(lp) for lp in svc.list_all()]
+    if scrub_policy_unavailable():
+        return _read_scrub_unavailable()
+    try:
+        loops = [_serialize_for_legacy_reader(lp) for lp in svc.list_all()]
+    except PlatformCompositionError:
+        # The write paths answer this exact condition with a 503; without it the
+        # projection's fail-closed raise surfaced here as an unaudited 500.
+        return _read_scrub_unavailable()
     return web.json_response({"enabled": True, "loops": loops})
 
 
@@ -506,13 +585,14 @@ async def api_autonudge_get(request: web.Request) -> web.Response:
     slot_key = request.match_info["slot_key"]
     if svc is None:
         return web.json_response({"enabled": False, "loop": None})
+    if scrub_policy_unavailable():
+        return _read_scrub_unavailable()
     loop = svc.get_by_slot(slot_key)
-    return web.json_response(
-        {
-            "enabled": True,
-            "loop": _serialize_for_legacy_reader(loop) if loop is not None else None,
-        }
-    )
+    try:
+        served = _serialize_for_legacy_reader(loop) if loop is not None else None
+    except PlatformCompositionError:
+        return _read_scrub_unavailable()
+    return web.json_response({"enabled": True, "loop": served})
 
 
 async def api_session_monitor_get(request: web.Request) -> web.Response:
@@ -558,17 +638,23 @@ async def api_session_monitor_get(request: web.Request) -> web.Response:
         # can verify arming instead of being told "do not assume" with no
         # instrument. The loop's free-text ``message`` is deliberately omitted:
         # this reading answers "is it armed and firing", not "what does it say".
-        return web.json_response(
-            {"enabled": True, "monitor": None, "autonudge_loop": _autonudge_loop_reading(loop)}
-        )
+        try:
+            reading = _autonudge_loop_reading(loop)
+        except PlatformCompositionError:
+            return _read_scrub_unavailable()
+        return web.json_response({"enabled": True, "monitor": None, "autonudge_loop": reading})
     monitor = loop.monitor
     assert monitor is not None
+    try:
+        redacted = _redact_monitor_value(monitor_state_public_dict(monitor))
+    except PlatformCompositionError:
+        return _read_scrub_unavailable()
     return web.json_response(
         {
             "enabled": True,
             "active": bool(loop.active),
             "monitor_id": loop.id,
-            "monitor": _redact_monitor_value(monitor_state_public_dict(monitor)),
+            "monitor": redacted,
             "autonudge_loop": None,
         }
     )
@@ -580,11 +666,14 @@ async def api_monitors_list(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     svc = _autonudge_get()
-    monitors = (
-        []
-        if svc is None
-        else [_serialize_monitor(lp) for lp in svc.list_all() if is_structured_monitor_loop(lp)]
-    )
+    try:
+        monitors = (
+            []
+            if svc is None
+            else [_serialize_monitor(lp) for lp in svc.list_all() if is_structured_monitor_loop(lp)]
+        )
+    except PlatformCompositionError:
+        return _read_scrub_unavailable()
     return web.json_response({"enabled": svc is not None, "monitors": monitors})
 
 
@@ -595,16 +684,15 @@ async def api_monitor_slot_get(request: web.Request) -> web.Response:
         return denied
     svc = _autonudge_get()
     loop = svc.get_by_slot(request.match_info["slot_key"]) if svc is not None else None
-    return web.json_response(
-        {
-            "enabled": svc is not None,
-            "monitor": (
-                _serialize_monitor(loop)
-                if loop is not None and is_structured_monitor_loop(loop)
-                else None
-            ),
-        }
-    )
+    try:
+        served = (
+            _serialize_monitor(loop)
+            if loop is not None and is_structured_monitor_loop(loop)
+            else None
+        )
+    except PlatformCompositionError:
+        return _read_scrub_unavailable()
+    return web.json_response({"enabled": svc is not None, "monitor": served})
 
 
 async def api_monitor_create(request: web.Request) -> web.Response:
@@ -651,7 +739,7 @@ async def api_monitor_create(request: web.Request) -> web.Response:
     )
     if error is not None:
         return _monitor_error(error, "monitor_create_denied", status=status)
-    return web.json_response({"ok": True, "monitor": _serialize_monitor(loop)})
+    return _ok_serialized("monitor", lambda: _serialize_monitor(loop))
 
 
 async def api_monitor_update(request: web.Request) -> web.Response:
@@ -724,7 +812,7 @@ async def api_monitor_update(request: web.Request) -> web.Response:
     )
     if error is not None:
         return _monitor_error(error, "monitor_update_denied", status=status)
-    return web.json_response({"ok": True, "monitor": _serialize_monitor(updated)})
+    return _ok_serialized("monitor", lambda: _serialize_monitor(updated))
 
 
 async def api_monitor_stop(request: web.Request) -> web.Response:
@@ -747,7 +835,7 @@ async def api_monitor_stop(request: web.Request) -> web.Response:
     )
     if error is not None:
         return _monitor_error(error, "monitor_stop_denied", status=status)
-    return web.json_response({"ok": True, "monitor": _serialize_monitor(stopped)})
+    return _ok_serialized("monitor", lambda: _serialize_monitor(stopped))
 
 
 async def api_monitor_clear(request: web.Request) -> web.Response:
@@ -829,7 +917,7 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
     )
     if error is not None:
         return _monitor_error(error, "monitor_restart_denied", status=status)
-    return web.json_response({"ok": True, "monitor": _serialize_monitor(restarted)})
+    return _ok_serialized("monitor", lambda: _serialize_monitor(restarted))
 
 
 async def api_autonudge_start(request: web.Request) -> web.Response:
@@ -921,7 +1009,7 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     )
     if error is not None:
         return web.json_response({"error": error, "code": "autonudge_not_armed"}, status=status)
-    return web.json_response({"ok": True, "loop": _serialize(loop)})
+    return _ok_serialized("loop", lambda: _serialize(loop))
 
 
 async def api_autonudge_update(request: web.Request) -> web.Response:
@@ -972,7 +1060,7 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
     )
     if error is not None:
         return web.json_response({"error": error}, status=status)
-    return web.json_response({"ok": True, "loop": _serialize(loop)})
+    return _ok_serialized("loop", lambda: _serialize(loop))
 
 
 async def api_autonudge_delete(request: web.Request) -> web.Response:
@@ -1240,6 +1328,11 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    if scrub_policy_unavailable():
+        # Ahead of ``fire_now``: the reply is serialized, so arming first 503s a cycle
+        # that already ran, which a retry would then run a second time.
+        await _audit("denied", existing.slot_key, "scrub_policy_unavailable")
+        return _read_scrub_unavailable()
     if not await _audit_or_deny(existing.slot_key):
         # Fail closed, with nothing armed: the deadline has not moved and no
         # timer was re-armed, so the loop is exactly as the operator left it.
@@ -1265,4 +1358,4 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
         if status == 404:
             return web.json_response({"error": error, "code": "autonudge_not_found"}, status=404)
         return web.json_response({"error": error, "code": "autonudge_not_fired"}, status=409)
-    return web.json_response({"ok": True, "loop": _serialize(loop)})
+    return _ok_serialized("loop", lambda: _serialize(loop))
