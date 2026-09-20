@@ -1,4 +1,9 @@
-"""Folds over a session's CREW LOG -- the side panel's five views, and the ledger.
+"""Folds over ONE session's crew log -- the side panel's five views, and the ledger.
+
+The panel reads five, and those five are what the growth push carries. ``class`` is a
+sixth registered fold that is deliberately NOT advertised: its reader is
+a session deciding whether it may read ANOTHER unit's log, which is why it is held at
+the most restrictive value the log ever recorded rather than at the current one.
 
 A projection folds one crew log and carries that log's ``seq`` as its version
 (RFC FR-5), so a reader that holds a projection at seq N and reads the entries
@@ -92,7 +97,9 @@ from kiro_crew.session_ledger import TERMINAL_PHASES as LEDGER_TERMINAL_PHASES
 logger = logging.getLogger(__name__)
 
 #: The session side panel's projections, in the RFC section 5 order. These fold ONE
-#: session's crew log and are the set the growth push sends.
+#: session's crew log and are the set the growth push sends, which is why ``class``
+#: is NOT among them: nothing on a client draws it, so pushing it would ship a frame
+#: per log growth to every owner socket for no reader.
 PROJECTION_NAMES: Final[tuple[str, ...]] = (
     "status",
     "usage",
@@ -100,6 +107,16 @@ PROJECTION_NAMES: Final[tuple[str, ...]] = (
     "tools",
     "approvals",
 )
+
+#: Folds this module registers but does NOT advertise: no panel draws them and the
+#: growth push does not carry them. ``class`` answers what kind of session a log
+#: belongs to over the log's whole life, for a reader deciding whether another
+#: session may read it, and its one caller asks for it by name
+#: (``fold_session(("class",))``). It is registered here rather than kept private so
+#: that one machinery folds it -- the same checkpoint, the same incremental reuse, the
+#: same recreated-log guard -- while staying out of the advertised set, which would
+#: otherwise name a projection with no reader.
+INTERNAL_PROJECTION_NAMES: Final[tuple[str, ...]] = ("class",)
 
 #: Projections keyed by a SLOT instead of by one crew log. A slot owns one ACP
 #: session id at a time, so a fact that belongs to the slot for its whole life --
@@ -111,7 +128,9 @@ PROJECTION_NAMES: Final[tuple[str, ...]] = (
 SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = ("ledger",)
 
 #: Every fold this module registers, in registry order.
-FOLD_NAMES: Final[tuple[str, ...]] = PROJECTION_NAMES + SLOT_PROJECTION_NAMES
+FOLD_NAMES: Final[tuple[str, ...]] = (
+    PROJECTION_NAMES + INTERNAL_PROJECTION_NAMES + SLOT_PROJECTION_NAMES
+)
 
 #: The types these folds can interpret, handed to ``iter_from(known=...)`` so an
 #: entry from a newer writer stops the fold instead of skewing it. The set is the
@@ -413,8 +432,8 @@ def fold_approvals(entries: Iterable[Entry]) -> dict[str, Any]:
 class SessionProjections:
     """Every projection for one session, all folded through the same seq.
 
-    One pass over the file serves all five, which is what makes pushing the whole
-    side panel on each growth cost one read rather than five.
+    One pass over the file serves every requested fold, which is what makes pushing the whole
+    side panel on each growth cost one read rather than one per fold.
     """
 
     session_id: str
@@ -781,7 +800,7 @@ def _advance_all(
 ) -> dict[str, Checkpoint]:
     """Every checkpoint advanced over the part of *chunk* it has not consumed.
 
-    The per-checkpoint filter is what lets one chunk serve five folds that may sit
+    The per-checkpoint filter is what lets one chunk serve every fold that may sit
     at DIFFERENT seqs: a reused bundle can hold a status checkpoint further along
     than its tools one, and ``advance`` refuses an entry at or below the seq it
     already reached rather than silently double-counting it.
@@ -1549,6 +1568,201 @@ def _ledger_render(state: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# class -- what kind of session this log belongs to, over its whole life
+# --------------------------------------------------------------------------- #
+
+
+def _class_start() -> dict[str, Any]:
+    return {
+        # Whether the FIRST opener this fold saw stated a class. ``saw_opener`` is
+        # what makes it the first one rather than any one: a log carries an opening
+        # entry per re-attachment, so a log whose original opener predates the field
+        # gains a later one that does state a class, and letting that set ``opened``
+        # would date the log by an entry written long after the part whose class is
+        # unknown.
+        "opened": False,
+        "saw_opener": False,
+        "stated": 0,
+        "memory": "",
+        "app": "",
+        "channel": False,
+        # The workspace the FIRST stated class named, and whether a later one named a
+        # different one. Not folded most-restrictively like the members above, because a
+        # workspace is an identity rather than a restriction -- there is no "more
+        # restrictive" workspace to keep. What a reader needs is whether ONE workspace
+        # owns this log's whole content, so the first is kept and any move is recorded as
+        # a fact of its own. A log that moved belongs to no single workspace, and a
+        # cross-session read of it is refused whichever workspace asks.
+        "workspace": "",
+        "workspace_moved": False,
+        # The last seq this fold RECEIVED, and whether the history it saw has a hole
+        # in it. Separate from ``complete``, which is about the log's beginning: a log
+        # can begin properly and still be missing a record in the middle.
+        "last_seq": 0,
+        "damaged": False,
+    }
+
+
+def _class_read(data: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The class members of *data*, or ``None`` when it states no class.
+
+    ``memory`` is required, so its absence is what says a class was not stated. A
+    line carrying the other members without it is a fragment, and a fragment reads
+    as nothing stated rather than as a class with an unknown memory mode -- the
+    same rule the reader applies to a missing object.
+
+    ``workspace`` is NOT required, and that is deliberate: whether a class was stated
+    and which workspace stated it are two questions, and a line that names a memory
+    mode did state a class. An absent workspace reads as the empty string, which no
+    live slot can produce (a slot's workspace defaults to ``default``), so the arm that
+    compares workspaces refuses on it rather than treating it as a match.
+    """
+    memory = data.get("memory")
+    if not isinstance(memory, str) or not memory:
+        return None
+    app = data.get("app")
+    workspace = data.get("workspace")
+    return {
+        "memory": _as_str(memory),
+        "app": _as_str(app) if isinstance(app, str) else "",
+        "channel": data.get("channel") is True,
+        "workspace": _as_str(workspace) if isinstance(workspace, str) else "",
+    }
+
+
+def _class_absorb(state: dict[str, Any], stated: dict[str, Any]) -> None:
+    """Fold *stated* into *state*, keeping the most restrictive value ever held.
+
+    Restrictive, not latest, and that is the whole semantics of this fold. The
+    question a reader asks is whether this log could hold content that must not
+    cross a boundary, and content is durable: a session published to a channel for
+    one turn holds that turn's words for good, so a later turn reporting no channel
+    does not make the log readable again. The same reasoning covers an app that
+    owned the session and a memory mode that was ever not persistent.
+
+    So each member only ever moves AWAY from the permissive value: ``channel``
+    latches true, ``app`` keeps the first owner it ever had, and ``memory`` keeps
+    the first non-persistent mode. A member that has never been restrictive tracks
+    what was last stated, which is what makes an ordinary session's fold read as
+    the ordinary class rather than as an empty one.
+    """
+    state["stated"] += 1
+    if state["memory"] == "" or state["memory"] == "persistent":
+        state["memory"] = stated["memory"]
+    if not state["app"] and stated["app"]:
+        state["app"] = stated["app"]
+    state["channel"] = state["channel"] or stated["channel"]
+    # Workspace is the exception to the paragraph above: it is an identity, so there is
+    # no more-restrictive value to keep. The first one stated is kept, and a later one
+    # that differs sets ``workspace_moved`` -- which is itself the restrictive fact,
+    # since a log whose content spans two workspaces is owned by neither.
+    if not state["workspace"]:
+        state["workspace"] = stated["workspace"]
+    elif stated["workspace"] and stated["workspace"] != state["workspace"]:
+        state["workspace_moved"] = True
+
+
+def _class_step(state: dict[str, Any], entry: Entry) -> None:
+    # Seq CONTIGUITY, and for this fold only. The store skips an unparseable interior
+    # line deliberately -- its own words: one unreadable record must not make the rest
+    # of the file unreadable -- and that is right for a fold accumulating totals, where
+    # a lost entry costs a count. It is wrong for this one: the skipped line may be the
+    # SOLE record of a restriction, and dropping it turns a restricted log into a
+    # permissive answer, which is an authorization ceiling raised by byte damage. So a
+    # gap in the seqs this fold receives marks the history damaged and the reader
+    # refuses on it, while every other fold keeps the store's tolerance.
+    #
+    # The FIRST entry seen is accepted at whatever seq it carries: a log whose front
+    # retention took does not begin at 1, and that is the reader's own check to make,
+    # from the segment names, rather than a hole reported from the middle.
+    previous = state["last_seq"]
+    state["last_seq"] = entry.seq
+    if previous and entry.seq != previous + 1:
+        state["damaged"] = True
+    if entry.type == "write/dropped":
+        # The log itself saying an append was permanently lost. For a fold whose
+        # answer is an authorization ceiling that is a hole: the lost append may have
+        # been the class move that restricted this session, and nothing else records
+        # it. This is what lets the RECORDER be best-effort at the call site -- a
+        # class move that never reaches the file cannot leave the log readable.
+        state["damaged"] = True
+        return
+    if entry.type == "session/opened":
+        first = not state["saw_opener"]
+        state["saw_opener"] = True
+        recorded = entry.data.get("class")
+        if not isinstance(recorded, Mapping):
+            # A log opened before the field existed. Nothing is absorbed and
+            # ``opened`` stays false, so the render reports a history with no
+            # beginning rather than an unrestricted session.
+            return
+        stated = _class_read(recorded)
+        if stated is None:
+            # The object is THERE and cannot be read, which is damage rather than
+            # age: a writer that records the field records it whole, and the
+            # declaration refuses a fragment at append. Absence is a date; an
+            # unreadable presence is a hole.
+            state["damaged"] = True
+            return
+        if first:
+            # Only the log's own beginning can date it. A later opener is written
+            # when a new gateway process re-attaches to the same session, so on a log
+            # whose first opener predates the field it would otherwise supply a
+            # beginning for a stretch of the log it was not present for.
+            state["opened"] = True
+        _class_absorb(state, stated)
+    elif entry.type == "session/class":
+        stated = _class_read(entry.data)
+        if stated is None:
+            # A move was recorded and cannot be read. What it moved TO is the whole
+            # content of this entry, so skipping it discards a transition this fold
+            # exists to carry -- and the direction it discards is always toward
+            # permissive, since only a restriction is worth recording a move for.
+            state["damaged"] = True
+            return
+        _class_absorb(state, stated)
+
+
+def _class_render(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        # Whether any class was stated at all. False for a log written before the
+        # class was recorded, and for one whose class-bearing entries retention has
+        # taken.
+        "recorded": state["stated"] > 0,
+        # Whether the history has a BEGINNING -- the log's FIRST opening entry
+        # stated a class. A fold that saw only transitions knows the class moved and
+        # not what it moved from, so it cannot report the earliest class the log
+        # held, and a reader deciding an authorization question must treat that as
+        # unknown. A LATER opener does not supply that beginning: one is written per
+        # re-attachment, so on a log whose first opener predates the field it would
+        # date a stretch of the log it was not present for.
+        # This is also what dates the log: the opening ``class`` object and
+        # ``session/class`` were declared together, so a log stating the first was
+        # written by a build that records the second, and its absence of transitions
+        # is therefore a real account of a class that never moved rather than the
+        # silence of a writer that could not say.
+        "complete": state["opened"],
+        # Whether the history this fold saw has a HOLE: a seq the store skipped
+        # because the line was unreadable, or a class record present and unreadable.
+        # Distinct from ``complete`` at the other end of the same question -- that one
+        # is about the log's beginning, this one about its middle -- and a reader
+        # deciding an authorization question refuses on either, because the record a
+        # hole swallows is more likely to be a restriction than a relaxation: only a
+        # restriction is worth writing a move for.
+        "damaged": state["damaged"],
+        "memory": state["memory"],
+        "app": state["app"],
+        "channel": state["channel"],
+        # Which workspace owns this log's content, and whether more than one ever did.
+        # A cross-session read compares the first against the caller's own workspace and
+        # refuses on the second, so an empty ``workspace`` (no live slot can state one)
+        # and a moved one both refuse rather than matching.
+        "workspace": state["workspace"],
+        "workspace_moved": state["workspace_moved"],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Reading a slot's folds
 # --------------------------------------------------------------------------- #
 
@@ -1737,6 +1951,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
     "timeline": _Fold("timeline", _timeline_start, _timeline_step, _timeline_render),
     "tools": _Fold("tools", _tools_start, _tools_step, _tools_render),
     "approvals": _Fold("approvals", _approvals_start, _approvals_step, _approvals_render),
+    "class": _Fold("class", _class_start, _class_step, _class_render),
     "ledger": _Fold("ledger", _ledger_start, _ledger_step, _ledger_render),
 }
 

@@ -121,6 +121,26 @@ UnbindListener = Callable[[str, ChannelLink, str], None]
 # a per-instance listener would leave those removals unannounced.
 _UNBIND_LISTENER: UnbindListener | None = None
 
+# The callable shape a COMMITTED channel binding is announced through: ``(session_key,)``.
+# Deliberately carries only the key: the sink resolves the session itself, because what
+# it records is a property of that session rather than of the link.
+BindListener = Callable[[str], None]
+
+# Announces that a session's conversation is now published to a channel. Registered by
+# the gateway, which is the only layer that can see a session's memory mode and owning
+# app -- this store sees the binding and nothing else about the session. MODULE-level
+# for the same reason as :data:`_UNBIND_LISTENER`: a binding call site may hold a
+# throwaway ``SessionMap()``, and a per-instance listener would leave those
+# announcements unmade.
+#
+# It exists because the crew log records a session's CLASS, and a reader deciding
+# whether another session may read that log asks about the whole life of the log rather
+# than about now. Sampling the class at each turn's start misses a link that commits
+# and is removed inside ONE turn, and content authored through it is in the log with no
+# record that it was published. Announcing the commit is what closes that: the record
+# is written when the fact becomes true, not when someone next looks.
+_BIND_LISTENER: BindListener | None = None
+
 
 def _normalize_unbind_reason(reason: str) -> str:
     """Constrain *reason* to the audited vocabulary.
@@ -152,6 +172,33 @@ def set_unbind_listener(callback: UnbindListener | None) -> None:
     """
     global _UNBIND_LISTENER
     _UNBIND_LISTENER = callback
+
+
+def set_bind_listener(callback: BindListener | None) -> None:
+    """Register (or clear, with None) the sink for COMMITTED channel bindings.
+
+    Invoked as ``callback(session_key)`` once the IN-MEMORY binding is committed and
+    while the map lock is still held, which is what makes it precede any traffic: routing
+    an inbound message reads this map, so no message can be attributed to the session
+    before the announcement has been made. The guarantee rests on that in-memory commit
+    ALONE, and deliberately so: the ordering that matters is against readers of the map,
+    and they read the dict, not the file. Where the file write has reached by then varies
+    by context and is not part of the guarantee -- on a thread running an event loop it is
+    only queued, while a caller with no running loop (CLI, tests, worker threads) has
+    already written it inline. A sink that waited for the disk would hold the lock across
+    a write on the one path that must not pay for it, without buying any ordering the
+    in-memory commit does not already give.
+
+    Best-effort at the call site, on the same contract as its unbind sibling -- it runs
+    on a synchronous path, so it must not block, and an exception it raises is
+    swallowed rather than failing the bind. That is safe here only because the thing it
+    records is fail-closed at the far end: the record is handed to the crew log's
+    writer without waiting, and a write the writer permanently loses is itself recorded,
+    which the class fold reads as a hole and a cross-session read refuses on. So a lost
+    announcement costs a refusal, never a silent grant.
+    """
+    global _BIND_LISTENER
+    _BIND_LISTENER = callback
 
 
 # Serializes every structural access to the map. MODULE-level, not per-instance,
@@ -846,6 +893,22 @@ class SessionMap:
         except (TypeError, ValueError):
             return None
 
+    def _note_bind(self, key: str) -> None:
+        """Announce one COMMITTED channel binding. The choke point both bind paths use.
+
+        Called after the binding is persisted and inside the map lock, so it describes
+        something that has happened and precedes anything that could route through it.
+        Best-effort, matching :meth:`_note_inbound_unbind`: a broken sink must not turn
+        a bind into a raise.
+        """
+        listener = _BIND_LISTENER
+        if listener is None:
+            return
+        try:
+            listener(key)
+        except Exception:
+            logger.warning("channel-bind listener failed for %s", key, exc_info=True)
+
     def _note_inbound_unbind(self, key: str, link: ChannelLink, reason: str) -> None:
         """Audit and announce the removal of one inbound resume binding.
 
@@ -1205,6 +1268,12 @@ class SessionMap:
             else:
                 self._thread_to_session[thread_ts] = key
         self._save()
+        if thread_ts:
+            # A real binding, not the clear sentinel. The identical-coordinates branch
+            # above returns before reaching here, so the inbound path re-writing the
+            # same thread every turn does not announce: this fires on a binding that
+            # CHANGED, which is what the sink records.
+            self._note_bind(key)
 
     @_guarded
     def get_slack_link(self, key: str) -> tuple[str | None, str | None]:
@@ -1348,6 +1417,7 @@ class SessionMap:
         # as the Slack path: a marker outliving its binding re-mutes the next one.
         entry.pop("mirror_paused", None)
         self._save()
+        self._note_bind(key)
         if displaced is not None and (displaced != link or not accepts_inbound):
             self._note_inbound_unbind(key, displaced, reason)
 

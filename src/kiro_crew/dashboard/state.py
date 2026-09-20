@@ -128,6 +128,75 @@ _BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
 _FOLDER_REPOSITORY = FolderRepository(lambda: logger)
 
 
+def note_crew_log_class(state: Any, slot: Any) -> None:
+    """Record *slot*'s current class in its crew log, if it has moved.
+
+    THE recorder, as the surfaces outside this module call it. Every path that commits a
+    change to a session's class reaches it, so there is one place the fact is written and
+    one place to read to know when it is written.
+    ``test_crew_log_class_recorder.py`` derives the call-site list from the source and
+    fails if a new one appears outside it.
+    """
+    _record_crew_log_class(state, slot)
+
+
+def _record_crew_log_class(state: Any, slot: Any) -> None:
+    """The implementation. Never raises, and the reason is not caution.
+
+    A record is not worth turning an injection or a binding into a failure, and the
+    paths that reach here are reached in tests by state DOUBLES that model a slot store
+    and nothing else -- so a missing attribute is an ordinary input rather than a bug.
+    What makes swallowing safe is the far end: the append is handed to the crew log's
+    writer without waiting, a write the writer permanently loses is itself recorded, and
+    the class fold reads a dropped write as a hole. A lost record therefore costs a
+    cross-session read a refusal, never a silent grant.
+
+    A slot with NO OPEN LOG is the one case that argument does not cover, because nothing
+    is handed to the writer at all and so nothing records the loss. It is reachable: an
+    idle session can be bound to a channel, route a turn, and be unbound again before its
+    first turn opens a log, and a class read from the live slot at that point states
+    never-published about a log that holds channel-authored words. So a restriction is
+    MARKED on the slot instead of dropped, and the shared derivation folds the mark in
+    when the log is finally opened.
+
+    The mark is written BEFORE the append is attempted and is NOT conditioned on it,
+    because a session id is not evidence that a log exists: a restored session publishes
+    its id while its log is still absent, and the append then finds no log and returns
+    having written nothing and recorded no loss. Keying the mark on the restriction itself
+    rather than on a prediction about the append covers that ordering and every other
+    reason an append can fail to land, including ones not enumerated here. The cost is a
+    mark that outlives an append that DID land, which only re-states a restriction the log
+    already carries: the fold holds each member at the most restrictive value the log ever
+    recorded, so a redundant mark changes no answer.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    try:
+        from kiro_crew.dashboard.chat_runner import (
+            PENDING_CHANNEL_ATTR,
+            _crew_log_class,
+            _crew_log_workspace,
+        )
+
+        memory, app, channel = _crew_log_class(state, slot)
+        if channel:
+            setattr(slot, PENDING_CHANNEL_ATTR, True)
+        sid = crew_log_emit.session_id_of(getattr(slot, "_acp_client", None))
+        if not sid:
+            return
+        crew_log_emit.on_class_observed(
+            sid,
+            memory=memory,
+            app=app,
+            channel=channel,
+            workspace=_crew_log_workspace(slot),
+        )
+    except Exception:
+        logger.debug(
+            "crew-log class record skipped for %r", getattr(slot, "key", ""), exc_info=True
+        )
+
+
 def _new_notification_coordinator() -> NotificationCoordinator:
     """Build a coordinator whose providers resolve facade seams at call time."""
     return NotificationCoordinator(
@@ -4702,6 +4771,56 @@ class DashboardState:
                 "Failed to deliver channel compact notice for %s", key
             )
 
+    def wire_session_bind_listener(self) -> None:
+        """Register the crew-log class record for a COMMITTED channel binding.
+
+        The session map sees the binding and nothing else about the session; the
+        memory mode and the owning app live on the slot. This is where those halves
+        meet, the same division as :meth:`wire_session_unbind_listener`.
+
+        Runs SYNCHRONOUSLY, unlike the unbind notice, and that difference is the point
+        rather than an oversight. The notice has to reach a transport, so it hops to
+        the gateway loop; this has to be recorded BEFORE anything can be routed through
+        the binding, and it is the map's own lock -- held across this call -- that
+        guarantees it. Hopping to the loop would put the record after traffic could
+        arrive. Every step here is cheap and non-blocking: reading slot attributes,
+        one probe of the map (whose lock is reentrant, so the same thread re-enters it
+        safely), and an append handed to the crew log's writer without waiting.
+        """
+
+        def _on_bind(key: str) -> None:
+            slot = self._slots.get(key.partition(":")[2] or key)
+            if slot is None:
+                # No live slot: nothing is authoring into a crew log under this key
+                # right now, so there is no class to record. A later turn opens the log
+                # and states the class it finds then.
+                return
+            self.note_crew_log_class(slot)
+
+        self.sessions.set_bind_listener(_on_bind)
+
+    def note_crew_log_class(self, slot: Any) -> None:
+        """Record *slot*'s current class in its crew log, if it has moved.
+
+        THE recorder. Every surface that commits a change to a session's class reaches
+        it -- the session map's bind announcement, and the paths that set a link on a
+        slot directly -- so there is one place the fact is written and one place to
+        read to know when it is written. ``test_crew_log_class_recorder.py`` derives the
+        call-site list from the source and fails if a new one appears outside it.
+
+        Best-effort by contract, because a binding must not fail for want of a record.
+        What makes that safe is the far end rather than optimism: the append is handed
+        to the crew log's writer without waiting, a write the writer permanently loses
+        is itself recorded, and the class fold reads a dropped write as a hole -- so a
+        lost record costs a cross-session read a refusal, never a silent grant.
+
+        The module-level :func:`note_crew_log_class` is what the surfaces outside this
+        class call, and it tolerates a state object that does not have this method at
+        all. That is not defensive padding: the link-setting paths are reached in tests
+        by state DOUBLES, and a record is not worth turning an injection into a failure.
+        """
+        _record_crew_log_class(self, slot)
+
     def wire_session_unbind_listener(self) -> None:
         """Register the channel notice for a removed inbound resume binding.
 
@@ -5886,6 +6005,9 @@ class DashboardState:
             slot.channel_origin = True
         if linked_session_key:
             slot.linked_session_key = linked_session_key
+            # Every path that sets a link records the class it just changed. Free when
+            # the slot has no live session yet, which is the common case here.
+            self.note_crew_log_class(slot)
         elif self.sessions and not app:
             # No caller-supplied binding, but a channel-stem name means this slot
             # displays a conversation that runs on the channel's own session.
@@ -5909,6 +6031,7 @@ class DashboardState:
                 resolved = self.sessions.channel_key_for_stem(name)
                 if isinstance(resolved, str) and is_channel_session_key(resolved):
                     slot.linked_session_key = resolved
+                    self.note_crew_log_class(slot)
         try:
             if self.sessions:
                 from kiro_crew.dashboard.chat_utils import effective_session_key

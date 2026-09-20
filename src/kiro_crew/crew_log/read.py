@@ -1,15 +1,19 @@
-"""Reads over a crew log that more than one consumer needs: a page, and a listing.
+"""Reads over a crew log that more than one consumer needs: a page, a listing, lineage.
 
-Both functions here are BLOCKING and belong off the event loop. They are in the
+All functions here are BLOCKING and belong off the event loop. They are in the
 storage package rather than in a route module because two consumers now want the
 same answers -- the dashboard's own routes and the ``kirocrew-crew-log`` MCP
 server's proxy leg -- and a second copy of a page reader is how two callers come
 to disagree about what a page is.
 
-Neither function makes an authorization claim. That is the same split
-``crew_log.store`` states for itself: this layer has no caller identity to derive
-a decision from, so the first caller with a permission model owns the decision,
-and for both consumers here that caller is a dashboard route.
+No function here makes an authorization claim, the dispatch pair included. That is
+the same split ``crew_log.store`` states for itself: this layer has no caller
+identity to derive a decision from, so the first caller with a permission model
+owns the decision, and for both consumers here that caller is a dashboard route.
+:func:`dispatch_view` and :func:`recorded_class` report recorded FACTS -- which
+session dispatched which, and what kind of session a log belongs to -- and a route
+decides what those facts permit. Keeping them here rather than in the route is why
+the page, the listing and the scope test read one record the same way.
 """
 
 from __future__ import annotations
@@ -18,15 +22,21 @@ import heapq
 import json
 import logging
 import os
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
 from kiro_crew.crew_log import projection as projections
+from kiro_crew.crew_log import session_tree
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION
+from kiro_crew.crew_log.session_tree import TreeNode
 from kiro_crew.crew_log.store import LOG_FILE, crew_log_root
 from kiro_crew.crew_log.store import now_ms as store_now_ms
+from kiro_crew.crew_log.store import segment_first_seqs
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +68,258 @@ MAX_LISTED_CANDIDATES: Final[int] = MAX_LISTED_SCAN * 2
 
 #: Rows one listing returns, whatever a caller asks for.
 MAX_LIST_LIMIT: Final[int] = 200
+
+#: Class bundles held for incremental re-folding, keyed by unit id. A read of the
+#: class asks a question about the log's whole life, so it cannot be answered from
+#: the head -- and re-folding every entry on each request would put a whole-file
+#: read on the path of a scope test a route runs per request. The bundle is the
+#: registry's own resumable checkpoint, so a second read of an unchanged log
+#: consumes no entries and a grown one consumes only what grew.
+MAX_CLASS_BUNDLES: Final[int] = 256
+
+#: The held bundles, newest use last. Module-level for the same reason the tree
+#: scanner is: the saving only exists if it survives the request.
+_class_bundles: "OrderedDict[str, projections.SessionProjections]" = OrderedDict()
+
+#: Guards :data:`_class_bundles`. Folds run off the loop and concurrently.
+_class_lock: Final[threading.Lock] = threading.Lock()
+
+
+def recorded_class(session_id: str) -> dict[str, Any] | None:
+    """What kind of session this unit belongs to, over its log's whole life, or ``None``.
+
+    The ``class`` projection, folded through the registry: ``memory`` always, ``app``
+    when an app owns the session, ``channel`` when its conversation is published to a
+    messaging channel, each held at the most restrictive value the log ever recorded.
+    ``complete`` says the history has a beginning -- an opening entry that stated a
+    class -- and ``stated`` counts the entries that stated one.
+
+    The whole life, not the first instant, and that is why this folds rather than
+    reading the head. A session can be given a channel surface, an app owner or a
+    different memory mode while it runs, and the content that arrives afterwards is
+    in this same log; a reader that consulted only the opening entry would be told
+    what the session was before the surface it acquired, which for a closed session
+    is the only thing anyone can still check.
+
+    ``None`` is the answer that matters. It means this log does not say what kind of
+    session it is -- nothing recorded, no unit, or a log that cannot be read -- and a
+    caller deciding whether another session may read it must REFUSE on it. A missing
+    record is not evidence that nothing applies.
+
+    A fold whose entries were CUT SHORT also answers ``None``. ``iter_from`` stops at
+    an entry type it does not know, which a log written by a newer build can carry,
+    and stopping is safe for a fold that accumulates totals but not for this one: a
+    restrictive move recorded after the unknown entry would simply be unseen, and the
+    fold would report the log as more readable than it is. So the seq the fold reached
+    is compared against the seq the file holds, and a short fold refuses.
+
+    A log that does not hold its own BEGINNING refuses for the same reason at the
+    other end. Retention deletes whole segments off the front, and the first seq is in
+    each segment's name, so an oldest survivor starting past seq 1 says so for the
+    price of a directory listing. Without that check the fold would read the earliest
+    SURVIVING opener as the log's first and date the log by an entry written after the
+    part retention took.
+
+    A log with a hole in its MIDDLE refuses too, and that one the fold reports rather
+    than the reader measuring it. The store skips an unreadable interior line on purpose
+    -- one damaged record must not make a whole file unreadable -- and it checks seq
+    continuity only at segment boundaries, so a damaged line that carried a restriction
+    disappears while the fold still reaches the file's tail. Neither check above sees
+    that: nothing stopped early and the beginning is intact. The class fold therefore
+    keeps its own contiguity, and reports a record it could not read as a hole rather
+    than as silence.
+
+    The one hole none of the three covers is a damaged LAST line: it lowers the tail seq
+    too, so the fold and that seq agree, and nothing distinguishes it from an append in
+    flight -- which is frequent, so refusing on it would refuse ordinary reads. It
+    carries no exposure, and that is a property of the writer rather than luck: a class
+    is recorded at the START of the turn that runs under it, so a move with nothing
+    after it is a move no turn has run under, and no content in the log is governed by
+    what was lost.
+
+    BLOCKING. The fold is incremental: the bundle for each unit is kept and handed
+    back as ``since=``, so a second read of an unchanged log consumes no entries, and
+    ``fold_session`` itself refuses to reuse a bundle whose log has been recreated.
+    """
+    if not session_id:
+        return None
+    try:
+        handle = projections.open_session_log(session_id)
+        if handle is None:
+            return None
+        held = handle.last_seq
+        with _class_lock:
+            since = _class_bundles.get(session_id)
+        bundle = projections.fold_session(session_id, ("class",), since=since, log=handle)
+        _keep_class_bundle(session_id, bundle)
+    except (CrewLogError, OSError):
+        logger.debug(
+            "no class record for %r: its log could not be folded", session_id, exc_info=True
+        )
+        return None
+    if bundle.last_seq < held:
+        logger.debug(
+            "the class fold for %r stopped at seq %d of %d; refusing rather than "
+            "reporting a class read from part of the log",
+            session_id,
+            bundle.last_seq,
+            held,
+        )
+        return None
+    try:
+        firsts = segment_first_seqs(KIND_SESSION, session_id)
+    except OSError:
+        return None
+    if not firsts or firsts[0] > 1:
+        # The same refusal as the short fold above, at the other end. Retention
+        # deletes whole segments off the FRONT, so a log whose oldest survivor starts
+        # past seq 1 does not hold its own beginning -- and the fold would then read
+        # the earliest surviving opener as the log's first one and date the log by it.
+        # Costs a directory listing, because the first seq is in the segment's name.
+        #
+        # An EMPTY list refuses on the same ground rather than being read as "no
+        # trimming": it means no segment name could be parsed, so the question of
+        # where this log starts has no answer here, and an unanswerable question about
+        # a log's beginning is what this check refuses on.
+        logger.debug(
+            "the class fold for %r cannot show it still holds seq 1 (segment starts: "
+            "%r); refusing rather than dating a log whose beginning may be gone",
+            session_id,
+            firsts[:3],
+        )
+        return None
+    folded = bundle.projection("class").value
+    if folded.get("damaged"):
+        # A hole in the middle. The store skips an unreadable interior line on purpose
+        # and does not check interior seq continuity, so a damaged line that carried a
+        # restriction disappears while the fold still reaches the file's tail -- the
+        # short-fold check above cannot see it, because nothing stopped early. The fold
+        # reports the hole and this refuses, which keeps byte damage from raising an
+        # authorization ceiling.
+        logger.debug(
+            "the class history for %r has a hole in it; refusing rather than "
+            "answering from a record that may be missing a restriction",
+            session_id,
+        )
+        return None
+    if not folded.get("recorded"):
+        return None
+    return dict(folded)
+
+
+def _keep_class_bundle(session_id: str, bundle: projections.SessionProjections) -> None:
+    """Hold *bundle* as the ``since=`` for this unit's next class fold.
+
+    Bounded and least-recently-used, because the key space is every unit that has
+    ever been asked about. Each held bundle is one checkpoint whose state is six
+    small fields, so the cap bounds real memory rather than standing in for a bound.
+    """
+    with _class_lock:
+        _class_bundles[session_id] = bundle
+        _class_bundles.move_to_end(session_id)
+        while len(_class_bundles) > MAX_CLASS_BUNDLES:
+            _class_bundles.popitem(last=False)
+
+
+def reset_class_bundles() -> None:
+    """Drop every held class bundle. For tests that rebuild a unit's log in place."""
+    with _class_lock:
+        _class_bundles.clear()
+
+
+@dataclass(frozen=True)
+class DispatchView:
+    """One scan of the store, folded so a dispatch question can be asked of it.
+
+    Two maps from the same scan: which SLOT each unit's log belongs to, and each
+    slot's creator. Both come from :mod:`kiro_crew.crew_log.session_tree` -- its scanner
+    reads every log's head once and caches it, and its pure fold decides the
+    parent edges, the orphans and the cycles -- so this holds no slot map of its
+    own and cannot disagree with the tree a reader sees on screen.
+
+    Keyed by SLOT, not by unit, and that is the point. A slot outlives its ACP
+    session: a gateway restart gives the same tab a new session id and therefore a
+    new unit, so a fence keyed on the recorded ``parent.sid`` would hand a
+    conductor a chain naming one of its own earlier units and lock it out of the
+    children it dispatched. The slot key carries its own creation stamp and is not
+    recycled, so the slot a child records is the slot that dispatched it for as
+    long as that tab exists.
+    """
+
+    #: unit id -> the slot key its log's header declares. A unit missing here has
+    #: no provable log in this scan, which refuses.
+    slot_of_unit: Mapping[str, str]
+    #: slot -> its node in the folded tree, carrying the creator it cites.
+    nodes: Mapping[str, TreeNode]
+
+    def slot_of(self, unit: str) -> str:
+        """The slot *unit*'s log belongs to, or ``""`` when this scan has no log for it."""
+        return self.slot_of_unit.get(unit, "") if unit else ""
+
+    def dispatched_by(self, unit: str, root_slot: str) -> bool:
+        """Whether *unit*'s session is *root_slot* or one it dispatched, transitively.
+
+        Membership is what "this session was dispatched by that one" means: a
+        conductor's slot appears above its child's slot and above its grandchild's.
+        The walk stops at the first slot citing no creator or on a repeat, and it
+        refuses to cross a slot the fold marked as being on a CYCLE -- a cycle is
+        unreachable through honest writes, since a creator exists before its child, so
+        a slot on one carries a forged or damaged record and is not evidence of
+        anything.
+
+        The repeat check is what ends the walk, and it ends it on any input: each pass
+        either returns or adds one slot to ``seen``, and ``seen`` only ever holds slots
+        drawn from the finite node map, so the walk cannot run longer than that map. A
+        counted depth cap on top of that would not make termination any safer -- it
+        would only make a deep-but-honest lineage answer "no creator above this" and
+        refuse a grant the tree actually supports.
+        """
+        if not root_slot:
+            return False
+        slot = self.slot_of(unit)
+        if not slot:
+            return False
+        if slot == root_slot:
+            return True
+        seen = {slot}
+        while True:
+            node = self.nodes.get(slot)
+            if node is None or node.cycle:
+                return False
+            parent = node.parent_slot
+            if not parent or parent in seen:
+                return False
+            if parent == root_slot:
+                return True
+            seen.add(parent)
+            slot = parent
+
+
+#: The scanner the dispatch view is folded from. Module-level because it holds a
+#: per-unit head cache validated against each segment's identity, and the cache is
+#: what keeps a scan one ``stat`` per untouched unit rather than one read -- which
+#: is the difference between a scope test a route can run per request and one it
+#: cannot. Its own lock makes concurrent scans safe.
+_TREE: Final[session_tree.SessionTree] = session_tree.SessionTree()
+
+
+def dispatch_view(preferred: Iterable[str] = ()) -> DispatchView:
+    """One scan of the store as a :class:`DispatchView`. BLOCKING; runs off the loop.
+
+    *preferred* names unit ids to admit FIRST, which the caller uses to put the
+    units a request is actually about ahead of the scanner's cap.
+
+    Never raises: a store fault must leave the caller able to refuse rather than
+    500, so a failed scan reports an empty view, in which no unit is placeable and
+    every dispatch test is therefore false.
+    """
+    try:
+        records = _TREE.records(preferred)
+    except Exception:
+        logger.warning("dispatch scope scan failed; reporting no lineage", exc_info=True)
+        return DispatchView(slot_of_unit={}, nodes={})
+    slots = {record.sid: record.slot for record in records if record.sid and record.slot}
+    return DispatchView(slot_of_unit=slots, nodes=session_tree.fold_tree(records))
 
 
 def read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
@@ -284,6 +546,9 @@ def list_session_units(
     now_ms: int = 0,
     with_type_counts: bool = False,
     limit: int = 50,
+    scope_unit: str = "",
+    scope_slot: str = "",
+    admit_dispatched: "Callable[[str], bool] | None" = None,
 ) -> dict[str, Any]:
     """The session crew logs on this host, newest first, with one row each.
 
@@ -301,6 +566,31 @@ def list_session_units(
     Reports ``scanned`` and ``truncated`` rather than only the rows: a caller that
     cannot tell a short list from a cut one would read "3 sessions" off a host
     running three hundred.
+
+    ``scope_unit`` and ``scope_slot`` narrow the listing, and between them they
+    express the three scopes a route hands down. Both empty is NO narrowing, the
+    owner's own view of every unit. ``scope_unit`` alone is exactly that one unit --
+    the scope of a caller entitled to its own record and to nothing past it, and it
+    costs no scan at all. Both together are that unit plus every unit whose session
+    ``scope_slot`` dispatched, transitively, which is the tree a conductor may read.
+    The unit is named separately rather than derived from the slot because a
+    caller's own record stays readable however its lineage folds, including on a
+    store the scan could not read.
+
+    The narrowing is applied BEFORE the unit is opened and before it counts as
+    scanned, so an out-of-scope unit costs a map lookup rather than a fold, and both
+    figures describe the in-scope set rather than the whole tree. A route decides
+    which scope to pass, and this function does not infer one from the absence of
+    the other.
+
+    ``admit_dispatched`` is asked about each row admitted by LINEAGE, and a false
+    answer drops the row exactly as the scope filter does -- before it is opened and
+    before it counts as scanned, so a dropped row neither appears nor shifts the
+    figures. It is a callable rather than more scope data because the question it
+    answers is a POLICY one: the route already owns the per-unit rules, and spelling
+    them a second time here would put two implementations of one authorization rule
+    in the tree. It is asked only of lineage rows, so a caller's own row and an
+    unscoped owner listing never pay for it.
     """
     capped = max(1, min(int(limit), MAX_LIST_LIMIT))
     cutoff_ms = 0
@@ -309,6 +599,10 @@ def list_session_units(
     needle = slot_contains.casefold()
     rows: list[dict[str, Any]] = []
     scanned = 0
+    # One scan for the whole listing, and only when a dispatch tree is in scope:
+    # every candidate is tested against the same fold, so the scope test costs one
+    # pass over the store rather than one walk per candidate.
+    view = dispatch_view() if scope_slot else None
     global_counts: Counter[str] = Counter()
     candidates, truncated = _candidate_dirs(KIND_SESSION)
     for directory in candidates:
@@ -321,6 +615,19 @@ def list_session_units(
         unit_id = _unit_id_in(directory)
         if not unit_id:
             continue
+        if scope_unit or scope_slot:
+            own = bool(scope_unit) and unit_id == scope_unit
+            dispatched = view is not None and view.dispatched_by(unit_id, scope_slot)
+            if not own and not dispatched:
+                continue
+            # A row admitted by LINEAGE gets the caller's per-unit test as well, because
+            # a listing discloses a unit's slot, model and activity and a lineage grant
+            # alone does not bound which workspace those belong to. Only the lineage
+            # rows: the caller's OWN row is its own record, which the per-unit door also
+            # answers before any target test, and an unscoped owner listing never
+            # reaches this branch at all.
+            if not own and admit_dispatched is not None and not admit_dispatched(unit_id):
+                continue
         scanned += 1
         row = _listed_row(unit_id, with_type_counts=with_type_counts)
         if row is None:

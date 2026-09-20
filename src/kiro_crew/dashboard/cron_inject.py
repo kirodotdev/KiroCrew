@@ -11,7 +11,12 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
+from kiro_crew.dashboard.state import (
+    DashboardState,
+    SlotOrigin,
+    note_crew_log_class,
+    row_mid,
+)
 from kiro_crew.history import append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -555,6 +560,10 @@ def _bind_cron_slot(
         slot.memory_store = job.memory_store
     if not slot.linked_session_key:
         slot.linked_session_key = f"cron:{job.id}"
+        # A cron link is exempt from the channel class, so this records nothing in
+        # practice. It is here so EVERY assignment site reaches the recorder and the
+        # derived pin needs no exception for this one.
+        note_crew_log_class(state, slot)
         hydrate_slot_from_history(slot, history or [])
     # Publish the (possibly just-created) tab to the dashboard-surface registry
     # BEFORE anything routes against it. Every gate that asks "does this session

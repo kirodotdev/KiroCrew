@@ -100,7 +100,7 @@ CHECKPOINT_DIR: Final[str] = "projections"
 #: fenced from the agent. ``test_changing_what_a_fold_stores_forces_the_savepoint_
 #: version_to_move`` pins each fold's stored state, so forgetting the bump fails
 #: CI rather than shipping.
-CHECKPOINT_VERSION: Final[int] = 1
+CHECKPOINT_VERSION: Final[int] = 2
 
 #: Largest savepoint file this module reads or writes. Every fold's state is
 #: already bounded by construction (``crew-log-projection.md`` section 2), so this

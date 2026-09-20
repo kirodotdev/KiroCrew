@@ -3,8 +3,9 @@
 ## 1. Purpose
 
 A session's crew log is an append-only file (`crew-log-core.md`). Every view of it
-is a FOLD: `status`, `usage`, `timeline`, `tools` and `approvals` -- the session
-side panel of the RFC's section 5 table. This module is those five folds, the
+is a FOLD: `status`, `usage`, `timeline`, `tools`, `approvals` and `class` -- the
+session side panel of the RFC's section 5 table, plus the one fold a READER of
+another unit's log consults rather than a panel. This module is those five advertised folds, the internal `class` fold, the
 slot-keyed `ledger` fold, the two read routes that serve them, and the frame that
 pushes a fold when the file grows.
 
@@ -147,14 +148,16 @@ read for any session -- so the pass is taken `FOLD_CHUNK_ENTRIES` at a time: one
 pass over the file, with what is held bounded. Folding a span in pieces is the
 same value as folding it whole, because `advance` is seq-anchored and each chunk
 is strictly after the last, and each checkpoint takes only the part of a chunk it
-has not already consumed -- which is what lets one chunk serve five folds sitting
+has not already consumed -- which is what lets one chunk serve every fold sitting
 at different seqs.
 
 ## 3. The projections
 
-### The five panel folds
+### The panel folds, and `class` beside them
 
-Each reads ONE session unit, and these five are what the growth push sends.
+Each reads ONE session unit, and these FIVE are what the growth push sends. ``class``
+is registered alongside them but is not advertised and is not pushed: no panel draws it
+and its one caller asks the registry for it by name.
 
 | projection | what it answers |
 |---|---|
@@ -163,6 +166,7 @@ Each reads ONE session unit, and these five are what the growth push sends.
 | `timeline` | The newest turn, lifecycle and cost MOMENTS, oldest first. Message, step and tool entries are deliberately absent: they are the bulk of a log, the page route and `tools` already serve them, and including them would make the timeline a second copy of the file. |
 | `tools` | Calls matched to completions by `call_id`: totals, per name, open calls, unmatched completions. An error is `status` in `refused`/`error`/`failed` OR `is_error` true -- two independent signals, and an absent `is_error` is not a claim that the call worked. |
 | `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. No emitter writes these types yet; the fold is against the declared shape. |
+| `class` (INTERNAL -- not advertised, not pushed) | What KIND of session this log belongs to, over the log's WHOLE LIFE: the memory mode, the owning app, and whether the conversation was ever published to a channel. Each of those three is held at the most RESTRICTIVE value the log ever recorded, from the `class` object on the log's first `session/opened` plus every later `session/class` move, so a session published to a channel for one turn keeps reading as channel-published after the link is dropped -- that turn's content is still in this log. It also carries `workspace`, which folds differently because it is an IDENTITY rather than a restriction: there is no more-restrictive workspace to keep, so the FIRST one stated is held and a later different one sets `workspace_moved`, which is itself the restrictive fact -- a log whose content spans two workspaces is owned by neither. `recorded` says a class was stated at all and `complete` says the history has a beginning, and a reader deciding an authorization question refuses on either being false. The only fold whose consumer is a READER of another unit rather than a panel, which is why it is held restrictive rather than current: a fold that reported the present value would answer a question nobody asks of a log. |
 
 ### The slot-keyed ledger fold
 
@@ -211,8 +215,8 @@ each would otherwise be a wrong answer rather than a slow one.
 
 **The BATCH read answers two things the folds cannot.** A fold says what it holds;
 it cannot say why it holds nothing, nor whether it was read mid-write. Both fields
-are on `/crew-log/projections` alone, because both exist for a surface showing five
-folds at once and no caller of the per-name route reads either -- and the settle one
+are on `/crew-log/projections` alone, because both exist for a surface showing folds
+TOGETHER and no caller of the per-name route reads either -- and the settle one
 of them needs is a wait charged to every request that carries it. The per-name and
 page reads resolve their id the same way; they simply do not report these:
 
@@ -294,8 +298,108 @@ already holds. A second, unit-keyed door serves the `kirocrew-crew-log` MCP serv
 over the same `read_page` and projection reads, on the strict internal transport
 only: `GET /api/crew-log/sessions` lists units, `GET /api/crew-log/resolve` answers
 which unit a caller's key lands in, and `GET /api/crew-log/units/{unit}/page` and
-`/projection/{name}` are the unit-keyed forms of the two above. Their gate, and the
-argument for granting them to an agent at all, is in
+`/projection/{name}` are the unit-keyed forms of the two above.
+
+That second door asks for a valid strict session identity and then a SCOPE: a
+session reads its own unit, the unit of any session it dispatched -- transitively,
+from the creator edge recorded on the dispatched session's own `session/opened`
+entry -- and, when it is the owner at a dashboard tab whose own caller class allows
+it, any unit. The listing carries
+the same scope as a filter, because an unscoped listing would name every session on
+the host and a per-unit gate cannot refuse that after the fact. A conductor reading
+the crew logs of the sub-sessions it dispatched is the ordinary shape of the work,
+and the lineage record already says which session created which, so the entitlement
+comes from a recorded fact. Issues #11963 and #12025 were closed as not planned for
+that reason.
+
+The lineage is not the whole entitlement, because it OUTLIVES a workspace switch: the
+creator edge is written on the dispatched session and nothing rewrites it, so a
+conductor that dispatched a child and then moved workspace still names that child in
+its tree. Both doors therefore compare the caller's workspace against the one the
+target's class recorded. The per-unit door refuses the read; the listing drops the row,
+so a boundary the read door enforces for content cannot be walked around by reading
+the enumeration instead. A row admitted as the caller's OWN, and an owner's unscoped
+view, are not asked -- the same two cases the per-unit door answers before any target
+test.
+
+The maintainer decision this implements is the DISPATCH fence, not an unrestricted
+read. The wider premise -- that
+sessions on one gateway belong to one operator, so any may read any other -- was
+put forward and does not hold, because it does
+not reach a channel-linked session, whose conversation is a Slack or Telegram thread
+several allow-listed people read and prompt-injectable content enters. Nor does
+parity with `session_read_message` support it: that tool's own gate
+(`session_control.authorize_target`) refuses precisely those caller classes, so it is
+narrower than an unrestricted read rather than an example of one. So the CALLER
+classes it refuses -- unattended, app-scoped,
+incognito, channel-linked or mirrored -- are mirrored here from that module's own
+constants, and each of those callers keeps its own unit while being refused another
+session's. The owner's dashboard arm is held to the same caller classes, because a
+dashboard session mirrored to a channel republishes every turn and would otherwise be
+the one caller entitled to read every log and publish it. The door also refuses a
+caller off the internal transport, a request
+naming another component, and a session the gateway cannot name -- that last one is
+what keeps the audit record of WHICH session read a log worth having.
+
+The fence keys on SLOTS. A slot outlives its ACP session, so a gateway restart gives
+the same tab a new session id and a new unit; keying on `parent.sid` would hand a
+re-attached conductor a chain naming the unit it used to write to and lock it out of
+children it had dispatched minutes earlier. The transitive walk is section 6's own
+fold rather than a second slot map, so the fence and the tree cannot disagree.
+
+The target side is mirrored in TWO tests, because the question is asked about
+sessions that no longer exist. The first reads the class recorded on the target's own
+`session/opened` entry -- the memory mode, the owning app, whether its conversation
+is published to a channel -- which is what makes a CLOSED child decidable; a log
+carrying no such record is REFUSED rather than assumed unrestricted, so every unit
+opened before the field existed is outside a cross-session read. The second reads the
+target's live slot, which is the only thing that can see a class the session acquired
+after it opened. Either refuses. A CLOSED session is otherwise admitted: reading a
+finished child's recorded work is what this door is for, and `authorize_target`
+answers 404 for it.
+
+Both the CALLER's class and the TARGET's are asked again after the entries are read. A
+read of another session's log is decided on the loop and then performed off it, and
+that offload is a suspension point: the caller can acquire a channel link or a mirror
+while the entries are being gathered, and so can the target. The caller half stops one
+act exactly, and claims no more than it: the route does not hand another session's
+content to a caller that is publishing AT THE HANDOFF. That is the scenario of a prompt
+to paste a dispatched child's log, a mirror bound while the read is suspended, and a
+reply that publishes the private log. The target's RECORDED class
+is folded again, and for its own reason
+rather than as belt and braces: that fold reads the log's WHOLE life, so a
+``session/class`` move appended while the payload was being gathered makes it answer
+more restrictively than it did at the grant, and the words of a channel turn the
+target took during the read would otherwise come back. What makes the re-fold exact is
+where the class is RECORDED: every surface that commits a change to it records the
+change at the moment it commits, not at the next sample, so a class that governs any
+content in the log is already stated in the log ahead of that content. A record is
+therefore never later than what it governs -- which is the property the re-fold needs,
+and one no amount of sampling supplies. Because each member is held at the most
+restrictive value ever recorded, a
+re-fold can only withdraw a grant, never widen one. It is incremental, so a log that
+did not move costs nothing.
+
+One residual is KNOWN and stated rather than papered over: a caller entitled at the
+handoff that acquires a channel link AFTERWARDS holds the payload in context and can
+publish it on a later turn. Nothing at turn emission inspects a turn for another
+session's log content -- the gateway has no provenance tracking on delivered content --
+so no refusal in this route can claw that back. The two cases differ in kind rather than
+in timing: the first is the gateway delivering content INTO a published session, which
+this route performs and therefore controls; the second is a session becoming published
+while holding content it was entitled to receive. Closing the second needs provenance on
+delivered content and is not in this module's scope. A LISTING is re-checked by
+recomputing its scope and comparing, since its rows were gathered under the scope the
+caller held at the gate. The CREATOR EDGE is the one input not asked again: it
+comes from an entry that cannot be rewritten, and an append-only store can only gain
+descendants, never take back a unit the caller was already placed above. What the
+grant leaves on the request is therefore a MARK naming which arm granted, never data:
+the re-check can re-derive every value, but not which target test it owes, since the
+owner arm owes none. A read of the caller's own unit is exempt on the
+same ground the first arm is: the classes govern reading past one's own record. The
+denial is audited under the operation name the grant was, so the audit log carries the
+true sequence rather than a grant quietly withdrawn. The argument in full, including
+why the fence's integrity guarantee is untouched, is in
 `docs/reference/crew-log/reading-from-an-agent.md`.
 
 A page reports the tail it OBSERVED, not the one its handle remembers. `last_seq`
@@ -378,7 +482,7 @@ would close an import cycle and put a reader's name in the writer's code.
 
 The publisher runs the reading half on the event loop, never on the writer
 thread: `notify` hands the id to the loop and returns. It then coalesces for
-`COALESCE_SECONDS`, folds all five projections from ONE incremental read of the
+`COALESCE_SECONDS`, folds every advertised projection from ONE incremental read of the
 entries that arrived, and sends a frame only for a projection whose `seq` moved --
 re-sending an unchanged value would spend a socket write to say nothing.
 
@@ -416,14 +520,31 @@ can tell exactly what happened. Only `turn/completed` closes a turn.
 
 ## 6. The session tree -- the one fold across logs
 
-Every fold above reads its own unit's file and nothing else (FR-4). The session
-tree (`crew_log/session_tree.py`) is the one reader that looks across logs, and it is a
-different kind of thing on purpose: the `session_create` edge is recorded on the
-CHILD (`crew-log-core.md` section 5), so "which session opened which" is not in
-any one log. It is a fold over the collection, the shape dsh's `flattenLineage`
-takes over its per-session `parentSession` header field: the record lives on the
-child, the tree is a pure function over all the records, and an orphan or a cycle
-degrades to root rather than to an error.
+Every fold above reads its own unit's file and nothing else (FR-4). Two readers
+look across logs, and they read the SAME recorded edge for different questions:
+the session tree here, and the dispatch fence in section 5. The `session_create`
+edge is recorded on the CHILD (`crew-log-core.md` section 5), so "which session
+opened which" is not in any one log.
+
+The tree (`crew_log/session_tree.py`) folds EVERY log and keys the result by
+SLOT, because it answers "what does the whole tree look like" for a display, and
+the live row a child nests under is the slot's -- a slot outlives its ACP
+session. The fence (`crew_log/read.py`, `dispatch_view`) keys on SLOT for the
+same reason, and does not fold the collection a second time: it calls
+`session_tree.SessionTree.records` and `session_tree.fold_tree` and adds only the
+unit-to-slot map a read needs, because a request names a unit while the lineage
+is recorded between slots. So the two readers share one fold and cannot disagree
+about who dispatched whom -- an earlier sid-keyed walk here could not, since a
+restart gives a tab a new session id and the recorded `parent.sid` then named a
+unit the re-attached creator no longer writes to. `sid` stays on the entry as the
+audit citation for which log held the creating call, which is what the module
+docstring means by a reader of the logs themselves; neither reader keys on it.
+
+The tree is a different kind of thing from a fold in the sections above on purpose.
+It is a fold over the collection, the shape dsh's `flattenLineage` takes over its
+per-session `parentSession` header field: the record lives on the child, the tree is
+a pure function over all the records, and an orphan or a cycle degrades to root
+rather than to an error.
 
 **What is read.** For every unit directory under the session root
 (`store.unit_dirs`), the HEADER and the FIRST ENTRY of the oldest surviving

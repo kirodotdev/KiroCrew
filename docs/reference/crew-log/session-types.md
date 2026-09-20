@@ -26,6 +26,7 @@ its **Since** line. A type this kind owns with no emitter anywhere is under
 | Type | One line | Emitter | `src` | Pairing |
 |---|---|---|---|---|
 | [`session/opened`](#sessionopened) | The crew log was created, or a claim re-attached to it. | live | `gateway` | — |
+| [`session/class`](#sessionclass) | The session's class changed after its log was opened. | live | `gateway` | supersedes `session/opened.class` |
 | [`session/closed`](#sessionclosed) | The gateway stopped serving this session. | live | `gateway` | — |
 | [`turn/started`](#turnstarted) | A turn was authorized and is about to run. | live | `gateway` | opener of `turn/completed` |
 | [`turn/refused`](#turnrefused) | A gate refused to run a dispatched turn. | live | `gateway` | terminal on its own |
@@ -79,6 +80,7 @@ entry's write is the point the interrupted-turn repair runs.
 | `cwd` | string | required | Working directory. May be empty. | |
 | `owner` | string | required | Owner, defaulted to `default`. | |
 | `resumed` | bool | required | `true` when this claim re-attached to an existing crew log. | |
+| `class` | object | when the gateway could read the slot's memory mode | What kind of session this log belongs to: `memory` (the slot's memory mode, required inside the object), `app` (the app that owns it, when one does), `channel` (`true` when its conversation is published to a messaging channel), `workspace` (the workspace it belongs to). | |
 
 **Invariants** — At most one per create and one per re-attach. The session's
 *starting* model rides here rather than in a `model/selected` entry, which records
@@ -92,6 +94,20 @@ run is withheld inside the provider, so this field names the choice rather than 
 message the backend received. An empty `model` is
 not a claim that nothing was configured, and a `model_requested` that differs from
 `model` is not by itself a refusal — the backend serves the spelling it resolved.
+
+`class` records facts and never a verdict, because the entry cannot be rewritten
+and a verdict would freeze one build's reading of a rule into it. Its `memory`
+member is required *inside* the object, so the object is never empty and the
+object's own presence is what says the class was recorded at all — a reader can
+therefore tell a session with nothing to declare (`{"memory":"persistent"}`) from a
+log written before the field existed (no `class` at all). The facts are true when
+the log is OPENED: a class a session acquires later, such as a channel link added
+mid-conversation, is not in them, so a reader that can also see the live session
+applies both and refuses on either. A reader deciding whether one session may read
+another's log must treat an absent `class` as a refusal rather than as "nothing
+applies"; that is what
+[reading-from-an-agent.md](reading-from-an-agent.md) means by a closed target
+staying decidable.
 
 `model_requested` is written from #12017 onward. An entry older than that carries
 no such field whatever the gateway chose, so even the qualified reading of an
@@ -107,6 +123,10 @@ read an absent field on an older entry as *unknown*, which is the same misreadin
 {"type":"session/opened","seq":1,"time":1789000000000,"src":"gateway","data":{"agent":"worker","slot":"dashboard:7","model":"","model_requested":"claude-opus-5","cwd":"/home/u/proj","owner":"default","resumed":false}}
 ```
 
+```json
+{"type":"session/opened","seq":1,"time":1789000000000,"src":"gateway","data":{"agent":"worker","slot":"chat-9-1789000000","model":"","cwd":"/home/u/proj","owner":"default","resumed":false,"parent":{"slot":"chat-4-1788900000","sid":"acp-sess-conductor"},"class":{"memory":"persistent"}}}
+```
+
 **Reader hint** — `resumed: true` means entries below this line belong to earlier
 runs of the same conversation, so a reader building "this run" starts here rather
 than at `seq` 1. Read `model` for what serves the session and `model_requested` for
@@ -116,6 +136,54 @@ strings. When `model` is empty the served id, once known, appears on the first
 `turn/completed` that reports one.
 
 **Since** — #10091.
+
+### `session/class`
+
+The session's class changed after its log was opened.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — At the start of a turn, when the class observed there differs from
+the last one this log stated. The ordinary session never produces one.
+
+**Pairing** — Supersedes the `class` object on `session/opened`, and any earlier
+`session/class`.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `memory` | string | required | The slot's memory mode, verbatim. | |
+| `app` | string | | The app that owns the session, when one does. | |
+| `channel` | boolean | | True when the conversation is published to a messaging channel. | |
+| `workspace` | string | | The workspace the session belongs to. | |
+
+**Invariants** — Same four members as `session/opened.class`, from one shared
+declaration, so the two cannot describe different shapes. A reader takes the most
+restrictive value each of the first three ever held: a log published to a channel for one turn
+holds that turn's content for good, so the fold does not let a later entry withdraw
+a restriction an earlier one recorded.
+
+`workspace` folds differently because it is an identity rather than a restriction:
+there is no more-restrictive workspace to keep, so a reader keeps the FIRST one
+stated and treats a later different one as the log spanning two workspaces, which
+no single workspace's session may read. A dispatch grant is compared against it
+because a recorded lineage outlives a workspace switch.
+
+Observed at the START of a turn, which is what makes sampling at turn boundaries
+exact rather than approximate. A channel link exists before the inbound message it
+routes, so the turn that carries a third party's words into the log is a turn whose
+opening observation already saw the link that carried them. A class acquired
+part-way through a turn is recorded on the next one, and the only content inside
+that window is the session's own.
+
+Absence means the class never moved — but only on a log whose `session/opened`
+carries a `class`. The two landed together, so a class on the opener is what dates a
+log to a build that also records transitions; an opener without one says nothing
+about either, and a reader deciding whether another session may read the log refuses
+on it.
+
+```json
+{"type":"session/class","seq":94,"time":1789000070000,"src":"gateway","data":{"memory":"persistent","channel":true}}
+```
 
 ### `session/closed`
 

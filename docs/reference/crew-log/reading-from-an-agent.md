@@ -4,9 +4,10 @@
 marked as a named exception in [the Reference index](../README.md).
 
 The crew log is fenced from the agent's file tools on purpose: the whole
-`crew-log/` root is a leaf in the shared sensitive-path floor, so a prompt-injected
-agent can neither read another unit's history nor forge a line into its own. That
-does not change.
+`crew-log/` root is a leaf in the shared sensitive-path floor, so an agent cannot
+reach the files at all — it can forge no line into its own history and alter
+nobody's. That does not change. What the tools below add is a READ, through the
+gateway, audited; the fence's integrity guarantee is not what they relax.
 
 What it also did was make the log unverifiable by anyone but the operator with a
 shell. `kirocrew-crew-log` is the sanctioned door: an MCP server of three read-only
@@ -34,7 +35,7 @@ fixed so one argument cannot mean two different units.
 |---|---|---|
 | a raw unit id | `s-7f3a` | passed through untouched |
 | a session key | `chat-1533-1789617503`, `dashboard:chat-1533-1789617503` | through `crew_log/resolve.py::unit_for_session_key` — anything carrying a namespace (a colon) or shaped `chat-<n>-…` |
-| the literal `self` | `self` | the calling session's own unit, via the strict identity gate |
+| the literal `self` | `self` | the calling session's own unit, resolved from its strictly-resolved key |
 
 `self` is the form to use when verifying that something the session just did was
 recorded. A slot's unit is only valid at the moment it is asked: a reset, a
@@ -74,22 +75,78 @@ would instead read as "Kiro Crew cannot do this at all".
 
 Authorization lives in the endpoints, not in the MCP layer. Every request the
 server makes carries the calling session's STRICTLY resolved key, so a caller the
-gateway cannot name reads nothing at all, not even its own unit. That matters
-because the lenient resolver walks `/proc` ancestors: a subagent lives under its
-spawner's process tree, and the spawner is commonly the owner's own tab, so a
-leniently-resolved key would present an owner identity for a subagent's call.
+gateway cannot name reads nothing at all, not even its own unit.
 
-Given a named caller, two rules:
+One rule: **a valid strict session identity, and then a scope.** A session may read
 
-- **The caller's OWN unit** (`unit="self"`, or a unit that resolves from the
-  caller's own key) needs only a strict session identity — the same gate
-  `session_ledger_read` uses. A subagent, a cron, an incognito session: each may
-  read itself.
-- **Any other unit, and the listing**, needs the owner at a dashboard tab. A
-  headless caller (cron, task runner, a subagent with no parent identity), a
-  channel-bound session (`slack:`, `discord:`, …), an app-owned session, a key
-  naming no live slot, and an incognito or temporary session are each refused with
-  `forbidden` and a one-line reason.
+- **its own unit** — `unit: "self"`, or its unit named outright;
+- **the unit of any session it dispatched**, at any depth — the walk up the creators
+  ends at the first session naming no creator, on a repeated session, or on one the
+  fold marked as being on a cycle, and each of those answers "no creator above this",
+  which REFUSES the read rather than admitting it. The
+  edge comes from the dispatched session's own `session/opened` entry, which records
+  the creator that `session_create` minted it from, so a conductor reaches its
+  children and their children. The fence keys on the recorded `parent.slot` rather
+  than on `parent.sid`, because a slot outlives its ACP session: a gateway restart
+  gives the same tab a new session id and therefore a new unit, and a sid-keyed
+  fence would lock a re-attached conductor out of the children it dispatched minutes
+  earlier. The transitive walk is the same fold the Sessions page's tree uses, so
+  the two cannot disagree about who dispatched whom;
+- **any unit at all**, if it is the owner at a dashboard tab whose own caller class
+  also allows it. Reading every unit is the case the routes shipped with; the class
+  condition is not, and it is there because a dashboard session MIRRORED to a
+  channel republishes every turn, so that tab would otherwise be the one caller that
+  could read every log and publish it. A mirrored owner tab is held to its own unit
+  like any other excluded caller.
+
+`crew_log_list` carries the same scope as a filter rather than as a verdict: a
+conductor's listing names its own unit and its dispatch tree, the owner's names
+every unit. An unscoped listing would tell any caller which sessions exist on the
+host, which is the one thing a per-unit gate cannot refuse after the fact.
+
+A conductor reading the crew logs of the sub-sessions it dispatched is the ordinary
+shape of the work, not a special case, and the lineage record already says which
+session created which — so the entitlement is derived from a recorded fact rather
+than asserted. Issues #11963 and #12025 were closed as not planned for that reason.
+
+It is a dispatch fence rather than an operator fence, and the difference is about
+surfaces rather than trust. The wider premise — that sessions on one gateway belong
+to one operator, so any may read any other — does not reach a **channel-linked**
+session: its conversation is a Slack or Telegram thread, so several allow-listed
+people read it and prompt-injectable content enters it. That is exactly the caller
+class an unscoped read would admit, so the caller classes
+`session_control.authorize_target` refuses are mirrored here, from that module's own
+constants.
+
+The refusals, and what each rules out:
+
+- **No internal secret.** These routes are internal-transport only; a browser
+  reads its own log through `/api/sessions/{id}/crew-log`, which has its own
+  cookie-and-owner gate. Admitting a cookie here would make a second, separately
+  audited path out of a door built for one caller.
+- **A request naming another component.** The prefix serves
+  `kirocrew-crew-log`; the `X-Internal-Caller` header is validated, not trusted.
+- **A session the gateway cannot name.** Refused with `forbidden` and a one-line
+  reason, ahead of every scope arm: an operator's record of WHICH session read a
+  log is only worth having if the identity behind it was resolved strictly rather
+  than walked out of a process tree. The lenient resolver walks `/proc` ancestors,
+  and a subagent lives under its spawner's tree, so a leniently resolved key would
+  file a subagent's read under its parent slot.
+- **A unit outside the caller's dispatch tree.** The fence itself.
+- **An excluded caller class reading past its own unit** — unattended (`cron:`,
+  `taskrunner:`), app-scoped, incognito or temporary, channel-linked or mirrored.
+  Each still reads its own unit; what is refused is reading another session's.
+- **A target whose log does not record its class.** The class of a session is
+  recorded on its own `session/opened` entry, which is what keeps a CLOSED child
+  decidable. A log written before that field existed, or whose opening entry
+  retention has taken, does not say — and an absent record is refused rather than
+  read as "nothing applies", so every such unit is outside a cross-session read
+  until the session is opened again under a build that records it.
+- **A target in an excluded class by its record.** App-scoped, incognito or
+  temporary, or published to a channel, read from the recorded facts.
+- **A target in an excluded class by its live slot.** The record states what the
+  session was when its log opened; this catches one it acquired afterwards, such as
+  a channel link added mid-conversation. Both tests run and either refuses.
 
 Every read is audited under the same SEL action names the browser routes use —
 `session_crew_log.list`, `session_crew_log.resolve`, `session_crew_log.read`,
@@ -99,25 +156,51 @@ in the calling session's own crew log.
 Every REFUSAL is audited under those names too, including the two that reject a
 caller before its identity is settled: a request with no internal secret, and one
 naming a different component. Those are the records an operator wants most, since
-both are the shape of an attempted boundary crossing, and a refused session class
-is ordinary by comparison. A secret-less caller is recorded as `dashboard` and an
-unrecognized component as `unknown-internal`, so the log cannot be seeded with a
-name the caller chose.
+both are the shape of an attempted boundary crossing. A secret-less caller is
+recorded as `dashboard` and an unrecognized component as `unknown-internal`, so the
+log cannot be seeded with a name the caller chose.
 
-This grants no read that is new in kind, and it is not a thinner read. State the
-content plainly: a crew log carries **full message bodies**. `message/received`
-and `message/sent` record the text itself, and a body too large for one line is
-split across `message/chunk` entries the citing entry names, so the whole text is
-reconstructable from the log. Other entry types are narrower than that
-(`context/composed` is char and token counts, `request/configured` is a sha256, a
-tool call is a parameter summary), but the transcript-bearing types are not.
+This is not a thin read, so state the content plainly: a crew log carries **full
+message bodies**. `message/received` and `message/sent` record the text itself, and
+a body too large for one line is split across `message/chunk` entries the citing
+entry names, so the whole text is reconstructable from the log. Other entry types
+are narrower than that (`context/composed` is char and token counts,
+`request/configured` is a sha256, a tool call is a parameter summary), but the
+transcript-bearing types are not.
 
-What makes this safe to grant is the gate, not the payload. `session_read_message`
-in `kirocrew-dashboard` already returns a peer session's full transcript to an
-agent the owner granted it; these reads answer the same class of content behind a
-**stricter** caller test — a strict session identity for `self`, and the owner's
-own non-restricted, non-app dashboard session for anything wider. Read the gate as
-the whole of the justification.
+### How this compares to `session_read_message`
+
+`session_read_message` returns a peer session's transcript behind
+`session_control.authorize_target`. The caller-class exclusions are the same; the
+two doors differ on the target side and on what they are keyed to:
+
+| Caller or target | `session_read_message` | crew log MCP reads |
+|---|---|---|
+| persistent dashboard session, own or dispatched | allowed | allowed |
+| a session in another dispatch tree | allowed | refused |
+| unattended (`cron:`, `taskrunner:`) caller | refused | refused past its own unit |
+| app-scoped caller or target | refused | refused past its own unit |
+| incognito or temporary caller or target | refused | refused past its own unit |
+| channel-linked or mirrored caller | refused | refused past its own unit |
+| owner's dashboard tab mirrored to a channel | refused | refused past its own unit |
+| channel-linked or mirrored target, live | refused | refused |
+| channel-linked or mirrored target, closed | not addressable | refused, from the record |
+| closed session's history, class recorded | not addressable | readable by its dispatcher |
+| closed session's history, no class recorded | not addressable | refused |
+| behind `agent.session_control` | yes | no |
+
+One row is the deliberate difference. A **closed** session is readable here, because
+reading a finished child's recorded work is what this door is for, and
+`authorize_target` answers 404 for it. That does not cost the target's class: the
+class is written on the target's own `session/opened` entry, so it is read from the
+log rather than from a slot that is gone, and a log that carries no such record is
+refused. A session in **another dispatch tree** is refused here and allowed there,
+so this door is narrower on the axis that matters most.
+
+What the fence still protects is INTEGRITY, and that is untouched: there is no
+write tool, the tool set is ratcheted, and the agent's file tools still cannot
+reach the `crew-log/` root. A session cannot alter its own history or anyone
+else's. Reading was never the thing the fence protected.
 
 ## Granting it to an agent
 

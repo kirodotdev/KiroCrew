@@ -525,6 +525,17 @@ _shutdown_started: float = 0.0
 #: is the only thing a reader wants from it. Keyed per session, not per turn,
 #: because the configuration outlives a turn.
 _last_config: "OrderedDict[str, tuple[Any, ...]]" = OrderedDict()
+#: session -> the last class this process stated for it, as ``(memory, app,
+#: channel)``. ``session/class`` is a CHANGE record for the same reason
+#: ``request/configured`` is: the class holds still for the whole life of most
+#: sessions, and restating it every turn would bury the turn where it moved.
+#:
+#: A MISSING entry is treated as a change rather than as agreement, so the bound
+#: below can cost a redundant line but never a missed restriction. That direction
+#: is deliberate: the fold that reads these entries takes the most restrictive
+#: value each member ever held, so a duplicate changes no verdict, while a
+#: dropped transition would silently widen who may read the log.
+_last_class: "OrderedDict[str, tuple[str, str, bool, str]]" = OrderedDict()
 #: session -> {turn ordinal -> the highest attempt opened at it}. A regenerate or
 #: a rewind reruns a turn the ordinal already names, so without this two starts
 #: at one ordinal are indistinguishable and a fold cannot tell a retry from a
@@ -762,6 +773,7 @@ def reset_caches() -> None:
         _tool_started.clear()
         _settled_tools.clear()
         _last_config.clear()
+        _last_class.clear()
         _attempts.clear()
         _child_origin.clear()
         _pending.clear()
@@ -2547,6 +2559,99 @@ def _write(
     _submit(_job, f"appending {entry_type}", session_id, after=after)
 
 
+def _latch_class(session_id: str, observed: "tuple[str, str, bool, str]") -> None:
+    """Remember the class a line just stated for *session_id*.
+
+    Called only AFTER the entry carrying it is on disk, for the reason
+    ``on_request_configured`` gives about its own fingerprint: committing the
+    value before the append would let one transient failure suppress every later
+    statement of the same class, leaving the log permanently without the record.
+    """
+    with _lock:
+        _last_class[session_id] = observed
+        _last_class.move_to_end(session_id)
+        _bound_unpinned(_last_class, _MAX_OPEN_CREW_LOGS, lambda k: k, "session classes")
+
+
+def _note_class_change(
+    session_id: str, log: Any, observed: "tuple[str, str, bool, str] | None"
+) -> None:
+    """Append ``session/class`` when *observed* is not what this log last stated.
+
+    The class recorded when a log is opened is true of that instant, and a session
+    can be given a channel surface, an app owner or a different memory mode while
+    it runs. A reader deciding whether one session may read this log has to be able
+    to see that, and for a session that has closed the log is the only thing left
+    to see it in -- so a move is recorded here rather than left to a live lookup
+    that will not be available when the question is asked.
+
+    ``observed`` is ``None`` when the caller supplied no memory mode. Nothing is
+    written then, matching the opening entry: a log that states no class refuses
+    every test built on one, and appending a transition to it would leave a log
+    whose class history has a middle but no beginning.
+
+    A latch MISS appends rather than seeds. The latch is bounded, so an eviction
+    is possible while the log stays open, and the two directions are not
+    symmetric: a redundant line cannot change a fold that takes the most
+    restrictive value each member ever held, while a skipped one silently widens
+    who may read the log.
+    """
+    if observed is None:
+        return
+    with _lock:
+        known = _last_class.get(session_id)
+    if known == observed:
+        return
+    memory, app, channel, workspace = observed
+    data: dict[str, Any] = {"memory": memory}
+    if app:
+        data["app"] = app
+    if channel:
+        data["channel"] = True
+    if workspace:
+        data["workspace"] = workspace
+    log.append("session/class", data, src=_SRC_GATEWAY)
+    _latch_class(session_id, observed)
+
+
+def on_class_observed(
+    session_id: str,
+    *,
+    memory: str = "",
+    app: str = "",
+    channel: bool = False,
+    workspace: str = "",
+) -> None:
+    """Record that this session's CLASS is now *(memory, app, channel, workspace)*.
+
+    For the moment a class becomes true rather than the moment someone next samples
+    it. The per-turn observation in :func:`on_session_opened` cannot see a channel
+    link that commits and is removed inside ONE turn, and content authored through
+    that link is in the log with nothing saying it was published -- so the surfaces
+    that COMMIT a link call this instead of waiting to be sampled.
+
+    Writes nothing when the class has not moved, and nothing at all when *memory* is
+    empty: a log that states no class refuses every test built on one, and appending a
+    transition to it would leave a history with a middle and no beginning.
+
+    Returns without waiting, like every other emitter here, which is what lets a
+    caller holding a lock use it. That is safe because a write this writer permanently
+    loses is itself recorded, and the class fold reads a dropped write as a hole -- so
+    a lost move costs a refusal rather than a silent grant.
+    """
+    if not session_id or not memory:
+        return
+    observed = (memory, app, channel, workspace)
+
+    def _job() -> None:
+        log = _handle(session_id)
+        if log is None:
+            return
+        _note_class_change(session_id, log, observed)
+
+    _submit(_job, "appending session/class", session_id)
+
+
 def on_session_opened(
     session_id: str,
     *,
@@ -2559,6 +2664,10 @@ def on_session_opened(
     resumed: bool = False,
     parent_slot: str = "",
     parent_sid: str = "",
+    memory: str = "",
+    app: str = "",
+    channel: bool = False,
+    workspace: str = "",
 ) -> None:
     """Create the crew log if this session has none, then echo its header.
 
@@ -2612,6 +2721,23 @@ def on_session_opened(
     crew log in an entry that can never be corrected. Both empty means nobody
     created this session (a person's own tab, a fork) and no ``parent`` is
     written at all, so a fold can tell "no creator" from "creator unknown".
+
+    ``memory``, ``app`` and ``channel`` record WHAT KIND of session this log
+    belongs to: the slot's memory mode verbatim, the app that owns it if one does,
+    and whether its conversation is published to a messaging channel by a link or
+    a mirror. They are written as one ``class`` object and only when ``memory`` is
+    given, which makes that member the witness that the class was recorded -- so a
+    reader can tell a session with nothing to declare from a log written before
+    this existed, and must refuse rather than assume on the second.
+
+    They belong on the record rather than in a live lookup because the question
+    they answer -- may another session read this log -- is asked about sessions
+    that have CLOSED, and a closed session has no slot left to ask. They are also
+    facts and not a verdict: recording "readable" would freeze this build's reading
+    of a rule into an entry that can never be corrected. The facts are true when
+    the log is opened; a class a session ACQUIRES later (a channel link added
+    mid-conversation) is not in them, so a reader that can also see the live
+    session applies both and refuses on either.
     """
     if not session_id or not enabled():
         return
@@ -2698,7 +2824,18 @@ def on_session_opened(
             )
             created = True
         _remember(session_id, log)
+        # The class as observed for THIS turn. The caller reads it off the live slot
+        # on every turn rather than only the first, which is what lets a class the
+        # session acquires LATER reach the log at all.
+        observed = (memory, app, bool(channel), workspace) if memory else None
         if not announce.setdefault("owed", created or bool(resumed)):
+            # Nothing new to say about the OPENING, which is what this entry
+            # records. A class that has moved since the last statement of it is
+            # something new to say about the session, and it goes out as its own
+            # entry rather than as a second opening entry: the opener is read as
+            # what the session was CREATED as, and a fold over the transitions
+            # after it is what gives a reader the whole life.
+            _note_class_change(session_id, log, observed)
             return
         data: dict[str, Any] = {
             "agent": agent or _DEFAULT_AGENT,
@@ -2728,7 +2865,40 @@ def on_session_opened(
             if parent_sid:
                 parent["sid"] = parent_sid
             data["parent"] = parent
+        if memory:
+            # The class of session this log belongs to, as facts. Written only when
+            # the caller supplied ``memory``, which every live slot has: that makes
+            # one member the witness that the class was recorded at all, so a reader
+            # can tell "recorded, and nothing applies" from "not recorded", and an
+            # object that is never empty carries that distinction without a flag
+            # saying so. A caller that passes no memory mode -- a test fixture, an
+            # older build's log -- records no class, and a reader that needs one
+            # must refuse rather than read the absence as "nothing applies".
+            #
+            # These live HERE, on the opening entry, because the crew log is the
+            # authoritative record of a session and the question they answer is
+            # asked about sessions that have CLOSED. A gate that read them from the
+            # live slot instead can answer only for a session still being served,
+            # which is the one case it does not need.
+            #
+            # Facts, not a verdict: what owns the session, whether it keeps memory,
+            # whether its conversation is published to a channel. A verdict recorded
+            # here would be this build's reading of a rule that may change, and the
+            # entry cannot be rewritten.
+            session_class: dict[str, Any] = {"memory": memory}
+            if app:
+                session_class["app"] = app
+            if channel:
+                session_class["channel"] = True
+            if workspace:
+                session_class["workspace"] = workspace
+            data["class"] = session_class
         log.append("session/opened", data, src=_SRC_GATEWAY)
+        if observed is not None:
+            # This line states the class, so it is also what later turns compare
+            # themselves against. Seeding it here is what stops the first warm turn
+            # from restating an unchanged class as though it had moved.
+            _latch_class(session_id, observed)
 
     def _flag_creation_failed() -> None:
         # The creating record died with no crew log file behind it: no later append

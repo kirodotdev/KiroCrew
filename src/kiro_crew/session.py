@@ -195,9 +195,16 @@ from kiro_crew.session_lifecycle import (
     SessionLifecycleState,
 )
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
-from kiro_crew.session_map import MIRROR_OPT_OUT_FLAG
+from kiro_crew.session_map import (
+    MIRROR_OPT_OUT_FLAG,
+    BindListener,
+)
 from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
-from kiro_crew.session_map import UnbindListener, set_unbind_listener
+from kiro_crew.session_map import (
+    UnbindListener,
+    set_bind_listener,
+    set_unbind_listener,
+)
 from kiro_crew.session_pid import (
     _build_child_map,
     _cleanup_orphaned_mcp_servers,
@@ -2996,6 +3003,15 @@ class SessionManager:
         a removal performed through a throwaway map is announced too.
         """
         set_unbind_listener(callback)
+
+    @staticmethod
+    def set_bind_listener(callback: BindListener | None) -> None:
+        """Register the sink notified when a channel binding COMMITS.
+
+        Same registry reasoning as the unbind sink above: it is the session map's, shared
+        by every instance, so a binding made through a throwaway map is announced too.
+        """
+        set_bind_listener(callback)
 
     async def aflush(self) -> None:
         await self._session_map.aflush()

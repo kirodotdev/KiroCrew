@@ -30,25 +30,44 @@ writer.
 **Authorization lives in the ENDPOINTS, not here.** Every tool is a thin proxy over
 a dashboard route on loopback carrying ``X-Internal-Secret`` and
 ``X-Internal-Caller: kirocrew-crew-log`` (attached centrally by the ``mcp_core``
-request helpers), and the route decides what the calling session may see:
-the caller's OWN unit needs only a strict session identity, and any wider read
-needs the owner at a dashboard tab — not an app-owned session, not a cron or a
-subagent, not a channel conversation, and not an incognito or temporary session.
-This module shapes output and nothing else, which is why a reviewer looking for
-the security argument should read ``dashboard/handlers/crew_log.py``.
+request helpers), and the route decides what the calling session may see: a valid
+strict session identity, and then a SCOPE. A session may read its own unit, the
+unit of any session it dispatched at any depth, and, if it is
+the owner at a dashboard tab, any unit at all. This module shapes output and nothing
+else, which is why a reviewer looking for the security argument should read
+``dashboard/handlers/crew_log.py``.
 
-**What it grants, in comparison.** ``session_read_message`` in
-``kirocrew-dashboard`` already returns a peer session's full transcript to an agent
-the owner granted it, and a crew log carries full message bodies too: ``message/*``
-entries record the text itself. So this is NOT a thinner read, and the whole of the
-justification is the gate above, which is stricter. ``docs/reference/crew-log/
-reading-from-an-agent.md`` carries that argument in full.
+**Why a dispatch tree.** A conductor reading the crew logs of the sub-sessions it
+dispatched is the ordinary shape of the work rather than a special case, and the
+recorded ``session/opened`` lineage already says which session created which, so
+the entitlement is derived from a fact rather than asserted. The wider premise --
+that sessions on a Kiro Crew gateway belong to one operator, so any may read any
+other -- was considered and is NOT the rule: a channel-linked session's
+conversation is a Slack or Telegram thread that several allow-listed people read
+and prompt-injectable content enters, so "one operator" does not reach it.
+
+A crew log carries full message bodies -- ``message/*`` entries record the text
+itself -- so this is not a thin read, and it is NOT justified by parity with
+``session_read_message``. That tool reads a peer's transcript behind
+``session_control.authorize_target``: unattended, app-scoped, incognito and
+channel-linked or mirrored callers and targets are all refused, only open sessions
+are addressable, and the feature sits behind ``agent.session_control``. Those
+CALLER-class exclusions are mirrored by the route, from that module's own
+constants. The route deliberately differs on one point, stated there: it serves a
+CLOSED session's recorded log, which is the whole point of reading a finished child.
+It does NOT thereby give up on a closed target's class -- the class is recorded on
+the target's own ``session/opened`` entry, so the route reads it from the log rather
+than from a slot that is gone, and a log that does not carry the record is refused.
+``docs/reference/crew-log/reading-from-an-agent.md`` carries the comparison in
+full.
 
 Identity posture: the strict resolver, never the lenient ``/proc`` walk. ``self``
 is resolved through :func:`~kiro_crew.mcp_core.require_strict_session_key` and the
 key it returns is the key sent on the wire, so the identity that was checked is the
-identity that is used — under a pooled backend the lenient walk can answer a parent
-slot, and a subagent must not read its parent's log as though it were its own.
+identity that is used, and the identity the gateway AUDITS is the session that
+actually read. Under a pooled backend the lenient walk can answer a parent slot,
+which would file a subagent's read under its parent and leave the audit naming a
+session that did nothing.
 """
 
 from __future__ import annotations
@@ -297,14 +316,15 @@ def _caller_key() -> tuple[str, str]:
     """``(key, "")`` for the strictly-resolved calling session, else ``("", refusal)``.
 
     EVERY request this server makes carries this key, not just the ``self`` one.
-    The endpoint decides what a caller may read FROM the key it is handed, so a
-    leniently-resolved key is not a cosmetic difference there: the lenient
-    resolver walks ``/proc`` ancestors, a subagent lives under its spawner's
-    process tree, and the spawner is commonly the owner's own dashboard tab. A
-    request that let the helper resolve its own key would therefore hand the
-    endpoint an OWNER identity for a subagent's call, and the wider-read rule
-    would admit it. Resolving once here, strictly, and sending that key on every
-    leg is what makes the identity that was checked the identity that is used.
+    The endpoint requires a strict session identity to admit a read at all, and it
+    records that identity against the read, so a leniently-resolved key is not a
+    cosmetic difference there: the lenient resolver walks ``/proc`` ancestors, a
+    subagent lives under its spawner's process tree, and the spawner is commonly a
+    dashboard tab. A request that let the helper resolve its own key would file a
+    subagent's read under its parent slot, leaving the operator's record naming a
+    session that read nothing. Resolving once here, strictly, and sending that key
+    on every leg is what makes the identity that was checked the identity that is
+    used and the identity that is audited.
 
     Fails closed: a caller the gateway cannot name reads nothing at all, not even
     its own unit, because "its own unit" is derived from this same key.
@@ -587,10 +607,10 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
 #: caller block from EVERY forwarded request and re-injects its own only when the
 #: backend advertised this capability — so without the advertisement the block
 #: never arrives and a pooled backend would resolve an empty identity for every
-#: caller. For this server that fails CLOSED (``self`` refuses, a wider read is
-#: refused for want of an owner session), so the failure mode is tools that stop
-#: working rather than a read that widens; the advertisement is what makes them
-#: work on the topology pooling was built to serve.
+#: caller. For this server that fails CLOSED -- an unnamed session is refused at
+#: the endpoint, and ``self`` has no key to resolve -- so the failure mode is tools
+#: that stop working rather than an unattributed read; the advertisement is what
+#: makes them work on the topology pooling was built to serve.
 ADVERTISE_CALLER_IDENTITY = True
 
 

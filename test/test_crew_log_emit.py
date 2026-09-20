@@ -269,6 +269,52 @@ def test_a_sid_without_a_slot_names_no_creator():
     assert "parent" not in _opened_data()
 
 
+def test_the_session_class_is_recorded_as_facts_on_the_opened_entry():
+    # What kind of session this log belongs to, recorded here because the reader
+    # that asks -- may another session read this log -- asks it about sessions that
+    # have closed, and a closed session has no slot left to ask.
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew",
+        slot="chat-42",
+        memory="persistent",
+        app="travel-desk",
+        channel=True,
+    )
+    assert _opened_data()["class"] == {
+        "memory": "persistent",
+        "app": "travel-desk",
+        "channel": True,
+    }
+
+
+def test_a_session_with_nothing_to_declare_still_records_its_class():
+    # MUTATION-SENSITIVE: this is what makes "recorded, and nothing applies"
+    # distinguishable from "not recorded". The object is never empty, because
+    # ``memory`` is always known for a live slot, so its presence is the witness --
+    # and a reader deciding an authorization question refuses on the absence.
+    emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-42", memory="persistent")
+    assert _opened_data()["class"] == {"memory": "persistent"}
+
+
+def test_a_caller_that_names_no_memory_mode_records_no_class_at_all():
+    # A partial record would read as complete, so the emitter writes none. The key
+    # is absent rather than empty, which is the same distinction ``parent`` keeps.
+    _open_session()
+    assert "class" not in _opened_data()
+
+
+def test_an_absent_app_or_channel_is_absent_rather_than_falsy():
+    # An empty app would read as an app with an empty name, and ``channel: false``
+    # would claim the gateway checked and found none -- which is true here, but it
+    # is not true on a log written before the field existed, and a reader must not
+    # have to tell those two apart by the shape of a falsy value.
+    emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-42", memory="incognito")
+    recorded = _opened_data()["class"]
+    assert recorded == {"memory": "incognito"}
+    assert "app" not in recorded and "channel" not in recorded
+
+
 def test_the_creator_is_written_again_on_a_re_attach():
     # A resume re-announces the header facts, and the creator is one of them: the
     # slot's attribution outlives the ACP session, so a gateway taking the child
@@ -543,6 +589,53 @@ def test_a_tool_call_is_identified_by_id_in_data_and_records_no_arguments():
 
 
 # --- message bodies -------------------------------------------------------
+
+
+def test_an_observed_class_is_recorded_when_a_link_commits():
+    """MUTATION-SENSITIVE: the record is taken when the class BECOMES true.
+
+    The per-turn observation cannot see a link that commits and is removed inside one
+    turn, and content authored through it is in the log with nothing saying it was
+    published. So the surfaces that commit a link record the class themselves, and this
+    is the entry point they call.
+    """
+    _open_session()
+    emit.on_class_observed(SESSION, memory="persistent", channel=True)
+    assert emit.flush()
+    entry = _body()[-1]
+    assert entry["type"] == "session/class"
+    assert entry["data"]["channel"] is True
+    assert entry["data"]["memory"] == "persistent"
+
+
+def test_a_class_that_has_not_moved_records_nothing():
+    """MUTATION-SENSITIVE: the recorder is free to call from every link site.
+
+    Every assignment site calls it, several of which cannot have changed anything --
+    a cron link, a slot being created. Writing a line for each would fill a log with
+    restatements, so the latch is what makes calling it everywhere the cheap option.
+    Without this the previous test passes while the log grows a line per bind.
+    """
+    _open_session()
+    emit.on_class_observed(SESSION, memory="persistent", channel=True)
+    assert emit.flush()
+    before = len(_body())
+    emit.on_class_observed(SESSION, memory="persistent", channel=True)
+    assert emit.flush()
+    assert len(_body()) == before, "a restatement of the same class is not a move"
+
+
+def test_an_observed_class_with_no_memory_mode_records_nothing():
+    """A fragment is refused here rather than appended and refused by every reader.
+
+    The opening entry applies the same rule: a log that states no class refuses every
+    test built on one, and appending a transition to it would leave a history with a
+    middle and no beginning.
+    """
+    _open_session()
+    emit.on_class_observed(SESSION, memory="", channel=True)
+    assert emit.flush()
+    assert [e["type"] for e in _body()].count("session/class") == 0
 
 
 def _typed(turn: int = 1, text: str = "hello", **kw) -> None:

@@ -1337,6 +1337,84 @@ def _crew_log_lineage(slot: Any) -> tuple[str, str]:
     )
 
 
+#: Slot attribute carrying a channel binding that committed BEFORE the session had a
+#: crew log to record it in. The recorder sets it in that case instead of dropping the
+#: fact, and :func:`_crew_log_class` folds it in, so the opening entry of a log created
+#: later still states the restriction. Never cleared: the fold holds each member at the
+#: most restrictive value the log ever recorded, and a session that was published once
+#: holds that content for good.
+PENDING_CHANNEL_ATTR = "_crew_log_pending_channel"
+
+
+def _crew_log_workspace(slot: Any) -> str:
+    """The workspace a session's crew log records, or ``""`` when the slot states none.
+
+    Read alongside the class rather than folded into it, because a workspace is an
+    IDENTITY and the class members are RESTRICTIONS -- there is no more-restrictive
+    workspace for the class fold to keep, so it holds the first one stated and records a
+    later different one as a move instead.
+
+    A live slot always states one (it defaults to ``default``), so an empty answer means
+    the object is not a slot -- a state double in a test. The arm that compares
+    workspaces refuses on empty rather than treating it as a match, so an unstated
+    workspace costs a cross-session read a refusal.
+    """
+    return str(getattr(slot, "workspace", "") or "")
+
+
+def _crew_log_class(state: Any, slot: Any) -> tuple[str, str, bool]:
+    """The ``(memory, app, channel)`` a session's ``session/opened`` records.
+
+    The facts a reader needs to decide whether one session may read this one's
+    crew log, taken from the live slot at the moment the log is opened -- which is
+    the only moment they can be taken, because the reader that asks is usually
+    asking about a session that has since closed.
+
+    ``channel`` is true when this session's conversation is published to a
+    messaging channel, by a channel-born link or by an outbound mirror recorded in
+    the session store. A cron tab's link is not one: it names the job's own run and
+    republishes to nobody, which is the exemption ``CRON_LINK_PREFIX`` carries
+    wherever that boundary is enforced. The mirror probe is asked to fail CLOSED,
+    so a store that cannot answer records a channel rather than silently recording
+    a session as unpublished.
+
+    A slot whose memory mode cannot be read yields an empty ``memory``, and the
+    emitter then records no class at all rather than a partial one -- an absent
+    record is refusable, a half-filled one reads as complete.
+    """
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import CRON_LINK_PREFIX, _has_channel_mirror
+
+    link = str(getattr(slot, "linked_session_key", "") or "")
+    channel = bool(link) and not link.startswith(CRON_LINK_PREFIX)
+    if not channel:
+        try:
+            channel = _has_channel_mirror(state, slot)
+        except Exception:
+            # The probe already fails closed on a store it cannot read; this covers
+            # the narrower case of a state double that has no store at all, and it
+            # fails the same way. A log is being opened, not a boundary crossed, so
+            # this must not raise -- and recording "published" on a state nobody can
+            # read costs a dispatcher one refusal it can ask about.
+            logger.debug("channel mirror probe failed; recording a channel", exc_info=True)
+            channel = True
+    if not channel and bool(getattr(slot, PENDING_CHANNEL_ATTR, False)):
+        # A binding that committed while this slot had NO OPEN LOG could not be recorded
+        # when it happened -- there was nothing to append to -- so the recorder left this
+        # mark rather than dropping the fact. Reading it here is what makes a link that
+        # was bound AND removed before the log existed still count: the turn that link
+        # routed is in this log's content, so a class read from the live slot alone would
+        # state never-published about a log holding channel-authored words. The mark is
+        # never cleared, which matches the fold: each member is held at the most
+        # restrictive value the log ever recorded, so this can only add a restriction.
+        channel = True
+    return (
+        str(getattr(slot, "memory_mode", "") or ""),
+        str(getattr(slot, "_app", "") or ""),
+        channel,
+    )
+
+
 def _sync_served_model(slot: Any, client: Any) -> None:
     """Re-read the live session's served model into the slot.
 
@@ -9511,6 +9589,14 @@ async def _run_chat(
         # stamped them -- see `_crew_log_lineage` for why a restored `_created_by`
         # must never be promoted to gateway-authored lineage.
         _creator_key, _creator_sid = _crew_log_lineage(slot)
+        # Read HERE rather than at mint, because these are facts about the session
+        # this log is being opened for and they are recorded as of this moment. A class
+        # the session acquires LATER reaches the log through its own record: every
+        # surface that commits a change routes through ``note_crew_log_class``, so this
+        # entry states the opening class and the moves are stated as they happen. What
+        # this read still owes is the BEGINNING -- the value a later move is a move
+        # from.
+        _class_memory, _class_app, _class_channel = _crew_log_class(state, slot)
         crew_log_emit.on_session_opened(
             _crew_log_sid,
             agent=slot.agent or "",
@@ -9525,6 +9611,10 @@ async def _run_chat(
             resumed=bool(resumed),
             parent_slot=_creator_key,
             parent_sid=_creator_sid,
+            memory=_class_memory,
+            app=_class_app,
+            channel=_class_channel,
+            workspace=_crew_log_workspace(slot),
         )
         agent_label = kiro_agent or slot.agent or "default"
         # The label states what the session RUNS on, so a withheld pin reports the

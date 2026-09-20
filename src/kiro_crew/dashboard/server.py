@@ -4151,6 +4151,9 @@ async def start_dashboard(
     wire_session_subagent_probe(state)
     # Visible notice in a channel that just lost its session-resume binding
     state.wire_session_unbind_listener()
+    # Crew-log class record for a binding that just COMMITTED, taken before anything
+    # can be routed through it
+    state.wire_session_bind_listener()
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
@@ -5363,6 +5366,9 @@ async def start_api_server(
     wire_session_subagent_probe(state)
     # Visible notice in a channel that just lost its session-resume binding
     state.wire_session_unbind_listener()
+    # Crew-log class record for a binding that just COMMITTED, taken before anything
+    # can be routed through it
+    state.wire_session_bind_listener()
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024

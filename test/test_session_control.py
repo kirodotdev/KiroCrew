@@ -4367,6 +4367,62 @@ def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
     assert _crew_log_lineage(minted_without_handle) == ("chat-1", "")
 
 
+def test_the_opened_entry_records_the_session_class_from_the_live_slot(monkeypatch):
+    """``_crew_log_class`` is the seam between the slot and the ``class`` write.
+
+    The facts a reader needs to decide whether one session may read this one's crew
+    log, taken at the moment the log is opened because the reader that asks is
+    usually asking about a session that has since closed. A cron tab's link is not a
+    channel: it names the job's own run and republishes to nobody, which is the
+    exemption ``CRON_LINK_PREFIX`` carries wherever that boundary is enforced.
+
+    Mutation guard: drop the cron exemption and the third case reddens; drop the
+    mirror probe and the fourth reddens; let the probe's exception escape and the
+    fifth reddens instead of recording a channel.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import session_control as sc
+    from kiro_crew.dashboard.chat_runner import _crew_log_class
+    from kiro_crew.dashboard.session_control import CRON_LINK_PREFIX
+
+    mirrored: dict[str, bool] = {"value": False}
+    monkeypatch.setattr(sc, "_has_channel_mirror", lambda state, slot: mirrored["value"])
+    state = SimpleNamespace()
+
+    plain = SimpleNamespace(memory_mode="persistent", _app="", linked_session_key="", key="chat-9")
+    assert _crew_log_class(state, plain) == ("persistent", "", False)
+
+    owned = SimpleNamespace(
+        memory_mode="incognito", _app="travel-desk", linked_session_key="", key="chat-9"
+    )
+    assert _crew_log_class(state, owned) == ("incognito", "travel-desk", False)
+
+    cron = SimpleNamespace(
+        memory_mode="persistent", _app="", linked_session_key=f"{CRON_LINK_PREFIX}nightly", key="c"
+    )
+    assert _crew_log_class(state, cron) == ("persistent", "", False)
+
+    linked = SimpleNamespace(
+        memory_mode="persistent", _app="", linked_session_key="slack:C123", key="chat-9"
+    )
+    assert _crew_log_class(state, linked) == ("persistent", "", True)
+
+    # An OUTBOUND mirror lives in the session store rather than on the slot, so a
+    # slot with an empty link can still be republishing every turn.
+    mirrored["value"] = True
+    assert _crew_log_class(state, plain) == ("persistent", "", True)
+
+    # A probe that cannot answer at all records a channel rather than recording
+    # "unpublished": opening a log must not raise, and the safe direction costs a
+    # dispatcher one refusal it can ask about.
+    def _raises(state, slot):
+        raise RuntimeError("no store")
+
+    monkeypatch.setattr(sc, "_has_channel_mirror", _raises)
+    assert _crew_log_class(state, plain) == ("persistent", "", True)
+
+
 def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path, monkeypatch):
     """The creator sid is backend-authored, so it is bounded where it is RETAINED.
 

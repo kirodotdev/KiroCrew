@@ -56,7 +56,9 @@ CANONICAL: dict[str, dict] = {
         "owner": "default",
         "resumed": False,
         "parent": {"slot": "chat-7", "sid": "acp-sess-creator"},
+        "class": {"memory": "persistent", "app": "secretary", "channel": True},
     },
+    "session/class": {"memory": "persistent", "app": "secretary", "channel": True},
     "session/closed": {"reason": "reset"},
     "turn/started": {"turn": 3, "actor": "user", "depth": 0, "message_seq": 11, "attempt": 2},
     "turn/refused": {"turn": 4, "actor": "cron", "reason": "gateway_closing", "depth": 1},
@@ -164,7 +166,7 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The registry declares the types that HAVE a writer. A type nothing writes
     # would declare a shape no site produces, and the first emitter to land would
     # have to satisfy a contract written without it.
-    assert len(SESSION_ENTRY_TYPES) == 21
+    assert len(SESSION_ENTRY_TYPES) == 22
     # Nine types the vocabulary owns that nothing writes, and six more whose
     # emitters are not wired on this base. Declaring either kind would state a
     # shape no writer produces, and the first emitter to land would have to satisfy

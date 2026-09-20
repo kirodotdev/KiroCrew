@@ -163,6 +163,60 @@ ACTOR_VALUES: tuple[str, ...] = (
 #: from the writer's own set so the two cannot drift.
 _EVENT_KIND_VALUES: tuple[str, ...] = tuple(sorted(_LEDGER_EVENT_KINDS))
 
+#: The members of a session's recorded class, shared by the opening entry's
+#: ``class`` object and by ``session/class``. One tuple rather than two identical
+#: ones, because a reader folds the second over the first to decide an
+#: authorization question: a member declared on one and not the other would be
+#: read from a transition and silently missing from the opener it supersedes.
+_SESSION_CLASS_FIELDS: tuple[Field, ...] = (
+    Field(
+        "memory",
+        JSON_STRING,
+        required=True,
+        note=(
+            "The slot's memory mode, verbatim: persistent for an ordinary "
+            "session, anything else for one created to leave and learn nothing. "
+            "Required INSIDE the object, so the object is never empty and its "
+            "presence is what says the class was recorded at all."
+        ),
+    ),
+    Field(
+        "app",
+        JSON_STRING,
+        note=(
+            "The app that owns the session, when one does -- a short registered "
+            "app name, never a title or user content."
+        ),
+    ),
+    Field(
+        "channel",
+        JSON_BOOL,
+        note=(
+            "True when this session's conversation is published to a messaging "
+            "channel, by a link or a mirror. A cron tab's link is not one: it "
+            "names the job's own run and republishes to nobody. The channel is "
+            "not named -- a reader of this field needs the fact, not the address."
+        ),
+    ),
+    Field(
+        "workspace",
+        JSON_STRING,
+        note=(
+            "The workspace this session belongs to. Recorded because a dispatch "
+            "grant is derived from a lineage and a lineage OUTLIVES a workspace "
+            "switch -- the creating edge is written on the child and nothing "
+            "rewrites it -- so without this a conductor that moved workspace would "
+            "still read a log belonging to the one it left. Not a restriction like "
+            "the members above but an identity, so a reader keeps the FIRST one "
+            "stated and treats a later different one as the log spanning two "
+            "workspaces, which no single workspace's session may read. Absent on a "
+            "log opened before this field existed, and a reader that needs it must "
+            "refuse rather than assume."
+        ),
+    ),
+)
+
+
 _SESSION_TYPES: tuple[EntryType, ...] = (
     # -- session, turn ------------------------------------------------------ #
     EntryType(
@@ -231,6 +285,50 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                     "person's own tab, on a fork, and on a spawn_run subagent."
                 ),
             ),
+            Field(
+                "class",
+                JSON_OBJECT,
+                fields=_SESSION_CLASS_FIELDS,
+                note=(
+                    "What this session IS, as facts rather than as a verdict, recorded "
+                    "when the log is opened. It is here because the crew log is the "
+                    "authoritative record of a session and a reader deciding whether "
+                    "one session may read another's log must be able to answer that "
+                    "for a session that has since CLOSED, which no live lookup can. "
+                    "Absent on a log opened before this field existed, and a reader "
+                    "that needs it must refuse rather than assume: a missing record "
+                    "is not evidence that nothing applies."
+                ),
+            ),
+        ),
+    ),
+    EntryType(
+        "session/class",
+        "The session's class changed after its log was opened.",
+        _SESSION_CLASS_FIELDS,
+        note=(
+            "The class as re-observed after the log was opened, written only when it "
+            "differs from the last one recorded. The opening entry states the class as of "
+            "the moment the log was created, and a session can acquire a channel surface, "
+            "an app owner or a different memory mode afterwards -- so a reader deciding "
+            "whether another session may read this log has to see the whole life of it, "
+            "not its first instant. The fold takes the most restrictive value each "
+            "member ever held, because a log that was published to a channel for one "
+            "turn holds that turn's content for good.\n\n"
+            "Observed at TWO points, which together are what make the record exact "
+            "rather than approximate. A channel binding announces itself as it COMMITS: "
+            "the record is made while the session map's lock is still held, and routing "
+            "an inbound message reads that map, so the turn that carries a third party's "
+            "words into the log cannot precede the record of the surface that carried "
+            "them. Every other way a class moves -- an app owner, a different memory "
+            "mode -- is caught by re-observing at the start of a turn, so a change that "
+            "commits with no announcement is recorded before the next turn appends "
+            "anything.\n\n"
+            "Absent from a log whose class never changed, which is the ordinary case. "
+            "That absence is only readable as 'nothing changed' on a log whose opening "
+            "entry HAS a class: the two landed in one change, so a class on the opener "
+            "is what dates the log to a build that also records transitions. An opener "
+            "with no class says nothing about either, and refuses."
         ),
     ),
     EntryType(

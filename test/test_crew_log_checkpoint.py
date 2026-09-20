@@ -147,10 +147,19 @@ _FOLD_STATE_DIGESTS: dict[str, str] = {
     "timeline": "ca89b3c765575d9a",
     "tools": "008b36fed498d32b",
     "approvals": "c9db629215cc2620",
+    "class": "96f8e5381997f6fd",
 }
 
 #: The savepoint version the digests above were taken at.
-_DIGESTS_RECORDED_AT_VERSION = 1
+#:
+#: A fold ADDED to :data:`PROJECTION_NAMES` lands its digest here without moving the
+#: version, and that is not a way around the bump: the version retires savepoints
+#: that would resume onto changed meaning, and a new fold has none on any disk --
+#: ``_checkpoint_from`` matches a file to a fold by NAME, so no file on disk claims
+#: to be this one. Bumping for a new fold would instead retire every VALID savepoint
+#: of the other folds, costing each a refold to retire nothing. What obliges the bump
+#: is an EXISTING fold's digest moving, and the five above are unchanged.
+_DIGESTS_RECORDED_AT_VERSION = 2
 
 
 def _log(unit_id: str = SESSION) -> CrewLog:
@@ -626,7 +635,7 @@ def test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move(monkey
 
     measured = {
         name: _state_digest(crew_log.advance(crew_log.initial(name), entries).state)
-        for name in crew_log.PROJECTION_NAMES
+        for name in crew_log.PROJECTION_NAMES + crew_log.INTERNAL_PROJECTION_NAMES
     }
 
     assert savepoints.CHECKPOINT_VERSION == _DIGESTS_RECORDED_AT_VERSION, (

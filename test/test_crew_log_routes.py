@@ -1,9 +1,10 @@
 """The crew-log read routes and the ``session_projection`` push.
 
-Three things are pinned here that the fold tests cannot see: the owner gate on
-both reads, the deliberate difference in posture between a PAGE read and a FOLD
-read over the same bytes, and that the push sends a frame only for a projection
-whose seq actually moved.
+Four things are pinned here that the fold tests cannot see: the owner gate on
+the browser's two reads, the one-rule identity gate on the agent's unit-keyed
+reads (any session the gateway can NAME may read any unit), the deliberate
+difference in posture between a PAGE read and a FOLD read over the same bytes,
+and that the push sends a frame only for a projection whose seq actually moved.
 """
 
 from __future__ import annotations
@@ -47,23 +48,77 @@ def _is_owner():
         yield
 
 
-def _log(unit_id: str = SESSION) -> CrewLog:
-    return CrewLog.create(lg.KIND_SESSION, unit_id, owner="raymond", agent="kirocrew")
+def _log(unit_id: str = SESSION, slot: str = "dashboard:1") -> CrewLog:
+    # The HEADER's slot, which is what the session tree keys its fold by. Separate
+    # from the opening entry's own ``slot`` field, and the two are kept equal here
+    # because the emitter writes them from the same value.
+    return CrewLog.create(lg.KIND_SESSION, unit_id, owner="raymond", agent="kirocrew", slot=slot)
 
 
-def _opened(handle: CrewLog) -> None:
-    handle.append(
-        "session/opened",
-        {
-            "agent": "kirocrew",
-            "slot": "dashboard:1",
-            "model": "opus",
-            "cwd": "/w",
-            "owner": "raymond",
-            "resumed": False,
-        },
-        src=GATEWAY,
-    )
+def _opened(
+    handle: CrewLog,
+    *,
+    parent_sid: str = "",
+    parent_slot: str = "",
+    slot: str = "dashboard:1",
+    memory: str = "persistent",
+    app: str = "",
+    channel: bool = False,
+    workspace: str = "default",
+    record_class: bool = True,
+) -> None:
+    data = {
+        "agent": "kirocrew",
+        "slot": slot,
+        "model": "opus",
+        "cwd": "/w",
+        "owner": "raymond",
+        "resumed": False,
+    }
+    if parent_slot:
+        # The same shape ``crew_log.emit`` writes: ``slot`` names the creator's tab,
+        # which is what a scope test reads because a slot outlives its ACP session,
+        # and ``sid`` names the creator's crew log unit as an audit citation.
+        data["parent"] = {"slot": parent_slot}
+        if parent_sid:
+            data["parent"]["sid"] = parent_sid
+    if record_class:
+        # ``record_class=False`` is a log written before the class was recorded, which
+        # a cross-session read must refuse rather than read as "nothing applies".
+        session_class: dict[str, object] = {"memory": memory}
+        if app:
+            session_class["app"] = app
+        if channel:
+            session_class["channel"] = True
+        if workspace:
+            session_class["workspace"] = workspace
+        data["class"] = session_class
+    handle.append("session/opened", data, src=GATEWAY)
+
+
+def _class_moved(
+    unit_id: str,
+    *,
+    memory: str = "persistent",
+    app: str = "",
+    channel: bool = False,
+    workspace: str = "default",
+) -> None:
+    """Append the ``session/class`` the emitter writes when a class moves mid-life.
+
+    Same payload as the opening entry's ``class`` object, which is why both are
+    declared from one field tuple: a reader folds the second over the first. The log
+    is OPENED rather than created, because a transition by definition arrives after
+    the opener and ``create`` refuses a log that already exists.
+    """
+    data: dict[str, object] = {"memory": memory}
+    if app:
+        data["app"] = app
+    if channel:
+        data["channel"] = True
+    if workspace:
+        data["workspace"] = workspace
+    CrewLog.open(lg.KIND_SESSION, unit_id).append("session/class", data, src=GATEWAY)
 
 
 def _turn(handle: CrewLog, turn: int) -> None:
@@ -261,9 +316,9 @@ async def test_a_read_addressed_by_slot_key_folds_that_slot_s_unit():
 
 @pytest.mark.asyncio
 async def test_the_batch_read_answers_every_fold_from_one_resolution():
-    """All five folds, resolved once and folded once, so they cannot disagree.
+    """Every fold, resolved once and folded once, so they cannot disagree.
 
-    Five per-name reads each resolve the session for themselves, so a session
+    Per-name reads each resolve the session for themselves, so a session
     replaced mid-flight can leave some answers describing the unit going away and
     some the one arriving. This route removes that window: one resolution, one pass
     over one file.
@@ -1060,10 +1115,25 @@ async def test_installing_with_the_flag_off_builds_nothing(monkeypatch):
 class _Slot:
     """The little of a dashboard slot these routes read."""
 
-    def __init__(self, *, app: str = "", restricted: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        app: str = "",
+        restricted: bool = False,
+        key: str = "",
+        memory_mode: str = "persistent",
+        linked_session_key: str = "",
+        workspace: str = "default",
+    ) -> None:
         self._app = app
+        self.workspace = workspace
         self.is_restricted = restricted
-        self.linked_session_key = ""
+        self.linked_session_key = linked_session_key
+        # ``key`` is how a slot is matched back to the unit it is writing, and
+        # ``memory_mode`` is the field the mirrored incognito test reads --
+        # ``is_restricted`` is the owner test's own signal and is not the same field.
+        self.key = key
+        self.memory_mode = memory_mode
 
 
 class _State:
@@ -1169,71 +1239,789 @@ def test_a_read_with_the_flag_off_says_how_to_switch_it_on(monkeypatch):
     assert routes.CREW_LOG_ENV in body["error"]
 
 
-class TestWhoMayReadAnotherUnit:
-    """The owner at a dashboard tab, and nobody else. Each refusal names its class."""
+#: A conductor, its child and its grandchild, plus a session in another tree. The
+#: keys are deliberately NOT ``dashboard:`` so the owner arm cannot answer for them
+#: and the lineage arm is what is under test. The SLOT half of the conductor's key is
+#: what the fence matches, because the recorded edge names a slot.
+CONDUCTOR_KEY = "subagent:conductor"
+CONDUCTOR_SLOT = "conductor"
+CONDUCTOR_UNIT = "s-conductor"
+CHILD_SLOT = "chat-child-1789000000"
+CHILD_UNIT = "s-child"
+GRANDCHILD_SLOT = "chat-grandchild-1789000001"
+GRANDCHILD_UNIT = "s-grandchild"
+STRANGER_SLOT = "chat-stranger-1789000002"
+STRANGER_UNIT = "s-stranger"
 
-    @pytest.mark.parametrize(
-        "session_key",
-        [
-            "cron:nightly",
-            "subagent:abc123",
-            "taskrunner:run-1",
-            "slack:1712793600.123",
-            "discord:99",
-            "some-future-surface:1",
-        ],
-        ids=["cron", "subagent", "taskrunner", "slack", "discord", "unnamed-surface"],
+
+@pytest.fixture(autouse=True)
+def _fresh_dispatch_scan():
+    """Drop the read side's per-unit caches between tests.
+
+    Two of them, both module-level so they survive a request, which is what keeps a
+    scope test one ``stat`` per untouched unit and one fold per grown log. Each is
+    validated against the log's own identity, so a new data home would invalidate it
+    anyway -- clearing them outright means these tests do not depend on that
+    validation being right, which is a property with its own tests.
+    """
+    from kiro_crew.crew_log import read as crew_log_read
+
+    crew_log_read._TREE._heads.clear()
+    crew_log_read.reset_class_bundles()
+    yield
+    crew_log_read._TREE._heads.clear()
+    crew_log_read.reset_class_bundles()
+
+
+def _dispatch_tree(**child_class) -> None:
+    """Four units: conductor -> child -> grandchild, and a stranger under nobody.
+
+    The edges are recorded by SLOT, which is what the fence walks; each entry also
+    carries the creator's unit as ``sid``, the way the emitter writes it, so a test
+    that keys on the slot cannot pass merely because the sid happens to agree.
+    ``child_class`` sets the child's own recorded class.
+    """
+    _opened(_log(CONDUCTOR_UNIT, slot=CONDUCTOR_SLOT), slot=CONDUCTOR_SLOT)
+    _opened(
+        _log(CHILD_UNIT, slot=CHILD_SLOT),
+        slot=CHILD_SLOT,
+        parent_slot=CONDUCTOR_SLOT,
+        parent_sid=CONDUCTOR_UNIT,
+        **child_class,
     )
-    def test_a_headless_or_channel_caller_is_refused(self, monkeypatch, session_key):
-        """The rule is the ``dashboard:`` namespace, not a list of what a caller is not.
+    _opened(
+        _log(GRANDCHILD_UNIT, slot=GRANDCHILD_SLOT),
+        slot=GRANDCHILD_SLOT,
+        parent_slot=CHILD_SLOT,
+        parent_sid=CHILD_UNIT,
+    )
+    _opened(
+        _log(STRANGER_UNIT, slot=STRANGER_SLOT),
+        slot=STRANGER_SLOT,
+        parent_slot="somebody-else",
+        parent_sid="s-somebody-else",
+    )
 
-        The last case is a namespace no release has shipped: a new surface is
-        refused the wider read the day it is added, without anyone remembering to
-        name it here.
+
+def _as_conductor(path: str, **kwargs) -> object:
+    """A request from the conductor session, which is not the owner's own tab."""
+    kwargs.setdefault("session_key", CONDUCTOR_KEY)
+    kwargs.setdefault("slots", {"conductor": _Slot()})
+    kwargs.setdefault("sessions", {CONDUCTOR_KEY: CONDUCTOR_UNIT})
+    return _internal_request(path, **kwargs)
+
+
+class TestTheDispatchFence:
+    """A strict session identity, and then a scope: own unit, or one it dispatched.
+
+    The entitlement is derived from the recorded ``session/opened`` creator edge, so
+    a conductor reaches its child and its grandchild while a session in another tree
+    reaches neither. The owner at a dashboard tab still reaches everything, which is
+    the case this module shipped with.
+
+    The caller classes ``session_control.authorize_target`` refuses are refused here
+    too, and for its reasons rather than for a general distrust of headless callers:
+    each one is about where a read LANDS.
+    """
+
+    def test_a_conductor_reads_the_unit_it_dispatched(self, monkeypatch):
+        """MUTATION-SENSITIVE: the lineage arm itself.
+
+        The conductor is not the owner's tab and the child is not its own unit, so
+        nothing but the recorded creator edge can admit this read.
         """
         _flag_on(monkeypatch)
-        request = _internal_request("/api/crew-log/sessions", session_key=session_key)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == CHILD_UNIT
+
+    def test_a_conductor_reads_a_descendant_forty_generations_down(self, monkeypatch):
+        """MUTATION-SENSITIVE: the walk is bounded by the tree, not by a number.
+
+        The repeat check is the whole bound, and it ends the walk on every input: each
+        pass either returns or adds a slot to ``seen``, and ``seen`` draws only from a
+        finite node map. A fixed depth cap on top of that buys no termination safety and
+        costs correctness -- it answers "no creator above this" for an honest chain
+        longer than itself, refusing a grant the tree supports. This chain is 40 deep and
+        the top reads the bottom, so adding any fixed cap below 40 reddens it.
+        """
+        _flag_on(monkeypatch)
+        depth = 40
+        slots = [f"chat-deep-{i}" for i in range(depth)]
+        units = [f"s-deep-{i}" for i in range(depth)]
+        _opened(_log(units[0], slot=slots[0]), slot=slots[0])
+        for i in range(1, depth):
+            _opened(
+                _log(units[i], slot=slots[i]),
+                slot=slots[i],
+                parent_slot=slots[i - 1],
+                parent_sid=units[i - 1],
+            )
+        request = _internal_request(
+            f"/api/crew-log/units/{units[-1]}/page",
+            match={"unit": units[-1]},
+            session_key=f"subagent:{slots[0]}",
+            slots={slots[0]: _Slot()},
+            sessions={f"subagent:{slots[0]}": units[0]},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200, response.text
+        assert json.loads(response.text)["session_id"] == units[-1]
+
+    def test_a_conductor_reads_a_grandchild(self, monkeypatch):
+        """MUTATION-SENSITIVE: the walk is transitive, not one generation.
+
+        The grandchild's edge names the CHILD, so admitting this needs the chain to
+        be followed past its first link.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{GRANDCHILD_UNIT}/page", match={"unit": GRANDCHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == GRANDCHILD_UNIT
+
+    def test_a_conductor_keeps_its_children_across_a_gateway_restart(self, monkeypatch):
+        """MUTATION-SENSITIVE: the fence keys on the recorded SLOT, not on the sid.
+
+        A gateway restart gives the same tab a NEW ACP session id, so the conductor's
+        work lands in a new unit while its slot is unchanged. The child's entry still
+        names the OLD unit as ``sid``, which is correct -- that is the log that held
+        the creating call -- and a sid-keyed fence would therefore lock the
+        re-attached conductor out of a child it dispatched minutes earlier. Only the
+        slot survives the restart, so admitting this read requires keying on it.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        # The same slot, a new session: a second log for the conductor's tab, whose
+        # own entry cites no creator because the mint witness died with the process.
+        reattached = "s-conductor-after-restart"
+        _opened(_log(reattached, slot=CONDUCTOR_SLOT), slot=CONDUCTOR_SLOT)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            sessions={CONDUCTOR_KEY: reattached},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == CHILD_UNIT
+
+    def test_a_target_whose_log_records_no_class_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the fail-closed half of the recorded-class test.
+
+        A log opened before the class was recorded cannot say whether its session was
+        app-owned, incognito or published to a channel, and a live lookup cannot
+        answer for it either once that session has closed. Admitting it would put
+        every pre-existing unit back inside the fence, so the absence REFUSES and the
+        refusal names the missing record. The caller here really did dispatch the
+        child, so nothing but this test can refuse the read.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree(record_class=False)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "does not record what kind of session it is" in json.loads(response.text)["error"]
+
+    @pytest.mark.parametrize(
+        ("recorded", "word"),
+        [
+            ({"channel": True}, "published to a channel"),
+            ({"app": "travel-desk"}, "app-scoped"),
+            ({"memory": "incognito"}, "incognito"),
+        ],
+        ids=["channel", "app", "incognito"],
+    )
+    def test_a_closed_targets_class_is_read_from_its_own_log(self, monkeypatch, recorded, word):
+        """MUTATION-SENSITIVE: the recorded class decides a target with no live slot.
+
+        Nothing is writing the child's unit, which is the ordinary state of a
+        finished run, so the live target test has nothing to exclude on. The class is
+        on the child's own opening entry, which is the whole reason it is recorded
+        there, and each of these three closes a boundary a live-only test would miss.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree(**recorded)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert word in json.loads(response.text)["error"]
+
+    def test_a_class_acquired_after_the_log_opened_refuses_a_closed_target(self, monkeypatch):
+        """MUTATION-SENSITIVE: the whole reason the class history is folded, not read.
+
+        The child opens as an ordinary session and is given a channel surface later,
+        so the OPENING entry truthfully records no channel while the turns after it
+        carry a third party's words. Reading the opener alone admits this read; the
+        fold holds ``channel`` at the most restrictive value the log ever stated, so it
+        refuses. Nothing else in this suite catches it: the target has no live slot,
+        which is the ordinary state of a finished run.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _class_moved(CHILD_UNIT, channel=True)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "published to a channel" in json.loads(response.text)["error"]
+
+    def test_a_class_that_moved_back_stays_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the fold keeps the most restrictive value EVER held.
+
+        The link is dropped again, so the newest statement is clean -- and the turns
+        that ran while it was published are still in this log. A fold that took the
+        LATEST value would hand those words to the dispatcher, so taking the most
+        restrictive one is the honest reading rather than a conservative default.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _class_moved(CHILD_UNIT, channel=True)
+        _class_moved(CHILD_UNIT)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "published to a channel" in json.loads(response.text)["error"]
+
+    def test_a_class_history_with_no_beginning_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: a fold that saw only moves cannot say what it moved FROM.
+
+        Retention can take the segment carrying the opening entry, leaving transitions
+        whose earliest class is unknown. The surviving part states a clean class, so a
+        reader that trusted it would admit on a log whose opener may have been
+        app-owned. ``complete`` is what refuses, and it doubles as the log's date: the
+        opening ``class`` object and this transition were declared together, so a log
+        stating the first was written by a build that records the second.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree(record_class=False)
+        _class_moved(CHILD_UNIT)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "not the class it started from" in json.loads(response.text)["error"]
+
+    def test_a_closed_target_whose_class_never_moved_is_still_read(self, monkeypatch):
+        """The admitting direction, which is the feature this whole fence exists for.
+
+        An affirmatively clean history is an opening class plus no transition away
+        from it. Without this the three refusal tests above are satisfied by a gate
+        that refuses every closed target, which is what the ruling this implements
+        deliberately did not do.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _class_moved(CHILD_UNIT, memory="persistent")
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == CHILD_UNIT
+
+    def test_a_class_fold_that_stopped_short_of_the_file_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: a partial fold cannot answer a question about the whole log.
+
+        ``iter_from`` stops at an entry type it does not know, which a log written by a
+        newer build can carry. Stopping is safe for a fold that accumulates totals, and
+        unsafe for this one: a restrictive move recorded AFTER the unknown entry would
+        simply be unseen, so the fold would report the log as more readable than it is.
+        The fold is shortened here rather than a newer entry planted, because the
+        reader's rule is about the seq it reached, whatever stopped it.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        from kiro_crew.crew_log import read as crew_log_read
+
+        real = crew_log_read.projections.fold_session
+
+        def _short(session_id, names, **kwargs):
+            bundle = real(session_id, names, **kwargs)
+            return type(bundle)(
+                session_id=bundle.session_id,
+                last_seq=max(0, bundle.last_seq - 1),
+                checkpoints=bundle.checkpoints,
+                origin=bundle.origin,
+            )
+
+        monkeypatch.setattr(crew_log_read.projections, "fold_session", _short)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "does not record what kind of session it is" in json.loads(response.text)["error"]
+
+    def test_a_target_whose_class_moves_mid_read_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the re-check RE-FOLDS the target's class.
+
+        The target is published to a channel while the payload is being built, takes a
+        channel turn, and is unlinked again. At the grant it was clean and at the answer
+        its live slot is clean again, so both live reads pass -- and the words of that
+        channel turn are in the payload. Only a fold taken AFTER the read sees the move,
+        and because the fold is held at the most restrictive value the log ever recorded
+        it stays refused rather than following the slot back to clean.
+
+        This is why reusing the grant's fold is not an optimisation: the two answers
+        differ exactly in the case the guard exists for.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        real = routes._read_page
+
+        def _moving(*args, **kwargs):
+            _class_moved(CHILD_UNIT, channel=True)
+            _class_moved(CHILD_UNIT)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "_read_page", _moving)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "published to a channel" in json.loads(response.text)["error"]
+
+    def test_a_target_whose_class_holds_still_mid_read_is_still_answered(self, monkeypatch):
+        """MUTATION-SENSITIVE: the re-fold is a TEST, not a second refusal.
+
+        The same hook runs and appends a move that changes nothing restrictive. Without
+        this case a re-fold that refused whenever the log grew during the read would
+        pass the test above while breaking every read of a session still working, which
+        is most of them.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        real = routes._read_page
+
+        def _moving(*args, **kwargs):
+            _class_moved(CHILD_UNIT, memory="persistent")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "_read_page", _moving)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == CHILD_UNIT
+
+    def test_a_target_whose_log_lost_its_front_segment_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: a log that does not hold seq 1 cannot be dated.
+
+        Retention deletes whole segments off the FRONT, so a surviving log can begin
+        part-way through its own life. This log's own first opener recorded no class,
+        and the survivor is a RE-ATTACHMENT's opener, which does -- so within the file
+        that remains the stating opener genuinely is the first one the fold sees, and
+        the projection's own first-opener rule cannot help. Only the store can say the
+        file starts past seq 1, and the first seq is in each segment's NAME, so the
+        check costs a directory listing rather than a read.
+
+        The re-attachment carries the dispatch edge too, which is what keeps this in
+        scope and makes the CLASS the reason it is refused -- a trim that took the edge
+        as well would be refused for being out of scope and prove nothing about dating.
+
+        The trimmed state is built on disk rather than by calling retention, because no
+        writer rotates yet: the surviving segment is named for the seq it starts at and
+        carries exactly the entries from that seq on, which is the layout a front trim
+        leaves.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree(record_class=False)
+        child = CrewLog.open(lg.KIND_SESSION, CHILD_UNIT)
+        _turn(child, 1)
+        _opened(child, slot=CHILD_SLOT, parent_slot=CONDUCTOR_SLOT, parent_sid=CONDUCTOR_UNIT)
+
+        directory = lg.crew_log_dir(lg.KIND_SESSION, CHILD_UNIT)
+        head = directory / "log.jsonl"
+        lines = head.read_text(encoding="utf-8").splitlines(keepends=True)
+        # Line 0 is the log HEADER, not an entry, so the openers are found by type
+        # rather than by position and the RE-ATTACHMENT is the second of them.
+        openers = [
+            i for i, line in enumerate(lines) if json.loads(line).get("type") == "session/opened"
+        ]
+        assert len(openers) == 2, f"expected an original opener and a re-attachment, got {openers}"
+        # Every segment carries a copy of the log HEADER as its own line 1, which is
+        # what lets a reader open one without the segment before it -- and what keeps
+        # the dispatch edge readable here, since the tree reads line 2 of the oldest
+        # surviving segment.
+        kept = [lines[0]] + lines[openers[1] :]
+        first_kept = json.loads(kept[1])["seq"]
+        assert first_kept > 1, "a trim that keeps seq 1 is not a trim"
+        (directory / f"log.{first_kept}.jsonl").write_text("".join(kept), encoding="utf-8")
+        head.unlink()
+        from kiro_crew.crew_log import read as crew_log_read
+
+        crew_log_read.reset_class_bundles()
+
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        error = json.loads(response.text)["error"]
+        # The retention case gets its OWN text: the remedy differs, because nothing
+        # about this log will satisfy the read again, where an unrecorded class is
+        # fixed by the session recording one. Asserting the generic wording here
+        # would pass whether or not the two are told apart.
+        assert "no longer holds its own beginning" in error, error
+        assert "does not record what kind of session" not in error, error
+
+    def test_a_bare_session_key_is_read_as_its_own_slot(self, monkeypatch):
+        """MUTATION-SENSITIVE: a key with no colon is a bare SLOT name, not a broken key.
+
+        The crew log's own resolver states the premise and acts on it -- a key carrying
+        no colon cannot already be namespaced, since every namespace spelling carries
+        one -- so it retries a bare key in ``dashboard:`` form. Reading its slot half by
+        splitting on the colon and taking the SECOND part instead raises ``IndexError``
+        on exactly that key, which reaches the caller as a 500 on an ordinary read.
+
+        Resolving it as its own slot is not a widening: the class tests and the lineage
+        walk all still run on that slot, and the own-unit resolution already handled
+        this key shape, so refusing it here was the two halves disagreeing about who the
+        caller is rather than a boundary.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _internal_request(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            session_key=CONDUCTOR_SLOT,
+            slots={CONDUCTOR_SLOT: _Slot()},
+            sessions={CONDUCTOR_SLOT: CONDUCTOR_UNIT},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200, response.text
+        assert json.loads(response.text)["session_id"] == CHILD_UNIT
+
+    def test_a_target_whose_log_has_a_damaged_line_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: byte damage must not raise an authorization ceiling.
+
+        The restriction is written, then that line's bytes are destroyed while the line
+        COUNT and the tail seq are left alone. The store skips an unreadable interior
+        line on purpose and does not check interior seq continuity, so the fold still
+        reaches the file's tail: nothing stopped early, the short-fold refusal cannot
+        fire, and without the contiguity check the fold answers with the clean opening
+        class and the dispatcher receives the channel turn's message bodies.
+
+        The damage is planted rather than simulated because that is the only way to
+        reach the skipped-line path: no writer produces a line the reader cannot parse.
+        It is planted in the INTERIOR because the tail is a different case -- a damaged
+        LAST line lowers the tail seq too, so the fold and that seq agree, and nothing
+        can tell it from an append in flight. That case carries no exposure: a class is
+        recorded at the START of the turn that runs under it, so a move with nothing
+        after it is a move no turn has run under yet.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _class_moved(CHILD_UNIT, channel=True)
+        child = CrewLog.open(lg.KIND_SESSION, CHILD_UNIT)
+        _turn(child, 1)
+        head = lg.crew_log_dir(lg.KIND_SESSION, CHILD_UNIT) / "log.jsonl"
+        lines = head.read_text(encoding="utf-8").splitlines(keepends=True)
+        moves = [i for i, ln in enumerate(lines) if json.loads(ln).get("type") == "session/class"]
+        assert len(moves) == 1, f"expected one move to damage, got {moves}"
+        lines[moves[0]] = "{not json at all\n"
+        head.write_text("".join(lines), encoding="utf-8")
+        from kiro_crew.crew_log import read as crew_log_read
+
+        crew_log_read.reset_class_bundles()
+
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403, response.text
+        error = json.loads(response.text)["error"]
+        assert "does not record what kind of session it is" in error, error
+
+    def test_an_out_of_tree_target_is_refused_without_naming_its_class(self, monkeypatch):
+        """The scope refusal comes FIRST, so a class is not readable one refusal at a time.
+
+        The stranger's log records no class here, so a gate that tested the class
+        before the scope would answer with the class refusal and let any caller learn
+        something about a unit it may not read at all.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _opened(_log("s-lonely", slot="chat-lonely"), slot="chat-lonely", record_class=False)
+        request = _as_conductor("/api/crew-log/units/s-lonely/page", match={"unit": "s-lonely"})
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        error = json.loads(response.text)["error"]
+        assert "does not fall inside that scope" in error
+        assert "kind of session" not in error
+
+    def test_a_mirrored_owner_tab_reads_only_its_own_unit(self, monkeypatch):
+        """MUTATION-SENSITIVE: the owner arm is held to the caller classes too.
+
+        An owner's own tab publishes to the person at it, but a dashboard session
+        MIRRORED to a channel republishes every turn -- so the one caller entitled to
+        read every unit would otherwise be the one that publishes them. It keeps its
+        own unit, like every other excluded caller.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        owner_unit = "s-owner"
+        _opened(_log(owner_unit, slot="chat-owner"), slot="chat-owner")
+        slots = {"chat-owner": _Slot(key=OWNER_KEY, linked_session_key="slack:C500")}
+        sessions = {OWNER_KEY: owner_unit}
+        peer = _internal_request(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots=slots,
+            sessions=sessions,
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(peer))
+        assert response.status == 403
+        assert "channel" in json.loads(response.text)["error"]
+        own = _internal_request(
+            f"/api/crew-log/units/{owner_unit}/page",
+            match={"unit": owner_unit},
+            slots=slots,
+            sessions=sessions,
+        )
+        assert asyncio.run(routes.api_crew_log_unit_page(own)).status == 200
+
+    def test_a_sibling_cannot_read_a_sibling(self, monkeypatch):
+        """MUTATION-SENSITIVE: the fence, from the side it exists to hold.
+
+        The stranger's tree does not contain the conductor, so a walk that ran to
+        the end of the chain still must not admit it. A gate that admitted every
+        identified caller would pass this read.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{STRANGER_UNIT}/page", match={"unit": STRANGER_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        body = json.loads(response.text)
+        assert body["code"] == "forbidden"
+        assert "does not fall inside that scope" in body["error"]
+
+    def test_the_lineage_walk_runs_off_the_event_loop(self, monkeypatch):
+        """MUTATION-SENSITIVE: the fold is the only arm that touches the filesystem.
+
+        It lists the store and stats every unit, so running it inline would put a
+        real filesystem scan on the loop for every cross-unit request. Asserting that
+        no loop is RUNNING where the fold executes is what distinguishes an offloaded
+        scan from an inline one; the verdict is asserted too, so a scan that never ran
+        cannot pass this.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        from kiro_crew.crew_log import read as crew_log_read
+
+        real = crew_log_read.dispatch_view
+        seen: dict[str, bool] = {}
+
+        def _watching(preferred=()):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                seen["on_loop"] = False
+            else:
+                seen["on_loop"] = True
+            return real(preferred)
+
+        monkeypatch.setattr(crew_log_read, "dispatch_view", _watching)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert seen == {"on_loop": False}
+
+    def test_a_malformed_unit_is_refused_rather_than_crashing(self, monkeypatch):
+        """MUTATION-SENSITIVE: the lineage walk's own error containment.
+
+        The unit id is whatever a request named, and the store rejects some spellings
+        outright. A walk that let that escape would turn an unauthorized read into a
+        server error -- no verdict, and an audit row that records neither outcome. The
+        walk answers "no creator recorded" instead, which the fence refuses.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        bad = "bad\\id"
+        request = _as_conductor(f"/api/crew-log/units/{bad}/page", match={"unit": bad})
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert json.loads(response.text)["code"] == "forbidden"
+
+    def test_a_session_reads_its_own_unit(self, monkeypatch):
+        """No slot lookup and no walk: the cheapest arm, and the one every caller has."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CONDUCTOR_UNIT}/page", match={"unit": CONDUCTOR_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+
+    def test_a_channel_linked_caller_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the mirrored caller-class exclusion.
+
+        A linked session's own conversation is a channel thread, so a peer's crew
+        log it reads is published to whoever is in that channel. This is the class
+        the "sessions belong to one operator" premise does not reach, and it is
+        refused on the child it really did dispatch.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={"conductor": _Slot(linked_session_key="slack:C123")},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "channel" in json.loads(response.text)["error"]
+
+    def test_a_channel_linked_caller_still_reads_its_own_unit(self, monkeypatch):
+        """The exclusion is about reading PAST its own record, not about reading.
+
+        Without this the mirrored exclusions would be indistinguishable from a
+        blanket refusal of the class, which is a different and wider rule.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CONDUCTOR_UNIT}/page",
+            match={"unit": CONDUCTOR_UNIT},
+            slots={"conductor": _Slot(linked_session_key="slack:C123")},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+
+    @pytest.mark.parametrize("prefix", ["cron", "taskrunner"], ids=["cron", "taskrunner"])
+    def test_an_unattended_caller_cannot_read_a_peer(self, monkeypatch, prefix):
+        """A scheduled run has no operator watching what it did with the content."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        key = f"{prefix}:nightly"
+        request = _internal_request(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            session_key=key,
+            slots={"nightly": _Slot()},
+            sessions={key: CONDUCTOR_UNIT},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "unattended" in json.loads(response.text)["error"]
+
+    def test_an_app_owned_caller_cannot_read_a_peer(self, monkeypatch):
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={"conductor": _Slot(app="travel-desk")},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "app-owned" in json.loads(response.text)["error"]
+
+    def test_an_incognito_caller_cannot_read_a_peer(self, monkeypatch):
+        """That session was created to leave and learn nothing."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={"conductor": _Slot(memory_mode="incognito")},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "incognito" in json.loads(response.text)["error"]
+
+    def test_a_caller_the_slot_table_cannot_place_reads_only_its_own(self, monkeypatch):
+        """A caller with no live slot cannot be placed in a dispatch tree.
+
+        It keeps its own unit, because that is resolved from the session manager
+        rather than from the slot table.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        peer = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}, slots={}
+        )
+        assert asyncio.run(routes.api_crew_log_unit_page(peer)).status == 403
+        own = _as_conductor(
+            f"/api/crew-log/units/{CONDUCTOR_UNIT}/page",
+            match={"unit": CONDUCTOR_UNIT},
+            slots={},
+        )
+        assert asyncio.run(routes.api_crew_log_unit_page(own)).status == 200
+
+    def test_a_live_channel_linked_target_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the mirrored TARGET-class exclusion.
+
+        A child minted by ``session_create`` is unlinked, so this is the case where
+        it was linked AFTERWARDS -- read from its live slot, which is why the slot
+        is matched to the unit it is currently writing.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        child_key = "dashboard:chat-child"
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={
+                "conductor": _Slot(),
+                "chat-child": _Slot(key=child_key, linked_session_key="slack:C999"),
+            },
+            sessions={CONDUCTOR_KEY: CONDUCTOR_UNIT, child_key: CHILD_UNIT},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "channel" in json.loads(response.text)["error"]
+
+    def test_a_closed_target_is_read_by_its_dispatcher(self, monkeypatch):
+        """The whole point: a FINISHED child's recorded log.
+
+        No live slot is writing the child's unit here, which is the ordinary state
+        of a completed run. ``authorize_target`` answers 404 for that, and this door
+        deliberately does not.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        assert asyncio.run(routes.api_crew_log_unit_page(request)).status == 200
+
+    def test_a_caller_with_no_session_key_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the identity requirement, ahead of every scope arm.
+
+        An unnamed caller is refused because the audit row for a read is only worth
+        keeping if it names the session that made it.
+        """
+        _flag_on(monkeypatch)
+        _opened(_log())
+        request = _internal_request("/api/crew-log/sessions", session_key="")
         response = asyncio.run(routes.api_crew_log_sessions(request))
         assert response.status == 403
         body = json.loads(response.text)
         assert body["code"] == "forbidden"
-        assert session_key.split(":", 1)[0] in body["error"]
-
-    def test_a_caller_with_no_session_key_is_refused(self, monkeypatch):
-        _flag_on(monkeypatch)
-        request = _internal_request("/api/crew-log/sessions", session_key="")
-        response = asyncio.run(routes.api_crew_log_sessions(request))
-        assert response.status == 403
-        assert json.loads(response.text)["code"] == "forbidden"
-
-    def test_a_key_naming_no_live_slot_is_refused(self, monkeypatch):
-        """A popped tab cannot say whose it was, so it is not the person."""
-        _flag_on(monkeypatch)
-        request = _internal_request("/api/crew-log/sessions", slots={})
-        response = asyncio.run(routes.api_crew_log_sessions(request))
-        assert response.status == 403
-        assert "no live dashboard slot" in json.loads(response.text)["error"]
-
-    def test_an_app_owned_session_is_refused(self, monkeypatch):
-        """An app agent arrives on the same transport and must not inherit the person."""
-        _flag_on(monkeypatch)
-        request = _internal_request(
-            "/api/crew-log/sessions", slots={"chat-owner": _Slot(app="travel-desk")}
-        )
-        response = asyncio.run(routes.api_crew_log_sessions(request))
-        assert response.status == 403
-        assert "app-owned" in json.loads(response.text)["error"]
-
-    def test_an_incognito_session_is_refused(self, monkeypatch):
-        """The session asked to leave nothing behind; handing it every other
-        session's history is the opposite of that."""
-        _flag_on(monkeypatch)
-        request = _internal_request(
-            "/api/crew-log/sessions", slots={"chat-owner": _Slot(restricted=True)}
-        )
-        response = asyncio.run(routes.api_crew_log_sessions(request))
-        assert response.status == 403
-        assert "incognito or temporary" in json.loads(response.text)["error"]
+        assert "session identity" in body["error"]
 
     def test_a_request_naming_another_component_is_refused(self, monkeypatch):
         """The route serves ONE internal caller; the header is validated, not trusted."""
@@ -1251,6 +2039,299 @@ class TestWhoMayReadAnotherUnit:
         response = asyncio.run(routes.api_crew_log_sessions(request))
         assert response.status == 200
         assert json.loads(response.text)["kind"] == "session"
+
+
+class TestTheGrantIsRecheckedAfterTheRead:
+    """A verdict about the TARGET's class must still hold when the payload returns.
+
+    Each unit route authorizes, then reads the entries off the loop. That offload is a
+    suspension point, so the target can append a class move while it runs -- and the
+    payload would then be a one-shot delivery of entries the refreshed class governs.
+    The caller's class is NOT re-tested here; where a caller's turn lands is decided
+    after this route answers, so such a test could not buy an invariant. It is tested
+    at the gate, which is where it decides whether the read happens at all.
+    """
+
+    def _links_during(self, monkeypatch, slot, name: str = "_read_page"):
+        """Make the offloaded read acquire a channel link as its side effect.
+
+        The link lands while the read is in flight, which is the only moment this
+        guard exists for: before it, the gate refuses; after it, the payload is
+        already out.
+        """
+        real = getattr(routes, name)
+
+        def _linking(*args, **kwargs):
+            slot.linked_session_key = "telegram:-100999"
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(routes, name, _linking)
+
+    def test_the_owner_arm_keeps_reading_a_target_the_lineage_arm_would_refuse(self, monkeypatch):
+        """MUTATION-SENSITIVE: the re-check re-runs the tests the GRANT ran, no others.
+
+        The owner at a dashboard tab reads any unit, which is this door's recorded
+        product decision, so that arm runs no target test at all. This target records
+        no class, which the lineage arm refuses on -- so a re-check that ran the target
+        test unconditionally would withdraw a grant the gate correctly gave, and turn
+        the owner's ordinary read of an old unit into a refusal.
+        """
+        _flag_on(monkeypatch)
+        _opened(_log("s-old", slot="chat-old"), slot="chat-old", record_class=False)
+        request = _internal_request("/api/crew-log/units/s-old/page", match={"unit": "s-old"})
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == "s-old"
+
+    def test_a_payload_carrying_no_record_of_its_grant_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the re-check fails closed on a mark it cannot read.
+
+        Every arm that BUILDS a payload leaves a mark saying which target test its
+        grant ran. A request reaching the re-check without one is the gate and this
+        route having stopped agreeing, and the live test must not be run alone there:
+        for a target that HAS a live slot it would pass, and the recorded test would
+        never have been applied at all. So the absence refuses rather than falling
+        through to the weaker half.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        assert routes.TARGET_CLASS_KEY not in request, "the gate has not run yet"
+        response = asyncio.run(
+            routes._stale_grant_refusal(request, "session_crew_log.read", unit=CHILD_UNIT)
+        )
+        assert response is not None
+        assert "cannot be checked against the grant" in json.loads(response.text)["error"]
+
+    def test_a_caller_that_links_to_a_channel_mid_read_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the caller half of the re-check on the page route.
+
+        This is the scenario in full: a prompt to paste a dispatched child's log, a
+        mirror bound while the payload read is suspended, and a reply that would
+        publish the private log to the channel. The gate cannot see it -- at the moment
+        it ran, the caller was unlinked and entitled.
+
+        What this buys is exact and no wider: the route does not hand another session's
+        content to a caller that is publishing AT THE HANDOFF, which is the act the
+        route performs and controls. A caller that links AFTER the payload returns
+        holds it in context and can publish it on a later turn; nothing at turn
+        emission inspects a turn for another session's log content, so that residual
+        is real and is named in ``_stale_grant_refusal``'s own docstring rather than
+        papered over. The two differ in kind: delivering INTO a published session
+        versus a session becoming published while holding what it was entitled to.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        slot = _Slot()
+        self._links_during(monkeypatch, slot)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={CONDUCTOR_SLOT: slot},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "lands in that channel's thread" in json.loads(response.text)["error"]
+
+    def test_a_caller_that_links_during_the_refold_offload_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the caller verdict is re-read AFTER the refold suspends.
+
+        A window narrower than the one above, and the reason it needs its own case: the
+        caller verdict is sampled before the arms run, and the lineage arm then suspends
+        AGAIN to refold the target. A link landing inside that second suspension is
+        invisible to the first sample, so answering on the incoming verdict alone leaves
+        this route's own smaller window open while it closes the payload-build one --
+        the same stale-read class the route exists to close.
+
+        Hooking ``recorded_class`` is what places the link after the sample rather than
+        before it: the sibling case hooks the payload read, which the gate's own sample
+        already sees.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        slot = _Slot()
+        from kiro_crew.crew_log import read as crew_log_read
+
+        real = crew_log_read.recorded_class
+        calls = []
+
+        def _linking(*args, **kwargs):
+            # The gate folds the class too, and THAT call precedes the caller sample.
+            # Linking on it would be caught by the sample itself and the mutation
+            # would survive, so the link is placed on the re-check's own call.
+            calls.append(1)
+            if len(calls) >= 2:
+                slot.linked_session_key = "telegram:-100999"
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(crew_log_read, "recorded_class", _linking)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={CONDUCTOR_SLOT: slot},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert len(calls) >= 2, "the re-check never refolded, so the window was not exercised"
+        assert response.status == 403
+        assert "lands in that channel's thread" in json.loads(response.text)["error"]
+
+    def test_a_target_that_moves_mid_read_still_lets_a_caller_read_its_own_unit(self, monkeypatch):
+        """MUTATION-SENSITIVE: the re-check is CONDITIONAL, not a blanket refusal.
+
+        The classes govern reading PAST one's own record, so the own-unit exemption
+        returns before any target test. Without this case a re-check that refused
+        unconditionally would pass every other case here while breaking every
+        self-read, which is the shipped behaviour on base. The mid-read event is a
+        class move on the unit BEING read, which is what this function now reads.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        real = routes._read_page
+
+        def _moving(*args, **kwargs):
+            _class_moved(CONDUCTOR_UNIT, channel=True)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "_read_page", _moving)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CONDUCTOR_UNIT}/page",
+            match={"unit": CONDUCTOR_UNIT},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == CONDUCTOR_UNIT
+
+    def test_a_caller_that_links_mid_projection_is_refused(self, monkeypatch):
+        """The same race on the projection route, which offloads its own fold."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        slot = _Slot()
+        real = routes._crew_log().read_projection
+
+        def _linking(*args, **kwargs):
+            slot.linked_session_key = "telegram:-100999"
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(routes._crew_log(), "read_projection", _linking)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/projection/status",
+            match={"unit": CHILD_UNIT, "name": "status"},
+            slots={CONDUCTOR_SLOT: slot},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_projection(request))
+        assert response.status == 403
+        assert "lands in that channel's thread" in json.loads(response.text)["error"]
+
+    def test_a_caller_that_links_mid_listing_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the listing's scope is re-derived and compared.
+
+        A listing carries its scope as a FILTER, so the rows were selected under the
+        wider scope the caller held at the gate. Acquiring a link narrows that scope
+        to its own unit, and the rows already gathered include the units it
+        dispatched -- so the comparison, not a row test, is what refuses.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        slot = _Slot()
+        real = routes._crew_log_read().list_session_units
+
+        def _linking(*args, **kwargs):
+            slot.linked_session_key = "telegram:-100999"
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(routes._crew_log_read(), "list_session_units", _linking)
+        request = _as_conductor("/api/crew-log/sessions", slots={CONDUCTOR_SLOT: slot})
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 403
+
+    def test_every_offloading_route_rechecks_before_it_answers(self):
+        """MUTATION-SENSITIVE: the guard is at the choke point, not at one call site.
+
+        This route set grows, and a route added without the re-check reads correctly
+        in review -- the defect is an ABSENT line, which no assertion about the
+        current routes can see. So the rule is asserted over the module's own source:
+        an agent-door handler that suspends to build a payload must pass through
+        ``_stale_grant_refusal`` before returning it -- the unit routes because the
+        target's class can move while the entries are read, and the listing because its
+        rows were gathered under a scope wider than the caller now holds.
+        """
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(routes))
+        gated = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            called = {
+                n.func.id
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            }
+            if "_authorize_crew_log_read" not in called:
+                continue
+            body = ast.dump(node)
+            if "to_thread" not in body:
+                # The resolve route answers from memory, so its gate's own check
+                # is already the last read of live state before it returns.
+                continue
+            gated.append(node.name)
+            assert "_stale_grant_refusal" in called, (
+                f"{node.name} suspends after authorizing but never re-checks the "
+                "grant; a caller can acquire a channel link while it reads"
+            )
+        # A control: an empty set would satisfy the loop above silently.
+        assert len(gated) == 3, f"expected three offloading routes, found {gated}"
+
+
+class TestTheListingCarriesTheSameScope:
+    """A listing enumerates units, so it is filtered rather than merely allowed."""
+
+    def test_a_conductor_sees_its_own_tree_and_not_a_stranger(self, monkeypatch):
+        """MUTATION-SENSITIVE: the listing filter.
+
+        An unscoped listing would name every session on the host, which is the one
+        leak a per-unit gate cannot refuse after the fact.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor("/api/crew-log/sessions")
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 200
+        listed = {row["unit"] for row in json.loads(response.text)["units"]}
+        assert listed == {CONDUCTOR_UNIT, CHILD_UNIT, GRANDCHILD_UNIT}
+
+    def test_the_owner_sees_every_unit(self, monkeypatch):
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _internal_request("/api/crew-log/sessions")
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        listed = {row["unit"] for row in json.loads(response.text)["units"]}
+        assert STRANGER_UNIT in listed
+
+    def test_an_excluded_class_sees_only_its_own_unit(self, monkeypatch):
+        """Its own record, and nothing below it -- the listing form of the exclusion."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            "/api/crew-log/sessions",
+            slots={"conductor": _Slot(linked_session_key="slack:C123")},
+        )
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 200
+        listed = {row["unit"] for row in json.loads(response.text)["units"]}
+        assert listed == {CONDUCTOR_UNIT}
+
+    def test_a_caller_with_no_unit_of_its_own_is_refused(self, monkeypatch):
+        """Nothing to scope to, so there is no honest listing to return."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor("/api/crew-log/sessions", sessions={})
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 403
+        assert "no live crew log unit" in json.loads(response.text)["error"]
 
 
 class TestOnlyTheInternalTransportReachesThese:
@@ -1293,19 +2374,23 @@ class TestOnlyTheInternalTransportReachesThese:
         assert body["code"] == "forbidden"
         assert "/api/sessions/" in body["error"]
 
-    def test_a_cookie_caller_never_reaches_the_owner_test(self, monkeypatch):
-        """The owner test must not become a second way in from an authenticated page.
+    def test_a_cookie_caller_reads_nothing_through_this_door(self, monkeypatch):
+        """The refusal lands BEFORE any read, not after a second authorization test.
 
-        If a cookie caller fell through to it, any page the person has open would
-        reach ANOTHER session's recorded history -- the owner test would pass,
-        because the person IS the owner. The refusal has to land before it.
+        This door and the browser's own pair keep separate authorization models, and
+        a cookie admitted here would be a second path into the same bytes with a
+        different gate in front of it. Pinned by asserting the shared read
+        implementation is never entered, so the refusal cannot be satisfied by a
+        handler that reads first and filters after.
         """
         _flag_on(monkeypatch)
+        _opened(_log())
         request = _internal_request("/api/crew-log/sessions", secret=False)
-        with patch.object(routes, "require_owner_dashboard_request") as owner_gate:
+        with patch.object(routes, "_crew_log_read") as reader:
             response = asyncio.run(routes.api_crew_log_sessions(request))
-        owner_gate.assert_not_called()
+        reader.assert_not_called()
         assert response.status == 403
+        assert "/api/sessions/" in json.loads(response.text)["error"]
 
     def test_the_prefix_is_on_the_strict_transport(self):
         """Strict, not mixed: a forwarded browser is hard-denied rather than
@@ -1322,8 +2407,15 @@ class TestOnlyTheInternalTransportReachesThese:
         assert "/api/sessions" not in _STRICT_INTERNAL_API_PATHS
 
 
-class TestSelfScope:
-    """Reading YOUR OWN unit needs only a strict identity -- no dashboard tab."""
+class TestReadingAnotherSessionsUnit:
+    """A DISPATCHED session's unit, by name. The capability the rule exists for.
+
+    ``self`` is resolved server-side from the forwarded key, and naming another
+    unit asks the gate the same question as naming your own, so these tests pin
+    both forms against one rule. Every cross-unit read here is a read DOWN the
+    caller's own dispatch tree; a read across to a stranger is pinned in
+    ``TestTheDispatchFence``.
+    """
 
     def test_a_subagent_may_read_its_own_unit(self, monkeypatch):
         _flag_on(monkeypatch)
@@ -1341,25 +2433,117 @@ class TestSelfScope:
         assert response.status == 200
         assert json.loads(response.text)["entries"]
 
-    def test_a_subagent_may_not_read_a_different_unit(self, monkeypatch):
-        """The self scope is derived server-side from the forwarded key, so naming
-        another unit falls to the owner rule rather than being waved through."""
+    def test_a_subagent_may_read_a_unit_it_dispatched(self, monkeypatch):
+        """MUTATION-SENSITIVE: the rule, stated as a behaviour.
+
+        A non-owner strict identity pages a unit that is NOT the one its own work
+        lands in, and reaches it because that unit's ``session/opened`` names the
+        caller's unit as its creator. This is the read a conductor needs to see what
+        a session it dispatched actually did.
+        """
         _flag_on(monkeypatch)
-        other = _log("s-someone-else")
-        _opened(other)
+        child = _log("s-dispatched", slot="chat-dispatched")
+        _opened(child, parent_slot="abc", parent_sid=SESSION)
+        _turn(child, 1)
         request = _internal_request(
-            "/api/crew-log/units/s-someone-else/page",
+            "/api/crew-log/units/s-dispatched/page",
             session_key="subagent:abc",
-            slots={},
+            slots={"abc": _Slot()},
             sessions={"subagent:abc": SESSION},
-            match={"unit": "s-someone-else"},
+            match={"unit": "s-dispatched"},
         )
         response = asyncio.run(routes.api_crew_log_unit_page(request))
-        assert response.status == 403
-        assert json.loads(response.text)["code"] == "forbidden"
+        assert response.status == 200
+        body = json.loads(response.text)
+        assert body["session_id"] == "s-dispatched"
+        assert body["entries"]
 
-    def test_an_incognito_session_may_still_read_its_own_unit(self, monkeypatch):
-        """Restriction is about what LEAVES the session, not about reading itself."""
+    def test_a_subagent_may_fold_a_unit_it_dispatched(self, monkeypatch):
+        """The fold door too, because one open route is the whole capability."""
+        _flag_on(monkeypatch)
+        child = _log("s-dispatched", slot="chat-dispatched")
+        _opened(child, parent_slot="abc", parent_sid=SESSION)
+        request = _internal_request(
+            "/api/crew-log/units/s-dispatched/projection/status",
+            session_key="subagent:abc",
+            slots={"abc": _Slot()},
+            sessions={"subagent:abc": SESSION},
+            match={"unit": "s-dispatched", "name": "status"},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_projection(request))
+        assert response.status == 200
+        assert json.loads(response.text)["name"] == "status"
+
+    def test_a_subagent_may_resolve_the_key_of_a_session_it_dispatched(self, monkeypatch):
+        """Resolving a dispatched session's key is the step BEFORE reading its unit.
+
+        The route resolves the named key to a unit and scopes on THAT, so the answer
+        is available exactly when the read that follows it would be. A key outside
+        the caller's tree is refused here rather than one call later.
+        """
+        _flag_on(monkeypatch)
+        _opened(_log("s-dispatched", slot="chat-dispatched"), parent_slot="abc", parent_sid=SESSION)
+        child_key = "dashboard:chat-child"
+        request = _internal_request(
+            f"/api/crew-log/resolve?key={child_key}",
+            session_key="subagent:abc",
+            slots={"abc": _Slot()},
+            sessions={"subagent:abc": SESSION, child_key: "s-dispatched"},
+        )
+        response = asyncio.run(routes.api_crew_log_resolve(request))
+        assert response.status == 200
+        assert json.loads(response.text) == {"key": child_key, "unit": "s-dispatched"}
+
+    def test_resolving_a_stranger_key_is_refused(self, monkeypatch):
+        """A resolve is a read, so it carries the same fence.
+
+        Without this the route would answer which unit any session is landing in,
+        which is the first half of reading it.
+        """
+        _flag_on(monkeypatch)
+        _opened(_log("s-stranger-unit"))
+        stranger_key = "dashboard:chat-stranger"
+        request = _internal_request(
+            f"/api/crew-log/resolve?key={stranger_key}",
+            session_key="subagent:abc",
+            slots={"abc": _Slot()},
+            sessions={"subagent:abc": SESSION, stranger_key: "s-stranger-unit"},
+        )
+        response = asyncio.run(routes.api_crew_log_resolve(request))
+        assert response.status == 403
+
+    def test_a_dead_key_and_a_live_stranger_key_refuse_identically(self, monkeypatch):
+        """MUTATION-SENSITIVE: the resolve route must not be a liveness oracle.
+
+        The route resolves the key the caller named BEFORE authorizing, so the two
+        refusals it can reach -- nothing resolved, and something resolved that is
+        outside the caller's tree -- are reached by guessing a key. If their text
+        differed, a dispatched agent could guess keys and learn which slots are
+        live, which is an enumeration of the host's sessions rather than a read of
+        one. The bodies are compared byte for byte, so any divergence fails.
+        """
+        _flag_on(monkeypatch)
+        _opened(_log("s-stranger-unit"))
+        stranger_key = "dashboard:chat-stranger"
+        live = _internal_request(
+            f"/api/crew-log/resolve?key={stranger_key}",
+            session_key="subagent:abc",
+            slots={"abc": _Slot()},
+            sessions={"subagent:abc": SESSION, stranger_key: "s-stranger-unit"},
+        )
+        dead = _internal_request(
+            "/api/crew-log/resolve?key=dashboard:chat-does-not-exist",
+            session_key="subagent:abc",
+            slots={"abc": _Slot()},
+            sessions={"subagent:abc": SESSION},
+        )
+        live_response = asyncio.run(routes.api_crew_log_resolve(live))
+        dead_response = asyncio.run(routes.api_crew_log_resolve(dead))
+        assert live_response.status == dead_response.status == 403
+        assert json.loads(live_response.text) == json.loads(dead_response.text)
+
+    def test_an_incognito_session_may_read_its_own_unit(self, monkeypatch):
+        """Restriction is about what LEAVES the session, not about reading."""
         _flag_on(monkeypatch)
         handle = _log()
         _opened(handle)
@@ -1371,6 +2555,19 @@ class TestSelfScope:
         response = asyncio.run(routes.api_crew_log_unit_projection(request))
         assert response.status == 200
         assert json.loads(response.text)["name"] == "status"
+
+    def test_an_unnamed_caller_reads_no_unit_at_all(self, monkeypatch):
+        """Not even its own: "its own unit" is derived from the key that is missing."""
+        _flag_on(monkeypatch)
+        _opened(_log())
+        request = _internal_request(
+            f"/api/crew-log/units/{SESSION}/page",
+            session_key="",
+            match={"unit": SESSION},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert json.loads(response.text)["code"] == "forbidden"
 
 
 class TestTheNewRoutes:
@@ -1410,7 +2607,7 @@ class TestTheNewRoutes:
     def test_a_slot_filter_keeps_only_matching_units(self, monkeypatch):
         _flag_on(monkeypatch)
         _opened(_log())
-        other = _log("s-other-slot")
+        other = _log("s-other-slot", slot="dashboard:99")
         other.append(
             "session/opened",
             {
@@ -1536,16 +2733,78 @@ class TestAudit:
         assert rows[0]["outcome"] == "granted"
 
     def test_a_denied_read_is_audited_with_its_reason(self, monkeypatch):
+        """MUTATION-SENSITIVE: an unnamed caller is refused AND leaves the record.
+
+        A ``cron:`` key is admitted now, so the denial pinned here is the one the
+        identity gate still makes: a request carrying no session key at all.
+        """
         _flag_on(monkeypatch)
         recorded: list[dict] = []
         sel = MagicMock()
         sel.log_api_access.side_effect = lambda **kw: recorded.append(kw)
-        request = _internal_request("/api/crew-log/sessions", session_key="cron:nightly")
+        request = _internal_request("/api/crew-log/sessions", session_key="")
         with patch("kiro_crew.sel.sel", return_value=sel):
-            asyncio.run(routes.api_crew_log_sessions(request))
+            response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 403
         rows = [row for row in recorded if row["operation"] == "session_crew_log.list"]
         assert rows and rows[0]["outcome"] == "denied"
-        assert "cron" in rows[0]["error"]
+        assert rows[0]["caller"] == routes.CREW_LOG_MCP_CALLER
+        assert "session identity" in rows[0]["error"]
+
+    def test_a_dispatched_unit_read_is_audited_as_granted(self, monkeypatch):
+        """MUTATION-SENSITIVE: the widened read is the one an operator must see.
+
+        The decision makes a non-owner read of a unit it dispatched ordinary, so the
+        audit row for it is the whole of what replaces the refusal. It names the
+        operation, the calling component and the granted outcome.
+        """
+        _flag_on(monkeypatch)
+        _opened(_log("s-dispatched", slot="chat-dispatched"), parent_slot="abc", parent_sid=SESSION)
+        recorded: list[dict] = []
+        sel = MagicMock()
+        sel.log_api_access.side_effect = lambda **kw: recorded.append(kw)
+        request = _internal_request(
+            "/api/crew-log/units/s-dispatched/page",
+            session_key="subagent:abc",
+            slots={"abc": _Slot()},
+            sessions={"subagent:abc": SESSION},
+            match={"unit": "s-dispatched"},
+        )
+        with patch("kiro_crew.sel.sel", return_value=sel):
+            response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        rows = [row for row in recorded if row["operation"] == "session_crew_log.read"]
+        assert rows, recorded
+        assert rows[0]["outcome"] == "granted"
+        assert rows[0]["caller"] == routes.CREW_LOG_MCP_CALLER
+        assert rows[0]["source"] == "mcp"
+
+    def test_a_read_outside_the_dispatch_tree_is_audited_as_denied(self, monkeypatch):
+        """MUTATION-SENSITIVE: the refusal side of the same door.
+
+        A fence is only auditable if the refusal it produces reaches the record, and
+        this is the refusal an operator most wants: one session reaching for
+        another's history.
+        """
+        _flag_on(monkeypatch)
+        _opened(_log("s-stranger-unit"))
+        recorded: list[dict] = []
+        sel = MagicMock()
+        sel.log_api_access.side_effect = lambda **kw: recorded.append(kw)
+        request = _internal_request(
+            "/api/crew-log/units/s-stranger-unit/page",
+            session_key="subagent:abc",
+            slots={"abc": _Slot()},
+            sessions={"subagent:abc": SESSION},
+            match={"unit": "s-stranger-unit"},
+        )
+        with patch("kiro_crew.sel.sel", return_value=sel):
+            response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        rows = [row for row in recorded if row["operation"] == "session_crew_log.read"]
+        assert rows, recorded
+        assert rows[0]["outcome"] == "denied"
+        assert "does not fall inside that scope" in rows[0]["error"]
 
     def test_a_secretless_caller_is_audited_as_the_dashboard(self, monkeypatch):
         """The denial an operator most wants: something reached an MCP-only route
@@ -1773,6 +3032,129 @@ class TestTheListingBoundsWhatItRetains:
         assert reader._candidate_dirs(lg.KIND_SESSION) == ([], False)
 
 
+class TestTheRetentionListingStaysOffTheLoop:
+    """A directory listing must never be reached from a coroutine's own body.
+
+    The listing only chooses between two refusal TEXTS, so blocking the loop for it
+    spends every session's latency on wording. A review lane found exactly that, and a
+    reading of the source is what catches it returning: the repo's sync-IO gate did not
+    fire here, because the blocking call is several frames below the coroutine and the
+    gate matches direct ones.
+
+    The rule is derived rather than listed: every call site is found in the source, so a
+    THIRD one added later is checked without anyone remembering to name it here.
+    """
+
+    def _calls_to(self, func_name):
+        """Every call of *func_name*, with the enclosing function and whether it awaits."""
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard.handlers import crew_log as mod
+
+        tree = ast.parse(inspect.getsource(mod))
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if not isinstance(inner, ast.Call):
+                    continue
+                target = inner.func
+                if isinstance(target, ast.Name) and target.id == func_name:
+                    found.append((node.name, isinstance(node, ast.AsyncFunctionDef), "direct"))
+                elif (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "to_thread"
+                    and any(isinstance(a, ast.Name) and a.id == func_name for a in inner.args)
+                ):
+                    found.append((node.name, isinstance(node, ast.AsyncFunctionDef), "offloaded"))
+        return found
+
+    def test_the_listing_is_only_ever_offloaded(self):
+        calls = self._calls_to("_front_of_log_is_gone")
+        assert calls, "no call site found, so this pin measures nothing"
+        on_loop = [(where, how) for where, is_async, how in calls if is_async and how == "direct"]
+        assert not on_loop, f"reached on the event loop from {on_loop}"
+
+    def test_the_offloaded_reader_is_the_one_that_may_call_it_directly(self):
+        """The non-async helper is allowed to, because it is what gets offloaded."""
+        direct = {
+            where
+            for where, is_async, how in self._calls_to("_front_of_log_is_gone")
+            if how == "direct"
+        }
+        assert direct <= {"_recorded_class_and_front"}, direct
+
+
+class TestTheCallerTestAgreesWithTheSharedDerivation:
+    """The inline caller test must refuse every state the shared derivation publishes.
+
+    ``_caller_class_refusal`` respells the test ``chat_runner._crew_log_class`` makes,
+    and deliberately: the derivation answers with a class, while a refusal has to NAME
+    which member refused and why it matters, and a caller that reads its own reason is
+    the difference between a usable refusal and a bare 403. What that duplication risks
+    is divergence -- a member the derivation learns to report and the refusal never
+    tests would let a publishing caller read another session's log, which fails OPEN.
+
+    So the agreement is pinned rather than the duplication removed. Each case asserts
+    the shape actually moved the DERIVATION before asking the refusal about it, so a
+    fixture that stopped constructing the state it names fails instead of passing
+    vacuously, and the width assertion makes a NEW member fail here until someone
+    decides whether the refusal owes it a test.
+    """
+
+    def _request_for(self, slot):
+        return _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={CONDUCTOR_SLOT: slot},
+        )
+
+    def test_the_derivation_reports_exactly_the_members_the_refusal_tests(self):
+        """A fourth member has to be considered here, not silently untested."""
+        from kiro_crew.dashboard.chat_runner import _crew_log_class
+
+        assert len(_crew_log_class(None, _Slot())) == 3
+
+    @pytest.mark.parametrize(
+        "shape,expected",
+        [
+            ({"memory_mode": "incognito"}, "leave and learn nothing"),
+            ({"_app": "notes"}, "app-owned session"),
+            ({"linked_session_key": "telegram:-100999"}, "lands in that channel's thread"),
+        ],
+        ids=["memory", "app", "channel"],
+    )
+    def test_a_state_the_derivation_publishes_is_refused(self, monkeypatch, shape, expected):
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        slot = _Slot()
+        for name, value in shape.items():
+            setattr(slot, name, value)
+        request = self._request_for(slot)
+        from kiro_crew.dashboard.chat_runner import _crew_log_class
+
+        state = request.app.get("state")
+        assert _crew_log_class(state, slot) != (
+            "persistent",
+            "",
+            False,
+        ), "the fixture no longer moves the shared derivation, so it pins nothing"
+        assert expected in routes._caller_class_refusal(request, CONDUCTOR_SLOT)
+
+    def test_a_state_the_derivation_calls_private_is_admitted(self, monkeypatch):
+        """The accepting case, without which every assertion above could be a blanket no."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        slot = _Slot()
+        request = self._request_for(slot)
+        from kiro_crew.dashboard.chat_runner import _crew_log_class
+
+        assert _crew_log_class(request.app.get("state"), slot) == ("persistent", "", False)
+        assert routes._caller_class_refusal(request, CONDUCTOR_SLOT) == ""
+
+
 class TestRecencyComesFromTheLogNotItsDirectory:
     """A long-lived session is the case that breaks reading the directory's mtime.
 
@@ -1835,3 +3217,224 @@ class TestRecencyComesFromTheLogNotItsDirectory:
         assert reader._written_at(lg.crew_log_root(lg.KIND_SESSION) / "s-no-log") == 0.0
         payload = reader.list_session_units(limit=50)
         assert [row["unit"] for row in payload["units"]] == ["s-real"]
+
+
+class TestTheWorkspaceBoundary:
+    """A dispatch grant does not cross a workspace, because a lineage outlives a switch.
+
+    The creator edge is written on the CHILD and nothing rewrites it, so a conductor that
+    dispatched a child and then moved to another workspace still names that child in its
+    tree. Switching workspace is ordinary operation, so the recorded lineage alone would
+    hand that conductor a log belonging to the workspace it left -- the boundary a
+    workspace exists to draw.
+
+    So the class records which workspace stated it, and the fence compares. Three states
+    refuse, one fact in three shapes: the workspaces DIFFER, the log's workspace MOVED so
+    its content spans two and neither owns it, or the log records NO workspace, which no
+    live slot can produce.
+
+    The arm is ordered LAST of the target arms on purpose -- it asks about ownership while
+    the arms above ask about publication, and a caller refused for either deserves the
+    more specific reason.
+    """
+
+    def test_a_conductor_in_the_same_workspace_still_reads_its_child(self, monkeypatch):
+        """The accepting case, without which every assertion below could be a blanket no."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 200
+        assert json.loads(response.text)["session_id"] == CHILD_UNIT
+
+    def test_a_conductor_that_moved_workspace_cannot_read_its_own_child(self, monkeypatch):
+        """MUTATION-SENSITIVE: the comparison itself, on the scenario the lane named.
+
+        Every other arm admits this read. The lineage is recorded and intact, the caller
+        is a persistent non-app session publishing to nobody, and the target's class is
+        clean -- so the workspace comparison is the only thing standing between this
+        caller and a log from the workspace it left.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={CONDUCTOR_SLOT: _Slot(workspace="beta")},
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "belongs to a different workspace" in json.loads(response.text)["error"]
+
+    def test_a_log_whose_workspace_moved_is_read_by_neither(self, monkeypatch):
+        """A log whose content spans two workspaces is owned by neither, so both refuse.
+
+        Asserted from the workspace the log STARTED in, which is the caller most likely to
+        be admitted by a naive first-one-wins comparison.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _class_moved(CHILD_UNIT, workspace="beta")
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "spans more than one workspace" in json.loads(response.text)["error"]
+
+    def test_a_log_that_records_no_workspace_is_refused(self, monkeypatch):
+        """Silence is not a match. A live slot always states a workspace, so a log that
+        does not is one this build cannot place -- and placing it by assumption is the
+        whole thing being prevented."""
+        _flag_on(monkeypatch)
+        _dispatch_tree(workspace="")
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "does not record which workspace" in json.loads(response.text)["error"]
+
+    def test_a_workspace_that_moves_mid_read_is_caught_by_the_recheck(self, monkeypatch):
+        """MUTATION-SENSITIVE: the workspace arm in the STALE re-check, not just the gate.
+
+        At the grant the log named one workspace and the caller matched it, so the gate
+        admitted the read. The log then records a move while the payload is being built,
+        which puts content from a second workspace in this same log. Only a fold taken
+        AFTER the read sees it, which is why the arm runs in both places rather than once.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        real = routes._read_page
+
+        def _moving(*args, **kwargs):
+            _class_moved(CHILD_UNIT, workspace="beta")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(routes, "_read_page", _moving)
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "spans more than one workspace" in json.loads(response.text)["error"]
+
+    def test_the_gate_refuses_before_a_payload_is_built(self, monkeypatch):
+        """MUTATION-SENSITIVE: the arm in the GATE, which the route alone cannot pin.
+
+        Every unit read also passes the stale re-check, and that runs this arm too -- so
+        deleting the gate's call leaves each route test above still green, refused a moment
+        later by the re-check. The difference is not the verdict but WHEN: without the gate
+        arm the payload is read off disk first and refused afterwards, so the log is pulled
+        into memory for a caller who must not see it.
+
+        So the gate is asked directly, where no re-check can answer for it.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page",
+            match={"unit": CHILD_UNIT},
+            slots={CONDUCTOR_SLOT: _Slot(workspace="beta")},
+        )
+        refusal = asyncio.run(routes._read_scope_refusal(request, CONDUCTOR_KEY, CHILD_UNIT))
+        assert "belongs to a different workspace" in refusal
+
+    def test_the_gate_admits_a_caller_in_the_same_workspace(self):
+        """The accepting half of the assertion above, so it is a boundary not a wall."""
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{CHILD_UNIT}/page", match={"unit": CHILD_UNIT}
+        )
+        refusal = asyncio.run(routes._read_scope_refusal(request, CONDUCTOR_KEY, CHILD_UNIT))
+        assert refusal == ""
+
+
+class TestTheListingCarriesTheWorkspaceBoundary:
+    """A listing discloses each row's unit, slot, model and activity, so the workspace
+    boundary the per-unit door draws has to reach the rows as well.
+
+    Lineage alone does not bound which workspace a row belongs to, and the dispatch edge
+    is written on the child and never rewritten -- so a conductor that dispatched in one
+    workspace and then switched still names those children in its tree. Without a per-row
+    test the listing becomes an enumeration oracle for exactly the units the read path
+    refuses to open.
+
+    The test is asked of LINEAGE rows only, which is what the per-unit door does: a
+    caller's own record is answered before any target test, and an owner's unscoped
+    listing runs none at all.
+    """
+
+    def test_a_conductor_that_moved_workspace_sees_only_its_own_row(self, monkeypatch):
+        """MUTATION-SENSITIVE: the per-row filter.
+
+        Same tree and same caller as the scope test above, which lists all three. Only
+        the workspace comparison removes the two descendants here -- and the caller's own
+        row staying is what proves the filter is scoped to lineage rather than blanket.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            "/api/crew-log/sessions", slots={CONDUCTOR_SLOT: _Slot(workspace="beta")}
+        )
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 200
+        listed = {row["unit"] for row in json.loads(response.text)["units"]}
+        assert listed == {CONDUCTOR_UNIT}
+
+    def test_a_descendant_whose_workspace_moved_drops_out_alone(self, monkeypatch):
+        """One row spanning two workspaces is refused without taking its siblings."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _class_moved(CHILD_UNIT, workspace="beta")
+        request = _as_conductor("/api/crew-log/sessions")
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 200
+        listed = {row["unit"] for row in json.loads(response.text)["units"]}
+        assert listed == {CONDUCTOR_UNIT, GRANDCHILD_UNIT}
+
+    def test_the_owner_still_sees_a_unit_from_another_workspace(self, monkeypatch):
+        """The owner's listing is not narrowed, so it is never asked -- the recorded
+        product decision for that door, which this change must not quietly revise."""
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        _class_moved(CHILD_UNIT, workspace="beta")
+        request = _internal_request("/api/crew-log/sessions")
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 200
+        listed = {row["unit"] for row in json.loads(response.text)["units"]}
+        assert {CONDUCTOR_UNIT, CHILD_UNIT, GRANDCHILD_UNIT} <= listed
+
+    def test_a_caller_that_switches_workspace_mid_listing_is_refused(self, monkeypatch):
+        """MUTATION-SENSITIVE: the re-check's workspace arm, and why the gate stores a
+        VALUE.
+
+        The rows were admitted against the workspace read at the gate. The caller then
+        switches while the walk runs, so the payload it is about to receive names rows
+        from the workspace it just left. The scope tuple is a unit and a slot and neither
+        moves on a switch, so a tuple comparison alone cannot see this.
+
+        It also pins the storage choice: holding the slot OBJECT would make the re-check
+        re-read the same mutable attribute and compare the new workspace against itself,
+        which is always equal and would never refuse.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        slot = _Slot(workspace="default")
+        reader = routes._crew_log_read()
+        real = reader.list_session_units
+
+        def _switching(*args, **kwargs):
+            out = real(*args, **kwargs)
+            slot.workspace = "beta"
+            return out
+
+        monkeypatch.setattr(reader, "list_session_units", _switching)
+        request = _as_conductor("/api/crew-log/sessions", slots={CONDUCTOR_SLOT: slot})
+        response = asyncio.run(routes.api_crew_log_sessions(request))
+        assert response.status == 403
+        assert (
+            "changed workspace while this listing was built" in json.loads(response.text)["error"]
+        )
