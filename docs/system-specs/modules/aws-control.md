@@ -840,6 +840,97 @@ without the stamp a reader cannot tell a measurement taken before a manual delet
 one taken after. A measured zero is stored like any other count, so an absent kind
 means only that no sweep has measured it.
 
+`run_sessions_backup` always archives the crew half (the display transcript under
+the data home). It archives the kiro-cli half -- Layer B, the byte-exact
+unredacted model context window -- only when the operator has granted it for that
+account; the default is withhold, and an unreadable or non-boolean stored value
+also withholds. The permission is read once, before the archive is opened, and
+the resulting run record carries `layer_b` so whoever inspects the run can tell
+which layers the archive holds rather than inferring it from an absent key. That
+value is taken from the number of kiro-cli files actually added, not from the
+permission: a granted run whose kiro-cli directory is absent or empty adds none,
+and a record is written once, so reading the permission there would state a
+fidelity the object does not hold with nothing afterwards to correct it.
+Nothing reads the field programmatically -- `restore_download` does not consult
+it -- so it is a record for a human or an incident review, and the two archives
+it distinguishes are otherwise identical by name.
+
+The grant is stored PER ACCOUNT as `sessionsIncludeLayerB` in the app's state
+document, `backup.json`, which sits inside the `apps/aws-control/data` directory
+registered in `security._CREW_SECRET_LEAVES` -- the read+write keystone floor,
+beside the `nightly` bit. It is deliberately NOT a `config.json` key.
+`config.json` is writable by any auto-approved agent shell, so a permission
+honoured from there is one a prompt-injected agent can grant itself, and an
+unredacted archive already in a bucket cannot be recalled; an authorization whose
+subject can write it is not an authorization. The sole writer is the owner-gated
+`POST /api/apps/aws-control/backup/{account}/layer-b`, which opens the state file
+directly rather than through the agent file gate. The grant is per account
+because the risk it prices is the destination bucket, so granting it for one
+account must not grant it for another.
+
+A revocation landing while an archive is being built refuses the upload:
+`run_sessions_backup` re-reads the permission immediately before the PUT and
+raises rather than shipping bytes under a permission the operator has withdrawn.
+That re-read, the live authorization checks, and the PUT all run inside one
+acquisition of the state file's sidecar lock, taken before `_authorize_upload`
+through `_upload_lock`. Taking it after authorizing put a blocking wait between
+the consent check and the PUT: a concurrent account's backup can hold this lock
+across its own upload, and consent withdrawn during that wait was never re-read,
+because the Layer B re-read does not cover consent. This is the same rule
+`routes._reauthorize_in_lock` already states for `routes._library_lock` -- a lock
+that makes a caller wait must re-run the authorization inside it, because the wait
+sits between the checks that authorized the call and the call itself.
+
+`_upload_lock` takes ONLY the sidecar file lock, deliberately not `_run_lock` --
+the same shape `_delete_under_the_retention_gate` composes, and for the same
+reason. `_run_lock` also serializes `last_runs`, which the dashboard's backup
+status read goes through (`routes.py`), so holding it across a PUT allowed up to
+`_PUSH_TIMEOUT_SECS` stalled every account's status surface for one account's
+upload. The revocation guarantee does not need `_run_lock`: the setter
+(`set_sessions_layer_b` -> `_locked_state_update` -> `_state_lock`) takes this
+same sidecar file lock exclusively, so an exclusive hold across the upload already
+orders a revocation wholly before or wholly after it, across processes as well as
+threads. Dropping `_run_lock` therefore keeps the guarantee.
+
+Dropping it there was necessary and not sufficient. The stall arrives through the
+contending WRITER, not through the upload: `_state_lock` took `_run_lock` before
+parking on the sidecar file lock, so a writer meeting an in-flight upload -- a
+mid-upload revocation, or any second account's `_record_run` finishing -- held
+`_run_lock` for the upload's whole duration and `last_runs` queued behind the
+writer. So the module has ONE acquisition order, stated in a comment above
+`_state_lock` and pointed at from `_run_lock`'s own definition:
+
+    _RETENTION_GATE -> state sidecar FILE lock -> _run_lock -> leaf locks
+
+Nothing may hold `_run_lock` while waiting for the file lock. `_state_lock` takes
+the file lock first, and `_record_run` and `_record_skip` no longer wrap it in
+`_run_lock` at all -- `_record_run_locked` takes that lock only for the
+`_run_sequence` bump, which cannot park. The bump has to stay under it: the
+callers' outer hold was the only thing serialising it, and `(process, sequence)`
+is the identity the compare-and-set inside `mutate` reads, so a shared sequence
+would let a stale baseline pass a check it must fail.
+The sidecar lock is taken with a ceiling derived from that hold rather than
+`file_lock`'s 300s default, which is sized for a sub-second read plus a rename.
+A shorter ceiling would refuse a contender that is only waiting, and that refusal
+arrives as the `OSError` `_record_run` absorbs by keeping a completed upload's
+record in memory alone -- so a short-lived process that exits first loses the
+record and leaves the nightly loop due. `frontend._STAGING_LOCK_TIMEOUT` derives
+its ceiling the same way, for a lock spanning a frontend build.
+Nothing is uploaded and no run record is written, so the archive-and-record
+agreement above is preserved -- rebuilding without Layer B instead would be the
+torn state the read-once rule exists to prevent. Only the withdrawn direction
+refuses; a grant arriving mid-build leaves an archive without Layer B, which the
+next run picks up.
+
+`test_aws_control_backup.py::TestSessionsArchiveLayerBGate` pins both directions,
+that no `config.json` key can grant it, that a grant does not cross accounts, and
+that the store stays inside the fenced directory.
+
+This decision is separate from the file export's
+`dashboard.export_include_layer_b`: a downloaded file can be handed to another
+person, while this archive lands in a bucket the operator owns, so the two are
+different risk decisions and enabling one must not enable the other.
+
 ### Run identity and failed state writes
 
 A run's `at` is the observed UTC wall time, not a unique identifier or a

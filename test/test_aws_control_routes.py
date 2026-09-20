@@ -3265,6 +3265,70 @@ class TestBackupEndpoints:
         # not need to disclose the local filesystem layout.
         assert ".kirocrew" not in body["error"]
 
+    def test_layer_b_toggle_persists_the_permission(self):
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/backup/{ACCOUNT}/layer-b", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value={"enabled": True})  # type: ignore[method-assign]
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.backup_mod, "set_sessions_layer_b") as setter,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/backup/{account}/layer-b")](req)  # type: ignore[operator]
+            )
+        assert _payload(resp) == {"sessionsIncludeLayerB": True}
+        setter.assert_called_once_with(ACCOUNT, True)
+
+    def test_a_non_boolean_layer_b_is_refused_and_never_persisted(self):
+        # Same rule as the nightly toggle above, and the cost of coercing is
+        # higher here: `bool("false")` is True, so a caller asking for off would
+        # switch unredacted model context ON, and an object already uploaded
+        # cannot be recalled.
+        handlers = _registered()
+        for raw in ("false", "true", 0, 1, "", None, [], {}):
+            p1, p2, p3 = _enabled_owner_env()
+            req = _request("POST", f"/backup/{ACCOUNT}/layer-b", match_info={"account": ACCOUNT})
+            req.json = AsyncMock(return_value={"enabled": raw})  # type: ignore[method-assign]
+            with (
+                p1,
+                p2,
+                p3,
+                mock.patch.object(routes_mod.backup_mod, "set_sessions_layer_b") as setter,
+            ):
+                resp = asyncio.run(
+                    handlers[("POST", "/backup/{account}/layer-b")](req)  # type: ignore[operator]
+                )
+            assert resp.status == 400, f"{raw!r} was accepted"
+            assert _payload(resp)["code"] == "invalid_enabled"
+            setter.assert_not_called()
+
+    def test_a_layer_b_write_that_failed_does_not_report_success(self):
+        # A permission the console renders as stored while the next read denies it
+        # is worse than an error, so the failure is loud, structured, and does not
+        # echo the state file's absolute path.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/backup/{ACCOUNT}/layer-b", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value={"enabled": True})  # type: ignore[method-assign]
+        boom = OSError(28, "No space left on device", "/home/someone/.kirocrew/backup.json")
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.backup_mod, "set_sessions_layer_b", side_effect=boom),
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/backup/{account}/layer-b")](req)  # type: ignore[operator]
+            )
+        body = _payload(resp)
+        assert resp.status == 500
+        assert body["code"] == "state_persist_failed"
+        assert "sessionsIncludeLayerB" not in body
+        assert ".kirocrew" not in body["error"]
+
     def test_a_real_false_still_disables_nightly(self):
         # The validation must not break the ordinary off path.
         handlers = _registered()
