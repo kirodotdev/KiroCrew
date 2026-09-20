@@ -46,13 +46,16 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
 from kiro_crew.cloud import aws, sizes
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
 from kiro_crew.cloud.fargate import (
     CPU_ARCHITECTURES,
+    CREW_TAG_KEY,
     EPHEMERAL_STORAGE_MAX_GIB,
     EPHEMERAL_STORAGE_MIN_GIB,
     FARGATE_MEMORY_FOR_CPU,
@@ -82,9 +85,14 @@ __all__ = [
     "Ownership",
     "TaskSighting",
     "TeardownPlan",
+    "TaskBounds",
+    "BoundsSweepPlan",
+    "DEFAULT_TASK_TTL_SECONDS",
+    "DEFAULT_MAX_RUNNING_TASKS",
     "FargateLaunchSpec",
     "classify_task",
     "plan_teardown",
+    "plan_bounds_sweep",
     "FargateSigninHandle",
     "FargateLaunchEngine",
 ]
@@ -140,6 +148,15 @@ class TaskSighting:
     tags: Mapping[str, str]
     started_by: str = ""
     last_status: str = ""
+
+    #: When this task began, as epoch seconds, or ``None`` when the read did not
+    #: say. It is optional because ECS does not report one until a task starts,
+    #: and ``None`` is what :func:`plan_bounds_sweep` reads as "age unknown": a
+    #: task whose age cannot be established is never stopped for age, and is
+    #: named rather than skipped in silence. The engine fills this from
+    #: ``startedAt`` and falls back to ``createdAt``, so a task that was created
+    #: and never started still has an age.
+    started_at: Optional[float] = None
 
     @property
     def is_running(self) -> bool:
@@ -388,6 +405,281 @@ def _started_by_for(tag: str) -> str:
     return f"{_STARTED_BY_PREFIX}{tag}"
 
 
+#: How many task ARNs one ``DescribeTasks`` call may carry.
+#:
+#: The API's own documented ceiling for its ``tasks`` list. It is a constant here
+#: rather than an inline number because the reason it exists is not obvious at the
+#: call site: the AWS CLI AUTO-PAGINATES ``ListTasks`` by default and merges every
+#: page into one response with no ``nextToken`` -- which is the behaviour
+#: ``ec2.list_instances`` already relies on for ``resourcegroupstaggingapi
+#: get-resources``, with no token loop at all -- so a cluster-wide read hands back
+#: every task at once and nothing about a page boundary bounds the describe batch.
+#: Without an explicit cap, a cluster holding more tasks than this makes every
+#: ``DescribeTasks`` call fail, and with it every launch, on exactly the busy or
+#: leaking cluster a lifetime sweep exists for.
+DESCRIBE_TASKS_MAX = 100
+
+
+#: How long a task may run before this launcher stops it, in seconds.
+#:
+#: Six hours, and the number is READ rather than chosen. ``cloud/connect.py``
+#: states the only session length this package commits to: ``mint_token`` takes
+#: ``ttl: str = "6h"`` and ``_safe_ttl`` falls back to ``"6h"`` for anything it
+#: cannot parse. That is the window the cloud lane already treats as one working
+#: session, so a task that outlives it has outlived the only session length the
+#: lane names. Inventing a second number here would leave two answers to one
+#: question with nothing comparing them, which is the same defect as a second
+#: spelling of a tag key.
+#:
+#: It answers the RFC's open question ("session lifetime against task lifetime
+#: ... needs a number") with a number rather than a judgement. A launch that
+#: needs longer passes its own :class:`TaskBounds`; what it cannot do is pass
+#: none, because the engine holds a default.
+DEFAULT_TASK_TTL_SECONDS = 6 * 60 * 60
+
+#: How many of this launcher's tasks may run at once in one cluster.
+#:
+#: Ten, which is the fan-out width the RFC itself names when it weighs the
+#: deferral of registry parity ("ten unregistered fan-out workers are ten things
+#: the owner cannot see"). It is a CEILING on the population, not a target: a
+#: normal launch runs one task, so an operator reaches this only by fanning out
+#: deliberately or by leaking, and the second is what it exists to catch.
+DEFAULT_MAX_RUNNING_TASKS = 10
+
+
+@dataclass(frozen=True)
+class TaskBounds:
+    """What bounds a task's cost, as two numbers with stated defaults.
+
+    A Fargate task is unattended by construction (RFC section 7), which is the
+    difference from the EC2 lane: an instance is launched by someone who is
+    watching, and a disposable task is not. So the bound cannot be "a human
+    notices", and this is where the alternative is written down.
+
+    ``ttl_seconds`` is a wall-clock cap on one task's life, enforced by stopping
+    it. ``max_running`` is a cap on how many of this launcher's tasks may run at
+    once in one cluster, enforced by REFUSING a launch rather than by stopping
+    anything: which of several running tasks is the leak is not knowable from a
+    read, and stopping one on that guess is the error the ownership rule exists
+    to avoid. A refusal costs a launch; a wrong stop costs a running crew.
+
+    There is deliberately no idle bound here. An idle-stop needs a last-activity
+    signal, and no read available to a stopper reports one: ``DescribeTasks``
+    carries lifecycle timestamps and no use, the only activity a task has is
+    inside it, and reaching into a task is deferred by RFC section 6. A quiet
+    CloudWatch stream is not evidence of idleness either -- a crew that is busy
+    without logging reads as idle, so an idle-stop built on it would stop work in
+    progress. The TTL is the hard bound on spend; an idle bound only tightens it,
+    so its absence leaves nothing unbounded.
+    """
+
+    ttl_seconds: int = DEFAULT_TASK_TTL_SECONDS
+    max_running: int = DEFAULT_MAX_RUNNING_TASKS
+
+    def __post_init__(self) -> None:
+        if self.ttl_seconds <= 0:
+            raise ValueError(
+                f"ttl_seconds={self.ttl_seconds!r} is not a lifetime; a bound of zero or less "
+                "would stop a task the moment it started, and there is no spelling here for "
+                "an unbounded task"
+            )
+        if self.max_running <= 0:
+            raise ValueError(
+                f"max_running={self.max_running!r} would refuse every launch; a cap of at "
+                "least one is what makes a launch possible"
+            )
+
+
+@dataclass(frozen=True)
+class BoundsSweepPlan:
+    """What a bound sweep should stop, and what it found still inside its bounds.
+
+    ``stop`` is the ARNs to stop, and the rule is the same one teardown obeys:
+    only a task this launcher can CLAIM is ever stopped. What makes the claim is
+    the crew tag ``run_task_request`` writes onto every task it starts -- the
+    managed marker says a task is this system's, and the crew tag says whose, and
+    a cluster-wide sweep needs the second because a shared cluster can hold a
+    colleague's crew. ``running`` is the tasks that are ours, alive and not yet
+    over their lifetime -- the population the ``max_running`` cap is measured
+    against, which is why the plan reports it rather than deciding the cap itself.
+    The engine owns the refusal because the refusal belongs to a launch, and this
+    function knows nothing about one.
+
+    ``warning`` names what the sweep did and what it could not judge. A task whose
+    read reports no start time, and a managed task carrying no crew tag, are both
+    left alone and NAMED: they are still billing, and a bound that silently skips
+    the cases it cannot decide is a bound an operator cannot audit.
+    """
+
+    stop: tuple[str, ...]
+    running: tuple[str, ...]
+    warning: str = ""
+
+
+def plan_bounds_sweep(
+    sightings: Sequence[TaskSighting],
+    *,
+    bounds: TaskBounds,
+    crew: str,
+    now: float,
+) -> BoundsSweepPlan:
+    """Decide which of *crew*'s sighted tasks are over their lifetime, and which are
+    inside it.
+
+    Deliberately takes no launch tag. A TTL has to reach a task whose tag the
+    caller has forgotten -- ``launch_job._new_tag`` mints a fresh random tag for
+    every launch, so a sweep scoped to the tag in hand would bound the one task
+    that is certainly fine and never the leftovers, which are the whole reason a
+    TTL exists. So each sighting supplies its own launch tag and ownership is
+    decided per task.
+
+    Attribution is what *crew* is for, and it is the rule this sweep turns on.
+    A cluster-wide read reaches every task in the cluster, and a shared account
+    can hold a colleague's crew, so the sweep needs a value that says WHOSE a
+    managed task is. Two candidates do not: :func:`classify_task` against a
+    sighting's own tag can only answer the MARKER half, because ``launch_tag``
+    equals the tag the sighting itself carries and so matches by construction;
+    and :func:`_started_by_for` is a prefix plus that same tag, carrying no host
+    or crew component, so a genuine task of ANY crew satisfies it. Both are kept
+    -- the first keeps an unmarked task out of the stop list including the case
+    where the launch tag was written into the marker itself, and the second
+    refuses a task whose ``startedBy`` disagrees with its own tag -- but neither
+    can attribute, and treating them as if they could is how a sweep stops a
+    neighbour's running crew. :data:`CREW_TAG_KEY` is the value that attributes:
+    ``runtask.run_task_request`` writes the launching crew's name onto every task
+    it starts, and a crew name is stable across launches, which is exactly the
+    property a TTL needs and a launch tag lacks.
+
+    An empty *crew* is refused rather than treated as a wildcard. It is the one
+    value that would match nothing and therefore appear to match everything to a
+    reader, and a bound sweep that silently widened to the whole cluster is the
+    failure this parameter exists to prevent.
+
+    A ``STOPPED`` task is skipped before anything else. It costs nothing, so it
+    is neither stopped again nor counted against the cap.
+
+    A task whose age cannot be established -- no ``startedAt`` and no
+    ``createdAt`` in the read -- is never stopped for age. That is the safe
+    direction: stopping on an unknown age would stop a task that may have started
+    a second ago. It is counted as running, so it still presses against the cap,
+    and it is named in the warning so the case is auditable rather than silent.
+
+    A managed task carrying a launch tag and this launcher's stamp but NO crew tag
+    is treated the same way: never stopped, counted as running, and named. It
+    cannot be attributed, so it may be a leftover of this crew from a launcher too
+    old to have written the tag, or a neighbour's from the same. Counting it
+    presses the cap and can refuse a launch that would otherwise have gone ahead,
+    which is the direction this module already chose -- a refusal costs a launch,
+    a wrong stop costs a running crew. A task whose crew tag names a DIFFERENT
+    crew is skipped in silence, because on a shared cluster it is not this
+    launcher's business and naming every one of them would be noise an operator
+    learns to scroll past.
+    """
+    if not crew:
+        raise ValueError(
+            "a crew name is required to sweep for bounds; without one the sweep cannot tell "
+            "this launcher's tasks from a colleague's on a shared cluster, and stopping a "
+            "task it cannot attribute is the guess teardown refuses to make"
+        )
+    stop: list[str] = []
+    running: list[str] = []
+    ageless: list[str] = []
+    unattributed: list[str] = []
+    for sighting in sightings:
+        if not sighting.is_running:
+            continue
+        tag = sighting.tags.get(LAUNCH_TAG_KEY, "")
+        if not tag:
+            continue
+        stamped = _started_by_for(tag)
+        if classify_task(sighting, launch_tag=tag, started_by=stamped) is not Ownership.OURS:
+            continue
+        if sighting.started_by != stamped:
+            continue
+        sighted_crew = sighting.tags.get(CREW_TAG_KEY, "")
+        if not sighted_crew:
+            unattributed.append(sighting.task_arn)
+            running.append(sighting.task_arn)
+            continue
+        if sighted_crew != crew:
+            continue
+        if sighting.started_at is None:
+            ageless.append(sighting.task_arn)
+            running.append(sighting.task_arn)
+            continue
+        if now - sighting.started_at >= bounds.ttl_seconds:
+            stop.append(sighting.task_arn)
+        else:
+            running.append(sighting.task_arn)
+    parts: list[str] = []
+    if stop:
+        parts.append(
+            f"Stopping {len(stop)} task(s) past the {bounds.ttl_seconds}s lifetime bound "
+            f"({', '.join(sorted(stop))})."
+        )
+    if ageless:
+        parts.append(
+            f"{len(ageless)} running task(s) report no start time "
+            f"({', '.join(sorted(ageless))}), so their age cannot be established and the "
+            "lifetime bound was not applied to them. They are still billing: check them from "
+            "the console or the CLI."
+        )
+    if unattributed:
+        parts.append(
+            f"{len(unattributed)} running task(s) carry no {CREW_TAG_KEY} tag "
+            f"({', '.join(sorted(unattributed))}), so they cannot be attributed to a crew and "
+            "the lifetime bound was not applied to them. They are still billing, and they "
+            "count against the running cap: check whose they are from the console or the CLI."
+        )
+    return BoundsSweepPlan(stop=tuple(stop), running=tuple(running), warning=" ".join(parts))
+
+
+def _epoch_seconds(value: object) -> Optional[float]:
+    """*value* as epoch seconds, or ``None`` when it does not carry a moment.
+
+    The ``aws`` CLI renders an ECS timestamp as an ISO 8601 string, and the same
+    field arrives as a number from a caller that read the API directly, so both
+    are accepted. Anything else -- absent, empty, or unparseable -- is ``None``
+    rather than a guess, and :func:`plan_bounds_sweep` reads ``None`` as an age
+    it may not act on.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        # A naive timestamp is the CLI's own rendering with the offset dropped.
+        # ECS reports UTC, so reading it as UTC is the field's own meaning rather
+        # than this host's clock, which would shift the age by the local offset.
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
+
+
+def _first_moment(*values: object) -> Optional[float]:
+    """The first of *values* that carries a moment, as epoch seconds.
+
+    Explicit rather than an ``or`` chain, because ``0.0`` is a moment and a falsy
+    one: a timestamp of exactly the Unix epoch would be discarded by ``or`` and
+    the next field read in its place, which is a different task's age. Returns
+    ``None`` only when NONE of them carries a moment, which is what
+    :func:`plan_bounds_sweep` reads as an age it may not act on.
+    """
+    for value in values:
+        moment = _epoch_seconds(value)
+        if moment is not None:
+            return moment
+    return None
+
+
 @dataclass(frozen=True)
 class FargateLaunchSpec:
     """The placement, image and secrets a Fargate launch needs, supplied to the
@@ -550,8 +842,18 @@ class FargateLaunchEngine:
     fingerprint is a stale cache, not a launch.
     """
 
-    def __init__(self, spec: Optional[FargateLaunchSpec] = None) -> None:
+    def __init__(
+        self,
+        spec: Optional[FargateLaunchSpec] = None,
+        *,
+        bounds: Optional[TaskBounds] = None,
+    ) -> None:
         self._spec = spec
+        #: What bounds a task's cost. Defaulted rather than required, because a
+        #: caller who supplies nothing must still get a bounded task: an optional
+        #: bound that defaults to absent is the unbounded launch this engine is
+        #: not allowed to make.
+        self._bounds = bounds or TaskBounds()
         #: fingerprint -> confirmed revision number. Populated on registration and
         #: on a confirmed cache hit; a per-process memory, never authoritative.
         self._revisions: dict[str, int] = {}
@@ -601,6 +903,15 @@ class FargateLaunchEngine:
         ``kirocrew:revision-key`` tag still equals :func:`revision_fingerprint` of
         the spec before launching that number; a mismatch is a stale cache and
         raises rather than launching the wrong content.
+
+        It also bounds what it is about to create. Before registering anything it
+        runs :meth:`reap`, which stops this launcher's tasks that are past
+        :attr:`TaskBounds.ttl_seconds` anywhere in the spec's cluster, and then
+        refuses this launch when the tasks still running reach
+        :attr:`TaskBounds.max_running`. The two are one step because they answer
+        one question -- how much of this launcher is already running -- and
+        sweeping first is what keeps a cap from being reached by tasks that should
+        already be gone.
 
         Returns the task ARN ``RunTask`` reports.
         """
@@ -656,6 +967,22 @@ class FargateLaunchEngine:
             )
 
         size = _parse_size(size_key)
+
+        # Bound BEFORE registering anything, and after every free refusal above, so
+        # a launch that was going to be refused for its tag costs no AWS call. The
+        # sweep is here because provision is the one place a Fargate launch is
+        # driven, and a bound that arrives after the launch path leaves a window
+        # where a bug bills real money.
+        swept = self.reap(profile=profile, region=region)
+        if len(swept.running) >= self._bounds.max_running:
+            raise RuntimeError(
+                f"{len(swept.running)} running task(s) in cluster "
+                f"{spec.placement.cluster!r} are this crew's or carry no crew tag to attribute "
+                f"them by, which is the cap of {self._bounds.max_running}. Tear one down "
+                "before launching another: they are billing, and stopping one of them here "
+                "would be a guess at which is the leak."
+            )
+
         taskdef = self._taskdef_spec(spec, region)
         revision = self._revision_for(taskdef, profile=profile, region=region)
 
@@ -806,6 +1133,143 @@ class FargateLaunchEngine:
         unconditionally and a raise would fail a launch that otherwise succeeded.
         """
 
+    def _sightings(
+        self,
+        *,
+        cluster: str,
+        profile: str,
+        region: str,
+        started_by: str = "",
+    ) -> list[TaskSighting]:
+        """Read *cluster*'s tasks as :class:`TaskSighting` values.
+
+        One reader for both consumers. ``teardown`` asks about one launch and
+        passes *started_by*; the bound sweep asks about the whole cluster and
+        passes nothing, because a lifetime has to reach a task whose tag nobody
+        remembers. A second reader would be two places deciding which fields
+        ownership is judged from, and the moment they disagreed one consumer
+        would classify every task as another launch's.
+
+        ``startedBy`` must be the ONLY ``ListTasks`` filter -- the API rejects it
+        combined with any other -- so there is no ``--desired-status`` here.
+        ``RUNNING`` is the API default and ownership is decided from each task's
+        ``lastStatus``, not from this filter.
+
+        Paginated, which the single-launch read did not need and the cluster-wide
+        one does: ``ListTasks`` answers at most a page at a time, so stopping at
+        the first page would leave every task past it unbounded -- and unbounded
+        is the state this sweep exists to end. The token loop is kept even though
+        the CLI normally makes it unnecessary, because a profile configured not to
+        auto-paginate would otherwise read one page and silently under-sweep, and
+        a silent under-sweep is worse than a loop that iterates once.
+
+        The ``DescribeTasks`` batch is capped HERE, at
+        :data:`DESCRIBE_TASKS_MAX`, and not by a page boundary. The CLI
+        auto-paginates ``ListTasks`` and merges every page into one response
+        carrying no ``nextToken``, so ``arns`` normally holds the WHOLE cluster in
+        a single iteration -- which means a batch sized by "one page" is sized by
+        nothing at all. Above the API's ceiling ``DescribeTasks`` refuses, and
+        because that refusal propagates out through ``reap`` to ``provision``, the
+        result would be that every launch fails on a cluster holding more than
+        that many tasks. That is the cluster this sweep is for, so the cap is the
+        difference between a bound that works where it matters and one that only
+        works on a quiet account.
+        """
+        sightings: list[TaskSighting] = []
+        token = ""
+        while True:
+            args = ["ecs", "list-tasks", "--cluster", cluster]
+            if started_by:
+                args += ["--started-by", started_by]
+            if token:
+                args += ["--next-token", token]
+            listed = aws.checked_json(args, profile, region, action="ecs:ListTasks") or {}
+            arns = [str(a) for a in (listed.get("taskArns") or [])]
+            for start in range(0, len(arns), DESCRIBE_TASKS_MAX):
+                batch = arns[start : start + DESCRIBE_TASKS_MAX]
+                described = aws.checked_json(
+                    [
+                        "ecs",
+                        "describe-tasks",
+                        "--cluster",
+                        cluster,
+                        "--tasks",
+                        *batch,
+                        "--include",
+                        "TAGS",
+                    ],
+                    profile,
+                    region,
+                    action="ecs:DescribeTasks",
+                )
+                for task in (described or {}).get("tasks") or []:
+                    tags = {
+                        str(t.get("key")): str(t.get("value")) for t in (task.get("tags") or [])
+                    }
+                    sightings.append(
+                        TaskSighting(
+                            task_arn=str(task.get("taskArn") or ""),
+                            tags=tags,
+                            started_by=str(task.get("startedBy") or ""),
+                            last_status=str(task.get("lastStatus") or ""),
+                            started_at=_first_moment(task.get("startedAt"), task.get("createdAt")),
+                        )
+                    )
+            token = str(listed.get("nextToken") or "")
+            if not token:
+                return sightings
+
+    def reap(self, *, profile: str, region: str, now: Optional[float] = None) -> BoundsSweepPlan:
+        """Stop this launcher's tasks that are past their lifetime, and report what
+        is left inside it.
+
+        The executing half of :func:`plan_bounds_sweep`, through the same
+        ``ecs:StopTask`` channel ``teardown`` uses. Scoped to the spec's cluster
+        and to the spec's own CREW, so it stops a leftover from a launch whose tag
+        is long forgotten and leaves a colleague's crew in the same cluster alone.
+        The crew is derived here the way :meth:`_revision_for` derives it, from
+        ``spec_binding`` over this spec's secret ARNs, so the name the sweep
+        matches on is the same one ``run_task_request`` tags a task with and the
+        two cannot disagree. It is not a new field on the spec for the same
+        reason: a second place to say whose tasks these are is a second place for
+        the answer to be wrong.
+
+        The read it sweeps is cluster-wide and deliberately unfiltered by
+        ``startedBy``, because a lifetime has to reach a task whose tag nobody
+        remembers and ``startedBy`` varies with the tag. That is exactly why the
+        crew tag carries the attribution instead.
+
+        Called by :meth:`provision`, which is the one place a Fargate launch is
+        driven, so a bound arrives with the launch rather than after it. It is
+        public because that caller is not the only one worth having: a periodic
+        caller would reach a cluster whose last launch has ended, and there is no
+        scheduler in this package to register one with today. Being public is what
+        lets that land without touching this engine again.
+
+        Returns the plan rather than a bool, because its two answers have
+        different readers: the ARNs it stopped are a log line, and the ones still
+        running are what :meth:`provision` measures its cap against.
+        """
+        if self._spec is None:
+            return BoundsSweepPlan(stop=(), running=())
+        cluster = self._spec.placement.cluster
+        plan = plan_bounds_sweep(
+            self._sightings(cluster=cluster, profile=profile, region=region),
+            bounds=self._bounds,
+            crew=spec_binding(self._taskdef_spec(self._spec, region)).crew,
+            now=time.time() if now is None else now,
+        )
+        for arn in plan.stop:
+            aws.checked(
+                ["ecs", "stop-task", "--cluster", cluster, "--task", arn],
+                profile,
+                region,
+                action="ecs:StopTask",
+            )
+        if plan.warning:
+            logger.warning("fargate bound sweep: %s", plan.warning)
+        return plan
+
     def teardown(self, *, tag: str, profile: str, region: str) -> bool:
         """Stop the tasks this launch owns, and confirm only when nothing of ours
         may remain.
@@ -828,51 +1292,9 @@ class FargateLaunchEngine:
         cluster = self._spec.placement.cluster
         started_by = _started_by_for(tag)
 
-        listed = aws.checked_json(
-            [
-                "ecs",
-                "list-tasks",
-                "--cluster",
-                cluster,
-                "--started-by",
-                started_by,
-                # startedBy must be the only ListTasks filter (the ECS API rejects
-                # it combined with any other), so no --desired-status here; RUNNING
-                # is the API default and ownership is decided from each task's
-                # lastStatus in classify_task, not from this filter.
-            ],
-            profile,
-            region,
-            action="ecs:ListTasks",
+        sightings = self._sightings(
+            cluster=cluster, profile=profile, region=region, started_by=started_by
         )
-        arns = [str(a) for a in ((listed or {}).get("taskArns") or [])]
-        sightings: list[TaskSighting] = []
-        if arns:
-            described = aws.checked_json(
-                [
-                    "ecs",
-                    "describe-tasks",
-                    "--cluster",
-                    cluster,
-                    "--tasks",
-                    *arns,
-                    "--include",
-                    "TAGS",
-                ],
-                profile,
-                region,
-                action="ecs:DescribeTasks",
-            )
-            for task in (described or {}).get("tasks") or []:
-                tags = {str(t.get("key")): str(t.get("value")) for t in (task.get("tags") or [])}
-                sightings.append(
-                    TaskSighting(
-                        task_arn=str(task.get("taskArn") or ""),
-                        tags=tags,
-                        started_by=str(task.get("startedBy") or ""),
-                        last_status=str(task.get("lastStatus") or ""),
-                    )
-                )
 
         plan = plan_teardown(
             sightings,
