@@ -1967,8 +1967,8 @@ async def _cached_parse_sessions() -> dict:
 
     Both usage endpoints call this so neither blocks the aiohttp loop on the
     iterdir + per-file stat + json.loads scan, and a burst of polls reuses one
-    parse. Returns {} when there is no sessions directory (the common case for
-    claude_code/bedrock, where ~/.kiro/sessions/cli is kiro-cli's own store).
+    parse. A missing sessions directory is parsed into the route's complete zero
+    shape; returning a bare ``{}`` would violate the frontend contract.
     """
     global _SESSIONS_CACHE, _SESSIONS_CACHE_TS
     now = time.time()
@@ -1976,8 +1976,6 @@ async def _cached_parse_sessions() -> dict:
     # `is not None` (not truthiness) so a valid-but-empty {} parse is still a hit.
     if now - _SESSIONS_CACHE_TS < _CACHE_TTL and _SESSIONS_CACHE is not None:
         return _SESSIONS_CACHE
-    if not _sessions_dir().exists():
-        return {}
     async with _SESSIONS_CACHE_LOCK:
         # Re-check: a concurrent request may have refreshed while we waited, so
         # a burst of cold-cache polls collapses into a single parse.
@@ -1990,6 +1988,84 @@ async def _cached_parse_sessions() -> dict:
             _SESSIONS_CACHE = sessions
             _SESSIONS_CACHE_TS = time.time()
     return sessions
+
+
+# A cold 30-day session scan can traverse many large JSONL transcripts. Local
+# dashboard requests can wait for it, but a phone reaches the gateway through an
+# extra transport; waiting for the whole scan leaves its Usage card empty until
+# completion. Give cheap scans a small synchronous budget, then return cached
+# billing + a truthful refreshing marker while the one shared scan continues.
+_USAGE_SESSION_WAIT_SECONDS = 0.05
+_USAGE_SESSION_REFRESH_TASK: asyncio.Task[dict[str, Any]] | None = None
+
+
+def _empty_session_summary() -> dict[str, Any]:
+    """Complete zero-shaped session payload used only during a cold refresh."""
+    empty_period = {"sessions": 0, "messages": 0, "tool_calls": 0}
+    return {
+        "total_sessions": 0,
+        "total_messages": 0,
+        "total_tool_calls": 0,
+        "all_time_sessions": 0,
+        "daily_history": [],
+        "today": dict(empty_period),
+        "this_week": dict(empty_period),
+        "this_month": dict(empty_period),
+        "avg_msgs_per_session": 0.0,
+        "avg_tools_per_session": 0.0,
+        "refused_transcripts": 0,
+    }
+
+
+async def _usage_sessions_snapshot() -> tuple[dict[str, Any], bool]:
+    """Return session analytics and whether a slower refresh is still running."""
+    global _USAGE_SESSION_REFRESH_TASK
+
+    loop = asyncio.get_running_loop()
+    task = _USAGE_SESSION_REFRESH_TASK
+    if task is not None and task.done():
+        _USAGE_SESSION_REFRESH_TASK = None
+        if task.cancelled():
+            task = None
+        else:
+            completed = task.result()
+            # Successful production refreshes populate _SESSIONS_CACHE before the
+            # task completes. A patched/test refresh or an error result does not;
+            # return that one result rather than discarding its only copy. Otherwise
+            # continue through freshness below so an expired cache starts a new scan.
+            if _SESSIONS_CACHE is None or "error" in completed:
+                return completed, False
+            task = None
+    elif task is not None and task.get_loop() is not loop:
+        # Module globals survive pytest/event-loop replacement and embedded
+        # gateway restarts. A task cannot be awaited from a different loop.
+        if not task.done():
+            task.cancel()
+        task = None
+        _USAGE_SESSION_REFRESH_TASK = None
+
+    now = time.time()
+    if now - _SESSIONS_CACHE_TS < _CACHE_TTL and _SESSIONS_CACHE is not None:
+        return _SESSIONS_CACHE, False
+
+    if task is None:
+        task = loop.create_task(_cached_parse_sessions(), name="usage-session-refresh")
+        _USAGE_SESSION_REFRESH_TASK = task
+
+    try:
+        sessions = await asyncio.wait_for(asyncio.shield(task), timeout=_USAGE_SESSION_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        stale = _SESSIONS_CACHE
+        if isinstance(stale, dict) and "today" in stale:
+            return stale, True
+        return _empty_session_summary(), True
+    except Exception:
+        if task.done():
+            _USAGE_SESSION_REFRESH_TASK = None
+        raise
+
+    _USAGE_SESSION_REFRESH_TASK = None
+    return sessions, False
 
 
 def get_usage_cache() -> dict:
@@ -2020,10 +2096,7 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             return web.json_response(_CACHE)
 
         username = getpass.getuser()
-
-        # Parse local sessions (runs in thread to avoid blocking)
-        loop = asyncio.get_running_loop()
-        sessions = await loop.run_in_executor(None, _parse_sessions)
+        sessions, refreshing = await _usage_sessions_snapshot()
 
         # Get billing from existing usage cache
         billing: dict = {}
@@ -2047,11 +2120,14 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             "username": username,
             "sessions": sessions,
             "billing": billing,
+            "refreshing": refreshing,
         }
 
         if "error" in sessions:
             response["error"] = sessions["error"]
-        else:
+        elif not refreshing:
+            # A partial response must never enter the two-minute full-response
+            # cache or the frontend's fast poll would keep reading the placeholder.
             _CACHE = response
             _CACHE_TS = time.time()
 

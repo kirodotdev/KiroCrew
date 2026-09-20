@@ -36,6 +36,8 @@ export interface TokenBreakdown {
 }
 
 export interface NormalizedUsage {
+  /** Session analytics are still refreshing; billing data is already usable. */
+  refreshing?: boolean
   sessions: {
     total: number
     today: UsagePeriod

@@ -118,6 +118,14 @@ describe('AcpAdapter.fetchUsage — an unreadable sessions directory', () => {
     const usage = await new AcpAdapter().fetchUsage()
     expect(usage.sessions.today).toEqual({ sessions: 3, messages: 9, toolCalls: 4 })
     expect(usage.billing?.plan).toBe('Pro')
+    expect(usage.refreshing).toBe(false)
+  })
+
+  it('preserves a background session-refresh marker while billing is usable', async () => {
+    kiroUsage.mockResolvedValue({ ...healthySessionsPayload(), refreshing: true })
+    const usage = await new AcpAdapter().fetchUsage()
+    expect(usage.refreshing).toBe(true)
+    expect(usage.billing?.plan).toBe('Pro')
   })
 })
 
