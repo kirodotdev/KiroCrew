@@ -71,6 +71,37 @@ describe('useBrowserCookies', () => {
     expect(result.current.error).toBeNull()
   })
 
+  it('sends the active slot key as X-Session-Key on every request', async () => {
+    const headers: { url: string; method: string; sk: string | null }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const h = new Headers(init?.headers)
+      headers.push({ url, method, sk: h.get('X-Session-Key') })
+      const body = method === 'GET' ? ABSENT : method === 'POST' ? IMPORT_OK : { ok: true, present: false }
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+    const { result } = renderHookWithProviders(() => useBrowserCookies(true, 'dashboard:slot-7'))
+    await waitFor(() => expect(result.current.data?.present).toBe(false))
+    await result.current.importCookies('{"cookies":[]}')
+    await result.current.clear()
+    const cookieCalls = headers.filter((c) => c.url === '/api/browser/cookies')
+    expect(cookieCalls.map((c) => c.method)).toEqual(['GET', 'POST', 'DELETE'])
+    // The restricted-session guard reads this header; the shared `dashboard:ui`
+    // placeholder would answer "not restricted" for an incognito slot.
+    expect(cookieCalls.every((c) => c.sk === 'dashboard:slot-7')).toBe(true)
+  })
+
+  it('falls back to the shared dashboard:ui key when no slot is given', async () => {
+    const seen: (string | null)[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/browser/cookies') seen.push(new Headers(init?.headers).get('X-Session-Key'))
+      return new Response(JSON.stringify(ABSENT), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+    const { result } = renderHookWithProviders(() => useBrowserCookies(true))
+    await waitFor(() => expect(result.current.data?.present).toBe(false))
+    expect(seen).toEqual(['dashboard:ui'])
+  })
+
   it('does not read the status at all when disabled', async () => {
     const calls = stubFetch({ '/api/browser/cookies': { status: 200, body: PRESENT } })
     renderHookWithProviders(() => useBrowserCookies(false))

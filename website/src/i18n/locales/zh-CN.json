@@ -8120,6 +8120,7 @@
       "cookies_choose_a_file": "选择文件",
       "cookies_clear": "清除 Cookie",
       "cookies_clear_confirm": "再次点击以清除",
+      "cookies_clear_failed": "无法清除 Cookie",
       "cookies_count": "{{count}} 个 Cookie",
       "cookies_dialog_explanation": "从你已登录的浏览器中导出 Cookie（可以是 Playwright storageState JSON、Cookie-Editor 或 Get cookies.txt 的导出，或 Netscape cookies.txt 文件），然后在此粘贴或上传。它们会应用到代理的浏览器会话中。Cookie 的值只保留在网关主机上，绝不会在此显示。",
       "cookies_domains_more": "还有 {{count}} 个",

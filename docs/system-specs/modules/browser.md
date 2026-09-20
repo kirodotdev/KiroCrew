@@ -395,15 +395,14 @@ The schema is **nested** under a `browser` key — `{"browser": {"browserName":
 nothing, which presents as the branded-Chrome failure above rather than as a
 config error.
 
-**The generated config names the engine plus one conditional key.** Every added
-key becomes a default an operator must discover in order to override, and the
-engine is the only unconditional one the install flow already decided. The one
-conditional addition is `browser.contextOptions.storageState`, present only while
-the imported-cookies file (`<data-home>/browser-storage-state.json`) exists on
-disk: it points every new session at the cookies the owner imported (see
-[Imported cookies](#imported-cookies)). The import and clear handlers rewrite the
-config after they touch the file, so the key is present exactly when there is a
-state to load and absent again after a clear.
+**The generated config names the engine and nothing else.** Every added key
+becomes a default an operator must discover in order to override, and the engine
+is the only one the install flow already decided. In particular it never names
+the imported-cookies file: that file is bind-masked out of every agent sandbox,
+and the daemon an AGENT's command starts runs inside that sandbox, so a
+`contextOptions.storageState` there would fail every browse with ENOENT. The
+cookies reach a session through a second, gateway-side config instead (see
+[Imported cookies](#imported-cookies)).
 
 **The browser sandbox is deliberately untouched.** Chromium's sandbox is a
 security boundary, so no generated default removes it. A host that cannot run it —
@@ -420,11 +419,24 @@ trade-off on a host that requires it.
 A remote gateway runs on a different machine from the browser the operator is
 logged into, so the agent's own `playwright-cli` sessions start with no session
 cookies. `browser_cli/cookies.py` closes that: the owner exports the cookies
-where they are logged in and imports them, the gateway normalises and stores them
-as a Playwright `storageState`, and the [launch config](#launch-config) names that
-file so every new session loads them. This replaces the hand-written
+where they are logged in and imports them, and the gateway normalises and stores
+them as a Playwright `storageState` under the data home
+(`browser-storage-state.json`). This replaces the hand-written
 `PLAYWRIGHT_MCP_CONFIG` that was previously the only path (issues #6546, #12319,
-#11382; Mesh-3859 / Mesh-3872).
+#11382).
+
+**The agent can never read the values, yet its new sessions carry them.** Two
+properties, held by three pieces:
+
+| Piece | What it does |
+|---|---|
+| `sandbox._CREW_HIDDEN_LEAVES` + `security._CREW_SECRET_LEAVES` | `browser-storage-state.json` is bind-masked in every sandbox mode and fenced at the tool gate, so neither a spawned shell's `open()` nor a file tool reaches the cookie values. Pinned by `test_sandbox_governance_mask.py` and `test_browser_cookies.py`. |
+| `cookies.gateway_config_path()` / `write_gateway_config()` | A SECOND launch config (`playwright-cli-gateway-config.json`, visible — it holds a path, never a value): the agent's document plus `browser.contextOptions.storageState` while the state file exists. Only gateway-launched CLI processes read it; the agent's `PLAYWRIGHT_MCP_CONFIG` keeps pointing at the engine-only `desired_config()`. The import and clear handlers rewrite it, so the key is present exactly when there is a state to load. |
+| `cookies.prewarm_session(session_name, env)` | Called at both agent spawn sites (`acp/runtime.py`, `acp/client.py`) right after `browser_socket_env`. When the state file exists it runs `playwright-cli -s=<kc-name> open about:blank` in a daemon thread FROM THE GATEWAY, with the gateway config and the same `PWTEST_SOCKETS_DIR` / `PWTEST_DAEMON_SESSION_DIR` the agent process receives, so the agent's later commands connect over the socket to a daemon that runs outside its sandbox and already carries the cookies. The child's environment also carries `PLAYWRIGHT_CLI_SESSION` and `KIROCREW_SPAWNED`, so the orphan sweep in `session_pid` reaps it like any agent-started daemon. Fire-and-forget: never blocks the spawn, never raises. Skipped (returns `False`) with no cookies, a non-generated name, a spawn without the lifecycle variables, an operator-set `PLAYWRIGHT_MCP_CONFIG`, or no CLI. |
+
+Residual, by design: an agent whose first browser command lands before the
+pre-warmed daemon is up starts its own in-sandbox, cookie-less daemon; the panel
+hint already says cookies apply to NEW sessions, and the next spawn gets them.
 
 `parse_cookie_import(text)` accepts three shapes and normalises each to the
 Playwright cookie shape (`name`, `value`, `domain`, `path`, `expires` — a float
@@ -446,10 +458,18 @@ owner-only (`0o600` on POSIX, an owner-only DACL on Windows via
 dot stripped, sorted), the earliest positive expiry, and the file mtime as
 `imported_at` — and **never a cookie value**; nothing here returns or logs one.
 `hot_load_into_live_sessions` best-effort runs `state-load` against each live
-`kc-` session so a browser already open picks the cookies up, and never raises: a
-CLI that is absent or a session set that cannot be enumerated comes back as an
-empty result with a `note`, because new sessions get the cookies from the config
-regardless.
+`kc-` session and never raises. Sessions are enumerated by SHAPE — a
+`pw/<8hex>/s/cli/*.sock` control socket under the data home marks `kc-<8hex>`
+as a candidate, each addressed with its own lifecycle variables — because a
+bare `playwright-cli list` under the gateway's environment never sees the
+per-session roots (`list` is the fallback when no root holds a socket). The
+result is truthful: `{loaded, failed: {name: reason}}` plus a one-line `note`
+whenever nothing loaded. Only a gateway-owned (pre-warmed) daemon can succeed;
+a daemon the agent started itself cannot open the masked file and fails with
+the daemon's own error, which is reported rather than hidden.
+`clear_live_sessions` is the companion on DELETE: it runs `cookie-clear` on the
+same candidates so a clear does not leave an open browser signed in, and reports
+`{cleared, failed}` the same way.
 
 The API contract (all three owner-only, refused in a restricted
 incognito/temporary session, and SEL-audited on import and clear with the cookie
@@ -457,9 +477,9 @@ count and domains only):
 
 | Route | Response |
 |---|---|
-| `GET /api/browser/cookies` | `{present, summary\|null, config_path}` |
-| `POST /api/browser/cookies` `{content, filename?}` | `{ok, summary, hot_load}`; 400 malformed, 413 over 2 MiB, 403 non-owner |
-| `DELETE /api/browser/cookies` | `{ok, present: false}`; 403 non-owner |
+| `GET /api/browser/cookies` | `{present, summary\|null, config_path}`; 403 non-owner or restricted session (`code: restricted_session`, the same body the mutations return) |
+| `POST /api/browser/cookies` `{content, filename?}` | `{ok, summary, hot_load: {loaded, failed, note?}}`; 400 malformed, 413 over 2 MiB, 403 non-owner |
+| `DELETE /api/browser/cookies` | `{ok, present: false, live: {cleared, failed, note?}}`; 403 non-owner |
 
 ### Snapshot retention
 

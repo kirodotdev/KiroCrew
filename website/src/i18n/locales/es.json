@@ -8348,6 +8348,7 @@
       "cookies_choose_a_file": "Elegir un archivo",
       "cookies_clear": "Borrar cookies",
       "cookies_clear_confirm": "Haz clic de nuevo para borrar",
+      "cookies_clear_failed": "No se pudieron borrar las cookies",
       "cookies_count": "{{count}} cookies",
       "cookies_dialog_explanation": "Exporta las cookies desde el navegador donde ya has iniciado sesión —como un JSON de storageState de Playwright, una exportación de Cookie-Editor o Get cookies.txt, o un archivo cookies.txt de Netscape— y pégalas o súbelas aquí. Se aplican a las sesiones de navegador del agente. Los valores de las cookies permanecen en el host de la puerta de enlace y nunca se muestran aquí.",
       "cookies_domains_more": "+{{count}} más",

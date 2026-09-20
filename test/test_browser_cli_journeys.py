@@ -73,9 +73,12 @@ class TestOperatorConfigIsNotOurs:
         #                 test_the_operator_config_path_is_never_written.
         #   cookies.py -- persists the storage state the dashboard owner imported
         #                 (Browser panel > Import cookies) under the data home,
-        #                 0600, so it survives a restart and is applied to new
-        #                 browser sessions through launch.py's config. It is
-        #                 Kiro Crew's own file, not the operator's CLI config.
+        #                 0600, and the GATEWAY-side launch config that names it
+        #                 (the agent's config from launch.py never does: the state
+        #                 file is masked from every agent sandbox, so only the
+        #                 daemon the gateway pre-warms for a session may load it).
+        #                 Both are Kiro Crew's own files, not the operator's CLI
+        #                 config.
         sanctioned = {"token.py", "launch.py", "cookies.py"}
         pkg = Path(install.__file__).parent
         writes = []

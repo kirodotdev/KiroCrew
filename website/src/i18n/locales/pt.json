@@ -8348,6 +8348,7 @@
       "cookies_choose_a_file": "Escolher um arquivo",
       "cookies_clear": "Limpar cookies",
       "cookies_clear_confirm": "Clique novamente para limpar",
+      "cookies_clear_failed": "Não foi possível limpar os cookies",
       "cookies_count": "{{count}} cookies",
       "cookies_dialog_explanation": "Exporte os cookies do navegador onde você já está conectado — como um JSON storageState do Playwright, uma exportação do Cookie-Editor ou Get cookies.txt, ou um arquivo cookies.txt do Netscape — e cole ou envie-os aqui. Eles são aplicados às sessões de navegador do agente. Os valores dos cookies permanecem no host do gateway e nunca são mostrados aqui.",
       "cookies_domains_more": "+{{count}} mais",

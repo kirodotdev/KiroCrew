@@ -8348,6 +8348,7 @@
       "cookies_choose_a_file": "Scegli un file",
       "cookies_clear": "Cancella cookie",
       "cookies_clear_confirm": "Fai di nuovo clic per cancellare",
+      "cookies_clear_failed": "Impossibile cancellare i cookie",
       "cookies_count": "{{count}} cookie",
       "cookies_dialog_explanation": "Esporta i cookie dal browser in cui hai già effettuato l'accesso — come JSON storageState di Playwright, come esportazione di Cookie-Editor o Get cookies.txt, o come file cookies.txt di Netscape — e incollali o caricali qui. Vengono applicati alle sessioni del browser dell'agente. I valori dei cookie restano sull'host del gateway e non vengono mai mostrati qui.",
       "cookies_domains_more": "+{{count}} altri",

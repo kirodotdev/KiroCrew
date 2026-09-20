@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
 import WebPreviewPanel from '../components/WebPreviewPanel'
@@ -30,9 +30,10 @@ vi.mock('../api/client', async (importOriginal) => {
       getBrowserView: () => getBrowserView(),
       startBrowserView: () => startBrowserView(),
       openInBrowser: (url: string, sessionKey: string) => openInBrowser(url, sessionKey),
-      getBrowserCookies: () => getBrowserCookies(),
-      importBrowserCookies: (content: string, filename?: string) => importBrowserCookies(content, filename),
-      clearBrowserCookies: () => clearBrowserCookies(),
+      getBrowserCookies: (sessionKey?: string) => getBrowserCookies(sessionKey),
+      importBrowserCookies: (content: string, filename?: string, sessionKey?: string) =>
+        importBrowserCookies(content, filename, sessionKey),
+      clearBrowserCookies: (sessionKey?: string) => clearBrowserCookies(sessionKey),
     },
   }
 })
@@ -91,15 +92,37 @@ describe('WebPreviewPanel — Import cookies', () => {
     const textarea = dialog.querySelector('textarea') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: '{"cookies":[{"name":"s","domain":"example.com"}]}' } })
     fireEvent.click(screen.getByTestId('web-preview-cookies-submit'))
+    // The active slot's key rides the import, so the gateway's restricted-session
+    // guard sees the real slot rather than the shared `dashboard:ui` placeholder.
     await waitFor(() => expect(importBrowserCookies).toHaveBeenCalledWith(
-      '{"cookies":[{"name":"s","domain":"example.com"}]}', undefined,
+      '{"cookies":[{"name":"s","domain":"example.com"}]}', undefined, 'sess-1',
     ))
     const chip = await screen.findByTestId('web-preview-cookies-chip')
     expect(chip.textContent).toContain('34')
     expect(screen.queryByTestId('web-preview-cookies-dialog')).toBeNull()
   })
 
-  it('shows the server message inline on a 400 and keeps the dialog open', async () => {
+  it('reads the cookie status on behalf of the active slot', async () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await waitFor(() => expect(getBrowserCookies).toHaveBeenCalledWith('sess-1'))
+  })
+
+  it('shows a client-side hint (not an error surface) for an empty paste', async () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await screen.findByLabelText(/preview url/i)
+    openOverflow()
+    fireEvent.click(await screen.findByTestId('web-preview-import-cookies'))
+    await screen.findByTestId('web-preview-cookies-dialog')
+    fireEvent.click(screen.getByTestId('web-preview-cookies-submit'))
+    const hint = await screen.findByTestId('web-preview-cookies-hint')
+    expect(hint.textContent).toContain('Paste an export or choose a file first')
+    // Nothing failed on the server: no request, and no ErrorNotice.
+    expect(importBrowserCookies).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('web-preview-cookies-error')).toBeNull()
+    expect(hint.getAttribute('role')).not.toBe('alert')
+  })
+
+  it('renders a failed import through ErrorNotice (no hand-off) and keeps the dialog open', async () => {
     importBrowserCookies.mockRejectedValue(new ApiError(400, 'That is not a cookie export'))
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     await screen.findByLabelText(/preview url/i)
@@ -110,20 +133,85 @@ describe('WebPreviewPanel — Import cookies', () => {
     fireEvent.change(textarea, { target: { value: 'garbage' } })
     fireEvent.click(screen.getByTestId('web-preview-cookies-submit'))
     const err = await screen.findByTestId('web-preview-cookies-error')
+    // The shared ErrorNotice surface: role="alert", the server's own message.
+    expect(err.getAttribute('role')).toBe('alert')
     expect(err.textContent).toContain('That is not a cookie export')
-    expect(screen.getByTestId('web-preview-cookies-dialog')).toBeTruthy()
+    // No hand-off next to the unsaved paste: the textarea keeps its draft.
+    expect(err.querySelector('button')).toBeNull()
+    expect((screen.getByTestId('web-preview-cookies-dialog').querySelector('textarea') as HTMLTextAreaElement).value).toBe('garbage')
   })
 
-  it('clears an imported set on the two-step Clear action', async () => {
+  it('keeps the status chip read-only (no Clear control on it)', async () => {
+    getBrowserCookies.mockResolvedValue(PRESENT)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const chip = await screen.findByTestId('web-preview-cookies-chip')
+    expect(chip.querySelector('button')).toBeNull()
+    expect(chip.getAttribute('title')).toContain('example.com')
+    expect(screen.queryByTestId('web-preview-cookies-clear')).toBeNull()
+  })
+
+  it('clears an imported set from the overflow menu on the two-step Clear item', async () => {
     getBrowserCookies.mockResolvedValue(PRESENT)
     clearBrowserCookies.mockResolvedValue({ ok: true, present: false })
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    // The chip renders in the toolbar; the first web-preview-cookies-clear is it.
-    const clearBtn = await screen.findByTestId('web-preview-cookies-clear')
-    fireEvent.click(clearBtn) // arm
-    fireEvent.click(clearBtn) // confirm
-    await waitFor(() => expect(clearBrowserCookies).toHaveBeenCalled())
+    await screen.findByTestId('web-preview-cookies-chip')
+    openOverflow()
+    const item = await screen.findByTestId('web-preview-cookies-clear')
+    expect(item.textContent).toContain('Clear cookies')
+    fireEvent.click(item) // arm — the menu stays open and the label flips
+    expect(clearBrowserCookies).not.toHaveBeenCalled()
+    const armed = await screen.findByTestId('web-preview-cookies-clear')
+    expect(armed.textContent).toContain('Click again to clear')
+    fireEvent.click(armed) // confirm
+    await waitFor(() => expect(clearBrowserCookies).toHaveBeenCalledWith('sess-1'))
     await waitFor(() => expect(screen.queryByTestId('web-preview-cookies-chip')).toBeNull())
+    // Nothing to clear any more, so the item leaves the menu with the chip.
+    await waitFor(() => expect(screen.queryByTestId('web-preview-cookies-clear')).toBeNull())
+  })
+
+  it('does not offer Clear when nothing is imported', async () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await screen.findByLabelText(/preview url/i)
+    openOverflow()
+    await screen.findByTestId('web-preview-import-cookies')
+    expect(screen.queryByTestId('web-preview-cookies-clear')).toBeNull()
+  })
+
+  it('renders a failed Clear through ErrorNotice inside the menu with a sibling hand-off item', async () => {
+    getBrowserCookies.mockResolvedValue(PRESENT)
+    clearBrowserCookies.mockRejectedValue(new ApiError(500, 'disk on fire'))
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await screen.findByTestId('web-preview-cookies-chip')
+    openOverflow()
+    fireEvent.click(await screen.findByTestId('web-preview-cookies-clear')) // arm
+    fireEvent.click(await screen.findByTestId('web-preview-cookies-clear')) // confirm
+    const err = await screen.findByTestId('web-preview-cookies-clear-error')
+    expect(err.getAttribute('role')).toBe('alert')
+    expect(err.textContent).toContain('disk on fire')
+    // The hand-off is a real menu focus stop, described by the passive alert.
+    const handoff = screen.getByRole('menuitem', { name: /Ask the agent/ })
+    expect(handoff.getAttribute('aria-describedby')).toBe(err.getAttribute('id'))
+    // The set is still there — the chip stays.
+    expect(screen.getByTestId('web-preview-cookies-chip')).toBeTruthy()
+  })
+
+  it('keeps the running Live-view header at its two actions (open + toggle) with a read-only chip', async () => {
+    getBrowserView.mockResolvedValue({ status: 'running', url: 'http://127.0.0.1:45613/', port: 45613, reason: null })
+    getBrowserCookies.mockResolvedValue(PRESENT)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const frame = await screen.findByTitle('Live browser session')
+    const header = frame.parentElement!.parentElement!.firstElementChild as HTMLElement
+    // The hidden preview toolbar keeps its own chip under the overlay; scope to
+    // the header.
+    const chip = await within(header).findByTestId('web-preview-cookies-chip')
+    expect(chip.querySelector('button')).toBeNull()
+    // max-two-buttons-per-row: the header carries open-in-browser + the toggle,
+    // and nothing the cookie feature added counts (the chip is a span).
+    const actions = Array.from(header.children).filter(
+      (el) => el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button',
+    )
+    expect(actions).toHaveLength(2)
+    expect(screen.queryByTestId('web-preview-import-cookies-btn')).toBeNull()
   })
 
   it('hides the cookie control for a non-owner (403)', async () => {

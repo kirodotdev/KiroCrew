@@ -8462,6 +8462,7 @@
       "cookies_choose_a_file": "Выбрать файл",
       "cookies_clear": "Очистить cookie",
       "cookies_clear_confirm": "Нажмите ещё раз, чтобы очистить",
+      "cookies_clear_failed": "Не удалось очистить cookie",
       "cookies_count": "{{count}} cookie",
       "cookies_dialog_explanation": "Экспортируйте cookie из браузера, где вы уже вошли в систему — в виде JSON storageState Playwright, экспорта Cookie-Editor или Get cookies.txt, либо файла cookies.txt в формате Netscape — и вставьте или загрузите их здесь. Они применяются к сеансам браузера агента. Значения cookie остаются на хосте шлюза и здесь никогда не показываются.",
       "cookies_domains_more": "ещё {{count}}",

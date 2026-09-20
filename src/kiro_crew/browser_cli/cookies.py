@@ -3,11 +3,27 @@ to the agent's ``playwright-cli`` sessions.
 
 The dashboard user exports cookies from the browser where they are already
 logged in and imports them here; the gateway normalises them to Playwright's
-cookie shape, writes one owner-only ``storageState`` file under the data home,
-and :mod:`kiro_crew.browser_cli.launch` names that file in the launch config so
-every NEW ``playwright-cli`` session starts with the cookies loaded. This is the
-remote-gateway path a hand-written ``PLAYWRIGHT_MCP_CONFIG`` otherwise has to
-carry by hand.
+cookie shape and writes one owner-only ``storageState`` file under the data
+home. That file is **bind-masked out of every agent sandbox**
+(``sandbox._CREW_HIDDEN_LEAVES``): the agent must never be able to read a
+session cookie off disk, and a spawned shell's ``open()`` never routes through
+the tool gate, so only the OS mask holds. The cookies still have to reach the
+agent's browser, and a hidden file cannot be named in the config the AGENT's
+``playwright-cli`` reads -- the daemon an agent command starts runs inside the
+same sandbox and would fail on ENOENT. So two configs exist, and the state
+travels through the GATEWAY:
+
+* :func:`kiro_crew.browser_cli.launch.desired_config` (the file the agent's
+  ``PLAYWRIGHT_MCP_CONFIG`` names) stays engine-only and never references the
+  hidden path.
+* :func:`gateway_config_path` holds the same document PLUS
+  ``browser.contextOptions.storageState`` while the state file exists. Only
+  gateway-side spawns use it.
+* :func:`prewarm_session` starts the daemon for an agent's ``kc-*`` session
+  from the GATEWAY process, with that config and the same socket/registry
+  directories the agent process is about to receive, so the agent's later
+  commands connect to a daemon that already carries the cookies and that runs
+  outside its sandbox. The agent sees the session, never the file.
 
 **Three import shapes are accepted**, because that is what the browsers and
 their export extensions actually produce:
@@ -31,27 +47,55 @@ with a message meant to be shown to the user.
 **Values never leave.** :func:`storage_state_summary` reports counts, domains
 and the earliest expiry, and nothing here ever returns or logs a cookie value.
 The agent is told (see ``docs/browser-control.md``) that imported cookies apply
-to new sessions on their own and that it must never read the storage-state file.
+to new sessions on their own and that it must never read the storage-state file
+-- and the sandbox mask is what makes that last sentence a fact rather than an
+instruction.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
+import os
+import subprocess
+import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.install import cli_command, cli_env
-from kiro_crew.browser_cli.launch import _SESSION_PREFIX
+from kiro_crew.browser_cli.launch import (
+    _LIFECYCLE_DIR,
+    _SESSION_PREFIX,
+    CONFIG_ENV,
+    DAEMON_DIR_ENV,
+    SESSION_ENV,
+    SOCKETS_ENV,
+    _session_leaf,
+    daemon_dir,
+    desired_config,
+    launch_config_path,
+    socket_dir,
+)
 from kiro_crew.config.paths import config_dir
+from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 
 logger = logging.getLogger(__name__)
 
-#: The storageState file playwright-cli loads. Fixed name under the data home so
-#: an isolated ``KIROCREW_HOME`` (a pod, a test) stays isolated here too.
+#: The storageState file the gateway-launched daemon loads. Fixed name under the
+#: data home so an isolated ``KIROCREW_HOME`` (a pod, a test) stays isolated here
+#: too. Listed in ``sandbox._CREW_HIDDEN_LEAVES`` and ``security._CREW_SECRET_LEAVES``
+#: under exactly this name: renaming it here without renaming it there would
+#: silently put the cookie values back in the agent's reach.
 STORAGE_STATE_FILE = "browser-storage-state.json"
+
+#: The launch config GATEWAY-side spawns read: the agent's config plus the
+#: ``storageState`` key. A separate file from the agent's so the agent's copy can
+#: never carry a path its sandbox cannot open (see the module docstring).
+_GATEWAY_CONFIG_FILE = "playwright-cli-gateway-config.json"
 
 #: Reject an import whose raw text exceeds this, before parsing: the same 2 MiB
 #: ceiling the HTTP handler enforces, restated here so a non-HTTP caller
@@ -63,8 +107,14 @@ MAX_IMPORT_BYTES = 2 * 1024 * 1024
 #: and bounds the work of writing and re-loading the state.
 MAX_COOKIES = 5000
 
-#: How long a ``state-load`` on one live session is allowed to take.
+#: How long a ``state-load`` / ``cookie-clear`` on one live session is allowed to take.
 _HOT_LOAD_TIMEOUT_S = 15.0
+
+#: How long a gateway-side pre-warm (``open about:blank``, which starts the
+#: daemon and launches Chromium) may run before it is abandoned. Generous
+#: because a cold Chromium start on a loaded host takes tens of seconds, and
+#: nothing waits on it: the agent spawn has already returned.
+_PREWARM_TIMEOUT_S = 90.0
 
 #: Playwright's three accepted ``sameSite`` values.
 _SAME_SITE_VALUES = frozenset({"Strict", "Lax", "None"})
@@ -108,6 +158,16 @@ def _normalize_same_site(raw: Any) -> str:
     return "Lax"
 
 
+def _reject_json_constant(name: str) -> Any:
+    """Refuse the non-standard JSON constants ``NaN``/``Infinity``/``-Infinity``.
+
+    ``json.loads`` accepts them by default; a cookie export never legitimately
+    carries one, and letting one through would persist a value the daemon's
+    strict parser cannot read.
+    """
+    raise CookieImportError(f"cookie import contains the invalid JSON constant {name}")
+
+
 def _normalize_expires(raw: Any) -> float:
     """Normalise an expiry to a float unix timestamp, or ``-1`` for a session cookie.
 
@@ -127,7 +187,9 @@ def _normalize_expires(raw: Any) -> float:
             parsed = float(raw)
         except ValueError:
             parsed = None
-    if parsed is None or parsed <= 0:
+    if parsed is None or not math.isfinite(parsed) or parsed <= 0:
+        # NaN/Infinity would be written verbatim and make the persisted state
+        # unreadable to the daemon; they carry no expiry, so: session cookie.
         return -1.0
     return parsed
 
@@ -224,7 +286,11 @@ def parse_cookie_import(text: str) -> list[dict[str, Any]]:
     stripped = text.lstrip()
     if stripped[:1] in "{[":
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(text, parse_constant=_reject_json_constant)
+        except RecursionError as exc:
+            # json.loads recurses per nesting level; a pathological document
+            # must be a 400, not a 500 from the handler.
+            raise CookieImportError("cookie import is nested too deeply") from exc
         except ValueError as exc:
             raise CookieImportError(f"cookie import is not valid JSON: {exc}") from exc
         if isinstance(parsed, dict):
@@ -289,6 +355,53 @@ def clear_storage_state() -> bool:
         return False
 
 
+def gateway_config_path() -> Path:
+    """Where the gateway-side launch config lives, under the data home."""
+    return config_dir() / _GATEWAY_CONFIG_FILE
+
+
+def gateway_config() -> dict[str, object]:
+    """The agent's launch config plus ``storageState`` while the state file exists.
+
+    Exactly :func:`kiro_crew.browser_cli.launch.desired_config` when no cookies
+    are imported, so a gateway-side spawn behaves like an agent's in every other
+    respect; with the file present it adds ``browser.contextOptions.storageState``
+    naming it. Only processes the GATEWAY launches read this document -- the
+    path it names is masked from every agent sandbox.
+    """
+    config = desired_config()
+    state_path = storage_state_path()
+    if state_path.is_file():
+        browser = config["browser"]
+        assert isinstance(browser, dict)
+        browser["contextOptions"] = {"storageState": str(state_path)}
+    return config
+
+
+def write_gateway_config() -> Path | None:
+    """Write the gateway-side config, returning its path (``None`` when it could not be).
+
+    Rewritten whenever it does not already match :func:`gateway_config`, so the
+    ``storageState`` key appears after an import and disappears after a clear.
+    Best effort: a config that cannot be written means the next pre-warm is
+    skipped, never that an agent spawn fails.
+    """
+    path = gateway_config_path()
+    payload = json.dumps(gateway_config(), indent=2) + "\n"
+    try:
+        if path.is_file() and path.read_text(encoding="utf-8") == payload:
+            return path
+    except (OSError, UnicodeDecodeError):
+        pass
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, payload)
+    except OSError:
+        logger.warning("could not write the gateway browser launch config at %s", path)
+        return None
+    return path
+
+
 def storage_state_summary() -> dict[str, Any] | None:
     """Summarise the stored cookies without ever returning a value.
 
@@ -305,7 +418,7 @@ def storage_state_summary() -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     cookies = data.get("cookies") if isinstance(data, dict) else None
     if not isinstance(cookies, list):
@@ -337,21 +450,39 @@ def storage_state_summary() -> dict[str, Any] | None:
     }
 
 
-def _live_session_names() -> list[str]:
-    """Best-effort list of the live ``kc-*`` playwright-cli sessions.
+# ── Live sessions: the gateway reaching an agent's daemon ────────────────────
 
-    Runs ``playwright-cli list`` and returns the names beginning with the
-    Kiro-Crew session prefix. Never raises: an empty list means "could not
-    enumerate", which the caller reports rather than treating as an error. The
-    output format is a line per session with the name as its first
-    whitespace-separated token; a name is only accepted when it carries the
-    reserved prefix, so a header or a stray line is ignored.
+
+def _session_env(session_name: str) -> dict[str, str]:
+    """The lifecycle variables an agent process was handed for *session_name*.
+
+    Mirrors :func:`kiro_crew.browser_cli.launch.browser_socket_env` for the
+    DEFAULT lifecycle root: the socket and registry directories are derived from
+    the generated name, so a gateway-side CLI client pointed at them connects to
+    the same daemon the agent's commands reach. An operator-configured root
+    (``SOCKETS_ENV`` set to a foreign path before the gateway started) is not
+    re-derived here; sessions under it are simply not enumerated.
+    """
+    return {
+        SESSION_ENV: session_name,
+        SOCKETS_ENV: str(socket_dir(session_name)),
+        DAEMON_DIR_ENV: str(daemon_dir(session_name)),
+    }
+
+
+def _live_session_names() -> list[str]:
+    """Best-effort list of the live ``kc-*`` sessions visible to ``playwright-cli list``.
+
+    Runs ``list`` under the gateway's own environment and returns the names
+    beginning with the Kiro-Crew session prefix. Never raises: an empty list
+    means "could not enumerate". Only sessions registered in the DEFAULT
+    registry show up here -- one an agent started on a host where the lifecycle
+    hooks are unsupported -- which is why :func:`_live_sessions` scans the
+    per-session lifecycle roots first and falls back to this.
     """
     command = cli_command()
     if command is None:
         return []
-    import subprocess  # noqa: PLC0415 - kept local so import-time never spawns
-
     try:
         proc = subprocess.run(
             [*command, "list"],
@@ -373,37 +504,59 @@ def _live_session_names() -> list[str]:
     return names
 
 
-def hot_load_into_live_sessions(path: Path) -> dict[str, Any]:
-    """Load *path* into every live ``kc-*`` session, best effort.
+def _live_sessions() -> dict[str, dict[str, str]]:
+    """Candidate live ``kc-*`` sessions, each with the env a CLI client needs to reach it.
 
-    Runs ``playwright-cli -s=<name> state-load <path>`` for each enumerated
-    session, so a browser already open picks up the freshly imported cookies
-    without an agent restart. NEVER raises. Returns ``{"loaded": [names],
-    "failed": {name: reason}}``; when the CLI is unavailable or no session could
-    be enumerated it returns ``{"loaded": [], "failed": {}, "note": "..."}``
-    explaining why. New sessions get the cookies from the launch config
-    regardless, so an empty result is a "nothing to hot-load into", not a
-    failure to import.
+    Every generated session gets its own ``<data-home>/pw/<8hex>/{s,d}`` subtree
+    (:func:`kiro_crew.browser_cli.launch.browser_socket_env`), precisely so
+    ``playwright-cli list`` under one root cannot see a peer's browser -- which
+    also means a bare ``list`` from the gateway sees none of them. So the
+    gateway enumerates by SHAPE: a ``pw/<8hex>/s/cli/*.sock`` control socket
+    marks session ``kc-<8hex>`` as a candidate. A socket can outlive its daemon
+    (the CLI unlinks it on a failed connect, not on exit), so "candidate" is
+    the honest word; the command run against it reports the truth. Falls back
+    to the ``list`` output when no per-session root holds a socket.
+    """
+    found: dict[str, dict[str, str]] = {}
+    root = config_dir() / _LIFECYCLE_DIR
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        name = f"{_SESSION_PREFIX}{entry.name}"
+        if not _session_leaf(name):
+            continue
+        try:
+            sockets = [p for p in (entry / "s" / "cli").iterdir() if p.suffix == ".sock"]
+        except OSError:
+            continue
+        if sockets:
+            found[name] = _session_env(name)
+    if found:
+        return found
+    return {name: {} for name in _live_session_names()}
+
+
+def _run_on_sessions(
+    verb: list[str], sessions: Mapping[str, Mapping[str, str]]
+) -> tuple[list[str], dict[str, str]]:
+    """Run ``playwright-cli -s=<name> <verb>`` on each session; ``(succeeded, {name: reason})``.
+
+    Never raises. Each session gets the gateway's CLI environment plus its own
+    lifecycle variables, so the client connects to THAT session's daemon.
     """
     command = cli_command()
     if command is None:
-        return {"loaded": [], "failed": {}, "note": "playwright-cli is not installed"}
-    sessions = _live_session_names()
-    if not sessions:
-        return {
-            "loaded": [],
-            "failed": {},
-            "note": "no live browser sessions; cookies apply to new sessions automatically",
-        }
-    import subprocess  # noqa: PLC0415 - kept local so import-time never spawns
-
-    loaded: list[str] = []
+        return [], {name: "playwright-cli is not installed" for name in sessions}
+    base_env = cli_env()
+    done: list[str] = []
     failed: dict[str, str] = {}
-    env = cli_env()
-    for name in sessions:
+    for name, overrides in sessions.items():
+        env = {**base_env, **overrides}
         try:
             proc = subprocess.run(
-                [*command, f"-s={name}", "state-load", str(path)],
+                [*command, f"-s={name}", *verb],
                 capture_output=True,
                 timeout=_HOT_LOAD_TIMEOUT_S,
                 env=env,
@@ -414,7 +567,164 @@ def hot_load_into_live_sessions(path: Path) -> dict[str, Any]:
             failed[name] = str(exc)
             continue
         if proc.returncode == 0:
-            loaded.append(name)
+            done.append(name)
         else:
-            failed[name] = (proc.stderr or "state-load failed").strip()[:200]
-    return {"loaded": loaded, "failed": failed}
+            failed[name] = (proc.stderr or proc.stdout or f"{verb[0]} failed").strip()[:200]
+    return done, failed
+
+
+def hot_load_into_live_sessions(path: Path) -> dict[str, Any]:
+    """Load *path* into every live ``kc-*`` session, best effort.
+
+    Runs ``playwright-cli -s=<name> state-load <path>`` against each candidate
+    session (see :func:`_live_sessions`). NEVER raises. Returns ``{"loaded":
+    [names], "failed": {name: reason}}`` plus a one-line ``note`` whenever
+    NOTHING loaded, so the caller can show why rather than an empty success.
+
+    Only a GATEWAY-owned daemon (:func:`prewarm_session`) can succeed: the CLI
+    forwards the filename and the DAEMON opens it, and a daemon the agent's own
+    command started runs inside the agent's sandbox, where the file is masked.
+    Such a session fails here with the daemon's own error, which is the
+    truthful outcome -- the agent's NEXT session, pre-warmed by the gateway,
+    carries the cookies, which is what the panel's new-session hint says.
+    """
+    if cli_command() is None:
+        return {"loaded": [], "failed": {}, "note": "playwright-cli is not installed"}
+    sessions = _live_sessions()
+    if not sessions:
+        return {
+            "loaded": [],
+            "failed": {},
+            "note": "no live browser sessions; cookies apply to new sessions automatically",
+        }
+    loaded, failed = _run_on_sessions(["state-load", str(path)], sessions)
+    result: dict[str, Any] = {"loaded": loaded, "failed": failed}
+    if not loaded:
+        result["note"] = (
+            "no open browser session could load the cookies (a session the agent "
+            "started itself cannot read them); they apply to new sessions automatically"
+        )
+    return result
+
+
+def clear_live_sessions() -> dict[str, Any]:
+    """Clear the cookies of every live ``kc-*`` session, best effort.
+
+    Companion of :func:`clear_storage_state`: deleting the file stops NEW
+    sessions from loading the cookies, but a browser already open stays signed
+    in until it is closed. This runs ``playwright-cli -s=<name> cookie-clear``
+    on each candidate session so a clear from the dashboard means what it says.
+    NEVER raises. Returns ``{"cleared": [names], "failed": {name: reason}}``
+    plus a ``note`` when there was nothing to clear.
+    """
+    if cli_command() is None:
+        return {"cleared": [], "failed": {}, "note": "playwright-cli is not installed"}
+    sessions = _live_sessions()
+    if not sessions:
+        return {"cleared": [], "failed": {}, "note": "no live browser sessions"}
+    cleared, failed = _run_on_sessions(["cookie-clear"], sessions)
+    return {"cleared": cleared, "failed": failed}
+
+
+# ── Pre-warm: a gateway-owned daemon for the agent's session ─────────────────
+
+
+def _run_prewarm(argv: list[str], env: dict[str, str], session_name: str) -> None:
+    """Thread body of :func:`prewarm_session`: run the CLI once and log the outcome."""
+    try:
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_PREWARM_TIMEOUT_S,
+            env=env,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("browser pre-warm for %s did not finish in time", session_name)
+        return
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("browser pre-warm for %s could not run: %s", session_name, exc)
+        return
+    if proc.returncode != 0:
+        logger.warning(
+            "browser pre-warm for %s failed (rc=%s): %s",
+            session_name,
+            proc.returncode,
+            (proc.stderr or proc.stdout or "").strip()[:200],
+        )
+    else:
+        logger.debug("browser pre-warm for %s started a daemon with imported cookies", session_name)
+
+
+def prewarm_session(session_name: str, env: Mapping[str, str]) -> bool:
+    """Start the daemon for an agent's browser session from the GATEWAY, with the cookies.
+
+    Called at the two agent spawn sites right after the child's browser
+    environment is computed. When imported cookies exist, this runs
+    ``playwright-cli -s=<session_name> open about:blank`` in a daemon thread,
+    OUTSIDE any sandbox, with :func:`gateway_config_path` as the CLI config and
+    the same ``SOCKETS_ENV`` / ``DAEMON_DIR_ENV`` values *env* hands the agent.
+    The daemon that command leaves running is the one the agent's later
+    commands connect to over the socket, so the agent's session carries the
+    cookies while the file that holds them stays masked from the agent's
+    filesystem view. The daemon's exec-time environment also carries
+    ``SESSION_ENV`` and the ``KIROCREW_SPAWNED`` marker, exactly as an
+    agent-started daemon's would, so the orphan sweep in ``session_pid`` still
+    recognises and reaps it once the agent process is gone.
+
+    Returns ``True`` when a pre-warm was SCHEDULED, ``False`` when there was
+    nothing to do -- no imported cookies, a name that is not a generated
+    ``kc-<8hex>``, an *env* without the lifecycle variables (the daemon would
+    then land under the agent's private ``TMPDIR`` where the gateway cannot
+    address it), an operator-supplied ``PLAYWRIGHT_MCP_CONFIG`` (their config
+    wins, as everywhere else), or no CLI. Fire-and-forget: never blocks the
+    spawn, never raises; a failure is one warning in the gateway log.
+
+    Residual race, by design: an agent whose FIRST browser command lands before
+    this daemon is up starts its own in-sandbox, cookie-less daemon, and the
+    pre-warm then fails to bind the same session. The panel already tells the
+    user that imported cookies apply to NEW sessions, and the next spawn gets
+    them.
+    """
+    try:
+        if not _session_leaf(session_name):
+            return False
+        sockets = env.get(SOCKETS_ENV, "").strip()
+        daemons = env.get(DAEMON_DIR_ENV, "").strip()
+        if not sockets or not daemons:
+            return False
+        configured = os.environ.get(CONFIG_ENV, "").strip()
+        if configured and configured != str(launch_config_path()):
+            return False
+        if not storage_state_path().is_file():
+            return False
+        command = cli_command()
+        if command is None:
+            return False
+        config = write_gateway_config()
+        if config is None:
+            return False
+        child_env = cli_env()
+        child_env.update(
+            {
+                SESSION_ENV: session_name,
+                SOCKETS_ENV: sockets,
+                DAEMON_DIR_ENV: daemons,
+                CONFIG_ENV: str(config),
+                KIROCREW_SPAWNED_ENV: KIROCREW_SPAWNED_VALUE,
+            }
+        )
+        argv = [*command, f"-s={session_name}", "open", "about:blank"]
+        threading.Thread(
+            target=_run_prewarm,
+            args=(argv, child_env, session_name),
+            name=f"browser-prewarm-{session_name}",
+            daemon=True,
+        ).start()
+        return True
+    except Exception as exc:  # noqa: BLE001 - a spawn must never fail on a pre-warm
+        logger.warning("browser pre-warm for %s was skipped: %s", session_name, exc)
+        return False

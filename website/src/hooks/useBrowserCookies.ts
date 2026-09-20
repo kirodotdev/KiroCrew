@@ -1,15 +1,19 @@
 import { useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { ApiError } from '../api/apiError'
 import {
   api,
-  ApiError,
   type BrowserCookiesStatus,
   type BrowserCookiesImportResult,
 } from '../api/client'
 
-/** Query key for the imported-cookies status. */
+/** Query key for the imported-cookies status, scoped by the slot the read is
+ * made on behalf of: a restricted slot's 403 must not be served from (or
+ * poison) the cache of a persistent one. */
 export const BROWSER_COOKIES_KEY = ['browserCookies'] as const
+export const browserCookiesKey = (sessionKey?: string) =>
+  [...BROWSER_COOKIES_KEY, sessionKey ?? ''] as const
 
 /**
  * What the panel shows when the ENDPOINT itself is absent (404/501) — an older
@@ -46,20 +50,28 @@ function isForbidden(e: unknown): boolean {
  * mount and re-read after an import or clear, but never polled — imported
  * cookies do not change on their own the way a supervised view process does.
  *
+ * `sessionKey` is the ACTIVE chat slot's key and rides every request as
+ * X-Session-Key, the way the browser view's open does. The gateway's
+ * restricted-session guard reads that header; without it the shared
+ * `dashboard:ui` placeholder answers "not restricted", and an incognito or
+ * temporary slot would read the sites a stored credential unlocks and persist
+ * a logged-in browser state it promised to keep nothing of.
+ *
  * A missing route degrades to the empty "no cookies" state, because that IS the
- * honest reading for a gateway that predates the feature. A 403 sets
- * `forbidden` so the caller can HIDE the control silently, mirroring how the
- * browser view treats a non-owner. Any OTHER failure is left as an error so the
- * panel can surface it.
+ * honest reading for a gateway that predates the feature. A 403 — a non-owner,
+ * or a restricted slot — sets `forbidden` so the caller can HIDE the control
+ * silently, mirroring how the browser view treats a non-owner. Any OTHER
+ * failure is left as an error so the panel can surface it.
  */
-export function useBrowserCookies(enabled: boolean) {
+export function useBrowserCookies(enabled: boolean, sessionKey?: string) {
   const queryClient = useQueryClient()
+  const queryKey = browserCookiesKey(sessionKey)
 
   const query = useQuery({
-    queryKey: BROWSER_COOKIES_KEY,
+    queryKey,
     queryFn: async (): Promise<BrowserCookiesStatus> => {
       try {
-        return await api.getBrowserCookies()
+        return await api.getBrowserCookies(sessionKey)
       } catch (e) {
         if (isMissingRoute(e)) return ENDPOINT_ABSENT
         throw e
@@ -78,12 +90,12 @@ export function useBrowserCookies(enabled: boolean) {
 
   const importMutation = useMutation({
     mutationFn: ({ content, filename }: { content: string; filename?: string }) =>
-      api.importBrowserCookies(content, filename),
+      api.importBrowserCookies(content, filename, sessionKey),
     onSuccess: (data: BrowserCookiesImportResult) => {
       // The import answer carries the fresh summary, so write status straight
       // into the cache: the chip must reflect the new set NOW, not after a
       // follow-up read.
-      queryClient.setQueryData<BrowserCookiesStatus>(BROWSER_COOKIES_KEY, (prev) => ({
+      queryClient.setQueryData<BrowserCookiesStatus>(queryKey, (prev) => ({
         present: true,
         summary: data.summary,
         config_path: prev?.config_path ?? '',
@@ -98,9 +110,9 @@ export function useBrowserCookies(enabled: boolean) {
   )
 
   const clearMutation = useMutation({
-    mutationFn: () => api.clearBrowserCookies(),
+    mutationFn: () => api.clearBrowserCookies(sessionKey),
     onSuccess: () => {
-      queryClient.setQueryData<BrowserCookiesStatus>(BROWSER_COOKIES_KEY, (prev) => ({
+      queryClient.setQueryData<BrowserCookiesStatus>(queryKey, (prev) => ({
         present: false,
         summary: null,
         config_path: prev?.config_path ?? '',
@@ -117,7 +129,7 @@ export function useBrowserCookies(enabled: boolean) {
     pending: query.isPending,
     /** The status read failed for a reason that is NOT "route absent" or 403. */
     error: forbidden ? null : query.error,
-    /** The caller is not the owner: hide the control entirely. */
+    /** The caller is not the owner, or the slot is restricted: hide the control entirely. */
     forbidden,
     /** POST a pasted/loaded export. Resolves with the import result (summary +
      *  hot-load report); rejects with the ApiError on a 400/other failure. */

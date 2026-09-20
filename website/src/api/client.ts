@@ -4939,12 +4939,20 @@ export const api = {
   // POST stores a pasted/loaded export and hot-loads it into live sessions;
   // DELETE clears it. All three are owner-only (403 to a non-owner), which the
   // hook treats as "hide the control" rather than an error.
-  getBrowserCookies: () => get('/api/browser/cookies').then(j) as Promise<BrowserCookiesStatus>,
-  importBrowserCookies: (content: string, filename?: string) =>
-    post('/api/browser/cookies', filename ? { content, filename } : { content })
+  // `sessionKey` MUST carry the active slot's key when one is active: the
+  // server's restricted-session guard reads X-Session-Key, and the shared
+  // `dashboard:ui` default answers "not restricted" — which would let an
+  // incognito/temporary slot read the sites a stored credential unlocks, or
+  // persist a logged-in browser state the slot promised to keep nothing of.
+  // Same contract as `openInBrowser` and the mobile-link surface; the guard
+  // answers 403, which the hook maps to "hide the control".
+  getBrowserCookies: (sessionKey?: string) =>
+    get('/api/browser/cookies', sessionKey).then(j) as Promise<BrowserCookiesStatus>,
+  importBrowserCookies: (content: string, filename?: string, sessionKey?: string) =>
+    post('/api/browser/cookies', filename ? { content, filename } : { content }, sessionKey)
       .then(j) as Promise<BrowserCookiesImportResult>,
-  clearBrowserCookies: () =>
-    del('/api/browser/cookies').then(j) as Promise<{ ok: true; present: false }>,
+  clearBrowserCookies: (sessionKey?: string) =>
+    del('/api/browser/cookies', undefined, sessionKey).then(j) as Promise<{ ok: true; present: false }>,
   // Computer use (desktop automation). The PUT returns the refreshed snapshot so
   // the panel re-renders from server truth rather than its optimistic guess.
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,

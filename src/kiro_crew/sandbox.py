@@ -323,11 +323,17 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # PAT included — and any crash orphan are covered at every name, present and future.
     _MD_NOTEBOOK_STAGING_LEAF,
     # Browser session material. The extension token reaches the CLI through the
-    # environment, never by ``open()``, so masking the file costs nothing; the other
-    # four are retired leaves with no reader left in the tree. The LIVE browser paths
-    # (``browser-state``, ``playwright-snapshots``, ``pw``, ``playwright-cli-config.json``)
-    # are deliberately absent from the sensitive list and stay fully visible.
+    # environment, never by ``open()``, so masking the file costs nothing; the
+    # imported-cookies storageState (``browser-storage-state.json``) holds live
+    # session cookies and is loaded ONLY by gateway-launched CLI processes
+    # (``browser_cli/cookies.py`` pre-warms the agent's daemon from the gateway,
+    # outside this mask), so the agent's own shell never needs to read it; the
+    # other four are retired leaves with no reader left in the tree. The LIVE
+    # browser paths (``browser-state``, ``playwright-snapshots``, ``pw``,
+    # ``playwright-cli-config.json``, ``playwright-cli-gateway-config.json``) are
+    # deliberately absent from the sensitive list and stay fully visible.
     "browser-cookies.txt",
+    "browser-storage-state.json",
     "playwright-storage-state.json",
     "playwright-extension-token",
     "browser-mode-enabled",

@@ -111,7 +111,8 @@ from kiro_crew.agent_sdk.tool_search import (
     spec_grants_tool_search,
     with_client_meta_settings,
 )
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
+from kiro_crew.browser_cli.cookies import prewarm_session
+from kiro_crew.browser_cli.launch import SESSION_ENV, browser_session_env, browser_socket_env
 from kiro_crew.config import live
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import (
@@ -2362,6 +2363,10 @@ class AcpRuntime:
         if browser_env:
             lifecycle_env = {**os.environ, **browser_env}
             env.update(await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env))
+            # Imported cookies: start this session's daemon from the GATEWAY so
+            # it carries them; the file itself is masked from the child's
+            # sandbox. Fire-and-forget, never raises (see prewarm_session).
+            prewarm_session(browser_env[SESSION_ENV], env)
         # Per-process scratch containment: the agent's temp AND its
         # prompt-guided work products land in the owned directory allocated
         # before the sandbox wrap, instead of the shared system temp dir.

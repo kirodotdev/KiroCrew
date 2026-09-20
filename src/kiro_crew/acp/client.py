@@ -196,7 +196,8 @@ from kiro_crew.agent_sdk.backends import (
     launch_for,
 )
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
+from kiro_crew.browser_cli.cookies import prewarm_session
+from kiro_crew.browser_cli.launch import SESSION_ENV, browser_session_env, browser_socket_env
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.constants import (
     COMPACT_WAIT_TIMEOUT_SECS,
@@ -7987,6 +7988,10 @@ class AcpClient:
         if browser_env:
             lifecycle_env = {**os.environ, **browser_env}
             env.update(await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env))
+            # Imported cookies: start this session's daemon from the GATEWAY so
+            # it carries them; the file itself is masked from the child's
+            # sandbox. Fire-and-forget, never raises (see prewarm_session).
+            prewarm_session(browser_env[SESSION_ENV], env)
         # The scratch dir was allocated before the sandbox wrap (carved out of
         # the masked root there); hand it to the child as its temp.
         if self._scratch_dir is not None:

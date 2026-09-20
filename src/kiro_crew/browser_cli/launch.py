@@ -368,33 +368,22 @@ def launch_config_path() -> Path:
 
 
 def desired_config() -> dict[str, object]:
-    """The config Kiro Crew generates.
+    """The config Kiro Crew generates for the AGENT's ``playwright-cli``.
 
-    Deliberately minimal: it names the engine, and adds ONE conditional key.
-    Every key added here becomes a default an operator has to discover in order
-    to override, and the engine is the only one the product's own install flow
-    already decided.
+    Deliberately minimal: it names the engine and nothing else. Every key added
+    here becomes a default an operator has to discover in order to override, and
+    the engine is the only one the product's own install flow already decided.
 
-    The one conditional key is ``browser.contextOptions.storageState``, added
-    ONLY when the imported-cookies file
-    (:func:`kiro_crew.browser_cli.cookies.storage_state_path`) exists on disk. It
-    points every new ``playwright-cli`` session at the cookies the dashboard user
-    imported, which is how a logged-in session reaches the agent's browser on a
-    remote gateway. It is absent when no cookies have been imported (and after a
-    clear), so the config carries the key exactly when there is a state to load;
-    the handlers call :func:`write_config` after a save or clear so the file
-    converges immediately. The path is read lazily here rather than pinned, so an
-    isolated ``KIROCREW_HOME`` resolves its own file.
+    It never names the imported-cookies file. That file
+    (:func:`kiro_crew.browser_cli.cookies.storage_state_path`) is bind-masked out
+    of every agent sandbox, and the daemon an AGENT's command starts runs inside
+    that sandbox: a ``contextOptions.storageState`` pointing at a path the daemon
+    cannot open fails every browse with ENOENT. The cookies reach the agent's
+    session through the gateway-owned daemon instead
+    (:func:`kiro_crew.browser_cli.cookies.prewarm_session`), which is launched
+    with the separate :func:`kiro_crew.browser_cli.cookies.gateway_config_path`.
     """
-    from kiro_crew.browser_cli.cookies import storage_state_path
-
-    config: dict[str, object] = {"browser": {"browserName": LAUNCH_ENGINE}}
-    state_path = storage_state_path()
-    if state_path.is_file():
-        browser = config["browser"]
-        assert isinstance(browser, dict)
-        browser["contextOptions"] = {"storageState": str(state_path)}
-    return config
+    return {"browser": {"browserName": LAUNCH_ENGINE}}
 
 
 def write_config() -> Path | None:

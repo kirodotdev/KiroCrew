@@ -8120,6 +8120,7 @@
       "cookies_choose_a_file": "파일 선택",
       "cookies_clear": "쿠키 지우기",
       "cookies_clear_confirm": "지우려면 다시 클릭",
+      "cookies_clear_failed": "쿠키를 지울 수 없습니다",
       "cookies_count": "쿠키 {{count}}개",
       "cookies_dialog_explanation": "이미 로그인되어 있는 브라우저에서 쿠키를 내보내(Playwright storageState JSON, Cookie-Editor 또는 Get cookies.txt 내보내기, 또는 Netscape cookies.txt 파일 형식으로) 여기에 붙여넣거나 업로드하세요. 쿠키는 에이전트의 브라우저 세션에 적용됩니다. 쿠키 값은 게이트웨이 호스트에만 남으며 여기에는 표시되지 않습니다.",
       "cookies_domains_more": "+{{count}}개 더",

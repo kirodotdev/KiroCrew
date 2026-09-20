@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { Cookie, Upload, X, Loader2, AlertTriangle, Check } from 'lucide-react'
+import { Cookie, Upload, X, Loader2, AlertTriangle, Check, Trash2 } from 'lucide-react'
 
 import { ApiError } from '../api/apiError'
 import { fmtNumber, fmtRelative } from '../i18n/format'
@@ -7,6 +7,7 @@ import { i18nT } from '../i18n/t'
 import type { useBrowserCookies } from '../hooks/useBrowserCookies'
 import { DropdownMenuItem } from './ui/dropdown-menu'
 import { Btn } from './ui'
+import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 
 /** The shared shape returned by `useBrowserCookies`, passed to each piece so the
  * panel holds ONE hook instance (one status read, one dialog) while the trigger,
@@ -16,14 +17,17 @@ type Cookies = ReturnType<typeof useBrowserCookies>
 /** How many domains the status-chip tooltip lists before it caps with "+N more". */
 const DOMAIN_TOOLTIP_CAP = 15
 
-/** Extract the user-readable message from a failed import. `friendlyErrText`
+/** Extract the user-readable message from a failed request. `friendlyErrText`
  * (in the api layer) already unwraps a `{"error": "…"}` 400 body into
- * `ApiError.message`, so the message is the thing to show inline. */
-function importErrorText(e: unknown): string {
+ * `ApiError.message`, so the message is the thing to show. */
+function requestErrorText(e: unknown, fallback: string): string {
   if (e instanceof ApiError && e.message) return e.message
   if (e instanceof Error && e.message) return e.message
-  return i18nT('components.webPreviewPanel.cookies_import_failed_generic')
+  return fallback
 }
+
+/** How long an armed Clear stays armed before it disarms itself. */
+const CLEAR_ARM_MS = 3000
 
 /** The domain tooltip: distinct domains, capped, with a localized "+N more". */
 function domainsTooltip(domains: string[]): string {
@@ -70,78 +74,124 @@ export function CookieMenuItem({ cookies, onOpen }: { cookies: Cookies; onOpen: 
 }
 
 /**
- * The header button that opens the import dialog — for the browser-view overlay
- * header, which has no sibling-button-count guard (unlike the preview toolbar).
- * Hidden for a non-owner.
+ * The overflow-menu entry that clears the stored set. Sits beside
+ * `CookieMenuItem` in the same "More actions" dropdown, so clearing costs the
+ * toolbar and the Live-view header no extra button (max-two-buttons-per-row).
+ *
+ * Two-step: the first select ARMS the item (the menu stays open via
+ * `preventDefault`, matching `ExportSessionItem`, and the label turns into the
+ * confirm wording); the second select within `CLEAR_ARM_MS` sends the DELETE.
+ * The menu also stays open on the second select so the outcome — a spinner,
+ * then either the item disappearing with the chip, or a failure — renders on
+ * the row rather than vanishing with the menu.
+ *
+ * A failed DELETE renders through `ErrorNotice` (the passive alert, `askAgent`
+ * off) with the hand-off as a sibling `ErrorNoticeMenuItem` whose
+ * `describedBy` is the notice's `id`: inside Radix menu content a nested button
+ * is skipped by the roving focus, so the hand-off has to be its own focus stop.
+ *
+ * Hidden for a non-owner and when nothing is imported.
  */
-export function CookieHeaderButton({ cookies, onOpen }: { cookies: Cookies; onOpen: () => void }) {
-  if (cookies.forbidden) return null
+export function CookieClearMenuItem({ cookies }: { cookies: Cookies }) {
+  const [armed, setArmed] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const errorId = useId()
+
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current) }, [])
+
+  const onSelect = useCallback((event: Event) => {
+    // Keep the menu open: the armed state and the outcome both render here.
+    event.preventDefault()
+    if (cookies.clearing) return
+    if (!armed) {
+      setArmed(true)
+      setFailure(null)
+      armTimer.current = setTimeout(() => setArmed(false), CLEAR_ARM_MS)
+      return
+    }
+    if (armTimer.current) clearTimeout(armTimer.current)
+    setArmed(false)
+    cookies.clear().catch((e: unknown) => {
+      setFailure(requestErrorText(e, i18nT('components.webPreviewPanel.cookies_clear_failed')))
+    })
+  }, [armed, cookies])
+
+  if (cookies.forbidden || !cookies.data?.present) return null
+
+  const label = armed
+    ? i18nT('components.webPreviewPanel.cookies_clear_confirm')
+    : i18nT('components.webPreviewPanel.cookies_clear')
+
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex items-center justify-center w-6 h-6 rounded text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-      title={i18nT('components.webPreviewPanel.import_cookies')}
-      aria-label={i18nT('components.webPreviewPanel.import_cookies')}
-      data-testid="web-preview-import-cookies-btn"
-    >
-      <Cookie size={14} />
-    </button>
+    <>
+      <DropdownMenuItem
+        onSelect={onSelect}
+        disabled={cookies.clearing}
+        className={armed ? 'text-danger' : undefined}
+        data-testid="web-preview-cookies-clear"
+        data-armed={armed || undefined}
+      >
+        {cookies.clearing
+          ? <Loader2 size={13} className="shrink-0 animate-spin text-muted" />
+          : <Trash2 size={13} className={`shrink-0 ${armed ? 'text-danger' : 'text-muted'}`} />}
+        <span className="flex-1">{label}</span>
+        {failure && (
+          // The passive alert. This wrapper swallows pointer events so a click on
+          // the notice does not bubble to the row and re-arm the clear.
+          <span
+            className="ml-auto"
+            role="presentation"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <ErrorNotice
+              id={errorId}
+              message={failure}
+              variant="inline"
+              testId="web-preview-cookies-clear-error"
+            />
+          </span>
+        )}
+      </DropdownMenuItem>
+      {failure && (
+        <ErrorNoticeMenuItem
+          Item={DropdownMenuItem}
+          message={failure}
+          describedBy={errorId}
+        />
+      )}
+    </>
   )
 }
 
 /**
- * The status chip: "34 cookies · 12 sites · expires in 19h" with a domain
- * tooltip and a two-step Clear. Shown only when a set is imported. `compact`
- * drops the text to just the count for the tight overlay header (full detail
- * stays in the tooltip). Hidden for a non-owner or when nothing is imported.
+ * The READ-ONLY status chip: "34 cookies · 12 sites · expires in 19h" with a
+ * domain tooltip. It carries no action — Clear lives in the overflow menu
+ * (`CookieClearMenuItem`) so neither the toolbar nor the Live-view header grows
+ * a button. Shown only when a set is imported. `compact` drops the text to just
+ * the count for the tight overlay header (full detail stays in the tooltip).
+ * Hidden for a non-owner or when nothing is imported.
  */
 export function CookieChip({ cookies, compact = false }: { cookies: Cookies; compact?: boolean }) {
-  const [clearArmed, setClearArmed] = useState(false)
-  const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const summary = cookies.data?.summary ?? null
-
-  const armClear = useCallback(() => {
-    if (clearArmed) {
-      if (clearTimer.current) clearTimeout(clearTimer.current)
-      setClearArmed(false)
-      void cookies.clear().catch(() => { /* surfaced via clearError */ })
-      return
-    }
-    setClearArmed(true)
-    clearTimer.current = setTimeout(() => setClearArmed(false), 3000)
-  }, [clearArmed, cookies])
-
   if (cookies.forbidden || !cookies.data?.present || !summary) return null
 
   const label = compact
     ? i18nT('components.webPreviewPanel.cookies_chip_compact', { count: fmtNumber(summary.cookie_count) })
     : cookieChipText(summary)
+  const tooltip = compact
+    ? `${cookieChipText(summary)}\n${domainsTooltip(summary.domains)}`
+    : domainsTooltip(summary.domains)
 
   return (
     <span
-      className="inline-flex items-center gap-1 shrink min-w-0 max-w-[240px] h-6 pl-1.5 pr-0.5 rounded-md bg-bg-elevated border border-border text-[11px] text-muted"
+      className="inline-flex items-center gap-1 shrink min-w-0 max-w-[240px] h-6 px-1.5 rounded-md bg-bg-elevated border border-border text-[11px] text-muted"
       data-testid="web-preview-cookies-chip"
-      title={domainsTooltip(summary.domains)}
+      title={tooltip}
     >
       <Cookie size={11} className="shrink-0 text-accent" aria-hidden />
       <span className="truncate">{label}</span>
-      <Btn
-        aria-label={clearArmed
-          ? i18nT('components.webPreviewPanel.cookies_clear_confirm')
-          : i18nT('components.webPreviewPanel.cookies_clear')}
-        title={clearArmed
-          ? i18nT('components.webPreviewPanel.cookies_clear_confirm')
-          : i18nT('components.webPreviewPanel.cookies_clear')}
-        onClick={armClear}
-        disabled={cookies.clearing}
-        className={`shrink-0 ${clearArmed ? 'text-danger' : ''}`}
-        data-testid="web-preview-cookies-clear"
-      >
-        {cookies.clearing
-          ? <Loader2 className="lucide-inline animate-spin" />
-          : <X className="lucide-inline" />}
-      </Btn>
     </span>
   )
 }
@@ -168,7 +218,8 @@ export function CookieNewSessionHint({ show }: { show: boolean }) {
  * textarea, Import/Cancel. Rendered ONCE by the panel as a fixed overlay so it
  * shows over either header. `open` is controlled by the panel; `onDone` reports
  * whether the successful import reached no live session (so the panel can show
- * the new-session hint). A 400 is shown inline and keeps the dialog open.
+ * the new-session hint). A failed request renders through `ErrorNotice` and
+ * keeps the dialog open; client-side validation stays an inline hint.
  */
 export function CookieDialog({
   cookies,
@@ -185,14 +236,21 @@ export function CookieDialog({
 }) {
   const [paste, setPaste] = useState('')
   const [filename, setFilename] = useState<string | undefined>(undefined)
-  const [inlineError, setInlineError] = useState<string | null>(null)
+  // Two distinct things can go wrong here, and errors-use-error-notice draws the
+  // line by where the VALUE comes from: `validationHint` is client-side ("paste
+  // something first", "couldn't read that file") and is NOT an error surface;
+  // `requestError` is the outcome of a request that FAILED (a 400 from the
+  // parser, a 5xx) and renders through ErrorNotice.
+  const [validationHint, setValidationHint] = useState<string | null>(null)
+  const [requestError, setRequestError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const dialogTitleId = useId()
 
   const reset = useCallback(() => {
     setPaste('')
     setFilename(undefined)
-    setInlineError(null)
+    setValidationHint(null)
+    setRequestError(null)
     if (fileRef.current) fileRef.current.value = ''
   }, [])
 
@@ -213,28 +271,31 @@ export function CookieDialog({
     reader.onload = () => {
       setPaste(typeof reader.result === 'string' ? reader.result : '')
       setFilename(file.name)
-      setInlineError(null)
+      setValidationHint(null)
+      setRequestError(null)
     }
-    reader.onerror = () => setInlineError(i18nT('components.webPreviewPanel.cookies_file_read_failed'))
+    reader.onerror = () => setValidationHint(i18nT('components.webPreviewPanel.cookies_file_read_failed'))
     reader.readAsText(file)
   }, [])
 
   const submit = useCallback(async () => {
     const content = paste.trim()
     if (!content) {
-      setInlineError(i18nT('components.webPreviewPanel.cookies_paste_or_choose_a_file'))
+      setValidationHint(i18nT('components.webPreviewPanel.cookies_paste_or_choose_a_file'))
       return
     }
-    setInlineError(null)
+    setValidationHint(null)
+    setRequestError(null)
     try {
       const result = await cookies.importCookies(content, filename)
       const reachedNone = result.hot_load.loaded.length === 0
       onImported(viewRunning && reachedNone)
       close()
     } catch (e) {
-      // A 400 (malformed input) is shown inline; the dialog stays open so the
-      // user can fix the paste and retry.
-      setInlineError(importErrorText(e))
+      // A failed request (a 400 for malformed input, or anything else) is shown
+      // through ErrorNotice; the dialog stays open so the user can fix the
+      // paste and retry.
+      setRequestError(requestErrorText(e, i18nT('components.webPreviewPanel.cookies_import_failed_generic')))
     }
   }, [paste, filename, cookies, viewRunning, onImported, close])
 
@@ -301,7 +362,7 @@ export function CookieDialog({
 
           <textarea
             value={paste}
-            onChange={(e) => { setPaste(e.target.value); setFilename(undefined); setInlineError(null) }}
+            onChange={(e) => { setPaste(e.target.value); setFilename(undefined); setValidationHint(null); setRequestError(null) }}
             placeholder={i18nT('components.webPreviewPanel.cookies_paste_placeholder')}
             aria-label={i18nT('components.webPreviewPanel.cookies_paste_label')}
             spellCheck={false}
@@ -309,16 +370,29 @@ export function CookieDialog({
             className="w-full resize-y rounded-md border border-border bg-bg-elevated text-[12px] font-mono text-text placeholder:text-muted px-2 py-1.5 focus:border-accent outline-none"
           />
 
-          {inlineError && (
+          {/* Client-side validation only ("paste something first", "couldn't
+              read that file"): nothing has failed on the server, so this is a
+              hint beside the field, not an error surface. */}
+          {validationHint && (
             <div
-              className="flex items-start gap-1.5 text-[11px] leading-snug text-danger"
-              data-testid="web-preview-cookies-error"
-              role="alert"
+              className="flex items-start gap-1.5 text-[11px] leading-snug text-muted"
+              data-testid="web-preview-cookies-hint"
             >
               <AlertTriangle size={13} className="shrink-0 mt-0.5" aria-hidden />
-              <span className="min-w-0">{inlineError}</span>
+              <span className="min-w-0">{validationHint}</span>
             </div>
           )}
+          {/* No hand-off: this notice sits under the cookie-export textarea, whose
+              paste is the unsaved draft — the failed import is exactly why it was
+              NOT persisted. The hand-off navigates to the chat and unmounts this
+              dialog, taking the paste with it; the remedy ("fix the export and
+              retry") lives in the textarea the user is already in. */}
+          <ErrorNotice
+            message={requestError}
+            title={i18nT('components.webPreviewPanel.cookies_import_failed_generic')}
+            testId="web-preview-cookies-error"
+            className="text-[12px]"
+          />
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">

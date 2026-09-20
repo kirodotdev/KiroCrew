@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -34,6 +35,9 @@ from kiro_crew.platform_compat import IS_WINDOWS
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     h = tmp_path / "home"
     monkeypatch.setenv("KIROCREW_HOME", str(h))
+    # The host running the tests may itself be an agent with the CLI config
+    # variable set; prewarm_session treats a foreign value as an operator choice.
+    monkeypatch.delenv(launch_mod.CONFIG_ENV, raising=False)
     return h
 
 
@@ -111,6 +115,27 @@ class TestNormalisation:
     def test_missing_expiry_is_session_cookie(self, home: Path) -> None:
         text = json.dumps([{"name": "n", "domain": "d.com"}])
         assert mod.parse_cookie_import(text)[0]["expires"] == -1.0
+
+    @pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "Infinity", "NaN"])
+    def test_non_finite_expiry_string_is_session_cookie(self, home: Path, raw: str) -> None:
+        # A non-finite float would be written verbatim into the storage state and
+        # make it unreadable to the daemon's strict JSON parser.
+        text = json.dumps([{"name": "n", "domain": "d.com", "expirationDate": raw}])
+        assert mod.parse_cookie_import(text)[0]["expires"] == -1.0
+
+    @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+    def test_json_constants_are_rejected(self, home: Path, constant: str) -> None:
+        text = f'[{{"name": "n", "domain": "d.com", "expirationDate": {constant}}}]'
+        with pytest.raises(mod.CookieImportError, match="invalid JSON constant"):
+            mod.parse_cookie_import(text)
+
+    def test_deeply_nested_json_is_a_user_error(self, home: Path) -> None:
+        # json.loads recurses per nesting level; the handler must see a
+        # CookieImportError (400), never a RecursionError (500).
+        depth = 100_000
+        text = "[" * depth + "]" * depth
+        with pytest.raises(mod.CookieImportError, match="nested too deeply|not valid JSON"):
+            mod.parse_cookie_import(text)
 
     def test_expired_cookie_dropped(self, home: Path) -> None:
         past = time.time() - 3600
@@ -213,35 +238,100 @@ class TestSaveAndSummary:
         assert mod.clear_storage_state() is False
 
 
-# ── launch.desired_config conditional storageState key ──
+# ── Two configs: the agent's never names the masked file, the gateway's does ──
 
 
 class TestLaunchConfig:
-    def test_no_key_without_file(self, home: Path) -> None:
+    def test_agent_config_is_engine_only_without_file(self, home: Path) -> None:
         assert launch_mod.desired_config() == {"browser": {"browserName": "chromium"}}
 
-    def test_key_present_with_file(self, home: Path) -> None:
+    def test_agent_config_never_names_the_state_even_when_present(self, home: Path) -> None:
+        """The agent's daemon runs inside the sandbox that masks the file: naming it
+        there would make every browse fail on ENOENT, so the key must never appear."""
         mod.save_storage_state(
             mod.parse_cookie_import(json.dumps([{"name": "n", "domain": "d.com"}]))
         )
-        config = launch_mod.desired_config()
-        browser = config["browser"]
-        assert isinstance(browser, dict)
-        assert browser["contextOptions"] == {"storageState": str(mod.storage_state_path())}
-
-    def test_write_config_converges_after_save_and_clear(self, home: Path) -> None:
-        mod.save_storage_state(
-            mod.parse_cookie_import(json.dumps([{"name": "n", "domain": "d.com"}]))
-        )
+        assert launch_mod.desired_config() == {"browser": {"browserName": "chromium"}}
         path = launch_mod.write_config()
         assert path is not None
+        assert "storageState" not in path.read_text(encoding="utf-8")
+
+    def test_gateway_config_has_key_exactly_when_file_exists(self, home: Path) -> None:
+        assert mod.gateway_config() == launch_mod.desired_config()
+        mod.save_storage_state(
+            mod.parse_cookie_import(json.dumps([{"name": "n", "domain": "d.com"}]))
+        )
+        browser = mod.gateway_config()["browser"]
+        assert isinstance(browser, dict)
+        assert browser["contextOptions"] == {"storageState": str(mod.storage_state_path())}
+        assert browser["browserName"] == "chromium"
+
+    def test_gateway_config_is_a_separate_file_that_converges(self, home: Path) -> None:
+        mod.save_storage_state(
+            mod.parse_cookie_import(json.dumps([{"name": "n", "domain": "d.com"}]))
+        )
+        path = mod.write_gateway_config()
+        assert path is not None
+        assert path != launch_mod.launch_config_path()
         assert "storageState" in path.read_text(encoding="utf-8")
         mod.clear_storage_state()
-        launch_mod.write_config()
+        mod.write_gateway_config()
         assert "storageState" not in path.read_text(encoding="utf-8")
 
 
-# ── hot_load: best effort, never raises ──
+# ── The state file is masked from every agent sandbox ──
+
+
+def test_storage_state_leaf_is_hidden_and_tool_gated() -> None:
+    from kiro_crew import sandbox, security
+
+    assert mod.STORAGE_STATE_FILE in sandbox._CREW_HIDDEN_LEAVES
+    assert mod.STORAGE_STATE_FILE in security._CREW_SECRET_LEAVES
+    assert security.is_sensitive_path(f"~/.kiro/crew/{mod.STORAGE_STATE_FILE}") is True
+    # The gateway config only carries a PATH, never a value: it stays visible.
+    assert mod._GATEWAY_CONFIG_FILE not in sandbox._CREW_HIDDEN_LEAVES
+
+
+# ── Live-session enumeration by lifecycle-root shape ──
+
+
+def _fake_socket(home: Path, leaf: str) -> None:
+    cli = home / "pw" / leaf / "s" / "cli"
+    cli.mkdir(parents=True)
+    (cli / f"0123456789abcdef-kc-{leaf}.sock").write_bytes(b"")
+
+
+class TestLiveSessions:
+    def test_sockets_under_generated_roots_are_sessions(self, home: Path) -> None:
+        _fake_socket(home, "aaaa1111")
+        _fake_socket(home, "bbbb2222")
+        (home / "pw" / "cccc3333" / "s" / "cli").mkdir(parents=True)  # no socket
+        (home / "pw" / "ui" / "s" / "cli").mkdir(parents=True)  # the gateway's own root
+        (home / "pw" / "ui" / "s" / "cli" / "x-panel.sock").write_bytes(b"")
+        sessions = mod._live_sessions()
+        assert sorted(sessions) == ["kc-aaaa1111", "kc-bbbb2222"]
+        env = sessions["kc-aaaa1111"]
+        assert env[launch_mod.SESSION_ENV] == "kc-aaaa1111"
+        assert env[launch_mod.SOCKETS_ENV] == str(home / "pw" / "aaaa1111" / "s")
+        assert env[launch_mod.DAEMON_DIR_ENV] == str(home / "pw" / "aaaa1111" / "d")
+
+    def test_falls_back_to_list_when_no_root_holds_a_socket(self, home: Path) -> None:
+        with patch.object(mod, "_live_session_names", return_value=["kc-dddd4444"]):
+            assert mod._live_sessions() == {"kc-dddd4444": {}}
+
+    def test_live_session_names_filters_to_prefix(self, home: Path) -> None:
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = "kc-aaaa1111 running\npanel-1 running\nkc-bbbb2222\n"
+        with (
+            patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
+            patch.object(mod, "cli_env", return_value={}),
+            patch("subprocess.run", return_value=proc),
+        ):
+            assert mod._live_session_names() == ["kc-aaaa1111", "kc-bbbb2222"]
+
+
+# ── hot_load / clear_live_sessions: best effort, truthful, never raise ──
 
 
 class TestHotLoad:
@@ -257,54 +347,219 @@ class TestHotLoad:
     def test_no_sessions_returns_note(self, home: Path) -> None:
         with (
             patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
-            patch.object(mod, "_live_session_names", return_value=[]),
+            patch.object(mod, "_live_sessions", return_value={}),
         ):
             result = mod.hot_load_into_live_sessions(mod.storage_state_path())
         assert result["loaded"] == []
         assert result["failed"] == {}
         assert "note" in result
 
-    def test_loads_and_reports_failures(self, home: Path) -> None:
+    def test_loads_with_each_sessions_env_and_reports_failures(self, home: Path) -> None:
         path = mod.storage_state_path()
+        seen: dict[str, dict[str, str]] = {}
 
         def fake_run(argv, **kwargs):
+            name = next(a for a in argv if a.startswith("-s=")).removeprefix("-s=")
+            seen[name] = kwargs["env"]
+            assert argv[-2:] == ["state-load", str(path)]
             proc = MagicMock()
-            proc.returncode = 0 if "-s=kc-aaaa1111" in argv else 1
+            proc.returncode = 0 if name == "kc-aaaa1111" else 1
             proc.stdout = ""
-            proc.stderr = "boom"
+            proc.stderr = "Error: ENOENT: no such file or directory"
             return proc
 
+        sessions = {
+            "kc-aaaa1111": {launch_mod.SOCKETS_ENV: "/s/a"},
+            "kc-bbbb2222": {launch_mod.SOCKETS_ENV: "/s/b"},
+        }
         with (
             patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
-            patch.object(mod, "cli_env", return_value={}),
-            patch.object(mod, "_live_session_names", return_value=["kc-aaaa1111", "kc-bbbb2222"]),
+            patch.object(mod, "cli_env", return_value={"PATH": "/bin"}),
+            patch.object(mod, "_live_sessions", return_value=sessions),
             patch("subprocess.run", side_effect=fake_run),
         ):
             result = mod.hot_load_into_live_sessions(path)
         assert result["loaded"] == ["kc-aaaa1111"]
-        assert "kc-bbbb2222" in result["failed"]
+        assert "ENOENT" in result["failed"]["kc-bbbb2222"]
+        assert "note" not in result
+        assert seen["kc-aaaa1111"] == {"PATH": "/bin", launch_mod.SOCKETS_ENV: "/s/a"}
+        assert seen["kc-bbbb2222"][launch_mod.SOCKETS_ENV] == "/s/b"
+
+    def test_nothing_loaded_carries_a_note(self, home: Path) -> None:
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.stdout = ""
+        proc.stderr = "boom"
+        with (
+            patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
+            patch.object(mod, "cli_env", return_value={}),
+            patch.object(mod, "_live_sessions", return_value={"kc-aaaa1111": {}}),
+            patch("subprocess.run", return_value=proc),
+        ):
+            result = mod.hot_load_into_live_sessions(mod.storage_state_path())
+        assert result["loaded"] == []
+        assert result["failed"] == {"kc-aaaa1111": "boom"}
+        assert "new sessions" in result["note"]
 
     def test_never_raises_on_subprocess_error(self, home: Path) -> None:
         with (
             patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
             patch.object(mod, "cli_env", return_value={}),
-            patch.object(mod, "_live_session_names", return_value=["kc-aaaa1111"]),
+            patch.object(mod, "_live_sessions", return_value={"kc-aaaa1111": {}}),
             patch("subprocess.run", side_effect=OSError("nope")),
         ):
             result = mod.hot_load_into_live_sessions(mod.storage_state_path())
         assert result["loaded"] == []
         assert "kc-aaaa1111" in result["failed"]
 
-    def test_live_session_names_filters_to_prefix(self, home: Path) -> None:
-        proc = MagicMock()
-        proc.returncode = 0
-        proc.stdout = "kc-aaaa1111 running\npanel-1 running\nkc-bbbb2222\n"
+
+class TestClearLiveSessions:
+    def test_no_cli_and_no_sessions_carry_notes(self, home: Path) -> None:
+        with patch.object(mod, "cli_command", return_value=None):
+            assert mod.clear_live_sessions()["note"] == "playwright-cli is not installed"
+        with (
+            patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
+            patch.object(mod, "_live_sessions", return_value={}),
+        ):
+            result = mod.clear_live_sessions()
+        assert result["cleared"] == [] and result["failed"] == {} and "note" in result
+
+    def test_runs_cookie_clear_per_session_and_reports(self, home: Path) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            proc = MagicMock()
+            proc.returncode = 0 if "-s=kc-aaaa1111" in argv else 1
+            proc.stdout = ""
+            proc.stderr = "The browser 'kc-bbbb2222' is not open"
+            return proc
+
         with (
             patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
             patch.object(mod, "cli_env", return_value={}),
-            patch("subprocess.run", return_value=proc),
+            patch.object(
+                mod, "_live_sessions", return_value={"kc-aaaa1111": {}, "kc-bbbb2222": {}}
+            ),
+            patch("subprocess.run", side_effect=fake_run),
         ):
-            assert mod._live_session_names() == ["kc-aaaa1111", "kc-bbbb2222"]
+            result = mod.clear_live_sessions()
+        assert result == {
+            "cleared": ["kc-aaaa1111"],
+            "failed": {"kc-bbbb2222": "The browser 'kc-bbbb2222' is not open"},
+        }
+        assert all(argv[-1] == "cookie-clear" for argv in calls)
+
+    def test_never_raises(self, home: Path) -> None:
+        with (
+            patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
+            patch.object(mod, "cli_env", return_value={}),
+            patch.object(mod, "_live_sessions", return_value={"kc-aaaa1111": {}}),
+            patch("subprocess.run", side_effect=OSError("nope")),
+        ):
+            assert "kc-aaaa1111" in mod.clear_live_sessions()["failed"]
+
+
+# ── prewarm_session: gateway-owned daemon, fire-and-forget ──
+
+
+_AGENT_ENV = {
+    launch_mod.SESSION_ENV: "kc-deadbeef",
+    launch_mod.SOCKETS_ENV: "/data/pw/deadbeef/s",
+    launch_mod.DAEMON_DIR_ENV: "/data/pw/deadbeef/d",
+}
+
+
+def _import_one(home: Path) -> None:
+    mod.save_storage_state(mod.parse_cookie_import(json.dumps([{"name": "n", "domain": "d.com"}])))
+
+
+class TestPrewarm:
+    def test_noop_without_state_file(self, home: Path) -> None:
+        with patch.object(mod.threading, "Thread") as thread:
+            assert mod.prewarm_session("kc-deadbeef", _AGENT_ENV) is False
+        thread.assert_not_called()
+
+    def test_noop_for_non_generated_name_or_missing_lifecycle_env(self, home: Path) -> None:
+        _import_one(home)
+        with patch.object(mod.threading, "Thread") as thread:
+            assert mod.prewarm_session("chrome", _AGENT_ENV) is False
+            assert (
+                mod.prewarm_session("kc-deadbeef", {launch_mod.SESSION_ENV: "kc-deadbeef"}) is False
+            )
+        thread.assert_not_called()
+
+    def test_operator_config_wins(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _import_one(home)
+        monkeypatch.setenv(launch_mod.CONFIG_ENV, "/etc/theirs.json")
+        with patch.object(mod.threading, "Thread") as thread:
+            assert mod.prewarm_session("kc-deadbeef", _AGENT_ENV) is False
+        thread.assert_not_called()
+
+    def test_spawns_open_with_gateway_config_and_agent_lifecycle_env(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _import_one(home)
+        monkeypatch.setenv(launch_mod.CONFIG_ENV, str(launch_mod.launch_config_path()))
+        runs: list[tuple[list[str], dict[str, str]]] = []
+
+        def fake_run(argv, **kwargs):
+            runs.append((argv, kwargs["env"]))
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stdout = proc.stderr = ""
+            return proc
+
+        started: list[threading.Thread] = []
+        real_thread = threading.Thread
+
+        def capture(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            started.append(thread)
+            return thread
+
+        with (
+            patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
+            patch.object(mod, "cli_env", return_value={"PATH": "/bin", "HOME": str(home)}),
+            patch("subprocess.run", side_effect=fake_run),
+            patch.object(mod.threading, "Thread", side_effect=capture),
+        ):
+            assert mod.prewarm_session("kc-deadbeef", _AGENT_ENV) is True
+            for thread in started:
+                thread.join(timeout=5)
+        assert len(runs) == 1
+        argv, env = runs[0]
+        assert argv == ["node", "cli.js", "-s=kc-deadbeef", "open", "about:blank"]
+        assert env[launch_mod.CONFIG_ENV] == str(mod.gateway_config_path())
+        assert env[launch_mod.SESSION_ENV] == "kc-deadbeef"
+        assert env[launch_mod.SOCKETS_ENV] == "/data/pw/deadbeef/s"
+        assert env[launch_mod.DAEMON_DIR_ENV] == "/data/pw/deadbeef/d"
+        assert env["KIROCREW_SPAWNED"] == "1"
+        assert env["PATH"] == "/bin"
+        # The config the daemon reads names the masked file; the agent's does not.
+        gateway = json.loads(mod.gateway_config_path().read_text(encoding="utf-8"))
+        assert gateway["browser"]["contextOptions"]["storageState"] == str(mod.storage_state_path())
+        assert started[0].daemon is True
+
+    def test_never_raises_and_never_blocks(self, home: Path) -> None:
+        _import_one(home)
+        gate = threading.Event()
+
+        def slow_run(argv, **kwargs):
+            gate.wait(5)
+            raise OSError("nope")
+
+        with (
+            patch.object(mod, "cli_command", return_value=["node", "cli.js"]),
+            patch.object(mod, "cli_env", return_value={}),
+            patch("subprocess.run", side_effect=slow_run),
+        ):
+            start = time.monotonic()
+            assert mod.prewarm_session("kc-deadbeef", _AGENT_ENV) is True
+            assert time.monotonic() - start < 2.0
+            gate.set()
+        with patch.object(mod, "cli_command", side_effect=RuntimeError("boom")):
+            assert mod.prewarm_session("kc-deadbeef", _AGENT_ENV) is False
 
 
 # ── HTTP handlers ──
@@ -411,11 +666,38 @@ async def test_import_oversize_is_413(app, home: Path) -> None:
 @pytest.mark.asyncio
 async def test_clear_removes(app, home: Path) -> None:
     mod.save_storage_state(mod.parse_cookie_import(json.dumps([{"name": "n", "domain": "d.com"}])))
+    mod.write_gateway_config()
+    assert "storageState" in mod.gateway_config_path().read_text(encoding="utf-8")
+    live = {"cleared": ["kc-aaaa1111"], "failed": {"kc-bbbb2222": "not open"}}
     async with TestClient(TestServer(app)) as client:
-        resp = await client.delete("/api/browser/cookies")
+        with patch(
+            "kiro_crew.browser_cli.cookies.clear_live_sessions", return_value=live
+        ) as clear_live:
+            resp = await client.delete("/api/browser/cookies")
         assert resp.status == 200
-        assert (await resp.json()) == {"ok": True, "present": False}
+        # Live sessions are cleared too, and the outcome is reported, not hidden.
+        assert (await resp.json()) == {"ok": True, "present": False, "live": live}
+        clear_live.assert_called_once_with()
     assert not mod.storage_state_path().exists()
+    assert "storageState" not in mod.gateway_config_path().read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_import_reports_hot_load_note_and_writes_gateway_config(app, home: Path) -> None:
+    hot = {"loaded": [], "failed": {"kc-aaaa1111": "ENOENT"}, "note": "cannot load"}
+    async with TestClient(TestServer(app)) as client:
+        with patch("kiro_crew.browser_cli.cookies.hot_load_into_live_sessions", return_value=hot):
+            resp = await client.post(
+                "/api/browser/cookies",
+                json={"content": json.dumps([{"name": "n", "value": "v", "domain": "d.com"}])},
+            )
+        assert resp.status == 200
+        assert (await resp.json())["hot_load"] == hot
+    gateway = json.loads(mod.gateway_config_path().read_text(encoding="utf-8"))
+    assert gateway["browser"]["contextOptions"]["storageState"] == str(mod.storage_state_path())
+    # The AGENT's config was not touched into naming the masked file.
+    agent = launch_mod.launch_config_path()
+    assert not agent.exists() or "storageState" not in agent.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -434,12 +716,18 @@ async def test_restricted_session_forbidden(home: Path, mock_sel) -> None:
     from kiro_crew.dashboard.handlers import messaging
 
     application = web.Application()
+    application.router.add_get("/api/browser/cookies", messaging.api_browser_cookies_get)
     application.router.add_post("/api/browser/cookies", messaging.api_browser_cookies_import)
     application.router.add_delete("/api/browser/cookies", messaging.api_browser_cookies_clear)
     as_owner(application)
     application["state"] = _make_state(restricted=True)
     headers = {"X-Session-Key": "dashboard:guest"}
     async with TestClient(TestServer(application)) as client:
+        # The status read names the sites a credential unlocks, so it is refused
+        # on the SAME body shape as the mutations (the panel hides on one code).
+        status = await client.get("/api/browser/cookies", headers=headers)
+        assert status.status == 403
+        assert (await status.json())["code"] == "restricted_session"
         imp = await client.post(
             "/api/browser/cookies",
             json={"content": json.dumps([{"name": "n", "domain": "d.com"}])},

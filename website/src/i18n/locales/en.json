@@ -5434,6 +5434,7 @@
       "cookies_choose_a_file": "Choose a file",
       "cookies_clear": "Clear cookies",
       "cookies_clear_confirm": "Click again to clear",
+      "cookies_clear_failed": "Couldn't clear the cookies",
       "cookies_count": "{{count}} cookies",
       "cookies_dialog_explanation": "Export the cookies from the browser where you are already logged in — as a Playwright storageState JSON, a Cookie-Editor or Get cookies.txt export, or a Netscape cookies.txt file — and paste or upload them here. They are applied to the agent's browser sessions. The cookie values stay on the gateway host and are never shown here.",
       "cookies_domains_more": "+{{count}} more",
