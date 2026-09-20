@@ -8,7 +8,18 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fc from 'fast-check'
-import { HeightCache } from '../hooks/virtualizer/HeightCache'
+import {
+  HeightCache,
+  HEIGHT_SCHEMA_VERSION,
+  SCHEMA_VERSION_KEY,
+} from '../hooks/virtualizer/HeightCache'
+
+/** A persisted blob carrying the CURRENT schema version, as `flush()` writes
+ *  it. Seeding a raw map instead would make `load()` discard it, which is the
+ *  whole point of the version -- so every test that seeds heights it expects
+ *  to survive goes through here. */
+const versionedBlob = (heights: Record<string, unknown>): string =>
+  JSON.stringify({ [SCHEMA_VERSION_KEY]: HEIGHT_SCHEMA_VERSION, ...heights })
 
 beforeEach(() => {
   // Reset persisted state between tests so sessions don't bleed into each
@@ -179,7 +190,7 @@ describe('HeightCache: corruption recovery', () => {
     const sid = 'bad-values'
     window.localStorage.setItem(
       `vc_heights_${sid}`,
-      JSON.stringify({ a: 100, b: 'oops', c: -5, d: NaN, e: 200 }),
+      versionedBlob({ a: 100, b: 'oops', c: -5, d: NaN, e: 200 }),
     )
     const c = new HeightCache(sid)
     expect(c.get('a')).toBe(100)
@@ -443,7 +454,7 @@ describe('HeightCache: size-aware eviction cap', () => {
     const sid = 'cap-unknown-load'
     const blob: Record<string, number> = {}
     for (let i = 0; i < 5000; i++) blob[`k${i}`] = 100
-    window.localStorage.setItem(`vc_heights_${sid}`, JSON.stringify(blob))
+    window.localStorage.setItem(`vc_heights_${sid}`, versionedBlob(blob))
 
     // rowCount 0 == "transcript not loaded yet", NOT "session has no rows".
     const c = new HeightCache(sid, { rowCount: 0 })
@@ -460,7 +471,7 @@ describe('HeightCache: size-aware eviction cap', () => {
     const sid = 'cap-omitted-load'
     const blob: Record<string, number> = {}
     for (let i = 0; i < 3000; i++) blob[`k${i}`] = 100
-    window.localStorage.setItem(`vc_heights_${sid}`, JSON.stringify(blob))
+    window.localStorage.setItem(`vc_heights_${sid}`, versionedBlob(blob))
     expect(new HeightCache(sid).size()).toBe(3000)
   })
 
@@ -468,7 +479,7 @@ describe('HeightCache: size-aware eviction cap', () => {
     const sid = 'cap-unknown-ceiling'
     const blob: Record<string, number> = {}
     for (let i = 0; i < 20050; i++) blob[`k${i}`] = 100
-    window.localStorage.setItem(`vc_heights_${sid}`, JSON.stringify(blob))
+    window.localStorage.setItem(`vc_heights_${sid}`, versionedBlob(blob))
     // Seeding the cap from the blob must not let it exceed HARD_CEILING.
     expect(new HeightCache(sid).size()).toBe(20000)
   })
@@ -506,7 +517,7 @@ describe('HeightCache: size-aware eviction cap', () => {
     const sid = 'cap-load-trim-persist'
     const blob: Record<string, number> = {}
     for (let i = 0; i < 20050; i++) blob[`k${i}`] = 100
-    window.localStorage.setItem(`vc_heights_${sid}`, JSON.stringify(blob))
+    window.localStorage.setItem(`vc_heights_${sid}`, versionedBlob(blob))
 
     const c = new HeightCache(sid)
     expect(c.size()).toBe(20000)
@@ -514,7 +525,9 @@ describe('HeightCache: size-aware eviction cap', () => {
     // reclaimed blob out rather than treating it as a no-op.
     c.flush()
     const persisted = JSON.parse(window.localStorage.getItem(`vc_heights_${sid}`)!)
-    expect(Object.keys(persisted).length).toBe(20000)
+    // 20000 heights plus the schema stamp.
+    expect(persisted[SCHEMA_VERSION_KEY]).toBe(HEIGHT_SCHEMA_VERSION)
+    expect(Object.keys(persisted).length).toBe(20001)
     expect(persisted.k49).toBeUndefined()
     expect(persisted.k50).toBe(100)
   })
@@ -703,7 +716,7 @@ describe('HeightCache: poisoned zero entries are dropped on load', () => {
   it('drops zero heights from a persisted blob and keeps positive ones', () => {
     window.localStorage.setItem(
       'vc_heights_poisoned',
-      JSON.stringify({ a: 0, b: 120, c: 0, d: 36 }),
+      versionedBlob({ a: 0, b: 120, c: 0, d: 36 }),
     )
     const cache = new HeightCache('poisoned')
     // Zeros load as ABSENT — the unmeasured state — not as 0px truths.
@@ -716,7 +729,7 @@ describe('HeightCache: poisoned zero entries are dropped on load', () => {
   it('an all-zero blob loads as an empty cache, not a 0px transcript', () => {
     window.localStorage.setItem(
       'vc_heights_allzero',
-      JSON.stringify({ a: 0, b: 0, c: 0 }),
+      versionedBlob({ a: 0, b: 0, c: 0 }),
     )
     const cache = new HeightCache('allzero')
     expect(cache.get('a')).toBeUndefined()

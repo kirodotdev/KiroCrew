@@ -22,6 +22,10 @@ import { readFileSync } from 'node:fs'
 // Resolved from the vitest cwd (website/), used by the chokepoint source guard.
 const HOOK_SRC = 'src/hooks/virtualizer/useVirtualChat.ts'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
+import {
+  HEIGHT_SCHEMA_VERSION,
+  SCHEMA_VERSION_KEY,
+} from '../hooks/virtualizer/HeightCache'
 import type { UseVirtualChatOptions } from '../hooks/virtualizer/types'
 
 interface Geom { scrollTop: number; scrollHeight: number; clientHeight: number }
@@ -641,7 +645,8 @@ describe('useVirtualChat: adaptive height estimate is wired into the offsets (GP
   beforeEach(() => localStorage.clear())
 
   const seed = (sid: string, keys: string[], h: number) => {
-    const blob: Record<string, number> = {}
+    // Unstamped, the blob is discarded on load and every row reads unmeasured.
+    const blob: Record<string, number | string> = { [SCHEMA_VERSION_KEY]: HEIGHT_SCHEMA_VERSION }
     for (const k of keys) blob[k] = h
     localStorage.setItem(`vc_heights_${sid}`, JSON.stringify(blob))
   }
@@ -692,7 +697,7 @@ describe('useVirtualChat: OffsetIndex is rebuilt on session switch (GPT MEDIUM)'
   // the Fenwick tree serving the previous transcript's heights and rendering
   // wrong spacers until a measurement tick corrected it.
   const seedHeights = (sessionId: string, n: number, h: number) => {
-    const blob: Record<string, number> = {}
+    const blob: Record<string, number | string> = { [SCHEMA_VERSION_KEY]: HEIGHT_SCHEMA_VERSION }
     for (let i = 0; i < n; i++) blob[`m${i}`] = h
     window.localStorage.setItem(`vc_heights_${sessionId}`, JSON.stringify(blob))
   }
@@ -748,13 +753,17 @@ describe('useVirtualChat: height-cache eviction cap is wired to the row count', 
   beforeEach(clearSeeds)
   afterEach(clearSeeds)
   const seed = (sessionId: string, n: number) => {
-    const blob: Record<string, number> = {}
+    const blob: Record<string, number | string> = { [SCHEMA_VERSION_KEY]: HEIGHT_SCHEMA_VERSION }
     for (let i = 0; i < n; i++) blob[`m${i}`] = 40 + (i % 5)
     window.localStorage.setItem(`vc_heights_${sessionId}`, JSON.stringify(blob))
   }
+  // HEIGHTS only. The schema stamp shares the blob but is not a row, and
+  // counting it would put every cap assertion one off the cap it names.
   const persistedCount = (sessionId: string) => {
     const raw = window.localStorage.getItem(`vc_heights_${sessionId}`)
-    return raw ? Object.keys(JSON.parse(raw) as Record<string, number>).length : 0
+    if (!raw) return 0
+    return Object.keys(JSON.parse(raw) as Record<string, number>)
+      .filter((k) => k !== SCHEMA_VERSION_KEY).length
   }
   // Mount, then push ONE real measurement through the hook's own measure path.
   // That matters: flush() skips when the cache isn't dirty, so without a write

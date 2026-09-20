@@ -17,6 +17,10 @@ import { renderHook, act } from '@testing-library/react'
 import { type RefObject } from 'react'
 
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
+import {
+  HEIGHT_SCHEMA_VERSION,
+  SCHEMA_VERSION_KEY,
+} from '../hooks/virtualizer/HeightCache'
 import type { UseVirtualChatOptions } from '../hooks/virtualizer/types'
 import {
   ANCHOR_KEY_PREFIX,
@@ -60,7 +64,10 @@ const stableId = (it: Item) => `a-${it.id}`
 /** Pre-measure every row at `h` px via the persisted HeightCache blob, so the
  *  restore's offset math is exact (100px * index) rather than estimate-driven. */
 function seedHeights(sessionId: string, n: number, h: number) {
-  const blob: Record<string, number> = {}
+  // The stamp is what makes the blob loadable at all -- an unversioned one is
+  // discarded, which would leave every row unmeasured and the offsets
+  // estimate-driven, defeating the point of pre-measuring.
+  const blob: Record<string, number | string> = { [SCHEMA_VERSION_KEY]: HEIGHT_SCHEMA_VERSION }
   for (let i = 0; i < n; i++) blob[`m${i}`] = h
   localStorage.setItem(`vc_heights_${sessionId}`, JSON.stringify(blob))
 }

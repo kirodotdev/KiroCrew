@@ -19,6 +19,10 @@
 // Falls back to in-memory-only mode when localStorage is unavailable
 // (private browsing, quota exceeded, sandboxed iframes, etc.). Corrupted
 // JSON triggers a console.warn and a fresh cache for that session.
+//
+// The persisted blob carries a SCHEMA VERSION, so a blob written by a build
+// whose measurement semantics differ is discarded instead of trusted -- see
+// HEIGHT_SCHEMA_VERSION.
 
 // localStorage key prefix — a storage identifier, never rendered. Not UI copy.
 // Kept in sync with SESSION_PREFIXES in `utils/storageGc.ts`, which garbage-
@@ -45,6 +49,34 @@ const DEFAULT_ESTIMATED_HEIGHT = 100
 // pathological case. A tighter bound (or a minimum-sample gate before trusting
 // the mean at all) was MEASURED to be worse -- see the comment on averageHeight.
 const MAX_MEAN_PX = 4000
+// Reserved own-property key inside the persisted blob holding the schema
+// version. Every other key in the blob is a row key mapping to a height.
+//
+// A row key spelled exactly this way would collide, so `flush()` never
+// persists one and `load()` never reads one as a height. The collision is
+// also fail-SAFE rather than fail-open: the version is compared as a STRING,
+// so a numeric value here (the only thing a height could be) can never equal
+// it, and the blob is discarded instead of being half-trusted.
+//
+// Spelled in the module's own `vc_` storage vocabulary rather than as a
+// punctuation sentinel: the i18n strict pass looks inside ALL-CAPS module
+// constants and reports a literal matching none of its content exemptions,
+// and lowercase_snake is one of them. A storage identifier, never rendered.
+export const SCHEMA_VERSION_KEY = 'vc_schema_version'
+// Schema version of the persisted blob. BUMP IT whenever what a stored number
+// MEANS changes -- a different row layout, a different measurement point, a
+// different unit -- so blobs from the old semantics are dropped rather than
+// loaded as truth and then corrected downward once rows re-measure. That
+// downward correction shrinks the virtualizer's total height under a reader
+// who is already at the bottom, and the browser answers by clamping scrollTop
+// to the new maximum: the transcript jumps upward by exactly the height lost.
+//
+// A bump costs each open session one pass of re-measurement (rows load as
+// UNMEASURED, which the estimate path already handles) and costs a reader
+// nothing visible. It is NOT a storage-key bump: the key prefix stays
+// `vc_heights_`, so `utils/storageGc.ts` keeps collecting these keys with no
+// second prefix to track.
+export const HEIGHT_SCHEMA_VERSION = 'h1'
 
 type FlushTimer = ReturnType<typeof setTimeout>
 
@@ -343,13 +375,19 @@ export class HeightCache {
       // Use Object.create(null) so keys like "__proto__" or "constructor"
       // are stored as own properties instead of mutating the prototype.
       // (A naive `{}` literal swallows __proto__ on assignment.)
-      const obj: Record<string, number> = Object.create(null)
+      const obj: Record<string, number | string> = Object.create(null)
+      // Stamped FIRST so it survives a truncated read and is visible to a
+      // human inspecting the blob.
+      obj[SCHEMA_VERSION_KEY] = HEIGHT_SCHEMA_VERSION
       // Retired keys are deliberately NOT persisted: the row is gone from the
       // transcript, so after a reload its height would be back in the mean
       // pricing rows that are still there. The in-memory entry is what serves a
       // same-session rollback; a reload has no snapshot to roll back to.
       for (const [k, v] of this.cache) {
         if (this.retired.has(k)) continue
+        // The version slot is not a row. A row key spelled like it loses its
+        // persistence rather than overwriting the stamp.
+        if (k === SCHEMA_VERSION_KEY) continue
         obj[k] = v
       }
       this.storage.setItem(this.storageKey, JSON.stringify(obj))
@@ -415,6 +453,15 @@ export class HeightCache {
       return
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
+    // Schema gate. A blob without the CURRENT version was written under
+    // measurement semantics this build does not share, so every number in it
+    // is of unknown provenance -- discard the whole blob and start empty
+    // rather than load it as truth. Removing the key reclaims the quota and
+    // stops the next open re-parsing a blob that can never be used.
+    if ((parsed as Record<string, unknown>)[SCHEMA_VERSION_KEY] !== HEIGHT_SCHEMA_VERSION) {
+      try { this.storage.removeItem(this.storageKey) } catch { /* ignore */ }
+      return
+    }
     // Preserve insertion order from the stored object (which preserved LRU
     // order at last flush). Skip non-numeric/non-finite values defensively.
     // Use Object.keys instead of Object.entries so own-property keys like
@@ -432,6 +479,7 @@ export class HeightCache {
     // instead makes the row unmeasured, which is the state the estimate path
     // and the write-side floor already handle.
     for (const k of Object.keys(parsed as Record<string, unknown>)) {
+      if (k === SCHEMA_VERSION_KEY) continue
       const v = (parsed as Record<string, unknown>)[k]
       if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
         this.cache.set(k, v)
