@@ -22,9 +22,9 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 | Path | Role |
 |---|---|
 | `.github/workflows/gui-user-test.yml` | Triggers, boot, run, artifact, PR comment, nightly issue, lane status. |
-| `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin + one-time token, mode 0600) and `pids`. |
+| `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin + one-time token, mode 0600) and `pids`. Also stages the sample notes folder at a fixed path (see "Seeds" below). |
 | `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed` and adds `config.agents.<slug>` for each `--member` so the Crew Members page has a roster. |
-| `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home and browser profile. |
+| `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home, the browser profile and the sample notes folder. |
 | `test/gui_user/harness.py` | The screenshot -> Bedrock Messages API -> action loop with the step, time and budget gates. |
 | `test/gui_user/x11.py` | Screenshots (Pillow `ImageGrab`) and input (`xdotool`); coordinate scaling, key aliases and argv building are pure and unit-tested. |
 | `test/gui_user/scenarios.py` + `scenarios/*.yaml` | The scenario DSL (including the `FEATURES` registry) and the shipped scenarios. |
@@ -162,9 +162,29 @@ its rail label, which was the same on both sides of the change. When a scenario 
 need to move with the product, change the YAML in the same PR as the UI and re-run it
 on demand (below) before merging.
 
+### Seeds: one home per run, plus a fixed sample folder
+
 `boot.sh` seeds one home per run from `GUI_SEED` (default `rich`) with `GUI_MEMBERS`
 (default `nova-sky`); a scenario's `preconditions.seed` / `members` document what it
 needs and must agree with that boot, because the target is booted once per run.
+
+The home is a `mktemp` directory, so no scenario can spell its path. Where a flow needs
+the tester to TYPE a path -- the Knowledge "Add Source > Local Folder" form, whose
+native picker is macOS-only -- `boot.sh` stages the three markdown files under
+`scripts/gui-user-test/knowledge-notes/` at the fixed path
+`/tmp/kirocrew-gui-user-test/team-notes`: mode 0700, recorded in `target.paths` as
+`notes=` and removed by `teardown.sh`. Because the path is fixed under a shared `/tmp`,
+neither script deletes anything it cannot prove is its own: `boot.sh` writes a marker
+file (`.owned-by-gui-user-test`) into the tree it creates, and both scripts remove the
+tree only when it is a real directory owned by the current user that carries that
+marker -- a stale tree from a crashed run qualifies; a symlink, another user's
+directory or an unmarked directory at that path refuses the boot (exit 2) or the
+removal instead. The path is deliberately not configurable:
+`knowledge-add-folder-source-and-scan` types it verbatim, and an override would
+silently desynchronise the two. Each note is one chunk, so a scan of the folder yields
+exactly three items -- the count that scenario asserts, and
+`test_scenarios_and_report.py` pins the note count and word length to it, so a note
+added without moving the scenario fails a unit test rather than a paid nightly run.
 
 ### New-user friction: what confused the tester, beside the verdict
 
@@ -296,8 +316,8 @@ owning server is not a virtual one.
   10-step scenario on a Sonnet-class model is about $0.25-0.40 and two to four
   minutes. Budget the nightly tier (every shipped scenario, one retry each in the
   worst case) at about $0.50 per scenario and the smoke tier at about $0.35. The run
-  stops at `--budget-usd` (dispatch default $5 -- the smoke tier is seven scenarios,
-  about $2.50 with one retry apiece, so the default has to clear that; nightly $8)
+  stops at `--budget-usd` (dispatch default $5 -- at about $0.35 per smoke scenario
+  with one retry apiece the default has to clear the whole smoke tier; nightly $8)
   and marks the remaining
   scenarios `SKIPPED`; the job's 90-minute timeout is the backstop for a hung target,
   not the budget. Keep the nightly bill under $10: when a new batch would push past

@@ -10,6 +10,11 @@ import yaml
 from gui_user import harness, report, scenarios
 
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
+#: The markdown notes boot.sh stages at the fixed folder path the Knowledge
+#: scenario types (docs/build/gui-user-test.md, "Seeds").
+KNOWLEDGE_NOTES_DIR = (
+    Path(__file__).resolve().parents[2] / "scripts" / "gui-user-test" / "knowledge-notes"
+)
 
 
 # --------------------------------------------------------------------------
@@ -18,6 +23,7 @@ SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 
 
 SHIPPED_SMOKE = {
+    "apps-discover-enable-research-lab",
     "auth-sign-in-card-signed-out",
     "chat-switch-seeded-sessions",
     "search-everywhere-jump-to-setting",
@@ -26,7 +32,11 @@ SHIPPED_SMOKE = {
     "settings-theme-toggle",
     "sidebar-folders-and-older-sessions",
 }
-SHIPPED = SHIPPED_SMOKE | {"members-dm-hello", "members-private-memory-keeps-thread"}
+SHIPPED = SHIPPED_SMOKE | {
+    "knowledge-add-folder-source-and-scan",
+    "members-dm-hello",
+    "members-private-memory-keeps-thread",
+}
 
 
 class TestShippedScenarios:
@@ -49,6 +59,23 @@ class TestShippedScenarios:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
         assert {s.name for s in nightly} == SHIPPED
         assert SHIPPED_SMOKE < SHIPPED
+
+    def test_knowledge_sample_notes_are_the_count_the_scenario_asserts(self) -> None:
+        # Each staged note is one chunk, so the file count IS the item count the
+        # scenario reads off the source row. A note added or removed without the
+        # scenario moving -- or a chunker change that splits a note -- fails here,
+        # not as a paid nightly run.
+        from kiro_crew.knowledge.chunker import HeadingAwareChunker
+
+        notes = sorted(KNOWLEDGE_NOTES_DIR.glob("*.md"))
+        assert len(notes) == 3
+        chunker = HeadingAwareChunker()
+        for note in notes:
+            assert len(chunker.chunk(note.read_text(encoding="utf-8"))) == 1, note.name
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "knowledge-add-folder-source-and-scan.yaml")
+        assert any("3 supported files found" in step for step in sc.steps)
+        assert any('"3 items"' in exp for exp in sc.expectations)
+        assert any("/tmp/kirocrew-gui-user-test/team-notes" in step for step in sc.steps)
 
     def test_explicit_name_selection(self) -> None:
         picked = scenarios.select(scenarios.load_all(SCENARIOS_DIR), names=["members-dm-hello"])
@@ -83,11 +110,22 @@ class TestShippedScenarios:
             "sidebar": ["sidebar-folders-and-older-sessions"],
             "search": ["search-everywhere-jump-to-setting"],
             "members": ["members-dm-hello", "members-private-memory-keeps-thread"],
+            "knowledge": ["knowledge-add-folder-source-and-scan"],
+            "apps": ["apps-discover-enable-research-lab"],
             "auth": ["auth-sign-in-card-signed-out"],
             "settings": ["settings-search-jump-to-theme", "settings-theme-toggle"],
         }
         # FEATURES order, not alphabetical: chat is the product's primary surface.
-        assert list(groups) == ["chat", "sidebar", "search", "members", "auth", "settings"]
+        assert list(groups) == [
+            "chat",
+            "sidebar",
+            "search",
+            "members",
+            "knowledge",
+            "apps",
+            "auth",
+            "settings",
+        ]
 
     def test_members_scenario_holds_across_the_crew_mode_retirement(self) -> None:
         """The Feature Previews card carries two titles across the Crew Mode retirement; the steps name both."""
@@ -433,7 +471,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_6 of {len(scenarios.FEATURES)} features covered · 9 scenarios (7 smoke / 2 nightly)._"
+            f"_8 of {len(scenarios.FEATURES)} features covered · 11 scenarios (8 smoke / 3 nightly)._"
             in md
         )
         assert (
@@ -455,7 +493,7 @@ class TestReport:
         )
         # Uncovered features are the backlog.
         assert "## Not yet covered" in md
-        assert "- `knowledge` Knowledge library" in md
+        assert "- `artifacts` Artifacts" in md
         assert "- `chat` Chat sessions" not in md
 
     def test_features_catalog_without_a_run(self) -> None:
