@@ -9,6 +9,8 @@ absent).
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import re
 from collections import Counter
@@ -132,6 +134,26 @@ def _write_golden(tmp_path: Path, docs: list[dict], queries: list[dict]) -> Path
     return p
 
 
+def _gold_label_digest(gs: KBGoldenSet) -> str:
+    """SHA-256 over the label-bearing fields of every query, and nothing else.
+
+    Covers query id, class and the set of gold doc ids -- the three fields that
+    decide what the ruler scores as correct. Deliberately excludes the question
+    text, the documents and the file bytes, so rewording a question, fixing a
+    typo in a document or reformatting the JSON leaves the digest unchanged.
+    Rows and gold ids are sorted before hashing, so reordering queries or gold
+    ids is not a label change either.
+    """
+    rows = sorted([q.id, q.query_class, sorted(q.gold_doc_ids)] for q in gs.queries)
+    payload = json.dumps(rows, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+#: The gold labels of v2 at ``label_revision`` 1. Changing any gold label under
+#: this revision fails ``test_v2_declares_the_label_revision_its_corrections_make``.
+V2_LABEL_DIGEST_AT_REVISION_1 = "f43387ab3152a16ad3de3168a6616456787747d3bae8be369ad9d8a18f4fe864"
+
+
 class TestGoldenSetV2:
     """The enlarged set exists to DISCRIMINATE, and that is a property of its
     shape, not of its size.
@@ -175,6 +197,99 @@ class TestGoldenSetV2:
         assert set(counts) == set(KB_QUERY_CLASSES), "every class must be exercised"
         thin = {cls: n for cls, n in counts.items() if n < 4}
         assert not thin, f"classes with too few queries to average: {thin}"
+
+    def test_audited_labels_demand_only_the_documents_needed(self) -> None:
+        """Two labels a blind re-labelling audit overturned, pinned.
+
+        Three annotators on separate model families relabelled the set from an
+        anonymized packet and agreed with each other AGAINST the file on exactly
+        these two. Both had the same shape -- a document written to answer the
+        question on its own, labelled as though it needed a partner -- and both
+        biased ``recall_all``/``recall_micro`` downward, so the ruler charged the
+        retriever for a labelling error.
+
+        Pinned by id rather than by count: a future corpus edit that re-adds a
+        redundant gold doc here is the regression, and a count assertion would
+        pass as long as some other query lost one.
+        """
+        by_id = {q.id: q for q in self._v2().queries}
+        # d-vpn-access states "requires the corporate VPN in addition to hardware
+        # MFA. Both are required together", so it answers the question alone.
+        assert by_id["q-multi-5"].gold_doc_ids == ("d-vpn-access",)
+        # Corroboration is not requirement: the question asks whether MFA IS
+        # required, which the baseline answers outright. The two audits confirm
+        # it without being needed to answer it.
+        assert by_id["q-reinforcement-1"].gold_doc_ids == ("d-mfa-baseline",)
+
+    def test_v2_declares_the_label_revision_its_corrections_make(self) -> None:
+        """The two audit corrections above change v2's labels under an unchanged
+        name, so the set must say so itself: a print scored against the original
+        labels and one scored against these are not comparable, and the name is
+        the only thing both prints share.
+
+        What is enforced: the revision is pinned at 1 AND a digest of every gold
+        label (query id, class, gold doc ids) is pinned beside it, so a further
+        gold-label edit that lands without a bump fails here mechanically. What
+        is not: a bumped revision with unchanged labels passes once the pins are
+        moved; the bump-on-edit rule is checked in one direction only.
+        """
+        gs = self._v2()
+        assert gs.label_revision == 1
+        digest = _gold_label_digest(gs)
+        assert digest == V2_LABEL_DIGEST_AT_REVISION_1, (
+            f"v2's gold labels differ from the set pinned at label_revision 1 "
+            f"(digest {digest}). If a gold label changed on purpose, bump "
+            f"'label_revision' in the golden JSON and re-pin the digest constant "
+            f"for the new revision to {digest!r}; if no label was meant to "
+            "change, revert the label edit."
+        )
+
+    def test_label_digest_moves_when_any_gold_label_changes(self) -> None:
+        """The guard above is only a guard if an unbumped label edit trips it.
+
+        Swap one gold doc id on a query that is NOT one of the two id-pinned
+        corrections, leave ``label_revision`` at 1, and the digest must differ;
+        reordering queries or rewording a question must leave it unchanged.
+        """
+        gs = self._v2()
+        base = _gold_label_digest(gs)
+        target = next(
+            q
+            for q in gs.queries
+            if q.gold_doc_ids and q.id not in {"q-multi-5", "q-reinforcement-1"}
+        )
+        other_doc = next(d.id for d in gs.docs if d.id not in target.gold_doc_ids)
+        edited = dataclasses.replace(target, gold_doc_ids=(other_doc, *target.gold_doc_ids[1:]))
+        relabelled = dataclasses.replace(
+            gs, queries=tuple(edited if q.id == target.id else q for q in gs.queries)
+        )
+        assert relabelled.label_revision == 1
+        assert _gold_label_digest(relabelled) != base
+        reordered = dataclasses.replace(gs, queries=tuple(reversed(gs.queries)))
+        assert _gold_label_digest(reordered) == base
+        reworded = dataclasses.replace(
+            gs,
+            queries=tuple(
+                dataclasses.replace(q, question=q.question + " (reworded)") for q in gs.queries
+            ),
+        )
+        assert _gold_label_digest(reworded) == base
+
+    def test_multi_hop_queries_all_require_more_than_one_document(self) -> None:
+        """A single-gold query in ``multi_hop`` inflates the class it sits in.
+
+        ``multi_hop`` exists to measure whether retrieval can assemble an answer
+        that no one document carries. A member needing only one document scores
+        1.0 on ``recall_all`` for free and raises the class mean without any
+        multi-hop retrieval happening, which is how a wrong label hid inside a
+        plausible-looking number.
+        """
+        for q in self._v2().queries:
+            if q.query_class == "multi_hop":
+                assert len(q.gold_doc_ids) > 1, (
+                    f"{q.id} is class 'multi_hop' with {len(q.gold_doc_ids)} gold doc(s); "
+                    "a one-document answer belongs in a single-document class"
+                )
 
     def test_every_answerable_query_faces_a_competing_distractor(self) -> None:
         """THE discriminating property, and the one worth a test.
@@ -324,6 +439,41 @@ class TestGoldenSet:
         assert gs.docs and gs.queries
         for q in gs.queries:
             assert q.query_class in KB_QUERY_CLASSES
+
+    def test_shipped_v1_carries_no_label_revision(self) -> None:
+        # v1's labels are the author's originals; the field is absent, which must
+        # parse as "unrevised" rather than crash or default to a number the file
+        # never declared.
+        assert KBGoldenSet.from_json(v1_golden_set_path()).label_revision is None
+
+    def test_label_revision_absent_means_unrevised(self, tmp_path: Path) -> None:
+        p = _write_golden(
+            tmp_path,
+            [{"id": "d1", "title": "t", "content": "c"}],
+            [{"id": "q1", "class": "clean_fact", "question": "q", "gold_doc_ids": ["d1"]}],
+        )
+        assert KBGoldenSet.from_json(p).label_revision is None
+
+    @pytest.mark.parametrize("bad", [0, -1, True, "1", 1.0])
+    def test_label_revision_must_be_a_positive_integer(self, tmp_path: Path, bad: object) -> None:
+        # 0 would spell "unrevised" a second way; a bool is an int subclass that
+        # json.loads produces from `true`; a string or float cannot be ordered
+        # against an integer revision unambiguously. All refuse rather than print.
+        p = tmp_path / "g.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "name": "t",
+                    "label_revision": bad,
+                    "docs": [{"id": "d1", "title": "t", "content": "c"}],
+                    "queries": [
+                        {"id": "q1", "class": "clean_fact", "question": "q", "gold_doc_ids": ["d1"]}
+                    ],
+                }
+            )
+        )
+        with pytest.raises(KBGoldenSetError, match="label_revision"):
+            KBGoldenSet.from_json(p)
 
     def test_shipped_v1_preserves_supersession_chronology(self) -> None:
         # KnowledgeStore.add_item timestamps in insertion order. Older/draft evidence
@@ -571,6 +721,46 @@ class TestRunKbRetrieval:
         assert "KB retrieval eval" in text
         assert "HEADLINE" in text
         assert "clean_fact" in text
+
+    def test_report_header_names_the_label_revision(self) -> None:
+        """The header is the one guard against differencing incomparable prints,
+        so it must carry the labels' revision, not just the corpus name: v2's
+        gold labels change under the unchanged name ``kb_golden_v2``, and a
+        print that shows only the name cannot say which labels it scored."""
+        gs = KBGoldenSet.from_json(default_golden_set_path())
+        report = run_kb_retrieval(gs, use_embeddings=False)
+        assert report.label_revision == 1
+        text = format_kb_report(report, k=3)
+        assert text.splitlines()[0] == "KB retrieval eval: kb_golden_v2 (label revision 1)"
+
+    def test_report_header_marks_unrevised_labels_explicitly(self) -> None:
+        """A set without the field prints an explicit marker, not the bare name,
+        so an unrevised print is distinguishable both from a revised one and
+        from an archived print that predates the field."""
+        gs = KBGoldenSet.from_json(v1_golden_set_path())
+        report = run_kb_retrieval(gs, use_embeddings=False)
+        assert report.label_revision is None
+        text = format_kb_report(report, k=3)
+        first = text.splitlines()[0]
+        assert first == "KB retrieval eval: kb_golden_v1 (unrevised labels)"
+        assert "label revision" not in first
+        # The rest of the report is unaffected by the missing field.
+        assert "HEADLINE @3" in text
+        assert "clean_fact" in text
+
+    def test_report_header_differs_between_revisions_of_one_name(self) -> None:
+        """Two reports on the same corpus name but different label revisions must
+        print different identity lines -- that difference IS the guard."""
+        from kiro_crew.eval.bench.kb_retrieval import KBRetrievalReport
+
+        a = KBRetrievalReport(golden_set="same", embedder_id="e", k_values=(3,))
+        b = KBRetrievalReport(golden_set="same", embedder_id="e", k_values=(3,), label_revision=1)
+        c = KBRetrievalReport(golden_set="same", embedder_id="e", k_values=(3,), label_revision=2)
+        idents = {a.golden_set_identity, b.golden_set_identity, c.golden_set_identity}
+        assert len(idents) == 3
+        assert a.golden_set_identity == "same (unrevised labels)"
+        assert b.golden_set_identity == "same (label revision 1)"
+        assert c.golden_set_identity == "same (label revision 2)"
 
     def test_non_default_k_is_computed_not_zero(self) -> None:
         # A cut-off outside DEFAULT_KB_K_VALUES must be explicitly computed, or the
