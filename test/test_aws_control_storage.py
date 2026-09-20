@@ -501,7 +501,7 @@ class TestObjectIO:
         # owner's file.
         local = tmp_path / "a.txt"
         local.write_bytes(b"x")
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.put_file(
                 "p", "us-east-1", "b", "drive", "a.txt", str(local), account="111122223333"
             )
@@ -514,12 +514,41 @@ class TestObjectIO:
         assert argv[argv.index("--expected-bucket-owner") + 1] == "111122223333"
         assert kwargs["action"] == "s3:PutObject"
 
+    def test_put_file_drops_an_over_long_version_id_rather_than_retaining_it(self, tmp_path):
+        # The comment on `_MAX_VERSION_ID_LEN` claims every retained variable-length
+        # field is bounded, and this one is retained: it reaches the run record and is
+        # persisted in `backup.json`. The read path at the version listing already
+        # bounds the same field, so leaving the write path unbounded made the claim
+        # false on the side that actually stores the value.
+        local = tmp_path / "a.txt"
+        local.write_bytes(b"x")
+        payload = json.dumps({"VersionId": "v" * (storage._MAX_VERSION_ID_LEN + 1)})
+        with mock.patch.object(storage, "_checked", return_value=payload):
+            version = storage.put_file(
+                "p", "us-east-1", "b", "drive", "a.txt", str(local), account="111122223333"
+            )
+        # Absent, not truncated: a cut id names a DIFFERENT version while looking like
+        # proof of ownership, and retention will not retire a key it has no version for.
+        assert version == ""
+
+    def test_put_file_keeps_a_version_id_at_the_bound(self, tmp_path):
+        # The bound must not reject ids S3 really returns, which would silently stop
+        # retention ever claiming an upload.
+        local = tmp_path / "a.txt"
+        local.write_bytes(b"x")
+        exact = "v" * storage._MAX_VERSION_ID_LEN
+        with mock.patch.object(storage, "_checked", return_value=json.dumps({"VersionId": exact})):
+            version = storage.put_file(
+                "p", "us-east-1", "b", "drive", "a.txt", str(local), account="111122223333"
+            )
+        assert version == exact
+
     def test_put_file_forwards_a_custom_timeout(self, tmp_path):
         # Uploads can be large; the caller's timeout must reach the subprocess
         # chokepoint rather than a hardcoded default.
         local = tmp_path / "a.txt"
         local.write_bytes(b"x")
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.put_file(
                 "p", "r", "b", "drive", "a.txt", str(local), timeout=999, account="111122223333"
             )
@@ -532,7 +561,7 @@ class TestObjectIO:
         local = tmp_path / "big.tar.gz"
         local.write_bytes(b"x")
         monkeypatch.setattr(storage.os.path, "getsize", lambda p: 6 * 1024 * 1024 * 1024)
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             with pytest.raises(storage.AWSError) as exc:
                 storage.put_file(
                     "p", "r", "b", "backup", "k.tar.gz", str(local), account="111122223333"
@@ -541,7 +570,7 @@ class TestObjectIO:
         checked.assert_not_called()
 
     def test_get_file_is_owner_pinned_and_section_scoped(self, tmp_path):
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.get_file(
                 "p", "us-east-1", "b", "library", "a.txt", "/tmp/out", account="111122223333"
             )
@@ -557,7 +586,7 @@ class TestObjectIO:
     def test_delete_key_writes_a_delete_object_call(self):
         # On the versioned bucket this is a delete MARKER, so the argv must be a
         # plain delete-object (recoverable), not a version purge.
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.delete_key("p", "us-east-1", "b", "drive", "a.txt", account="111122223333")
         argv = checked.call_args.args[0]
         assert argv[:2] == ["s3api", "delete-object"]
@@ -570,7 +599,7 @@ class TestCopyObject:
         # copy-object reads AND writes, so the name-reuse attack put_file's
         # docstring describes applies to both sides: the destination pin alone
         # would still let a re-created source bucket serve a stranger's bytes.
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.copy_object(
                 "p", "us-east-1", "b", "drive", "a.txt", "sub/b.txt", account="111122223333"
             )
@@ -587,7 +616,7 @@ class TestCopyObject:
         # The copy source travels in an HTTP header, so a space in a valid key
         # must be percent-encoded — while '/' stays literal or the bucket/key
         # split inside the header breaks.
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.copy_object(
                 "p", "us-east-1", "b", "drive", "my file.txt", "b.txt", account="111122223333"
             )
@@ -630,7 +659,7 @@ class TestCreateFolder:
         # A folder is a zero-byte object: put-object with NO --body, owner-pinned
         # like every write, keyed at section/path/ (trailing slash appended here,
         # never taken from the caller).
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.create_folder("p", "us-east-1", "b", "drive", "photos", account="111122223333")
         argv = checked.call_args.args[0]
         assert argv[:2] == ["s3api", "put-object"]
@@ -1066,7 +1095,7 @@ class TestPutFileContentType:
     def _argv(self, key: str, tmp_path):
         local = tmp_path / "body"
         local.write_bytes(b"x")
-        with mock.patch.object(storage, "_checked") as checked:
+        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
             storage.put_file("p", "us-east-1", "b", "drive", key, str(local), account="1")
         return checked.call_args.args[0]
 

@@ -74,6 +74,7 @@ P0_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/library/{account}/remove"),
     ("POST", "/backup/{account}/run"),
     ("POST", "/backup/{account}/nightly"),
+    ("POST", "/backup/{account}/retention"),
     ("POST", "/backup/{account}/restore"),
     # Not account-scoped: an install is the same install whichever account it
     # backs up to, so a name per account would mint the confusion the install id

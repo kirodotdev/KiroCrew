@@ -20,8 +20,12 @@ inherited deliberately:
   drive's deliberate delta from deploy-web. deploy-web keeps versioning off
   because its teardown empties with ``s3 rm`` (current versions only); the
   drive has no teardown surface in this PR, and artifact versions ↔ object
-  versions is the point of the Library. A future destroy needs the
-  version-aware purge the spec calls out.
+  versions is the point of the Library. Versioning also means a plain delete
+  reclaims nothing: :func:`delete_key` and :func:`delete_prefix` write delete
+  MARKERS and the bytes stay behind them as noncurrent versions, still billed.
+  :func:`list_object_versions` and :func:`delete_object_versions` are the pair
+  that erases bytes, and the backup retention sweep is their one caller; a
+  future whole-drive destroy needs them too.
 
 CALLER CONTRACT (load-bearing): these functions do NOT check consent. Every
 HTTP handler must gate with ``aws_consent.refuse_and_log(SERVICE_S3, ...)``
@@ -522,8 +526,13 @@ def put_file(
     *,
     account: str,
     timeout: int = 600,
-) -> None:
+) -> str:
     """Upload one local file to ``section/key``, pinned to the bucket's owner.
+
+    Returns the ``VersionId`` S3 assigned, or ``""`` when the response names none.
+    A caller that does not care may ignore it; backup retention records it, because
+    on a versioned bucket the version id is the only thing identifying WHICH bytes
+    under a key an uploader wrote.
 
     ``s3api put-object`` rather than ``s3 cp``: the high-level ``aws s3`` commands
     do not accept ``--expected-bucket-owner`` (checked against their own help
@@ -561,12 +570,50 @@ def put_file(
     if content_type:
         args += ["--content-type", content_type]
     args += ["--expected-bucket-owner", account]
-    _checked(
+    # `--output json` for the same reason the version delete pins it: the parse
+    # below would otherwise become a no-op on a machine whose ~/.aws/config sets
+    # `output = text`, and this caller needs the response, not just the exit code.
+    args += ["--output", "json"]
+    out = _checked(
         args,
         profile,
         action="s3:PutObject",
         timeout=timeout,
     )
+    return _put_version_id(out)
+
+
+def _put_version_id(out: str) -> str:
+    """The ``VersionId`` a ``put-object`` response reports, or ``""``.
+
+    Empty is a real answer rather than a failure: an unversioned bucket reports no
+    version at all, and a response that will not parse cannot be claimed as one
+    either. The upload has already succeeded by the time this runs, since
+    ``_checked`` raises otherwise, so refusing here would fail a transfer that
+    completed.
+
+    What an empty answer COSTS is the caller's decision. Backup retention treats a
+    key with no recorded version as one it must not retire, which is the
+    fail-closed direction: the alternative is erasing bytes nothing proves are ours.
+    """
+    if not (out or "").strip():
+        return ""
+    try:
+        parsed = json.loads(out) or {}
+    except json.JSONDecodeError:
+        return ""
+    version = parsed.get("VersionId")
+    # Bounded here as well as on the read path at the version listing, because the
+    # comment on `_MAX_VERSION_ID_LEN` claims every retained variable-length field is
+    # bounded and this one is retained: it reaches `_record_run` and is persisted in
+    # `backup.json`. Over-long reads as ABSENT rather than being cut to fit, and the
+    # paragraph above already says what absent costs -- retention will not retire a key
+    # it has no version for, which is the fail-closed direction. A truncated id would
+    # be worse than none: it names a different version, or no version at all, while
+    # looking like proof of ownership.
+    if not isinstance(version, str) or len(version) > _MAX_VERSION_ID_LEN:
+        return ""
+    return version
 
 
 def get_file(
@@ -932,31 +979,61 @@ _DELETE_PAYLOAD_MAX_BYTES = 12 * 1024
 _WINDOWS_CMDLINE_MAX = 32767
 
 
-def _delete_batches(keys: list[str]) -> list[list[str]]:
-    """Split ``keys`` into batches that fit BOTH S3's count cap and argv limits.
+def _delete_entry_batches(entries: list[dict[str, str]]) -> list[list[dict[str, str]]]:
+    """Split ``delete-objects`` entries into batches fitting S3's cap and argv limits.
 
-    Order is preserved and every key appears exactly once: a split that dropped
-    or duplicated a key would under-delete (leaving objects behind) or make the
-    reported count a lie. A single key that alone exceeds the budget still gets
+    An entry is the document S3 itself receives -- ``{"Key": k}`` to remove the
+    current version, ``{"Key": k, "VersionId": v}`` to erase one specific
+    version -- so the budget is measured on the bytes that actually travel. That
+    matters here rather than being pedantry: a version id is another ~32
+    characters plus its field name, so a batch of version-pinned entries is
+    roughly twice the size of the same keys alone, and a budget derived from the
+    keys would under-count it.
+
+    Order is preserved and every entry appears exactly once: a split that dropped
+    or duplicated one would under-delete (leaving objects behind) or make the
+    reported count a lie. A single entry that alone exceeds the budget still gets
     its own batch - refusing it here would silently skip an object the caller
     asked to remove, so the spawn is attempted and any failure surfaces.
     """
-    batches: list[list[str]] = []
-    current: list[str] = []
-    # {"Objects":[],"Quiet":true} plus the per-key {"Key":"..."} wrapper.
+    batches: list[list[dict[str, str]]] = []
+    current: list[dict[str, str]] = []
+    # {"Objects":[],"Quiet":true} plus each entry's own serialized wrapper.
     overhead = len(json.dumps({"Objects": [], "Quiet": True}, separators=(",", ":")))
     size = overhead
-    for key in keys:
-        entry = len(json.dumps({"Key": key}, separators=(",", ":")).encode()) + 1
-        too_big = size + entry > _DELETE_PAYLOAD_MAX_BYTES
+    for obj in entries:
+        cost = len(json.dumps(obj, separators=(",", ":")).encode()) + 1
+        too_big = size + cost > _DELETE_PAYLOAD_MAX_BYTES
         if current and (too_big or len(current) >= _DELETE_BATCH_MAX):
             batches.append(current)
             current, size = [], overhead
-        current.append(key)
-        size += entry
+        current.append(obj)
+        size += cost
     if current:
         batches.append(current)
     return batches
+
+
+def _delete_batches(keys: list[str]) -> list[list[str]]:
+    """Batch plain keys for ``delete-objects``. See :func:`_delete_entry_batches`."""
+    wrapped = _delete_entry_batches([{"Key": key} for key in keys])
+    return [[str(entry["Key"]) for entry in batch] for batch in wrapped]
+
+
+class DeleteObjectsPartialFailure(AWSError):
+    """``delete-objects`` answered 200 and named entries it could not remove.
+
+    Carries how many it named. ``Quiet`` is set at every call site, so the
+    response lists ONLY failures: a caller holding the batch can subtract and know
+    exactly how many entries that batch DID erase. On the version-delete path that
+    subtraction is the difference between auditing erased bytes and auditing zero.
+
+    Still an :class:`AWSError`, so the folder sweep keeps catching it unchanged.
+    """
+
+    def __init__(self, message: str, failures: int) -> None:
+        super().__init__(message)
+        self.failures = failures
 
 
 def _raise_on_delete_errors(out: str) -> None:
@@ -987,10 +1064,288 @@ def _raise_on_delete_errors(out: str) -> None:
     first = errors[0] if isinstance(errors[0], dict) else {}
     code = first.get("Code", "unknown")
     key = first.get("Key", "?")
-    raise AWSError(
+    raise DeleteObjectsPartialFailure(
         f"delete-objects could not remove {len(errors)} object(s) — "
-        f"first: {key} ({code}); the folder is only partially deleted"
+        f"first: {key} ({code}); the folder is only partially deleted",
+        len(errors),
     )
+
+
+#: One version-listing window per round-trip, the same client-side pagination the
+#: drive's other walks use. This is what bounds the response the CLI builds in
+#: memory for a single call; an auto-paginated listing bounds nothing, because the
+#: CLI joins every page before this process sees a byte of it.
+_VERSION_PAGE_ITEMS = 1000
+
+#: The most version rows one folder listing will retain, as ten full delete
+#: batches. A folder needing more than ten batches to clear is past what this app
+#: should sweep object by object, and the answer there is a bucket lifecycle rule
+#: rather than a larger buffer inside the gateway.
+_VERSION_ROWS_MAX = 10 * _DELETE_BATCH_MAX
+
+#: S3's own ceiling for a version id. A longer value cannot name a real version.
+#: Paired with :data:`_MAX_KEY_LEN` and :data:`_MAX_MODIFIED_LEN` it bounds every
+#: unbounded-length field a row retains, and none is ever shortened to fit: a
+#: truncated key or version id names a DIFFERENT object, so an over-long row is
+#: dropped instead of trimmed.
+_MAX_VERSION_ID_LEN = 1024
+
+#: The third retained variable-length field. An ISO-8601 instant needs about 25
+#: characters, so this is loose and still bounds the value; it exists because the
+#: pairing above claimed to cover every field a row retains and did not.
+_MAX_MODIFIED_LEN = 64
+
+
+def list_object_versions(
+    profile: str, region: str, bucket: str, section: str, subpath: str, *, account: str
+) -> list[dict[str, Any]]:
+    """Every version AND delete marker under ``section/subpath/``.
+
+    The drive has versioning ENABLED (see the module docstring), and that one
+    fact is why this listing exists beside :func:`list_section`.
+    ``list-objects-v2`` answers only about CURRENT versions, so a caller that
+    deletes what it returns reclaims nothing: :func:`delete_key` without a
+    version id writes a delete MARKER, the bytes stay behind it as a noncurrent
+    version, and the bucket goes on being billed for every one of them. This is
+    the listing a caller needs in order to remove bytes rather than hide them,
+    because it names the ``VersionId`` of each version -- the only form
+    :func:`delete_object_versions` can actually erase.
+
+    Delete markers come back TAGGED rather than filtered out. A key whose newest
+    entry is a marker is not a live object, and a caller that could not see the
+    marker would read the older version underneath it as live.
+
+    Keys are section-RELATIVE, like :func:`list_section` and every key this
+    package passes around, so a caller can compare one against a key it wrote.
+    They are RAW, unlike :func:`list_section`: this is an identity read whose
+    answers are compared against keys and then deleted, and a redacted name
+    matches no key -- so a caller fed the display listing could read an archive
+    that exists as absent.
+
+    ``subpath`` must name a folder. Every caller of this is about to delete, and
+    a whole-section version listing is not a blast radius this function hands
+    out. The prefix is anchored on :data:`SECTION_PREFIXES` and closed with a
+    trailing ``/``, so listing ``snapshots/abc`` cannot reach a sibling
+    ``snapshots/abcdef/``.
+
+    Paged with ``--max-items`` and walked to the end of the token chain, so the
+    answer is still the COMPLETE set or a raised error, never a first page a
+    caller could mistake for the whole prefix. Bounding the PAGE is what keeps the
+    peak in memory bounded; bounding the ANSWER is not on offer here, so a prefix
+    holding more than :data:`_VERSION_ROWS_MAX` versions RAISES rather than
+    returning what fits. An unreadable response raises for the same reason, unlike
+    :func:`usage`: an empty list here reads as "nothing worth keeping", and a
+    caller acting on that would delete on a view it never had.
+    """
+    # Whitespace as well as slashes: `validate_key` requires a segment to START
+    # alphanumeric, so no legitimate folder is changed by the strip, and a value
+    # that is nothing but spaces would otherwise build the prefix `backup/   /`
+    # and list a folder nobody named.
+    leaf = subpath.strip().strip("/").strip()
+    if not leaf:
+        raise ValueError(
+            "list_object_versions needs a folder; a whole-section version listing "
+            "is not offered here"
+        )
+    prefix = f"{SECTION_PREFIXES[section]}{leaf}/"
+    rows: list[dict[str, Any]] = []
+    token = ""
+    while True:
+        args = [
+            "s3api",
+            "list-object-versions",
+            "--bucket",
+            bucket,
+            "--prefix",
+            prefix,
+            "--max-items",
+            str(_VERSION_PAGE_ITEMS),
+            "--expected-bucket-owner",
+            account,
+            "--output",
+            "json",
+        ]
+        if token:
+            args += ["--starting-token", token]
+        out = _checked(
+            args,
+            profile,
+            action="s3:ListBucketVersions",
+            timeout=60,
+        )
+        try:
+            data = json.loads(out or "{}") or {}
+        except json.JSONDecodeError:
+            raise AWSError(
+                "the version listing returned a response that could not be read as JSON; "
+                "refusing to report the folder as empty"
+            ) from None
+        if not isinstance(data, dict):
+            raise AWSError(
+                "the version listing returned a document that is not an object; "
+                "refusing to report the folder as empty"
+            )
+        for field, is_marker in (("Versions", False), ("DeleteMarkers", True)):
+            page = data.get(field) or []
+            if not isinstance(page, list):
+                continue
+            for obj in page:
+                if not isinstance(obj, dict):
+                    continue
+                key, version = obj.get("Key"), obj.get("VersionId")
+                # Both halves or nothing. A row missing either one cannot be deleted
+                # by version, and filling in the missing half by guessing is how a
+                # delete lands on an object the caller never named.
+                if not isinstance(key, str) or not isinstance(version, str):
+                    continue
+                if not version or not key.startswith(prefix):
+                    continue
+                # Length is checked before the row is retained, and an over-long
+                # field drops the row rather than being cut to fit. Nothing this
+                # install wrote can reach either bound, because `validate_key`
+                # holds every key it accepts under the same one, so the rows this
+                # drops are rows retention could not have owned anyway.
+                if len(key) > _MAX_KEY_LEN or len(version) > _MAX_VERSION_ID_LEN:
+                    continue
+                modified_raw = obj.get("LastModified")
+                # `modified` is retained too, so the same rule reaches it: this is the
+                # third field in this row, not a second mechanism. It DROPS rather than
+                # emptying, because an empty timestamp sorts as oldest and would make
+                # the row a likelier deletion candidate -- the unsafe direction for a
+                # value that arrived malformed.
+                if isinstance(modified_raw, str) and len(modified_raw) > _MAX_MODIFIED_LEN:
+                    continue
+                if len(rows) >= _VERSION_ROWS_MAX:
+                    raise AWSError(
+                        f"this folder holds more than {_VERSION_ROWS_MAX} object "
+                        "versions; refusing to answer with the part that fits, "
+                        "because a caller would delete on it. Clear the history "
+                        "with a bucket lifecycle rule"
+                    )
+                modified = modified_raw
+                size = obj.get("Size")
+                rows.append(
+                    {
+                        "key": key[len(SECTION_PREFIXES[section]) :],
+                        "versionId": version,
+                        "modified": modified if isinstance(modified, str) else "",
+                        "size": (
+                            size if isinstance(size, int) and not isinstance(size, bool) else 0
+                        ),
+                        # S3's own answer about which version a plain GET would
+                        # return, rather than one inferred from timestamps.
+                        "latest": bool(obj.get("IsLatest")),
+                        "deleteMarker": is_marker,
+                    }
+                )
+        token = data.get("NextToken", "")
+        if not isinstance(token, str) or not token:
+            return rows
+
+
+class PartialVersionDelete(RuntimeError):
+    """A batched version delete that failed AFTER erasing some versions.
+
+    :func:`delete_object_versions` reports its count by RETURNING it, and on this
+    path that count is the only record that bytes are gone. A bare raise carries
+    no count, so a caller auditing the failure would file "nothing was deleted"
+    over versions that are already erased -- the one shape the retention audit
+    exists to prevent. This class carries the count across the raise instead.
+
+    Raised only when at least one batch has already completed. A first-batch
+    failure erases nothing, so there the original error is the honest signal and
+    is re-raised untouched rather than dressed up as a partial.
+
+    ``removed`` counts VERSIONS, not keys: batches are filled to the API's limit
+    without regard to key boundaries, so the erased set does not map to a clean
+    number of keys and this class does not invent one.
+    """
+
+    def __init__(self, removed: int, cause: BaseException) -> None:
+        super().__init__(f"{removed} version(s) erased before the failure: {cause}")
+        self.removed = removed
+
+
+def delete_object_versions(
+    profile: str,
+    region: str,
+    bucket: str,
+    section: str,
+    versions: list[tuple[str, str]],
+    *,
+    account: str,
+) -> int:
+    """Erase specific object VERSIONS. Returns the number removed.
+
+    Unlike :func:`delete_key` and :func:`delete_prefix`, this removes bytes. A
+    delete pinned to a ``VersionId`` erases that version and leaves NO delete
+    marker behind, which on this versioned bucket is the whole difference between
+    reclaiming storage and hiding an object that keeps billing.
+
+    It is therefore unrecoverable at the S3 layer, and that is why WHICH versions
+    is entirely the caller's decision: this function anchors the section prefix
+    and does nothing else. There is deliberately no prefix argument that could
+    widen to "every version under a folder" -- the caller passes the exact
+    (key, version) pairs it means, having listed them with
+    :func:`list_object_versions`.
+
+    Owner-pinned like every other write, for the same bucket-name-reuse reason.
+    Per-key failures arrive inside a 200 response, so the same
+    :func:`_raise_on_delete_errors` check the folder sweep uses runs here: a
+    count returned by this function means those versions are gone.
+
+    A failure partway through a multi-batch delete raises
+    :class:`PartialVersionDelete` instead, carrying the count already erased --
+    the count is this function's only report, so discarding it would leave the
+    caller auditing erased bytes as nothing.
+    """
+    entries = [
+        {"Key": section_key(section, key), "VersionId": version}
+        for key, version in versions
+        if key and version
+    ]
+    if not entries:
+        return 0
+    removed = 0
+    for batch in _delete_entry_batches(entries):
+        payload = json.dumps({"Objects": batch, "Quiet": True}, separators=(",", ":"))
+        try:
+            out = _checked(
+                [
+                    "s3api",
+                    "delete-objects",
+                    "--bucket",
+                    bucket,
+                    "--delete",
+                    payload,
+                    "--expected-bucket-owner",
+                    account,
+                    # The error check below reads this as JSON; a user's
+                    # `output = text` in ~/.aws/config would otherwise turn the
+                    # check into a no-op on their machine only.
+                    "--output",
+                    "json",
+                ],
+                profile,
+                action="s3:DeleteObjectVersion",
+            )
+            _raise_on_delete_errors(out)
+        except Exception as exc:
+            # A mixed batch answers 200 and names ONLY the entries it could not
+            # remove, so the rest of that batch is erased and has to be counted --
+            # otherwise a first batch that half succeeded reports zero. When the
+            # CLI itself failed there is no response to subtract from, so that
+            # batch contributes nothing rather than a guess.
+            if isinstance(exc, DeleteObjectsPartialFailure):
+                removed += max(0, len(batch) - exc.failures)
+            # The count is this function's only report, so raising past it would
+            # tell the caller nothing happened while bytes are already gone.
+            # Nothing erased yet means there is no partial to report.
+            if removed:
+                raise PartialVersionDelete(removed, exc) from exc
+            raise
+        removed += len(batch)
+    return removed
 
 
 def folder_placeholder_key(section: str, path: str) -> str:
