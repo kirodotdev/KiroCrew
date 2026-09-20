@@ -118,18 +118,41 @@ On a planning turn, at end of turn (the plan-detector block in `dashboard/chat_r
    might_not_be_plan=True)` asks the model to either reformat it or answer
    `NOT_A_PLAN`, in which case nothing is armed.
 
-   The pre-filter is a RUN of numbered lines, not a match count: at least two
-   `Phase|Step|Stage|Part N:` lines numbered 1, 2, 3 …, or at least
-   `_PLAN_BOLD_LIST_MIN` (3) bold-led ordered items numbered the same way. It
-   stays deliberately loose — genuinely plan-shaped prose is the LLM's call — but
-   a false positive costs a 2–8 s round trip on the background session, so three
-   shapes that used to count as two matches no longer do: an excerpt starting
+   The pre-filter is a RUN of numbered lines, not a match count, and
+   `_ordered_plan_runs` takes THREE readings of the text: the stage-line shape
+   alone, the bold-item shape alone, and the two merged in document order.
+
+   No single reading serves every real plan. A plan states its stages and numbers
+   its substeps under them — `Stage 1: Setup` / `1. **Install**` /
+   `2. **Configure**` / `Stage 2: Build` — and in the merged reading those
+   substeps carry the count past 2, so `Stage 2` no longer continues its own run
+   and a plan plainly written as a plan scores 1. Each shape therefore keeps a
+   reading where the other's numbering cannot reach it. The merged reading is for
+   the case neither isolated one sees: a model writing ONE sequence in both
+   shapes, `Stage 1: Survey` then `2. **Build**`.
+
+   A run qualifies at `_PLAN_STAGE_RUN_MIN` (2) when it is stage lines, or is
+   merged and holds at least one stage line; a run of bold items alone needs
+   `_PLAN_BOLD_LIST_MIN` (3). The bold-only shape carries no stage vocabulary at
+   all, and two bold items is the commonest shape of ordinary prose
+   (`1. **Yes** …` / `2. **No** …`), which is why the merged reading is offered
+   the shorter threshold only when a stage line is in it.
+
+   Both patterns are `re.IGNORECASE`: a model writes `1. **setup the repo**` as
+   readily as `1. **Setup the repo**`, and a case-sensitive `[A-Z]` made every
+   lowercase-led bold plan invisible.
+
+   The run taken is the LONGEST one starting at 1, anywhere in the text, not the
+   run at its head — one stray `Step 3:`-shaped sentence above the plan (a line
+   about the code, a quoted log) otherwise zeroed the score of the plan below it.
+
+   It stays deliberately loose — genuinely plan-shaped prose is the LLM's call —
+   but a false positive costs a 2–8 s round trip on the background session, so
+   three shapes that used to count as two matches do not: an excerpt starting
    mid-list (`3. **Alpha**` / `4. **Beta**`), the same line repeated in two worked
-   examples (`Step 1:` … `Step 1:`), and an unordered enumeration. The bold-list
-   shape needs a longer run than the stage-line shape because it carries no stage
-   vocabulary at all, and two bold items is the commonest shape of ordinary prose
-   (`1. **Yes** …` / `2. **No** …`). Same sequential-from-1 reading
-   `validate_plan_format` already applies to a real plan, one stage earlier.
+   examples (`Step 1:` … `Step 1:`), and an unordered enumeration. Same
+   sequential-from-1 reading `validate_plan_format` already applies to a real
+   plan, one stage earlier.
 3. Header present but invalid: `_rephrase_plan_lite` retries the format once.
    If the result is still invalid, `strip_plan_markers` removes the markers and
    the turn degrades to ordinary chat.
@@ -211,9 +234,8 @@ approvals live on separate endpoints an iframe cannot reach.
 in the prompt. It creates the tracker if absent, loads the budgets
 (`orchestrator.stage_timeout_seconds` and `orchestrator.max_plan_duration_seconds`)
 whenever `tracker.budgets_unset` says this tracker has never had them applied,
-resumes at `tracker.current_stage` when rounds already exist — unless
-`tracker.retry_stage` names a stage, which wins (see the empty-result gate
-below) — and for each stage index:
+resumes at `tracker.current_stage` when rounds already exist, and for each stage
+index:
 
 **A plan whose stages are gone is refused, before anything else.** If
 `slot._plan_stage_count` is 0 the loop posts `⚠️ This plan is no longer active …`,
@@ -316,41 +338,7 @@ entry.
    `tracker.current_stage` as each spawn wave finishes, which is why this gate is
    placed after the wave rather than on entry. Placed **after** the capture too,
    so a stage that genuinely finished keeps its result on disk.
-10. **A stage that produced nothing is not complete.** If the captured text is
-   empty after stripping — the same snapshot `_write_stage_result` just wrote, so
-   the verdict matches the artifact rather than a second opinion about it — the
-   loop records a round for the stage, latches it with
-   `tracker.mark_stage_for_retry(stage_num)`, clears `_auto_run`, posts
-   `⚠️ Stage N produced no output …` with a fresh
-   `[OPTION: Go | Go All | Cancel]`, logs `auto_run_empty_stage` /
-   `stage_produced_nothing`, and pauses. Before this the loop advanced on
-   "`_run_chat` returned without raising", so an empty or refused turn moved the
-   plan on, showed the stage as `✅ completed` in the next `status_summary`, and
-   let a Go All run reach "✅ All N stages complete" having produced none of it.
-
-   The latch is what makes "do not advance" real: the resume point is
-   `tracker.current_stage`, the highest stage key, which the empty stage
-   registered on ENTRY — so without it the next Go would run the stage after the
-   one that failed. `tracker.retry_stage` is a pure READ and
-   `tracker.start_stage` is what spends it, so exactly one re-entry is bought and
-   nothing buys it early: the gates between the loop's read and the stage it names
-   — the whole-plan watchdog and the stage-timeout check — both break before
-   `start_stage`, and a latch spent at the read would be gone on those paths while
-   `current_stage` still pointed past the failed stage. The stage keeps its rounds
-   and its ledger place because it did run. The rounds are the existing budget: three empty attempts reach
-   `MAX_STAGE_ROUNDS` exactly as three fruitless spawn waves do, and the notice
-   says so — **one round per attempt, whoever records it**. The stage's tally is
-   snapshotted at entry (after `start_stage`, which registers the stage without
-   resetting it), and the gate records a round only when that tally has not moved
-   since: a delegated stage that spawned a wave and then emitted no assistant text
-   is the ordinary shape of this case, and `_subagent_done` has already charged
-   that wave against the same tracker. Charging again would make one attempt cost
-   two of three rounds, so two attempts would exhaust a budget of three.
-   Auto-run stops rather than retrying by itself, like every other guard
-   here (timeout, round cap, subagent failure): the next attempt is only worth
-   spending if a human still wants it. The message walk sits OUTSIDE the capture's
-   `try` so a failed WRITE is never read as a stage that idled.
-11. If not `auto_run` and another stage remains: post
+10. If not `auto_run` and another stage remains: post
    `✅ Stage N complete. Click **Go** to proceed to …` plus a fresh
    `[OPTION: Go | Go All | Cancel]`, mark the loop paused, and return. The
    user's next Go re-enters `_stage_loop`.
@@ -556,10 +544,11 @@ however long the plan runs.
 - Sub-agent wait is capped at half the stage budget, 15 minutes at most; a
   longer fan-out stops auto-run with a possibly-incomplete-results notice rather
   than waiting.
-- An empty stage is detected by the text it captured, so a stage whose entire
-  turn was tool calls with no assistant output reads as "produced nothing". That
-  is deliberate — it handed the next stage nothing either — but it is a
-  mechanical test, not a judgement about whether work happened.
+- A stage advances when its turn returns without raising. Whether the stage
+  actually produced work is NOT judged: deciding it needs a signal that survives
+  a tool-only turn, a transient empty turn, a refused permission-gated call, an
+  unrelated successor turn and an unanswered question, and no such signal exists
+  yet. Tracked as P2-1 on #1783.
 
 ## Testing
 
@@ -567,7 +556,7 @@ however long the plan runs.
 |------|----------|
 | Tracker limits, timeout, `timeout_human`, caps, stale-session cleanup | `test/test_context_management.py` |
 | Round cap enforced on the dashboard path; stage entry spends no round | `test/test_stage_round_cap_enforced.py` |
-| An empty stage does not advance, spends a round, and re-enters itself on the next Go | `test/test_autopilot_empty_stage.py` |
+| The plan pre-filter still sees lowercase, mixed-shape and stray-numbered plans | `test/test_plan_detection_breadth.py` |
 | The wave wait is event-driven, its fallback still bounds it, and the waiter table is fused | `test/test_autopilot_wave_wait_event.py` |
 | Only the last three prior stages are inlined | `test/test_autopilot_previous_stage_context.py` |
 | Whole-plan watchdog, the 75% notice, budget loading for a tracker the loop did not build | `test/test_plan_duration_watchdog.py` |

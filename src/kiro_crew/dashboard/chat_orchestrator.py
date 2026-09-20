@@ -577,19 +577,7 @@ async def _stage_loop(
     titles = getattr(slot, "_stage_titles", [])
 
     # Determine starting stage (0-based index).
-    #
-    # A stage that produced nothing latches itself for retry (see the
-    # empty-result gate below), and that latch wins: `current_stage` is the
-    # HIGHEST stage key, which the empty stage already registered on entry, so
-    # resuming from it would advance past the stage that did not finish. Reading
-    # the latch does not spend it -- the gates below (plan watchdog, stage
-    # timeout) can exit before any stage is entered, and a latch spent here would
-    # be gone on those paths. `start_stage` spends it, i.e. the retry itself does.
-    _retry_stage = tracker.retry_stage
-    if _retry_stage:
-        start_idx = _retry_stage - 1
-    else:
-        start_idx = tracker.current_stage if tracker._stage_rounds else 0
+    start_idx = tracker.current_stage if tracker._stage_rounds else 0
 
     logger.info(
         "Stage loop start: slot=%s total=%d start_idx=%d auto_run=%s titles=%s",
@@ -725,14 +713,6 @@ async def _stage_loop(
             # NOT `record_round`: a round is a spawn wave, and the cap this PR
             # makes real is the wave budget -- see `OrchestrationTracker.start_stage`.
             tracker.start_stage(stage_num)
-            # The stage's round tally BEFORE its turn runs. The
-            # subagent-completion handler records a round against this same
-            # tracker as each spawn wave closes, so this is what lets the
-            # empty-result gate below tell "this attempt has already been charged"
-            # from "this attempt has cost nothing yet". Read after `start_stage`,
-            # which registers the stage without resetting its tally -- a retry
-            # keeps the rounds its earlier attempts spent.
-            _rounds_at_entry = tracker.round_count(stage_num)
             title = titles[stage_idx] if stage_idx < len(titles) else ""
             label = f"Stage {stage_num}: {title}" if title else f"Stage {stage_num}"
             sep = f"\n\n───── {label} ─────\n"
@@ -1089,13 +1069,8 @@ async def _stage_loop(
             # Capture result to disk, split in two: the message walk stays on
             # the loop (it reads live slot state), and the mkdir + write go to a
             # worker. This was one synchronous call on the loop.
-            #
-            # The walk sits OUTSIDE the try: it cannot raise OSError, and the
-            # empty-result gate below reads its answer, so leaving it inside
-            # would make a failed WRITE indistinguishable from a stage that
-            # produced nothing.
-            _raw_parts = _collect_stage_result_parts(slot)
             try:
+                _raw_parts = _collect_stage_result_parts(slot)
                 result_path = await asyncio.to_thread(
                     _write_stage_result, slot.key, stage_num, _raw_parts
                 )
@@ -1105,91 +1080,11 @@ async def _stage_loop(
                     "Failed to capture stage %d result to disk", stage_num, exc_info=True
                 )
 
-            # A stage that produced NOTHING has not completed. Until now the
-            # loop advanced on "`_run_chat` returned without raising", so an
-            # empty or refused turn moved the plan forward, marked the stage
-            # completed in `status_summary`, and a Go All run reached
-            # "✅ All N stages complete" having done none of it.
-            #
-            # "Produced work" is deliberately narrow and mechanical: the text
-            # this stage captured is empty after stripping. It is the same
-            # snapshot that was just written to `stage_N_result.md`, so the
-            # verdict matches the artifact on disk rather than a second opinion
-            # about it -- and a stage whose turn was all tool calls with no
-            # assistant text genuinely handed the next stage nothing.
-            #
-            # It is a FAILED ROUND of this stage, not a plan error: the round is
-            # recorded on the tracker (so three empty attempts reach
-            # `MAX_STAGE_ROUNDS` exactly as three fruitless spawn waves do), the
-            # stage is latched for retry so the next Go re-enters IT rather than
-            # the stage after it, and the user is asked -- in the same notice
-            # shape and with the same Go row as every other pause. Auto-run
-            # stops rather than retrying by itself, which is what every other
-            # guard in this loop does (timeout, round cap, subagent failure):
-            # the next attempt is only worth spending if a human still wants it.
-            if not "".join(_raw_parts).strip():
-                # ONE round per attempt, whoever records it. A delegated stage
-                # that spawned a wave and then emitted no assistant text is the
-                # ordinary shape of this case -- it is named in the comment above
-                # -- and its wave has already been charged here by
-                # `_subagent_done`. Recording another would make that single
-                # attempt cost two of the stage's three rounds, so two empty
-                # attempts would exhaust a budget of three. A round is recorded
-                # only when this attempt has not been charged yet, which is what
-                # keeps an empty stage from being retried forever without ever
-                # reaching the cap.
-                _rounds_now = tracker.round_count(stage_num)
-                if _rounds_now > _rounds_at_entry:
-                    _empty_rounds = _rounds_now
-                    _limit_hit = tracker.round_limit_reached(stage_num)
-                else:
-                    _empty_rounds = _rounds_now + 1
-                    _limit_hit = tracker.record_round(stage_num)
-                tracker.mark_stage_for_retry(stage_num)
-                slot._auto_run = False
-                if _limit_hit:
-                    _empty_msg = (
-                        f"⚠️ Stage {stage_num} produced no output, and has now used all "
-                        f"{MAX_STAGE_ROUNDS} of its rounds. Auto-run stopped — send "
-                        f"guidance, then click **Go** to retry this stage."
-                        "\n\n[OPTION: Go | Go All | Cancel]"
-                    )
-                else:
-                    _empty_msg = (
-                        f"⚠️ Stage {stage_num} produced no output, so it is not complete "
-                        f"(attempt {_empty_rounds} of {MAX_STAGE_ROUNDS}). Auto-run "
-                        f"stopped — click **Go** to retry this stage."
-                        "\n\n[OPTION: Go | Go All | Cancel]"
-                    )
-                _empty_msg, _ = redact_exfiltration_urls(_empty_msg)
-                _empty_msg, _ = redact_credentials(_empty_msg)
-                append_and_surface(state, slot, "assistant", _empty_msg, "msg msg-a")
-                sel().log(
-                    SecurityEvent(
-                        event_id=uuid.uuid4().hex,
-                        timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                        event_type="auto_run_empty_stage",
-                        caller_identity=f"dashboard:{slot.key}",
-                        agent=getattr(slot, "agent", ""),
-                        source="dashboard",
-                        operation="stage_produced_nothing",
-                        outcome="stopped",
-                        resources=f"slot={slot.key},stage={stage_num},rounds={_empty_rounds}",
-                    )
-                )
-                # Same exit as the stage gate below: the Go row needs
-                # `needs_input`, and the plan must not be closed out as done.
-                _paused = True
-                return
-
             # Re-check the round cap AFTER the stage's subagent wave: those
             # completions are what push a dashboard stage to its round limit, and
             # they land on this tracker while the stage runs. Placed after the
             # capture above so the completed stage's work is on disk (and its
-            # result recorded) before the plan halts -- and after the empty-result
-            # gate, so a stage that spent its waves AND produced nothing is
-            # latched for retry by that gate instead of being halted here with no
-            # latch, which would advance past it on the next Go.
+            # result recorded) before the plan halts.
             #
             # AUTO-RUN ONLY, like the plan watchdog above and for the same reason.
             # The cap exists to stop an UNATTENDED plan from spinning; an attended

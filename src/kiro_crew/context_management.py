@@ -118,7 +118,6 @@ class OrchestrationTracker:
         self._plan_warned: bool = False  # the 75% notice fires once per plan
         # 1-based stage the next loop entry must RE-ENTER instead of advancing
         # past it; 0 means "advance normally". Set when a stage produced nothing.
-        self._retry_stage: int = 0
 
     def stop(self) -> None:
         """User requested stop after escalation."""
@@ -200,13 +199,6 @@ class OrchestrationTracker:
         Slack handler then records against and what the loop resumes from.
         """
         self._stage_rounds.setdefault(stage, 0)
-        # Entering a stage is what spends a retry latch, and the only thing that
-        # does: every gate between the loop's read of :attr:`retry_stage` and this
-        # call can exit without entering a stage, and a latch consumed at that read
-        # would let the next Go skip the stage it named. Cleared unconditionally
-        # rather than only for ``stage == self._retry_stage``, because entering ANY
-        # stage means the loop got past the latch's purpose.
-        self._retry_stage = 0
         # Unconditional: this is the per-STAGE clock, so entering stage 2 must not
         # inherit stage 1's elapsed time.
         self._stage_start = time.monotonic()
@@ -215,33 +207,6 @@ class OrchestrationTracker:
         # every stage boundary refresh the ceiling the watchdog enforces.
         if not self._plan_start:
             self._plan_start = time.monotonic()
-
-    def mark_stage_for_retry(self, stage: int) -> None:
-        """Re-enter *stage* on the next loop entry rather than advancing past it.
-
-        The stage loop otherwise resumes at :attr:`current_stage`, the highest
-        stage key -- which the entered stage already registered through
-        ``start_stage``, so "do not advance" cannot be expressed by leaving the
-        ledger alone. It is a separate latch rather than an un-registration
-        because the stage DID run: its rounds, its result path and its place in
-        ``status_summary`` are all real and must survive the retry.
-        """
-        self._retry_stage = stage
-
-    @property
-    def retry_stage(self) -> int:
-        """The latched retry stage (1-based), or 0 when none. A pure READ.
-
-        Deliberately not consumed here. The loop reads this to pick its starting
-        index, and several gates between that read and the stage it names can exit
-        the loop without entering ANY stage -- the whole-plan watchdog and the
-        stage-timeout check both break before ``start_stage``. A latch spent at the
-        read would be gone on those paths, and the next Go would resume from
-        :attr:`current_stage` and silently skip the stage that produced nothing.
-        The latch is cleared by :meth:`start_stage`, i.e. by the retry actually
-        happening, so exactly one re-entry is bought and nothing buys it early.
-        """
-        return self._retry_stage
 
     def round_limit_reached(self, stage: int) -> bool:
         """True when *stage* has spent its whole round budget.
@@ -469,37 +434,112 @@ Stage N: Verification
 # carry no plan NUMBERING at all are refused here instead — see
 # ``_ordered_plan_run``.
 _PLAN_STAGE_LINE_RE = re.compile(
-    r"^[ \t]*(?:Phase|Step|Stage|Part)[ \t]+(\d+)[ \t]*[:\-—]",
+    r"^[ \t]*(?:Phase|Step|Stage|Part)[ \t]+(\d{1,4})[ \t]*[:\-—]",
     re.IGNORECASE | re.MULTILINE,
 )
-_PLAN_NUMBERED_BOLD_RE = re.compile(r"^[ \t]*(\d+)\.[ \t]+\*\*[A-Z]", re.MULTILINE)
+# IGNORECASE is load-bearing here, not decoration: a model writes
+# ``1. **setup the repo**`` as readily as ``1. **Setup the repo**``, and the
+# single alternation this pair replaced carried the flag for both shapes.
+# Without it every lowercase-led bold plan is invisible to the filter.
+_PLAN_NUMBERED_BOLD_RE = re.compile(
+    r"^[ \t]*(\d{1,4})\.[ \t]+\*\*[A-Z]",
+    re.IGNORECASE | re.MULTILINE,
+)
 
-# How many bold-led ordered items a text needs before it counts as plan-like on
-# that shape ALONE. Two is the commonest shape of ordinary prose that is not a
-# plan ("1. **Yes** … 2. **No** …", a two-option write-up), and it carries no
-# stage vocabulary to distinguish it. The stage-line shape names a phase/stage
-# explicitly, so two is enough there.
+# The step number is captured with a LENGTH BOUND, and it is not cosmetic:
+# ``int()`` refuses a string of more than 4300 digits (CPython's integer-string
+# conversion limit), and this runs on every assistant turn over text the model
+# wrote, so an unbounded capture turns a completed response into an error turn.
+# Four digits is far past any real plan and keeps the conversion free.
+#
+# How long a run has to be, and it depends on what the run is MADE OF.
+#
+# A run containing a `Phase|Step|Stage|Part N:` line names a stage explicitly, so
+# two items is enough -- a two-stage plan is ordinary, and refusing it is a miss
+# the downstream rephrase never gets the chance to correct. A run of bold-led
+# ordered items ALONE carries no stage vocabulary, and two of those is the
+# commonest shape of ordinary prose ("1. **Yes** ... 2. **No** ...", a
+# two-option write-up), so that shape still needs three.
+#
+# The two thresholds are unchanged from the predecessor of this comment. What
+# changed is that one run may now be made of BOTH shapes, and a stage line
+# anywhere in it is what buys the shorter threshold.
+_PLAN_STAGE_RUN_MIN = 2
 _PLAN_BOLD_LIST_MIN = 3
 
 
-def _ordered_plan_run(pattern: re.Pattern[str], text: str) -> int:
-    """Length of the run of *pattern* lines numbered 1, 2, 3, … from the start.
+def _longest_run_from_one(numbered: "list[tuple[int, int, bool]]") -> tuple[int, int]:
+    """Longest run numbered 1, 2, 3 … in *numbered*, as ``(length, with stage)``.
+
+    *numbered* is ``(position, number, is a stage line)`` in document order. The
+    second value counts only runs holding at least one stage line, which is what
+    lets the caller demand a shorter run of that kind.
+
+    The run is the LONGEST one starting at 1, not the run at the head of the
+    text: stopping at the first mismatch let one stray ``Step 3:``-shaped line
+    earlier in the turn — a sentence about the code, a quoted log — zero the
+    score of the real plan printed below it.
+    """
+    best = 0
+    best_staged = 0
+    expected = 1
+    run_has_stage = False
+    for _, value, is_stage in numbered:
+        if value == expected:
+            expected += 1
+            run_has_stage = run_has_stage or is_stage
+        elif value == 1:
+            # A mismatch is not the end of the scan, it is where the next
+            # candidate run may start -- and a line numbered 1 is such a start.
+            expected = 2
+            run_has_stage = is_stage
+        else:
+            expected = 1
+            run_has_stage = False
+            continue
+        best = max(best, expected - 1)
+        if run_has_stage:
+            best_staged = max(best_staged, expected - 1)
+    return best, best_staged
+
+
+def _ordered_plan_runs(text: str) -> tuple[int, int, int]:
+    """Three readings of *text*: ``(stage lines alone, bold alone, mixed)``.
 
     A plan numbers its steps from 1 and counts up, which is what separates one
-    from a list that merely happens to be numbered. Counting the RUN rather than
-    the matches is what stops three shapes that each counted as two matches
-    before: an excerpt starting mid-list (``3. **Alpha**`` / ``4. **Beta**``),
-    the same line repeated in two worked examples (``Step 1:`` … ``Step 1:``),
-    and an unordered enumeration. ``validate_plan_format`` already demands
-    sequential-from-1 numbering of a real plan, so this is the same reading
-    applied one stage earlier.
+    from a list that merely happens to be numbered. Counting a RUN rather than
+    the matches is what stops an excerpt starting mid-list (``3. **Alpha**`` /
+    ``4. **Beta**``), the same line repeated in two worked examples (``Step 1:``
+    … ``Step 1:``), and an unordered enumeration.
+
+    Three readings rather than one, because no single sequence serves every real
+    plan:
+
+    * **Stage lines alone.** A plan states its stages and numbers its substeps
+      under them — ``Stage 1: Setup`` / ``1. **Install**`` / ``2. **Configure**``
+      / ``Stage 2: Build``. Read as one merged sequence the substeps carry the
+      count past 2, so ``Stage 2`` fails to continue its own run and a plan
+      plainly written as a plan scores 1. The stage shape therefore keeps a
+      reading of its own, where substep numbering cannot reach it.
+    * **Bold items alone.** The symmetric case: stage vocabulary interleaved with
+      a bold-led list must not break that list's own count either.
+    * **Mixed.** A model also writes ONE sequence in both shapes
+      (``Stage 1: Survey`` then ``2. **Build**``), which neither isolated reading
+      sees as longer than 1.
+
+    The mixed reading is returned only for runs holding at least one stage line.
+    A mixed run of bold items alone is just the bold reading, and letting it
+    qualify at the shorter threshold is what would turn ``1. **Yes**`` /
+    ``2. **No**`` into a plan.
     """
-    expected = 1
-    for m in pattern.finditer(text):
-        if int(m.group(1)) != expected:
-            break
-        expected += 1
-    return expected - 1
+    stage_matches = [(m.start(), int(m.group(1)), True) for m in _PLAN_STAGE_LINE_RE.finditer(text)]
+    bold_matches = [
+        (m.start(), int(m.group(1)), False) for m in _PLAN_NUMBERED_BOLD_RE.finditer(text)
+    ]
+    stage_run, _ = _longest_run_from_one(stage_matches)
+    bold_run, _ = _longest_run_from_one(bold_matches)
+    _, mixed_staged_run = _longest_run_from_one(sorted(stage_matches + bold_matches))
+    return stage_run, bold_run, mixed_staged_run
 
 
 def looks_like_plan(text: str) -> bool:
@@ -510,9 +550,10 @@ def looks_like_plan(text: str) -> bool:
     to fire on any numbered text, because every false positive here buys that
     LLM call.
     """
-    if _ordered_plan_run(_PLAN_STAGE_LINE_RE, text) >= 2:
+    _stage_run, _bold_run, _mixed_staged_run = _ordered_plan_runs(text)
+    if _stage_run >= _PLAN_STAGE_RUN_MIN or _mixed_staged_run >= _PLAN_STAGE_RUN_MIN:
         return True
-    return _ordered_plan_run(_PLAN_NUMBERED_BOLD_RE, text) >= _PLAN_BOLD_LIST_MIN
+    return _bold_run >= _PLAN_BOLD_LIST_MIN
 
 
 _GO_ALL_RE = re.compile(r"\[OPTION:\s*Go\s*\|\s*Cancel\s*\]")

@@ -301,7 +301,9 @@ def test_looks_like_plan_false_two_item_bold_list():
     """ "1. **Yes** / 2. **No**" is a two-option write-up, not a plan.
 
     The bold-list shape carries no stage vocabulary at all, so it needs a longer
-    run than the `Stage N:` shape before it counts.
+    run than the `Stage N:` shape before it counts. A run that MIXES the shapes
+    qualifies at two, because the stage line in it is the vocabulary this one
+    lacks -- see ``test_plan_detection_breadth.py``.
     """
     from kiro_crew.context_management import looks_like_plan
 
