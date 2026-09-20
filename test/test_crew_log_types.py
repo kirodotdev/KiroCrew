@@ -202,6 +202,20 @@ CANONICAL: dict[str, dict] = {
         "facts_omitted": [],
         "observed_at": 1789000002.5,
     },
+    "radar/recorded": {
+        "crew_id": "c_0a1b2c3d",
+        "owner": "kirodotdev",
+        "repo": "KiroCrew",  # brand-ok: the repository name
+        "number": 2251,
+        "phase": "implementing",
+        "next": "add the Windows branch to _safe_chmod",
+        "tried": {"approach": "hasattr guard", "rejected_because": "loses the ACL"},
+        "branch": "fix/safe-chmod-2251",
+        "pr_number": 2271,
+        "ci_state": {"state": "running", "round": 3},
+        "event": "entered implementing: the test already fails",
+        "event_kind": "implement",
+    },
 }
 
 
@@ -227,7 +241,7 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # had never declared -- four subagent/*, background/completed and plan/updated --
     # joined it. The first five stopped a fold outright; plan/updated was skipped
     # instead, which the class fold reads as damage.
-    assert len(SESSION_ENTRY_TYPES) == 29
+    assert len(SESSION_ENTRY_TYPES) == 30
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.
@@ -272,10 +286,12 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
     # vocabulary that arrives from a provider, the gateway's teardown reasons or a
     # subagent runtime would turn "the upstream set grew" into a lost entry.
     #
-    # The two actor sets, the ledger's event_kind, the observation's producer and a
-    # plan row's state are the only ones a producing site clamps -- the last computed
-    # as done-or-open from one boolean, so a third value has no path to the entry. A
-    # type with no
+    # The two actor sets, the ledger's event_kind, the observation's producer, a plan
+    # row's state and the radar ledger's three vocabularies are the only ones a producing
+    # site clamps: a plan row's state is computed as done-or-open from one boolean, so a
+    # third value has no path to the entry, and the crew store refuses an unknown phase
+    # or event kind before anything is appended, and coerces an unknown skip scope to
+    # ``other``, so no value outside these sets ever reaches an entry. A type with no
     # producing site cannot qualify, however small its spec vocabulary looks: there
     # is no code enforcing the set, so the first resolver to report a value outside
     # it would have the entry refused rather than recorded.
@@ -291,6 +307,9 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
         ("ledger/recorded", "event_kind"),
         ("object/observed", "producer"),
         ("plan/updated", "state"),
+        ("radar/recorded", "phase"),
+        ("radar/recorded", "scope"),
+        ("radar/recorded", "event_kind"),
     }
     emitted = set(_types_with_a_producing_site())
     assert {spec_type for spec_type, _ in closed} <= emitted

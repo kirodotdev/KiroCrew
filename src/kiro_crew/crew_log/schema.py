@@ -144,6 +144,11 @@ TYPE_OWNERSHIP: dict[str, frozenset[str]] = {
             # observation is made for it and lands in its own history; the producer
             # that made it is named on the entry, never inferred from prose.
             "object",
+            # The Issue Radar crew ledger. ``issue_radar_crew_record`` appends one
+            # ``radar/recorded`` entry per call into the crew's own session log and
+            # every reader folds those entries, which is what makes that ledger a
+            # projection of the crew log rather than a store of its own.
+            "radar",
             "write",
         }
     ),

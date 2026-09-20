@@ -113,6 +113,14 @@ def _bad_request(message: str, code: str) -> web.Response:
     return web.json_response({"error": message, "code": code}, status=400)
 
 
+def _owner_served_refusal(name: str) -> web.Response:
+    """The answer for a slot-keyed fold its owner serves: the same as an unregistered name."""
+    return _bad_request(
+        f"projection {name!r} is slot-keyed and is served by its owner, not by this route",
+        "unknown_projection",
+    )
+
+
 def _seq_param(request: web.Request, name: str) -> int | None:
     """A positive-int query parameter, ``None`` when absent, or raise ValueError."""
     raw = request.query.get(name)
@@ -293,6 +301,12 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
         projections.require_name(name)
     except CrewLogError as exc:
         return _bad_request(exc.message, "unknown_projection")
+    if name == projections.OWNER_SERVED_SLOT_PROJECTION:
+        # A slot-keyed fold its OWNER serves: the owner orders the slot's units by
+        # what the crew recorded and pins the live unit last, which this route cannot
+        # do, and folding the one unit it addresses would serve a part of the record
+        # as the whole. Refused the way an unregistered name is.
+        return _owner_served_refusal(name)
     unit_id, _ = _unit_id(request, session_id)
     try:
         if name in projections.SLOT_PROJECTION_NAMES:
@@ -1648,6 +1662,10 @@ async def api_crew_log_unit_projection(request: web.Request) -> web.Response:
         projections.require_name(name)
     except CrewLogError as exc:
         return _bad_request(exc.message, "unknown_projection")
+    if name == projections.OWNER_SERVED_SLOT_PROJECTION:
+        # Same refusal as the per-session route: this fold is slot-keyed and served
+        # by its owner; a per-unit fold of it would be a part served as the whole.
+        return _owner_served_refusal(name)
     try:
         result = await asyncio.to_thread(projections.read_projection, unit, name)
     except CrewLogError as exc:

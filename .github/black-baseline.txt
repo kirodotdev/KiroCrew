@@ -626,7 +626,6 @@ test/test_is_interrupted.py
 test/test_issue_radar_crew_github.py
 test/test_issue_radar_crew_routes.py
 test/test_issue_radar_crew_runtime.py
-test/test_issue_radar_crew_store.py
 test/test_issue_radar_gh_bin.py
 test/test_issue_radar_investigation_tool.py
 test/test_issue_radar_list_probe.py

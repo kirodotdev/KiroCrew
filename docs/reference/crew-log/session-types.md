@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Twenty-nine types. Read [envelope.md](envelope.md) first for the fields every entry
+Thirty types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -54,6 +54,7 @@ its **Since** line. A type this kind owns with no emitter anywhere is under
 | [`subagent/failed`](#subagentfailed) | A child did not finish its work. | live | `gateway` | closer, by `agent_id` |
 | [`ledger/recorded`](#ledgerrecorded) | One session-ledger update: the fields it set and the event explaining them. | live | `gateway` | — |
 | [`object/observed`](#objectobserved) | The state of an object outside the session, as a named producer observed it. | live | `gateway` | — |
+| [`radar/recorded`](#radarrecorded) | One Issue Radar crew-ledger update: the work-item fields it set and the event explaining them. | live | `gateway` | — |
 
 ## Session and turn
 
@@ -1129,6 +1130,85 @@ entries. Read `state`, `mergeability`, `review_decision` and the `checks` bucket
 `facts_omitted` as unknown, never as its default.
 
 **Since** — the producer half of #12397.
+
+## The Issue Radar crew ledger
+
+### `radar/recorded`
+
+One Issue Radar crew-ledger update: the work-item fields it set, and the event
+explaining them.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — One entry per `issue_radar_crew_record` call, appended to the
+crew log of the session the crew runs on. A crew's work items, its progress lines
+and its passes are the `radar` fold of these entries over every unit the crew's
+slot ran under, so the ledger is a projection of the log rather than a stored
+document. The repository's shared skip index is the union of that fold across
+every crew of the repository.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `crew_id` | string | required | The crew this update belongs to. | |
+| `owner` | string | required | Repository owner the crew works in. | |
+| `repo` | string | required | Repository name the crew works in. | |
+| `number` | int | optional | The issue this update is about. ABSENT on a crew-level step (a queue sweep that took nothing), which is the only kind of entry that patches no work item. | |
+| `phase` | string | optional | The item's new phase. Never written without `event` and `event_kind`, which is what makes the phase-requires-a-reason rule a property of ONE entry. Closed: the writer refuses an unknown phase before anything is appended. | `selected`, `claimed`, `investigating`, `implementing`, `awaiting-ci`, `addressing-review`, `awaiting-merge`, `awaiting-reply`, `resolved`, `skipped`, `yielded`, `handed-back`, `preempted` |
+| `outcome` | string | optional | Terminal outcome; an empty string clears it. | |
+| `decision` | string | optional | What the crew decided to do. | |
+| `why` | string | optional | On what grounds. | |
+| `next` | string | optional | The resumable intent — the concrete next step. | |
+| `tried` | object | optional | One rejected approach, appended to the item's list. | |
+| `tried.approach` | string | required | What was tried. | |
+| `tried.rejected_because` | string | optional | Why it was rejected. | |
+| `worktree` | string | optional | Local only; never echoed into a comment. | |
+| `branch` | string | optional | Local only. | |
+| `base_sha` | string | optional | Local only. | |
+| `pr_number` | int | optional | The pull request this item opened. | |
+| `ci_state` | object | optional | CI reading merged into the item's `ci_state` map, key by key. Members are `state`, `passed`, `total`, `round`, `inherited_reds`; the fold keeps no other key and re-bounds each to the record tool's own type and ceiling (a 32-character `state`, counters as ints within the tool's ranges). | |
+| `claim_comment_id` | int | optional | Which forge comment carries the claim. | |
+| `labels_applied` | array of string | optional | Labels this crew put on the issue, replaced whole; the fold keeps at most 20. | |
+| `clear` | array of string | optional | Work-item fields this update EMPTIES, by name. How an explicit null in a record call is carried: a typed field cannot hold one, so the writer names the cleared fields and the fold empties them before applying the fields the same update sets. | `decision`, `why`, `next`, `worktree`, `branch`, `base_sha`, `pr_number`, `claim_comment_id`, `ci_state`, `labels_applied`, `outcome` (open) |
+| `skip` | object | optional | Present when this update records a PASS on the issue. The repository's shared skip index is a fold of these across every crew of the repository. | |
+| `skip.reason` | string | required | Why the issue was passed over. | |
+| `skip.scope` | string | required | Closed: the writer coerces an unknown scope to `other`. | `architecture`, `new-feature`, `needs-design`, `needs-decision`, `needs-investigation`, `duplicate`, `already-fixed`, `not-reproducible`, `wrong-root-cause`, `breaking-change`, `gate-config`, `other` |
+| `skip.crew_id` | string | optional | The crew that decided the pass, when it is not the entry's own — only a carried entry sets it. | |
+| `skip.decided_at` | string | optional | When the pass was decided, when not this entry's time — carry only. | |
+| `skip.deferred` | boolean | optional | True when another crew's decision on this number already stood in the shared index as this pass was recorded. A deferred pass never stands over the decision it saw, whatever the clocks say: the writer's own observation is the first-writer token, not a timestamp. | |
+| `carried` | bool | optional | True on an entry that carries a pre-projection on-disk record forward, once, so a crew upgraded mid-work keeps its items and the repository keeps its passes. | |
+| `claimed_at` | string | optional | The carried record's own stamp; the fold stamps every other entry itself. | |
+| `last_progress_at` | string | optional | Carry only, as `claimed_at`. | |
+| `finished_at` | string | optional | Carry only, as `claimed_at`. | |
+| `event` | string | required | The public progress line. | |
+| `event_kind` | string | required | Which kind of step this records. `sweep` is the one crew-level kind and the only one an entry without `number` may carry. Closed: the writer refuses an unknown kind before anything is appended. | `claim`, `investigate`, `reply`, `implement`, `ci`, `review`, `conflict`, `merge`, `handback`, `skip`, `yield`, `sweep` |
+
+**Invariants** — One entry per call, carrying only the fields that call set — an
+omitted field means "unchanged", which is what lets a partial patch be one line. A
+phase change carries its event in the SAME entry, and a pass carries its skip row in
+the same entry as the phase that records it, so no reader can observe a phase that
+moved without its reason or an issue skipped without its index entry. Stamps
+(`claimed_at`, `last_progress_at`, `finished_at`) come off the entry's own `time`
+except on a carried entry, which re-states a record that already had them. The crew
+ledger therefore DEPENDS on this log: a crew whose session has no crew log cannot
+record, and the tool refuses rather than keeping a document of its own.
+
+```json
+{"type":"radar/recorded","seq":81,"time":1789000002700,"src":"gateway","data":{"crew_id":"c_0a1b2c3d","owner":"kirodotdev","repo":"KiroCrew","number":2251,"phase":"implementing","next":"add the Windows branch to _safe_chmod","tried":{"approach":"hasattr guard","rejected_because":"loses the ACL"},"branch":"fix/safe-chmod-2251","pr_number":2271,"ci_state":{"state":"running","round":3},"event":"entered implementing: the test already fails","event_kind":"implement"}}
+```
+
+**Reader hint** — Fold a crew's entries oldest first across every unit its slot ran
+under, the live unit last; a later entry's set fields overwrite an earlier one's, an
+omitted field leaves the folded value unchanged, a name in `clear` empties that
+field before the same entry's set fields apply, `tried` appends, and the FIRST pass
+recorded on a number stands. An entry that repeats an item's OWN LAST applied update
+exactly — same payload, whatever its line id, which a retry re-stamps — is applied
+once; an item that legitimately returns to identical fields after intervening updates
+is a new update and applies. An entry naming a `crew_id` other than
+the fold's first is left out: every unit of one slot belongs to one crew.
+
+**Since** — the Issue Radar crew ledger's move onto the crew log.
 
 ## Removed types
 

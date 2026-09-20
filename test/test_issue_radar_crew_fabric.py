@@ -14,19 +14,26 @@ test go red, restore):
   * **Re-entering a phase after an exit is a reopen**, counted, and each restarts
     the dwell clock.
 
-Plus the two conditions whose failure is otherwise silent: a LEGACY ledger line
-with no ``phase`` key must be tolerated (degrade, not crash), and the route must
-answer a non-GitHub provider / an empty repo with ``items: []`` at HTTP 200.
+Plus the two conditions whose failure is otherwise silent: a work item CARRIED from a
+pre-projection ledger (whose history has no phase-bearing lines) must fold rather
+than crash, and the route must answer a non-GitHub provider / an empty repo with
+``items: []`` at HTTP 200.
 
-The fold tests drive the store directly against a ``tmp_path`` root — every store
-function threads ``root`` for exactly this reason. The route tests look the handler
-up out of a real ``web.Application`` (so registration and the gates are proven too)
-and isolate all data behind one ``routes._scope`` patch, mirroring
-``test_issue_radar_crew_routes``.
+The fold tests drive the store directly against a ``tmp_path`` root -- every store
+function threads ``root`` for exactly this reason -- and against an isolated crew
+log data home, since a crew's ledger is the ``radar`` fold of its own crew log: each
+crew these tests create gets the unit its slot runs on (:func:`_crew`), and every
+write goes through ``commit_work_progress`` with that unit as ``session_id``, exactly
+as the write route does. The route tests look the handler up out of a real
+``web.Application`` (so registration and the gates are proven too) and isolate all
+data behind one ``routes._scope`` patch, mirroring ``test_issue_radar_crew_routes``.
 """
 
+import itertools
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -41,6 +48,10 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     routes,
     store,
 )
+from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.crew_log.schema import KIND_SESSION
+from kiro_crew.crew_log.store import CrewLog
 
 OWNER, REPO = "kirodotdev", "KiroCrew"  # brand-ok: the repository name
 BASE = "/api/apps/issue-radar"
@@ -48,14 +59,50 @@ BASE = "/api/apps/issue-radar"
 
 # ── fold fixtures ────────────────────────────────────────────────────────────
 
+#: crew id -> the live crew log unit its slot runs on, for the crews a test made.
+_UNITS: dict[str, str] = {}
+_SEQ = itertools.count(1)
+
+
+def _isolate_crew_log(case: unittest.TestCase) -> None:
+    """Own crew log data home, crew log on, writer state reset around *case*."""
+    home = tempfile.TemporaryDirectory()
+    case.addCleanup(home.cleanup)
+    env = mock.patch.dict(os.environ, {"KIROCREW_HOME": home.name, crew_log_emit.CREW_LOG_ENV: "1"})
+    env.start()
+    case.addCleanup(env.stop)
+    crew_log_emit.reset_caches()
+    crew_store._fold_cache.clear()
+    _UNITS.clear()
+
+    def _teardown() -> None:
+        crew_log_emit.drain_for_shutdown(timeout=2.0)
+        crew_log_emit.reset_caches()
+        crew_store._fold_cache.clear()
+        _UNITS.clear()
+
+    case.addCleanup(_teardown)
+
 
 def _crew(root: Path, name: str = "Andromeda") -> dict:
-    return crew_store.create_crew(OWNER, REPO, {"name": name}, root)
+    """A crew plus the crew log unit its slot runs on, so it can record."""
+    crew = crew_store.create_crew(OWNER, REPO, {"name": name}, root)
+    sid = f"acp-{next(_SEQ)}"
+    CrewLog.create(
+        KIND_SESSION, sid, owner="owner", agent="kirocrew", slot=crew_store.slot_key_for(crew["id"])
+    )
+    _UNITS[crew["id"]] = sid
+    return crew
+
+
+def _tick() -> None:
+    """Let the writer's millisecond clock move between two stamps."""
+    time.sleep(0.004)
 
 
 def _work(root: Path, crew_id: str, number: int, patch: dict) -> dict:
-    """Drive one transaction through the real write path so the ledger line carries
-    the phase exactly as production writes it — no hand-built event dicts."""
+    """Drive one update through the real write path so the entry carries the phase
+    exactly as production writes it -- no hand-built event dicts."""
     return crew_store.commit_work_progress(
         OWNER,
         REPO,
@@ -67,6 +114,7 @@ def _work(root: Path, crew_id: str, number: int, patch: dict) -> dict:
         skip_reason=patch.get("_skip_reason"),
         skip_scope=patch.get("_skip_scope", ""),
         root=root,
+        session_id=_UNITS[crew_id],
     )
 
 
@@ -85,41 +133,34 @@ def _fold_item(root: Path, number: int) -> dict:
 def _bulk_no_move_lines(
     root: Path, crew_id: str, number: int, count: int, *, tag: str, kind: str = "ci"
 ) -> None:
-    """Append *count* byte-identical no-move ledger lines in ONE write.
+    """Append *count* no-move entries to the crew's log through the real writer.
 
-    Each line is shaped exactly as ``commit_work_progress`` writes for a CI round
-    that does NOT move the item: the numbered ``{id, ts, crew_id, number, kind,
-    text}`` line with NO ``phase`` key (``append_event`` omits the key when
-    ``phase is None``). The volume the fold reads past is the write COUNT, not the
-    write PATH -- the property under test lives entirely in the fold's
-    ``require_phase`` READ filter, which discards every one of these lines -- so
-    building them directly and appending once replaces thousands of real,
-    disk-backed transactions with a single append while preserving the exact line
-    the fold must skip.
+    Each entry is shaped exactly as ``commit_work_progress`` writes for a CI round
+    that does NOT move the item: a ``radar/recorded`` entry with a ``ci_state`` delta
+    and no ``phase``. The volume the fold reads past is the entry COUNT, not the
+    write PATH -- the property under test is that an item's phase-entry history is
+    kept per item by the fold, not derived from the bounded event tail these lines
+    fill -- so the entries are queued straight onto the writer and drained once,
+    instead of *count* round trips through the store's refusal checks.
 
-    ``id`` is content-addressed the same way the real writer computes it
-    (:func:`crew_store._event_id`), and ``text`` carries *tag* plus the line index
-    so every id is distinct -- a duplicated id would collapse on read and undercount
-    the volume. The lines are legal input to ``read_events`` and indistinguishable
-    from lines the real path emits for a non-moving round.
+    ``text`` carries *tag* plus the index so every line id is distinct -- a
+    duplicated id would collapse on read and undercount the volume.
     """
-    path = crew_store.events_path(OWNER, REPO, root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ts = store._now_iso()
-    buf = []
+    sid = _UNITS[crew_id]
     for i in range(count):
-        text = f"{tag}-{i}"
-        entry = {
-            "id": crew_store._event_id(ts, crew_id, number, kind, text),
-            "ts": ts,
-            "crew_id": crew_id,
-            "number": int(number),
-            "kind": kind,
-            "text": text,
-        }
-        buf.append(json.dumps(entry))
-    with open(path, "a", encoding="utf-8") as out:
-        out.write("\n".join(buf) + "\n")
+        crew_log_emit.on_radar_recorded(
+            sid,
+            {
+                "crew_id": crew_id,
+                "owner": OWNER,
+                "repo": REPO,
+                "number": int(number),
+                "ci_state": {"round": i},
+                "event": f"{tag}-{i}",
+                "event_kind": kind,
+            },
+        )
+    assert crew_log_emit.flush(timeout=30.0), "the crew log writer did not drain the filler"
 
 
 class FoldTest(unittest.TestCase):
@@ -127,6 +168,7 @@ class FoldTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        _isolate_crew_log(self)
         self.crew = _crew(self.root)
         self.cid = self.crew["id"]
 
@@ -360,61 +402,55 @@ class FoldTest(unittest.TestCase):
         self.assertEqual(item["exit"]["phase"], "skipped")
         self.assertEqual([t["phase"] for t in item["timeline"]], ["claimed"])
 
-    # ── legacy lines with no phase key ───────────────────────────────────────
+    # ── a work item carried from the pre-projection files ────────────────────
 
-    def test_legacy_lines_without_phase_are_tolerated(self):
-        # Simulate a pre-feature ledger: the item record has a live phase, but its
-        # history has no phase-bearing lines, so the timeline is empty and the fold
-        # does not crash.
-        crew_store.upsert_work_item(
-            OWNER, REPO, self.cid, 5109, {"phase": "awaiting-ci"}, self.root
+    def _carried(self, number: int, phase: str) -> None:
+        """Plant a pre-projection item file; the crew's next write carries it."""
+        path = crew_store.work_item_path(OWNER, REPO, self.cid, number, self.root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "crew_id": self.cid,
+                    "owner": OWNER,
+                    "repo": REPO,
+                    "number": number,
+                    "phase": phase,
+                    "tried": [],
+                    "claimed_at": "2026-01-01T00:00:00Z",
+                    "last_progress_at": "2026-01-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
         )
-        path = crew_store.events_path(OWNER, REPO, self.root)
-        with open(path, "a", encoding="utf-8") as fh:
-            for kind in ("claim", "implement", "ci"):
-                fh.write(
-                    json.dumps(
-                        {
-                            "id": f"legacy-{kind}",
-                            "ts": "2026-01-01T00:00:00Z",
-                            "crew_id": self.cid,
-                            "number": 5109,
-                            "kind": kind,
-                            "text": "old line",
-                        }
-                    )
-                    + "\n"
-                )
+
+    def test_a_carried_item_with_no_phase_history_is_tolerated(self):
+        # A pre-projection ledger had a live phase on the record but no per-item
+        # phase history; the carry re-states the record, so the lane opens at its
+        # live phase, stamped at the record's OWN last progress, and the fold does
+        # not crash on a history one line long.
+        self._carried(5109, "awaiting-ci")
+        _step(self.root, self.cid, 7, "claimed", "claim", "the write that carries")
         item = _fold_item(self.root, 5109)
 
         self.assertEqual(item["phase"], "awaiting-ci")  # still authoritative
-        self.assertEqual(item["timeline"], [])  # no phase-bearing lines
+        self.assertEqual(item["timeline"], [{"phase": "awaiting-ci", "at": "2026-01-01T00:00:00Z"}])
         self.assertIsNone(item["exit"])
         self.assertEqual(item["reopens"], 0)
 
-    def test_mixed_legacy_and_new_lines_fold_only_the_new_ones(self):
-        # A legacy line, then real M1 writes on top of it.
-        path = crew_store.events_path(OWNER, REPO, self.root)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "id": "legacy-claim",
-                        "ts": "2026-01-01T00:00:00Z",
-                        "crew_id": self.cid,
-                        "number": 5109,
-                        "kind": "claim",
-                        "text": "old",
-                    }
-                )
-                + "\n"
-            )
-        crew_store.upsert_work_item(OWNER, REPO, self.cid, 5109, {"phase": "selected"}, self.root)
+    def test_a_carried_item_then_real_writes_fold_both(self):
+        # A carried record, then real writes on top of it.
+        self._carried(5109, "selected")
         _step(self.root, self.cid, 5109, "implementing", "implement", "edit")
         item = _fold_item(self.root, 5109)
-        # Only the phase-bearing line lands on the timeline.
-        self.assertEqual([t["phase"] for t in item["timeline"]], ["implementing"])
+        self.assertEqual([t["phase"] for t in item["timeline"]], ["selected", "implementing"])
         self.assertEqual(item["phase"], "implementing")
+        # The carry happened once: the file is marked and its bytes untouched.
+        marker = (
+            crew_store.work_item_path(OWNER, REPO, self.cid, 5109, self.root).parent / ".carried"
+        )
+        self.assertTrue(marker.is_file())
 
     # ── the store change itself ──────────────────────────────────────────────
 
@@ -428,18 +464,18 @@ class FoldTest(unittest.TestCase):
     # ── ordering across items ────────────────────────────────────────────────
 
     def test_items_are_newest_progress_first(self):
-        # Distinct progress timestamps establish recency independently of clock resolution.
-        with mock.patch.object(store, "_now_iso", return_value="2026-01-01T00:00:00.000000Z"):
-            _step(self.root, self.cid, 100, "claimed", "claim", "older")
-        with mock.patch.object(store, "_now_iso", return_value="2026-01-01T00:00:01.000000Z"):
-            _step(self.root, self.cid, 200, "claimed", "claim", "newer")
+        # Stamps come off the crew log's own clock, so distinct progress timestamps
+        # are established by letting that clock move between writes.
+        _step(self.root, self.cid, 100, "claimed", "claim", "older")
+        _tick()
+        _step(self.root, self.cid, 200, "claimed", "claim", "newer")
         numbers = [it["number"] for it in crew_store.fold_fabric(OWNER, REPO, self.root)]
         self.assertEqual(numbers[0], 200)
         self.assertIn(100, numbers)
 
         # Progress on the older item must outrank creation time on the newer item.
-        with mock.patch.object(store, "_now_iso", return_value="2026-01-01T00:00:02.000000Z"):
-            _step(self.root, self.cid, 100, "implementing", "implement", "resumed work")
+        _tick()
+        _step(self.root, self.cid, 100, "implementing", "implement", "resumed work")
         numbers = [it["number"] for it in crew_store.fold_fabric(OWNER, REPO, self.root)]
         self.assertEqual(numbers, [100, 200])
 
@@ -466,6 +502,7 @@ class RouteTest(unittest.IsolatedAsyncioTestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        _isolate_crew_log(self)
         for patcher in (
             mock.patch.object(routes, "_scope", return_value=self.root),
             mock.patch.object(routes, "is_app_enabled", return_value=True),
@@ -508,17 +545,8 @@ class RouteTest(unittest.IsolatedAsyncioTestCase):
     async def test_non_github_provider_answers_200_empty(self):
         # Even if a GitLab repo somehow had crew records on disk, the route must
         # answer items:[] — crews are a GitHub-only feature.
-        crew = crew_store.create_crew(OWNER, REPO, {"name": "Andromeda"}, self.root)
-        crew_store.commit_work_progress(
-            OWNER,
-            REPO,
-            crew["id"],
-            5109,
-            {"phase": "claimed"},
-            "claim",
-            "claimed",
-            root=self.root,
-        )
+        crew = _crew(self.root)
+        _step(self.root, crew["id"], 5109, "claimed", "claim", "claimed")
         resp = await self._get(provider="gitlab", host="gitlab.com")
         self.assertEqual(resp.status, 200)
         body = _payload(resp)
@@ -528,16 +556,14 @@ class RouteTest(unittest.IsolatedAsyncioTestCase):
     # populated
 
     async def test_populated_repo_returns_folded_items(self):
-        crew = crew_store.create_crew(OWNER, REPO, {"name": "Andromeda"}, self.root)
+        crew = _crew(self.root)
         cid = crew["id"]
         for phase, kind, text in (
             ("claimed", "claim", "claimed"),
             ("implementing", "implement", "edit"),
             ("awaiting-ci", "ci", "PR opened"),
         ):
-            crew_store.commit_work_progress(
-                OWNER, REPO, cid, 5109, {"phase": phase}, kind, text, root=self.root
-            )
+            _step(self.root, cid, 5109, phase, kind, text)
         resp = await self._get()
         self.assertEqual(resp.status, 200)
         body = _payload(resp)
@@ -569,7 +595,8 @@ class TitleHintDegradationTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
-        crew = crew_store.create_crew(OWNER, REPO, {"name": "Andromeda"}, self.root)
+        _isolate_crew_log(self)
+        crew = _crew(self.root)
         self.cid = crew["id"]
         _step(self.root, self.cid, 5109, "claimed", "claim", "mine")
 
@@ -593,25 +620,24 @@ class TitleHintDegradationTest(unittest.TestCase):
 @pytest.mark.timeout(300)
 class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
     """A lane parked in one phase keeps its entry timestamp no matter how many
-    newer lines the repo's shared ledger accumulates.
+    newer lines the crew's log accumulates.
 
-    Each case deliberately performs more than 5,000 real, disk-backed
-    transactions.  Windows filesystem and antivirus overhead can legitimately
-    exceed the suite's 120-second default without indicating a deadlock.
-
-    The fold reads the ledger newest-first under a cap, so the cap drops the
-    OLDEST lines. When it was spent on every write rather than the phase-bearing
-    ones, a lane that had sat in a phase long enough for the repo to log a few
-    thousand later steps lost the line that says WHEN it entered — so its dwell
+    The fold keeps the lines that ENTERED a phase per item, apart from the bounded
+    tail of progress lines a crew page shows. Before that, the fabric derived them
+    from a newest-first read of every line under a cap, so the cap dropped the
+    OLDEST lines: a lane that had sat in a phase long enough for the crew to log a
+    few thousand later steps lost the line that says WHEN it entered -- so its dwell
     could not be computed and it dropped out of the queue summary's longest-wait.
     The direction was perverse: the longer an item stalled, the more certain the
-    board was to hide it, which is the one thing the board exists to show.
+    board was to hide it, which is the one thing the board exists to show. These
+    cases fill the event tail well past its bound and read the entry back.
     """
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        _isolate_crew_log(self)
 
     def test_an_old_phase_entry_survives_thousands_of_later_writes(self):
         crew = _crew(self.root)
@@ -624,14 +650,13 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
         stamped_at = entry["timeline"][-1]["at"]
         self.assertTrue(stamped_at, "the lane must carry the moment it entered the phase")
 
-        # The repo stays busy: 6,000 further writes on the SAME item that do not
-        # move it (CI rounds), which is how production accumulates volume without
-        # transitions. This is past the old 5,000 global cap. The 6,000 is
-        # load-bearing (it exceeds the historical cap), but the write PATH is not
-        # -- the property lives in the fold's require_phase READ filter, which
-        # drops every no-move line -- so the volume is built byte-identically and
-        # appended once instead of driven through 6,000 real transactions.
-        _bulk_no_move_lines(self.root, cid, 4242, 6000, tag="round")
+        # The crew stays busy: three times the event tail's bound in further writes
+        # on the SAME item that do not move it (CI rounds), which is how production
+        # accumulates volume without transitions. The count is load-bearing (it is
+        # well past the bound the tail keeps), but the write PATH is not -- the
+        # property lives in the fold keeping phase entries per item -- so the volume
+        # is queued straight onto the writer instead of driven through the store.
+        _bulk_no_move_lines(self.root, cid, 4242, 3 * crew_log.RADAR_EVENT_LIMIT, tag="round")
 
         after = _fold_item(self.root, 4242)
         self.assertEqual(
@@ -652,12 +677,10 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
         stalled_at = _fold_item(self.root, 77)["timeline"][-1]["at"]
 
         # Other work items generate the volume, so the stalled lane itself is
-        # written once and then never again — the worst case for a global cap.
-        # Built byte-identically and appended once (see _bulk_no_move_lines): the
-        # 6,000 count is what exceeds the historical cap; the write path is not
-        # what the fold's require_phase filter turns on.
+        # written once and then never again -- the worst case for a shared tail.
+        # Together the three fill the tail three times over (see _bulk_no_move_lines).
         for other in (900, 901, 902):
-            _bulk_no_move_lines(self.root, cid, other, 2000, tag=f"x{other}")
+            _bulk_no_move_lines(self.root, cid, other, crew_log.RADAR_EVENT_LIMIT, tag=f"x{other}")
 
         self.assertEqual(
             _fold_item(self.root, 77)["timeline"][-1]["at"],
@@ -666,22 +689,14 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
         )
 
     def test_phase_filter_alone_saves_the_entry_when_the_cap_cannot(self):
-        """The require_phase filter is load-bearing ON ITS OWN, not only as a
-        partner to the cap.
+        """The per-item phase history is load-bearing ON ITS OWN, not the tail cap.
 
-        The two cases above go red only if BOTH the cap AND require_phase are
-        reverted together: with the cap intact, dropping require_phase still lets
-        their few thousand no-move lines fit under the 200,000 ceiling, so the
-        phase line survives and the phase filter sits unguarded. This case closes
-        that gap with enough no-move filler that the cap alone cannot save the
-        phase-bearing entry: past the ceiling, an unfiltered newest-first read
-        never reaches the lone old phase line, so dropping require_phase buries it
-        while leaving the cap untouched.
-
-        FILLER_N is one line past the 200,000 ceiling -- the smallest count that
-        still goes red under the require_phase-only mutation, since the phase line
-        is then exactly the single oldest line an unfiltered read evicts. Built
-        byte-identically and appended once, it stays ~1s.
+        The two cases above go red only if the phase history were derived from an
+        event tail SHORTER than their filler. This case fills the tail one line past
+        the fold's own bound (``RADAR_EVENT_LIMIT``), so a fabric that read phase
+        entries out of the tail would find the lone old phase line evicted -- the
+        smallest count that still goes red under that mutation, since the phase
+        line is then exactly the single oldest line the bound evicts.
         """
         crew = _crew(self.root)
         cid = crew["id"]
@@ -693,17 +708,17 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
         stamped_at = entry["timeline"][-1]["at"]
         self.assertTrue(stamped_at, "the lane must carry the moment it entered the phase")
 
-        # One filler past the fold's cap. With require_phase intact these are all
-        # discarded before the cap is consulted, so the phase line is read. Drop
-        # require_phase and the cap evicts the single oldest line -- which is the
-        # phase line -- and the lane loses its entry timestamp.
-        filler_n = crew_store._FABRIC_PHASE_EVENT_LIMIT + 1
+        # One filler past the tail's bound: the phase line is outside the tail
+        # entirely, and the lane still knows when it entered.
+        filler_n = crew_log.RADAR_EVENT_LIMIT + 1
         _bulk_no_move_lines(self.root, cid, 900, filler_n, tag="filler")
+        tail = crew_store.read_events(OWNER, REPO, self.root, crew_id=cid, limit=filler_n + 5)
+        self.assertNotIn("waiting on checks", [line["text"] for line in tail])
 
         after = _fold_item(self.root, 555)
         self.assertEqual(
             after["timeline"][-1]["at"],
             stamped_at,
-            "the phase filter alone must keep the entry when the cap cannot",
+            "the phase history alone must keep the entry when the tail cannot",
         )
         self.assertEqual(after["phase"], "awaiting-ci")

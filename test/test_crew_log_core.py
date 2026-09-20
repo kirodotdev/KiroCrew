@@ -426,6 +426,7 @@ def test_the_ownership_registry_is_the_documented_partition():
         "write",
         "ledger",
         "object",
+        "radar",
     }
 
 
@@ -463,6 +464,7 @@ SESSION_VOCABULARY: tuple[str, ...] = (
     "write/dropped",
     "ledger/recorded",
     "object/observed",
+    "radar/recorded",
 )
 
 

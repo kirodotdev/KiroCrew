@@ -2474,6 +2474,25 @@ _ISSUE_RADAR_CREW_SKIP_SCOPES = frozenset(
     }
 )
 
+#: Work-item fields the record tool may EMPTY through its ``clear`` list. Spelled
+#: out so the tool schema advertises them as an enum; pinned against the entry
+#: type's ``RADAR_CLEARABLE_FIELDS`` by test, so the two cannot drift.
+_ISSUE_RADAR_CREW_CLEARABLE_FIELDS = frozenset(
+    {
+        "decision",
+        "why",
+        "next",
+        "worktree",
+        "branch",
+        "base_sha",
+        "pr_number",
+        "claim_comment_id",
+        "ci_state",
+        "labels_applied",
+        "outcome",
+    }
+)
+
 # Abbreviated-or-full git object name. Bounds ``base_sha`` to something that can
 # actually be handed to git on a resume; a resumed turn checks out from this
 # value, so an arbitrary 5k string here is a resume that fails much later.
@@ -2515,9 +2534,11 @@ ISSUE_RADAR_CREW_READ_SCHEMA = ToolSchema(
 ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
     tool_name="issue_radar_crew_record",
     fields=[
-        # Bounds the number that becomes the work item's FILENAME
-        # (``crews/<crew_id>/<n>.json``) — same ENAMETOOLONG rationale as the
-        # investigation record, hence the same constant.
+        # Bounds the number the work item is KEYED by: a JSON int on one
+        # ``radar/recorded`` crew log entry and the string key the fold files the
+        # item under. The bound guards a key rather than a path, and keeps the
+        # same constant as the investigation record so a number a crew records is
+        # one every other Issue Radar surface can also hold.
         #
         # NOT required. A crew that swept its queue and took nothing has no issue
         # to name, and requiring one here left it recording the cycle against an
@@ -2526,7 +2547,7 @@ ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
         # ``sweep`` is valid ONLY without one — is enforced on the write route and
         # in the store, because it is a relation between two fields and this
         # schema validates them one at a time. Keeping the bound here still
-        # matters: when a number IS sent it is the filename.
+        # matters: when a number IS sent it is the item's key.
         FieldSpec("number", int, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER),
         FieldSpec("phase", str, max_len=32, allowed=_ISSUE_RADAR_CREW_PHASES),
         # Bounded but deliberately NOT ``allowed=``, unlike ``phase`` beside it.
@@ -2540,7 +2561,7 @@ ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
         # an enum in the tool schema, so the model is told what to pick.
         FieldSpec("skip_scope", str, max_len=32),
         # ``outcome`` is a bounded free string, NOT an enum: the store keeps it
-        # as free text (``crew_store.upsert_work_item``) and no vocabulary is
+        # as free text (``crew_store.commit_work_progress``) and no vocabulary is
         # defined anywhere in the app, so an allowlist invented here would
         # reject a legitimate terminal outcome and lose it.
         FieldSpec("outcome", str, max_len=MAX_SHORT_STRING),
@@ -2578,6 +2599,10 @@ ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
             item_max_len=MAX_SHORT_STRING,
             max_items=20,
         ),
+        # Names of work-item fields this update empties. The route checks each name
+        # against the store's clearable list and refuses an unknown one; this bound
+        # only keeps the list from being a payload.
+        FieldSpec("clear", list, item_type=str, item_max_len=32, max_items=16),
         # One public progress line. Short by design: it is rendered as a list
         # item inside the claim comment's <details> block, not as a report.
         FieldSpec("event", str, max_len=MAX_SHORT_STRING),

@@ -1851,7 +1851,10 @@ class SessionConfig:
         metadata=_meta(
             "Archive Retention (days)",
             "Days to keep compacted/rotated session archives before auto-cleanup. "
-            "-1 disables cleanup (manage deletion manually).",
+            "-1 disables cleanup (manage deletion manually). The same window collects "
+            "a closed session's crew log, and with the crew log on that is where "
+            "Issue Radar keeps each repository's shared skip memory and its crews' "
+            "open work items.",
             nullable=True,
         ),
     )

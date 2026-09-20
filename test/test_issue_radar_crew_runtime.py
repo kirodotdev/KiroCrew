@@ -230,8 +230,50 @@ def _crew(root, name="Andromeda", **spec) -> dict[str, Any]:
     return cs.create_crew(OWNER, REPO, {"name": name, **spec}, root)
 
 
+#: crew id -> the live crew log unit its slot runs on. A crew's ledger is the fold of
+#: that unit, so seeding a work item means recording into it as the write route does.
+_UNITS: dict[str, str] = {}
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _isolated_crew_log():
+    """One crew log data home for the module, crew log on.
+
+    Module-scoped because the seeding helper below is called from unittest classes
+    that manage their own store roots; crews are minted with unique ids, so their
+    units never collide, and the fold cache is keyed by crew.
+    """
+    with tempfile.TemporaryDirectory() as home:
+        with mock.patch.dict(os.environ, {"KIROCREW_HOME": home, "KIROCREW_CREW_LOG": "1"}):
+            from kiro_crew.crew_log import emit as crew_log_emit
+
+            crew_log_emit.reset_caches()
+            cs._fold_cache.clear()
+            _UNITS.clear()
+            yield
+            crew_log_emit.drain_for_shutdown(timeout=2.0)
+            crew_log_emit.reset_caches()
+            cs._fold_cache.clear()
+            _UNITS.clear()
+
+
+def _unit_for(crew_id: str) -> str:
+    """The crew's live unit, created on first use."""
+    if crew_id not in _UNITS:
+        from kiro_crew.crew_log.schema import KIND_SESSION
+        from kiro_crew.crew_log.store import CrewLog
+
+        sid = f"acp-{crew_id}"
+        CrewLog.create(KIND_SESSION, sid, owner="owner", agent="kirocrew", slot=cs.slot_key_for(crew_id))
+        _UNITS[crew_id] = sid
+    return _UNITS[crew_id]
+
+
 def _item(root, crew_id, number, **patch) -> dict[str, Any]:
-    return cs.upsert_work_item(OWNER, REPO, crew_id, number, patch, root)
+    """Seed one work item through the real write path: one entry in the crew's log."""
+    return cs.commit_work_progress(
+        OWNER, REPO, crew_id, number, patch, "claim", "seeded", root=root, session_id=_unit_for(crew_id)
+    )["item"]
 
 
 # ── brief injection ─────────────────────────────────────────────────────────
@@ -631,16 +673,23 @@ class TestCrewStoreScoping(unittest.TestCase):
             base = Path(tmp)
             gh = store_mod.provider_root(root=base, provider="github", host="github.com")
             gl = store_mod.provider_root(root=base, provider="gitlab", host="gitlab.example")
-            self.assertNotEqual(cs.skips_path(OWNER, REPO, gh), cs.skips_path(OWNER, REPO, gl))
+            self.assertNotEqual(cs.crews_dir(OWNER, REPO, gh), cs.crews_dir(OWNER, REPO, gl))
 
-            cs.record_skip(OWNER, REPO, 7, "architecture call", "architecture", "c_11111111", gh)
+            crew = _crew(gh)
+            cs.commit_work_progress(
+                OWNER, REPO, crew["id"], 7, {"phase": "skipped"}, "skip", "architecture call",
+                skip_reason="architecture call", skip_scope="architecture",
+                root=gh, session_id=_unit_for(crew["id"]),
+            )
+            # The index is a fold across the crews UNDER A ROOT, so the scoped roots
+            # are independent indexes.
             self.assertEqual(cs.read_skips(OWNER, REPO, gl), {})
             self.assertIn("7", cs.read_skips(OWNER, REPO, gh))
 
             # The same call with the scope forgotten. It cannot raise and cannot be
             # detected downstream: for public GitHub the scoped root and the base
             # data dir are the same path.
-            self.assertEqual(cs.skips_path(OWNER, REPO, base), cs.skips_path(OWNER, REPO, gh))
+            self.assertEqual(cs.crews_dir(OWNER, REPO, base), cs.crews_dir(OWNER, REPO, gh))
 
 
 # ── session launch / trust ──────────────────────────────────────────────────

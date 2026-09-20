@@ -24,6 +24,7 @@ from urllib.parse import quote
 from kiro_crew import mcp_core
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
+    _ISSUE_RADAR_CREW_CLEARABLE_FIELDS,
     _ISSUE_RADAR_CREW_EVENT_KINDS,
     _ISSUE_RADAR_CREW_PHASES,
     _ISSUE_RADAR_CREW_SKIP_SCOPES,
@@ -401,6 +402,20 @@ def schemas() -> list[dict[str, Any]]:
                         "items": {"type": "string"},
                         "description": "Labels you applied, so a hand-back removes exactly those",
                     },
+                    "clear": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": sorted(_ISSUE_RADAR_CREW_CLEARABLE_FIELDS),
+                        },
+                        "description": (
+                            "Fields to EMPTY, by name — the only way to erase one, since "
+                            "an omitted field is left as stored. `pr_number` once the "
+                            "pull request is closed, `claim_comment_id` once the claim "
+                            "comment is gone, `next` when there is no next step. A field "
+                            "both cleared and set in the same call keeps the set value"
+                        ),
+                    },
                     "event": {
                         "type": "string",
                         "description": (
@@ -733,6 +748,13 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
     if "labels_applied" in args:
         _cw_body["labels_applied"] = [
             redact(s) for s in (args.get("labels_applied") or []) if s
+        ]
+    # Names, forwarded as names: the route turns each into an explicit null in the
+    # work-item patch, which is how a field is emptied. Every field above is gated
+    # on truthiness, so this list is the ONLY way a clear reaches the ledger.
+    if "clear" in args:
+        _cw_body["clear"] = [
+            s for s in (args.get("clear") or []) if isinstance(s, str) and s
         ]
     # The flat ci_* args are re-assembled into the store's `ci_state` dict
     # (crew_store merges it key-by-key). `ci_state` the ARG is the forge's

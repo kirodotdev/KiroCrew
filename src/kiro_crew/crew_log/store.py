@@ -609,7 +609,7 @@ def _slot_root_fingerprint(root: Path, names: "list[str]") -> "tuple[Any, ...]":
     return (str(root), stat.st_dev, stat.st_ino, stat.st_mtime_ns, tuple(names))
 
 
-def session_units_for_slot(slot: str) -> "tuple[str, ...]":
+def session_units_for_slot(slot: str, *, strict: bool = False) -> "tuple[str, ...]":
     """Every session crew log whose HEADER names *slot*, oldest unit first.
 
     The slot-keyed read path. A slot owns one ACP session id AT A TIME rather than
@@ -620,6 +620,14 @@ def session_units_for_slot(slot: str) -> "tuple[str, ...]":
     rewritten, and inside the fenced tree, so it does not move when a mapping does.
     A unit whose header cannot be PROVED to be its own is left out rather than
     attributed to a slot it may not belong to (see :func:`_proved_header`).
+
+    *strict* is for a caller that VALIDATES against the listing rather than reading
+    it, and it refuses on both ways the listing can come back incomplete: a scan that
+    could not be made at all, and a child that cannot be proved while already holding
+    entries (:func:`_unproven_holding_content`). Without it a read takes the shorter
+    listing, which is the right answer for a read -- it says nothing false about what
+    it could see -- and the wrong one for a write, which would validate against a
+    record missing whatever that unit recorded.
 
     Ordered by the header's ``createdAt``, then by unit id so a tie is stable.
     That is the order the units were opened in, and therefore the order their
@@ -637,10 +645,18 @@ def session_units_for_slot(slot: str) -> "tuple[str, ...]":
         root = _checked_crew_log_root(KIND_SESSION)
         names = sorted(child.name for child in root.iterdir())
     except (CrewLogError, OSError):
+        # No store, or one that could not be scanned. A read takes the empty listing;
+        # a caller that would VALIDATE against the listing passes ``strict`` and gets
+        # the failure instead, because an empty listing taken for a scan that failed
+        # would let it validate against a record that is not there.
+        if strict:
+            raise
         return ()
     fingerprint = _slot_root_fingerprint(root, names)
     cached = _slot_index
     if cached is not None and cached[0] == fingerprint and not _any_now_provable(root, cached[2]):
+        if strict:
+            _refuse_unprovable_unit(root, cached[2])
         return cached[1].get(slot, ())
     rows: "dict[str, list[tuple[int, str]]]" = {}
     unproven: list[str] = []
@@ -673,7 +689,57 @@ def session_units_for_slot(slot: str) -> "tuple[str, ...]":
         rows.setdefault(unit_slot, []).append((order, unit_id))
     by_slot = {key: tuple(unit for _order, unit in sorted(found)) for key, found in rows.items()}
     _slot_index = (fingerprint, by_slot, tuple(unproven))
+    if strict:
+        _refuse_unprovable_unit(root, tuple(unproven))
     return by_slot.get(slot, ())
+
+
+def _unproven_holding_content(root: Path, unproven: "tuple[str, ...]") -> "str | None":
+    """The first child that cannot be proved AND already holds log content.
+
+    What the strict listing needs beyond the scan. A child ``_proved_header`` could
+    not prove is one of two different things, and only one of them is safe to leave
+    out of the listing:
+
+    * ``create`` has made the directory and not yet published the header. It holds no
+      entries at all, so a listing without it is missing nothing that could be folded.
+    * an established unit whose header will not read right now -- a transient
+      ``OSError``, a link at the name, a segment that will not parse. It may hold any
+      number of entries, so a caller that VALIDATES against the listing (the crew
+      ledger's one-editor rule) would pass against a record missing them.
+
+    "Holds content" is the same test ``create`` itself applies: the header is
+    published atomically, so a partial one never reaches the name, and a zero-byte
+    file "carries no header and no entries". A directory that will not answer at all
+    is reported rather than guessed about -- whether it holds entries is exactly what
+    could not be established.
+    """
+    for name in unproven:
+        directory = root / name
+        if is_link(directory):
+            return name
+        try:
+            segments = [
+                child for child in directory.iterdir() if _segment_first_seq(child) is not None
+            ]
+        except OSError:
+            return name
+        if any(_has_content(segment) for segment in segments):
+            return name
+    return None
+
+
+def _refuse_unprovable_unit(root: Path, unproven: "tuple[str, ...]") -> None:
+    """Raise when a strict listing cannot account for a child that holds entries."""
+    blocked = _unproven_holding_content(root, unproven)
+    if blocked is None:
+        return
+    raise CrewLogError(
+        f"session crew log {blocked!r} holds entries its header cannot prove, "
+        "so the listing is incomplete",
+        code=CODE_BAD_HEADER,
+        field="id",
+    )
 
 
 def _any_now_provable(root: Path, unproven: "tuple[str, ...]") -> bool:

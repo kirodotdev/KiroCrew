@@ -128,7 +128,7 @@ _AGENT_REACHABLE: frozenset[tuple[str, str]] = frozenset(
     {("GET", "/crew"), ("PUT", "/crew/work")}
 )
 
-#: Work-item fields ``PUT /crew/work`` forwards to ``upsert_work_item``.
+#: Work-item fields ``PUT /crew/work`` forwards to ``commit_work_progress``.
 #:
 #: Listed explicitly so the envelope keys (owner/repo/crew_id/number/event/
 #: event_kind) cannot land in the patch, and so this route's writable surface is
@@ -174,10 +174,58 @@ def _crew_conflict(handler):
     async def _wrapped(request: web.Request) -> web.Response:
         try:
             return await handler(request)
+        except crew_store.CrewLedgerEntryTooLarge as exc:
+            # Can never land however often it is retried, so it is not a conflict: the
+            # caller has to record fewer or shorter fields, and 413 says exactly that.
+            return web.json_response(
+                {"error": str(exc), "code": "ledger_entry_too_large"}, status=413
+            )
+        except crew_store.CrewLedgerUnavailable as exc:
+            # A crew whose session has no crew log (log switched off, or no turn run
+            # yet) has nowhere to record into. Named so the agent can tell it from a
+            # refusal of the update itself and stop retrying the same body.
+            return web.json_response(
+                {"error": str(exc), "code": "crew_log_unavailable"}, status=409
+            )
+        except crew_store.CrewLedgerNotRecorded as exc:
+            # The writer drained and the entry is not in the log: nothing was
+            # recorded. A server-side failure of the write, not a conflict of the
+            # update, so 503 -- the same body may be sent again.
+            return web.json_response(
+                {"error": str(exc), "code": "ledger_not_recorded"}, status=503
+            )
         except crew_store.CrewStoreError as exc:
             return web.json_response({"error": str(exc), "code": "crew_conflict"}, status=409)
 
     return _wrapped
+
+
+def _crew_live_unit(request: web.Request, crew: dict[str, Any]) -> str:
+    """The crew log unit *crew*'s slot is serving on now, or ``""``.
+
+    A ledger entry is appended to the CREW's own crew log, whichever caller writes
+    it -- the agent, whose session key is the crew's slot, and the dashboard alike
+    -- so the unit is resolved from the crew's slot key and never from the caller's
+    session. An exact registry read plus an attribute read: no disk, no mutation of
+    session state as a side effect of describing it.
+
+    ``""`` when the slot has no live ACP session: the crew has never run a turn, or
+    its session was torn down and not yet re-created. The store refuses on that
+    rather than guessing a unit, because an update filed under the wrong session is
+    worse than one the caller is told did not land.
+    """
+    from kiro_crew.crew_log.resolve import unit_for_session_key
+
+    slot = str(crew.get("slot_key") or "")
+    state = request.app.get("state")
+    sessions = getattr(state, "sessions", None)
+    if not slot or sessions is None:
+        return ""
+    try:
+        return unit_for_session_key(sessions, f"dashboard:{slot}")
+    except Exception:
+        logger.debug("crew ledger: resolving the crew's live unit failed", exc_info=True)
+        return ""
 
 
 def _agent_gate(method: str, path: str, handler):
@@ -584,6 +632,7 @@ def _crew_page(owner: str, repo: str, crew_id: str, limit: int, root: Any) -> di
         who needs more.
     """
     skips = crew_store.read_skips(owner, repo, root)
+    folded = crew_store.read_ledger(owner, repo, crew_id, root)["counts"]
     return {
         "crew": crew_store.read_crew(owner, repo, crew_id, root),
         "items": crew_store.list_work_items(owner, repo, crew_id, root),
@@ -594,7 +643,15 @@ def _crew_page(owner: str, repo: str, crew_id: str, limit: int, root: Any) -> di
             {"number": row["number"], "reason": row["reason"], "scope": row["scope"]}
             for row in crew_store.recent_skips(owner, repo, root, limit=_MAX_RECENT_SKIPS)
         ],
-        "counts": {"open": crew_store.open_slot_count(owner, repo, crew_id, root)},
+        "counts": {
+            "open": crew_store.open_slot_count(owner, repo, crew_id, root),
+            # The fold counts what its bounded collections evicted so a crew can be
+            # told ONCE PER SNAPSHOT that something was dropped. Left in the fold
+            # value alone, nothing that reads ever said it -- and this payload is what
+            # ``issue_radar_crew_read`` serves.
+            "evicted_items": folded["evicted_items"],
+            "evicted_skips": folded["evicted_skips"],
+        },
     }
 
 
@@ -939,10 +996,37 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
              "code": "unexpected_number"},
             status=400,
         )
+    # `clear` names work-item fields this update EMPTIES. The tool schema keeps
+    # every field strictly typed (an integer cannot be null there), so this list
+    # is how a caller says "no pull request any more"; it becomes an explicit null
+    # in the patch, which the store records as a clear. A name that is not a
+    # clearable field is refused rather than ignored: a typo that no-ops would
+    # leave the caller believing a field was emptied.
+    clear_names: list[str] = []
+    if "clear" in body:
+        raw_clear = body["clear"]
+        if not isinstance(raw_clear, list) or not all(isinstance(n, str) for n in raw_clear):
+            return web.json_response(
+                {"error": "'clear' must be a list of field names", "code": "invalid_clear"},
+                status=400,
+            )
+        unknown = sorted(set(raw_clear) - set(crew_store.CLEARABLE_FIELDS))
+        if unknown:
+            return web.json_response(
+                {"error": (f"'clear' names {', '.join(repr(n) for n in unknown)}; the fields "
+                           f"that can be cleared are {', '.join(crew_store.CLEARABLE_FIELDS)}"),
+                 "code": "invalid_clear"},
+                status=400,
+            )
+        clear_names = list(dict.fromkeys(raw_clear))
 
-    _crew, missing = await _require_crew(key, crew_id, must_be_live=True)
+    crew, missing = await _require_crew(key, crew_id, must_be_live=True)
     if missing is not None:
         return missing
+    # The entry lands in the CREW's own crew log, whichever caller writes it, so the
+    # unit is resolved from the crew's slot rather than from the caller's session. A
+    # crew with no live session has no log to append to and the store refuses.
+    session_id = _crew_live_unit(request, crew)
 
     if crew_level:
         # Refused rather than dropped. Every field named here patches a WORK ITEM,
@@ -951,7 +1035,7 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
         # stored anywhere. `skip_scope` is named alongside them because a pass is a
         # decision about one issue and is indexed by that issue's number.
         stray = sorted(
-            field for field in (*_WORK_PATCH_FIELDS, "skip_scope") if field in body
+            field for field in (*_WORK_PATCH_FIELDS, "skip_scope", "clear") if field in body
         )
         if stray:
             return web.json_response(
@@ -967,6 +1051,7 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
             key.repo,
             crew_id,
             event_text,
+            session_id=session_id,
         )
         return web.json_response(checkpoint)
 
@@ -983,6 +1068,10 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
         return number_error
 
     patch = {field: body[field] for field in _WORK_PATCH_FIELDS if field in body}
+    for name in clear_names:
+        # A field both cleared and set in one call keeps the set value, the same
+        # rule the fold applies to the entry.
+        patch.setdefault(name, None)
     # The route derives the pass's PROSE (only it has the request body); the store
     # owns the coupling — a non-`None` reason is what makes the transaction index
     # one, in the same call and under the same lock as the item and the line.
@@ -1001,6 +1090,7 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
         event_text,
         skip_reason=skip_reason,
         skip_scope=routes._str_field(body, "skip_scope"),
+        session_id=session_id,
     )
     return web.json_response(committed)
 

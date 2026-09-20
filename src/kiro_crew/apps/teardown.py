@@ -464,8 +464,7 @@ def register_slot_close_undo_hook(app: str, hook: SlotCloseHook) -> None:
     atomic. So each committed step needs an inverse, or some ordering of the three
     always leaves a pair disagreeing when a later step fails: notify last leaves a
     live worker behind a dismissed tab, notify first leaves a stopped worker behind
-    a tab that came back. Only a compensating action closes both, which is the same
-    discipline the crew store's own ``commit_work_progress`` rollback uses.
+    a tab that came back. Only a compensating action closes both.
 
     Same contract as :func:`register_slot_close_hook`: idempotent by app name, and
     re-registered from the app's watchdog because this registry is process memory.

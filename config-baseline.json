@@ -1536,7 +1536,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Archive Retention (days)",
-      "help": "Days to keep compacted/rotated session archives before auto-cleanup. -1 disables cleanup (manage deletion manually).",
+      "help": "Days to keep compacted/rotated session archives before auto-cleanup. -1 disables cleanup (manage deletion manually). The same window collects a closed session's crew log, and with the crew log on that is where Issue Radar keeps each repository's shared skip memory and its crews' open work items.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 30,

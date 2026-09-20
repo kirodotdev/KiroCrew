@@ -6,7 +6,7 @@ A session's crew log is an append-only file (`crew-log-core.md`). Every view of 
 is a FOLD: `status`, `usage`, `timeline`, `tools`, `approvals` and `class` -- the
 session side panel of the RFC's section 5 table, plus the one fold a READER of
 another unit's log consults rather than a panel. This module is those five advertised folds, the internal `class` fold, the
-slot-keyed `ledger` fold, the two read routes that serve them, and the frame that
+slot-keyed `ledger` and `radar` folds, the two read routes that serve them, and the frame that
 pushes a fold when the file grows.
 
 The split it implements is RFC NFR-2: the backend folds and cuts pages, the
@@ -14,14 +14,15 @@ frontend renders and pages and never folds. A client that folded the log would
 need the whole file to show one number.
 
 The five panel folds each read ONE session unit and are the set the growth push
-sends, so `PROJECTION_NAMES` holds those five. The `ledger` fold is keyed by a
-SLOT rather than by one unit: a slot owns one ACP session id at a time, so the
-work it accrues over its life is spread across a unit per id it ran under, and
-answering for it means joining them. `SLOT_PROJECTION_NAMES` holds `ledger` and
-is kept OUT of `PROJECTION_NAMES` for that reason -- the growth push and the side
-panel address a session, and pushing a slot-wide value under one session's id
-would report a partial answer as the whole one. `FOLD_NAMES` is the union of the
-two, and the import-time registry check compares a requested name against it.
+sends, so `PROJECTION_NAMES` holds those five. A fold in `SLOT_PROJECTION_NAMES` is
+keyed by a SLOT rather than by one unit: a slot owns one ACP session id at a time,
+so the state it accrues over its life is spread across a unit per id it ran under,
+and answering for it means joining them. `SLOT_PROJECTION_NAMES` holds `ledger`
+and `radar`, and those names are kept OUT of
+`PROJECTION_NAMES` for that reason -- the growth push and the side panel address a
+session, and pushing a slot-wide value under one session's id would report a partial
+answer as the whole one. `FOLD_NAMES` is the union of the two, and the import-time
+registry check compares a requested name against it.
 
 Scope: the SESSION kind. The crew-kind projections (`roster`, `activity`,
 `board`, `budget`, ...) are out of scope here because the crew kind has no writer
@@ -168,22 +169,27 @@ and its one caller asks the registry for it by name.
 | `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. No emitter writes these types yet; the fold is against the declared shape. |
 | `class` (INTERNAL -- not advertised, not pushed) | What KIND of session this log belongs to, over the log's WHOLE LIFE: the memory mode, the owning app, and whether the conversation was ever published to a channel. Each of those three is held at the most RESTRICTIVE value the log ever recorded, from the `class` object on the log's first `session/opened` plus every later `session/class` move, so a session published to a channel for one turn keeps reading as channel-published after the link is dropped -- that turn's content is still in this log. It also carries `workspace`, which folds differently because it is an IDENTITY rather than a restriction: there is no more-restrictive workspace to keep, so the FIRST one stated is held and a later different one sets `workspace_moved`, which is itself the restrictive fact -- a log whose content spans two workspaces is owned by neither. `recorded` says a class was stated at all and `complete` says the history has a beginning, and a reader deciding an authorization question refuses on either being false. The only fold whose consumer is a READER of another unit rather than a panel, which is why it is held restrictive rather than current: a fold that reported the present value would answer a question nobody asks of a log. |
 
-### The slot-keyed ledger fold
+### The slot-keyed folds
 
 | projection | what it answers |
 |---|---|
 | `ledger` | The session work ledger's state record: goal, phase, resumable next step, rejected approaches, artifact pointers, and a bounded event tail. It interprets only `ledger/recorded` and renders the ten fields every reader of that record expects (`session-work-ledger.md`). |
+| `radar` | An Issue Radar crew's ledger: its work items (newest progress first), a bounded tail of progress lines, its own passes for the repository's shared skip index, and the per-item history of phase entries. It interprets only `radar/recorded` and renders the shapes the crew page, the fabric and the `issue_radar_crew_read` tool already expect (`apps/builtins/issue_radar/backend/crew_ledger_spec.md`). |
 
-This fold is the module's ONE exception to FR-4, and it is stated rather than
-assumed, because a reader has to know which kind of fold it holds. A slot owns one
-ACP session id at a time rather than for its whole life, so the record it answers
-for is spread over a unit per id the slot ran under. `fold_slot_checkpoint` folds
-those units oldest first, RE-BASING the seq guard at each one: a seq is comparable
-only within one file, so the second unit's entries all sit at or below the first
-unit's seq, and `advance` would refuse the whole file as a re-fold. The state
-carries forward across the boundary while the seq restarts. `fold_slot` renders the
-result. The units it joins are still exactly one slot's own, so nothing reads across
-slots.
+A slot-keyed fold is the module's stated exception to "one fold, one unit", and it
+is stated rather than assumed, because a reader has to know which kind of fold it
+holds. A slot owns one ACP session id at a time rather than for its whole life, so
+the record it answers for is spread over a unit per id the slot ran under.
+`fold_slot_checkpoint` folds those units oldest first, RE-BASING the seq guard at
+each one: a seq is comparable only within one file, so the second unit's entries all
+sit at or below the first unit's seq, and `advance` would refuse the whole file as a
+re-fold. The state carries forward across the boundary while the seq restarts.
+`fold_slot` renders the result for the ledger's route; the radar fold's owner (the
+crew store) renders the checkpoint itself, since it also advances it over the entry
+it is appending. The units either joins are still exactly one slot's own,
+so nothing reads across slots -- the radar fold's one cross-crew read, the
+repository's skip index, is a union the app makes OVER per-crew folds, not a fold
+that reads another slot's units.
 
 `session_units_for_slot` supplies that list. It names the units whose HEADER can be
 PROVED to belong to the store holding it, ordered by the header's `createdAt` and
@@ -193,24 +199,42 @@ earlier one. A caller that cannot tolerate a clock's ordering re-orders the list
 itself: the ledger's `crew_log_units` applies its own append-order log and drops the
 units a permanent delete excluded before folding, because a backward clock step
 would otherwise apply a retired session's goal over a later one's
-(`session-work-ledger.md`). `read_slot_projection` is the slot-keyed read, and
-`slot_of_session` resolves a session-addressed request to the slot recorded in that
-session's header: the header rather than a session mapping, because it is written
-once inside the fenced tree and cannot be made to name another conversation's slot.
+(`session-work-ledger.md`); the radar fold's owner keeps the order the crew RECORDED
+into its units and pins the crew's LIVE unit last, for the same reason. `read_slot_projection`
+is the slot-keyed read the `ledger` route uses, and `slot_of_session` resolves a
+session-addressed request to the slot recorded in that session's header: the header
+rather than a session mapping, because it is written once inside the fenced tree and
+cannot be made to name another conversation's slot. The radar fold takes no generic
+read route: this module folds it for its owner and the owner serves it, so no reader
+can be handed the listing as stored without the owner's ordering.
 
 A reader that folds on every loop wake would re-walk the whole log each time, since
 the fold interprets only its own entry type but still reads every line to find it.
-So the ledger's caller keeps the checkpoint per slot and advances it over what
-arrived since, through this module's own `advance`. A changed unit list, a newest
-unit whose seq went backwards, or a cold cache each force a full rebuild, because
-each would otherwise be a wrong answer rather than a slow one.
+So each owner keeps the checkpoint (per slot for the ledger, per crew for the radar
+fold) and advances it over what arrived since, through this module's own `advance`.
+A changed unit list, a unit whose seq went backwards, growth in any unit but the
+newest, or a cold cache each force a full rebuild, because each would otherwise be a
+wrong answer rather than a slow one.
+
+The radar fold's own rules, applied to the bytes as the writer applies them to a
+request: an entry naming a crew other than the fold's first is left out (every unit
+of one slot belongs to one crew); an entry identical to the item's LAST applied
+update is applied once (a retry re-stamped later), while an identical update after
+intervening ones is a new update and applies; a name in the entry's `clear` list
+empties that field before the same entry's set fields apply; consecutive crew-level
+sweeps coalesce; a crew-level kind with a number, or a number-less entry with an
+item kind, is dropped; the FIRST pass recorded on a number stands; each CI member and
+the label count are re-bounded to the record tool's own limits; and a `carried`
+entry re-states a pre-projection record with its own stamps (a rejected approach it
+already lists is not appended again), while a carried pass on an issue the crew never
+worked records the row and no work item.
 
 ## 4. Reads
 
 | route | answers |
 |---|---|
 | `GET /api/sessions/{id}/crew-log?from=&to=` | The entries in a seq range, oldest first, with every `ref` on the page resolved (FR-4). |
-| `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. A name in `SLOT_PROJECTION_NAMES` is served from the same route: the slot is resolved from that session's own header first, and the fold then joins every unit the slot ran under. A session whose slot cannot be proved gets the empty fold, never another slot's. |
+| `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. A slot-keyed name this route serves (`ledger`) is resolved to the slot recorded in that session's own header first, and the fold then joins every unit the slot ran under; a session whose slot cannot be proved gets the empty fold, never another slot's. A slot-keyed fold served by its OWNER (`radar`) is refused here (400 `unknown_projection`, the answer an unregistered name gets): folding the one unit this route addresses would serve a part of the record as the whole. |
 | `GET /api/sessions/{id}/crew-log/projections` | Every fold, keyed by name, from ONE resolution and ONE pass over the unit, so a caller showing them together cannot be handed a mix from two units. Each fold keeps its own `seq`, which differs by design: an entry advances the folds it belongs to and leaves the rest. |
 
 **The BATCH read answers two things the folds cannot.** A fold says what it holds;

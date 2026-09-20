@@ -5034,6 +5034,40 @@ def test_a_closed_session_does_not_leave_its_creation_failure_flagged():
     ), "a closed session left its creation-failure flag behind"
 
 
+def test_a_closed_session_does_not_leave_its_overflow_count_behind(monkeypatch):
+    """The per-session overflow count dies with the session, not at the next reset.
+
+    ``overflow_writes(session_id)`` answers "did an append for this session overflow",
+    which a writer reads to tell a landed append from a dropped one. It is therefore
+    per SESSION and read only while that session is writing -- so, like every other
+    per-session map, it is released in the close path's terminal cleanup. Left to
+    ``reset_caches`` a gateway that runs for weeks keeps one ``str -> int`` entry for
+    every session that ever overflowed, and a successor reusing the id would read a
+    count it did not earn.
+
+    Its sibling ``_overflow_reported`` is deliberately NOT touched here: that one is a
+    report-once latch cleared on recovery in ``_note_progress``, it predates this
+    change, and its own lifetime is main's to decide.
+    """
+    _open_session()
+    assert emit.flush()
+
+    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 0)
+    emit._buffer(
+        SESSION,
+        emit._PendingJob(job=lambda: None, what="overflowed append", nbytes=31),
+    )
+    assert emit.overflow_writes(SESSION) == 1, "the fixture did not record an overflow"
+    monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 100_000)
+
+    emit.on_session_closed(SESSION, reason="test")
+    assert emit.flush(timeout=20.0)
+
+    assert (
+        SESSION not in emit._overflow_by_session
+    ), "a closed session left its overflow count behind"
+
+
 # --- loss debt survives until its marker lands -----------------------------
 
 

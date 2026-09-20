@@ -456,6 +456,9 @@ _dropped_reported: "set[str]" = set()
 #: "the writer fell too far behind" -- reading them apart is how an operator tells
 #: a stuck disk from a saturated one.
 _overflow_count = 0
+#: The same count per session, for a writer that must tell ITS OWN rejection apart
+#: from another session's -- a global delta cannot say whose append was refused.
+_overflow_by_session: dict[str, int] = {}
 #: Sessions whose overflow has already been reported, so a saturated buffer is
 #: named once rather than once per rejected entry. Cleared by that session's next
 #: successful append.
@@ -670,8 +673,12 @@ def dropped_writes() -> int:
         return _dropped_count
 
 
-def overflow_writes() -> int:
+def overflow_writes(session_id: str | None = None) -> int:
     """How many appends were rejected for crossing the buffer's memory ceiling.
+
+    With *session_id*, only that session's rejections: a caller judging its own
+    append reads this figure before and after, and another session's rejection in
+    the same window must not read as its own.
 
     Distinct from :func:`dropped_writes`: that names a storage refusal the writer
     gave up on, this names backpressure the buffer refused to hold once it reached
@@ -683,6 +690,8 @@ def overflow_writes() -> int:
     :func:`dropped_writes` is how a stuck disk is told from a saturated one.
     """
     with _lock:
+        if session_id is not None:
+            return _overflow_by_session.get(session_id, 0)
         return _overflow_count
 
 
@@ -792,6 +801,7 @@ def reset_caches() -> None:
         _stall_reported = False
         _dropped_count = 0
         _overflow_count = 0
+        _overflow_by_session.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
         _pending_high_water = 0
@@ -1181,6 +1191,7 @@ def _buffer(session_id: str, pending: _PendingJob) -> None:
             or would_total_bytes > _MAX_PENDING_BYTES
         ):
             _overflow_count += 1
+            _overflow_by_session[session_id] = _overflow_by_session.get(session_id, 0) + 1
             _record_loss_locked(session_id, [pending], True)
             first_overflow = session_id not in _overflow_reported
             _overflow_reported.add(session_id)
@@ -4560,6 +4571,40 @@ def on_object_observed(
     _write(session_id, "object/observed", data, src=_SRC_GATEWAY)
 
 
+def on_radar_recorded(session_id: str, data: dict[str, Any]) -> None:
+    """Append ONE ``radar/recorded`` entry -- an Issue Radar crew's own ledger update.
+
+    The write half of the crew ledger. Every field the caller set rides on this single
+    entry, including the event that explains a phase change and the skip row that
+    indexes a pass, so the rules that a phase never moves without a logged reason and
+    that an issue is never skipped without being indexed are properties of one append
+    rather than of three writes a crash can separate.
+
+    Queued through the same writer as every other entry, for the reason the session
+    ledger gives: an append takes the unit's WRITE OWNERSHIP, and while the emitter
+    holds a running session's handle a second handle in this process is refused, so a
+    ledger that wrote around the emitter would fail for exactly the crews that are
+    working. Going through the writer also keeps the entry ordered against the turn
+    it was recorded inside.
+
+    The caller establishes that the crew's session has a crew log to write to; this
+    is the ordinary ``_write``, so a session without one is a policy no-op here and the
+    refusal belongs where the crew can be told about it.
+    """
+    _write(session_id, "radar/recorded", data, src=_SRC_GATEWAY)
+
+
+def radar_entry_fits(data: dict[str, Any]) -> bool:
+    """Whether *data* would fit one ``radar/recorded`` entry.
+
+    Asked beside the write rather than inside it, because the caller can act on the
+    answer and ``_write`` cannot: an entry over the ceiling by construction can never
+    land, so the update it would report as taken never exists. Same serializer, same
+    entry type and src as the append, so the two cannot disagree about what fits.
+    """
+    return _entry_line_fits("radar/recorded", data, src=_SRC_GATEWAY)
+
+
 def on_session_closed(session_id: str, reason: str) -> None:
     """Record a session teardown and drop its cached state.
 
@@ -4617,6 +4662,13 @@ def on_session_closed(session_id: str, reason: str) -> None:
             # closing entry itself was dropped -- which is the case for exactly
             # the sessions the flag is set on.
             _creation_failed.discard(session_id)
+            # The overflow count is per SESSION and is only ever read while that
+            # session is writing, so it dies with the session like every other
+            # per-session map here. Left behind, a gateway that runs for weeks keeps
+            # one entry per session that ever overflowed, released only by the global
+            # ``reset_caches``; and a successor reusing the id would inherit a count
+            # it did not earn.
+            _overflow_by_session.pop(session_id, None)
             # Only calls whose turn is already gone -- `_tool_started` is keyed by
             # call id, so the turn comes from the record's last field. A live turn's
             # open calls are its own to close, and dropping them here left them open
