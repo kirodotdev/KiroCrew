@@ -9,7 +9,7 @@ import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
-import { DndContext, closestCenter, pointerWithin, useDroppable, useDndContext, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
+import { DndContext, closestCenter, pointerWithin, useDroppable, useDndContext, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection, type Collision } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -30,7 +30,7 @@ import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 import { findReport, type ErrorReport } from '../utils/errorReport'
-import { computeReorderedFolders } from '../utils/reorderFolders'
+import { computeSiblingReorder } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
@@ -256,6 +256,37 @@ function slotStatusText(detail: { kind?: string; text?: string; toolName?: strin
 
 /** Sortable wrapper for a folder block — enables drag-to-reorder */
 /**
+ * Whether the pointer sits in the nest band of a collided folder's HEADER.
+ *
+ * Anchored to the MEASURED header height, not a constant. The droppable rect
+ * spans the whole folder BLOCK (header + expanded body), so a fraction of
+ * `rect.height` would balloon the nest zone on an expanded folder. The header is
+ * the block's first child; its real height differs by layout — list headers
+ * (text-sm py-1.5) are taller than board headers (text-[12px] py-1) — so a
+ * single px constant that fit one layout mis-sized the other (the board
+ * over-nest bug). Reading the header rect makes the middle-60% band correct for
+ * both. Falls back to `FOLDER_HEADER_DROP_BAND`, clamped to the block, if the
+ * node is unavailable (e.g. before first measure).
+ *
+ * A drag with no pointer coordinates (keyboard / synthetic activation) has no
+ * band: there is no "where on the row" for it to answer, so it is never a nest.
+ *
+ * Shared by both folder branches of `sidebarCollision` so root and nested rows
+ * disambiguate reorder from re-parent by the same rule — the asymmetry #10428
+ * reported was a nested row having only one of the two gestures at all.
+ */
+function isFolderNestBandHit(args: Parameters<CollisionDetection>[0], collision: Collision): boolean {
+  if (!args.pointerCoordinates) return false
+  const rect = collision?.data?.droppableContainer?.rect?.current
+  if (!rect) return false
+  const node = collision?.data?.droppableContainer?.node?.current
+  const headerEl = node?.firstElementChild as HTMLElement | null
+  const headerH = headerEl?.getBoundingClientRect().height
+    || Math.min(rect.height, FOLDER_HEADER_DROP_BAND)
+  return isFolderNestBand(args.pointerCoordinates.y - rect.top, headerH)
+}
+
+/**
  * Folder reordering and session-to-folder assignment share one DndContext but
  * want different collision behavior:
  *  - Dragging a folder: restrict collisions to folder sortable containers so
@@ -271,17 +302,30 @@ export const sidebarCollision: CollisionDetection = (args) => {
     type?: string
     nested?: boolean
     subtree?: string[]
+    siblings?: readonly string[]
     pinned?: boolean
     container?: string
   } | undefined
   const activeType = activeData?.type
   if (activeType === 'folder') {
     const subtree = new Set(activeData?.subtree ?? [])
+    // The ring this drag may re-order within: the rows sharing its container.
+    // Every folder row — root and nested — is a `folder` droppable, so without
+    // this a closest-center fallback could resolve to a row in a DIFFERENT
+    // container; that is a re-parent gesture, and routing it to the reorder path
+    // renumbers nothing, which reads as the drag having been ignored. Absent
+    // (drag data predating the field), every folder row stays eligible, which is
+    // what the root lane did when it was the only sortable level.
+    const siblings = activeData?.siblings
+    const reorderContainers = args.droppableContainers.filter(c => {
+      if ((c.data?.current as { type?: string } | undefined)?.type !== 'folder') return false
+      return siblings ? siblings.includes(String(c.id)) : true
+    })
     if (activeData?.nested) {
-      // Nested subfolder drag: the gesture is re-parenting, not reordering.
-      // Target the innermost folder-drop zone under the pointer (or the root
-      // lane to move to top level), excluding the dragged folder's own
-      // subtree so it can never be dropped into itself or a descendant.
+      // Nested subfolder drag: BOTH gestures, same as a root row. Target the
+      // innermost folder-drop zone under the pointer (or the root lane to move to
+      // top level), excluding the dragged folder's own subtree so it can never be
+      // dropped into itself or a descendant.
       // Innermost = leaf-first by DOM containment: the root lane is every
       // folder's ancestor with a viewport-sized box, so pointerWithin's
       // box-size ranking would resolve a pointer on a tall expanded folder to
@@ -292,11 +336,35 @@ export const sidebarCollision: CollisionDetection = (args) => {
         return d?.type === 'folder-drop' && !(d.folderId && subtree.has(d.folderId))
       })
       const within = pointerWithinDeepest({ ...args, droppableContainers: dropContainers })
+      // The thirds rule, consulted only when the innermost zone under the pointer
+      // belongs to a SIBLING: the middle band of that header re-parents INTO it,
+      // its edges and everything below fall through to the sibling reorder. A
+      // pointer on any other container's header is unambiguous — there is no
+      // reorder to fall through to there — so it stays a re-parent at every
+      // offset, exactly as it did before nested rows were reorderable.
+      const innermost = within[0]
+      const innermostId = (innermost?.data?.droppableContainer?.data?.current as { folderId?: string | null } | undefined)?.folderId
+      if (innermost && innermostId && siblings?.includes(innermostId)
+        && !isFolderNestBandHit(args, innermost)) {
+        return closestCenter({ ...args, droppableContainers: reorderContainers })
+      }
       // A pointer drag outside every drop zone deliberately has NO target
       // (releasing there keeps the current parent). A drag WITHOUT pointer
-      // coordinates (keyboard / synthetic activation) has no such "outside",
-      // so it degrades to closestCenter rather than resolving to nothing.
+      // coordinates (keyboard / synthetic activation) has no such "outside", so
+      // it degrades to closestCenter -- and it must degrade to the SIBLING RING,
+      // not to the folder-drop zones. A keyboard drag has no "where on the row",
+      // so it can never land in a nest band; resolving it against folder-drop
+      // makes every keyboard drop a re-parent, which would leave a keyboard user
+      // with exactly the harm #10428 reports (an order only an agent can set)
+      // while the row walks its ring on screen. The root branch already lands
+      // here for the same reason: its whole thirds block is gated on
+      // `args.pointerCoordinates`, so a keyboard root drag falls straight to
+      // `closestCenter(reorderContainers)`. This is that same line, one level
+      // down. Without a sibling ring (drag data predating the field) there is no
+      // reorder to offer, so it keeps the folder-drop resolution it had when
+      // re-parent was a nested row's only gesture.
       if (within.length || args.pointerCoordinates) return within
+      if (siblings) return closestCenter({ ...args, droppableContainers: reorderContainers })
       return closestCenter({ ...args, droppableContainers: dropContainers })
     }
     // Root folder drag: two gestures share the drag, disambiguated by where
@@ -323,32 +391,14 @@ export const sidebarCollision: CollisionDetection = (args) => {
       })
       const within = pointerWithin({ ...args, droppableContainers: dropContainers })
       const first = within[0]
-      const rect = first?.data?.droppableContainer?.rect?.current
-      if (rect) {
-        // Anchor the nest band to the MEASURED header height, not a constant.
-        // The droppable rect spans the whole folder BLOCK (header + expanded
-        // body), so a fraction of rect.height would balloon the nest zone on an
-        // expanded folder. The header is the block's first child; its real
-        // height differs by layout — list headers (text-sm py-1.5) are taller
-        // than board headers (text-[12px] py-1) — so a single px constant that
-        // fit one layout mis-sized the other (the board over-nest bug). Reading
-        // the header rect makes the middle-60% band correct for both. Falls back
-        // to FOLDER_HEADER_DROP_BAND, clamped to the block, if the node is
-        // unavailable (e.g. before first measure).
-        const node = first?.data?.droppableContainer?.node?.current
-        const headerEl = node?.firstElementChild as HTMLElement | null
-        const headerH = headerEl?.getBoundingClientRect().height
-          || Math.min(rect.height, FOLDER_HEADER_DROP_BAND)
-        const offsetY = args.pointerCoordinates.y - rect.top
-        if (isFolderNestBand(offsetY, headerH)) {
-          return [first]
-        }
+      // Anchor the nest band to the MEASURED header height, not a constant —
+      // isFolderNestBandHit owns that reasoning, and the nested branch above
+      // reads it the same way.
+      if (first && isFolderNestBandHit(args, first)) {
+        return [first]
       }
     }
-    const folderContainers = args.droppableContainers.filter(
-      c => (c.data?.current as { type?: string } | undefined)?.type === 'folder'
-    )
-    return closestCenter({ ...args, droppableContainers: folderContainers })
+    return closestCenter({ ...args, droppableContainers: reorderContainers })
   }
   // Session drag. Containment first, leaf-first by DOM containment: the root
   // lane is the folders' ancestor but its border box is only viewport-sized
@@ -625,8 +675,8 @@ function DisclosureChevron({ open, size, className = '' }: { open: boolean; size
   return <ChevronRight size={size} className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''} ${className}`.trimEnd()} />
 }
 
-function SortableFolderBlock({ folder, subtree, renderFolderBlock }: { folder: ChatFolder; subtree?: readonly string[]; renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[] }) {
-  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree } })
+function SortableFolderBlock({ folder, subtree, siblings, renderFolderBlock }: { folder: ChatFolder; subtree?: readonly string[]; siblings?: readonly string[]; renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[] }) {
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree, siblings } })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, position: 'relative' as const }
   // The whole folder header is the drag handle (pointer + touch): dragging the
   // row reorders the folder — no grip, consistent with session-card drag. Only
@@ -640,6 +690,54 @@ function SortableFolderBlock({ folder, subtree, renderFolderBlock }: { folder: C
   return (
     <div ref={setNodeRef} style={style} className="relative" data-folder-sortable={folder.id}>
       {renderFolderBlock(folder, 0, undefined, listeners as unknown as React.HTMLAttributes<HTMLElement>, isDragging)}
+    </div>
+  )
+}
+
+/**
+ * Sortable wrapper for a NESTED subfolder row — the same wrapper
+ * `SortableFolderBlock` is for a root row, one level down.
+ *
+ * A nested row was a bare draggable until #10428, which made its ONLY possible
+ * outcome a re-parent: with no sortable id it registered no reorder target and
+ * appeared in no sibling ring, so a person could be shown an order an agent had
+ * set with `chat_folder_move`'s `before` / `after` and had no way to change it.
+ * Registering it here closes that, and it closes it by reusing the root path
+ * rather than adding a second one: the gesture, the collision band, the
+ * renumber and the endpoint are all the ones root rows already use.
+ *
+ * `siblings` is the ring this row may move within, which is what keeps the two
+ * levels from bleeding into each other. Every folder row is now a `folder`
+ * droppable, so without it a drag's closest-center fallback could resolve to a
+ * row in a different container — a reorder gesture that renumbers nothing,
+ * which reads as the drag having been ignored.
+ *
+ * `disabled` while renaming, matching the bare-draggable behaviour it replaces:
+ * a drag started on a text input would steal the caret.
+ */
+function SortableSubfolderBlock({ folder, depth, visited, subtree, siblings, disabled, renderFolderBlock }: {
+  folder: ChatFolder
+  depth: number
+  visited: ReadonlySet<string>
+  subtree?: readonly string[]
+  siblings?: readonly string[]
+  disabled?: boolean
+  renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[]
+}) {
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: folder.id,
+    disabled,
+    data: { type: 'folder', nested: true, subtree, siblings },
+  })
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
+  return (
+    <div ref={setNodeRef} style={style} data-subfolder-sortable={folder.id}>
+      {/* A CLONE of the ancestor path, never the caller's own set. This render
+       *  is deferred and re-invoked (StrictMode, `isDragging` flips), and
+       *  `renderFolderBlock` MUTATES the set it is handed — so sharing it would
+       *  make the second invocation hit the cycle guard, render the subfolder as
+       *  `[]`, and the folder would vanish mid-drag. */}
+      {renderFolderBlock(folder, depth, new Set(visited), listeners as unknown as React.HTMLAttributes<HTMLElement>, isDragging)}
     </div>
   )
 }
@@ -5580,8 +5678,12 @@ function ChatSidebar({
     if (activeId === overId) return
     // Read latest from cache to avoid stale-closure ordering on rapid successive drags
     const current = queryClient.getQueryData<ChatFolder[]>(['chat-folders']) ?? []
-    const rootOnly = current.filter(f => !f.parent_id)
-    const changes = computeReorderedFolders(rootOnly, activeId, overId)
+    // Scoped to the dragged folder's own container, not to the root lane: a
+    // nested subfolder is reorderable among its siblings too, and `order` is a
+    // per-container index either way. The helper refuses a target outside that
+    // container, so a cross-container drop reaching here renumbers nothing --
+    // that gesture is a re-parent and the collision layer routes it as one.
+    const changes = computeSiblingReorder(current, activeId, overId)
     if (!changes.length) return
     // Snapshot the pre-drag order of exactly the rows this drag renumbers, so a
     // rejected write can be rolled back field-scoped rather than by restoring a
@@ -6042,12 +6144,20 @@ function ChatSidebar({
     } | undefined
     if (a?.type === 'folder') {
       if (a.nested) {
-        // Nested subfolder drag = re-parent: into the folder-drop target, or
-        // to the top level when dropped on the root lane (folderId null).
-        // moveFolderByDrag itself no-ops on the folder's current parent, so a
-        // drop resolving to it (easy to hit now that a tall parent's whole
-        // block is a reachable target) costs no write.
-        if (o?.type === 'folder-drop') moveFolderByDrag(active.id as string, o.folderId ?? null)
+        // Nested subfolder drag, both gestures. A folder-drop hit is the
+        // re-parent: into that folder, or to the top level when dropped on the
+        // root lane (folderId null). moveFolderByDrag itself no-ops on the
+        // folder's current parent, so a drop resolving to it (easy to hit now
+        // that a tall parent's whole block is a reachable target) costs no write.
+        if (o?.type === 'folder-drop') {
+          moveFolderByDrag(active.id as string, o.folderId ?? null)
+          return
+        }
+        // Otherwise a sortable hit (over.id = a sibling's folder id) = reorder
+        // among siblings, the same call the root lane makes. reorderFolders
+        // renumbers only the dragged folder's own container and refuses a target
+        // outside it, so a stray resolution is a no-op rather than a wrong move.
+        reorderFolders(active.id as string, over.id as string)
         return
       }
       // Root folder drag: a folder-drop hit only occurs via the header-band
@@ -6484,7 +6594,11 @@ function ChatSidebar({
     }).length
     // Board-view folders become sortable only when a drag handle is supplied
     // (root folders wrapped in SortableColumnFolder). Subfolders render without
-    // it (parity with list view, where only root folders reorder). Disabled
+    // one, so a board subfolder is not directly draggable at all — neither
+    // reordered nor re-parented. That is NOT parity with the list view, which
+    // has always given a nested row a drag (re-parent before #10428, reorder as
+    // well after it); giving the board lane the same gesture needs a handle this
+    // path does not pass down, so it stays a separate piece of work. Disabled
     // while renaming in THIS column (rename is per-column via editScope) so
     // the inline input stays usable.
     const draggable = !!dragHandleProps && !(editingId === folder.id && editScope === columnId)
@@ -6893,8 +7007,8 @@ function ChatSidebar({
   /**
    * While the search box narrows the list, does this folder's subtree still put
    * ANYTHING on screen? Answered without rendering, because the render cannot
-   * answer it: a nested block's `[]` is returned from inside `DndDraggable`'s own
-   * children function, which runs after `childNodes.push` has already committed
+   * answer it: a nested block's `[]` is returned from inside the subfolder
+   * wrapper's own render, which runs after `childNodes.push` has already committed
    * the wrapper — so `childNodes.length > 0` reads true for a subtree that draws
    * nothing, and both the drop gate and the header count believed it.
    *
@@ -7278,36 +7392,40 @@ function ChatSidebar({
     visited.add(folder.id)
     const childSlots = filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
     const childNodes: React.ReactNode[] = []
-    // Nested subfolders are plain draggables (not sortables): dragging one
-    // re-parents it — drop on another folder to move inside, or on the root
-    // lane to move to the top level. The subtree ids ride along in the drag
-    // data so collision detection can exclude self/descendants as targets.
+    // Nested subfolders are sortables, exactly as root folders are: dragging one
+    // either re-orders it among its siblings (drop on a sibling's edges or body)
+    // or re-parents it (drop on the middle band of another folder's header, or on
+    // the root lane to move it to the top level). Both gestures are the ones the
+    // root lane already has -- see SortableSubfolderBlock for why a nested row
+    // could previously only re-parent. The subtree ids ride along in the drag data
+    // so collision detection can exclude self/descendants as targets, and the
+    // sibling ids so a reorder cannot resolve into another container.
     //
     // `drawableChildFolders`, not a raw parent_id filter: while the list is
     // narrowed a child whose subtree draws nothing must be skipped HERE, before
-    // the push. The nested render returns `[]` from inside DndDraggable's
-    // children function, which runs long after this push, so a wrapper committed
-    // now can never be taken back — and `childNodes.length` is what the drop gate
-    // below and the header count both read.
-    for (const cf of drawableChildFolders(folder)) {
+    // the push. The nested render returns `[]` from inside the wrapper's own
+    // render, which runs long after this push, so a wrapper committed now can
+    // never be taken back -- and `childNodes.length` is what the drop gate below
+    // and the header count both read.
+    //
+    // One SortableContext per PARENT, holding exactly that parent's drawable
+    // children: `order` is a per-container index, so the ring a drag may move
+    // within is one container's children and nothing else. It renders no DOM of
+    // its own, so the row geometry the alignment guides pin is untouched.
+    const childFolderRows = drawableChildFolders(folder)
+    if (childFolderRows.length) {
+      const siblingIds = childFolderRows.map(f => f.id)
       childNodes.push(
-        <DndDraggable key={`subfolder-drag-${cf.id}`} id={cf.id}
-          data={{ type: 'folder', nested: true, subtree: [...(folderSubtrees.get(cf.id) ?? collectFolderSubtreeIds(folders, cf.id))] }}
-          disabled={editingId === cf.id}>
-          {({ setNodeRef, listeners, isDragging }) => (
-            <div ref={setNodeRef} style={{ opacity: isDragging ? 0.5 : 1 }}>
-              {/* This children function runs during DndDraggable's OWN render —
-               *  deferred and re-invoked (StrictMode, isDragging flips). Pass a
-               *  CLONE of the ancestor path: sharing the mutated `visited` set
-               *  makes the second invocation hit the cycle guard and render the
-               *  subfolder as [] (folder vanishes; drags die at drag-start).
-               *  The source collapses while dragging (same UX as root-folder
-               *  reorder); the layout shift this causes is compensated by the
-               *  drag-scoped droppable re-measure polling on the DndContext. */}
-              {renderFolderBlock(cf, depth + 1, new Set(visited), listeners as unknown as React.HTMLAttributes<HTMLElement>, isDragging)}
-            </div>
-          )}
-        </DndDraggable>
+        <SortableContext key={`subfolder-ring-${folder.id}`} items={siblingIds} strategy={verticalListSortingStrategy}>
+          {childFolderRows.map(cf => (
+            <SortableSubfolderBlock key={`subfolder-drag-${cf.id}`} folder={cf}
+              depth={depth + 1} visited={visited}
+              subtree={[...(folderSubtrees.get(cf.id) ?? collectFolderSubtreeIds(folders, cf.id))]}
+              siblings={siblingIds}
+              disabled={editingId === cf.id}
+              renderFolderBlock={renderFolderBlock} />
+          ))}
+        </SortableContext>
       )
     }
     // Bottom of THIS container's folder list: announce what the filter is
@@ -8678,7 +8796,7 @@ function ChatSidebar({
                 {({ setNodeRef }) => (
                   <div ref={setNodeRef} className="flex flex-col flex-1 min-h-0">
                     <SortableContext items={rootFolderIds} strategy={verticalListSortingStrategy}>
-                      {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} renderFolderBlock={renderFolderBlock} />)}
+                      {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootFolderIds} renderFolderBlock={renderFolderBlock} />)}
                     </SortableContext>
                     {/* Bottom of the ROOT folder list. For a top-level hide this
                      *  is the sidebar's own bottom, which is exactly the "single
