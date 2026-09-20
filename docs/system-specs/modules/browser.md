@@ -501,8 +501,11 @@ own text — ANSI stripped, the update banner, the 2 KB Chromium argv dump and
 Node's stack preamble removed, credentials redacted, capped — so the panel
 shows `No usable sandbox!` or `Chromium distribution 'chrome' is not found …`
 verbatim instead of a blank frame. For the sandbox case the remedy from
-[Launch config](#launch-config) is appended (the marker is Chromium's own
-`No usable sandbox` line, and a miss costs only the appended advice): the
+[Launch config](#launch-config) is appended (the markers are Chromium's own
+sandbox-failure lines, one phrasing per platform -- `No usable sandbox` on Linux,
+`sandbox initialization failed` and `Failed to initialize sandbox.` on macOS,
+matched case-sensitively without the errno tail -- and a miss costs only the
+appended advice): the
 operator names their own `PLAYWRIGHT_MCP_CONFIG`; the launcher never drops the
 sandbox and never writes a config of its own. `view` is the post-attempt
 `show` status, so the panel frames the view without a second read.
