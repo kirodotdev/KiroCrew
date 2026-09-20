@@ -1684,7 +1684,8 @@
         "highlight_7": "I pod funzionano su Linux (systemd --user) e macOS (launchd) — ma il pod su macOS non ha un limite di memoria/CPU imposto; Make Live resta solo per Linux; vista della flotta, stato della PR, sincronizzazione, rebase ed eliminazione funzionano su qualsiasi piattaforma",
         "page_label": "Dev Fleet",
         "use_case_1": "Gestisci i worktree delle funzionalità di Kiro Crew e pod di anteprima isolati senza modificare il gateway live.",
-        "configuration_1": "Indica all'app un checkout di Kiro Crew; le azioni sulle PR richiedono gh autenticato, mentre i pod richiedono systemd --user su Linux o launchd su macOS e devono prima essere predisposti."
+        "configuration_1": "Indica all'app un checkout di Kiro Crew; le azioni sulle PR richiedono gh autenticato, mentre i pod richiedono systemd --user su Linux o launchd su macOS e devono prima essere predisposti.",
+        "highlight_8": "Un worktree fissato alla release stable più recente, così puoi eseguire in un pod una build pubblicata accanto al tuo branch; il canale da cui si aggiorna la tua installazione non cambia"
       }
     },
     "designTweak": {
@@ -11237,7 +11238,35 @@
       "orphan_pods_label": "Home di pod orfani: {{value}}",
       "total_disk_used_by_running_pod_homes": "Disco totale usato dagli home dei pod in esecuzione",
       "pod_homes_left_on_disk_with_no_live_pod": "Home di pod rimasti su disco senza un pod attivo",
-      "disk_usage_unavailable": "Utilizzo del disco non disponibile"
+      "disk_usage_unavailable": "Utilizzo del disco non disponibile",
+      "creating": "Creazione…",
+      "release_channel_unpublished": "Nessuna release {{lane}} ancora recuperata — Create recupera la più recente",
+      "release_channel_create_fetches": "Create recupera i tag di release {{lane}} ed effettua il checkout del più recente, in stato detached",
+      "release_channel_no_release": "non su una release",
+      "release_channel_unresolved_short": "Non è stato possibile risolvere il canale di release {{lane}}",
+      "no_worktree_yet": "nessun worktree ancora",
+      "not_applicable_short": "n/d",
+      "release_channel_has_no_pr": "Un worktree di release è scollegato su un tag, quindi non ha una pull request",
+      "release_channel_create_failed": "Impossibile creare il worktree del canale di release",
+      "create_worktree": "Crea worktree",
+      "release_channel_created": "Worktree {{lane}} creato su {{ref}}",
+      "release_channel_would_create_at": "Create effettua il checkout della release {{lane}} più recente, {{version}}, in stato detached",
+      "release_channel_pinned_at": "Fissato al canale di release {{lane}} su {{ref}}",
+      "release_channel_unresolved": "Non è stato possibile risolvere il canale di release {{lane}}: {{error}}",
+      "release_channel_on_older_release": "Su {{version}}; la punta del canale {{lane}} ora è {{tip}}",
+      "release_channel_version_behind_tip": "{{version}} · ultima {{tip}}",
+      "release_channel_on_release_tip_unknown": "Su {{version}}; la punta del canale {{lane}} non è stata risolta",
+      "release_channel_on_no_release": "Non su un tag di release {{lane}}; la punta del canale è {{tip}}",
+      "release_channel_on_no_release_tip_unknown": "Non su un tag di release {{lane}}, e la punta del canale non è stata risolta",
+      "release_channel_name_taken_by_branch": "{{name}} è riservato al worktree di release del canale {{lane}}, ma questo checkout è su un branch. Per liberare il nome, rinomina o rimuovi il checkout: “Elimina i worktree uniti” lo rimuove una volta che la sua PR è stata unita, oppure esegui `git worktree move` / `git worktree remove` in una shell",
+      "next_step": "poi",
+      "reserved_name_on_a_branch": "Su un branch, quindi la release {{lane}} non può usare questo nome — rinominalo o rimuovilo per liberarlo",
+      "rows_pending_one": "{{count}} worktree · {{pending}} da creare",
+      "rows_pending_many": "{{count}} worktree · {{pending}} da creare",
+      "rows_pending_other": "{{count}} worktree · {{pending}} da creare",
+      "release_rows_measured_by_version": "Le righe di release sono misurate per versione — vedi il badge",
+      "no_worktree_yet_create_checks_out": "Nessun worktree ancora — Create effettua il checkout di {{version}}",
+      "release_channel_tip_unresolved": "Non è stato possibile verificare le nuove release {{lane}}: {{error}}"
     },
     "developer": {
       "agentBackendTab": {
