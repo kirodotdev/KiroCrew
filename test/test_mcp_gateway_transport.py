@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
+from tmpdir_helpers import SHORT_TMP_PREFIX
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import transport
@@ -218,7 +219,7 @@ def sock_dir(tmp_path: Path) -> Iterator[Path]:
     that actually bind a socket need this; the ones asserting path arithmetic
     (``lock_path_for``, ``resolve_address``) are unaffected and keep ``tmp_path``.
     """
-    base = Path(tempfile.mkdtemp(prefix="kcs-", dir="/tmp"))
+    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "gwsock-", dir="/tmp"))
     try:
         yield base
     finally:

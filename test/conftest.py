@@ -1405,11 +1405,13 @@ def short_sock_dir(tmp_path):
     """
     import tempfile
 
+    from tmpdir_helpers import SHORT_TMP_PREFIX
+
     short_root = "/tmp" if os.path.isdir("/tmp") else None
     if short_root is None:
         yield tmp_path
         return
-    path = tempfile.mkdtemp(dir=short_root, prefix="kcsock-")
+    path = tempfile.mkdtemp(dir=short_root, prefix=SHORT_TMP_PREFIX + "unixsock-")
     try:
         yield pathlib.Path(path)
     finally:

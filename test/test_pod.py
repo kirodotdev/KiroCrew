@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from tmpdir_helpers import short_tmp_base
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
@@ -5699,7 +5699,7 @@ class TestMintPeerVerification:
         """
         if platform_compat.IS_WINDOWS:
             pytest.skip("AF_UNIX transport is POSIX-only")
-        root = Path(tempfile.mkdtemp(prefix="podpeer-", dir=short_tmp_base()))
+        root = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "podpeer-", dir=short_tmp_base()))
         try:
             monkeypatch.setenv("KIROCREW_POD_ROOT", str(root))
             c = PodConfig.load()

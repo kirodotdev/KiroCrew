@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from tmpdir_helpers import short_tmp_base
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 import kiro_crew
 from kiro_crew import platform_compat
@@ -150,7 +150,7 @@ def stub_gateway(monkeypatch: pytest.MonkeyPatch) -> _RecordingUnixServer:
     if platform_compat.IS_WINDOWS:
         pytest.skip("AF_UNIX transport is POSIX-only")
     with contextlib.ExitStack() as stack:
-        root = Path(tempfile.mkdtemp(prefix="podapi-", dir=short_tmp_base()))
+        root = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "podapi-", dir=short_tmp_base()))
         stack.callback(shutil.rmtree, root, ignore_errors=True)
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(root))
         cfg = PodConfig.load()
@@ -220,7 +220,7 @@ def port_squatter(monkeypatch: pytest.MonkeyPatch) -> _RecordingServer:
     if platform_compat.IS_WINDOWS:
         pytest.skip("AF_UNIX transport is POSIX-only")
     with contextlib.ExitStack() as stack:
-        root = Path(tempfile.mkdtemp(prefix="podapi-", dir=short_tmp_base()))
+        root = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "podapi-", dir=short_tmp_base()))
         stack.callback(shutil.rmtree, root, ignore_errors=True)
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(root))
         server = _RecordingServer(("127.0.0.1", 0), _Handler)

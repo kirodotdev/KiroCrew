@@ -22,6 +22,20 @@ from __future__ import annotations
 
 from kiro_crew import platform_compat
 
+#: ``prefix=`` for every ``mkdtemp`` that takes :func:`short_tmp_base`.
+#:
+#: A short-rooted dir sits in the SHARED ``/tmp``, outside the per-test root the conftest
+#: floor pins, so a hygiene probe cannot tell one from a test leaking into the host unless
+#: its name says whose it is. The stdlib default name is what an accidental bare
+#: ``mkdtemp()`` also produces, so a probe that sanctions it is blind to exactly the leaks
+#: it exists to catch; a per-fixture name instead forces the probe to carry a list of
+#: invented prefixes, which is wrong the moment a fixture is added.
+#:
+#: One prefix for all of them means one anchored stem in ``probe_plugin`` and
+#: ``host_snapshot``, and nothing to keep in sync. Keep a label after it
+#: (``kc-tmp-pod-``) to say which fixture: the stem matches the leading component.
+SHORT_TMP_PREFIX = "kc-tmp-"
+
 
 def short_tmp_base() -> str | None:
     """``dir=`` for ``mkdtemp``: ``/tmp`` on POSIX, platform default on Windows.

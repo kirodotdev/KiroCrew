@@ -32,7 +32,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
-from tmpdir_helpers import short_tmp_base
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew.browser_cli import launcher
 
@@ -768,7 +768,7 @@ class TestReveal:
         # regardless of TMPDIR: the conftest's redirected tempfile base (and
         # pytest's own tmp_path) can themselves be long enough to overflow
         # sun_path when the run's TMPDIR is deep, which makes bind() fail.
-        root = Path(tempfile.mkdtemp(prefix="pw-", dir=short_tmp_base()))
+        root = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "pw-", dir=short_tmp_base()))
         # Strict cleanup, registered the moment the directory exists: a socket
         # file left behind would be a real leak, not one to ignore.
         request.addfinalizer(lambda: shutil.rmtree(root))

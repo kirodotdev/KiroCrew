@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from tmpdir_helpers import short_tmp_base
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew.dashboard.handlers import api_outbox_notify
 
@@ -193,7 +193,7 @@ def outbox(tmp_path):
     import shutil
     import tempfile
 
-    base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
+    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "outbox-", dir=short_tmp_base()))
     odir = base / "outbox"
     odir.mkdir()
     try:
