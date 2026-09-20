@@ -605,7 +605,7 @@ class TestConflictResolution:
         self._plant_degenerate(store, "pref.os", '"   "')
         calls: list[tuple[str, str]] = []
         with mock.patch.object(
-            store, "_retire_stale_episodic", side_effect=lambda k, v: calls.append((k, v))
+            store, "_retire_stale_episodic", side_effect=lambda k, v, **kw: calls.append((k, v))
         ):
             assert store.set_semantic("pref.os", "linux", 0.9, "consolidation:b") is None
         assert calls == []
@@ -618,7 +618,7 @@ class TestConflictResolution:
         assert store.set_semantic("pref.os", "macos", 1.0, "user_explicit") is None
         calls: list[tuple[str, str]] = []
         with mock.patch.object(
-            store, "_retire_stale_episodic", side_effect=lambda k, v: calls.append((k, v))
+            store, "_retire_stale_episodic", side_effect=lambda k, v, **kw: calls.append((k, v))
         ):
             assert store.set_semantic("pref.os", "linux", 1.0, "user_explicit") is None
         assert calls == [("pref.os", "macos")]
