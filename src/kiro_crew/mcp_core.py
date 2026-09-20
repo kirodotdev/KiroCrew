@@ -1360,7 +1360,12 @@ def _session_token_header() -> dict[str, str]:
     """
     from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
-    token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
+    # A pooled backend is spawned from gatewayd's own environment, so the
+    # per-session token is not in ``os.environ``; gatewayd forwards it inside
+    # the per-call caller block for Kiro Crew's control-plane servers instead.
+    ctx = current_caller()
+    token = ctx.session_token if ctx is not None and ctx.from_gateway else ""
+    token = token or os.environ.get(STUB_SESSION_TOKEN_ENV, "")
     return {"X-Session-Token": token} if token else {}
 
 
@@ -1520,7 +1525,9 @@ def _send(
                 refusal = exc
             except Exception as exc:
                 return _transport_failure(str(exc), mark_transport_error)
-        return {"error": _refused_message(refused[0], refusal)}
+        # ``refused`` is the one failure that proves nothing reached a gateway,
+        # so a caller may fall back to a local path without risking a replay.
+        return {"error": _refused_message(refused[0], refusal), "refused": True}
 
     # ONE resolution for this attempt; both transports derive from it.
     target = _resolve_api_target()

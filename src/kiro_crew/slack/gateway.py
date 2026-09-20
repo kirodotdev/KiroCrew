@@ -10628,6 +10628,7 @@ class GatewayOrchestrator:
         """Restore and open the already-wired memory objects after readiness."""
         from kiro_crew.context import reset_memory_caches
         from kiro_crew.memory_backup import apply_pending_member_restores
+        from kiro_crew.memory_stores import repair_legacy_member_stores
 
         startup = self._memory_startup
         if startup is None:
@@ -10638,6 +10639,17 @@ class GatewayOrchestrator:
                     assert self.ctx_builder is not None
                     memory = self.ctx_builder.memory
                     reset_memory_caches(memory)
+                    # The gateway's one run of the pre-identity member store
+                    # upgrade. The CLI prologue skips `gateway` because the boot
+                    # path admits no new work before the dashboard socket accepts
+                    # requests; this worker runs after readiness, before pending
+                    # restores and before any consumer resolves a member. A no-op
+                    # when nothing needs repair; never raises.
+                    upgraded = repair_legacy_member_stores()
+                    if upgraded:
+                        logger.info("Upgraded member memory stores: %s", ", ".join(upgraded))
+                    if startup.stopped:
+                        return False
                     restored = apply_pending_member_restores(
                         should_stop=lambda: startup.stopped, on_error=startup.fail_store
                     )

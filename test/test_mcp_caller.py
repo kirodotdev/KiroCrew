@@ -48,6 +48,22 @@ def test_caller_round_trip_needs_no_member_capability():
     }
 
 
+def test_session_token_round_trips_only_when_present():
+    """The token is a bearer name: the wire block carries it only for the
+    control-plane calls gatewayd chose to hand it to, and a backend reads it
+    back into the typed field rather than digging in ``raw``."""
+    bare = build_caller_meta(CallerContext(session_key="dashboard:reviewer"))
+    assert "sessionToken" not in bare[kiro_crew.mcp_caller.CALLER_META_KEY]
+    assert CallerContext.from_meta(bare).session_token == ""
+
+    tokened = build_caller_meta(
+        CallerContext(session_key="dashboard:reviewer", session_token="t" * 64)
+    )
+    assert tokened[kiro_crew.mcp_caller.CALLER_META_KEY]["sessionToken"] == "t" * 64
+    parsed = CallerContext.from_meta(tokened)
+    assert parsed is not None and parsed.from_gateway and parsed.session_token == "t" * 64
+
+
 @pytest.mark.asyncio
 async def test_interleaved_member_calls_keep_their_ordinary_session_identity(monkeypatch):
     from kiro_crew import mcp_core

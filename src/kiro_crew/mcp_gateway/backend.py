@@ -628,6 +628,13 @@ class Backend:
     created_at: float
     last_used_at: float
     supports_caller_identity: bool = False
+    # True only when the spawn that produced this process was Kiro Crew's own
+    # packaged control plane -- the resolved command and args matched what the
+    # managed spec emits, not merely a reserved server NAME. It gates the one
+    # thing a pooled backend is ever handed beyond the caller's identity: the
+    # session's bearer token. A server that merely calls itself
+    # ``kirocrew-core`` stays False.
+    control_plane: bool = False
     _shutdown_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # --- Sharing boundary state (Milestone 2) -------------------------------
     # Each attached stub appears in ``_stub_inboxes`` keyed by stub_uuid; the

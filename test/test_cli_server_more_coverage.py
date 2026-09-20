@@ -135,6 +135,55 @@ class TestProbeDashboardHealth:
 
 
 # --------------------------------------------------------------------------
+# _token
+# --------------------------------------------------------------------------
+
+
+class TestTokenRefusal:
+    """A gateway that ANSWERS with an error is not a gateway that could not be
+    reached: the operator needs the reason the gateway gave, not a network hint."""
+
+    def test_403_prints_the_gateway_reason(self, monkeypatch, capsys) -> None:
+        import io
+        import json
+
+        reason = (
+            "The gateway could not verify this process as the local owner. "
+            "Open the dashboard using its CLI login link."
+        )
+        body = json.dumps({"error": reason, "code": "member_owner_token_refused"}).encode()
+
+        def refused(*a, **k):
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
+            )
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "s3cr3t")
+        monkeypatch.setattr(cli_server, "loopback_urlopen", refused)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "HTTP 403" in err and "could not verify this process as the local owner" in err
+        assert "Could not reach gateway" not in err
+
+    def test_connection_refused_still_reports_unreachable(self, monkeypatch, capsys) -> None:
+        def boom(*a, **k):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "s3cr3t")
+        monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        assert "Could not reach gateway on port 5476" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
 # _logout
 # --------------------------------------------------------------------------
 

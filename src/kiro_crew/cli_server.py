@@ -185,6 +185,19 @@ def _token(args: argparse.Namespace) -> None:
         with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
+    except urllib.error.HTTPError as exc:
+        # The gateway answered; its body names the reason (for example the
+        # host-provenance refusal on /api/token/local). Reporting that as
+        # "could not reach gateway" sends the operator to the wrong remedy.
+        try:
+            detail = str(json.loads(exc.read().decode("utf-8", "replace")).get("error") or "")
+        except Exception:
+            detail = ""
+        print(
+            f"❌ Gateway refused the token request (HTTP {exc.code}): {detail or exc.reason}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except Exception as exc:
         print(f"❌ Could not reach gateway on port {port}: {exc}", file=sys.stderr)
         sys.exit(1)

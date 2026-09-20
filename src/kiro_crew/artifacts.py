@@ -51,6 +51,7 @@ from typing import List as _List
 from kiro_crew import hooks
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES
 from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
     WebAppArchitecture,
     WebAppCost,
@@ -79,10 +80,11 @@ MAX_VERSIONS = 50
 #: HTML reports, CSVs) routinely exceed 1 MiB — at 1 MiB clone/pull would
 #: silently fail on exactly the shared-HTML artifacts bidirectional sync
 #: targets. 25 MiB is large enough to bring those down locally while still
-#: refusing truly unbounded content. Keep in lockstep with
-#: ``validation.ARTIFACT_CONTENT_MAX`` (the MCP tool-arg cap) so a save's limit
-#: doesn't depend on its entry path — guarded by a regression test.
-MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
+#: refusing truly unbounded content. Owned by
+#: ``constants.ARTIFACT_MAX_CONTENT_BYTES`` (a leaf) so
+#: ``validation.ARTIFACT_CONTENT_MAX`` -- the MCP tool-arg cap -- reads the same
+#: name without importing this module; re-exported here for the store's callers.
+MAX_CONTENT_BYTES = ARTIFACT_MAX_CONTENT_BYTES
 
 #: Maximum length of human-readable name / description fields.
 MAX_NAME_LEN = 200
@@ -712,9 +714,7 @@ def is_document_path(path: str) -> bool:
 # are lost -- and every consumer surfaces this as a soft warning, never a
 # rejection.
 _HARDCODED_COLOR_RE = re.compile(
-    r"[:=(\s\"']#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b"
-    r"|\brgba?\("
-    r"|\bhsla?\(",
+    r"[:=(\s\"']#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b" r"|\brgba?\(" r"|\bhsla?\(",
     re.IGNORECASE,
 )
 
@@ -848,7 +848,7 @@ def _strip_session_scope(key: str) -> str:
     """
     prefix = "dashboard:"
     if key.startswith(prefix):
-        return key[len(prefix):]
+        return key[len(prefix) :]
     from kiro_crew.history import _safe_key
     from kiro_crew.messaging.link import is_channel_session_key
 
@@ -1328,9 +1328,7 @@ class ArtifactStore:
         if not data:
             raise ArtifactValidationError("image bytes are empty")
         if len(data) > MAX_CONTENT_BYTES:
-            raise ArtifactValidationError(
-                f"image exceeds {MAX_CONTENT_BYTES} bytes ({len(data)})"
-            )
+            raise ArtifactValidationError(f"image exceeds {MAX_CONTENT_BYTES} bytes ({len(data)})")
         name = _validate_name(name)
         source = _validate_source(source)
         description = _validate_description(description)
@@ -1715,9 +1713,7 @@ class ArtifactStore:
             # worse than reading through one, so the same fd-pinned gate the
             # read side uses applies here: O_NOFOLLOW open first, then hardlink
             # / regular-file / real-path / sensitive checks on that descriptor.
-            if not hooks.safe_write_file_nolink(
-                str(p), content, within_root=str(containing)
-            ):
+            if not hooks.safe_write_file_nolink(str(p), content, within_root=str(containing)):
                 logger.warning(
                     "source_path %r refused by the descriptor-pinned write gate", source_path
                 )

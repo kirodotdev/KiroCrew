@@ -80,7 +80,12 @@ from kiro_crew.security import (
     scan_exfiltration_urls,
 )
 from kiro_crew.sel import sel
-from kiro_crew.validation import MCP_CRON_SCHEMAS, ValidationError, validate_tool_args
+from kiro_crew.validation import (
+    MCP_CRON_SCHEMAS,
+    ValidationError,
+    infer_use_case,
+    validate_tool_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1892,6 +1897,20 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         response = _post(
             "/api/crons/tools", {"name": name, "arguments": args}, session_key=session_key
         )
+        if (
+            response.get("refused")
+            and current_caller() is None
+            and infer_use_case(session_key) == "cli"
+        ):
+            # No gateway is listening (nothing was executed) and the identity is
+            # POSITIVELY the attended CLI's own -- ``kirocrew chat`` presents the
+            # ``cli_chat`` key everywhere it is identified, and it is the one
+            # surface whose cron tools always wrote the host store directly.
+            # Keep that. A gateway-minted key (dashboard, channel, cron,
+            # subagent) with no injected caller is the non-pooled gateway
+            # topology, where a refused dial is an outage of the gateway that
+            # validates the call: report it, never write around it.
+            return _call_tool_locally(name, raw_args)
         if response.get("error"):
             advice = (
                 " Outcome unknown; check cron_list before retrying a mutation."

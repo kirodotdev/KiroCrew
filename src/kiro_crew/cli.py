@@ -3024,6 +3024,22 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     else:
         _platform_boot_error = None
 
+    # ── Member memory upgrade (CLI commands only) ──
+    # A member store written before member identities existed cannot be resolved
+    # until its identity is published, and no command can do it later: the
+    # resolvers refuse the store outright. So every CLI command runs it here, in
+    # the sync prologue, BEFORE it resolves a member. Three commands are exempt:
+    # `gateway`, whose boot path admits no new work (the dashboard socket must
+    # accept requests first) and which runs the same repair in its post-readiness
+    # memory worker instead; `doctor`, the read-only triage command, which
+    # reports the same stores; and the mcp-* stdio servers, children of a gateway
+    # that already ran it. A no-op scan of the loaded config when there is
+    # nothing to repair; never raises.
+    if args.command not in ("gateway", "doctor") and not args.command.startswith("mcp-"):
+        from kiro_crew.memory_stores import repair_legacy_member_stores
+
+        repair_legacy_member_stores()
+
     # ── Process-isolation jail gate (CPP JailProvider seam) ──
     # For agent-bearing commands, give the active edition a chance to re-exec this
     # process into an isolation jail BEFORE any agent/credential work starts.  The

@@ -1300,3 +1300,16 @@ BANNER = r"""
 # authorizers, the MCP tool schemas, and the store loader -- reads THIS name, so
 # there is one definition and no path can drift to a different cap.
 MAX_BANNER_CHARS = 500
+
+# Byte cap on one artifact's content: the store's own limit AND the MCP save /
+# update field cap, which must be the same number or the tool path rejects
+# content the store accepts (or the reverse). Real widget payloads (dashboards,
+# HTML reports, CSVs) routinely exceed 1 MiB, so 25 MiB brings those down while
+# still refusing unbounded content.
+#
+# Same reason as ``MAX_BANNER_CHARS``: ``validation.py`` is a leaf, and reading
+# this bound from ``artifacts`` was the closing edge of the import cycle
+# ``artifacts -> hooks -> webhooks -> validation -> artifacts``, which broke any
+# process whose first ``kiro_crew`` import reached ``artifacts`` before
+# ``validation``. ``artifacts.MAX_CONTENT_BYTES`` is this name, re-exported.
+ARTIFACT_MAX_CONTENT_BYTES = 26_214_400  # 25 MiB

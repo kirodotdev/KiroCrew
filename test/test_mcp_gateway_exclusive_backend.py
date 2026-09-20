@@ -477,6 +477,7 @@ class _NullWriter:
 
 class _HandlerBackend:
     supports_caller_identity = True
+    control_plane = False
     quarantined = False
     exclusive_token = ""
 

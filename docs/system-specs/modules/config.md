@@ -311,6 +311,18 @@ Non-string `member_id` or `owner_member_id` values refuse allocation with
 `UnknownMemoryStore` before forming the reserved-ID set, preserving the raw values,
 existing databases and V1 bindings instead of replacing damaged identities.
 
+A `memory_version: 2` record whose `owner_member_id` is empty is a member store
+written before identities existed; the loader keeps it verbatim and every
+resolver refuses it. `repair_legacy_member_stores()` runs in the `cli.main`
+prologue after `boot_platform` for every CLI subcommand except `gateway`,
+`doctor` and the `mcp-*` servers, and for the gateway in its post-readiness
+memory preparation worker (never on the boot path), so both
+surfaces publish the missing `member_id` / `owner_member_id` pair before any
+member is resolved. It writes through `update_config_locked`, skips a config
+whose memory section degraded, and never raises. Criteria, refusals and the
+database half are owned by
+[memory-skills-hooks](memory-skills-hooks.md#pre-identity-member-stores-are-upgraded-at-start).
+
 ### Exact resolution and explicit failures
 
 Admission resolves one frozen `ExecutionContext` containing member ID, store ID,

@@ -223,8 +223,28 @@ def _list_stores_blocking() -> list[dict[str, Any]]:
     from kiro_crew.config.loader import KiroCrewConfig
 
     config = KiroCrewConfig.load()
+    # Only nonempty strings are identities. The loader keeps a hand-edited
+    # non-string ``member_id`` as written (the resolvers refuse it), so the
+    # picker must not hash it.
+    living_ids = {
+        member_id
+        for m in config.agents.values()
+        if isinstance(member_id := getattr(m, "member_id", ""), str) and member_id
+    }
     rows: list[dict[str, Any]] = []
     for name in declared_store_names():
+        record = config.memory_stores.get(name)
+        # A deleted member's V2 store is retained on purpose (its member_id stays
+        # reserved so a new same-named member cannot claim the old memory), but
+        # no route can read it: every content request fails the member lookup.
+        # Listing it under the dead crew's name gives the picker a row whose
+        # every click is a 503, so the picker omits it; ``kirocrew memory scan``
+        # and ``doctor`` still see the record.
+        owner_id = getattr(record, "owner_member_id", "")
+        if getattr(record, "memory_version", 1) == 2 and (
+            not isinstance(owner_id, str) or owner_id not in living_ids
+        ):
+            continue
         try:
             rows.append(_probe_store_blocking(name))
         except Exception:
@@ -232,7 +252,6 @@ def _list_stores_blocking() -> list[dict[str, Any]]:
                 "could not probe memory store %r; listing it unreadable", name, exc_info=True
             )
             rows.append(_unprobed_store_row(name))
-        record = config.memory_stores.get(name)
         owner = getattr(record, "owner_member", "")
         rows[-1]["owner_member"] = owner
         # Reuse the roster's validated avatar descriptor and exact member name.

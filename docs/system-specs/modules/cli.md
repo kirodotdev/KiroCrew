@@ -358,7 +358,15 @@ path gives up is ancestor-swap resistance, not link resistance.
 
 `kirocrew token` has a **machine-readable stdout contract**: stdout carries only
 the dashboard URL(s), and every failure reason (invalid TTL, gateway not running,
-gateway unreachable, empty token) goes to **stderr**.
+gateway unreachable, gateway refused, empty token) goes to **stderr**.
+
+A gateway that ANSWERS with an HTTP error is reported as a refusal carrying the
+gateway's own reason (`Gateway refused the token request (HTTP 403): <error
+body>`), never as `Could not reach gateway`: the 403 `/api/token/local` returns
+when it cannot prove the caller's host provenance (a sandboxed caller, an
+unresolvable peer pid, a different namespace on Linux — see
+[security](security.md)) names its remedy in the body, and reporting it as a
+network failure sent the operator to the wrong fix.
 
 The contract exists because stdout is parsed, not just read by a human. The
 remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs

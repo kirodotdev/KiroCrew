@@ -1048,6 +1048,83 @@ checks passed, not a full database health or backend-capability assessment.
 The command's existing configuration-loading behavior is unchanged.
 SQLite identity reads can create transient WAL coordination files while
 preserving the database and any committed WAL content.
+The same section covers every V2 store still lacking `owner_member_id` (see
+the upgrade below). One that the upgrade will repair is reported as pending
+through its one bound member — the binding line reads "no member identity yet;
+the next gateway start or CLI command upgrades it automatically" and the runtime
+validator, which would refuse it today, is not run on it — so it contributes no
+issue and a repairable store alone leaves doctor's exit clean. One the upgrade
+refuses is listed as an issue and carries the upgrade's own reason and
+`LEGACY_MEMBER_STORE_REMEDY`. Doctor never runs the upgrade itself.
+
+#### Pre-identity member stores are upgraded at start
+
+An earlier member-store layout recorded ownership as the `owner_member` label,
+a `member-memory.json` manifest beside `memory.db`, and `owner_member`,
+`private_memory_version` and `store_name` rows in `memory_meta`; the database
+held the crew tables (`memory_items`, `memory_events`, `memory_meta`, the
+revision tables and `schema_version`) but no `member_database` row, no
+`memory_history`, `memory_consolidations` or `memory_fts`, and the store had no
+`memory/` documents. Today's resolvers require `owner_member_id`, `member_id`
+and the `member_database` row, so that shape is refused everywhere and no
+runtime action can repair it.
+
+`memory_stores.migrate_legacy_member_stores(config)` is the one repair. It runs
+from `repair_legacy_member_stores()` at process start on both surfaces — the CLI
+prologue in `cli.main` for every CLI subcommand (except `doctor`, which only
+reports, and the `mcp-*` stdio servers, which are children of a gateway that
+already ran it) and, for the gateway, its memory preparation worker after the
+dashboard socket is accepting requests, before pending restores are activated
+and before any consumer resolves a member. The `gateway` subcommand is exempt
+from the prologue on purpose: the gateway boot path admits no new work before
+readiness (see `AUTOSDE.yaml`, `no-new-work-on-gateway-boot-path`), and a
+legacy store's lock and SQLite work would otherwise delay the moment the
+dashboard is usable. Both calls are idempotent:
+an install with no `memory_version: 2` record lacking `owner_member_id` takes no
+lock and opens no file, and a repaired install finds nothing on the next start.
+A config whose memory section degraded is left alone.
+
+Under the store namespace lock, for each V2 record with an empty
+`owner_member_id`, the upgrade proceeds only when every one of these holds, and
+otherwise logs one warning naming the store, the reason and the remedy, and
+skips it without guessing:
+
+- exactly one Crew Member has `memory_store` set to the store, and that
+  member's `member_id` is empty;
+- the record's `owner_member`, when set, equals that member's alias, and
+  `member-memory.json` is absent or its `owner_member` equals that alias; a
+  malformed manifest refuses. Both labels are writer-populated and a rebinding
+  can leave them naming another member, so two labels that agree with each
+  other but not with the bound member are refused rather than adopted;
+- `memory.db` exists, is a regular file with exactly one name (`st_nlink == 1`:
+  a hard link would make the same inode another store's database too, and
+  writing identity through this name would relabel that one) and holds
+  `memory_items`; its own `memory_meta` stamps, when present, name this store
+  (`store_name`) and the bound member (the old layout's `owner_member`), so a
+  database copied or restored into another store's directory is refused by the
+  labels it carried in; it either has
+  no `member_database` row or has one whose `store_id` is this store and whose
+  `member_id` is held by no other member or store (an interrupted earlier run
+  resumes with that id); a row naming another store refuses. The file check is
+  repeated immediately before the write, since the read and the write are not
+  one open.
+
+For an admitted store it allocates the `member_id` exactly as member creation
+does (`_allocate_member_id`: the alias slug, uuid-suffixed on collision with
+any `member_id` or `owner_member_id`), then in one SQLite transaction creates
+each missing `MEMBER_SCHEMA_SQL` table, runs `record_meta.ensure_schema`,
+ensures `schema_version` carries the crew version, inserts the
+`member_database` row and makes the `schema_lineage` stamp `crew`; existing
+`memory_items` rows are untouched, so lessons learned on the old build stay
+readable through `open_member_database`. It then reads the identity back,
+creates `memory/preferences.md` and `memory/projects.md` when missing, and
+publishes `agents.<alias>.member_id` and
+`memory_stores.<name>.owner_member_id` through `update_config_locked`,
+re-checking the on-disk document (binding unchanged, no other identity
+published, the id unclaimed) and keeping `owner_member`. The in-memory config
+it was handed receives the same values. `member-memory.json` and the old
+`memory_meta` rows are left in place. One store's failure is logged and never
+blocks start or another store.
 
 V2 labels owner changes as Edit and retained older experiences as Replaced
 experiences. Recall explains which context the member would receive; the record
@@ -2317,7 +2394,7 @@ the unconditional gate is the stronger check layered in front of it.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/memory/stores` | Enumerate every store for the picker: `name`, `is_default`, `lineage` (`v1`/`crew`), `exists`, `semantic_count`, `episodic_count`, `lessons_count`, `facets_supported`, `backup_count`, `newest_backup`. Takes no `?store=` — it answers for all of them |
+| GET | `/api/memory/stores` | Enumerate every store for the picker: `name`, `is_default`, `lineage` (`v1`/`crew`), `exists`, `semantic_count`, `episodic_count`, `lessons_count`, `facets_supported`, `backup_count`, `newest_backup`. Takes no `?store=` — it answers for all of them. One exception: a crew (V2) store whose `owner_member_id` no living member holds — a deleted member's retained store — is omitted, because no content route can read it (every request fails the member lookup) and listing it would give the picker a row whose every click is a 503. The record itself stays in `memory_stores` (its member id is reserved, and `kirocrew memory scan` / `doctor` still report it) |
 | GET | `/api/memory/retired?store=&limit=&offset=` | Episodes a semantic write superseded, newest first: `id`, `text`, `superseded_by`, `retired_times`, `ts`. 400 `invalid_pagination` |
 | POST | `/api/memory/retired/restore` | Body `{"id", "store"}` — clears the tombstone in place. 400 `invalid_episode_id`, 404 `unknown_retired_episode` for an id that is not a restorable retirement in that store |
 | GET | `/api/memory/backups?store=` | That store's hot copies: `name`, `size_bytes`, `taken_at` |

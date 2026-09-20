@@ -187,6 +187,12 @@ class CallerContext:
     #: the dataclass only blocks attribute *reassignment*, not mutation of
     #: mutable field contents.
     raw: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    #: The signed per-session token gatewayd forwards to Kiro Crew's OWN pooled
+    #: control-plane backends (``kirocrew-core`` / ``kirocrew-cron``) so their
+    #: loopback gateway requests can carry ``X-Session-Token``. gatewayd spawns
+    #: a shared backend from its own environment, so the per-session env token
+    #: never reaches it. Never forwarded to a third-party backend.
+    session_token: str = ""
 
     @classmethod
     def from_meta(cls, meta: Any) -> "CallerContext | None":
@@ -217,6 +223,7 @@ class CallerContext:
             channel_id=str(block.get("channelId") or ""),
             from_gateway=True,
             raw=MappingProxyType(dict(block)),
+            session_token=str(block.get("sessionToken") or ""),
         )
 
     @classmethod
@@ -352,6 +359,8 @@ def build_caller_meta(ctx: CallerContext) -> dict[str, Any]:
             "channelId": ctx.channel_id,
         }
     }
+    if ctx.session_token:
+        meta[CALLER_META_KEY]["sessionToken"] = ctx.session_token
     return meta
 
 

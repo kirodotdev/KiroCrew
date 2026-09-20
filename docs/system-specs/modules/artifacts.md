@@ -186,9 +186,14 @@ slash-free in practice). Clone/fork keep the id in the JSON body instead.
 POST/PATCH/DELETE require an unrestricted session. The HTTP body envelope is
 capped at 2 MiB; the store enforces a per-content cap of 25 MiB
 (`artifacts.MAX_CONTENT_BYTES`), large enough for cloned/pulled rich artifacts
-(HTML reports, CSVs). The MCP save/update field cap
-(`validation.ARTIFACT_CONTENT_MAX`) imports that same constant so the tool and
-store paths never disagree.
+(HTML reports, CSVs). The number is owned by `constants.ARTIFACT_MAX_CONTENT_BYTES`;
+`artifacts.MAX_CONTENT_BYTES` and the MCP save/update field cap
+(`validation.ARTIFACT_CONTENT_MAX`) are both that name, so the tool and store
+paths never disagree. It lives in the `constants` leaf rather than in `artifacts`
+because `validation` importing `artifacts` closed the cycle `artifacts -> hooks
+-> webhooks -> validation -> artifacts`, which raised ImportError in any process
+whose first `kiro_crew` import reached `artifacts` before `validation`;
+`test_agent_import_hoist.py` pins that `validation` never imports `artifacts`.
 
 **Folders:** `Artifact.folder_id` (`""` = unfiled) is an opaque,
 rename-safe membership id, tolerant-loaded for legacy meta.json.

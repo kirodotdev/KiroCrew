@@ -145,13 +145,31 @@ def _safe_display(value: object) -> str:
 
 def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Check every configured member's existing binding without initializing memory."""
-    from kiro_crew.memory_stores import require_member_memory_store
+    from kiro_crew.memory_stores import (
+        LEGACY_MEMBER_STORE_REMEDY,
+        legacy_member_store_states,
+        require_member_memory_store,
+    )
 
+    # A V2 store with no owner_member_id predates member identities. The start-of-
+    # process upgrade repairs the ones it can attribute to exactly one member;
+    # doctor itself repairs nothing (it is exempt from that prologue so it can
+    # report the stores), so a repairable store is reported as pending through
+    # the one member bound to it -- the resolver refuses it today, but nothing is
+    # broken -- and a refused one carries the upgrade's own reason and remedy.
+    legacy = legacy_member_store_states(cfg)
     print("\nMember Memory Bindings")
     if not cfg.agents:
         print("  (no configured members)")
     for name, member in cfg.agents.items():
-        binding = f"{_safe_display(name)} -> {_safe_display(getattr(member, 'memory_store', None))}"
+        store = getattr(member, "memory_store", None)
+        binding = f"{_safe_display(name)} -> {_safe_display(store)}"
+        if isinstance(store, str) and store in legacy and not legacy[store]:
+            print(
+                f"  {binding}: no member identity yet; the next gateway start or "
+                "CLI command upgrades it automatically"
+            )
+            continue
         try:
             require_member_memory_store(cfg, name, require_directory=True)
         except Exception as exc:  # noqa: BLE001 -- one broken member must not hide healthy peers
@@ -159,6 +177,14 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
             issues.append(f"member memory binding unavailable: {binding}")
         else:
             print(f"  {binding}: valid binding")
+    for store, reason in legacy.items():
+        if not reason:
+            continue  # pending: reported above through its one bound member
+        print(
+            f"  store {_safe_display(store)}: no member identity and not upgradable "
+            f"({_safe_display(reason)}); to repair it, {LEGACY_MEMBER_STORE_REMEDY}"
+        )
+        issues.append(f"member memory store without identity: {_safe_display(store)}")
 
 
 def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[str]) -> None:

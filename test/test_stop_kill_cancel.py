@@ -483,6 +483,7 @@ class TestDetachOnCancelFailure:
 
         class _RaisingBackend:
             supports_caller_identity = True
+            control_plane = False
             quarantined = False
 
             def __init__(self) -> None:

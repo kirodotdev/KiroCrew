@@ -1660,6 +1660,18 @@ same argument validation, cron ownership, governance and deterministic-job
 checks as its regular dispatcher. A request-local `CallerContext` is restored
 even on failure. Transport failure never triggers a local file-write fallback
 or blind mutation retry; callers inspect `cron_list` after an uncertain response.
+The ONE exception is not a transport failure: a dial that was **refused**
+(`_post` returns `refused=True` — no gateway is listening, so nothing was
+executed and nothing can be replayed) from a process with NO gateway-injected
+caller whose resolved session key is POSITIVELY the attended CLI's own
+(`validation.infer_use_case(key) == "cli"`, the `cli_chat` key `kirocrew chat`
+presents everywhere it is identified) dispatches to the direct host store, which
+is the behaviour that runtime always had before the transport was required. The
+absence of an injected caller alone is not enough: the non-pooled stdio gateway
+topology also has none, and a gateway-minted key (`dashboard:`, a channel, a
+cron, a subagent) with a refused dial is the validating gateway being down — an
+outage to report, never a licence to write around it. A gateway-injected caller
+likewise proves a gateway exists, so its refused dial is reported as an outage.
 Global V1 direct runtimes retain their existing local cron dispatch.
 
 **A new `kirocrew-core` or `kirocrew-cron` tool MUST NOT keep per-caller or
@@ -1769,6 +1781,103 @@ the rest of its life rather than for one turn.
 The token is a bearer name for a session's identity, so it is never logged, never
 in `stats()`, and stripped from the register payload before the prewarm recorder
 can persist it.
+
+**The one place the token is forwarded: Kiro Crew's own pooled control planes.**
+gatewayd spawns a pooled backend from its OWN environment, so the per-session
+token the stub carries never reaches the backend's `os.environ`. That is right
+for a third-party server, which has no business proving a session to anyone.
+`kirocrew-core` and `kirocrew-cron` are different: they post back to the gateway
+over loopback (`/api/crons/tools`, the memory routes) on behalf of the session
+they act for, and since #11780 the gateway requires `X-Session-Token` on that
+transport when no kernel peer attestation is present — which a gatewayd child
+never has. So for exactly `gatewayd.CONTROL_PLANE_BACKENDS` the connection
+handler copies `conn.stub_session_token` onto the injected `CallerContext`
+(`session_token`), `build_caller_meta` emits it as `sessionToken` only when set,
+and `mcp_core._session_token_header` reads the gateway-injected caller's token
+before falling back to `KIROCREW_STUB_SESSION_TOKEN`. The name alone does not
+earn the token: the server name arrives in the stub's register frame while the
+spawn target resolves separately from the spec-derived
+`KIROCREW_MCP_TARGET_<NAME>` mapping, so a spec could declare a third-party
+command under a reserved name. At spawn, `gatewayd._spawns_own_control_plane`
+compares the command actually exec'd (by real path) and its args against the
+invocation `agent.managed_mcp_spec_entry` emits for that name and records the
+verdict as `Backend.control_plane`; the handler forwards the token on that flag
+only. The invocation being ours is still not proof of what runs: the managed
+spec falls back to `<python> -m kiro_crew <sub>` when no launcher resolves, and
+the child's CWD could carry foreign code under our name. Python's `PYTHON*`
+environment namespace is an extensible interpreter control surface: entries can add roots, execute hooks, select an executable, or move
+user-site without changing the command. For a control-plane backend, the
+gateway's pooled-backend resolver removes that whole namespace from the operator
+environment. Any non-empty `PYTHON*` entry present at the verdict therefore came
+from a hand-declared overlay or another resolver and denies the token without
+value inspection. The prefix rule fails closed when Python adds a variable; it
+cannot drift into a false grant through an incomplete list. Third-party pooled
+backends never receive the token and keep operator Python settings outside the
+four keys in `sandbox._PYTHON_ENV_PREFIXES`; `PYTHONUNBUFFERED` is one such
+setting. With those environment controls excluded from a control plane, two roots
+remain. The first is the fixed local root: the CWD for module form or the
+launcher's directory for script form. The second is per-user site-packages,
+which needs no variable to take effect — the interpreter adds it from a default
+location ahead of the install's own site-packages, so removing `PYTHONUSERBASE`
+relocates it rather than disabling it, and `PYTHONSAFEPATH` does not cover it.
+It is read from the gateway's own process, which is sound because the spawn is
+already pinned by realpath to the managed spec's launcher, so the child runs this
+install's interpreter. Inspecting that directory cannot cover everything it does:
+its `.pth` entries execute code at interpreter startup under any filename. So when
+nothing there is load-bearing -- user-site does not hold the package this process
+is running -- an accepted control plane is launched with `PYTHONNOUSERSITE=1`,
+removing the surface rather than inspecting it. A `--user` install is the case that
+keeps user-site enabled, because its own package lives there; an unresolvable
+user-site is treated the same way, leaving the child's import behaviour unchanged
+rather than guessing. The verdict is false when either root holds an importable
+`kiro_crew` other than this process's package. A `--user` install therefore keeps
+its token: its user-site holds the very package this process is running, which
+matches. Disabling user-site instead would break that install shape outright. A namespace directory
+without `__init__.py` does not count, and a dev gateway whose project CWD is its
+own `src/` remains valid. Interpreter flags such as `-P`, `-E`, and `-I` never
+relax this bearer-token fence: an inert root may cause a safe false-deny, but a
+Python version change cannot create a false-grant.
+
+The verdict is taken BEFORE `spawn_backend` forks, under `asyncio.to_thread`
+(it imports `kiro_crew.agent`, reads config and stats those roots), so foreign
+code cannot erase its shadow before a post-spawn check. An accepted backend is
+still launched with `PYTHONSAFEPATH=1` as defense in depth. After the verdict,
+and for every pooled backend, the spawn site re-applies Kiro Crew's own UTF-8
+pinning (`platform_compat._UTF8_PROCESS_ENV`: `PYTHONUTF8` and
+`PYTHONIOENCODING`) to the child environment, so a pooled interpreter builds
+its stdio from UTF-8 rather than a Windows ANSI codepage. The order is the
+guarantee: the classifier sees a `PYTHON*`-free environment, and the pinning
+lands on a child whose verdict is already fixed -- the same pair present before
+the verdict would deny every control plane its own token.
+`Backend.control_plane` is set from that pre-spawn verdict and never recomputed.
+The token joins a caller in one place, `gatewayd._caller_for_backend`, which
+reads the flag off the backend that receives THAT frame and returns a
+token-bearing copy; the connection's base `CallerContext` stays tokenless for
+its whole life. A transparent respawn is therefore judged on its own: the
+handler hands the tokenless base to `_respawn_backend_for_stub`, whose
+tool-surface probe and subscription replay decide against the replacement, and
+the frames the session forwards afterwards decide against whatever backend now
+serves it — so a control plane that died is not a warrant for the fresh process
+spawned under its name. A denial for a reserved name is logged at spawn
+(`_deny_control_plane`) naming the backend and the condition that failed — no
+spec entry, a different binary, different args, a non-empty `PYTHON*` variable,
+or a root that shadows `kiro_crew` (named in the message, so per-user site-packages
+is distinguishable from the local one) — so an
+install that trips the check has more to read than every cron tool answering
+403.
+
+`CONTROL_PLANE_BACKENDS` mirrors `acp.session_mcp.CONTROL_PLANE_SERVERS`
+(importing it would put `kiro_crew.agent` on the daemon's boot path) and a
+ratchet test pins the two equal. The stub-strip in
+`backend._strip_caller_meta` removes the whole caller block, so a stub cannot
+forge a `sessionToken` either. A gateway-injected caller also marks the backend
+as gateway-hosted: when its dial to the gateway is refused it reports the
+outage, whereas the attended CLI's own identity (`kirocrew chat` with no gateway
+— no injected caller AND a session key `infer_use_case` classes as `cli` — whose
+`_post` returns `refused=True` meaning nothing was executed) falls back to the
+direct host store the cron tools always had before the transport was required;
+a gateway-minted key with no injected caller is the non-pooled topology and
+reports the outage instead.
 
 `register_hook` resolves through `require_strict_session_key`. Member hooks
 capture their originating execution record before provider allocation; Global

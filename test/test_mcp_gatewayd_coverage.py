@@ -999,30 +999,59 @@ class TestEnvTargetResolver:
         assert isinstance(env, dict)
         assert work_dir == key.work_dir
 
-    def test_python_env_prefixes_are_stripped_from_spawned_env(self, monkeypatch):
-        """PYTHONPATH/PYTHONHOME/PYTHONPYCACHEPREFIX must not reach a pooled
-        Python-based MCP backend: the first two cause import conflicts, and
-        PYTHONPYCACHEPREFIX would make the backend mirror its stdlib into the
-        shared bytecode cache (see pycache_gc.py). This scrub reuses
-        sandbox._PYTHON_ENV_PREFIXES rather than a hand-listed set of keys, so
-        it can't silently drift from the kiro-cli/agent spawn path's scrub.
+    def test_python_namespace_is_stripped_from_managed_spawn_env(self, monkeypatch):
+        """Control-plane resolution and the token fence share a closed namespace rule.
+
+        This pins the RESOLVER's output, which is what the classifier reads:
+        no inherited ``PYTHON*`` key survives for a control-plane backend. The
+        child's final environment is a separate step -- the spawn site re-applies
+        Kiro Crew's own UTF-8 pair after the verdict -- and is pinned by the
+        spawn-site tests.
         """
-        key = _pool_key(server="pyenv-mcp")
-        monkeypatch.delenv("KIROCREW_MCP_TARGET_PYENV_MCP", raising=False)
-        monkeypatch.setenv("MC_MCP_TARGET_PYENV_MCP", "py-backend --stdio")
-        monkeypatch.setenv("PYTHONPATH", "/host/site-packages")
-        monkeypatch.setenv("PYTHONHOME", "/host/python")
-        monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/host/cache/pycache")
-        monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+        key = _pool_key(server="kirocrew-core")
+        monkeypatch.delenv("KIROCREW_MCP_TARGET_KIROCREW_CORE", raising=False)
+        monkeypatch.setenv("MC_MCP_TARGET_KIROCREW_CORE", "kirocrew mcp-core")
+        python_env = {
+            "PYTHONPATH": "/host/site-packages",
+            "PYTHONHOME": "/host/python",
+            "PYTHONPYCACHEPREFIX": "/host/cache/pycache",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONUSERBASE": "/host/user-site",
+            "PYTHONSTARTUP": "/host/startup.py",
+            "PYTHONEXECUTABLE": "/host/python",
+            "PYTHON_FUTURE_IMPORT_ROOT": "/host/future",
+        }
+        for env_key, value in python_env.items():
+            monkeypatch.setenv(env_key, value)
 
         resolved = gw.env_target_resolver(key)
         assert resolved is not None
         _command, _args, env, _work_dir = resolved
 
-        for leaked_key in (
-            "PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE",
+        assert not [env_key for env_key in env if env_key.upper().startswith("PYTHON")]
+
+    def test_third_party_keeps_benign_python_env(self, monkeypatch):
+        """A third-party backend keeps Python settings outside the four-key scrub."""
+        key = _pool_key(server="third-party-mcp")
+        monkeypatch.setenv("MC_MCP_TARGET_THIRD_PARTY_MCP", "python third_party_server.py")
+        monkeypatch.setenv("PYTHONPATH", "/host/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/host/python")
+        monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/host/cache/pycache")
+        monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+        monkeypatch.setenv("PYTHONUNBUFFERED", "1")
+
+        resolved = gw.env_target_resolver(key)
+        assert resolved is not None
+        _command, _args, env, _work_dir = resolved
+
+        assert env.get("PYTHONUNBUFFERED") == "1"
+        for env_key in (
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONPYCACHEPREFIX",
+            "PYTHONDONTWRITEBYTECODE",
         ):
-            assert leaked_key not in env
+            assert env_key not in env
 
 
 # --- backend acquire / respawn ----------------------------------------------

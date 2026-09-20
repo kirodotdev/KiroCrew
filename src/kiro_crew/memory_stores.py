@@ -8,6 +8,9 @@ A V2 member owns one memory.db with its immutable member/store identity and
 all learned memory tables. Its manual preferences/projects documents remain
 separate. FTS uses that same database. Only explicit new-member creation
 allocates files; resolution never repairs, migrates, copies or initializes data.
+The one repair is :func:`migrate_legacy_member_stores`, run at process start
+and nowhere else: it gives a member store written before identities existed its
+``member_id`` and ``member_database`` row, keeping every learned row in place.
 Config membership and captured execution records route built-in operations;
 these paths are not a confidentiality boundary against same-user code.
 
@@ -804,6 +807,505 @@ def memory_store_namespace_lock(root: Path | None = None) -> Iterator[None]:
         os.close(fd)
 
 
+def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> str:
+    """A member id for *member* that no agent or store in *config* already holds.
+
+    The slug of the display name, with a random suffix only on collision. Deleted
+    members retain their stores, so a retired store's ``owner_member_id`` reserves
+    the slug too: captured work must never resolve to a newly created member that
+    happens to share the name.
+
+    ``refuse_damaged`` decides what a non-string identity elsewhere in the config
+    means. Creating a member refuses outright, because a config that cannot be
+    read is no basis for writing a new identity into it. The upgrade passes
+    ``False`` instead: a non-string can never collide with a string slug, so
+    excluding it from the reservation set is sound, and refusing would let one
+    damaged record anywhere block the repair of every other store -- the very
+    failure the upgrade exists to end. The damaged record is still refused on its
+    own behalf, by the candidate scan that rejects it.
+    """
+    from kiro_crew.members import slug_for_name
+
+    base = slug_for_name(member)
+    identities = [getattr(item, "member_id", "") for item in config.agents.values()]
+    identities.extend(item.owner_member_id for item in config.memory_stores.values())
+    if refuse_damaged and any(not isinstance(identity, str) for identity in identities):
+        raise UnknownMemoryStore("Configured member identity must be a string; allocation refused")
+    existing = {identity for identity in identities if isinstance(identity, str)}
+    member_id = base
+    while member_id in existing:
+        member_id = f"{base[:48]}-{uuid.uuid4().hex[:12]}"
+    return member_id
+
+
+#: Ownership manifest an earlier member-store layout wrote beside ``memory.db``.
+#: Read as corroborating evidence by the upgrade below, never written, never
+#: required, and left in place afterwards.
+LEGACY_MEMBER_MANIFEST = "member-memory.json"
+
+#: ``memory_meta`` key under which that same layout stamped the owning member
+#: into the database itself, beside :data:`~kiro_crew.memory_schema.STORE_NAME_META_KEY`.
+#: The current schema does not write it; the upgrade reads it as one more
+#: label that has to name the member bound today.
+LEGACY_OWNER_MEMBER_META_KEY = "owner_member"
+
+#: What an operator does about a V2 store the upgrade refuses to touch. One
+#: string so the boot log and ``kirocrew doctor`` say the same thing.
+LEGACY_MEMBER_STORE_REMEDY = (
+    "edit config.json so exactly one Crew Member has memory_store set to this store "
+    "and an empty member_id, and make the store's owner_member name that member"
+)
+
+_CREATE_TABLE_RE = re.compile(r"CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(\w+)", re.IGNORECASE)
+
+
+def _legacy_member_manifest_owner(directory: Path) -> tuple[bool, str]:
+    """``(present, owner_member)`` from the store's old manifest; malformed is an error."""
+    import json
+
+    manifest = directory / LEGACY_MEMBER_MANIFEST
+    try:
+        raw = manifest.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, ""
+    except OSError as exc:
+        raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is unreadable: {exc}") from exc
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is not valid JSON") from exc
+    owner = value.get("owner_member") if isinstance(value, dict) else None
+    if not isinstance(owner, str) or not owner:
+        raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} names no owner_member")
+    return True, owner
+
+
+def _require_private_member_database(path: Path) -> None:
+    """Refuse *path* unless it is a regular file with exactly one name.
+
+    A symlink would let the upgrade act on a file outside the store directory,
+    and a hard link means the same inode is ALSO some other store's database:
+    writing identity through one name relabels the other, silently. Same rule
+    as the namespace lock, applied before every read and every write the
+    upgrade makes, since the two are not one open.
+    """
+    import stat
+
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise UnknownMemoryStore(f"{MEMORY_DB_FILE} is missing") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise UnknownMemoryStore(f"{MEMORY_DB_FILE} is not a regular file")
+    if info.st_nlink != 1:
+        raise UnknownMemoryStore(f"{MEMORY_DB_FILE} is hard-linked to another file")
+
+
+def _legacy_member_database_identity(path: Path, store: str, alias: str) -> str:
+    """The member id an unfinished upgrade already wrote into *path*, or ``""``.
+
+    Read-only. Refuses a file that is not a member-lineage database, one whose
+    own ``memory_meta`` stamps (``store_name``, and the old layout's
+    ``owner_member``) name another store or member, or one whose
+    ``member_database`` row names another store: that file belongs to someone
+    else and adopting it would hand this member their memory. A database copied
+    or restored into the wrong store directory carries the stamps of where it
+    came from, which is what makes the misplacement detectable here.
+    """
+    import sqlite3
+
+    from kiro_crew.memory_schema import MEMBER_DATABASE_FORMAT, STORE_NAME_META_KEY
+
+    _require_private_member_database(path)
+    try:
+        connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        raise UnknownMemoryStore(f"{MEMORY_DB_FILE} is unreadable: {exc}") from exc
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type IN ('table', 'view')"
+            )
+        }
+        if "memory_items" not in tables:
+            raise UnknownMemoryStore(f"{MEMORY_DB_FILE} does not hold the member memory schema")
+        if "memory_meta" in tables:
+            stamps = dict(
+                connection.execute(
+                    "SELECT key, value FROM memory_meta WHERE key IN (?, ?)",
+                    (STORE_NAME_META_KEY, LEGACY_OWNER_MEMBER_META_KEY),
+                )
+            )
+            for key, expected in (
+                (STORE_NAME_META_KEY, store),
+                (LEGACY_OWNER_MEMBER_META_KEY, alias),
+            ):
+                if key in stamps and stamps[key] != expected:
+                    raise UnknownMemoryStore(
+                        f"{MEMORY_DB_FILE} records {key} {stamps[key]!r}, not {expected!r}"
+                    )
+        if "member_database" not in tables:
+            return ""
+        row = connection.execute(
+            "SELECT format_version, member_id, store_id FROM member_database WHERE singleton=1"
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise UnknownMemoryStore(f"{MEMORY_DB_FILE} is unreadable: {exc}") from exc
+    finally:
+        connection.close()
+    if row is None:
+        return ""
+    if row[0] != MEMBER_DATABASE_FORMAT or not isinstance(row[1], str) or not row[1]:
+        raise UnknownMemoryStore(f"{MEMORY_DB_FILE} carries an unsupported member identity")
+    if row[2] != store:
+        raise UnknownMemoryStore(
+            f"{MEMORY_DB_FILE} already records the identity of store {row[2]!r}"
+        )
+    return row[1]
+
+
+def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
+    """Every V2 record with no ``owner_member_id``: ``name -> (alias, member_id, reason)``.
+
+    A candidate is UPGRADABLE when *reason* is ``""``; *alias* is then the one
+    Crew Member bound to it and *member_id* is the identity an interrupted
+    earlier upgrade already wrote into its database (``""`` when none). Every
+    other outcome carries the reason it was refused. Read-only: config, the old
+    manifest and the database are inspected, nothing is written, and no name is
+    guessed -- a store this cannot attribute to exactly one member stays
+    unrepaired with its reason rather than adopting a plausible owner.
+    """
+    candidates: dict[str, tuple[str, str, str]] = {}
+    bindings: dict[str, list[str]] = {}
+    for alias, agent in config.agents.items():
+        store = getattr(agent, "memory_store", None)
+        if isinstance(store, str):
+            bindings.setdefault(store, []).append(alias)
+    for name, record in config.memory_stores.items():
+        owner_id = getattr(record, "owner_member_id", "")
+        if getattr(record, "memory_version", 1) != 2 or owner_id:
+            continue
+        bound = bindings.get(name, [])
+        try:
+            validate_memory_store_name(name)
+            # The loader keeps a hand-edited non-string (``[]``, ``null``,
+            # ``false``) as written so the resolvers refuse it and doctor can
+            # show it; it is a damaged identity, not a missing one, so the
+            # upgrade must not read it as pre-identity and overwrite it.
+            if not isinstance(owner_id, str):
+                raise UnknownMemoryStore("its owner_member_id is not a string")
+            if name == DEFAULT_MEMORY_STORE:
+                raise UnknownMemoryStore("the default store cannot be a member store")
+            if len(bound) != 1:
+                raise UnknownMemoryStore(
+                    "no Crew Member is bound to it"
+                    if not bound
+                    else f"{len(bound)} Crew Members are bound to it: {', '.join(sorted(bound))}"
+                )
+            alias = bound[0]
+            agent = config.agents[alias]
+            if not isinstance(agent.member_id, str):
+                raise UnknownMemoryStore("its Crew Member's member_id is not a string")
+            directory = _named_store_dir(name)
+            # Every owner label the old build left behind must name the member
+            # bound today. Accepting a manifest that merely agrees with the
+            # record would adopt a store both labels say is someone else's --
+            # the labels are writer-populated and a later rebinding can leave
+            # them naming a member other than the one now bound.
+            record_owner = getattr(record, "owner_member", "")
+            if record_owner and record_owner != alias:
+                raise UnknownMemoryStore(
+                    f"its record names owner_member {record_owner!r}, not {alias!r}"
+                )
+            present, owner = _legacy_member_manifest_owner(directory)
+            if present and owner != alias:
+                raise UnknownMemoryStore(
+                    f"{LEGACY_MEMBER_MANIFEST} names owner {owner!r}, not {alias!r}"
+                )
+            member_id = _legacy_member_database_identity(directory / MEMORY_DB_FILE, name, alias)
+            # An identity the bound member already carries is this store's own
+            # half-finished upgrade, not a conflict: the member's identity is
+            # published before the store record's, so an interruption between
+            # the two leaves exactly this shape. Refusing it would strand the
+            # store for good, and the remedy -- blanking the member_id -- would
+            # put the two identities into disagreement. Any OTHER holder is a
+            # real conflict and still refuses.
+            resuming = bool(member_id) and agent.member_id == member_id
+            if agent.member_id and not resuming:
+                raise UnknownMemoryStore(
+                    f"its Crew Member {alias!r} already carries member_id {agent.member_id!r}"
+                )
+            if member_id:
+                claimed = any(
+                    other_alias != alias and getattr(other, "member_id", "") == member_id
+                    for other_alias, other in config.agents.items()
+                ) or any(
+                    other_name != name and getattr(other, "owner_member_id", "") == member_id
+                    for other_name, other in config.memory_stores.items()
+                )
+                if claimed:
+                    raise UnknownMemoryStore(
+                        f"{MEMORY_DB_FILE} records identity {member_id!r}, "
+                        "which another member or store already holds"
+                    )
+        except UnknownMemoryStore as exc:
+            candidates[name] = ("", "", str(exc))
+        else:
+            candidates[name] = (alias, member_id, "")
+    return candidates
+
+
+def legacy_member_store_states(config) -> dict[str, str]:
+    """``store -> reason`` for every V2 record still lacking ``owner_member_id``.
+
+    ``""`` means the upgrade will repair it on the next start; anything else is
+    why it is left alone, in the words the boot log uses. Read-only, for
+    ``kirocrew doctor``.
+    """
+    return {
+        name: reason
+        for name, (_alias, _id, reason) in _legacy_member_store_candidates(config).items()
+    }
+
+
+def _complete_legacy_member_database(path: Path, *, member_id: str, store: str) -> None:
+    """Add the member tables and identity row to an older member database, in place.
+
+    Every existing row survives: only tables the file lacks are created, and the
+    ``member_database`` row is inserted when absent. One transaction, so a crash
+    leaves either the old file or the finished one.
+    """
+    import sqlite3
+
+    from kiro_crew import memory_record_metadata as record_meta
+    from kiro_crew.memory_schema import (
+        CREW_SCHEMA_VERSION,
+        LINEAGE_CREW,
+        LINEAGE_META_KEY,
+        MEMBER_DATABASE_FORMAT,
+        MEMBER_SCHEMA_SQL,
+    )
+    from kiro_crew.vector_memory import _now_iso
+
+    _require_private_member_database(path)
+    db = sqlite3.connect(path, isolation_level=None)
+    try:
+        db.execute("PRAGMA busy_timeout=5000")
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            present = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_schema WHERE type IN ('table', 'view')"
+                )
+            }
+            for statement in MEMBER_SCHEMA_SQL.split(";"):
+                statement = statement.strip()
+                if not statement:
+                    continue
+                match = _CREATE_TABLE_RE.match(statement)
+                if match is None:
+                    raise UnknownMemoryStore("member schema holds a statement that is not a table")
+                if match.group(1) not in present:
+                    db.execute(statement)
+            record_meta.ensure_schema(db)
+            now = _now_iso()
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version "
+                "(version INTEGER PRIMARY KEY, applied_at TEXT)"
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO schema_version VALUES (?,?)", (CREW_SCHEMA_VERSION, now)
+            )
+            if db.execute("SELECT 1 FROM member_database WHERE singleton=1").fetchone() is None:
+                db.execute(
+                    "INSERT INTO member_database VALUES (1,?,?,?)",
+                    (MEMBER_DATABASE_FORMAT, member_id, store),
+                )
+            updated = db.execute(
+                "UPDATE memory_meta SET value=?, updated_at=? WHERE key=? AND value<>?",
+                (LINEAGE_CREW, now, LINEAGE_META_KEY, LINEAGE_CREW),
+            ).rowcount
+            if (
+                updated == 0
+                and db.execute(
+                    "SELECT 1 FROM memory_meta WHERE key=?", (LINEAGE_META_KEY,)
+                ).fetchone()
+                is None
+            ):
+                db.execute(
+                    "INSERT INTO memory_meta (key,value,updated_at) VALUES (?,?,?)",
+                    (LINEAGE_META_KEY, LINEAGE_CREW, now),
+                )
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+    finally:
+        db.close()
+
+
+def _publish_legacy_member_identity(alias: str, store: str, member_id: str) -> None:
+    """Write the allocated identity onto the member and its store under the config lock.
+
+    Re-checked against the document on disk, so a concurrent writer that already
+    published the same identity is a no-op and one that changed the binding or
+    published a different identity refuses rather than overwrites.
+    """
+    from kiro_crew.config.loader import _invalidate_config_cache, update_config_locked
+
+    def mutate(data: dict) -> dict | None:
+        agents = data.get("agents")
+        stores = data.get("memory_stores")
+        if not isinstance(agents, dict) or not isinstance(stores, dict):
+            raise UnknownMemoryStore("agent or memory store configuration is unreadable")
+        current = agents.get(alias)
+        entry = stores.get(store)
+        if not isinstance(current, dict) or not isinstance(entry, dict):
+            raise UnknownMemoryStore("the member or its store was removed concurrently")
+        if current.get("memory_store", DEFAULT_MEMORY_STORE) != store:
+            raise UnknownMemoryStore("the member's memory binding changed concurrently")
+        if entry.get("memory_version") != 2:
+            raise UnknownMemoryStore("the store declaration changed concurrently")
+        published_member = current.get("member_id")
+        published_store = entry.get("owner_member_id")
+        if published_member == member_id and published_store == member_id:
+            return None
+        # Refuse a value that DISAGREES, not one that is merely present: the
+        # member's identity is written before the store's, so a half-published
+        # pair carrying this very id is an interrupted write of it, and
+        # completing it is the whole point. A damaged non-string disagrees and
+        # still refuses.
+        if (published_member and published_member != member_id) or (
+            published_store and published_store != member_id
+        ):
+            raise UnknownMemoryStore("a different member identity was published concurrently")
+        for other, other_agent in agents.items():
+            if other != alias and isinstance(other_agent, dict):
+                if other_agent.get("memory_store") == store:
+                    raise UnknownMemoryStore(f"memory store {store!r} was bound to another member")
+                if other_agent.get("member_id") == member_id:
+                    raise UnknownMemoryStore(
+                        f"member identity {member_id!r} was taken concurrently"
+                    )
+        for other, other_store in stores.items():
+            if (
+                other != store
+                and isinstance(other_store, dict)
+                and other_store.get("owner_member_id") == member_id
+            ):
+                raise UnknownMemoryStore(f"member identity {member_id!r} was taken concurrently")
+        current["member_id"] = member_id
+        entry["owner_member_id"] = member_id
+        if not entry.get("owner_member"):
+            entry["owner_member"] = alias
+        return data
+
+    update_config_locked(mutate=mutate)
+    _invalidate_config_cache()
+
+
+def migrate_legacy_member_stores(config) -> list[str]:
+    """Give every attributable pre-identity V2 store its member identity; return their names.
+
+    A member store created by an earlier build carries ``memory_version: 2`` with
+    no ``owner_member_id``, a Crew Member with no ``member_id``, and a database
+    with the crew tables but no ``member_database`` row -- a shape today's
+    resolvers refuse outright, leaving no repair path. This is that path, run at
+    every start: for each candidate that exactly one member is bound to (see
+    :func:`_legacy_member_store_candidates` for the full criteria) it allocates
+    the id the way member creation does, completes the database in place with the
+    learned rows intact, adds the manual documents, publishes the identity to
+    ``config.json`` under the config lock and mirrors it onto *config*.
+
+    One store's failure never touches another: each is its own try, refused ones
+    are logged once with the reason and :data:`LEGACY_MEMBER_STORE_REMEDY`, and
+    the second run over a repaired install finds nothing to do.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.memory import PREFERENCES_FILE, PROJECTS_FILE
+    from kiro_crew.vector_memory import read_member_database_identity
+
+    repaired: list[str] = []
+    with memory_store_namespace_lock():
+        for name, (alias, existing_id, reason) in _legacy_member_store_candidates(config).items():
+            if reason:
+                logger.warning(
+                    "memory store %r has no member identity and was left unrepaired: %s. "
+                    "To repair it, %s.",
+                    name,
+                    reason,
+                    LEGACY_MEMBER_STORE_REMEDY,
+                )
+                continue
+            try:
+                member_id = existing_id or _allocate_member_id(config, alias, refuse_damaged=False)
+                directory = _named_store_dir(name)
+                database = directory / MEMORY_DB_FILE
+                _complete_legacy_member_database(database, member_id=member_id, store=name)
+                if read_member_database_identity(database) != (member_id, name):
+                    raise UnknownMemoryStore(
+                        "the completed database does not read back its identity"
+                    )
+                manual = directory / "memory"
+                platform_compat.make_owner_only_dir(manual)
+                if not (manual / PREFERENCES_FILE).exists():
+                    atomic_write(manual / PREFERENCES_FILE, "# Member Preferences\n", fsync=True)
+                if not (manual / PROJECTS_FILE).exists():
+                    atomic_write(manual / PROJECTS_FILE, "# Member Projects\n", fsync=True)
+                _publish_legacy_member_identity(alias, name, member_id)
+            except Exception:
+                logger.warning(
+                    "memory store %r could not be given its member identity; it stays "
+                    "unavailable until the next start. To repair it by hand, %s.",
+                    name,
+                    LEGACY_MEMBER_STORE_REMEDY,
+                    exc_info=True,
+                )
+                continue
+            config.agents[alias].member_id = member_id
+            config.memory_stores[name].owner_member_id = member_id
+            if not config.memory_stores[name].owner_member:
+                config.memory_stores[name].owner_member = alias
+            repaired.append(name)
+            logger.info(
+                "memory store %r now carries member identity %r for %r", name, member_id, alias
+            )
+    return repaired
+
+
+def repair_legacy_member_stores() -> list[str]:
+    """The start-of-process entry to :func:`migrate_legacy_member_stores`; never raises.
+
+    Cheap when there is nothing to do: an install with no pre-identity V2 record
+    takes no lock and opens no file. A config whose memory section degraded is
+    left alone -- writing identities into a document the loader could not fully
+    read would be a guess.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+        config = KiroCrewConfig.load()
+        if not any(
+            getattr(record, "memory_version", 1) == 2 and not getattr(record, "owner_member_id", "")
+            for record in config.memory_stores.values()
+        ):
+            return []
+        if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
+            logger.warning(
+                "memory stores without a member identity were left unrepaired: the memory "
+                "configuration is unreadable"
+            )
+            return []
+        return migrate_legacy_member_stores(config)
+    except Exception:
+        logger.warning("member memory upgrade did not run", exc_info=True)
+        return []
+
+
 def provision_member_memory(config, member: str) -> str:
     """Validate configuration before allocating or acquiring a store write lock."""
     from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
@@ -817,7 +1319,6 @@ def provision_member_memory(config, member: str) -> str:
 def _provision_member_memory(config, member: str) -> str:
     from kiro_crew import platform_compat
     from kiro_crew.config.sections import MemoryStoreConfig
-    from kiro_crew.members import slug_for_name
     from kiro_crew.vector_memory import create_member_database
 
     if member == DEFAULT_MEMORY_STORE or member not in config.agents:
@@ -831,20 +1332,7 @@ def _provision_member_memory(config, member: str) -> str:
         raise UnknownMemoryStore("Existing member identity has no valid store; allocation refused")
     if current is not None and (current.owner_member_id or current.owner_member):
         raise UnknownMemoryStore("Existing member store identity is invalid")
-    if not member_id:
-        base = slug_for_name(member)
-        identities = [getattr(item, "member_id", "") for item in config.agents.values()]
-        # Deleted members retain their stores; captured work must never resolve
-        # their identities to a newly created member with the same slug.
-        identities.extend(item.owner_member_id for item in config.memory_stores.values())
-        if any(not isinstance(identity, str) for identity in identities):
-            raise UnknownMemoryStore(
-                "Configured member identity must be a string; allocation refused"
-            )
-        existing = set(identities)
-        member_id = base
-        while member_id in existing:
-            member_id = f"{base[:48]}-{uuid.uuid4().hex[:12]}"
+    member_id = _allocate_member_id(config, member)
     root = memory_stores_root()
     platform_compat.make_owner_only_dir(root)
     while True:

@@ -255,3 +255,122 @@ async def test_dispatch_failure_clears_request_caller_and_reports_uncertain_outc
     assert "Check cron_list" in body["error"]
     assert seen == [env.identities["alice"].key]
     assert current_caller() is outer
+
+
+def _app_without_peer_attestation(env):
+    """The production TCP shape: internal secret only, NO ``peer_verified``.
+
+    :func:`app_for` marks the synthetic peer verified so the routing tests stay
+    focused on routing; that mark is exactly what hid the pooled-backend 403,
+    because a gatewayd-spawned backend has no session binding to attest.
+    """
+
+    @web.middleware
+    async def authenticate(request, handler):
+        if request.headers.get("X-Internal-Secret") == "fixture-internal-secret":
+            request["internal_auth"] = True
+        return await handler(request)
+
+    app = web.Application(middlewares=[authenticate])
+    app["state"] = env.state
+    _register_mcp_routes(app)
+    return app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forwarded", [True, False])
+async def test_pooled_backend_carries_the_gateway_forwarded_token(env, monkeypatch, forwarded):
+    """A pooled ``kirocrew-cron`` backend is spawned from gatewayd's own environment,
+    so ``KIROCREW_STUB_SESSION_TOKEN`` is never in its ``os.environ``. The token
+    it proves the session with is the one gatewayd forwards inside the per-call
+    caller block; without it the request is (correctly) refused."""
+    from kiro_crew.mcp_caller import build_caller_meta
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    monkeypatch.delenv(STUB_SESSION_TOKEN_ENV, raising=False)
+    identity = env.identities["alice"]
+    token = "stub-token-for-alice"
+    # Only the mapping is stubbed; the header plumbing under test is real.
+    monkeypatch.setattr(
+        member_memory_auth,
+        "verify_session_token",
+        lambda presented: identity.key if presented == token else "",
+    )
+    ctx = CallerContext(session_key=identity.key, session_token=token if forwarded else "")
+    parsed = CallerContext.from_meta(build_caller_meta(ctx))
+    assert parsed is not None and parsed.from_gateway
+    assert parsed.session_token == (token if forwarded else "")
+    set_current_caller(parsed)
+    loop = asyncio.get_running_loop()
+    captured: list[dict[str, str]] = []
+    async with TestClient(TestServer(_app_without_peer_attestation(env))) as client:
+
+        async def send(body, headers):
+            captured.append(dict(headers))
+            response = await client.post("/api/crons/tools", json=body, headers=headers)
+            return response.status, await response.json()
+
+        def post(path, body, *, session_key):
+            headers = {"X-Session-Key": session_key, "X-Internal-Secret": "fixture-internal-secret"}
+            headers.update(mcp_core._session_token_header())
+            status, payload = asyncio.run_coroutine_threadsafe(send(body, headers), loop).result(
+                timeout=10
+            )
+            return payload if status == 200 else {"error": payload.get("error", "refused")}
+
+        monkeypatch.setattr(mcp_core, "_post", post)
+        result = await asyncio.to_thread(
+            mcp_cron._call_tool, "cron_add", {"name": "pooled", "message": "go", "every": 120}
+        )
+    assert len(captured) == 1
+    jobs = CronService(base_dir=env.home).list_jobs()
+    if forwarded:
+        assert captured[0].get("X-Session-Token") == token
+        assert result.startswith("Added job"), result
+        assert [job.session_key for job in jobs] == [identity.key]
+    else:
+        assert "X-Session-Token" not in captured[0]
+        assert result.startswith("Error:"), result
+        assert jobs == []
+
+
+def test_no_gateway_with_cli_identity_dispatches_locally(env, monkeypatch):
+    """``kirocrew chat`` with no gateway: the identity is the CLI's own
+    ``cli_chat`` key, nothing was executed (connection refused), so the direct
+    host store this runtime always had is used rather than an error about a
+    gateway that was never part of the picture."""
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "cli_chat")
+    post = mock.Mock(return_value={"error": "gateway not reachable", "refused": True})
+    monkeypatch.setattr(mcp_core, "_post", post)
+    result = mcp_cron._call_tool("cron_add", {"name": "local", "message": "go", "every": 120})
+    assert result.startswith("Added job"), result
+    assert [job.name for job in CronService(base_dir=env.home).list_jobs()] == ["local"]
+    post.assert_called_once()
+
+
+def test_no_gateway_with_a_gateway_minted_key_does_not_fall_back(env, monkeypatch):
+    """The non-pooled gateway topology: no injected caller, but the env key is a
+    gateway session's (``dashboard:alice``). A refused dial there is the
+    validating gateway being down, not a standalone CLI -- the mutation must
+    not route around it to the host store."""
+    post = mock.Mock(return_value={"error": "gateway not reachable", "refused": True})
+    opening = mock.Mock(side_effect=AssertionError("gateway session must not write cron files"))
+    monkeypatch.setattr(mcp_core, "_post", post)
+    monkeypatch.setattr(mcp_cron, "CronService", opening)
+    assert current_caller() is None
+    result = mcp_cron._call_tool("cron_add", {"name": "once", "message": "go", "every": 120})
+    assert result.startswith("Error:"), result
+    opening.assert_not_called()
+
+
+def test_no_gateway_with_gateway_injected_identity_does_not_fall_back(env, monkeypatch):
+    """A gateway-injected caller proves a gateway exists; a refused dial from
+    its backend is an outage to report, never a licence to write the host store."""
+    post = mock.Mock(return_value={"error": "gateway not reachable", "refused": True})
+    opening = mock.Mock(side_effect=AssertionError("pooled backend must not write cron files"))
+    monkeypatch.setattr(mcp_core, "_post", post)
+    monkeypatch.setattr(mcp_cron, "CronService", opening)
+    set_current_caller(CallerContext(session_key=env.identities["alice"].key, from_gateway=True))
+    result = mcp_cron._call_tool("cron_add", {"name": "once", "message": "go", "every": 120})
+    assert result.startswith("Error:"), result
+    opening.assert_not_called()

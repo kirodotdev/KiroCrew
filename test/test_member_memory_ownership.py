@@ -220,6 +220,51 @@ class TestPrivateOwnership:
         assert refreshed[second]["owner_avatar"] == rows[second]["owner_avatar"]
         assert require_member_memory_store(KiroCrewConfig.load(), "Code Review") == first
 
+    def test_deleted_member_store_is_not_listed_for_the_picker(self):
+        """The store record stays (its member id is reserved), but no route can
+        read it, so listing it hands the picker a row whose every click is a 503."""
+        from kiro_crew.dashboard.handlers.memory_admin import _list_stores_blocking
+
+        cfg, store = _new_member("reviewer")
+        persist_member_config(cfg, "reviewer", create=True)
+        assert store in {row["name"] for row in _list_stores_blocking()}
+
+        def delete_member(data):
+            del data["agents"]["reviewer"]
+            return data
+
+        update_config_locked(mutate=delete_member)
+        names = {row["name"] for row in _list_stores_blocking()}
+        assert store not in names and "default" in names
+        assert store in KiroCrewConfig.load().memory_stores  # reservation intact
+
+    @pytest.mark.parametrize("junk", [[], {"id": 1}, 7, None])
+    def test_non_string_identities_in_config_never_crash_the_picker(self, junk):
+        """config.json is hand-editable: a ``member_id: []`` (or a junk
+        ``owner_member_id``) is kept as written so the resolvers refuse it and
+        doctor can show it, but the picker must not hash it into an unhashable
+        TypeError that turns ``/api/memory/stores`` into a 500."""
+        from kiro_crew.dashboard.handlers.memory_admin import _list_stores_blocking
+
+        cfg, store = _new_member("reviewer")
+        persist_member_config(cfg, "reviewer", create=True)
+
+        def corrupt(data):
+            data["agents"]["reviewer"]["member_id"] = junk
+            data["agents"]["bystander"] = {"member_id": junk}
+            data["memory_stores"][store]["owner_member_id"] = junk
+            return data
+
+        update_config_locked(mutate=corrupt)
+        loaded = KiroCrewConfig.load()
+        assert loaded.agents["reviewer"].member_id == junk
+        assert loaded.agents["bystander"].member_id == junk
+        assert loaded.memory_stores[store].owner_member_id == junk
+        names = {row["name"] for row in _list_stores_blocking()}
+        # A damaged identity is not a living owner, so the record is omitted
+        # like a deleted member's store; the default store still lists.
+        assert store not in names and "default" in names
+
     def test_mcp_advisory_binding_does_not_open_hidden_files_but_runtime_does(self):
         cfg, store = _new_member()
         (memory_stores_root() / store / "memory.db").unlink()

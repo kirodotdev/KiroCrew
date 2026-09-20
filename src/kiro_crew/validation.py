@@ -33,6 +33,7 @@ from typing import Any
 from kiro_crew.computer_use import types as _cu_types
 from kiro_crew.config.sections import SUBAGENT_MAX_TURNS_CEILING
 from kiro_crew.constants import (
+    ARTIFACT_MAX_CONTENT_BYTES,
     AWS_PROFILE_NAME_RE,
     CHANNEL_OWNER_DM_NAMESPACES,
     MAX_BANNER_CHARS,
@@ -1717,8 +1718,10 @@ MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 _ARTIFACT_SOURCE_RE = re.compile(r"^(chat|cron|subagent|manual|import)$")
 # Single source of truth: the MCP save/update field cap MUST equal the store's
 # own content cap, else the tool path rejects content the store would accept
-# (or vice-versa). Import the store constant rather than re-declaring it.
-from kiro_crew.artifacts import MAX_CONTENT_BYTES as ARTIFACT_CONTENT_MAX  # noqa: E402
+# (or vice-versa). Both read ``constants.ARTIFACT_MAX_CONTENT_BYTES`` -- a leaf,
+# so this module never imports ``artifacts`` (that edge closed the cycle
+# ``artifacts -> hooks -> webhooks -> validation -> artifacts``).
+ARTIFACT_CONTENT_MAX = ARTIFACT_MAX_CONTENT_BYTES
 
 ARTIFACT_WEBAPP_METADATA_MAX_BYTES = 16_384
 
