@@ -142,6 +142,40 @@ describe('FileBrowserRail mode segment', () => {
     await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledWith(DIR))
     expect(within(screen.getByLabelText('Changed')).queryByText('0')).toBeNull()
   })
+
+  // The listing is capped server-side at 500 and the response says so. Read as a
+  // total it is a wrong number, not a rounded one: a repo with 900 changed files
+  // reported "500". These two pin the floor marker in both directions, so the
+  // badge cannot go back to stating the cap as the count.
+  it('reads the badge as a floor when the status listing was capped', async () => {
+    H.api.projectGitStatus.mockResolvedValue({
+      repo: true,
+      truncated: true,
+      files: Array.from({ length: 500 }, (_, i) => ({ path: `f${i}.ts`, status: 'M', staged: false })),
+    })
+    mount()
+    const badge = await screen.findByTestId('file-browser-rail-changed-count')
+    expect(badge).toHaveTextContent('500+')
+    // The qualifier has to reach a non-hovering reader too, or `500+` is the
+    // only explanation of itself.
+    expect(screen.getByLabelText('Changed').getAttribute('title')).toContain('500+ uncommitted')
+  })
+
+  it('leaves the badge a bare total when the listing was complete', async () => {
+    H.api.projectGitStatus.mockResolvedValue({
+      repo: true,
+      truncated: false,
+      files: [
+        { path: 'a.ts', status: 'M', staged: false },
+        { path: 'b.ts', status: 'M', staged: false },
+      ],
+    })
+    mount()
+    const badge = await screen.findByTestId('file-browser-rail-changed-count')
+    expect(badge).toHaveTextContent('2')
+    expect(badge.textContent).not.toContain('+')
+    expect(screen.getByLabelText('Changed').getAttribute('title')).toContain('2 uncommitted')
+  })
 })
 
 describe('FileBrowserRail search field', () => {

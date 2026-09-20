@@ -695,6 +695,25 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           {i18nT('pages.chat.activityViewer.workspace_truncated')}
         </div>
       )}
+      {/* Changed mode renders the git-status set, which the server caps at 500
+          and reports with `truncated`. The notice above covers the TREE payload's
+          own cap and is gated on `all`, so without this branch the changed tree
+          just ends at 500 rows with nothing saying the list was cut.
+
+          `statusEntries.length` rather than `status.files.length`: the rows here
+          are the listed files minus any outside the project root and minus the
+          staged/unstaged duplicate of a file, so the payload count would name a
+          number this surface does not show. Reuses the Git panel's catalog entry
+          for the same reason the composer badge does -- one spelling per claim. */}
+      {mode === 'changed' && status?.truncated && statusEntries.length > 0 && (
+        <div
+          role="status"
+          className="px-3 py-1 text-[11px] text-muted"
+          data-testid="workspace-tree-changed-truncated"
+        >
+          {i18nT('components.gitPanel.showing_first', { count: statusEntries.length })}
+        </div>
+      )}
       <FileTree
         model={model}
         className="pierre-tree"

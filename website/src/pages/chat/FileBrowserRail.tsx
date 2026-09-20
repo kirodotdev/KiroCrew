@@ -361,6 +361,21 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     refetchOnWindowFocus: true,
   })
   const changedCount = status?.files?.length ?? 0
+  // The server caps the listing at 500 and says so. Unless the badge reads that
+  // flag the cap reads as the total, so a repo with 900 changed files shows a
+  // bare `500` -- a wrong number rather than a rounded one.
+  const changedTruncated = status?.truncated === true
+  // Tooltip for the Changed badge. Reuses the Git panel's catalog entries so
+  // this surface adds no i18n keys, the same choice the composer badge made for
+  // the same claim. The mode name stays the first line so the button keeps
+  // saying what it does; `aria-label` is left alone so the accessible NAME is
+  // still the action, not the count.
+  const changedTitle = changedCount > 0
+    ? `${t('pages.chat.fileBrowserRail.changed')}\n${t(
+        changedTruncated ? 'components.gitPanel.uncommitted_capped' : 'components.gitPanel.uncommitted',
+        { count: changedCount },
+      )}`
+    : t('pages.chat.fileBrowserRail.changed')
 
   // Both queries poll (10s tree / 5s status); this is the "I changed something
   // outside the app, show me now" escape hatch. `refetchQueries` (not
@@ -442,11 +457,19 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               onClick={() => setChangedMode(true)}
               aria-pressed={changedMode}
               className={segBtn(changedMode)}
-              title={t('pages.chat.fileBrowserRail.changed')}
+              title={changedTitle}
               aria-label={t('pages.chat.fileBrowserRail.changed')}
             >
               <Diff size={12} className="shrink-0" />
-              {changedCount > 0 && <span className="opacity-60 text-[10px] tabular-nums">{changedCount}</span>}
+              {/* `500+` when capped: the count is a floor, not a total. Bare
+                  glyph concatenation rather than a catalog entry, matching the
+                  composer badge -- a `{{count}}+` string of its own would be a
+                  second spelling of one claim. */}
+              {changedCount > 0 && (
+                <span className="opacity-60 text-[10px] tabular-nums" data-testid="file-browser-rail-changed-count">
+                  {changedTruncated ? `${changedCount}+` : changedCount}
+                </span>
+              )}
             </button>
           </div>
           )}
