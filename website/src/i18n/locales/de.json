@@ -8320,14 +8320,21 @@
       "uncommitted": "{{count}} nicht committet",
       "branch_unavailable": "Branch nicht verfügbar",
       "status_failed": "Der Repository-Status konnte nicht gelesen werden. Der Commit-Verlauf ist möglicherweise veraltet.",
-      "status_failed_no_history": "Die Liste der Änderungen konnte nicht gelesen werden.",
+      "status_failed_no_history": "Ein separates Problem: Die Liste der Änderungen konnte nicht gelesen werden. Zum erneuten Versuch aktualisieren.",
       "log_failed": "Das Commit-Protokoll konnte nicht gelesen werden.",
       "uncommitted_capped": "über {{count}} nicht committet",
       "showing_first": "erste {{count}} angezeigt",
-      "filter_refused": "Die Git-Konfiguration dieses Repositorys richtet ein Konvertierungsprogramm (etwa Git LFS) ein, daher lässt Kiro diese Prüfungen hier aus. Änderungen und Verlauf können nicht angezeigt werden, und ein erneuter Versuch hilft nicht.",
-      "filter_refused_title": "Kiro kann dieses Repository nicht auf Änderungen prüfen",
-      "refresh_unavailable": "Aktualisieren nicht möglich, solange diese Prüfungen aus sind",
-      "filter_refused_unreadable": "Kiro konnte die Git-Konfiguration dieses Repositorys nicht lesen und lässt diese Prüfungen hier daher aus. Änderungen und Verlauf können erst angezeigt werden, wenn dieser Lesevorgang gelingt."
+      "filter_refused": "Git LFS oder ein anderes Konvertierungsprogramm ist in der Git-Konfiguration dieses Repositorys eingerichtet. Ein erneuter Versuch hilft nicht.",
+      "filter_refused_title": "Kiro kann Änderungen und Verlauf dieses Repositorys nicht anzeigen",
+      "filter_refused_title_changes": "Kiro kann die Änderungen dieses Repositorys nicht anzeigen",
+      "filter_refused_title_history": "Kiro kann den Verlauf dieses Repositorys nicht anzeigen",
+      "refresh_unavailable": "Aktualisieren kann hier weder Änderungen noch Verlauf anzeigen",
+      "filter_refused_unreadable": "Kiro konnte die Git-Konfiguration dieses Repositorys nicht lesen.",
+      "filter_refused_title_unreadable": "Kiro kann Änderungen und Verlauf derzeit nicht anzeigen",
+      "filter_refused_title_unreadable_changes": "Kiro kann die Änderungen derzeit nicht anzeigen",
+      "filter_refused_title_unreadable_history": "Kiro kann den Verlauf derzeit nicht anzeigen",
+      "ask_agent_changes": "Agent zu den Änderungen fragen",
+      "ask_agent_history": "Agent zum Verlauf fragen"
     },
     "workspaceTree": {
       "status_failed": "Der Repository-Status konnte nicht gelesen werden."

@@ -10,6 +10,8 @@ import {
   gitErrorCode,
   gitFilterRefusalCause,
   gitFilterRefusalCopyKey,
+  gitFilterRefusalScope,
+  gitFilterRefusalTitleKey,
 } from '../utils/gitStatusError'
 import { i18nT } from '../i18n/t'
 import { fmtUnit } from '../i18n/format'
@@ -145,6 +147,19 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   const filterRefusedCause =
     gitFilterRefusalCause(statusFilterRefused ? statusError : logError)
   const filterRefusedCopy = i18nT(gitFilterRefusalCopyKey(filterRefusedCause))
+  // What the refusal accounts for, which is NOT always both halves. Two states
+  // leave one route refusing on its own: the divergent one, where the sibling
+  // route failed for its own reason and carries its own notice; and a recovered
+  // one, where the other route is simply healthy and its list is rendering
+  // underneath. A refusal that claims both halves there either reports the
+  // sibling notice's failure as its own or denies a list on screen -- the same
+  // over-claim this panel already avoids on the status side by dropping the
+  // stale-history clause when the log has its own notice. The title carries the
+  // scope, so the body stays one sentence per cause.
+  const filterRefusedScope = gitFilterRefusalScope(statusFilterRefused, logFilterRefused)
+  const filterRefusedTitle = i18nT(
+    gitFilterRefusalTitleKey(filterRefusedCause, filterRefusedScope),
+  )
   // "Commit history may be out of date" is a promise about a list that is still
   // rendered. When the log route ALSO failed there is no list, and the notice
   // below says so outright, so the two boxes then contradict each other -- one
@@ -239,13 +254,23 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
               shape carries the state without depending on a hover tooltip or
               on noticing a contrast difference. Keyed on BOTH routes refusing,
               never on the coalescing predicate: a half-recovered pair needs
-              this button as its escape. */}
+              this button as its escape.
+
+              The inert treatment deviates from the repo's dominant `opacity-40`
+              disabled skin, at `opacity-60` and a heavier stroke, and that is
+              deliberate. Everywhere else a disabled glyph carries no
+              information -- the fade IS the message -- so 40% costs nothing.
+              Here the whole difference between the two refusal causes is one
+              thin diagonal at `size={13}`, and a reader shown three frames
+              called all three crossed-out. The slash is the first thing 40%
+              erases. Weaker than the live glyph either way, so the resting
+              convention below is untouched. */}
           <button
             onClick={() => { refetchStatus(); refetchLog() }}
             disabled={refreshInert}
             className={`flex items-center justify-center w-[26px] h-[26px] rounded-md transition-colors bg-transparent border-none ${
               refreshInert
-                ? 'text-muted opacity-40 cursor-not-allowed'
+                ? 'text-muted opacity-60 cursor-not-allowed'
                 : 'cursor-pointer text-muted hover:text-text hover:bg-bg-hover'
             }`}
             title={refreshInert
@@ -255,7 +280,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
               ? i18nT('components.gitPanel.refresh_unavailable')
               : i18nT('components.gitPanel.refresh')}
           >
-            {refreshInert ? <RefreshCwOff size={13} /> : <RefreshCw size={13} />}
+            {refreshInert ? <RefreshCwOff size={13} strokeWidth={2.5} /> : <RefreshCw size={13} />}
           </button>
         </div>
       }
@@ -271,7 +296,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                 filter-driver config is exactly what it can explain or change. */}
             {filterRefused ? (
               <ErrorNotice
-                title={i18nT('components.gitPanel.filter_refused_title')}
+                title={filterRefusedTitle}
                 message={filterRefusedCopy}
                 report={findReport(filterRefusedMessage)}
                 askAgent
@@ -294,7 +319,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                     // side.
                     title={
                       statusFilterRefused
-                        ? i18nT('components.gitPanel.filter_refused_title')
+                        ? filterRefusedTitle
                         : !statusUnavailable && statusErrorMessage
                           ? localizedStatusFailure
                           : undefined
@@ -308,6 +333,10 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                     }
                     report={findReport(statusErrorMessage)}
                     askAgent
+                    // Two notices stack here, each carrying its own report. With
+                    // the shared label nothing said which failure a hand-off
+                    // was for, so both read as one affordance rendered twice.
+                    askAgentLabel={i18nT('components.gitPanel.ask_agent_changes')}
                     testId="git-panel-status-error"
                   />
                 )}
@@ -315,7 +344,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                   <ErrorNotice
                     title={
                       logFilterRefused
-                        ? i18nT('components.gitPanel.filter_refused_title')
+                        ? filterRefusedTitle
                         : logErrorMessage ? localizedLogFailure : undefined
                     }
                     message={
@@ -330,6 +359,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
                     // status or code.
                     report={findReport(logErrorMessage)}
                     askAgent
+                    askAgentLabel={i18nT('components.gitPanel.ask_agent_history')}
                     testId="git-panel-log-error"
                   />
                 )}

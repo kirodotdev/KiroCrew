@@ -8206,14 +8206,21 @@
       "uncommitted": "{{count}} 件の未コミット",
       "branch_unavailable": "ブランチを利用できません",
       "status_failed": "リポジトリの状態を読み取れませんでした。コミット履歴が古い可能性があります。",
-      "status_failed_no_history": "変更の一覧を読み取れませんでした。",
+      "status_failed_no_history": "これとは別の問題です。変更の一覧を読み取れませんでした。更新して再試行してください。",
       "log_failed": "コミットログを読み取れませんでした。",
       "uncommitted_capped": "{{count}} 件以上の未コミット",
       "showing_first": "先頭 {{count}} 件を表示",
-      "filter_refused": "このリポジトリの Git 設定は変換プログラム (Git LFS など) を設定しているため、Kiro はここでのチェックを行いません。変更と履歴は表示できず、再試行しても解決しません。",
-      "filter_refused_title": "Kiro はこのリポジトリの変更を確認できません",
-      "refresh_unavailable": "これらのチェックが無効の間は更新できません",
-      "filter_refused_unreadable": "Kiro はこのリポジトリの Git 設定を読み取れなかったため、ここでのチェックを行いません。読み取りが成功するまで、変更と履歴は表示できません。"
+      "filter_refused": "Git LFS などの変換プログラムがこのリポジトリの Git 設定で指定されています。再試行しても解決しません。",
+      "filter_refused_title": "Kiro はこのリポジトリの変更と履歴を表示できません",
+      "filter_refused_title_changes": "Kiro はこのリポジトリの変更を表示できません",
+      "filter_refused_title_history": "Kiro はこのリポジトリの履歴を表示できません",
+      "refresh_unavailable": "更新しても、ここでは変更や履歴を表示できません",
+      "filter_refused_unreadable": "Kiro はこのリポジトリの Git 設定を読み取れませんでした。",
+      "filter_refused_title_unreadable": "Kiro は現在、変更と履歴を表示できません",
+      "filter_refused_title_unreadable_changes": "Kiro は現在、変更を表示できません",
+      "filter_refused_title_unreadable_history": "Kiro は現在、履歴を表示できません",
+      "ask_agent_changes": "変更についてエージェントに質問",
+      "ask_agent_history": "履歴についてエージェントに質問"
     },
     "workspaceTree": {
       "status_failed": "リポジトリの状態を読み取れませんでした。"

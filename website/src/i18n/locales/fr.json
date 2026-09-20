@@ -8434,14 +8434,21 @@
       "uncommitted": "{{count}} non validé(s)",
       "branch_unavailable": "Branche indisponible",
       "status_failed": "Impossible de lire l’état du dépôt. L’historique des commits peut être obsolète.",
-      "status_failed_no_history": "Impossible de lire la liste des modifications.",
+      "status_failed_no_history": "Un problème distinct : impossible de lire la liste des modifications. Actualisez pour réessayer.",
       "log_failed": "Impossible de lire l’historique des commits.",
       "uncommitted_capped": "plus de {{count}} non validé(s)",
       "showing_first": "{{count}} premiers affichés",
-      "filter_refused": "La configuration Git de ce dépôt met en place un programme de conversion (comme Git LFS), alors Kiro laisse ces vérifications désactivées ici. Les modifications et l'historique ne peuvent pas être affichés, et réessayer n'y changera rien.",
-      "filter_refused_title": "Kiro ne peut pas vérifier les modifications de ce dépôt",
-      "refresh_unavailable": "Actualisation indisponible tant que ces vérifications sont désactivées",
-      "filter_refused_unreadable": "Kiro n'a pas pu lire la configuration Git de ce dépôt, alors il laisse ces vérifications désactivées ici. Les modifications et l'historique ne peuvent pas être affichés tant que cette lecture n'aboutit pas."
+      "filter_refused": "Git LFS ou un autre programme de conversion est défini dans la configuration Git de ce dépôt. Réessayer n’y changera rien.",
+      "filter_refused_title": "Kiro ne peut pas afficher les modifications ni l’historique de ce dépôt",
+      "filter_refused_title_changes": "Kiro ne peut pas afficher les modifications de ce dépôt",
+      "filter_refused_title_history": "Kiro ne peut pas afficher l’historique de ce dépôt",
+      "refresh_unavailable": "Actualiser n’affichera ni les modifications ni l’historique ici",
+      "filter_refused_unreadable": "Kiro n’a pas pu lire la configuration Git de ce dépôt.",
+      "filter_refused_title_unreadable": "Kiro ne peut pas afficher les modifications ni l’historique pour le moment",
+      "filter_refused_title_unreadable_changes": "Kiro ne peut pas afficher les modifications pour le moment",
+      "filter_refused_title_unreadable_history": "Kiro ne peut pas afficher l’historique pour le moment",
+      "ask_agent_changes": "Interroger l’agent sur les modifications",
+      "ask_agent_history": "Interroger l’agent sur l’historique"
     },
     "workspaceTree": {
       "status_failed": "Impossible de lire l’état du dépôt."

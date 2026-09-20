@@ -8434,14 +8434,21 @@
       "uncommitted": "{{count}} non committati",
       "branch_unavailable": "Branch non disponibile",
       "status_failed": "Impossibile leggere lo stato del repository. La cronologia dei commit potrebbe non essere aggiornata.",
-      "status_failed_no_history": "Non è stato possibile leggere l'elenco delle modifiche.",
+      "status_failed_no_history": "Un problema distinto: non è stato possibile leggere l'elenco delle modifiche. Aggiorna per riprovare.",
       "log_failed": "Impossibile leggere la cronologia dei commit.",
       "uncommitted_capped": "oltre {{count}} non committati",
       "showing_first": "primi {{count}} mostrati",
-      "filter_refused": "La configurazione Git di questo repository imposta un programma di conversione (come Git LFS), quindi Kiro mantiene questi controlli disattivati qui. Modifiche e cronologia non possono essere mostrate e riprovare non servirà.",
-      "filter_refused_title": "Kiro non può verificare le modifiche di questo repository",
-      "refresh_unavailable": "Aggiornamento non disponibile mentre questi controlli sono disattivati",
-      "filter_refused_unreadable": "Kiro non ha potuto leggere la configurazione Git di questo repository, quindi mantiene questi controlli disattivati qui. Modifiche e cronologia non possono essere mostrate finché quella lettura non riesce."
+      "filter_refused": "Git LFS o un altro programma di conversione è impostato nella configurazione Git di questo repository. Riprovare non servirà.",
+      "filter_refused_title": "Kiro non può mostrare modifiche e cronologia di questo repository",
+      "filter_refused_title_changes": "Kiro non può mostrare le modifiche di questo repository",
+      "filter_refused_title_history": "Kiro non può mostrare la cronologia di questo repository",
+      "refresh_unavailable": "Aggiornare non può mostrare modifiche o cronologia qui",
+      "filter_refused_unreadable": "Kiro non ha potuto leggere la configurazione Git di questo repository.",
+      "filter_refused_title_unreadable": "Kiro non può mostrare modifiche e cronologia in questo momento",
+      "filter_refused_title_unreadable_changes": "Kiro non può mostrare le modifiche in questo momento",
+      "filter_refused_title_unreadable_history": "Kiro non può mostrare la cronologia in questo momento",
+      "ask_agent_changes": "Chiedi all'agente delle modifiche",
+      "ask_agent_history": "Chiedi all'agente della cronologia"
     },
     "workspaceTree": {
       "status_failed": "Impossibile leggere lo stato del repository."

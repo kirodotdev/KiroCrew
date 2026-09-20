@@ -46,9 +46,79 @@ export function gitFilterRefusalCause(error: unknown): string | undefined {
  * The i18n key for the refusal copy this cause supports. An unknown or absent
  * cause falls back to the unreadable sentence, which claims strictly less: it
  * names no driver, and promises nothing about permanence.
+ *
+ * The body states the CAUSE and what to do about it. What cannot be shown is
+ * the title's job ({@link gitFilterRefusalTitleKey}), because that part varies
+ * with how many routes are refusing while the cause does not.
  */
 export function gitFilterRefusalCopyKey(cause: string | undefined): string {
   return cause === 'declared'
     ? 'components.gitPanel.filter_refused'
     : 'components.gitPanel.filter_refused_unreadable'
+}
+
+/**
+ * How much of the panel a refusal actually accounts for.
+ *
+ * `both` when both routes refuse, and one half otherwise. The refusal is
+ * repo-level so the routes normally refuse together, but they need not: a
+ * corrupt HEAD fails the status route on its own terms while the log route
+ * still refuses, and a status route that has recovered leaves a cached log
+ * refusal standing on its own. In those states a refusal that claims both
+ * halves is reporting a sibling notice's failure as well as its own -- or, when
+ * the sibling route is simply healthy, claiming a list the panel is rendering
+ * underneath it cannot be shown.
+ */
+export type GitFilterRefusalScope = 'both' | 'changes' | 'history'
+
+/**
+ * Titles for the refusal, by cause and by scope.
+ *
+ * Written out as a literal map rather than assembled, so every key stays
+ * greppable and extractable (see `dynamicKeys.test.ts`).
+ *
+ * Two things ride on the title rather than on the body. **Scope**, because the
+ * body's cause clause is the same sentence whichever routes refused. And
+ * **permanence**: the two causes are one condition with opposite advice --
+ * declared is permanent while the config stands, unreadable can clear on its
+ * own -- and a reader who reads only the bold line has to come away with the
+ * right one of those. A single shared title put that difference a body-read
+ * away, which reads as the same problem twice.
+ */
+const FILTER_REFUSAL_TITLE_KEYS = {
+  declared: {
+    both: 'components.gitPanel.filter_refused_title',
+    changes: 'components.gitPanel.filter_refused_title_changes',
+    history: 'components.gitPanel.filter_refused_title_history',
+  },
+  unreadable: {
+    both: 'components.gitPanel.filter_refused_title_unreadable',
+    changes: 'components.gitPanel.filter_refused_title_unreadable_changes',
+    history: 'components.gitPanel.filter_refused_title_unreadable_history',
+  },
+} as const
+
+/**
+ * The i18n key for the refusal's title. An unknown or absent cause falls back
+ * to the unreadable titles for the same reason the body does: they promise
+ * nothing about permanence.
+ */
+export function gitFilterRefusalTitleKey(
+  cause: string | undefined,
+  scope: GitFilterRefusalScope,
+): string {
+  const titles =
+    cause === 'declared'
+      ? FILTER_REFUSAL_TITLE_KEYS.declared
+      : FILTER_REFUSAL_TITLE_KEYS.unreadable
+  return titles[scope]
+}
+
+/** Which halves a refusal covers, from the two routes' refusal flags. */
+export function gitFilterRefusalScope(
+  statusRefused: boolean,
+  logRefused: boolean,
+): GitFilterRefusalScope {
+  if (statusRefused && logRefused) return 'both'
+  return statusRefused ? 'changes' : 'history'
 }

@@ -8320,14 +8320,21 @@
       "uncommitted": "{{count}}টি আনকমিটেড",
       "branch_unavailable": "ব্রাঞ্চ পাওয়া যাচ্ছে না",
       "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি। কমিট ইতিহাসটি পুরোনো হতে পারে।",
-      "status_failed_no_history": "পরিবর্তনের তালিকা পড়া যায়নি।",
+      "status_failed_no_history": "এটি একটি আলাদা সমস্যা। পরিবর্তনের তালিকা পড়া যায়নি। আবার চেষ্টা করতে রিফ্রেশ করো।",
       "log_failed": "কমিট লগ পড়া যায়নি।",
       "uncommitted_capped": "{{count}}টির বেশি আনকমিটেড",
       "showing_first": "প্রথম {{count}}টি দেখানো হয়েছে",
-      "filter_refused": "এই রিপোজিটরির Git কনফিগ একটি রূপান্তর প্রোগ্রাম (যেমন Git LFS) সেট করে, তাই Kiro এখানে এই পরীক্ষাগুলো বন্ধ রাখে। পরিবর্তন ও ইতিহাস দেখানো যাবে না, আর আবার চেষ্টা করলেও কাজ হবে না।",
-      "filter_refused_title": "Kiro এই রিপোজিটরিতে পরিবর্তন পরীক্ষা করতে পারে না",
-      "refresh_unavailable": "এই পরীক্ষাগুলো বন্ধ থাকাকালে রিফ্রেশ করা যাবে না",
-      "filter_refused_unreadable": "Kiro এই রিপোজিটরির Git কনফিগ পড়তে পারেনি, তাই এখানে এই পরীক্ষাগুলো বন্ধ রাখে। সেই পড়া সফল না হওয়া পর্যন্ত পরিবর্তন ও ইতিহাস দেখানো যাবে না।"
+      "filter_refused": "Git LFS বা অন্য কোনো রূপান্তর প্রোগ্রাম এই রিপোজিটরির Git কনফিগে সেট করা আছে। আবার চেষ্টা করলেও কাজ হবে না।",
+      "filter_refused_title": "Kiro এই রিপোজিটরির পরিবর্তন বা ইতিহাস দেখাতে পারে না",
+      "filter_refused_title_changes": "Kiro এই রিপোজিটরির পরিবর্তন দেখাতে পারে না",
+      "filter_refused_title_history": "Kiro এই রিপোজিটরির ইতিহাস দেখাতে পারে না",
+      "refresh_unavailable": "রিফ্রেশ করলে এখানে পরিবর্তন বা ইতিহাস দেখা যাবে না",
+      "filter_refused_unreadable": "Kiro এই রিপোজিটরির Git কনফিগ পড়তে পারেনি।",
+      "filter_refused_title_unreadable": "Kiro এখন পরিবর্তন বা ইতিহাস দেখাতে পারছে না",
+      "filter_refused_title_unreadable_changes": "Kiro এখন পরিবর্তন দেখাতে পারছে না",
+      "filter_refused_title_unreadable_history": "Kiro এখন ইতিহাস দেখাতে পারছে না",
+      "ask_agent_changes": "পরিবর্তন সম্পর্কে এজেন্টকে জিজ্ঞাসা করো",
+      "ask_agent_history": "ইতিহাস সম্পর্কে এজেন্টকে জিজ্ঞাসা করো"
     },
     "workspaceTree": {
       "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি।"

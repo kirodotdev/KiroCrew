@@ -8434,14 +8434,21 @@
       "uncommitted": "{{count}} sem commit",
       "branch_unavailable": "Branch indisponível",
       "status_failed": "Não foi possível ler o estado do repositório. O histórico de commits pode estar desatualizado.",
-      "status_failed_no_history": "Não foi possível ler a lista de alterações.",
+      "status_failed_no_history": "Um problema separado: não foi possível ler a lista de alterações. Atualize para tentar de novo.",
       "log_failed": "Não foi possível ler o histórico de commits.",
       "uncommitted_capped": "mais de {{count}} sem commit",
       "showing_first": "primeiros {{count}} mostrados",
-      "filter_refused": "A configuração do Git deste repositório define um programa de conversão (como o Git LFS), por isso o Kiro mantém estas verificações desativadas aqui. As alterações e o histórico não podem ser exibidos, e tentar de novo não vai ajudar.",
-      "filter_refused_title": "O Kiro não consegue verificar alterações neste repositório",
-      "refresh_unavailable": "Atualização indisponível enquanto estas verificações estiverem desativadas",
-      "filter_refused_unreadable": "O Kiro não conseguiu ler a configuração do Git deste repositório, por isso mantém estas verificações desativadas aqui. As alterações e o histórico não podem ser exibidos até que essa leitura funcione."
+      "filter_refused": "Git LFS ou outro programa de conversão está definido na configuração do Git deste repositório. Tentar de novo não vai ajudar.",
+      "filter_refused_title": "Kiro não consegue mostrar as alterações e o histórico deste repositório",
+      "filter_refused_title_changes": "Kiro não consegue mostrar as alterações deste repositório",
+      "filter_refused_title_history": "Kiro não consegue mostrar o histórico deste repositório",
+      "refresh_unavailable": "Atualizar não mostra as alterações nem o histórico aqui",
+      "filter_refused_unreadable": "Kiro não conseguiu ler a configuração do Git deste repositório.",
+      "filter_refused_title_unreadable": "Kiro não consegue mostrar as alterações e o histórico neste momento",
+      "filter_refused_title_unreadable_changes": "Kiro não consegue mostrar as alterações neste momento",
+      "filter_refused_title_unreadable_history": "Kiro não consegue mostrar o histórico neste momento",
+      "ask_agent_changes": "Perguntar ao agente sobre as alterações",
+      "ask_agent_history": "Perguntar ao agente sobre o histórico"
     },
     "workspaceTree": {
       "status_failed": "Não foi possível ler o estado do repositório."

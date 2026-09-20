@@ -8206,14 +8206,21 @@
       "uncommitted": "{{count}} 个未提交",
       "branch_unavailable": "分支不可用",
       "status_failed": "无法读取仓库状态。提交历史可能已过时。",
-      "status_failed_no_history": "无法读取更改列表。",
+      "status_failed_no_history": "这是另一个问题。无法读取更改列表。请刷新后重试。",
       "log_failed": "无法读取提交记录。",
       "uncommitted_capped": "超过 {{count}} 个未提交",
       "showing_first": "已显示前 {{count}} 个",
-      "filter_refused": "此仓库的 Git 配置设置了转换程序（例如 Git LFS），所以 Kiro 在这里不做这些检查。无法显示更改和历史，重试也不会有帮助。",
-      "filter_refused_title": "Kiro 无法检查此仓库的更改",
-      "refresh_unavailable": "这些检查停用时无法刷新",
-      "filter_refused_unreadable": "Kiro 无法读取此仓库的 Git 配置，所以在这里不做这些检查。在读取成功之前，无法显示更改和历史。"
+      "filter_refused": "Git LFS 或其他转换程序已在此仓库的 Git 配置中设置。重试也不会有帮助。",
+      "filter_refused_title": "Kiro 无法显示此仓库的更改和历史",
+      "filter_refused_title_changes": "Kiro 无法显示此仓库的更改",
+      "filter_refused_title_history": "Kiro 无法显示此仓库的历史",
+      "refresh_unavailable": "刷新也无法在这里显示更改或历史",
+      "filter_refused_unreadable": "Kiro 无法读取此仓库的 Git 配置。",
+      "filter_refused_title_unreadable": "Kiro 目前无法显示更改和历史",
+      "filter_refused_title_unreadable_changes": "Kiro 目前无法显示更改",
+      "filter_refused_title_unreadable_history": "Kiro 目前无法显示历史",
+      "ask_agent_changes": "就更改询问代理",
+      "ask_agent_history": "就历史询问代理"
     },
     "workspaceTree": {
       "status_failed": "无法读取仓库状态。"
