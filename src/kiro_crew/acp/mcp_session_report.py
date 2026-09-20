@@ -73,6 +73,10 @@ _ERROR_CAP = 240
 # Servers per bucket. A stock install runs well under ten; the cap exists so a
 # misconfigured host cannot push an unbounded list into every slots snapshot.
 _BUCKET_CAP = 64
+# Names a one-line summary spells out before it counts the tail. A log line is
+# read at a glance, so the bound is far below ``_BUCKET_CAP``: the point is
+# which servers are broken, and a 64-name line answers that worse than eight.
+_SUMMARY_NAME_CAP = 8
 
 _ACTION_INITIALIZED = "mcp_server_initialized"
 _ACTION_INIT_FAILURE = "mcp_server_init_failure"
@@ -378,6 +382,21 @@ class KasMcpReadiness:
         )
 
 
+def _joined(names: list[str]) -> str:
+    """Join names for one line, counting the tail instead of printing it.
+
+    A pure formatter. Names and failure texts arrive already sanitized from the
+    points that admit them (:meth:`McpSessionReport.record_frame`,
+    :meth:`McpSessionReport.record_unresolved_refs`), so nothing is re-cleaned
+    here: a composite like ``name (error)`` would otherwise be re-truncated to a
+    name's length and lose the reason.
+    """
+    head = names[:_SUMMARY_NAME_CAP]
+    rest = len(names) - len(head)
+    joined = ", ".join(head)
+    return f"{joined} (+{rest} more)" if rest > 0 else joined
+
+
 @dataclass
 class McpSessionReport:
     """Mutable accumulator for one session's MCP registration frames.
@@ -621,6 +640,58 @@ class McpSessionReport:
             or self._failed
             or self._awaiting_auth
         )
+
+    def problem_summary(self, *, include_reasons: bool = True) -> str:
+        """One line naming the servers this session cannot use, or ``""`` if clean.
+
+        A METHOD rather than a module function taking a payload: a consumer that
+        must not import this layer (``agent_sdk``'s boundary gate refuses any new
+        ACP edge) already holds the report itself through
+        ``LLMProvider.mcp_session_report()``, so reaching the summary through the
+        object it has costs it no import at all. It is declared on the
+        ``SessionMcpReport`` protocol beside ``payload`` for the same reason that
+        one is declared: a consumer must be able to name the capability instead of
+        probing for it.
+
+        Three buckets, kept apart because the reader's next move differs: a server
+        that FAILED needs its startup fixed, one AWAITING AUTHORIZATION needs a
+        person to authorize it, and an UNRESOLVED REF means the agent spec asked
+        for a server nothing configured -- so there is no row for it to be missing
+        from. ``ready`` and ``configured`` are deliberately absent: this is the
+        summary a consumer prints only when something is wrong, and naming the
+        healthy servers in it would make the clean case indistinguishable at a
+        glance.
+
+        Empty-on-clean, so a caller's silence-when-fine behaviour is this method's
+        return value rather than a condition each caller repeats.
+
+        ``include_reasons=False`` drops the failure text and keeps the names. A
+        reason is the failing server's OWN startup output -- remote content in the
+        OAuth and network cases -- and it is sanitized for credentials, URLs,
+        control characters and length, none of which neutralizes a natural-language
+        instruction. That is harmless in a log a person reads and is not harmless
+        in a model's prompt, so the sink that feeds a model asks for the summary
+        without it instead of trusting a scrubber to disarm prose.
+        """
+        parts: list[str] = []
+        if self._failed:
+            described = [
+                (
+                    f"{name} ({self._failures[name]})"
+                    if include_reasons and self._failures.get(name)
+                    else name
+                )
+                for name in self._failed
+            ]
+            parts.append("failed to start: " + _joined(described))
+        if self._awaiting_auth:
+            parts.append("awaiting authorization: " + _joined(list(self._awaiting_auth)))
+        if self.unresolved_refs:
+            parts.append(
+                "declared by the agent spec but not configured: "
+                + _joined(list(self.unresolved_refs))
+            )
+        return "; ".join(parts)
 
     def payload(self) -> dict[str, Any] | None:
         """The serialized report, or ``None`` when no session has begun.

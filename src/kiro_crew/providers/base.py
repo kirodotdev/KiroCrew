@@ -77,6 +77,13 @@ class SessionMcpReport(Protocol):
 
     def payload(self) -> dict | None: ...
 
+    #: One line naming the servers this session cannot use, empty when it can use
+    #: them all. Declared beside ``payload`` because a consumer outside the ACP
+    #: layer cannot reach the renderer any other way: the agent-SDK boundary gate
+    #: refuses it a new ACP import, so the capability has to be nameable HERE or
+    #: it is reachable only by probing an attribute.
+    def problem_summary(self, *, include_reasons: bool = True) -> str: ...
+
     def record_event(
         self, kind: str, server_name: str, error: str = "", *, fanout_no_owner: bool = False
     ) -> bool: ...

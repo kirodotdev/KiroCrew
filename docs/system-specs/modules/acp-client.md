@@ -430,6 +430,27 @@ an empty `mcpServers` map — opts out via
 `AcpRuntime(expect_mcp_reports=False)`, which passes a zero ceiling and keeps
 the idle shortcut active from the start (the pre-ceiling behavior).
 
+**`problem_summary()` renders the report's bad news, and nothing else.** The
+report answers two different questions, so it has two renderers: `payload()` is
+the whole picture a dashboard draws (including `ready` and `configured`), and
+`problem_summary()` is one line naming only what this session cannot use --
+`failed to start`, `awaiting authorization`, `declared by the agent spec but not
+configured` -- and the EMPTY string when it can use everything. Empty-on-clean is
+the contract, not a caller's convention: a consumer prints the line
+unconditionally and a healthy session stays silent everywhere. It is declared on
+`providers.base.SessionMcpReport` beside `payload()` because the consumers that
+need it most sit outside this layer, where the agent-SDK boundary gate refuses a
+new ACP import -- a sub-agent spawn reaches it through the report the provider
+already hands it (`subagent_manager/run.py`).
+
+`include_reasons=False` keeps the server names and drops the failure text. A
+reason is the failing server's own startup output, so in the OAuth and
+remote-contacting cases it can carry content nobody here authored, and
+`sanitize_sink_text` bounds credentials, URLs, control characters and length --
+none of which disarms a plain-English instruction. A log a person reads takes the
+reasons; a sink that feeds a MODEL asks without them, and fences the names it does
+pass.
+
 ### KAS managed MCP readiness
 
 KAS opts into a readiness barrier through its harness notification declaration.
