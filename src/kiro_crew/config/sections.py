@@ -1619,6 +1619,23 @@ class AgentConfig:
             "spawn_run for work longer than that.",
         ),
     )
+    subagent_timeout_auto: bool = field(
+        default=False,
+        metadata=_meta(
+            "Adaptive SubAgent Timeout",
+            "When enabled, raise future subagent deadlines after a timeout or "
+            "a successful near-limit run. Learned levels contain no task text "
+            "and persist across restarts.",
+        ),
+    )
+    subagent_timeout_max_secs: int = field(
+        default=21600,
+        metadata=_meta(
+            "Adaptive SubAgent Timeout Max (seconds)",
+            "Maximum automatically learned subagent deadline. A manually "
+            "configured initial timeout above this value is still honored.",
+        ),
+    )
     subagent_stall_idle_secs: int = field(
         default=120,
         metadata=_meta(

@@ -51,6 +51,10 @@ from kiro_crew.config.loader import (
     SOFT_STOP_BUDGET_MIN,
     SUBAGENT_AUTO_MAX_CEILING,
     SUBAGENT_MAX_TURNS_CEILING,
+    SUBAGENT_TIMEOUT_MAX,
+    SUBAGENT_TIMEOUT_MAX_MAX,
+    SUBAGENT_TIMEOUT_MAX_MIN,
+    SUBAGENT_TIMEOUT_MIN,
     SWEEP_CHUNK_BUDGET_MAX,
     KiroCrewConfig,
     config_path,
@@ -1901,6 +1905,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "int",
         "min": COMPLETION_KEEP_CHARS_MIN,
         "max": RESULT_FILE_MAX_BYTES,
+    },
+    "agent.subagent_timeout_secs": {
+        "type": "int",
+        "min": SUBAGENT_TIMEOUT_MIN,
+        "max": SUBAGENT_TIMEOUT_MAX,
+    },
+    "agent.subagent_timeout_auto": {"type": "bool"},
+    "agent.subagent_timeout_max_secs": {
+        "type": "int",
+        "min": SUBAGENT_TIMEOUT_MAX_MIN,
+        "max": SUBAGENT_TIMEOUT_MAX_MAX,
     },
     "agent.soft_stop_budget_secs": {
         "type": "float",

@@ -189,10 +189,26 @@ def capabilities_of(provider: object) -> SessionCapabilities:
     return caps if isinstance(caps, SessionCapabilities) else UNKNOWN_BACKEND_CAPABILITIES
 
 
+def capture_prompt_timeout(provider: object, deadline: float) -> float | None:
+    """Resolve a provider-declared transport budget for one outer deadline.
+
+    Capability ownership is read from the provider TYPE, matching the billing
+    seam: an instance-only attribute on a loose mock cannot opt in by accident.
+    A legacy duck provider declares nothing and returns ``None``, which tells the
+    caller to preserve its one-argument ``stream(message)`` invocation.
+    """
+    resolver = getattr(type(provider), "prompt_timeout_for_deadline", None)
+    if not callable(resolver):
+        return None
+    timeout = resolver(provider, deadline)
+    return float(timeout) if timeout is not None else None
+
+
 __all__ = [
     "MODEL_NAMESPACE_ACP",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",
     "capabilities_of",
+    "capture_prompt_timeout",
 ]

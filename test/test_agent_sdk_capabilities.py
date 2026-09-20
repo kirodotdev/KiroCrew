@@ -39,6 +39,7 @@ from kiro_crew.agent_sdk.capabilities import (
     SessionCapabilities,
     capabilities_for,
     capabilities_of,
+    capture_prompt_timeout,
 )
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
 
@@ -454,6 +455,22 @@ class _FakeProvider:
 def test_capabilities_of_reads_a_real_record() -> None:
     claude = capabilities_for("claude")
     assert capabilities_of(_FakeProvider(claude)) is claude
+
+
+class _PromptTimeoutProvider:
+    def prompt_timeout_for_deadline(self, deadline: float) -> float:
+        return deadline + 60.0
+
+
+def test_capture_prompt_timeout_reads_a_type_declared_capability() -> None:
+    assert capture_prompt_timeout(_PromptTimeoutProvider(), 21600.0) == 21660.0
+
+
+def test_capture_prompt_timeout_preserves_legacy_duck_providers() -> None:
+    provider = _FakeProvider(None)
+    provider.prompt_timeout_for_deadline = lambda deadline: deadline + 60.0
+
+    assert capture_prompt_timeout(provider, 21600.0) is None
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from kiro_crew.acp.client import (
     AcpProcessDied,
     advertised_model_ids,
     model_is_unusable,
+    resolve_prompt_timeout_for_deadline,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
@@ -345,7 +347,11 @@ class AcpSessionProvider(LLMProvider):
 
         return self.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
+    def prompt_timeout_for_deadline(self, deadline: float) -> float:
+        """Resolve the immutable transport budget this ACP session supports."""
+        return resolve_prompt_timeout_for_deadline(deadline)
+
+    async def stream(self, message: str, timeout: float | None = None) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes."""
         # Re-establish this session's gateway claim before the turn can call a
         # tool. The shared identity publisher does the same at every surface that
@@ -366,11 +372,12 @@ class AcpSessionProvider(LLMProvider):
             self.reclaim()
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
+        send = self._handle.prompt
+        if timeout is not None:
+            send = partial(self._handle.prompt, timeout=timeout)
         try:
             async with aclosing(
-                self.essential_delivery.stream(
-                    message, self._handle.prompt, lambda: self.context_incarnation
-                )
+                self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
             ) as events:
                 async for event in events:
                     yield event
@@ -990,7 +997,7 @@ class AcpSessionProvider(LLMProvider):
 
     # ── Streaming (AcpClient-compatible method name) ──
 
-    def stream_events(self, message: str) -> AsyncIterator[LLMEvent]:
+    def stream_events(self, message: str, timeout: float | None = None) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield events. AcpClient-compatible name for stream().
 
         Delegates to stream() (NOT self._handle.prompt() directly) so it
@@ -999,7 +1006,9 @@ class AcpSessionProvider(LLMProvider):
         AcpRuntimeError, not an AcpError) escape chat_runner's handlers on a
         runtime death at prompt start -> unhandled crash instead of retry/login.
         """
-        return self.stream(message)
+        if timeout is None:
+            return self.stream(message)
+        return self.stream(message, timeout=timeout)
 
     @property
     def resumed(self) -> bool:

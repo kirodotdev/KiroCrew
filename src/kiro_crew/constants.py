@@ -106,6 +106,14 @@ SUBAGENT_TIMEOUT_SECS = 10800
 SUBAGENT_TIMEOUT_MIN = 60
 SUBAGENT_TIMEOUT_MAX = 86400
 
+# Load-time clamp for ``agent.subagent_timeout_max_secs`` — the ceiling that
+# adaptive learning is allowed to raise a subagent deadline to. The min keeps
+# automatic growth meaningfully above the shortest useful run; the max matches
+# the per-run hard ceiling ``SUBAGENT_TIMEOUT_MAX`` above, since a learned
+# deadline can never usefully exceed the longest deadline a run may hold.
+SUBAGENT_TIMEOUT_MAX_MIN = 1800
+SUBAGENT_TIMEOUT_MAX_MAX = 86400
+
 
 # ── Canonical "[OPTIONS: a | b | c]" trailer parsers ────────────────────────
 # The agent emits a trailing ``[OPTIONS: choice1 | choice2 | ...]`` marker that

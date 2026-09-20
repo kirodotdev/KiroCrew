@@ -106,7 +106,7 @@ def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:
     mock_handle.is_turn_active = False
     mock_handle.destroy = AsyncMock()
 
-    async def _handle_prompt(msg):
+    async def _handle_prompt(msg, timeout=None):
         yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="shared response")
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
 

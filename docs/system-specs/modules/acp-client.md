@@ -363,6 +363,37 @@ kill a long replay and silently fall back to `session/new`. Extending only while
 the agent is actively sending data is safe for the init/handshake callers — the
 hard cap still bounds a truly stuck handshake.
 
+### Prompt timeout ownership
+
+The prompt transport is the outer budget shared by dashboard turns, subagents,
+and review callers. `resolve_prompt_timeout()` never returns less than the 4-hour
+historical floor. Above that floor it follows the largest configured chat-turn
+ceiling and subagent floor, adding 60 seconds so the owning outer layer reports
+its specific timeout before ACP can return a raw transport failure.
+
+When `agent.subagent_timeout_auto` is enabled, the transport also reserves
+`max(agent.subagent_timeout_secs, agent.subagent_timeout_max_secs)`. This is the
+maximum deadline `AdaptiveTimeoutPolicy` can capture, including a manually
+configured floor above the adaptive ceiling. The resolver uses the configured
+range rather than the persisted learned level deliberately: learning updates the
+manager in memory before its detached atomic write completes, so a disk-only
+bound would still truncate the first run started after a raise. At exactly the
+4-hour transport floor, adaptive mode receives the same 60-second margin; with
+adaptation disabled, historical configured timeout behavior is unchanged.
+
+A subagent run resolves one explicit transport budget when execution begins:
+the larger of the live configured transport budget and its already-captured
+manager deadline plus the 60-second outer margin. Every original, transient,
+model-fallback, stop-recovery, and dependency-recovery prompt in that run reuses
+the same value through either `AcpSessionProvider` or `AcpProvider`/`AcpClient`.
+Those providers declare `prompt_timeout_for_deadline`; the generic agent-SDK
+resolver returns `None` for an undeclared legacy provider, and the run preserves
+its exact one-argument `stream(message)` call rather than speculatively sending a
+keyword or retrying after `TypeError`. A config reload can change future runs but
+cannot move ACP inside an in-flight run's immutable manager deadline. The
+ordinary `timeout=None` provider path continues to resolve live config, so
+dashboard turns and non-subagent callers retain their existing behavior.
+
 ### Session Resume via `session/load`
 
 When `set_resume_session_id(sid)` is called before `ensure_ready()`, the client
