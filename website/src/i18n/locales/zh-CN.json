@@ -4738,6 +4738,19 @@
         "highlight_5": "自带可直接运行的示例，方便上手",
         "page_label": "工作流"
       },
+      "workflowRunGraph": {
+        "failed_see_tree": "失败了。详情可以在树里看。",
+        "may_not_run": "可能不会运行",
+        "may_not_run_why": "脚本只在满足条件时才跑这一段。",
+        "no_plan": "这次运行的脚本里读不到计划，所以只画出实际跑过的部分。",
+        "not_planned": "计划里没有",
+        "not_planned_why": "计划没有预测到它，但它跑了。",
+        "nothing_to_draw": "还没有可画的内容。",
+        "partial_plan": "计划太大，画不完，只显示开头的一部分。真正跑起来的都会显示在下面。",
+        "planned": "已计划",
+        "runtime_shape": "形状在运行时确定",
+        "runtime_shape_settled": "已运行 {{count}} 个"
+      },
       "workflowRunTree": {
         "checkpoint_save_failed": "进度未能保存。重启前请复制需要保留的结果。请检查存储访问权限和可用空间；下一个检查点会重试保存。",
         "agent_other": "{{count}} 个代理",
@@ -4786,7 +4799,9 @@
         "no_background_runs_yet_runs_started_in_the_backg": "暂无后台运行。在后台启动的运行会显示在这里。",
         "run_detail": "运行详情",
         "select_a_run_to_see_its_phases_agents_and_result": "选择一次运行以查看其阶段、代理和结果。",
-        "unknown": "未知"
+        "unknown": "未知",
+        "view_graph": "图",
+        "view_tree": "树"
       }
     },
     "commandBar": {

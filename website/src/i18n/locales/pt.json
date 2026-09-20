@@ -4894,6 +4894,19 @@
         "use_case_1": "Valide e inspecione scripts restritos de workflow ou monitore fase a fase as principais execuções de workflows multiagente.",
         "configuration_1": "Ative o app oculto com kirocrew app enable workflows; valide Python DSL em Author ou use as ferramentas de workflow do chat ou MCP para uma orquestração real de agentes e monitore-a em Runs."
       },
+      "workflowRunGraph": {
+        "failed_see_tree": "Falhou. Abra Árvore para ver o detalhe.",
+        "may_not_run": "pode não ser executada",
+        "may_not_run_why": "O script so executa esta etapa sob uma condicao.",
+        "no_plan": "Nao foi possivel ler nenhum plano do script desta execucao, portanto so o que foi executado e desenhado.",
+        "not_planned": "não estava no plano",
+        "not_planned_why": "Isto foi executado sem que o plano o previsse.",
+        "nothing_to_draw": "Ainda não há nada para desenhar.",
+        "partial_plan": "O plano é grande demais para ser desenhado por completo, então só a primeira parte é exibida. Tudo o que for executado aparece mesmo assim abaixo.",
+        "planned": "previsto",
+        "runtime_shape": "o formato é decidido em tempo de execução",
+        "runtime_shape_settled": "{{count}} executados"
+      },
       "workflowRunTree": {
         "checkpoint_save_failed": "Não foi possível salvar o progresso. Copie os resultados necessários antes de reiniciar. Verifique o acesso ao armazenamento e o espaço livre; o salvamento será tentado novamente no próximo ponto de controle.",
         "agent_many": "{{count}} agentes",
@@ -4944,7 +4957,9 @@
         "no_background_runs_yet_runs_started_in_the_backg": "Nenhuma execução em segundo plano ainda. As execuções iniciadas em segundo plano aparecem aqui.",
         "run_detail": "Detalhes da execução",
         "select_a_run_to_see_its_phases_agents_and_result": "Selecione uma execução para ver suas fases, agentes e resultado.",
-        "unknown": "Desconhecido"
+        "unknown": "Desconhecido",
+        "view_graph": "Grafo",
+        "view_tree": "Árvore"
       }
     },
     "commandBar": {

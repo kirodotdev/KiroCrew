@@ -4808,6 +4808,19 @@
         "highlight_5": "実行可能な例が組み込まれています",
         "page_label": "Workflows"
       },
+      "workflowRunGraph": {
+        "failed_see_tree": "失敗しました。詳細はツリーで確認できます。",
+        "may_not_run": "実行されない場合があります",
+        "may_not_run_why": "スクリプトはこの段階を条件付きでしか実行しません。",
+        "no_plan": "この実行のスクリプトから計画を読み取れなかったので、実行されたものだけを描いています。",
+        "not_planned": "計画になかった",
+        "not_planned_why": "計画が予測していないまま実行されました。",
+        "nothing_to_draw": "まだ描くものがありません。",
+        "partial_plan": "計画が大きすぎて全体を描けないので、最初の一部だけを表示しています。実行されたものはすべて下に表示されます。",
+        "planned": "計画済み",
+        "runtime_shape": "形は実行時に決まります",
+        "runtime_shape_settled": "{{count}} 件実行"
+      },
       "workflowRunTree": {
         "checkpoint_save_failed": "進捗を保存できませんでした。再起動する前に必要な結果をコピーしてください。ストレージへのアクセス権と空き容量を確認してください。次のチェックポイントで保存を再試行します。",
         "agent_other": "{{count}} 個のエージェント",
@@ -4856,7 +4869,9 @@
         "no_background_runs_yet_runs_started_in_the_backg": "バックグラウンド実行はまだありません。バックグラウンドで開始された実行はここに表示されます。",
         "run_detail": "実行詳細",
         "select_a_run_to_see_its_phases_agents_and_result": "実行を選択してそのフェーズ、エージェント、結果を確認してください。",
-        "unknown": "不明"
+        "unknown": "不明",
+        "view_graph": "グラフ",
+        "view_tree": "ツリー"
       }
     },
     "awsControl": {

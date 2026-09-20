@@ -10,7 +10,8 @@ Routes (registered in dashboard/server.py):
   POST /api/workflows/run      {source, args?, name?, budget_total?, timeout_secs?}
                                                     → {run_id} | {error}
   GET  /api/workflows/runs                          → [{run_id, name, status, ...}]
-  GET  /api/workflows/runs/{id}                     → {…, events:[…]}  (full)
+  GET  /api/workflows/runs/{id}                     → {…, events:[…], plan?}  (full)
+                                                      ``?plan=1`` adds ``plan``
   POST /api/workflows/runs/{id}/cancel              → {cancelled: bool}
   POST /api/workflows/runs/{id}/promote             → save the original completed source
   GET  /api/workflows/definitions                   → reusable global definitions
@@ -31,6 +32,7 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers._shared import internal_memory_scope, read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.workflows.preview import plan_from_source
 
 logger = logging.getLogger(__name__)
 
@@ -531,7 +533,41 @@ async def api_workflow_run_get(request: web.Request) -> web.Response:
     snap = svc.result(run_id)
     if snap is None:
         return web.json_response({"error": "no such run"}, status=404)
+    # Predicting the shape means parsing the script, and only Graph mode draws it. The
+    # tree view polls this endpoint every couple of seconds, so the parse is opt-in
+    # rather than something every poll pays for.
+    if request.query.get("plan") in ("1", "true", "yes"):
+        snap = await _with_plan(snap)
     return await _json_response_off_loop(snap)
+
+
+async def _with_plan(snap: dict[str, Any]) -> dict[str, Any]:
+    """``snap`` plus a ``plan``: what the script SAYS it will do, if that is readable.
+
+    Asked for by ``?plan=1``. The graph view draws the plan behind the run, so it is
+    derived here rather than in the browser — predicting the shape means parsing
+    Python, and the source is already on this endpoint. ``plan`` is ABSENT, never null,
+    when the source yields none (no ``workflow(ctx)`` entrypoint, unparseable, or a
+    task-plan source), so the UI can tell "no plan" from "an empty plan".
+
+    A copy is returned; ``snap`` belongs to the live registry and is not mutated. The
+    parse runs on a worker thread for the same reason the serialization below does: a
+    script may be up to ``MAX_SCRIPT_BYTES``, and nothing that scales with stored data
+    belongs on the single-threaded loop.
+    """
+    source = snap.get("source")
+    if not isinstance(source, str) or not source.strip():
+        return snap
+    try:
+        plan = await asyncio.to_thread(plan_from_source, source)
+    except Exception:
+        # A preview is decoration on a snapshot the caller asked for. Nothing about a
+        # failure to predict the shape justifies failing the run's own record.
+        logger.exception("workflow plan preview failed for run %s", snap.get("run_id"))
+        return snap
+    if plan is None:
+        return snap
+    return {**snap, "plan": plan}
 
 
 async def api_workflow_run_promote(request: web.Request) -> web.Response:

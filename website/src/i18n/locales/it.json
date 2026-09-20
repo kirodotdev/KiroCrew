@@ -4894,6 +4894,19 @@
         "use_case_1": "Convalida e ispeziona script di workflow limitati oppure monitora fase per fase le esecuzioni principali di workflow multi-agente.",
         "configuration_1": "Attiva l'app nascosta con kirocrew app enable workflows; convalida Python DSL in Author oppure usa gli strumenti di workflow della chat o MCP per una vera orchestrazione degli agenti e monitorala in Runs."
       },
+      "workflowRunGraph": {
+        "failed_see_tree": "Non riuscito. Apri Albero per il dettaglio.",
+        "may_not_run": "può non essere eseguita",
+        "may_not_run_why": "Lo script esegue questa fase solo a una condizione.",
+        "no_plan": "Non e stato possibile leggere alcun piano dallo script di questa esecuzione, quindi viene disegnato solo cio che e stato eseguito.",
+        "not_planned": "non era nel piano",
+        "not_planned_why": "Questo e stato eseguito senza che il piano lo prevedesse.",
+        "nothing_to_draw": "Non c'è ancora nulla da disegnare.",
+        "partial_plan": "Il piano è troppo grande per essere disegnato per intero, quindi viene mostrata solo la prima parte. Tutto ciò che viene eseguito appare comunque qui sotto.",
+        "planned": "previsto",
+        "runtime_shape": "la forma si decide durante l'esecuzione",
+        "runtime_shape_settled": "{{count}} eseguiti"
+      },
       "workflowRunTree": {
         "checkpoint_save_failed": "Impossibile salvare l’avanzamento. Copia i risultati necessari prima di riavviare. Controlla l’accesso all’archiviazione e lo spazio libero; il salvataggio verrà ritentato al prossimo checkpoint.",
         "agent_many": "{{count}} agenti",
@@ -4944,7 +4957,9 @@
         "no_background_runs_yet_runs_started_in_the_backg": "Ancora nessuna esecuzione in background. Le esecuzioni avviate in background appaiono qui.",
         "run_detail": "Dettaglio dell'esecuzione",
         "select_a_run_to_see_its_phases_agents_and_result": "Seleziona un'esecuzione per vederne le fasi, gli agenti e il risultato.",
-        "unknown": "Sconosciuto"
+        "unknown": "Sconosciuto",
+        "view_graph": "Grafo",
+        "view_tree": "Albero"
       }
     },
     "commandBar": {

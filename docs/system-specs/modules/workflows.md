@@ -58,7 +58,7 @@ intra-package imports per module, so the direction cannot drift:
 
 ```
 __init__, validate, dsl, schema, events, registry, store,
-agent_exec, agent_pool          (leaves: no sibling imports, or __init__ only)
+agent_exec, agent_pool, preview   (leaves: no sibling imports, or __init__ only)
 library                         (definition persistence; may import store)
     ↑
 context      (may import: __init__, validate)
@@ -1178,7 +1178,7 @@ when requested from another member. Member stores add no separate cross-member A
 | `POST /api/workflows/run` | `{source, args?, name?, budget_total?, timeout_secs?}` | `{run_id}` or `{error}` (400) |
 | `POST /api/workflows/run_intent` | `{intent, args?, name?, budget_total?, timeout_secs?}` | `{run_id}` immediately |
 | `GET /api/workflows/runs` | | `{runs: [...]}` compact, newest first |
-| `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events` (404 if absent) |
+| `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events`; adds `plan` under `?plan=1` when one is readable (404 if the run is absent) |
 | `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save exact source from a finished run or paused TaskRunner plan; 404 when unknown, 409 when not promotable or only a restored redacted source remains |
 | `POST /api/workflows/runs/{run_id}/cancel` | | `{run_id, cancelled}` |
 | `POST /api/workflows/runs/{run_id}/rerun` | `{from_index?, source?}` | `{run_id, from, replayed_before, edited}`; 400 on an invalid edited script, 404 on an unknown run |
@@ -1210,6 +1210,93 @@ the redacted event plus the run's `session_key`, and the frontend
 budget snapshot. On a terminal state, `dashboard/workflow_inject.py` posts the
 result into the originating chat slot and starts (or queues) an agent turn so the
 user gets a synthesized answer rather than a raw blob.
+
+### Plan preview and the graph view
+
+The event stream says what a run DID. `workflows/preview.py` says what its script
+SAYS it will do, so a run can be drawn as a flow chart before its first agent
+starts and lit up as it goes. `plan_from_source` reads the already-validated source
+with `ast` and returns `{phases: [{title, certain, nodes: [{kind, label, certain}]}],
+truncated, titleLimit}`, or `None` when no plan is readable. `None` and an empty plan
+are deliberately different: the run-detail response then OMITS `plan` rather than
+sending null, so the view can say "no plan" instead of drawing an empty one. A
+task-plan source lands there, having no `workflow(ctx)` entrypoint.
+
+Deriving the plan parses the script, and only the graph mode draws it, so it is
+**opt-in**: `GET /api/workflows/runs/{run_id}` reads it only under `?plan=1`. The run
+panel polls that endpoint every couple of seconds, and the tree mode must not pay for
+a parse it never renders.
+
+Every retained field is bounded. `MAX_PLAN_PHASES` / `MAX_PLAN_NODES` bound how MANY
+rows come back and set `truncated`; `MAX_PHASE_TITLE_CHARS` bounds a phase title, and a
+node label is bounded by whichever cut the RUN will apply to it. A literal `label=` is
+the runner's own label, which it never cuts, so `MAX_LABEL_CHARS` bounds it. A label
+that falls back to the prompt is cut by the runner at `RUNNER_PROMPT_LABEL_CHARS`,
+because the runner emits `label or prompt[:40]` -- and each word of that expression is
+mirrored: a falsy `label=""` loses to the prompt exactly as a missing one does, and
+`prompt` is read under both its positional and keyword spellings. Drawing a label the
+run will not emit makes a planned box rename itself the moment it lights up. Both cuts go through `_bounded`, which
+**redacts first and cuts second**. The order is load-bearing: the response-level
+redactors match a credential by its full shape, so a cut landing inside one leaves a
+prefix they no longer recognize -- measured against the real redactor, 33 of a
+40-character `ghp_` token and 19 of a 20-character AWS key id survive a cut-then-redact
+order. A title is cut before anything retains or compares it, so phase reuse and the
+stored row cannot disagree. The bound travels as
+`titleLimit` because the consumer pairs a plan row with a `phase_started` event by
+title and the runner emits that title whole: without the number, a cut title would
+read as a phase the plan missed.
+
+An `unknown` node is the whole safety property. A construct whose shape depends on a
+runtime value is never guessed at: `if` / `for` / `while` / `try` / `match`, a
+conditional expression, a comprehension, `ctx.parallel` over anything but a literal
+list or tuple, `ctx.pipeline`, `ctx.workflow`, a `ctx.phase` whose title is not a
+literal, and
+a call into a helper the script defines each contribute exactly one `unknown` node
+naming the construct, and every node found inside such a region is `certain: false`.
+`MAX_PLAN_PHASES` / `MAX_PLAN_NODES` bound the output and set `truncated`.
+
+That property has a precondition: the previewer must know every `ctx` method the DSL
+offers. `MODELLED_CTX_METHODS` holds the ones it draws and `NARRATION_CTX_METHODS` the
+ones that draw nothing on purpose, and together they cover the `WorkflowContext`
+Protocol exactly. `test_workflows_conformance.py` freezes that Protocol, but freezing
+the CONTRACT says nothing about whether the previewer classified a method added to it,
+so a deliberate re-freeze could introduce a work-spawning verb the previewer silently
+ignores. Two things close that: a parity test derived from the Protocol (never a
+hand-written copy of it, which is the enumeration that would go stale), and
+`_visit_call` degrading an unclassified method to an `unknown` node rather than drawing
+nothing -- honest at run time even if the pin is ever relaxed.
+
+`website/src/apps/workflows/planModel.ts` merges the plan with the stream. Both inputs
+are coerced to text at that seam, because nothing between a script and the graph
+guarantees a string: `ctx.phase(123)` records a numeric `title`, `ctx.agent(...,
+label=123)` a numeric `label`, and `runModel` reads event fields with a cast and no
+runtime narrowing -- deliberately, since narrowing there would change what the tree view
+renders for a malformed event. The graph does string work on those values (cutting a
+title to the plan's limit, sanitizing a label), so an uncoerced number reached `.slice`
+and blanked the whole view rather than making one node read oddly. The coercion is total
+and lives only at the two entry maps; the title cut is not a second coercion point,
+because no input can reach it uncoerced. Ordinal
+pairing is what makes planned node *i* the same work as actual node *i* — the
+script's calls run in source order — and an `unknown` node is a FENCE that stops it,
+because past an unpredictable region no position means anything. Past the fence the
+view shows the markers, then reality once reality exists, so a prediction never sits
+beside the thing that superseded it. A marker whose region HAS materialized carries
+`resolvedCount`, and the view then says how much ran there instead of still saying the
+shape is undecided — a marker that keeps asking beside real boxes cannot be told from
+one still being waited on. Run status and plan provenance are separate
+fields: an unpredicted agent that failed is both, and the failure matters more.
+
+`WorkflowRunGraph` is a MODE of the run panel, not a second tab, so the graph reads
+the one snapshot the panel already fetches. It is deliberately **not a control
+surface** — nothing in the drawing is clickable. Wiring a node to
+`workflow_rerun_subtree` would let a misclick spend tokens and restart real agents;
+rerun stays on the run controls, where the control names what it does.
+
+Per-node token cost is absent by necessity, not by choice: the stream carries a
+run-level budget only (`run_started.budget_total`, `budget_update.spent`) and no
+per-agent cost attribution, so drawing one would mean inventing a number. Per-node
+TIMING needs no new data, which is why it shipped first (#11795): `agent_started`
+and `agent_finished` each already carry a `ts`.
 
 ### MCP tools
 

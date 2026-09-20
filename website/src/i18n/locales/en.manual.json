@@ -931,6 +931,19 @@
       }
     },
     "workflows": {
+      "workflowRunGraph": {
+        "failed_see_tree": "Failed. Open Tree for the detail.",
+        "may_not_run": "may not run",
+        "may_not_run_why": "The script only runs this stage under a condition.",
+        "no_plan": "No plan could be read from this run's script, so only what ran is drawn.",
+        "not_planned": "not in the plan",
+        "not_planned_why": "This ran without the plan predicting it.",
+        "nothing_to_draw": "Nothing to draw yet.",
+        "partial_plan": "Plan too large to draw fully, so only its first part is shown. Everything that runs still appears below.",
+        "planned": "planned",
+        "runtime_shape": "shape decided at run time",
+        "runtime_shape_settled": "ran {{count}}"
+      },
       "workflowRunTree": {
         "checkpoint_save_failed": "Progress could not be saved. Copy any needed results before restarting. Check storage access and free space; saving retries at the next checkpoint.",
         "cancelled": "Cancelled",
@@ -953,7 +966,9 @@
         "cancel": "Cancel",
         "cancelling": "Cancelling…",
         "run_detail": "Run detail",
-        "unknown": "Unknown"
+        "unknown": "Unknown",
+        "view_graph": "Graph",
+        "view_tree": "Tree"
       }
     },
     "crewCompanion": {

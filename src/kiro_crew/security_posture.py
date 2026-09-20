@@ -1414,6 +1414,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # surfaces that SHOW the report are the registered sinks (the dashboard
         # slot snapshot and the live stream).
         "acp/mcp_session_report.py",
+        # Same shape: the workflow previewer scrubs the script-authored strings it
+        # RETAINS (an agent label, a prompt fallback label, a phase title) inside
+        # `_bounded`, before its own 120-char title cap. Redacting first is the
+        # whole point -- the response-level redactors match a credential by its
+        # full shape, so cutting first can leave a prefix no later pass
+        # recognises. It owns no output: the plan reaches a client only through
+        # dashboard/handlers/workflows.py, the registered sink for this surface,
+        # and that handler is the previewer's sole caller.
+        "workflows/preview.py",
         # Audit-side log hygiene: log_decline scrubs the model-authored tool
         # title before writing the shared auto_approve_declined SEL row. The
         # audit log is a gate-side record, not an output bound for a human or

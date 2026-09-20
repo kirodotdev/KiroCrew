@@ -4886,6 +4886,19 @@
         "use_case_1": "Validiere und untersuche eingeschränkte Workflow-Skripte oder überwache zentrale Multi-Agenten-Workflow-Läufe Phase für Phase.",
         "configuration_1": "Aktiviere die ausgeblendete App mit kirocrew app enable workflows; validiere DSL-Python unter Author oder nutze Chat- beziehungsweise MCP-Workflow-Werkzeuge für echte Agentenorchestrierung und überwache sie unter Runs."
       },
+      "workflowRunGraph": {
+        "failed_see_tree": "Fehlgeschlagen. Details unter Baum.",
+        "may_not_run": "läuft möglicherweise nicht",
+        "may_not_run_why": "Das Skript fuehrt diese Phase nur unter einer Bedingung aus.",
+        "no_plan": "Aus dem Skript dieses Durchlaufs war kein Plan lesbar, daher wird nur das gezeichnet, was ausgefuehrt wurde.",
+        "not_planned": "nicht im Plan",
+        "not_planned_why": "Das lief, ohne dass der Plan es vorhergesagt hat.",
+        "nothing_to_draw": "Noch nichts zu zeichnen.",
+        "partial_plan": "Der Plan ist zu groß, um ihn vollständig zu zeichnen, daher wird nur sein erster Teil angezeigt. Alles, was ausgeführt wird, erscheint trotzdem weiter unten.",
+        "planned": "geplant",
+        "runtime_shape": "Form wird zur Laufzeit bestimmt",
+        "runtime_shape_settled": "{{count}} ausgeführt"
+      },
       "workflowRunTree": {
         "checkpoint_save_failed": "Der Fortschritt konnte nicht gespeichert werden. Kopiere benötigte Ergebnisse vor dem Neustart. Prüfe den Speicherzugriff und freien Speicherplatz; am nächsten Prüfpunkt wird das Speichern erneut versucht.",
         "agent_one": "{{count}} Agent",
@@ -4935,7 +4948,9 @@
         "no_background_runs_yet_runs_started_in_the_backg": "Noch keine Hintergrundausführungen. Im Hintergrund gestartete Ausführungen erscheinen hier.",
         "run_detail": "Ausführungsdetails",
         "select_a_run_to_see_its_phases_agents_and_result": "Wählen Sie eine Ausführung, um ihre Phasen, Agenten und Ergebnisse zu sehen.",
-        "unknown": "Unbekannt"
+        "unknown": "Unbekannt",
+        "view_graph": "Graph",
+        "view_tree": "Baum"
       }
     },
     "awsControl": {

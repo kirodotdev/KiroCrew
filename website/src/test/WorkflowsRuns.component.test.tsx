@@ -169,4 +169,35 @@ describe("WorkflowsRuns", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("surfaces a failed run-detail fetch through the shared error notice", async () => {
+    // Graph mode asks for the plan on the same endpoint, so this is the path a plan
+    // request takes when it fails. The repo requires every user-facing error to render
+    // through ErrorNotice with its agent hand-off, never a hand-written red box -- the
+    // hand-off is safe here because the failed operation is a read.
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/workflows/runs") {
+        const summary: RunSummary = taskPlanRun;
+        return jsonResponse({ runs: [summary] });
+      }
+      if (url.startsWith("/api/workflows/runs/wf_task_plan")) {
+        return Promise.reject(new Error("plan read failed"));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    renderRuns();
+
+    fireEvent.click(await screen.findByText("Debug plan"));
+
+    expect(await screen.findByText("plan read failed")).toBeInTheDocument();
+    // The discriminator: a bare div carries no hand-off, so this is what tells
+    // ErrorNotice apart from the shape the rule forbids.
+    expect(
+      await screen.findByRole("button", {
+        name: i18nT("components.askAgent.ask_the_agent"),
+      }),
+    ).toBeInTheDocument();
+  });
 });

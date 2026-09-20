@@ -4964,6 +4964,19 @@
         "use_case_1": "Valide et inspecte des scripts de workflow restreints ou surveille les exécutions principales de workflows multi-agents phase par phase.",
         "configuration_1": "Active l'app masquée avec kirocrew app enable workflows ; valide le Python DSL dans Author, ou utilise les outils de workflow du chat ou MCP pour une véritable orchestration d'agents et suis-la dans Runs."
       },
+      "workflowRunGraph": {
+        "failed_see_tree": "Échec. Ouvrez Arbre pour le détail.",
+        "may_not_run": "peut ne pas s'exécuter",
+        "may_not_run_why": "Le script n'execute cette etape que sous condition.",
+        "no_plan": "Aucun plan n'a pu etre lu dans le script de cette execution, donc seul ce qui a ete execute est dessine.",
+        "not_planned": "absent du plan",
+        "not_planned_why": "Cela s'est execute sans que le plan l'ait prevu.",
+        "nothing_to_draw": "Rien à afficher pour l'instant.",
+        "partial_plan": "Le plan est trop grand pour être dessiné en entier, seule sa première partie est affichée. Tout ce qui est exécuté apparaît quand même ci-dessous.",
+        "planned": "prévu",
+        "runtime_shape": "forme déterminée à l'exécution",
+        "runtime_shape_settled": "{{count}} exécuté(s)"
+      },
       "workflowRunTree": {
         "checkpoint_save_failed": "La progression n’a pas pu être enregistrée. Copiez les résultats nécessaires avant de redémarrer. Vérifiez l’accès au stockage et l’espace libre ; l’enregistrement sera réessayé au prochain point de contrôle.",
         "agent_many": "{{count}} agents",
@@ -5014,7 +5027,9 @@
         "no_background_runs_yet_runs_started_in_the_backg": "Aucune exécution en arrière-plan pour le moment. Les exécutions lancées en arrière-plan apparaissent ici.",
         "run_detail": "Détail de l’exécution",
         "select_a_run_to_see_its_phases_agents_and_result": "Sélectionnez une exécution pour voir ses phases, ses agents et son résultat.",
-        "unknown": "Inconnu"
+        "unknown": "Inconnu",
+        "view_graph": "Graphe",
+        "view_tree": "Arbre"
       }
     },
     "awsControl": {

@@ -34,7 +34,9 @@ import { Badge, Btn, Input } from '../../components/ui'
 // Import shared view-model helpers from runModel directly (NOT from WorkflowsPage)
 // so this module and WorkflowsPage do not form an import cycle.
 import { latestBudget, type WfEvent } from './runModel'
+import type { RunPlan } from './planModel'
 import WorkflowRunTree from './WorkflowRunTree'
+import WorkflowRunGraph from './WorkflowRunGraph'
 import WorkflowSourceCode from './WorkflowSourceCode'
 
 import { i18nT } from '../../i18n/t'
@@ -86,6 +88,10 @@ export interface RunSummary {
 export interface RunDetail extends RunSummary {
   result: unknown
   source?: string
+  /** What the script SAYS it will do, read off `source` by the backend. Absent when
+   *  no plan is readable, which is why the graph reports "no plan" separately from
+   *  "an empty plan". */
+  plan?: RunPlan
   events: WfEvent[]
 }
 
@@ -228,6 +234,10 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
   const [saveSlug, setSaveSlug] = useState('')
   const [saveDescription, setSaveDescription] = useState('')
   const [savedSlug, setSavedSlug] = useState('')
+  // Tree or graph for the SAME snapshot — a mode on this panel rather than a second
+  // tab, so the graph reads one data source and costs nothing when unused. Local, not
+  // persisted: which question a reader is asking changes run to run.
+  const [viewMode, setViewMode] = useState<'tree' | 'graph'>('tree')
   const queryClient = useQueryClient()
 
   // Run list — react-query polling (dedup + caching + self-managed cleanup).
@@ -238,10 +248,17 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
   })
   const listError = listErrorObj instanceof Error ? listErrorObj.message : listErrorObj ? String(listErrorObj) : null
 
-  // Selected-run detail — fetched + polled only while a run is selected.
+  // Selected-run detail — fetched + polled only while a run is selected. The plan is
+  // asked for ONLY in graph mode: deriving it parses the script on the server, and the
+  // tree never draws it, so tree polling must not pay for it. The flag is part of the
+  // cache key, or switching modes would read a cached planless snapshot back.
+  const wantPlan = viewMode === 'graph'
   const { data: detail = null, error: detailErrorObj } = useQuery({
-    queryKey: ['workflow-run-detail', selectedId],
-    queryFn: () => coreGet<RunDetail>(`/runs/${encodeURIComponent(selectedId!)}`),
+    queryKey: ['workflow-run-detail', selectedId, wantPlan],
+    queryFn: () =>
+      coreGet<RunDetail>(
+        `/runs/${encodeURIComponent(selectedId!)}${wantPlan ? '?plan=1' : ''}`,
+      ),
     enabled: !!selectedId,
     refetchInterval: POLL_MS,
   })
@@ -306,9 +323,10 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
         </div>
 
         {listError && (
-          <div className="text-[12px] text-red-500 border border-red-500/30 rounded p-2">
-            {i18nT('apps.workflows.workflowsRuns.could_not_load_runs')} {listError}
-          </div>
+          <ErrorNotice
+            message={`${i18nT('apps.workflows.workflowsRuns.could_not_load_runs')} ${listError}`}
+            askAgent
+          />
         )}
 
         {rows.length === 0 && !listError && (
@@ -414,11 +432,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
           ) : null}
         </div>
 
-        {detailError && (
-          <div className="text-[12px] text-red-500 border border-red-500/30 rounded p-2">
-            {detailError}
-          </div>
-        )}
+        {detailError && <ErrorNotice message={detailError} askAgent />}
 
         {!selectedId && !detailError && (
           <div className="text-[12px] text-muted border border-dashed border-border rounded p-4">
@@ -428,8 +442,41 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
 
         {/* Phase tree + narrator logs + result panel — the shared component, so
             the Author view, this Runs view, and the chat surfaces stay identical
-            (and free of copy-paste duplication). */}
+            (and free of copy-paste duplication). The graph mode draws the same
+            snapshot as a flow chart instead, with the script's planned phases
+            behind what has actually run. */}
         {detail && (
+          <div className="flex items-center gap-1 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setViewMode('tree')}
+              aria-pressed={viewMode === 'tree'}
+              data-testid="workflow-view-tree"
+              className={`px-2 py-0.5 rounded border ${
+                viewMode === 'tree' ? 'border-accent text-accent' : 'border-border text-muted'
+              }`}
+            >
+              {i18nT('apps.workflows.workflowsRuns.view_tree')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('graph')}
+              aria-pressed={viewMode === 'graph'}
+              data-testid="workflow-view-graph"
+              className={`px-2 py-0.5 rounded border ${
+                viewMode === 'graph' ? 'border-accent text-accent' : 'border-border text-muted'
+              }`}
+            >
+              {i18nT('apps.workflows.workflowsRuns.view_graph')}
+            </button>
+          </div>
+        )}
+
+        {detail && viewMode === 'graph' && (
+          <WorkflowRunGraph events={events} plan={detail.plan} status={detail.status} />
+        )}
+
+        {detail && viewMode === 'tree' && (
           <WorkflowRunTree
             events={events}
             status={detail.status}
