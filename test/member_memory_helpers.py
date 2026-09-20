@@ -182,6 +182,8 @@ def make_request(
     internal: bool = False,
     session: str = "dashboard:alice",
     match_info: dict[str, str] | None = None,
+    attested: bool = True,
+    session_token: str = "",
 ) -> web.Request:
     """A mocked dashboard request against *state* in one of the authenticated shapes.
 
@@ -190,12 +192,21 @@ def make_request(
     ``owner`` publishes the cookie-path claims (the *owner_subject* identity plus
     an EMPTY app claim); ``internal`` marks the ``X-Internal-Secret`` branch;
     *session* is sent as ``X-Session-Key``.
+
+    ``attested`` stands in for the kernel peer attestation the unix-socket
+    middleware sets, which is what an internal caller declaring a session key
+    arrives with in production; ``attested=False`` is the bare-header shape a
+    process that merely holds the internal secret can produce. *session_token*
+    sends ``X-Session-Token``, the other attestation an internal caller can
+    carry.
     """
     method = method or ("POST" if body is not None else "GET")
     target = f"{path}?{urlencode(query)}" if query else path
     app = web.Application()
     app["state"] = state
     headers = {"X-Session-Key": session}
+    if session_token:
+        headers["X-Session-Token"] = session_token
     kwargs: dict[str, Any] = {}
     if body is not None:
         raw = json.dumps(body).encode()
@@ -209,10 +220,22 @@ def make_request(
         result["app"] = ""
     if internal:
         result["internal_auth"] = True
+        if attested:
+            result["peer_verified"] = True
     return result
 
 
-def request(env, *, body=None, query=None, owner=False, internal=False, session="dashboard:alice"):
+def request(
+    env,
+    *,
+    body=None,
+    query=None,
+    owner=False,
+    internal=False,
+    session="dashboard:alice",
+    attested=True,
+    session_token="",
+):
     """``make_request`` against ``env.state``: POST ``/api/memory/seed`` with a body, else GET recall."""
     path = "/api/memory/seed" if body is not None else "/api/memory/recall"
     return make_request(
@@ -223,6 +246,8 @@ def request(env, *, body=None, query=None, owner=False, internal=False, session=
         owner=owner,
         internal=internal,
         session=session,
+        attested=attested,
+        session_token=session_token,
     )
 
 

@@ -1681,6 +1681,35 @@ def _safe_tail_redaction_window(text: str, keep: int) -> str:
     return window
 
 
+def _publish_script_session_token(clean_env: dict[str, str], job_id: str) -> str:
+    """Attach the signed token naming ``cron:<job id>`` to a script child's env.
+
+    A script cron's MCP children reach the gateway's internal API under the job's
+    session key, and that API accepts a declared key only behind a transport
+    attestation. The unix-socket peer walk cannot supply one here: nothing
+    publishes a signed pid mapping for the sandbox launcher's pid, so the
+    ancestry walk resolves no session and the middleware attaches no kernel
+    attestation. The signed token is the channel that remains, minted with the
+    same primitive every ACP session uses.
+
+    One token per run: its mapping exists for the life of the run and is removed
+    when the run ends, so completed runs accumulate no mappings or orphans.
+    There is no cache and nothing to evict. The caller retracts the returned
+    token in its finally block; a refused unlink is reported at WARNING.
+
+    Blocking file I/O, on the cron worker thread rather than the event loop.
+    A publication failure leaves a token the verifier refuses, which costs the
+    child calls that need an attested identity, never the run itself.
+    """
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV, mint_stub_session_token
+    from kiro_crew.session_token_sig import publish_session_token
+
+    token = mint_stub_session_token()
+    publish_session_token(token, f"cron:{job_id}")
+    clean_env[STUB_SESSION_TOKEN_ENV] = token
+    return token
+
+
 def run_script_sandboxed(
     script_path: str,
     job_id: str,
@@ -1867,6 +1896,9 @@ def run_script_sandboxed(
     internal_secret = _child_internal_secret(internal_secret_provider, dial_port)
     # Write secret to temp file for ScriptContext (scrubbed from env)
     secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
+    from kiro_crew.session_token_sig import retract_session_token
+
+    script_session_token = ""
     try:
         try:
             # Tighten the DACL BEFORE writing the secret bytes so the file is
@@ -1988,6 +2020,11 @@ def run_script_sandboxed(
         # agent-cron sessions run under, so ownership and audit see one
         # principal per job regardless of which surface the job uses.
         clean_env["KIROCREW_SESSION_KEY"] = f"cron:{job_id}"
+        # The key states an identity; the token PROVES it. Session-scoped gateway
+        # routes accept a declared key only behind an attestation, and this is the
+        # only one a script cron can carry, so its MCP children reach those routes
+        # as this job instead of as a caller that merely holds the internal secret.
+        script_session_token = _publish_script_session_token(clean_env, job_id)
         # Pre-resolve gh OUTSIDE the sandbox and pin its identity for the
         # child: the sandbox's single-uid user namespace maps every root-owned
         # path component to the overflow uid, so the child's own ownership
@@ -2146,6 +2183,7 @@ def run_script_sandboxed(
         # exception the scheduler cannot attribute to this job.
         return {"status": "error", "error": f"{_SANDBOX_UNAVAILABLE_PREFIX}{exc}"}
     finally:
+        retract_session_token(script_session_token)
         Path(launcher_path).unlink(missing_ok=True)
         Path(secret_path).unlink(missing_ok=True)
         if pinned_dir:

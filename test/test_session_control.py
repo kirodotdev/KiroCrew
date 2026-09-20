@@ -806,8 +806,11 @@ class TestTheRoutesRequireTheInternalSecret:
         request.method = method
         request.headers = {"X-Session-Key": _key(caller)}
         request.query = {"target": "chat-2"}
+        # Both marks together are what an internal caller on the unix socket
+        # arrives with: the secret admits it, and the kernel peer attestation is
+        # what lets a session-scoped route act on the key it declares.
         request.get = lambda key, default=None: (
-            True if (key == "internal_auth" and internal) else default
+            True if (key in ("internal_auth", "peer_verified") and internal) else default
         )
 
         async def _json():

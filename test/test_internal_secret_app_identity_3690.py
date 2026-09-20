@@ -83,7 +83,11 @@ def _request(
     if session_key is not None:
         headers["X-Session-Key"] = session_key
     req.headers = headers
-    store: dict = {}
+    # The peer attestation the unix-socket middleware publishes for a caller whose
+    # ancestry resolves to the key it declares. Session-scoped routes read a
+    # declared X-Session-Key only behind it, so a double without it is refused for
+    # a transport reason and never reaches the app-identity question under test.
+    store: dict = {"peer_verified": True}
     req.__setitem__.side_effect = store.__setitem__
     req.__getitem__.side_effect = store.__getitem__
     req.__contains__.side_effect = store.__contains__

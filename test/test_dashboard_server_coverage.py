@@ -790,6 +790,16 @@ class TestStartApiServerResidualPaths:
         # the crashing spawn; the body must claim that same authenticated caller.
         session_key = "dashboard:audit-crash"
         bind_session_execution(session_key, execution_for_store(""))
+        # The caller also has to PROVE the key it declares, the way its production
+        # counterpart does, or the identity gate answers ahead of the spawn and the
+        # crash under test never happens.
+        from kiro_crew import member_memory_auth
+
+        monkeypatch.setattr(
+            member_memory_auth,
+            "verify_session_token",
+            lambda token: token.removeprefix("signed:"),
+        )
 
         runner, _state_obj = await _start_api(
             tmp_path, monkeypatch, subagents=subagents
@@ -804,7 +814,11 @@ class TestStartApiServerResidualPaths:
                 resp = await client.post(
                     "/api/spawn",
                     json={"task": "noop", "parent_session": session_key},
-                    headers={"X-Internal-Secret": secret, "X-Session-Key": session_key},
+                    headers={
+                        "X-Internal-Secret": secret,
+                        "X-Session-Key": session_key,
+                        "X-Session-Token": f"signed:{session_key}",
+                    },
                 )
                 assert resp.status == 500
         finally:

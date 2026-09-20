@@ -551,6 +551,7 @@ async def member_request_scope(request: web.Request) -> MemberScope:
     if isinstance(cached, MemberScope):
         return cached
     from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.member_memory_auth import session_key_is_attested
 
     def _resolve() -> MemberScope:
         if request.get("internal_auth") is not True:
@@ -560,6 +561,12 @@ async def member_request_scope(request: web.Request) -> MemberScope:
             return MemberScope(None, False, None)
         if not session:
             return MemberScope(None, True, None)
+        if not session_key_is_attested(request, session):
+            # The header names an execution record this transport cannot vouch
+            # for. An unverified scope is the answer the callers already turn
+            # into their 409 ``member_identity_unavailable`` / 403 refusals, so
+            # the record is never read on a name the caller merely asserted.
+            return MemberScope(session, False, None)
         try:
             execution = read_session_execution(session)
         except (OSError, ValueError):

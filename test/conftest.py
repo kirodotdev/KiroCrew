@@ -1651,6 +1651,7 @@ _REAL_MCP_POST_MODULES = frozenset(
         "test_mcp_core",
         "test_mcp_core_coverage",
         "test_mcp_internal_caller",
+        "test_session_token_header_parity",
     }
 )
 

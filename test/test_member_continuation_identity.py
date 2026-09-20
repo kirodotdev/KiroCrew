@@ -247,6 +247,13 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
         internal_secret=secret,
     )
 
+    # The caller proves its declared key with the signed token its launcher
+    # published; the stand-in token names its own session so the verifier can
+    # answer without a trust root on disk.
+    monkeypatch.setattr(
+        member_memory_auth, "verify_session_token", lambda token: token.removeprefix("signed:")
+    )
+
     async def call(path, handler, *, body=None, authenticated=True, session=key):
         request = make_request(
             env.state,
@@ -259,6 +266,7 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
             headers={
                 **request.headers,
                 "X-Internal-Secret": secret if authenticated else "invalid-secret",
+                "X-Session-Token": f"signed:{session}",
             },
             remote="127.0.0.1",
         )

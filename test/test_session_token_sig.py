@@ -67,6 +67,21 @@ def cfg(tmp_path):
 
 
 class TestRoundTrip:
+    def test_retract_removes_only_the_named_mapping_and_empty_is_a_noop(self, cfg, caplog):
+        session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
+        session_token_sig.publish_session_token(OTHER_TOKEN, OTHER_KEY)
+        assert _path_for(cfg, TOKEN).exists()
+        session_token_sig.retract_session_token(TOKEN)
+        assert not _path_for(cfg, TOKEN).exists()
+        assert session_token_sig.verify_session_token(TOKEN) == ""
+        assert session_token_sig.verify_session_token(OTHER_TOKEN) == OTHER_KEY
+
+        caplog.clear()
+        session_token_sig.retract_session_token(TOKEN)
+        session_token_sig.retract_session_token("")
+        assert list(cfg.glob("session_token_*.sig")) == [_path_for(cfg, OTHER_TOKEN)]
+        assert not caplog.records
+
     def test_publish_then_verify_returns_the_key(self, cfg):
         session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
         assert session_token_sig.verify_session_token(TOKEN) == SESSION_KEY

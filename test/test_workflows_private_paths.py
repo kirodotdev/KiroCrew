@@ -178,16 +178,26 @@ async def test_unavailable_learned_memory_keeps_member_persona_and_routing(world
 
 
 @pytest.mark.asyncio
-async def test_http_controls_keep_original_execution_under_ordinary_auth(world):
+async def test_http_controls_keep_original_execution_under_ordinary_auth(world, monkeypatch):
     from types import SimpleNamespace
 
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
     from test_workflows_private_execution import SCRIPT, finished
 
+    from kiro_crew import member_memory_auth
     from kiro_crew.dashboard.handlers import workflows
     from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS, _STRICT_INTERNAL_API_PATHS
     from kiro_crew.dashboard.token_auth import token_auth_middleware
+
+    # A loopback TCP caller proves the key it declares with the signed token its
+    # launcher published. The stand-in token names its own session, so the
+    # verifier answers without a trust root on disk.
+    monkeypatch.setattr(
+        member_memory_auth,
+        "verify_session_token",
+        lambda token: token.removeprefix("signed:"),
+    )
 
     service = WorkflowService(sessions=world.sessions, context_builder=world.builder, persist=False)
     run = await finished(service, await service.start(SCRIPT, session_key="dashboard:alice"))
@@ -215,6 +225,7 @@ async def test_http_controls_keep_original_execution_under_ordinary_auth(world):
             headers = {
                 "X-Internal-Secret": "workflow-test-secret",
                 "X-Session-Key": f"dashboard:{member}",
+                "X-Session-Token": f"signed:dashboard:{member}",
             }
             detail = await client.get(f"/api/workflows/runs/{run.run_id}", headers=headers)
             assert detail.status == 200, await detail.text()
