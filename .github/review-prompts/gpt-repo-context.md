@@ -50,6 +50,14 @@ is the tier that holds when a path is assembled at runtime. So:
   - A finding whose fix is "one more table entry for wrapper W" is a
     smell. Four review rounds of #7441 did exactly that before the
     author restructured. Prefer a finding on the SUBJECT or the SANDBOX.
+  - But the sandbox's SCOPE is not yours to widen either. Do NOT ask
+    for a new seal, mask, no-follow pin or refusal, and do NOT ask for
+    an existing fence to be tightened past the threat the PR names.
+    That is the operator's decision about their own files, and your
+    comment is not their authorization. This direction converges on
+    nothing: #12103 spent ELEVEN rounds on one span, each round naming
+    one more variable that "also reaches it". Cite the seal that FAILS
+    on a path this PR already changes, or report nothing.
 
 Follow the conventions in CLAUDE.md and AGENTS.md (root and
 website/) when present.

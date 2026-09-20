@@ -748,6 +748,53 @@ custom-rules:
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.
 
+  - id: a-sandbox-widening-is-not-incidental-scope
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/sandbox.py"
+      - "src/kiro_crew/security.py"
+      - "src/kiro_crew/hooks.py"
+    rule: |
+      What the OS sandbox seals, masks, no-follow pins or refuses is an
+      OPERATOR-FACING contract: it decides which of their own files their agent can
+      still reach. A widening nobody asked for does not surface as a failed review;
+      it surfaces days later as work that stopped, reported as a pattern instead of
+      a cause, with the legitimate operation gone and no record that anyone chose
+      to lose it. So the scope is the operator's to widen. It is not a reviewer's
+      to request, and not an author's to add on the way past something else.
+
+      FLAG, in a diff that touches these files:
+      - a new entry on a seal / mask / no-follow / precreate list, or a new
+        refusal, whose path the PR's stated intent does not name. A leaf added
+        because it looked like a sibling of one that IS named is exactly the
+        unrequested widening.
+      - an existing fence tightened past the threat the PR names — a predicate
+        widened to a superset, a per-value inspection replaced by a blanket deny,
+        a check moved onto a path the PR does not otherwise touch.
+      - hardening added in round N only to answer a reviewer's "spelling Y reaches
+        it too". A review comment is not the operator's authorization, and this
+        converges on nothing: #12103 spent ELEVEN rounds on one span that way,
+        each round a new named variable. Cite the seal that actually fails on a
+        path the PR already changes, or post a rebutted disposition and keep the
+        code.
+      - a widening whose whole justification is defense in depth with no reachable
+        input named. "Could be reached" is not a threat; a caller is.
+
+      An added invariant ships with the data it demands, in the SAME commit, and
+      at import time the blast radius is the whole PACKAGE rather than one test.
+      #11556 added a module-level `assert` over the full sealed union while writing
+      wording for two of five leaves. `import kiro_crew.sandbox` then raised on
+      main, so every backend test in the repo failed at COLLECTION — including
+      `test_every_strict_leaf_of_either_shape_is_covered_by_the_delegated_guard`,
+      the test written to pin that exact invariant, which could not report the gap
+      because it could not be collected either. An import-time self-check silences
+      its own witness. FLAG an invariant whose inputs the diff leaves incomplete,
+      and say which data is missing.
+
+      Allowed (do NOT flag): a widening the PR's stated intent names, carrying the
+      reachable input and the consequence in writing; a completion that brings an
+      EXISTING invariant's data up to what it already demands; any narrowing.
+
   - id: prefer-subtracting-a-duplicate-mechanism
     blocking: false
     file-patterns:
