@@ -767,7 +767,18 @@ send time.
   `session.timeout_secs` and `session.watchdog_rss_max_mb` off the manager's
   current `_cfg` (which the config watcher keeps current) and re-applying the
   same bounds the loader does — the 60s floor, the `0` = sweep-disabled
-  sentinel, and the non-negative-int coercion of the RSS ceiling. The sleep
+  sentinel, and the non-negative-int coercion of the RSS ceiling — plus a
+  `MAX_TICK_INTERVAL_SECS` = 300s **ceiling on the derived interval itself**.
+  The ceiling exists because one tick drives the idle-expiry hook AND every
+  housekeeping sweep below it, so deriving the cadence from `timeout_secs`
+  alone coupled the sweeps to a setting about something else and coupled it
+  backwards: `timeout_secs=86400` gave an `86400 // 6` four-hour tick while
+  DISABLING idle expiry (`timeout_secs=0`) gave 300s, so asking for long-lived
+  sessions bought slower orphan cleanup than switching the idle sweep off.
+  Capping cannot expire a session early — `_expire_idle_hook` passes
+  `state.idle_timeout`, so the timeout still decides WHEN a session is stale
+  and the interval only decides how often the question is asked — and it is a
+  ceiling, not a floor, so sub-300s intervals are untouched. The sleep
   between sweeps is chopped into waits of at most `POLICY_REFRESH_SECS` (60s);
   each wake re-adopts the policy and, when the interval moved, re-anchors the
   next sweep to the last sweep plus the new interval, so a shortened timeout
@@ -786,8 +797,8 @@ send time.
   monkeypatch seams remain observable: `idle_expiry`, `orphan_mcp`,
   `reap_agent_scopes`, `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
   `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
-  sandbox-artifact, bytecode-cache, periodic tracked-PID, and untracked-MCP
-  sweeps.
+  sandbox-artifact, session-pid-mapping, bytecode-cache, periodic tracked-PID,
+  and untracked-MCP sweeps.
 - **Reaping abandoned agent scopes** (`session_scope_reap.py`,
   Linux/systemd only): each agent session runs inside a transient
   `systemd-run --user --scope` under a per-instance child of
@@ -2544,6 +2555,34 @@ a trust root on its own; publication therefore also writes a
   graceful-shutdown sweep asks for the narrowing. This pass touches only the
   `session_pid_<pid>` family, never the shared `kiro_session_pids.txt` that
   pass 1 rewrites.
+- **Cadence** (`SessionCleanup._sweep_session_pid_mappings`): the pass above is
+  reached from `cleanup_orphaned_sessions` — **startup + shutdown only** — so a
+  gateway that kept running held every mapping it published until it restarted,
+  one per released session, and a recycled pid number went on carrying a
+  dashboard slot's key (measured on a Windows host: twelve files from six
+  released sessions inside an hour, two of those numbers already handed to
+  unrelated live processes). The periodic cleanup tick therefore calls
+  `_prune_stale_session_pid_files` as well, which is why the
+  `MAX_TICK_INTERVAL_SECS` ceiling above is the other half of the same change:
+  it is what makes this cadence bounded at 300s instead of derived from
+  `session.timeout_secs`. Deliberately NOT hooked onto provider teardown, even
+  though a teardown is the moment a runtime is known dead: `_untrack_session_pid`
+  is synchronous and `AcpClient._reset_state` calls it on the event loop, so a
+  mapping read or unlink placed there is filesystem work over predictable
+  same-uid agent-writable paths in the one place
+  `no-blocking-call-on-event-loop` forbids — a planted FIFO or reparse point
+  would park the gateway. On the maintenance executor the same pass needs no
+  per-syscall bounding at all, and the case a teardown hook could not reach (a
+  gateway that dies without running one) is covered by the same pass.
+  Retraction latency is bounded rather than immediate: a released session's
+  mapping survives at most one tick. The pass keeps its own decision rules
+  unchanged, deliberately — in particular it still retains a mapping whose pid
+  number was recycled to a live process, because that mapping is already refused
+  at READ time (`_pid_recycled` on both the strict and the lenient path) and its
+  file is reclaimed once the unrelated process exits. Adding a prune branch for
+  it would trade a disk saving against the read-then-unlink window in which a
+  new owner's `publish_session_pid` can land, and losing a live mapping costs
+  that session its identity until its next turn republishes.
 - **Member execution routing**: the ordinary session/run owner record carries
   the immutable member/store snapshot. Strict MCP caller identity still uses
   the existing transport token and signed `session_pid` publication. No separate

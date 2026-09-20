@@ -204,6 +204,7 @@ from kiro_crew.session_pid import (
     _collect_active_pids,
     _kill_confirmed_and_writeback,
     _periodic_pid_sweep,
+    _prune_stale_session_pid_files,
     _rss_mb_from_tree,
     _sync_kill_provider,
 )
@@ -1250,6 +1251,7 @@ class SessionManager:
             cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(
                 data_home=data_home
             ),
+            prune_session_pid_mappings=lambda: _prune_stale_session_pid_files(),
             prune_pycache=lambda: prune_pycache(),
             collect_active_pids=lambda sessions: _collect_active_pids(
                 cast(dict[Any, Any], sessions)

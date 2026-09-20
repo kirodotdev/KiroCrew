@@ -161,6 +161,7 @@ class CleanupDeps:
     cleanup_orphaned_mcp_servers: Callable[[], int]
     cleanup_orphaned_session_roots: Callable[[], int]
     cleanup_stale_sandbox_profiles: Callable[[], int]
+    prune_session_pid_mappings: Callable[[], int]
     prune_pycache: Callable[[], tuple[int, int]]
     collect_active_pids: ActivePidCollector
     periodic_pid_sweep: PeriodicPidSweep
@@ -210,6 +211,25 @@ class SessionCleanup:
     # Upper bound on one sleep of the cleanup loop, so a lowered idle timeout
     # is adopted within this many seconds regardless of the previous interval.
     POLICY_REFRESH_SECS = 60.0
+
+    # Ceiling on the tick interval itself.
+    #
+    # One tick drives the idle-expiry hook AND every housekeeping sweep in
+    # ``_run_cleanup_ticks``: orphaned session roots, tracked PIDs, untracked
+    # MCP servers, sandbox artifacts. Deriving that interval from
+    # ``session.timeout_secs`` alone couples the housekeeping cadence to a
+    # setting that is about something else, and couples it the wrong way round:
+    # ``timeout_secs=86400`` yields an ``86400 // 6`` = 4-hour tick, while
+    # DISABLING idle expiry (``timeout_secs=0``) yields 300 s. Without a ceiling,
+    # asking for long-lived sessions buys slower orphan cleanup than switching
+    # the idle sweep off entirely.
+    #
+    # ``session.py``'s module map states the intended cadence --
+    # "``_expire_idle()`` -- **periodic** (every ~5 min)" -- which is this
+    # ceiling. Capping cannot expire a session early: ``_expire_idle_hook``
+    # passes ``state.idle_timeout``, so the timeout decides WHEN a session is
+    # stale and the interval only decides how often the question is asked.
+    MAX_TICK_INTERVAL_SECS = 300.0
 
     def __init__(
         self,
@@ -589,6 +609,11 @@ class SessionCleanup:
         the loader's: a timeout in (0, 60) becomes 60, a negative or non-int RSS
         ceiling disables the check. Transitions are logged once, on change,
         so a steady config costs the loop nothing but two attribute reads.
+
+        The returned interval is capped at :data:`MAX_TICK_INTERVAL_SECS`: the
+        tick also drives the housekeeping sweeps, which must not slow down
+        because an operator asked for long-lived sessions. See that constant for
+        why the cap is the same 300 s the disabled path already used.
         """
         cfg = self._owner._cfg
         timeout = cfg.session.timeout_secs
@@ -624,7 +649,11 @@ class SessionCleanup:
             )
             self.state.rss_max_mb = rss_max
 
-        return float(max(timeout // 6, 60) if idle_sweep_enabled else 300)
+        return float(
+            min(max(timeout // 6, 60), self.MAX_TICK_INTERVAL_SECS)
+            if idle_sweep_enabled
+            else self.MAX_TICK_INTERVAL_SECS
+        )
 
     async def _cleanup_loop(self) -> None:
         interval = self._adopt_idle_policy()
@@ -679,6 +708,7 @@ class SessionCleanup:
             await self._owner._watchdog.tick()
             await self._sweep_session_roots()
             await self._sweep_sandbox_artifacts()
+            await self._sweep_session_pid_mappings()
             await self._maybe_prune_pycache()
             await self._sweep_periodic_pids()
             await self._sweep_untracked_mcps()
@@ -711,6 +741,55 @@ class SessionCleanup:
         except Exception as exc:
             self._deps.logger.debug(
                 "sandbox launcher sweep failed: %s",
+                type(exc).__name__,
+            )
+
+    async def _sweep_session_pid_mappings(self) -> None:
+        """Retract ``session_pid_<pid>`` mappings whose pid is dead or names no process.
+
+        Those two are the whole of what the pass removes: an unsignalable pid, or
+        one absent from the thread-group-leaders snapshot whose per-pid re-read
+        confirms it names no process. A pid that is LIVE keeps its mapping even
+        when the number has been recycled away from the session that published
+        it -- that mapping is already refused at read time by
+        ``session_pid_sig._pid_recycled`` on both the strict and the lenient
+        resolution path, so it carries no identity, and its file goes when the
+        unrelated process exits.
+
+        ``session_pid._prune_stale_session_pid_files`` is otherwise reached only
+        from ``cleanup_orphaned_sessions``, which ``session.py``'s module map
+        records as startup + shutdown, so a gateway that keeps running holds
+        every mapping it publishes until it restarts — one per released session,
+        and a recycled pid number goes on carrying a dashboard slot's key. The
+        pass itself needs nothing added; it needs a caller on a bounded cadence,
+        which is what :data:`MAX_TICK_INTERVAL_SECS` makes this one.
+
+        The cadence lives here rather than on a provider teardown deliberately,
+        even though a teardown is the moment a runtime is known dead.
+        ``_untrack_session_pid`` is synchronous and ``AcpClient._reset_state``
+        calls it on the event loop, so a mapping read or unlink placed on that
+        stack is filesystem work on the loop over predictable same-uid
+        agent-writable paths — the whole of
+        ``no-blocking-call-on-event-loop``, where a planted FIFO or reparse
+        point parks the gateway. On the maintenance executor the same pass needs
+        no per-syscall bounding at all, and the one case a teardown hook cannot
+        reach — a gateway that dies without running one — this pass covers too.
+        The cost is latency: a released session's mapping survives at most one
+        tick rather than vanishing with its process.
+        """
+        try:
+            removed = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.prune_session_pid_mappings,
+            )
+            if removed:
+                self._deps.logger.info(
+                    "Periodic sweep: retracted %d stale session pid mappings",
+                    removed,
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "session pid mapping sweep failed: %s",
                 type(exc).__name__,
             )
 

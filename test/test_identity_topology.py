@@ -503,6 +503,18 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "processes, and (age-bounded) session_token_*.sig mappings, whose "
         "token-hash filenames name no pid to probe"
     ),
+    "session_cleanup.py": (
+        "SCHEDULER, not a reader or a resolver: the periodic cleanup tick calls "
+        "session_pid._prune_stale_session_pid_files on the maintenance executor "
+        "so the pass above runs more often than gateway startup and shutdown. It "
+        "reads no mapping, resolves no session key, and walks no /proc — the pid "
+        "view it would need is the one the pass it delegates to already uses, so "
+        "the pid-view parametrization this file requires of a new resolution path "
+        "has no new path to cover. It appears in this scan only because its "
+        "docstring names the file family it schedules the prune of, and says why "
+        "the prune is scheduled here rather than on a provider teardown, which "
+        "is synchronous on the gateway event loop"
+    ),
     "session_token_sig.py": (
         "SIBLING contract, NOT a session_pid reader: owns the per-SESSION "
         "token -> session-key mapping (session_token_<sha256(token)>.sig, one "

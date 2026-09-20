@@ -13,6 +13,9 @@ dispatched through ``ConfigWatch`` reaches the manager end to end.
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -78,6 +81,20 @@ def _make_manager(**cfg_kwargs) -> tuple[SessionManager, MagicMock]:
     with patch("kiro_crew.session.default_project_dir", return_value="/ws"):
         mgr = SessionManager(cfg, provider_factory=factory)
     return mgr, factory
+
+
+#: Every housekeeping coroutine one cleanup tick drives, so a test exercising the
+#: loop can silence the ones it is not about. Silencing matters beyond noise:
+#: several of these touch the real data home, and a tick test that left them live
+#: would sweep the operator's own ``~/.kiro/crew``.
+_TICK_SWEEPS = (
+    "_sweep_session_roots",
+    "_sweep_sandbox_artifacts",
+    "_sweep_session_pid_mappings",
+    "_maybe_prune_pycache",
+    "_sweep_periodic_pids",
+    "_sweep_untracked_mcps",
+)
 
 
 class TestSubscription:
@@ -335,7 +352,9 @@ class TestCleanupLoopRereadsPolicy:
     def test_adopt_reads_timeout_and_rss_from_the_current_config(self) -> None:
         mgr, _ = _make_manager(timeout_secs=3600, rss_max_mb=0)
         cleanup = mgr._cleanup_boundary()
-        assert cleanup._adopt_idle_policy() == 600.0
+        # timeout // 6 would be 600, but the tick also drives the housekeeping
+        # sweeps and is capped at MAX_TICK_INTERVAL_SECS.
+        assert cleanup._adopt_idle_policy() == 300.0
         assert cleanup.state.idle_sweep_enabled is True
         assert cleanup.state.idle_timeout == 3600
         assert cleanup.state.rss_max_mb == 0
@@ -345,6 +364,42 @@ class TestCleanupLoopRereadsPolicy:
         assert cleanup.state.idle_timeout == 600
         assert cleanup.state.rss_max_mb == 2048
         assert mgr._rss_max_mb == 2048
+
+    def test_a_long_session_timeout_does_not_slow_the_housekeeping_sweeps(self) -> None:
+        """The tick is capped, so long-lived sessions keep the ~5 min cadence.
+
+        One tick drives the idle-expiry hook AND ``_run_cleanup_ticks``'s
+        housekeeping: orphaned session roots, tracked PIDs, untracked MCP
+        servers, sandbox artifacts. Deriving it from ``timeout_secs`` alone puts
+        those sweeps 4 hours apart at ``timeout_secs=86400`` -- while DISABLING
+        idle expiry yields 300 s, so asking for long sessions would buy worse
+        orphan cleanup than switching the sweep off. The floor case is the
+        invariant: the interval must never exceed what ``timeout_secs=0`` gives.
+        """
+        mgr, _ = _make_manager(timeout_secs=0)
+        cleanup = mgr._cleanup_boundary()
+        disabled_interval = cleanup._adopt_idle_policy()
+        assert disabled_interval == SessionCleanup.MAX_TICK_INTERVAL_SECS
+
+        for timeout in (1801, 3600, 86400, 7 * 24 * 3600):
+            mgr._cfg = _make_cfg(timeout_secs=timeout)
+            interval = cleanup._adopt_idle_policy()
+            assert interval <= disabled_interval, (
+                f"timeout_secs={timeout} produced a {interval}s tick, slower than the "
+                f"{disabled_interval}s an operator gets by turning idle expiry OFF"
+            )
+            # The timeout itself is untouched -- only the question's cadence.
+            assert cleanup.state.idle_timeout == timeout
+            assert cleanup.state.idle_sweep_enabled is True
+
+    def test_a_short_timeout_still_ticks_faster_than_the_cap(self) -> None:
+        """The cap is a ceiling, not a floor: sub-cap intervals are unchanged."""
+        mgr, _ = _make_manager(timeout_secs=600)
+        cleanup = mgr._cleanup_boundary()
+        assert cleanup._adopt_idle_policy() == 100.0
+
+        mgr._cfg = _make_cfg(timeout_secs=1800)
+        assert cleanup._adopt_idle_policy() == 300.0
 
     def test_adopt_keeps_the_loader_clamps(self) -> None:
         mgr, _ = _make_manager(timeout_secs=30)
@@ -388,16 +443,7 @@ class TestCleanupLoopRereadsPolicy:
                 signal.set()
             return 0.01
 
-        quiet = {
-            name: AsyncMock()
-            for name in (
-                "_sweep_session_roots",
-                "_sweep_sandbox_artifacts",
-                "_maybe_prune_pycache",
-                "_sweep_periodic_pids",
-                "_sweep_untracked_mcps",
-            )
-        }
+        quiet = {name: AsyncMock() for name in _TICK_SWEEPS}
         mgr._watchdog = MagicMock(tick=AsyncMock())
         with (
             patch("kiro_crew.session.shutdown_event", signal),
@@ -406,6 +452,70 @@ class TestCleanupLoopRereadsPolicy:
         ):
             await asyncio.wait_for(cleanup._run_cleanup_ticks(0.01), timeout=5)
         assert calls >= 3
+
+    @pytest.mark.asyncio
+    async def test_the_tick_prunes_session_pid_mappings_off_the_loop(self) -> None:
+        """The mapping prune must run on the tick, and must not run on the loop.
+
+        Both halves are asserted because the alternative design satisfies only
+        the first. Until the tick called it, the prune was reached solely from
+        ``cleanup_orphaned_sessions`` -- startup and shutdown -- so a gateway that
+        kept running held every mapping it published, one per released session,
+        and a recycled pid number went on carrying a dashboard slot's key; the
+        300s cap above is what makes this cadence bounded. Hooking the same work
+        onto a provider teardown would also retract the mapping, but
+        ``AcpClient._reset_state`` is synchronous and on the event loop, so it
+        would be a directory glob and unlinks over agent-plantable paths in the
+        one place ``no-blocking-call-on-event-loop`` forbids.
+        """
+        mgr, _ = _make_manager()
+        cleanup = mgr._cleanup_boundary()
+        signal = asyncio.Event()
+        loop_thread = threading.get_ident()
+        ran_on: list[int] = []
+
+        def prune() -> int:
+            ran_on.append(threading.get_ident())
+            return 3
+
+        # The loop is stopped by a tick COUNT, not by the prune, so a prune that
+        # never runs still ends the loop and fails on the assertion below rather
+        # than on the outer timeout.
+        ticks = 0
+
+        def adopt() -> float:
+            nonlocal ticks
+            ticks += 1
+            if ticks >= 3:
+                signal.set()
+            return 0.01
+
+        quiet = {
+            name: AsyncMock() for name in _TICK_SWEEPS if name != "_sweep_session_pid_mappings"
+        }
+        mgr._watchdog = MagicMock(tick=AsyncMock())
+        pool = ThreadPoolExecutor(max_workers=1)
+        cleanup._deps = replace(
+            cleanup._deps,
+            prune_session_pid_mappings=prune,
+            get_maintenance_executor=lambda: pool,
+        )
+        try:
+            with (
+                patch("kiro_crew.session.shutdown_event", signal),
+                patch.object(SessionCleanup, "_adopt_idle_policy", side_effect=adopt),
+                patch.multiple(SessionCleanup, **quiet),
+            ):
+                await asyncio.wait_for(cleanup._run_cleanup_ticks(0.01), timeout=5)
+        finally:
+            pool.shutdown(wait=True)
+
+        assert ran_on, "the cleanup tick never pruned the session pid mappings"
+        assert loop_thread not in ran_on, (
+            "the prune ran on the event-loop thread; it globs a directory and "
+            "unlinks paths a same-uid agent can plant on, so it belongs on the "
+            "maintenance executor"
+        )
 
 
 class _FakeHandle:
