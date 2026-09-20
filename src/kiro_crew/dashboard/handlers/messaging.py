@@ -25,6 +25,7 @@ from kiro_crew.browser.command_bus import (
     QueueFullError,
     get_command_bus,
 )
+from kiro_crew.browser_cli import cookies as browser_cli_cookies
 from kiro_crew.browser_cli import install as browser_cli_install
 from kiro_crew.browser_cli import launcher as browser_cli_launcher
 from kiro_crew.browser_cli import token as browser_cli_token
@@ -58,6 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_key,
 )
 from kiro_crew.dashboard.handlers._shared import (
+    _is_restricted_session,
     _pip_install_channel_available,
     guard_owner_surface_routes,
     internal_memory_scope,
@@ -3900,6 +3902,161 @@ async def api_browser_view_start(request: web.Request) -> web.Response:
 
     await asyncio.to_thread(_start_view)
     return web.json_response(await asyncio.to_thread(browser_cli_view.status))
+
+
+async def api_browser_cookies_get(request: web.Request) -> web.Response:
+    """GET /api/browser/cookies -- report whether imported cookies are present.
+
+    Owner-only, like the view routes: the summary names the domains a logged-in
+    session covers, which is not something an app token or a non-owner should be
+    able to enumerate. Read of a security-relevant state, so it goes through the
+    same guard the mutations do rather than staying open like the install probe.
+    Refused in a restricted (incognito/temporary) session for the same reason
+    the import and clear are: the domain list says which sites a credential
+    unlocks, and an ephemeral session must not learn that either. The refusal
+    carries the same ``restricted_session`` body the mutations return, so the
+    panel hides the control on one shape.
+
+    Body: ``{"present": bool, "summary": <summary|null>, "config_path": str}``.
+    ``summary`` carries counts, domains and expiry only -- never a cookie value.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_cookies_status")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _restricted_cookie_denial(request, "browser_cookies_status")
+    summary = await asyncio.to_thread(browser_cli_cookies.storage_state_summary)
+    path = await asyncio.to_thread(browser_cli_cookies.storage_state_path)
+    return web.json_response(
+        {"present": summary is not None, "summary": summary, "config_path": str(path)}
+    )
+
+
+async def api_browser_cookies_import(request: web.Request) -> web.Response:
+    """POST /api/browser/cookies -- import cookies for the agent's browser sessions.
+
+    Body: ``{"content": str, "filename"?: str}``. ``content`` is a Playwright
+    ``storageState`` object, a Cookie-Editor / "Get cookies.txt" JSON array, or
+    a Netscape ``cookies.txt`` body. The cookies are normalised, written as an
+    owner-only storageState under the data home (a file every agent sandbox
+    masks), and the GATEWAY-side launch config is rewritten so the daemon the
+    gateway pre-warms for each new agent session loads them; a best-effort
+    hot-load applies them to any gateway-owned session already open, and
+    ``hot_load.note`` says why when nothing could be loaded.
+
+    Owner-only (a browser credential write), and refused in a restricted
+    (incognito/temporary) session the same way the other credential writes are:
+    an ephemeral session must not persist a logged-in browser state.
+
+    Responses: 200 ``{"ok": true, "summary": <summary>, "hot_load": {...}}``;
+    400 on malformed input; 413 when the body exceeds 2 MiB; 403 non-owner.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_cookies_import")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _restricted_cookie_denial(request, "browser_cookies_import")
+    body, error = await read_bounded_json(request, max_bytes=browser_cli_cookies.MAX_IMPORT_BYTES)
+    if error is not None:
+        return error
+    assert body is not None
+    content = body.get("content")
+    if not isinstance(content, str):
+        return web.json_response(
+            {"error": "content must be a string", "code": "invalid_content"}, status=400
+        )
+    try:
+        cookies = browser_cli_cookies.parse_cookie_import(content)
+    except browser_cli_cookies.CookieImportError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_cookies"}, status=400)
+
+    def _persist() -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        path = browser_cli_cookies.save_storage_state(cookies)
+        # Converge the GATEWAY-side config so the next pre-warmed session picks
+        # the cookies up; the agent's own config never names the (masked) file.
+        browser_cli_cookies.write_gateway_config()
+        hot = browser_cli_cookies.hot_load_into_live_sessions(path)
+        return browser_cli_cookies.storage_state_summary(), hot
+
+    summary, hot_load = await asyncio.to_thread(_persist)
+    # A permission DECISION whose damaging path is the ALLOWED write -- audit it
+    # with count and domains only, never a value (mirrors the install audit).
+    audited_resources = request.path
+    if summary:
+        audited_resources += (
+            f" cookies={summary.get('cookie_count')} "
+            f"domains={','.join(summary.get('domains', []))}"
+        )
+    _sel().log_api_access(
+        caller=str(request.get("user") or "owner"),
+        operation="browser_cookies_import",
+        outcome="allowed",
+        source="browser_api",
+        resources=audited_resources,
+    )
+    return web.json_response({"ok": True, "summary": summary, "hot_load": hot_load})
+
+
+async def api_browser_cookies_clear(request: web.Request) -> web.Response:
+    """DELETE /api/browser/cookies -- remove the imported cookies.
+
+    Deletes the storageState file and rewrites the gateway-side launch config so
+    its ``storageState`` key is dropped and the next pre-warmed session starts
+    clean. Then, best effort, clears the cookies of every browser session that is
+    ALREADY open (``playwright-cli cookie-clear``): deleting the file alone would
+    leave a live session signed in until it closed, which is not what "clear"
+    says. Owner-only, refused in a restricted session, and SEL-audited.
+
+    Responses: 200 ``{"ok": true, "present": false, "live": {"cleared": [...],
+    "failed": {...}}}``; 403 non-owner.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_cookies_clear")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _restricted_cookie_denial(request, "browser_cookies_clear")
+
+    def _clear() -> dict[str, Any]:
+        browser_cli_cookies.clear_storage_state()
+        # Rewrite so the storageState key disappears; the next pre-warmed
+        # session then starts with no imported cookies.
+        browser_cli_cookies.write_gateway_config()
+        return browser_cli_cookies.clear_live_sessions()
+
+    live = await asyncio.to_thread(_clear)
+    _sel().log_api_access(
+        caller=str(request.get("user") or "owner"),
+        operation="browser_cookies_clear",
+        outcome="allowed",
+        source="browser_api",
+        resources=request.path,
+    )
+    return web.json_response({"ok": True, "present": False, "live": live})
+
+
+def _restricted_cookie_denial(request: web.Request, operation: str) -> web.Response:
+    """403 for a cookie route reached from a restricted session, audited.
+
+    A restricted (incognito/temporary) session must not persist a logged-in
+    browser state, the same rule the other credential writes follow -- nor
+    learn which sites the stored one unlocks, which is why the status read
+    shares this denial.
+    """
+    _sel().log_api_access(
+        caller=str(request.get("user") or "owner"),
+        operation=operation,
+        outcome="denied",
+        source="browser_api",
+        resources=request.path,
+        error="browser cookies are not available from a restricted session",
+    )
+    return web.json_response(
+        {"error": "not available in a restricted session", "code": "restricted_session"},
+        status=403,
+    )
 
 
 async def api_browser_open(request: web.Request) -> web.Response:

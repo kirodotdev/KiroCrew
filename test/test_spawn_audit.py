@@ -1033,6 +1033,31 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # The agent's OWN browser commands are not spawned by us at all -- it
         # runs them as ordinary shell tool calls through the standard approval
         # path.
+        #   * ``cookies.py::_live_session_names`` runs ``playwright-cli list``
+        #     (fixed argv, no free element);
+        #     ``cookies.py::_run_on_sessions`` runs ``-s=kc-<8hex> state-load
+        #     <path>`` (import hot-load) or ``-s=kc-<8hex> cookie-clear``
+        #     (dashboard clear) once per live Kiro Crew session, right after the
+        #     dashboard OWNER imported or cleared cookies. The session names come
+        #     from the ``kc-<8hex>``-shaped lifecycle roots under the data home
+        #     (or ``list`` filtered to the reserved prefix) and the path is Kiro
+        #     Crew's own storage-state file under the data home, so no request
+        #     input reaches argv. The routes are owner-only and refuse
+        #     internal-secret (agent) callers, same as ``launcher.py::_run_cli``;
+        #     not sandboxed for the same reason ``show`` is not -- and, for the
+        #     state-load, BECAUSE the file is masked from every agent sandbox: only
+        #     a gateway-side daemon can open it.
+        #   * ``cookies.py::_run_prewarm`` runs ``-s=kc-<8hex> open about:blank``
+        #     from a daemon thread at agent-spawn time, so the agent's browser
+        #     daemon is started by the GATEWAY (outside the agent's sandbox) with
+        #     the imported cookies loaded. Fixed argv: the session name is the one
+        #     ``browser_session_env`` just generated and the URL is a literal; the
+        #     storage-state path travels in the child's PLAYWRIGHT_MCP_CONFIG, not
+        #     argv. Deliberately NOT sandboxed: the whole point is a daemon that
+        #     can read the masked file while the agent cannot.
+        "browser_cli/cookies.py::_live_session_names",
+        "browser_cli/cookies.py::_run_on_sessions",
+        "browser_cli/cookies.py::_run_prewarm",
         "browser_cli/install.py::_run",
         "browser_cli/launcher.py::_run_cli",
         "browser_cli/view.py::_spawn",

@@ -180,6 +180,15 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "TEAMS_MAX_ACTIVITY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # A cookie export is user content that legitimately exceeds 64 KB (a browser
+    # profile with a few hundred cookies, or a storageState document carrying
+    # origins), so the route owns its cap beside the parser's own limits in
+    # kiro_crew/browser_cli/cookies.py: MAX_IMPORT_BYTES (2 MiB) and the 5000-cookie
+    # ceiling are the same decision, made once.
+    "handlers/messaging.py::api_browser_cookies_import": (
+        "browser_cli_cookies.MAX_IMPORT_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # The UI-preference backup stores values up to MAX_VALUE_BYTES (64 KB) and a
     # document up to MAX_TOTAL_BYTES, so the shared 64 KB default -- exactly one
     # legal value, with no room for the JSON envelope -- would 413 a patch the

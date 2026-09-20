@@ -368,11 +368,20 @@ def launch_config_path() -> Path:
 
 
 def desired_config() -> dict[str, object]:
-    """The config Kiro Crew generates.
+    """The config Kiro Crew generates for the AGENT's ``playwright-cli``.
 
     Deliberately minimal: it names the engine and nothing else. Every key added
     here becomes a default an operator has to discover in order to override, and
     the engine is the only one the product's own install flow already decided.
+
+    It never names the imported-cookies file. That file
+    (:func:`kiro_crew.browser_cli.cookies.storage_state_path`) is bind-masked out
+    of every agent sandbox, and the daemon an AGENT's command starts runs inside
+    that sandbox: a ``contextOptions.storageState`` pointing at a path the daemon
+    cannot open fails every browse with ENOENT. The cookies reach the agent's
+    session through the gateway-owned daemon instead
+    (:func:`kiro_crew.browser_cli.cookies.prewarm_session`), which is launched
+    with the separate :func:`kiro_crew.browser_cli.cookies.gateway_config_path`.
     """
     return {"browser": {"browserName": LAUNCH_ENGINE}}
 

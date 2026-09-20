@@ -1770,6 +1770,14 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/browser/engine", handlers.api_browser_engine_install)
     app.router.add_get("/api/browser/view", handlers.api_browser_view_get)
     app.router.add_post("/api/browser/view/start", handlers.api_browser_view_start)
+    # Imported cookies: the owner exports a logged-in browser's cookies and
+    # imports them here; the gateway stores them as a Playwright storageState and
+    # applies them to the agent's playwright-cli sessions. Owner-only (a browser
+    # credential write) and refused in a restricted session, like the view/token
+    # routes -- see each handler's guard.
+    app.router.add_get("/api/browser/cookies", handlers.api_browser_cookies_get)
+    app.router.add_post("/api/browser/cookies", handlers.api_browser_cookies_import)
+    app.router.add_delete("/api/browser/cookies", handlers.api_browser_cookies_clear)
     # The Browser panel's address bar on the non-native transport: opens an
     # owner-typed URL in the gateway host's Playwright CLI browser and shows it
     # through the view above. Owner-only (cookie/token) and deliberately NOT on

@@ -232,6 +232,9 @@ class TestSecretsAreMaskedInEveryMode:
         "work-ledger",
         "backup",
         "browser-cookies.txt",
+        # Imported-cookies storageState: loaded only by gateway-launched daemons
+        # (browser_cli/cookies.py), so the agent's shell has no reader for it.
+        "browser-storage-state.json",
         "playwright-storage-state.json",
         "playwright-extension-token",
         "ops_mission_control_secrets.json",

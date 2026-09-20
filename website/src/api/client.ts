@@ -404,6 +404,43 @@ export interface BrowserOpenData {
   view: BrowserViewData
 }
 
+/** Summary of the imported Playwright storageState the gateway holds. NEVER
+ * carries cookie values — only the counts, domains and expiries needed to
+ * describe the set to the user. `imported_at` and `earliest_expiry` are unix
+ * seconds; `earliest_expiry` is null when every cookie is session-scoped. */
+export interface BrowserCookiesSummary {
+  cookie_count: number
+  domains: string[]
+  earliest_expiry: number | null
+  imported_at: number
+}
+
+/** Answer of GET /api/browser/cookies: whether an imported cookie set exists and,
+ * if so, its value-free summary. `config_path` is where the gateway stores the
+ * storageState on the host, shown so the user knows the file is local. */
+export interface BrowserCookiesStatus {
+  present: boolean
+  summary: BrowserCookiesSummary | null
+  config_path: string
+}
+
+/** Answer of POST /api/browser/cookies. `summary` is the value-free description
+ * of the newly-stored set. `hot_load` reports the best-effort attempt to apply
+ * the cookies to the agent's LIVE browser sessions: `loaded` names the sessions
+ * that took them, `failed` maps a session name to why it did not, and `note`
+ * explains a case where no session could be enumerated at all. An empty `loaded`
+ * with the view running is the cue to tell the user the cookies apply to NEW
+ * sessions. */
+export interface BrowserCookiesImportResult {
+  ok: true
+  summary: BrowserCookiesSummary
+  hot_load: {
+    loaded: string[]
+    failed: Record<string, string>
+    note?: string
+  }
+}
+
 /** ADVISORY macOS permission rows. Never a gate — macOS attributes a TCC grant
  * to the responsible parent process, so `missing` can coexist with a working
  * capture, and `unknown` means the probe could not be run. */
@@ -4916,6 +4953,25 @@ export const api = {
   // alongside the verdict, so a success frames the view with no follow-up read.
   openInBrowser: (url: string, sessionKey: string) =>
     post('/api/browser/open', { url, session_key: sessionKey }).then(j) as Promise<BrowserOpenData>,
+  // Imported browser cookies (a Playwright storageState the gateway stores and
+  // applies to the agent's browser sessions). GET reports a value-free summary;
+  // POST stores a pasted/loaded export and hot-loads it into live sessions;
+  // DELETE clears it. All three are owner-only (403 to a non-owner), which the
+  // hook treats as "hide the control" rather than an error.
+  // `sessionKey` MUST carry the active slot's key when one is active: the
+  // server's restricted-session guard reads X-Session-Key, and the shared
+  // `dashboard:ui` default answers "not restricted" — which would let an
+  // incognito/temporary slot read the sites a stored credential unlocks, or
+  // persist a logged-in browser state the slot promised to keep nothing of.
+  // Same contract as `openInBrowser` and the mobile-link surface; the guard
+  // answers 403, which the hook maps to "hide the control".
+  getBrowserCookies: (sessionKey?: string) =>
+    get('/api/browser/cookies', sessionKey).then(j) as Promise<BrowserCookiesStatus>,
+  importBrowserCookies: (content: string, filename?: string, sessionKey?: string) =>
+    post('/api/browser/cookies', filename ? { content, filename } : { content }, sessionKey)
+      .then(j) as Promise<BrowserCookiesImportResult>,
+  clearBrowserCookies: (sessionKey?: string) =>
+    del('/api/browser/cookies', undefined, sessionKey).then(j) as Promise<{ ok: true; present: false }>,
   // Computer use (desktop automation). The PUT returns the refreshed snapshot so
   // the panel re-renders from server truth rather than its optimistic guess.
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,

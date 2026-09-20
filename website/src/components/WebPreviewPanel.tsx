@@ -19,6 +19,8 @@ import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useBrowserView } from '../hooks/useBrowserView'
 import { useNativeBrowser } from '../hooks/useNativeBrowser'
+import { useBrowserCookies } from '../hooks/useBrowserCookies'
+import { CookieMenuItem, CookieClearMenuItem, CookieChip, CookieDialog, CookieNewSessionHint } from './WebPreviewCookies'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -745,6 +747,21 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // driven. There is no per-frame push to subscribe to any more: the view is a
   // process with a URL, so the panel polls its status and frames the URL.
   const view = useBrowserView(active)
+  // Imported browser cookies (a Playwright storageState the gateway applies to
+  // the agent's browser sessions). One hook instance for the whole panel, so the
+  // status is read once and there is a single dialog; the two menu items, the
+  // chips and the dialog all read this same result. Scoped to THIS slot's key
+  // so the gateway's restricted-session guard sees the real slot (an incognito
+  // slot answers 403 → `forbidden`), and owner-only: the pieces render nothing
+  // when `forbidden`.
+  const cookies = useBrowserCookies(active, sessionKey || undefined)
+  const [cookieDialogOpen, setCookieDialogOpen] = useState(false)
+  // Shown after an import the live session did not pick up; cleared on reopen.
+  const [cookieNewSessionHint, setCookieNewSessionHint] = useState(false)
+  const openCookieDialog = useCallback(() => {
+    setCookieNewSessionHint(false)
+    setCookieDialogOpen(true)
+  }, [])
   // Validate the server-reported URL before it becomes an iframe `src`. The
   // contract promises `http://127.0.0.1:<port>/`, and `normalizeUrl` rejects
   // anything that is not http(s) — so a malformed or hostile value degrades to
@@ -1598,6 +1615,11 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             <ExternalLink size={13} />
           </a>
         )}
+        {/* Imported-cookies status, READ-ONLY (a span, not a control): this row
+            already carries its two actions (open-in-browser + the toggle), so
+            Import and Clear live in the preview toolbar's overflow menu, reached
+            through the toggle. max-two-buttons-per-row. */}
+        <CookieChip cookies={cookies} compact />
         {/* Same toggle as the one in the URL bar, in its pressed state — the bar
             is inert while this overlay is up, so the way back has to live here. */}
         <button
@@ -2044,6 +2066,13 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         >
           {expanded ? <Minimize size={14} /> : <Expand size={14} />}
         </button>
+        {/* Imported-cookies status chip + post-import hint. Both the Import
+            trigger and the Clear action are menu items inside the overflow
+            dropdown below (not toolbar buttons), so the row's sibling-button
+            count does not grow past its guard. The chip is a read-only span and
+            the hint a span, so neither is counted either. */}
+        <CookieChip cookies={cookies} />
+        <CookieNewSessionHint show={cookieNewSessionHint} />
         {/* Divider */}
         <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 mx-0.5" />
         {/* Overflow menu — collapses browser-view toggle AND device-size presets
@@ -2069,6 +2098,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               <span>{i18nT('components.webPreviewPanel.browser_view')}</span>
               {viewRunning && <Check size={13} className="ml-auto shrink-0 text-accent" />}
             </DropdownMenuItem>
+            <CookieMenuItem cookies={cookies} onOpen={openCookieDialog} />
+            <CookieClearMenuItem cookies={cookies} />
             <DropdownMenuSeparator />
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
@@ -2392,6 +2423,15 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       </div>
       </div>
       {nativeOpen ? nativeSurface : showBrowserView ? browserView : null}
+      {/* One import dialog for the whole panel — a fixed overlay, so it shows
+          over either header. Opened from the toolbar overflow menu item. */}
+      <CookieDialog
+        cookies={cookies}
+        viewRunning={viewRunning}
+        open={cookieDialogOpen}
+        onClose={() => setCookieDialogOpen(false)}
+        onImported={(reachedNewSessionsOnly) => setCookieNewSessionHint(reachedNewSessionsOnly)}
+      />
     </div>
   )
 }

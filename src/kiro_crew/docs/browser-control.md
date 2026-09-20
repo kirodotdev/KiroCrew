@@ -40,6 +40,23 @@ Two things live there:
 Treat an attached browser as borrowed. The agent should not navigate a tab away
 from what you were doing, and closing it would take your own windows with it.
 
+## Import cookies
+
+The Live view has an **Import cookies** button. You export the cookies from the
+browser where you are already logged in — a Playwright storageState file, a
+Cookie-Editor / "Get cookies.txt" export, or a Netscape `cookies.txt` — and paste
+or upload them. The gateway stores them and applies them to the agent's own
+browser sessions, so a fresh session starts already logged in. This is how a
+logged-in session reaches a gateway running on a different machine from your
+laptop.
+
+The cookie values stay on the gateway host and are never shown back to you, and
+the agent never reads the stored file — it only gets the cookies through the
+browser sessions the gateway starts for it. Imported cookies apply to **new**
+browser sessions automatically; a session already open picks them up on a
+best-effort basis, and if it does not, the next one will. Clear them at any time
+from the same control.
+
 ## Related docs
 
 - [Dashboard](dashboard.md): the side panel and where its tabs live

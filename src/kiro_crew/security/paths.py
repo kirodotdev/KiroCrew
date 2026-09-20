@@ -164,6 +164,7 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 #   .env                          channel/API credentials (Slack/Discord/…)
 #   browser-cookies.txt           reusable browser-auth session cookies …
 #   playwright-storage-state.json … and the Playwright storage-state they become
+#   browser-storage-state.json    imported-cookies storageState (Browser panel)
 #   sel_hmac.key                  Security Event Log HMAC key — signs the
 #   security_events.jsonl         tamper-evident audit chain (``sel.py``);
 #   trust                         the key now lives at ``trust/sel_hmac.key``
@@ -299,6 +300,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # spawned shell's `open()` never routes through this gate.
     "quarantined-clones",
     "browser-cookies.txt",
+    # The imported-cookies storageState the dashboard owner uploads
+    # (browser_cli/cookies.py). Live session cookies; loaded only by
+    # gateway-launched browser daemons and masked at OS level too
+    # (`sandbox._CREW_HIDDEN_LEAVES`).
+    "browser-storage-state.json",
     "playwright-storage-state.json",
     # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is
     # an OUTBOUND SOURCE. Each entry names a conversation and carries text the

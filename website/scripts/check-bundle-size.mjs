@@ -82,7 +82,16 @@ export const CHUNK_BUDGETS = {
   // lazy import() boundary can move a catalog string out of `all`, which is why
   // shrinking is not an option here. Back to the 5% convention over the
   // measurement that includes this branch (11,930,130 B).
-  all: 12240 * KB, // measured 11650.5 KB on fix/gatewayd-overload-liveness 2026-09-16 (5.1% headroom)
+  // Re-measured 2026-09-20: this branch (browser cookie import) builds the chunk
+  // at 12,538,405 B (12244.5 KB) against the 12240 KB ceiling -- 4.5 KB OVER.
+  // Attribution measured, not assumed: the branch adds 18 keys x 13 catalogs,
+  // 20,992 B of catalog bytes over its merge base, so main alone sits at about
+  // 12,517,413 B (12224 KB) -- 16 KB (0.13%) under the ceiling, the same drift
+  // as every note above. The chunk still holds 14 modules (13 catalogs plus the
+  // entry); the feature's components live in their own chunks, and no lazy
+  // import() boundary can move a catalog string out of `all`. Back to the 5%
+  // convention over the measurement that includes this branch.
+  all: 12860 * KB, // measured 12244.5 KB on feat/browser-cookie-import 2026-09-20 (5.0% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

@@ -62,16 +62,24 @@ class TestOperatorConfigIsNotOurs:
         # a config write, this fails and the reviewer has to justify it rather than
         # discovering it from a support report.
         #
-        # TWO writes are sanctioned, named by module so a SECOND write in either
-        # still fails here:
-        #   token.py  -- persists the optional attach token, which has to survive a
-        #                restart to be worth configuring.
-        #   launch.py -- generates Kiro Crew's OWN launch config under the data
-        #                home, naming the engine the product installs. It never
-        #                writes, reads, or supersedes the operator's
-        #                .playwright/cli.config.json; see
-        #                test_the_operator_config_path_is_never_written.
-        sanctioned = {"token.py", "launch.py"}
+        # THREE writes are sanctioned, named by module so a SECOND write in any of
+        # them still fails here:
+        #   token.py   -- persists the optional attach token, which has to survive a
+        #                 restart to be worth configuring.
+        #   launch.py  -- generates Kiro Crew's OWN launch config under the data
+        #                 home, naming the engine the product installs. It never
+        #                 writes, reads, or supersedes the operator's
+        #                 .playwright/cli.config.json; see
+        #                 test_the_operator_config_path_is_never_written.
+        #   cookies.py -- persists the storage state the dashboard owner imported
+        #                 (Browser panel > Import cookies) under the data home,
+        #                 0600, and the GATEWAY-side launch config that names it
+        #                 (the agent's config from launch.py never does: the state
+        #                 file is masked from every agent sandbox, so only the
+        #                 daemon the gateway pre-warms for a session may load it).
+        #                 Both are Kiro Crew's own files, not the operator's CLI
+        #                 config.
+        sanctioned = {"token.py", "launch.py", "cookies.py"}
         pkg = Path(install.__file__).parent
         writes = []
         for source in sorted(pkg.glob("*.py")):
@@ -890,6 +898,14 @@ def test_every_browser_route_has_a_deliberate_app_token_stance():
         # request input, owner-only, and it refuses internal-secret callers too
         # (agent browsing must stay behind the shell approval ladder).
         "api_browser_open": "owner",
+        # Imported browser cookies are a credential: the summary names the
+        # sites they unlock, the import writes them, the clear removes them.
+        # All three owner-only; import and clear also refuse restricted
+        # (incognito/temporary) sessions and are SEL-audited (count + domains,
+        # never values).
+        "api_browser_cookies_get": "owner",
+        "api_browser_cookies_import": "owner",
+        "api_browser_cookies_clear": "owner",
         # Presence/version reporting only. No credential, no URL, no mutation --
         # and an app that cannot read it cannot tell "absent" from "broken".
         "api_browser_install_get": "open",
