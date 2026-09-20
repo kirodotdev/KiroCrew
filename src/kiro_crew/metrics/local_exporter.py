@@ -218,14 +218,11 @@ class JsonlMetricExporter(MetricExporter):
     def _directory_lock(self) -> Iterator[bool]:
         """Try to serialize pruning across exporter processes."""
         lock_path = self._dir / ".metrics.lock"
-        # Writable binary mode is required by msvcrt.locking on Windows. Seed
-        # one byte because that API locks a byte range and may reject an empty
-        # file. The sidecar is private and excluded from shard scans.
+        # Writable binary mode is required by msvcrt.locking on Windows. The file
+        # stays empty: a byte-range lock covers byte 0 of a zero-length file, and
+        # writing one here would fail with EACCES against a sibling that already
+        # holds that byte. The sidecar is private and excluded from shard scans.
         with lock_path.open("a+b") as lock_fd:
-            lock_fd.seek(0, os.SEEK_END)
-            if lock_fd.tell() == 0:
-                lock_fd.write(b"\0")
-                lock_fd.flush()
             self._restrict_file(lock_path)
             acquired = platform_compat.try_acquire_lock(lock_fd.fileno(), exclusive=True)
             if not acquired:

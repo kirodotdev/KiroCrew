@@ -619,18 +619,81 @@ log.flush()
         # The key bytes are untouched: the lock fd is never written through.
         assert legacy.read_bytes() == log._hmac_key
 
-    def test_fresh_sidecar_is_primed_for_byte_range_locking(self, tmp_path):
-        """A fresh sidecar must not be empty after its first use.
+    def test_a_byte_range_lock_excludes_on_a_zero_length_file(self, tmp_path):
+        """The premise the empty lock sidecar rests on.
 
-        Windows locks a byte RANGE (msvcrt.locking on byte 0), so an empty
-        sidecar has nothing to lock -- best-effort audits would vanish and
-        critical actions would be denied on every fresh Windows install. Same
-        priming the rotation lock already does for itself.
+        The chain-lock sidecar is never written through, so it can be zero
+        length when a writer locks it. A byte-range lock must still cover byte 0
+        of an empty file and exclude a second descriptor; if a platform ever
+        stops honouring that, SEL writers would silently stop serializing, so it
+        is asserted here rather than assumed.
+        """
+        lock_path = tmp_path / "empty.lock"
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0), 0o600)
+        contender = os.open(lock_path, os.O_RDWR | getattr(os, "O_BINARY", 0))
+        try:
+            assert os.fstat(holder).st_size == 0, "precondition: the file is empty"
+            assert platform_compat.try_acquire_lock(holder, exclusive=True)
+            assert not platform_compat.try_acquire_lock(contender, exclusive=True)
+            platform_compat.release_lock(holder)
+        finally:
+            os.close(contender)
+            os.close(holder)
+
+    def test_the_chain_lock_sidecar_is_never_written_through(self, tmp_path):
+        """No byte reaches the sidecar, so no write can race an acquire.
+
+        A Windows byte-range lock is mandatory: while a writer holds byte 0, any
+        other descriptor writing that byte gets ``EACCES``. A sidecar write on
+        the way to the lock therefore fails against a sibling that acquired
+        first, and ``_flush_batch`` turns that into a dropped audit record.
         """
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
-        log.log(_make_event(event_id="prime-1"))
+        log.log(_make_event(event_id="sidecar-1"))
+        log.log(_make_event(event_id="sidecar-2"))
         sidecar = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
-        assert sidecar.stat().st_size >= 1, "sidecar left empty; unlockable on Windows"
+        assert sidecar.exists(), "precondition: the chain lock was taken on the sidecar"
+        assert sidecar.stat().st_size == 0, "a byte was written on the way to the lock"
+
+    def test_a_foreign_sidecar_holder_does_not_cost_a_best_effort_event(self, tmp_path):
+        """A writer that must WAIT for the sidecar still lands its record.
+
+        The sidecar already exists and is empty (its creator took the lock
+        without writing it), and another holder has byte 0. A writer arriving
+        now must wait for the lock and then append, not fail on the way to it.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        sidecar = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+        sidecar.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        holder = os.open(sidecar, os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0), 0o600)
+        release = threading.Event()
+        logged = threading.Event()
+        try:
+            assert os.fstat(holder).st_size == 0, "precondition: the sidecar is empty"
+            assert platform_compat.try_acquire_lock(holder, exclusive=True)
+
+            def _write():
+                log.log(_make_event(event_id="waited-for-the-lock"))
+                logged.set()
+
+            writer = threading.Thread(target=_write)
+            writer.start()
+            # Give the writer time to reach the lock and block on it. On the
+            # unfixed code it instead fails on the sidecar write and returns at
+            # once, which is what this wait distinguishes.
+            early = logged.wait(timeout=0.5)
+            release.set()
+            platform_compat.release_lock(holder)
+            writer.join(timeout=30)
+            assert not writer.is_alive(), "the writer never finished"
+        finally:
+            release.set()
+            os.close(holder)
+        body = log._path.read_text(encoding="utf-8") if log._path.exists() else ""
+        assert "waited-for-the-lock" in body, (
+            "the record was dropped while another descriptor held the sidecar "
+            f"(writer returned before the lock was released: {early})"
+        )
 
     @pytest.mark.asyncio
     async def test_loop_critical_audit_does_not_wait_for_a_blocked_writer_drain(self):
@@ -2929,6 +2992,18 @@ class TestRotationIsSerializedAcrossProcesses:
         assert lock not in log._segments_oldest_first()
         total, valid = log.verify_integrity()
         assert total == valid, "the lock file was verified as an audit segment"
+
+    def test_the_rotation_lock_is_never_written_through(self, sel_dir, small_segments):
+        """Same contract as the chain-lock sidecar, at the rotation mutex.
+
+        A Windows byte-range lock is mandatory, so a byte written on the way to
+        the lock fails with ``EACCES`` against a sibling that acquired first —
+        which declines a rotation over a lock that is working.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 600)
+        lock = sel_dir / "security_events.d" / ".rotate.lock"
+        assert lock.stat().st_size == 0, "a byte was written on the way to the lock"
 
     def test_a_planted_lock_link_is_not_opened_through(self, sel_dir, small_segments):
         """Opening the mutex CREATES and chmods it, so a link must not be followed."""

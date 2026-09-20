@@ -183,7 +183,10 @@ def test_export_locks_only_the_prune_phase(tmp_path, monkeypatch):
     assert events == ["acquire", "prune", "release"]
     assert lock_held is False
     lock_path = tmp_path / ".metrics.lock"
-    assert lock_path.read_bytes() == b"\0"
+    # Nothing is written through a lock descriptor: on Windows a byte-range lock
+    # is mandatory, so a write here fails with EACCES against a sibling that
+    # acquired first. The empty range is still lockable.
+    assert lock_path.read_bytes() == b""
     assert lock_path.stat().st_mode & 0o777 == 0o600
 
 
