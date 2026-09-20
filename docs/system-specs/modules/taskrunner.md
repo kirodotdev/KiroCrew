@@ -854,6 +854,23 @@ finalizer removes the worktree.
 
 Applies to both exception errors and test failure outputs.
 
+Identity is `_error_fingerprint`, not raw string equality. A fingerprint is the
+`FAILED` / `ERROR` summary lines when the text is a test run (the `run_tests`
+tail truncation makes the head of the output the unstable part), otherwise the
+first `_ERROR_FINGERPRINT_LINES` lines. Only genuinely volatile forms are
+masked -- hex addresses, durations, `port N` / `pid N`, and timestamps -- and
+whitespace is collapsed.
+
+Bare digit runs are identity and are never masked. `error variant 1` and
+`error variant 2` are successive cases of the same parametrized run, and
+`assert 3 == 0` and `assert 1 == 0` are different assertions; collapsing them
+would report a steadily-advancing agent as a loop and overwrite the real error
+with "Loop detected" on the third attempt. Pinned by
+`test/test_task_error_fingerprint.py::TestErrorFingerprint` and by
+`test/test_scenarios_v2_logic.py::TestScenarioCycleDetection::test_different_errors_no_cycle`.
+
+Fingerprints are comparison-only; `task.error` always keeps the raw text.
+
 ## Step Prompt Context
 
 `task_executor.build_task_prompt()` assembles context for each step (async):
