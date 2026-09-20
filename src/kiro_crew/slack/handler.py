@@ -5541,14 +5541,36 @@ async def handle_message(
         # background task fails or returns SKIP, it unclaims the key so the next
         # message retries. A message arriving between claim and unclaim is
         # intentionally skipped (no duplicate).
-        if not _had_error and not _skip_writes and auto_title.try_claim(session_key):
-            track_background_task(
-                asyncio.create_task(
-                    _maybe_auto_title_slack(
-                        slack, sessions, channel, session_key, conversation_log, text, accumulated
+        if not _had_error and not _skip_writes and not auto_title.is_titled(session_key):
+            # The ``is_titled`` peek above is a cheap synchronous membership test on
+            # the same tracker ``try_claim`` checks below: once a key is claimed or
+            # titled the claim cannot be taken again, so without the peek the pin's
+            # thread hop would be paid and then discarded on every later message of
+            # every already-named conversation.
+            #
+            # Pin BEFORE claiming, and both before the task is scheduled. The pin
+            # read suspends on a thread, so claiming first would leave the claim
+            # held across that await with nothing scheduled yet to release it: a
+            # cancellation there (``!stop``) would strand it, and the claim is
+            # process-wide, so this key could not be auto-titled again until the
+            # gateway restarts. The pin still precedes ``create_task``, which is
+            # what closes the scheduling-tick window -- see ``pin_record``.
+            _title_pin = await auto_title.pin_record(conversation_log, session_key)
+            if auto_title.try_claim(session_key):
+                track_background_task(
+                    asyncio.create_task(
+                        _maybe_auto_title_slack(
+                            slack,
+                            sessions,
+                            channel,
+                            session_key,
+                            conversation_log,
+                            text,
+                            accumulated,
+                            pin=_title_pin,
+                        )
                     )
                 )
-            )
     finally:
         # If the verdict was deferred to the footer and this tail is torn down
         # (a raise or cancellation in a decoration) before the footer books it,
@@ -5577,8 +5599,14 @@ async def _maybe_auto_title_slack(
     conversation_log: ConversationLog | None,
     user_text: str,
     assistant_text: str,
+    *,
+    pin: auto_title.RecordPin,
 ) -> None:
-    """Generate and set a Slack thread title after the first response."""
+    """Generate and set a Slack thread title after the first response.
+
+    ``pin`` is captured by the CALLER before this task is scheduled, and is
+    required rather than defaulted -- see ``auto_title.pin_record``.
+    """
 
     async def _set_thread_title(title: str) -> None:
         await slack.set_thread_title(channel, session_key, title)
@@ -5589,6 +5617,7 @@ async def _maybe_auto_title_slack(
         session_key,
         user_text,
         assistant_text,
+        pin=pin,
         source="slack",
         resources=f"{channel}:{session_key}",
         set_channel_title=_set_thread_title,

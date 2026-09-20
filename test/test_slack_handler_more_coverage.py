@@ -41,6 +41,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY, ToolHookResult
+from kiro_crew.messaging import auto_title
 from kiro_crew.slack.handler import handle_interaction, handle_message
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
@@ -48,6 +49,13 @@ from kiro_crew.task_reporter import build_status
 # ──────────────────────────────────────────────────────────────────────
 # doubles
 # ──────────────────────────────────────────────────────────────────────
+
+
+#: These tests exercise the SLACK side (thread renaming), not the record
+#: pin, so they pass the value production supplies when there is nothing to
+#: pin. ``maybe_auto_title`` requires it, which is what stops a call site
+#: from reading the record inside the task and reopening the window.
+_PRESENT_PIN = auto_title.RecordPin(auto_title.RECORD_PRESENT, "")
 
 
 class FakeProvider:
@@ -586,7 +594,14 @@ class TestAutoTitleToolRejection:
         sessions = _TitleSessions(provider)
         slack = MockSlackClient()
         await h._maybe_auto_title_slack(
-            slack, sessions, "C1", "slack:t1", None, "user text", "assistant text"
+            slack,
+            sessions,
+            "C1",
+            "slack:t1",
+            None,
+            "user text",
+            "assistant text",
+            pin=_PRESENT_PIN,
         )
         # The titling session is never allowed to run tools.
         assert provider.rejected == ["rq1"]
@@ -602,7 +617,14 @@ class TestAutoTitleToolRejection:
         )
         slack = MockSlackClient()
         await h._maybe_auto_title_slack(
-            slack, _TitleSessions(provider), "C1", "slack:t2", None, "hi", "hello"
+            slack,
+            _TitleSessions(provider),
+            "C1",
+            "slack:t2",
+            None,
+            "hi",
+            "hello",
+            pin=_PRESENT_PIN,
         )
         assert "slack:t2" not in h._titled_threads
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
@@ -637,7 +659,14 @@ class TestAutoTitleToolRejection:
                 lock.release()
                 inner = lock._bound()  # this loop's underlying asyncio.Lock
                 await h._maybe_auto_title_slack(
-                    slack, _TitleSessions(provider), "C1", session_key, None, "u", "a"
+                    slack,
+                    _TitleSessions(provider),
+                    "C1",
+                    session_key,
+                    None,
+                    "u",
+                    "a",
+                    pin=_PRESENT_PIN,
                 )
                 return lock, inner
 

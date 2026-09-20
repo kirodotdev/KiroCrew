@@ -403,6 +403,13 @@ def needs_backfill_filing(meta: dict[str, Any]) -> bool:
     Used as the ``update_metadata_if`` guard as well as the pre-scan filter, so
     the decision is re-made against the locked on-disk record at the moment of
     the write -- a placement made while the scan ran wins.
+
+    It is deliberately not the WHOLE write decision. An empty record passes here,
+    which at scan time means "nothing has placed this" and is correct, but under
+    the write lock the same value also describes a conversation that has been
+    DELETED -- the store's metadata read cannot tell those apart. Existence is
+    therefore asked separately, by the write's ``require_existing`` flag, so that
+    one reading of an empty dict does not have to serve both questions.
     """
     return not (meta.get("folder_id") or meta.get("channel_folder_filed"))
 
@@ -1539,8 +1546,21 @@ async def backfill_channel_folder(state: "DashboardState", namespace: str) -> di
                 slot, placed = _live_slot_placement(state, key)
                 if placed:
                     continue
+                # ``require_existing`` because this pass's gap between reading a
+                # candidate and writing it is the widest in the feature -- up to
+                # BACKFILL_MOVE_LIMIT lock acquisitions and awaits -- and a
+                # conversation deleted inside that gap reads to the guard exactly
+                # like one that never had a metadata line. Without it the merge
+                # upserts and the deletion is undone as a metadata-only stub
+                # filed into the folder, with no transcript behind it: a row in
+                # the sidebar that opens onto nothing, and there is no undo for
+                # this button to walk it back.
                 filed = await asyncio.to_thread(
-                    log.update_metadata_if, key, filing_meta, needs_backfill_filing
+                    log.update_metadata_if,
+                    key,
+                    filing_meta,
+                    needs_backfill_filing,
+                    require_existing=True,
                 )
                 # Mirror the persisted placement onto the open tab, INSIDE the
                 # lock and against a freshly read slot. Without this the tab keeps
@@ -1580,9 +1600,12 @@ async def backfill_channel_folder(state: "DashboardState", namespace: str) -> di
             write_failures += 1
             continue
         if not filed:
-            # The guard refused under the lock -- the record gained a placement
-            # or a filing marker while this pass ran. That is the user's own
-            # action, so it stands and this is not retried.
+            # Two refusals reach here and neither is retried. The guard saw a
+            # placement or a filing marker that landed while this pass ran --
+            # the user's own action, so it stands. Or the conversation was
+            # DELETED while this pass ran, in which case there is nothing left
+            # to file. Neither is counted as a failure: both are decisions, not
+            # errors, and no write was attempted.
             continue
         report["moved"].append(
             {

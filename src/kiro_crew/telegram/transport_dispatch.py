@@ -1274,42 +1274,30 @@ class TelegramDispatcher:
                 await self._speak_reply(
                     route, chat_id, accumulated, int(thread) if thread else None
                 )
-            # Auto-title, fire-and-forget. Without it a conversation's name is
-            # frozen at the first forty characters of the first message forever —
-            # the deterministic fallback ``_persist_turn`` writes — and the only
-            # correction is a manual /title. Claim-and-spawn, never awaited: the
-            # answer has already been delivered, so the user waits on nothing.
+            # Decided BEFORE the persist below, and used by BOTH it and the
+            # auto-title dispatch, so the two cannot disagree. That write mints
+            # this conversation's deterministic fallback name, and auto-title's
+            # guard refuses a record that already carries a name -- so a fallback
+            # written here would be the conversation's name for good, with the
+            # claim retained and no later exchange retrying. The suppression is
+            # passed explicitly rather than inferred from claim timing, because the
+            # claim is taken AFTER this write: the pin below reads a record this
+            # turn has already persisted.
             #
-            # Requires ``accumulated``: a turn that produced no text has nothing to
-            # name, and titling it would spend a background turn to be told SKIP.
-            # Skipped for a restricted session, which persists nothing to title.
-            # Isolated like every other bookkeeping step here, so failing even to
-            # SPAWN the task never re-records this successful turn as a failure.
-            try:
-                if (
-                    resumed_key is None
-                    and accumulated
-                    and not privacy_mode.is_restricted(session_key)
-                    and auto_title.try_claim(session_key)
-                ):
-                    _title_task = asyncio.create_task(
-                        auto_title.maybe_auto_title(
-                            self.sessions,
-                            self.conv_log,
-                            session_key,
-                            text,
-                            accumulated,
-                            source="telegram",
-                        )
-                    )
-                    self._title_tasks.add(_title_task)
-                    _title_task.add_done_callback(self._title_tasks.discard)
-            except Exception:
-                logger.warning(
-                    "Telegram: auto-title dispatch failed session=%s",
-                    session_key,
-                    exc_info=True,
-                )
+            # ``accumulated`` is required: a turn that produced no text has
+            # nothing to name, and titling it would spend a background turn to be
+            # told SKIP. A restricted session persists nothing to title, and a
+            # resumed session is not this dispatcher's to name.
+            _will_auto_title = bool(
+                resumed_key is None
+                and accumulated
+                and not privacy_mode.is_restricted(session_key)
+                # Cheap synchronous peek: ``try_claim`` below tests this very
+                # membership, so without it the pin's thread hop would be paid
+                # and then thrown away on every later message of every
+                # already-named conversation.
+                and not auto_title.is_titled(session_key)
+            )
             try:
                 # Circular import: the dashboard package imports the channel
                 # transports on its boot path, so this edge only exists at call
@@ -1341,10 +1329,62 @@ class TelegramDispatcher:
                         is_new_own_session,
                         agent=agent,
                         mirror_mids=mirror_mids,
+                        auto_title_pending=_will_auto_title,
                     )
             except Exception:
                 logger.warning(
                     "Telegram: persist_turn failed session=%s", session_key, exc_info=True
+                )
+            # Auto-title, fire-and-forget. Without it a conversation's name is
+            # frozen at the first forty characters of the first message forever —
+            # the deterministic fallback ``_persist_turn`` writes — and the only
+            # correction is a manual /title. Claim-and-spawn, never awaited: the
+            # answer has already been delivered, so the user waits on nothing.
+            #
+            # Placed AFTER the persist above, because the record the pin reads is
+            # the one ``_persist_turn`` mints: pinning ahead of it would read
+            # ABSENT on a conversation's first exchange, which the guard refuses,
+            # so a new thread would lose its generated name and pay a second
+            # background turn for it on the next exchange. Both Slack dispatchers
+            # are ordered the same way -- they persist their turn before they pin
+            # -- so an ABSENT pin means the record is genuinely gone rather than
+            # not yet written. It stays OUTSIDE the ``dashboard_restricted``
+            # branch above so titling keeps the conditions it has here and gains
+            # none from that gate.
+            #
+            # Isolated like every other bookkeeping step here, so failing even to
+            # SPAWN the task never re-records this successful turn as a failure.
+            try:
+                if _will_auto_title:
+                    # Pin BEFORE claiming, and both before scheduling. The pin read
+                    # suspends on a thread, so claiming first would hold the claim
+                    # across that await with nothing scheduled yet to release it,
+                    # and a cancellation there would strand it -- the claim is
+                    # process-wide, so this key could not be named again until the
+                    # gateway restarts. The pin still precedes ``create_task``,
+                    # which is what closes the scheduling-tick window: read inside
+                    # the task, one tick is enough for a delete plus a re-message
+                    # on this thread to pin the replacement.
+                    _title_pin = await auto_title.pin_record(self.conv_log, session_key)
+                    if auto_title.try_claim(session_key):
+                        _title_task = asyncio.create_task(
+                            auto_title.maybe_auto_title(
+                                self.sessions,
+                                self.conv_log,
+                                session_key,
+                                text,
+                                accumulated,
+                                pin=_title_pin,
+                                source="telegram",
+                            )
+                        )
+                        self._title_tasks.add(_title_task)
+                        _title_task.add_done_callback(self._title_tasks.discard)
+            except Exception:
+                logger.warning(
+                    "Telegram: auto-title dispatch failed session=%s",
+                    session_key,
+                    exc_info=True,
                 )
             if is_new_own_session:
                 try:
@@ -3679,8 +3719,18 @@ class TelegramDispatcher:
         is_new: bool,
         agent: str | None = None,
         mirror_mids: tuple[str, str] | None = None,
+        auto_title_pending: bool = False,
     ) -> None:
         """Persist one atomic turn, deduplicating rows already projected live.
+
+        ``auto_title_pending`` says a generated name is on its way for this
+        conversation, so the deterministic fallback below is skipped: auto-title's
+        guard refuses a record that already carries a name, so writing one here
+        would make the first forty characters of the first message the permanent
+        name and retain the claim, leaving nothing to retry. The caller decides it
+        once and uses the same value for its own dispatch, so the two cannot
+        disagree. It defaults to False, so a caller that does not dispatch
+        auto-title writes the fallback unconditionally.
 
         ``privacy_mode.is_restricted`` is this channel's OWN privacy gate and is
         checked here, at the only writer, so it covers the turn, the drained queue
@@ -3731,7 +3781,7 @@ class TelegramDispatcher:
                         agent=agent,
                         mid=mint_row_mid(),
                     )
-            if is_new and not auto_title.is_titled(session_key):
+            if is_new and not auto_title_pending and not auto_title.is_titled(session_key):
                 title = (user_text or "").strip().replace("\n", " ")[:40] or "Telegram"
                 self.conv_log.set_title(session_key, title)
 

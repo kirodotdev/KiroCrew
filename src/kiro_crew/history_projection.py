@@ -1312,9 +1312,35 @@ class SessionMetadataProjection:
         key: str,
         fields: dict,
         guard: Callable[[dict], bool],
+        *,
+        require_existing: bool = False,
     ) -> bool:
-        """Merge fields only when the locked on-disk metadata passes a guard."""
+        """Merge fields only when the locked on-disk metadata passes a guard.
+
+        *require_existing* additionally refuses a session that has no file at
+        all. The guard cannot express that itself: :meth:`_read_metadata_status`
+        answers ``({}, True)`` for an ABSENT path -- no metadata, reported as
+        readable -- so through the dict the guard receives, a session DELETED
+        since the caller's own read and one whose file carries no metadata line
+        are the same value. :meth:`_update_metadata_locked` then upserts, so any
+        caller whose guard accepts an empty record recreates a deleted session as
+        a metadata-only line with no transcript behind it.
+
+        Decided INSIDE the lock the write takes, which is the whole point: a
+        deletion landing between a checked-then-written pair is precisely the
+        window this closes, so the caller cannot do it for itself beforehand.
+
+        Off by default, per caller rather than for everyone, because creating the
+        line is the documented behaviour some callers depend on:
+        ``bind_session_execution`` publishes a session's execution context and
+        memory store into its record, and a session whose record does not exist
+        yet must still end up carrying the mode it was admitted under. Refusing
+        there would leave a restricted session with no durable record of being
+        restricted, which is worse than the stub this flag prevents.
+        """
         with self._log._locked(key):
+            if require_existing and not self._log._path(key).exists():
+                return False
             metadata, readable = self._log._read_metadata_status(key)
             if not readable or not guard(metadata):
                 return False

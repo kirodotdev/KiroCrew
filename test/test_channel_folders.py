@@ -657,14 +657,30 @@ class _FakeLog:
     def update_metadata(self, key: str, fields: dict[str, Any]) -> None:
         self._meta.setdefault(key, {}).update(fields)
 
-    def update_metadata_if(self, key: str, fields: dict[str, Any], guard: Any) -> bool:
+    def update_metadata_if(
+        self,
+        key: str,
+        fields: dict[str, Any],
+        guard: Any,
+        *,
+        require_existing: bool = False,
+    ) -> bool:
         """Merge only if *guard* still accepts the stored record.
 
         The real method evaluates the guard inside the cross-process lock, so a
         write that landed while the caller queued IS visible to it. Mirroring that
         here — guard first, against the current record — is what lets a test prove
         the reconcile pass yields to a placement made mid-pass.
+
+        ``require_existing`` is modelled on ``self._keys``, which is this fake's
+        whole notion of a session existing: ``list_sessions`` and
+        ``read_messages`` both read it. Checked BEFORE the guard, matching the
+        real order, because the real store's metadata read reports a deleted
+        session as an empty-but-readable record, so a guard that accepts an
+        empty record cannot be the thing that refuses a deletion.
         """
+        if require_existing and key not in self._keys:
+            return False
         if not guard(self.get_metadata(key)):
             return False
         self.update_metadata(key, fields)
@@ -1557,11 +1573,11 @@ class TestBackfillChannelFolder:
         dashboard_state.conversation_log = log
         original = log.update_metadata_if
 
-        def _place_first(k: str, fields: dict[str, Any], guard: Any) -> bool:
+        def _place_first(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
             # Stand in for the user's own move committing while this pass queued
             # behind the cross-process lock.
             log.update_metadata(k, {"folder_id": "user-choice"})
-            return original(k, fields, guard)
+            return original(k, fields, guard, **kwargs)
 
         log.update_metadata_if = _place_first  # type: ignore[method-assign]
 
@@ -1612,10 +1628,10 @@ class TestBackfillChannelFolder:
         dashboard_state.conversation_log = log
         original = log.update_metadata_if
 
-        def _explode(k: str, fields: dict[str, Any], guard: Any) -> bool:
+        def _explode(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
             if k == bad:
                 raise OSError("disk went away")
-            return original(k, fields, guard)
+            return original(k, fields, guard, **kwargs)
 
         log.update_metadata_if = _explode  # type: ignore[method-assign]
 
@@ -1640,11 +1656,11 @@ class TestBackfillChannelFolder:
         original = log.update_metadata_if
         deleted: list[int] = []
 
-        def _delete_then_write(k: str, fields: dict[str, Any], guard: Any) -> bool:
+        def _delete_then_write(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
             if not deleted:
                 deleted.append(1)
                 dashboard_state._folders.clear()
-            return original(k, fields, guard)
+            return original(k, fields, guard, **kwargs)
 
         log.update_metadata_if = _delete_then_write  # type: ignore[method-assign]
 
@@ -1685,11 +1701,11 @@ class TestBackfillChannelFolder:
         assert slot is not None
         original = log.update_metadata_if
 
-        def _drag_then_write(k: str, fields: dict[str, Any], guard: Any) -> bool:
+        def _drag_then_write(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
             # Stand in for the user dragging the open tab while the write runs:
             # in memory now, on disk only after their save.
             slot.folder_id = "dragged-mid-write"
-            return original(k, fields, guard)
+            return original(k, fields, guard, **kwargs)
 
         log.update_metadata_if = _drag_then_write  # type: ignore[method-assign]
 
@@ -1706,7 +1722,7 @@ class TestBackfillChannelFolder:
         log = _ModifiedLog(keys, {k: {} for k in keys})
         dashboard_state.conversation_log = log
 
-        def _explode(k: str, fields: dict[str, Any], guard: Any) -> bool:
+        def _explode(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
             raise OSError("disk went away")
 
         log.update_metadata_if = _explode  # type: ignore[method-assign]
@@ -1796,7 +1812,7 @@ class TestBackfillChannelFolder:
         log = _ModifiedLog(keys, {k: {} for k in keys})
         dashboard_state.conversation_log = log
 
-        def _fail_then_delete(k: str, fields: dict[str, Any], guard: Any) -> bool:
+        def _fail_then_delete(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
             dashboard_state._folders.clear()
             raise OSError("disk went away")
 
@@ -1905,9 +1921,9 @@ class TestBackfillChannelFolder:
         written: list[dict[str, Any]] = []
         original = log.update_metadata_if
 
-        def _record(k: str, fields: dict[str, Any], guard: Any) -> bool:
+        def _record(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
             written.append(dict(fields))
-            return original(k, fields, guard)
+            return original(k, fields, guard, **kwargs)
 
         log.update_metadata_if = _record  # type: ignore[method-assign]
 
@@ -1915,3 +1931,102 @@ class TestBackfillChannelFolder:
 
         assert written and "tags" not in written[0], written
         assert log.get_metadata(key)["tags"] == ["shared"]
+
+
+class TestBackfillYieldsToADeletion:
+    """A conversation deleted while the pass runs must stay deleted.
+
+    The pass reads its candidate list, then takes one lock per write. That gap is
+    the widest in the feature -- up to ``BACKFILL_MOVE_LIMIT`` lock acquisitions
+    and awaits -- and the store's metadata read reports an ABSENT session as an
+    empty-but-readable record, which is the same value a session with no metadata
+    line has. So the placement guard cannot refuse the deletion:
+    ``needs_backfill_filing({})`` is True by design, because at SCAN time an
+    empty record means "nothing has placed this". Existence is asked separately,
+    inside the write's own lock.
+
+    What that prevents is specific and unrecoverable: the merge upserts, so the
+    deleted conversation comes back as a metadata line carrying the folder id and
+    the filing marker, with no transcript behind it -- a sidebar row that opens
+    onto nothing, stamped ineligible for any later pass, and this button has no
+    undo to walk it back.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _quiet_push(self, dashboard_state: Any) -> None:
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+    def _folder(self, state: Any, ns: str = "discord", name: str = "Discord") -> str:
+        _write_config(ns, name)
+        return asyncio.run(channel_folders.ensure_channel_folder(state, ns, name))
+
+    @staticmethod
+    def _delete_at_write(log: Any, victim: str) -> None:
+        """Make *victim*'s deletion land just before its own write is attempted.
+
+        Deleting from ``_keys`` AND ``_meta`` is what a real deletion does: the
+        transcript goes, and with it the metadata line. Doing it here rather than
+        before the pass is the whole point -- the candidate has to be present for
+        the scan and absent for the write, which is the window under test.
+        """
+        original = log.update_metadata_if
+
+        def _deleting(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
+            if k == victim:
+                log._keys = [x for x in log._keys if x != victim]
+                log._meta.pop(victim, None)
+            return original(k, fields, guard, **kwargs)
+
+        log.update_metadata_if = _deleting  # type: ignore[method-assign]
+
+    def test_a_conversation_deleted_mid_pass_is_not_recreated(self, dashboard_state: Any) -> None:
+        self._folder(dashboard_state)
+        key = "discord:kirocrew:direct:U1"
+        log = _ModifiedLog([key], {key: {"channel_origin": True}})
+        dashboard_state.conversation_log = log
+        self._delete_at_write(log, key)
+
+        report = asyncio.run(channel_slots.backfill_channel_folder(dashboard_state, "discord"))
+
+        # The record stays gone. A `folder_id` here would be the stub: filed into
+        # the folder with nothing behind it.
+        assert log.get_metadata(key) == {}
+        assert key not in log._meta
+        # And it is not claimed as moved. The receipt is the only record of what
+        # this button did, so naming a conversation it did not move is worse than
+        # naming none.
+        assert report["moved"] == []
+
+    def test_a_deletion_does_not_stop_the_conversations_after_it(
+        self, dashboard_state: Any
+    ) -> None:
+        """A refusal is a decision about one conversation, not about the pass."""
+        fid = self._folder(dashboard_state)
+        gone = "discord:kirocrew:direct:GONE"
+        kept = "discord:kirocrew:direct:KEPT"
+        log = _ModifiedLog(
+            [gone, kept],
+            {gone: {"channel_origin": True}, kept: {"channel_origin": True}},
+            modified={gone: 900.0, kept: 100.0},
+        )
+        dashboard_state.conversation_log = log
+        self._delete_at_write(log, gone)
+
+        report = asyncio.run(channel_slots.backfill_channel_folder(dashboard_state, "discord"))
+
+        assert [m["key"] for m in report["moved"]] == [kept]
+        assert log.get_metadata(kept)["folder_id"] == fid
+        assert log.get_metadata(gone) == {}
+        # Not a failure: no write was attempted, so inviting another click
+        # against a conversation that is gone would be a dead end.
+        assert report["failed"] == 0
+        assert report["reason"] == ""
+
+    def test_the_scan_filter_still_accepts_an_empty_record(self) -> None:
+        """The two questions have opposite answers for the same dict.
+
+        Pinned together so a later tidy-up cannot collapse them: moving existence
+        into the placement guard would refuse the feature's own population, and
+        that is why the flag exists instead.
+        """
+        assert channel_slots.needs_backfill_filing({}) is True

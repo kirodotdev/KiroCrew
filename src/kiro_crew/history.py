@@ -2948,8 +2948,12 @@ class ConversationLog:
         key: str,
         fields: dict,
         guard: Callable[[dict], bool],
+        *,
+        require_existing: bool = False,
     ) -> bool:
-        return self._metadata_projection.update_metadata_if(key, fields, guard)
+        return self._metadata_projection.update_metadata_if(
+            key, fields, guard, require_existing=require_existing
+        )
 
     def _update_metadata_locked(self, key: str, fields: dict) -> None:
         self._metadata_projection._update_metadata_locked(key, fields)

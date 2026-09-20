@@ -11,6 +11,7 @@ import pytest
 from conftest import MockSlackClient
 from kiro_crew.context import ContextBuilder
 from kiro_crew.hooks import HOOK_REPLY, AutoReplyHook, HookManager, HooksConfig
+from kiro_crew.messaging import auto_title
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack.format import CONTINUATION, SLACK_MSG_LIMIT, split_message
 from kiro_crew.slack.handler import (
@@ -28,6 +29,12 @@ from kiro_crew.slack.handler import (
     set_allowed_users,
     set_owner_id,
 )
+
+#: These tests exercise the SLACK side (thread renaming), not the record
+#: pin, so they pass the value production supplies when there is nothing to
+#: pin. ``maybe_auto_title`` requires it, which is what stops a call site
+#: from reading the record inside the task and reopening the window.
+_PRESENT_PIN = auto_title.RecordPin(auto_title.RECORD_PRESENT, "")
 
 
 @pytest.fixture(autouse=True)
@@ -2286,7 +2293,16 @@ class TestAutoTitleSlack:
         sessions = FakeSessionManager()
         sessions._provider = FakeProvider([LLMEvent(kind="text_chunk", text="ETL Debug Session")])
         _mark_titled("sk1")
-        await _maybe_auto_title_slack(slack, sessions, "C1", "sk1", None, "help me", "sure")
+        await _maybe_auto_title_slack(
+            slack,
+            sessions,
+            "C1",
+            "sk1",
+            None,
+            "help me",
+            "sure",
+            pin=_PRESENT_PIN,
+        )
         title_actions = [a for a in slack.actions if a[0] == "set_thread_title"]
         assert len(title_actions) == 1
         assert title_actions[0][1]["title"] == "ETL Debug Session"
@@ -2317,7 +2333,14 @@ class TestAutoTitleSlack:
         # logger that emits nothing passes vacuously (its sibling below did).
         with caplog.at_level(logging.WARNING, logger="kiro_crew.messaging.auto_title"):
             await _maybe_auto_title_slack(
-                slack, ExplodingSessionManager(), "C1", "sk-err", None, "help", "sure"
+                slack,
+                ExplodingSessionManager(),
+                "C1",
+                "sk-err",
+                None,
+                "help",
+                "sure",
+                pin=_PRESENT_PIN,
             )
 
         warnings = [
@@ -2350,7 +2373,14 @@ class TestAutoTitleSlack:
         _mark_titled("sk-slow")
         with caplog.at_level(logging.DEBUG, logger="kiro_crew.messaging.auto_title"):
             await _maybe_auto_title_slack(
-                slack, TimingOutSessionManager(), "C1", "sk-slow", None, "help", "sure"
+                slack,
+                TimingOutSessionManager(),
+                "C1",
+                "sk-slow",
+                None,
+                "help",
+                "sure",
+                pin=_PRESENT_PIN,
             )
 
         assert not [
@@ -2372,7 +2402,16 @@ class TestAutoTitleSlack:
         sessions = FakeSessionManager()
         sessions._provider = FakeProvider([LLMEvent(kind="text_chunk", text="SKIP")])
         _mark_titled("sk2")
-        await _maybe_auto_title_slack(slack, sessions, "C1", "sk2", None, "hi", "hello")
+        await _maybe_auto_title_slack(
+            slack,
+            sessions,
+            "C1",
+            "sk2",
+            None,
+            "hi",
+            "hello",
+            pin=_PRESENT_PIN,
+        )
         title_actions = [a for a in slack.actions if a[0] == "set_thread_title"]
         assert len(title_actions) == 0
         assert "sk2" not in _titled_threads
@@ -2386,7 +2425,16 @@ class TestAutoTitleSlack:
         sessions = FakeSessionManager()
         sessions._provider = None  # will cause AttributeError
         _mark_titled("sk3")
-        await _maybe_auto_title_slack(slack, sessions, "C1", "sk3", None, "test", "test")
+        await _maybe_auto_title_slack(
+            slack,
+            sessions,
+            "C1",
+            "sk3",
+            None,
+            "test",
+            "test",
+            pin=_PRESENT_PIN,
+        )
         assert "sk3" not in _titled_threads
 
     @pytest.mark.asyncio
@@ -2406,6 +2454,7 @@ class TestAutoTitleSlack:
             None,
             'parse this: {"key": "value"}',
             "sure, here's the parsed output",
+            pin=_PRESENT_PIN,
         )
         title_actions = [a for a in slack.actions if a[0] == "set_thread_title"]
         assert len(title_actions) == 1

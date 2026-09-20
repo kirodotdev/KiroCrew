@@ -870,21 +870,38 @@ async def handle_message_transport(
             if (
                 accumulated
                 and not _is_slack_restricted(session_key)
-                and auto_title.try_claim(session_key)
+                # Cheap synchronous peek before the pin's thread hop, because
+                # ``try_claim`` below tests this very membership: once a key is
+                # claimed or titled the claim cannot be taken again, so the pin
+                # would be read and then discarded on every later message of every
+                # already-named conversation.
+                and not auto_title.is_titled(session_key)
             ):
-                track_background_task(
-                    asyncio.create_task(
-                        _maybe_auto_title_slack(
-                            slack,
-                            sessions,
-                            channel,
-                            session_key,
-                            conversation_log,
-                            text,
-                            accumulated,
+                # Pin BEFORE claiming, and both before scheduling. The pin read
+                # suspends on a thread, so claiming first would hold the claim
+                # across that await with nothing scheduled yet to release it, and a
+                # cancellation there would strand it -- the claim is process-wide,
+                # so this key could not be named again until the gateway restarts.
+                # The pin still precedes ``create_task``, which is what closes the
+                # scheduling-tick window: read inside the task, one tick is enough
+                # for a delete plus a re-message on this thread to pin the
+                # replacement.
+                _title_pin = await auto_title.pin_record(conversation_log, session_key)
+                if auto_title.try_claim(session_key):
+                    track_background_task(
+                        asyncio.create_task(
+                            _maybe_auto_title_slack(
+                                slack,
+                                sessions,
+                                channel,
+                                session_key,
+                                conversation_log,
+                                text,
+                                accumulated,
+                                pin=_title_pin,
+                            )
                         )
                     )
-                )
         except Exception:
             logger.warning(
                 "transport_dispatch: auto-title dispatch failed session=%s",
