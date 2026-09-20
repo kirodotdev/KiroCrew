@@ -7229,7 +7229,8 @@
       "credit_multiplier": "{{value}} il costo in crediti di Auto",
       "credit_multiplier_baseline": "{{value}}, il costo in crediti di riferimento",
       "loading_models": "Caricamento dei modelli…",
-      "no_matches": "Nessuna corrispondenza"
+      "no_matches": "Nessuna corrispondenza",
+      "auto_jev": "Auto (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gestisci nelle impostazioni",
@@ -10523,7 +10524,21 @@
         "saved_tokens": "{{tokens}} token risparmiati",
         "sent_history": "cronologia {{chars}} caratteri",
         "sent_label": "Inviato a Jev",
-        "sent_message": "messaggio {{chars}} caratteri"
+        "sent_message": "messaggio {{chars}} caratteri",
+        "history_chars_label": "Contesto inviato (caratteri)",
+        "model_baseline_label": "Modello senza routing",
+        "model_baseline_named": "predefinito: {{model}}",
+        "model_chosen_label": "Modello usato",
+        "model_default": "Modello predefinito",
+        "model_latency": "{{ms}} ms",
+        "model_not_applied": "non applicato – eseguito su {{model}}",
+        "model_tier": "Jev: {{tier}}",
+        "model_tier_label": "Difficoltà",
+        "model_unpinned": "(non impostato)",
+        "point_model_route": "modello",
+        "rate_right_model": "Jev ha scelto il modello giusto",
+        "rate_wrong_model": "Jev ha scelto il modello sbagliato",
+        "truncated_turns_label": "Turni precedenti troncati"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev ha guardato questa chiamata e l'ha segnalata. Questo non ha cambiato nulla sul fatto che la chiamata fosse permessa: lo ha deciso l'impostazione dei permessi di questa sessione, e la chiamata potrebbe essere stata rifiutata comunque.",
@@ -10655,7 +10670,8 @@
       "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale",
       "run_in_terminal_liveness_probe_failed_error": "Il comando non è stato inviato al nuovo terminale. La sua shell potrebbe essere ancora in esecuzione, quindi la scheda è stata lasciata aperta.",
       "run_in_terminal_shell_alive_error": "Il comando non è stato inviato al nuovo terminale, ma la sua shell è in esecuzione: la scheda è stata lasciata aperta per poter eseguire il comando lì.",
-      "run_in_terminal_dispatch_rolled_back_error": "Il comando non è stato inviato al nuovo terminale, quindi quel terminale è stato chiuso."
+      "run_in_terminal_dispatch_rolled_back_error": "Il comando non è stato inviato al nuovo terminale, quindi quel terminale è stato chiuso.",
+      "model_auto_jev_description": "Lascia che Jev valuti ogni turno e lo esegua sul modello di quel livello"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

@@ -7126,7 +7126,8 @@
       "credit_multiplier": "{{value}} der Credit-Kosten von Auto",
       "credit_multiplier_baseline": "{{value}}, die Basis-Credit-Kosten",
       "loading_models": "Modelle werden geladen…",
-      "no_matches": "Keine Treffer"
+      "no_matches": "Keine Treffer",
+      "auto_jev": "Auto (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "In Einstellungen verwalten",
@@ -10380,7 +10381,21 @@
         "saved_tokens": "{{tokens}} Tokens gespart",
         "sent_history": "Verlauf {{chars}} Zeichen",
         "sent_label": "An Jev gesendet",
-        "sent_message": "Nachricht {{chars}} Zeichen"
+        "sent_message": "Nachricht {{chars}} Zeichen",
+        "history_chars_label": "Gesendeter Kontext (Zeichen)",
+        "model_baseline_label": "Modell ohne Routing",
+        "model_baseline_named": "Standard: {{model}}",
+        "model_chosen_label": "Verwendetes Modell",
+        "model_default": "Standardmodell",
+        "model_latency": "{{ms}} ms",
+        "model_not_applied": "nicht angewendet – lief auf {{model}}",
+        "model_tier": "Jev: {{tier}}",
+        "model_tier_label": "Schwierigkeit",
+        "model_unpinned": "(nicht gesetzt)",
+        "point_model_route": "Modell",
+        "rate_right_model": "Jev hat das richtige Modell gewählt",
+        "rate_wrong_model": "Jev hat das falsche Modell gewählt",
+        "truncated_turns_label": "Gekürzte frühere Beiträge"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev hat diesen Aufruf angesehen und markiert. Das hat nichts daran geändert, ob der Aufruf erlaubt war: darüber hat die Berechtigungseinstellung dieser Sitzung entschieden, und der Aufruf kann trotzdem abgelehnt worden sein.",
@@ -10511,7 +10526,8 @@
       "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
       "run_in_terminal_liveness_probe_failed_error": "Der Befehl wurde nicht an das neue Terminal gesendet. Seine Shell läuft möglicherweise noch, daher bleibt der Tab geöffnet.",
       "run_in_terminal_shell_alive_error": "Der Befehl wurde nicht an das neue Terminal gesendet, aber seine Shell läuft — der Tab bleibt geöffnet, damit Sie den Befehl dort ausführen können.",
-      "run_in_terminal_dispatch_rolled_back_error": "Der Befehl wurde nicht an das neue Terminal gesendet, daher wurde dieses Terminal geschlossen."
+      "run_in_terminal_dispatch_rolled_back_error": "Der Befehl wurde nicht an das neue Terminal gesendet, daher wurde dieses Terminal geschlossen.",
+      "model_auto_jev_description": "Jev bewertet jeden Beitrag und führt ihn auf dem Modell dieser Stufe aus"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

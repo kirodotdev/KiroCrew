@@ -5722,6 +5722,49 @@ DECISION_PROVIDER_MODEL_DEFAULT = "jev-latest"
 # conversation sent raises this themselves.
 DECISION_HISTORY_BUDGET_DEFAULT = 0
 
+# The tiers ``model.route`` may answer with, and the model each maps to by default.
+# The keys are the point's CLOSED answer domain
+# (``decisions.points.model_route.TIERS``): a key outside it is dropped, because a
+# tier the question never offers can never be answered and a map that accepted one
+# would read as configured while routing nothing.
+#
+# The values are ordinary model ids and grant nothing on their own -- the point
+# validates each against what the provider advertises to this account and keeps the
+# session's current model when an id is not there -- so this stays a config value
+# rather than a keystone one.
+DECISION_MODEL_ROUTE_TIERS: tuple[str, ...] = ("simple", "medium", "complex")
+
+# Every tier defaults to ``""`` -- INHERIT, i.e. the turn keeps the model its
+# session is already on. No concrete model id is named here, and none may be: a
+# hardcoded id fails at runtime -- silently, until the first prompt -- for every
+# account not entitled to it, so
+# ``docs/system-specs/common/model-selection.md`` allows ids to be pinned only in
+# an operator-written map and keeps code defaults at ``""`` / ``"auto"``.
+# ``code-review.yml`` gates on it.
+#
+# The three keys are PRESENT and empty rather than absent, which is the same
+# shape ``agent.role_models``'s roles take: "this tier exists and is unpinned" is
+# a state the log and the strip report ("complex -> (unpinned)"), so it needs a
+# spelling of its own rather than being inferred from a missing key.
+DECISION_MODEL_ROUTE_DEFAULT: dict[str, str] = {tier: "" for tier in DECISION_MODEL_ROUTE_TIERS}
+
+
+def coerce_model_route(raw: object) -> dict[str, str]:
+    """Normalize ``decisions.model_route`` from a hand-edited config.
+
+    Always returns all three tiers. Each value goes through
+    :func:`normalize_agent_model`, exactly as :func:`coerce_role_models` does, so
+    ``"auto"`` and a non-string both collapse to ``""`` -- "inherit" has ONE
+    spelling, and a tier set to ``"auto"`` keeps inheriting instead of hard-pinning
+    the backend's own default.
+
+    A tier outside the three is dropped: the question never offers it, so it could
+    never be answered, and a map that accepted one would read as configured while
+    routing nothing.
+    """
+    section = raw if isinstance(raw, dict) else {}
+    return {tier: normalize_agent_model(section.get(tier)) for tier in DECISION_MODEL_ROUTE_TIERS}
+
 
 @dataclass
 class DecisionProviderConfig:
@@ -5783,8 +5826,10 @@ class DecisionsConfig:
     same placement as ``computer_use.json`` and ``aws_service_consent.json``. This
     section carries only the knobs that grant nothing on their own: the sampling
     share, the prior-conversation budget (0 by default, so raising it is a choice),
-    and the provider. There is no per-point arm and no shadow mode: one point ships
-    (``skills.select``).
+    the tier-to-model map ``model.route`` reads, and the provider. There is no
+    per-point arm and no shadow mode: two points ship (``skills.select``,
+    ``model.route``), each reached only through its own owner-made choice --
+    a non-zero ``skills.max_triggered`` and the picker's ``Auto (Jev)`` entry.
 
     Every field is hot-applied (no ``restart=True`` anywhere): the gate reads the
     live snapshot per call, so a bucket change takes effect on the next decision
@@ -5815,6 +5860,26 @@ class DecisionsConfig:
             "reviewed, which names the message excerpt and the candidate "
             "descriptions; raising this widens what leaves the machine, so it is a "
             "choice rather than an upgrade. A negative value reads as 0.",
+        ),
+    )
+    model_route: dict[str, str] = field(
+        default_factory=lambda: dict(DECISION_MODEL_ROUTE_DEFAULT),
+        metadata=_meta(
+            "Model per difficulty tier",
+            "Which model answers a chat turn Jev put in each difficulty tier, for "
+            "a session whose model is set to 'Auto (Jev)' in the chat model "
+            "picker. Keys are the three tiers the question offers -- 'simple', "
+            "'medium', 'complex' -- and each value is a model id the provider "
+            "advertises to your account, exactly as the chat model picker spells "
+            "it. Every tier is EMPTY by default, which means inherit: the turn "
+            "keeps the model its session is already on, and the decision is still "
+            "recorded so you can see which tier Jev chose before you pin anything. "
+            "No model id is named for you, because an id your account is not "
+            "offered would fail on the first prompt. 'auto' means the same as empty. "
+            "An id your account cannot run keeps the session's model too and "
+            "records why in the decision log. Routing a turn to a dearer model "
+            "costs more, which is why it happens only for a session whose owner "
+            "picked 'Auto (Jev)' -- a manual model choice is never overridden.",
         ),
     )
     provider: DecisionProviderConfig = field(
@@ -5896,6 +5961,11 @@ class DecisionsConfig:
                 DECISION_HISTORY_BUDGET_DEFAULT,
                 0,
             ),
+            # Per-TIER fallback rather than per-map: see `coerce_model_route`. An
+            # absent section and one naming no known tier both read as the shipped
+            # map, since this key cannot widen anything -- every id is still held
+            # against the provider's advertised list at routing time.
+            model_route=coerce_model_route(section.get("model_route")),
             provider=provider,
         )
 

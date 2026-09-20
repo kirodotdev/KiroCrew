@@ -4157,15 +4157,23 @@ def _discard_stale_decision(slot: _ChatSlot) -> None:
 
 
 def _decisions_strip_meta(slot: _ChatSlot) -> dict | None:
-    """This session's pending decision outcome as row ``meta``, or ``None``.
+    """This session's pending decision outcomes as row ``meta``, or ``None``.
 
-    The decision that shaped this reply was made during prompt assembly, on a
-    worker thread, before any message existed to carry it
+    The decisions that shaped this reply were made during the turn -- prompt
+    assembly for ``skills.select``, just before the prompt is sent for
+    ``model.route`` -- before any message existed to carry them
     (:mod:`kiro_crew.decisions.outcomes`). This is the other end of that hand-off,
     and it is read at the moment the assistant row is APPENDED rather than after:
     ``slot.append`` broadcasts the live ``chat_message`` frame from inside the
     call, so a field written onto the row afterwards would persist but be missing
     from the frame the open tab renders -- one door out of two.
+
+    A LIST, always, even for the one-decision turn that is the common case. Two
+    points can decide the same reply, so a shape that held one would have to drop
+    the second or change shape between turns -- and a reader that must branch on
+    "object or array" is a reader two producers can disagree about. The frontend
+    still accepts a bare object, so a row written by an earlier release reads
+    unchanged.
 
     Carried under ``meta`` rather than as a top-level key because ``meta`` is the
     part of a row that already travels every door: ``_build_message_entry_uncached``
@@ -4182,8 +4190,172 @@ def _decisions_strip_meta(slot: _ChatSlot) -> dict | None:
     """
     from kiro_crew.decisions.outcomes import consume
 
-    strip = consume(effective_session_key(slot))
-    return {"decisions_strip": strip} if strip else None
+    strips = consume(effective_session_key(slot))
+    return {"decisions_strip": strips} if strips else None
+
+
+def _route_history_source(state: DashboardState, session_key: str) -> "Callable[[], list[dict]]":
+    """A callable serving this session's recent user/assistant rows, or nothing.
+
+    A CALLABLE and not a list, for the reason ``skills.select`` passes one: the
+    point invokes it only after the history budget is known to be above 0, so at
+    the shipped default of 0 no transcript is read at all.
+
+    Roles are restricted at the READ, so tool output is never projected rather
+    than filtered afterwards.
+    """
+    from kiro_crew.decisions.points import HISTORY_ROLES, MAX_HISTORY_MESSAGES
+
+    log = getattr(state, "conversation_log", None)
+    if log is None or not session_key:
+        return lambda: []
+
+    def _rows() -> list[dict]:
+        return log.recent(
+            session_key,
+            max_messages=MAX_HISTORY_MESSAGES,
+            roles=HISTORY_ROLES,
+        )
+
+    return _rows
+
+
+async def _route_model_for_turn(
+    state: DashboardState,
+    slot: _ChatSlot,
+    client: Any,
+    message: str,
+    session_key: str,
+) -> None:
+    """Ask ``model.route`` which model this turn should run on, and switch to it.
+
+    Called for a NORMAL dashboard chat turn of a slot whose owner picked
+    ``Auto (Jev)`` in the model picker, after the fallback restore probe and before
+    the prompt is sent. Every refusal -- the seam off, the session unsampled, an
+    answer outside the three tiers, a pinned id this account cannot run, a
+    timeout, a provider failure, no ``set_model`` seam -- leaves the session on
+    the model it was already on, which is exactly what an unconsented install
+    does. Nothing here raises except ``CancelledError``.
+
+    An UNPINNED tier is not a refusal and is the shipped state: every tier of
+    ``decisions.model_route`` is ``""`` until an owner pins one, because no model id
+    may be hardcoded as a default. The answer is then recorded and published --
+    the strip reads "complex -> (unpinned)" -- and no switch is attempted, so an
+    owner can see which tier their turns land in before pinning anything.
+
+    The BASELINE recorded on the row is the model this turn would have used, i.e.
+    whatever the session is on as the turn starts. A routed turn is not reverted
+    afterwards -- the point runs again next turn and answers again -- so on a
+    session that has already been routed the baseline is the previous turn's
+    tier, not the pin. That is the honest reading of "what would this turn have
+    run on", and it is what a refusal keeps.
+
+    The switch is taken under the SAME two locks the fallback swap and the restore
+    probe hold (session lock, then pick lock, in that order), because it is the
+    same kind of model transaction: without them a pick arriving through another
+    alias of this session could land inside the ``set_model`` await and then be
+    silently overwritten. The ``decide`` call is deliberately OUTSIDE them: it is
+    a network round trip, and holding a session-scoped lock across it would stall
+    every sibling alias for the provider budget.
+    """
+    try:
+        from kiro_crew.decisions.points import model_route
+    except Exception:  # pragma: no cover - a build without the point
+        return
+    try:
+        routed = await model_route.routed_model(
+            message,
+            session_key=session_key,
+            current_model=_crew_log_model(slot),
+            advertised=provider_advertised_ids(client),
+            history_source=_route_history_source(state, session_key),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # pragma: no cover - the point guards itself
+        logger.debug("model.route: keeping the session's own model", exc_info=True)
+        return
+    if not routed:
+        return
+    if not routed.get("model_chosen"):
+        # The answered tier is unpinned: nothing to switch, and the decision is
+        # still the owner's evidence for what to pin. Recorded and published on the
+        # same terms as an applied one, so the strip and the log describe the turn.
+        await asyncio.to_thread(model_route.record_outcome, session_key, routed)
+        return
+    set_model_fn = resolve_substitute_set_model(client)
+    if set_model_fn is None:
+        # No seam to switch through: the tier was answered and cannot be applied,
+        # which is a finding rather than a quiet no-op -- the owner picked
+        # Auto (Jev) and every turn would keep the same model with nothing said.
+        await asyncio.to_thread(
+            model_route.record_error,
+            session_key,
+            turn_id=str(routed.get("turn_id") or ""),
+            tier=str(routed.get("tier") or ""),
+            latency_ms=int(routed.get("latency_ms") or 0),
+            error=model_route.ERROR_NO_SWITCH,
+        )
+        return
+    _pick_lock = getattr(slot, "_model_pick_lock", None)
+    if _pick_lock is None:  # pragma: no cover - minimal slot doubles
+        _pick_lock = asyncio.Lock()
+    try:
+        async with slot_switch_session_lock(effective_session_key(slot)), _pick_lock:
+            # The answer was computed against a premise that a pick landing during
+            # the network round trip invalidates, and a pick made by hand is the
+            # newer instruction. So both halves of the premise are re-read HERE,
+            # inside the locks, where an in-flight pick has already completed: the
+            # flag any manual pick clears, and the model the answer's baseline names.
+            # Either having moved drops the answer -- re-asking would spend again on
+            # a turn whose model the owner just chose.
+            if not getattr(slot, "jev_route", False) or _crew_log_model(slot) != str(
+                routed.get("baseline_model") or ""
+            ):
+                logger.debug(
+                    "model.route: dropping the routed model for slot %s, the slot was "
+                    "re-picked during the await",
+                    slot.key,
+                )
+                return
+            await set_model_fn(str(routed["model_chosen"]))
+            _sync_served_model(slot, client)
+            # A returning ``set_model`` is not proof of a switch: on a backend that
+            # judges the model VALUE, the candidate ladder can be exhausted and the
+            # call returns having stayed on the backend default -- no exception. The
+            # row appended below is durable and never rewritten, so it is read here
+            # rather than assumed, and it records the model the turn RAN on.
+            _used = _crew_log_model(slot)
+            routed["model_used"] = _used
+            # Two ways a switch counts. The session reports the chosen id, or it
+            # reports something other than where the turn started -- the ladder's
+            # own fallback spelling, which is the pin under a name this build serves.
+            # Only staying put, on a model that was not the ask, is a failed switch.
+            routed["applied"] = _used == str(routed["model_chosen"]) or _used != str(
+                routed.get("baseline_model") or ""
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "model.route: set_model(%r) failed for slot %s (%s); keeping the current model",
+            routed.get("model_chosen"),
+            slot.key,
+            type(exc).__name__,
+        )
+        await asyncio.to_thread(
+            model_route.record_error,
+            session_key,
+            turn_id=str(routed.get("turn_id") or ""),
+            tier=str(routed.get("tier") or ""),
+            latency_ms=int(routed.get("latency_ms") or 0),
+            error=model_route.ERROR_SWITCH_FAILED,
+        )
+        return
+    # Written and published only once the switch has landed, so the strip and the
+    # log describe the model the turn actually ran on. Off the loop: the row is a
+    # filesystem append.
+    await asyncio.to_thread(model_route.record_outcome, session_key, routed)
 
 
 def _session_auto_approves(state: DashboardState, slot: _ChatSlot) -> bool:
@@ -9829,6 +10001,12 @@ async def _run_chat(
         # context_builder would hit UnboundLocalError at the mirror legs.
         _user_msg_for_mirror = message
 
+        # What the PERSON asked, after `@prompt`/`$skill` expansion and before any
+        # prepend this runner authors -- no cancelled-turn preamble, no sub-agent
+        # failure text, no app context -- so the consented history budget is the only
+        # prior transcript `model.route` can ever see.
+        _jev_route_text = message
+
         # Per-turn injection breakdown, recorded on the usage row at turn end.
         # Empty when this turn injected nothing (no context builder / raw path).
         slot_ctx_blocks: dict[str, int] = {}
@@ -10252,6 +10430,47 @@ async def _run_chat(
             and message not in _SYNTHETIC_RECOVERY_MSGS
         ):
             await _probe_fallback_restore_for_slot(slot, client)
+
+        # ── Jev model routing (decisions/points/model_route.py) ──
+        # Only for a slot whose owner picked "Auto (Jev)" in the model picker, and
+        # only for a NORMAL dashboard chat turn: `_crew_log_actor` is the turn's
+        # structural origin, so cron deliveries, sub-agent turns, crew-relayed
+        # turns, app injections and autonudge wakes are all excluded -- none has an
+        # owner watching the price of the answer, and each already resolves its
+        # model through its own tier. A runner-authored recovery continuation and a
+        # harness slash command are excluded too: neither is a request whose
+        # difficulty is a question, and re-routing mid-answer would swap the model
+        # under a turn already in progress.
+        # ``_directive_user_origin`` is the load-bearing half, not the actor: a
+        # dispatch that names no actor falls back to ``user`` by design, so the
+        # rewind, regenerate and OpenAI-compatible paths reach here as ``user``
+        # while carrying an app's provenance. The origin flag is the one fact a
+        # person cannot write -- the auth middleware stamps the app claim it is
+        # derived from -- and routing spends the owner's credential, so it asks
+        # for authenticated-human provenance and keeps the actor check beside it
+        # for the wakes that do declare themselves.
+        # The text sent is ``_jev_route_text``, not ``message``: Jev classifies the
+        # difficulty of what the PERSON asked, and by here ``message`` carries every
+        # prepend this turn made -- a cancelled-turn preamble, sub-agent failure text,
+        # the drained app context. The mirror's own snapshot is taken after the first
+        # two, so it is not the right source either: a preamble is prior transcript,
+        # and prior transcript reaches this send only through the consented history
+        # budget, whose shipped value is 0.
+        # ``_synthetic_recovery_turn`` rides beside the text check for the reason the
+        # parameter's own comment gives and the two sibling guards apply: a runner
+        # requeue of the USER'S OWN words is a recovery turn that fixed-text
+        # membership cannot recognize, and re-routing it would re-answer a turn
+        # already in progress on a model the owner is billed for twice.
+        if (
+            slot.jev_route
+            and _directive_user_origin
+            and _crew_log_actor == "user"
+            and not _is_synthetic
+            and not is_slash
+            and message not in _SYNTHETIC_RECOVERY_MSGS
+            and not _synthetic_recovery_turn
+        ):
+            await _route_model_for_turn(state, slot, client, _jev_route_text, session_key)
 
         state.broadcast_ws("chat_status", {"slot": slot.key, "status": "Thinking…"})
         state.broadcast_ws(

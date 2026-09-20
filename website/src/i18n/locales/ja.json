@@ -7023,7 +7023,8 @@
       "credit_multiplier": "Auto のクレジット消費量の {{value}}",
       "credit_multiplier_baseline": "{{value}}、クレジット消費量の基準",
       "loading_models": "モデルを読み込み中…",
-      "no_matches": "一致するものがありません"
+      "no_matches": "一致するものがありません",
+      "auto_jev": "自動 (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "設定で管理",
@@ -10237,7 +10238,21 @@
         "saved_tokens": "{{tokens}} トークン節約",
         "sent_history": "履歴 {{chars}} 文字",
         "sent_label": "Jev に送信",
-        "sent_message": "メッセージ {{chars}} 文字"
+        "sent_message": "メッセージ {{chars}} 文字",
+        "history_chars_label": "送信したコンテキスト（文字数）",
+        "model_baseline_label": "振り分けなしのモデル",
+        "model_baseline_named": "既定: {{model}}",
+        "model_chosen_label": "使用したモデル",
+        "model_default": "組み込みの既定モデル",
+        "model_latency": "{{ms}} ミリ秒",
+        "model_not_applied": "未適用 — {{model}} で実行",
+        "model_tier": "Jev: {{tier}}",
+        "model_tier_label": "難易度",
+        "model_unpinned": "(未設定)",
+        "point_model_route": "モデル",
+        "rate_right_model": "Jev は正しいモデルを選んだ",
+        "rate_wrong_model": "Jev は誤ったモデルを選んだ",
+        "truncated_turns_label": "切り詰めた過去のやり取り"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev がこの呼び出しを見て印を付けました。印を付けても、その呼び出しが許可されたかどうかは変わりません。それを決めるのはこのセッションの権限設定で、呼び出しは拒否されたこともあります。",
@@ -10367,7 +10382,8 @@
       "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
       "run_in_terminal_liveness_probe_failed_error": "コマンドは新しいターミナルに送信されませんでした。シェルはまだ実行中の可能性があるため、タブは開いたままにしてあります。",
       "run_in_terminal_shell_alive_error": "コマンドは新しいターミナルに送信されませんでしたが、シェルは実行中です。そこでコマンドを実行できるよう、タブは開いたままにしてあります。",
-      "run_in_terminal_dispatch_rolled_back_error": "コマンドは新しいターミナルに送信されなかったため、そのターミナルを閉じました。"
+      "run_in_terminal_dispatch_rolled_back_error": "コマンドは新しいターミナルに送信されなかったため、そのターミナルを閉じました。",
+      "model_auto_jev_description": "Jev が各ターンの難しさを判断し、その段階のモデルで実行します"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

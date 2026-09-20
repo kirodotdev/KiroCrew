@@ -1401,6 +1401,15 @@ def _rehydrate_slot_from_history(
                 logger.debug(
                     "Failed to resolve model for rehydrated slot %s", slot_name, exc_info=True
                 )
+        # `jev_route` is deliberately NEITHER written nor read here. It records an
+        # OWNER's pick that spends money -- a routed turn can run on a dearer model
+        # -- and transcript metadata is editable by the agent's own file tools, so a
+        # value read back from this file would let a prompt-injected agent grant
+        # itself routing the owner never selected. Same rule, and the same reason,
+        # as the crew log refusing to promote a restored `_created_by` to
+        # gateway-authored lineage. The flag lives in memory only: a restart leaves
+        # the slot on its persisted model -- the documented refusal -- and the owner
+        # re-picks "Auto (Jev)" to route again.
         if meta.get("reasoning_effort"):
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
         if meta.get("autocompact_pct") is not None:
@@ -2010,6 +2019,8 @@ def _apply_recent_session(
             slot.model = kiro_model_map.get(kiro_name, "")
         except Exception:
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
+    # `jev_route` is neither written nor read here, for the reason the rehydrate
+    # path above states: it is an owner pick, and this file is agent-writable.
     if meta.get("reasoning_effort"):
         slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
     if meta.get("autocompact_pct") is not None:

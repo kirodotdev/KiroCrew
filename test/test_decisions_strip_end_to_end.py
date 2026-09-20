@@ -179,8 +179,12 @@ async def test_a_sampled_turn_shows_its_decision_and_takes_a_verdict(
 
     rows = [row for row in slot.messages if row.get("role") == "assistant"]
     assert len(rows) == 1
-    strip = (rows[0].get("meta") or {}).get("decisions_strip")
-    assert strip is not None, "the reply must carry the decision that shaped it"
+    strips = (rows[0].get("meta") or {}).get("decisions_strip")
+    assert strips, "the reply must carry the decision that shaped it"
+    # A LIST, always: two points can decide one turn (see `_decisions_strip_meta`).
+    # Only `skills.select` fires here, so the list holds exactly its one row.
+    assert [row.get("point") for row in strips] == [sel.POINT]
+    strip = strips[0]
     assert strip["baseline"] == [BASELINE], "what word overlap would have injected"
     assert strip["jev"] == [WIDENED], "what was injected"
     assert strip["agree"] is False

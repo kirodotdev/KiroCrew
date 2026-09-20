@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_utils import (
     history_corpus_unreadable,
     slot_history_key,
 )
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
@@ -962,6 +963,14 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             raise
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
+    # Inherited beside the model it belongs to: the constructor takes `model` and
+    # the routing choice is the other half of the same answer, so a fork of an
+    # "Auto (Jev)" session that arrived pinned would run the parent's next turns
+    # on a model the parent had explicitly stopped choosing by hand.
+    # Inheriting is arming a SECOND routed session, so it answers to the same owner
+    # predicate as the arm itself: this route is gated on app ownership, which an
+    # allow-listed non-owner passes for a slot the owner armed.
+    new_slot.jev_route = slot.jev_route and is_owner_dashboard_request(request)
     # Inherit the active project directory so the fork keeps the parent's working
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.

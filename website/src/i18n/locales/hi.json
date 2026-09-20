@@ -7126,7 +7126,8 @@
       "credit_multiplier": "Auto की तुलना में {{value}} क्रेडिट लागत",
       "credit_multiplier_baseline": "{{value}}, आधार क्रेडिट लागत",
       "loading_models": "मॉडल लोड हो रहे हैं…",
-      "no_matches": "कोई मेल नहीं"
+      "no_matches": "कोई मेल नहीं",
+      "auto_jev": "स्वचालित (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "सेटिंग में प्रबंधित करें",
@@ -10380,7 +10381,21 @@
         "saved_tokens": "{{tokens}} टोकन बचाए",
         "sent_history": "इतिहास {{chars}} अक्षर",
         "sent_label": "Jev को भेजा गया",
-        "sent_message": "संदेश {{chars}} अक्षर"
+        "sent_message": "संदेश {{chars}} अक्षर",
+        "history_chars_label": "भेजा गया संदर्भ (अक्षर)",
+        "model_baseline_label": "रूटिंग के बिना मॉडल",
+        "model_baseline_named": "डिफ़ॉल्ट: {{model}}",
+        "model_chosen_label": "उपयोग किया गया मॉडल",
+        "model_default": "अंतर्निहित डिफ़ॉल्ट",
+        "model_latency": "{{ms}} मि.से.",
+        "model_not_applied": "लागू नहीं हुआ — {{model}} पर चला",
+        "model_tier": "Jev: {{tier}}",
+        "model_tier_label": "कठिनाई",
+        "model_unpinned": "(अनिर्दिष्ट)",
+        "point_model_route": "मॉडल",
+        "rate_right_model": "Jev ने सही मॉडल चुना",
+        "rate_wrong_model": "Jev ने गलत मॉडल चुना",
+        "truncated_turns_label": "काटे गए पिछले संदेश"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev ने इस कॉल को देखा और इसे चिह्नित किया। इससे यह नहीं बदला कि कॉल की अनुमति थी या नहीं: वह इस सेशन की अपनी अनुमति सेटिंग ने तय किया, और कॉल फिर भी मना की जा सकती थी।",
@@ -10511,7 +10526,8 @@
       "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके",
       "run_in_terminal_liveness_probe_failed_error": "कमांड नए टर्मिनल में नहीं भेजा गया। उसका शेल अभी भी चल सकता है, इसलिए टैब खुला रहने दिया गया।",
       "run_in_terminal_shell_alive_error": "कमांड नए टर्मिनल में नहीं भेजा गया, लेकिन उसका शेल चल रहा है — टैब खुला रहने दिया गया है ताकि तुम वहाँ कमांड चला सको।",
-      "run_in_terminal_dispatch_rolled_back_error": "कमांड नए टर्मिनल में नहीं भेजा गया, इसलिए वह टर्मिनल बंद कर दिया गया।"
+      "run_in_terminal_dispatch_rolled_back_error": "कमांड नए टर्मिनल में नहीं भेजा गया, इसलिए वह टर्मिनल बंद कर दिया गया।",
+      "model_auto_jev_description": "Jev हर संदेश की कठिनाई आँके और उस स्तर के मॉडल से उत्तर दे"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",

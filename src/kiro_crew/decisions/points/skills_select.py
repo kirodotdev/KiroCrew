@@ -67,7 +67,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 from kiro_crew import decisions as core
 from kiro_crew.decisions import log as _log
-from kiro_crew.decisions.points import MAX_KEY_CHARS
+from kiro_crew.decisions.points import MAX_KEY_CHARS, build_history
+from kiro_crew.decisions.points import history_budget as _history_budget
+from kiro_crew.decisions.points import prior_turns as _prior_turns
 from kiro_crew.decisions.types import Answer, Choice, Question
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
 
@@ -80,18 +82,6 @@ POINT = "skills.select"
 MAX_CANDIDATES = 100
 MAX_MESSAGE_CHARS = 2000
 MAX_DESCRIPTION_CHARS = 200
-
-#: How many prior transcript rows the point will even look at, before the CHAR
-#: budget is applied. The budget is what bounds egress; this bounds the READ, so
-#: a long conversation cannot turn one selection into a full-file scan. It is the
-#: value the caller passes to ``conversation_log.recent``, which serves a slice
-#: this small from a tail read rather than a whole-file parse.
-MAX_HISTORY_MESSAGES = 20
-
-#: The two roles a prior turn may carry. Tool output is not conversation and is
-#: not sent: it is the largest and least selective text in a transcript, and it
-#: routinely quotes files the message itself never mentioned.
-HISTORY_ROLES = frozenset({"user", "assistant"})
 
 #: Characters per token for the ``tokens_saved`` estimate. An estimate by
 #: construction -- a real tokenizer is a model-specific dependency this seam has
@@ -388,64 +378,6 @@ def screen_candidates(candidates: Sequence[dict[str, str]]) -> list[dict[str, st
                 "description": str(candidate.get("description", ""))[:MAX_DESCRIPTION_CHARS],
             }
         )
-    return rows
-
-
-def build_history(
-    history: Sequence[Mapping[str, Any]] | None,
-    text: str = "",
-    *,
-    history_budget_chars: int | None = None,
-    trace: dict[str, Any] | None = None,
-) -> list[dict[str, str]]:
-    """Prior turns as ``[{role, text}]``, newest FIRST, inside the char budget.
-
-    Newest first because that is the order the budget spends in: the turn just
-    before this message is the one worth a request, and the oldest reachable turn
-    is the one a small budget should drop. Walking from the newest end is also
-    what makes the truncation land on the LAST entry admitted rather than on the
-    most useful one.
-
-    Only ``user`` and ``assistant`` rows (:data:`HISTORY_ROLES`) are read, so no
-    tool output leaves the machine. A row whose text equals *text* is skipped: the
-    current turn may already be flushed to the transcript, and the caller drops it
-    with ``exclude_last_n``, but a caller that does not must not send the message
-    twice.
-
-    *trace* receives ``history_chars`` (the characters actually admitted) and
-    ``truncated`` (how many entries were clipped to fit — at most one, since the
-    budget stops the walk). Both are filled even when nothing is admitted, which
-    is what makes "no history was reachable" a row that says ``history_chars=0``
-    rather than a row missing a field.
-    """
-    budget = (
-        _history_budget() if history_budget_chars is None else max(0, int(history_budget_chars))
-    )
-    rows: list[dict[str, str]] = []
-    spent = 0
-    truncated = 0
-    for entry in reversed(list(history or [])):
-        if spent >= budget:
-            break
-        if not isinstance(entry, Mapping):
-            continue
-        role = str(entry.get("role", "") or "")
-        if role not in HISTORY_ROLES:
-            continue
-        content = entry.get("content", "")
-        if not isinstance(content, str) or not content:
-            continue
-        if content == text:
-            continue
-        room = budget - spent
-        if len(content) > room:
-            content = content[:room]
-            truncated += 1
-        rows.append({"role": role, "text": content})
-        spent += len(content)
-    if trace is not None:
-        trace["history_chars"] = spent
-        trace["truncated"] = truncated
     return rows
 
 
@@ -765,25 +697,6 @@ def publish_outcome(session_key: str | None, outcome: dict[str, Any]) -> bool:
         return False
 
 
-def _prior_turns(
-    history_source: Callable[[], Sequence[Mapping[str, Any]]] | None,
-) -> list[Mapping[str, Any]]:
-    """The caller's prior turns, or an empty list. Never raises.
-
-    Called only after the gates, so a transcript read is paid on the sampled
-    turns and nowhere else. A source that raises reads as no history rather than
-    as a failed selection: prior turns make the question better, they are not
-    what makes it answerable.
-    """
-    if history_source is None:
-        return []
-    try:
-        return list(history_source() or [])
-    except Exception:
-        logger.debug("skills.select: prior turns unreadable", exc_info=True)
-        return []
-
-
 def _repo_scope_ok(skills_loader: Any, scope: str, project_dir: str | Path | None) -> bool:
     """The loader's own repo-scope gate. A gate that fails reads as NOT satisfied."""
     try:
@@ -803,19 +716,6 @@ def _max_triggered(skills_loader: Any) -> int:
         return int(skills_loader._max_triggered_now())
     except Exception:
         logger.debug("skills.select: trigger cap unreadable", exc_info=True)
-        return 0
-
-
-def _history_budget() -> int:
-    """``decisions.history_budget_chars``, or 0 when it cannot be read.
-
-    0 is the fail-closed direction for this one: it sends the message alone,
-    which is exactly what the seam did before prior turns were part of the state.
-    """
-    try:
-        return max(0, int(core.history_budget_chars()))
-    except Exception:
-        logger.debug("skills.select: history budget unreadable", exc_info=True)
         return 0
 
 

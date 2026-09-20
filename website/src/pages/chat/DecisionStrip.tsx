@@ -1,12 +1,17 @@
 import { memo, useId } from 'react'
-import { Check, ChevronRight, Puzzle } from 'lucide-react'
+import { ArrowRight, Check, ChevronRight, Cpu, Puzzle } from 'lucide-react'
 
 import ErrorNotice from '../../components/ErrorNotice'
 import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { DECISIONS_LIVE_POINT } from '../settings/decisionsPreview'
-import { type DecisionStripRecord } from './decisionRecord'
+import {
+  isModelRecord,
+  type DecisionModelRecord,
+  type DecisionRecord,
+  type DecisionStripRecord,
+} from './decisionRecord'
 import VerdictThumbs from './DecisionVerdictThumbs'
 import { useRowDisclosure } from './rowDisclosure'
 
@@ -29,6 +34,160 @@ function Detail({ label, value }: { label: string; value: string }) {
     <div className="flex items-baseline gap-1.5 min-w-0">
       <span className="shrink-0 opacity-75">{label}</span>
       <span className="text-text tabular-nums truncate">{value}</span>
+    </div>
+  )
+}
+
+/**
+ * The transcript's receipt for one model-routing decision.
+ *
+ * Collapsed it is one line: the point, the tier Jev answered and the model that
+ * tier routed the turn to, the score, how long the decision took, and the model
+ * the turn would otherwise have used. The last one is what makes the row
+ * actionable -- "complex" alone says nothing a reader can disagree with, while
+ * "complex, so opus-5 instead of opus-4.8" is a claim about this reply.
+ *
+ * ONE thumbs pair, side `jev`. There is no second answer to rate: the alternative
+ * is not another judgement but the absence of one, so a `baseline` pair would ask
+ * the reader to rate "whatever the session was on", which is not a decision
+ * anybody made about this turn.
+ *
+ * Expanding adds the question's own shape -- how much conversation it carried and
+ * how much was clipped -- and the failure category when there is one. Expansion
+ * survives the row being recycled out of the virtualised transcript
+ * (`useRowDisclosure`); the thumbs survive it through their own store.
+ */
+function ModelRouteStrip({
+  record,
+  disclosureKey,
+}: {
+  record: DecisionModelRecord
+  disclosureKey?: string
+}) {
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
+  const panelId = useId()
+  const rightJev = i18nT('pages.chat.decisionStrip.rate_right_model')
+  const wrongJev = i18nT('pages.chat.decisionStrip.rate_wrong_model')
+  // An unpinned tier applied no model, and the row says so rather than leaving a
+  // gap where an id belongs: every tier ships unpinned, so this is the state most
+  // readers see first, and it is what tells them there is something to pin.
+  const chosen = record.modelChosen || i18nT('pages.chat.decisionStrip.model_unpinned')
+  // A session on the backend's own default names no model, and `''` must not
+  // render as an empty gap where a model id belongs.
+  const baseline = record.baselineModel || i18nT('pages.chat.decisionStrip.model_default')
+  // The switch was asked for and did not take: a backend that judges the model
+  // value can exhaust its candidate ladder and stay put without failing. The row
+  // names the model the turn actually ran on, because the durable record it is
+  // drawn from is what an owner reads when deciding what to pin.
+  const notApplied = record.applied
+    ? null
+    : i18nT('pages.chat.decisionStrip.model_not_applied', {
+        model: record.modelUsed || baseline,
+      })
+
+  return (
+    <div
+      className="self-center w-full max-w-full min-w-0 rounded-md ring-1 ring-inset forced-colors:border ring-border bg-card text-muted mt-1"
+      data-testid="decision-strip-model"
+      data-tier={record.tier}
+      data-pinned={record.modelChosen ? 'true' : 'false'}
+      data-applied={record.applied ? 'true' : 'false'}
+      data-expanded={expanded}
+    >
+      <div className="flex items-center gap-1.5 px-2 py-1 min-w-0 text-[12px] leading-5">
+        <button
+          type="button"
+          onClick={() => setExpanded(v => !v)}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          // No aria-label: the line's own text names the button, and
+          // aria-expanded carries the state — same as the skill strip's toggle.
+          className="flex-1 flex items-center gap-1.5 min-w-0 text-left hover:text-text transition-colors"
+          data-testid="decision-strip-model-toggle"
+        >
+          <ChevronRight
+            className={`lucide-inline shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
+            aria-hidden="true"
+          />
+          <Cpu className="lucide-inline shrink-0" aria-hidden="true" />
+          <span className="shrink-0 font-medium text-text">
+            {i18nT('pages.chat.decisionStrip.point_model_route')}{' \u00B7'}
+          </span>
+          <span className="truncate min-w-0" data-testid="decision-strip-model-pick">
+            {i18nT('pages.chat.decisionStrip.model_tier', { tier: record.tier })}
+            {' '}
+            {/* The arrow is decoration: the sentence either side already reads
+                "tier, then model", so a screen reader gains nothing from it. */}
+            <ArrowRight className="lucide-inline" aria-hidden="true" />
+            {' '}
+            <span className={record.modelChosen ? 'font-mono text-text' : 'text-muted'}>{chosen}</span>
+            {notApplied && (
+              <span className="text-muted" data-testid="decision-strip-model-not-applied">
+                {' '}
+                {notApplied}
+              </span>
+            )}
+          </span>
+          {record.p !== null && (
+            <span
+              className="shrink-0 tabular-nums"
+              title={i18nT('pages.chat.decisionStrip.confidence_title')}
+              data-testid="decision-strip-model-confidence"
+            >
+              ({confidence(record.p)})
+            </span>
+          )}
+          <span className="shrink-0 tabular-nums" data-testid="decision-strip-model-latency">
+            {i18nT('pages.chat.decisionStrip.model_latency', {
+              ms: fmtNumber(record.latencyMs),
+            })}
+          </span>
+          <span className="shrink-0 truncate" data-testid="decision-strip-model-baseline">
+            {'\u00B7 '}
+            {i18nT('pages.chat.decisionStrip.model_baseline_named', { model: baseline })}
+          </span>
+        </button>
+        <VerdictThumbs
+          turnId={record.turnId}
+          side="jev"
+          label={i18nT('pages.chat.decisionStrip.rate_jev')}
+          rightLabel={rightJev}
+          wrongLabel={wrongJev}
+        />
+      </div>
+      {expanded && (
+        <div id={panelId} className="px-2 pb-2 pt-0 text-[12px] leading-5 flex flex-col gap-1 min-w-0">
+          <Detail label={i18nT('pages.chat.decisionStrip.model_tier_label')} value={record.tier} />
+          {/* Labelled "Model used", so on a switch that did not take it names what the
+              turn RAN on, not what was asked for -- the collapsed line above still
+              carries the ask, so nothing is hidden by preferring the truth here. */}
+          <Detail
+            label={i18nT('pages.chat.decisionStrip.model_chosen_label')}
+            value={record.applied ? chosen : record.modelUsed || baseline}
+          />
+          <Detail label={i18nT('pages.chat.decisionStrip.model_baseline_label')} value={baseline} />
+          <Detail
+            label={i18nT('pages.chat.decisionStrip.history_chars_label')}
+            value={fmtNumber(record.historyChars)}
+          />
+          <Detail
+            label={i18nT('pages.chat.decisionStrip.truncated_turns_label')}
+            value={fmtNumber(record.truncated)}
+          />
+          {/* No hand-off: the unsaved composer draft in the thread this strip is
+              rendered inside. The hand-off navigates and unmounts that subtree, so
+              offering it here would trade a routing note for text the user typed and
+              has not sent. Nothing is lost by withholding it either: the turn already
+              ran on the session's own model, and the one actionable case -- a pinned id
+              this account cannot run -- is fixed in `decisions.model_route`. */}
+          <ErrorNotice
+            message={record.error}
+            title={i18nT('pages.chat.decisionStrip.error_title')}
+            variant="inline"
+            testId="decision-strip-model-error"
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -70,12 +229,26 @@ const DecisionStrip = memo(function DecisionStrip({
   record,
   disclosureKey,
 }: {
-  record: DecisionStripRecord
+  record: DecisionRecord
   disclosureKey?: string
 }) {
   // memo() bails out of the provider-level repaint; subscribe so a language
-  // switch repaints this row's strings.
+  // switch repaints this row's strings. Called before the point branch below so
+  // BOTH rows subscribe — a hook inside one branch would be a conditional hook.
   useLanguageGeneration()
+  if (isModelRecord(record)) {
+    return <ModelRouteStrip record={record} disclosureKey={disclosureKey} />
+  }
+  return <SkillSelectStrip record={record} disclosureKey={disclosureKey} />
+})
+
+function SkillSelectStrip({
+  record,
+  disclosureKey,
+}: {
+  record: DecisionStripRecord
+  disclosureKey?: string
+}) {
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const panelId = useId()
 
@@ -240,6 +413,6 @@ const DecisionStrip = memo(function DecisionStrip({
       )}
     </div>
   )
-})
+}
 
 export default DecisionStrip

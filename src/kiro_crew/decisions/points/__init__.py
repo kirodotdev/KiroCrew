@@ -1,15 +1,138 @@
 """Business adapters for the Jev decision seam.
 
-Two adapters. ``skills.select`` picks the skill a message loads: an exact offered
-key selects one, an explicit no-skill answer selects none, and a refusal keeps
-trigger matching. ``message.steer`` decides whether a message sent into a RUNNING
-turn steers it or queues for the next one, and a refusal takes the steer path the
-composer has always defaulted to. Each adapter's refusal is the shipped behaviour,
-never a third outcome.
+Three adapters. ``skills.select`` picks the skill a message loads: an exact
+offered key selects one, an explicit no-skill answer selects none, and a refusal
+keeps trigger matching. ``message.steer`` decides whether a message sent into a
+RUNNING turn steers it or queues for the next one, and a refusal takes the steer
+path the composer has always defaulted to. ``model.route`` answers how hard a
+chat turn is and maps that tier to a model id, and a refusal keeps the model the
+session was already on. Each adapter's refusal is the shipped behaviour, never a
+third outcome.
 
 The core package owns transport, sampling and diagnostic logging.
+
+What lives HERE rather than in one adapter is the prior-conversation read, because
+``skills.select`` and ``model.route`` send the same thing under the same ceiling:
+the budget comes from ``gate.history_budget_chars`` (the smaller of the config and
+the keystone), the rows come from a caller-supplied callable so an unsampled turn
+pays for no transcript read, and only ``user`` / ``assistant`` text is ever
+projected. A second copy of that walk in the second adapter would be a second
+place for the budget to be spent differently, which is the one property the
+keystone ceiling exists to make checkable.
+
+Nothing here imports an adapter: the shared helpers are below the points, so a
+broken adapter cannot make another one unimportable.
 """
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable, Mapping, Sequence
+
+from kiro_crew import decisions as core
+
+logger = logging.getLogger(__name__)
 
 # Skill identifiers must remain exact when passed to the loader. Drop a key
 # exceeding this bound rather than truncating it into a different identifier.
 MAX_KEY_CHARS = 120
+
+#: How many prior transcript rows a point will even look at, before the CHAR
+#: budget is applied. The budget is what bounds egress; this bounds the READ, so
+#: a long conversation cannot turn one decision into a full-file scan. It is the
+#: value the caller passes to ``conversation_log.recent``, which serves a slice
+#: this small from a tail read rather than a whole-file parse.
+MAX_HISTORY_MESSAGES = 20
+
+#: The two roles a prior turn may carry. Tool output is not conversation and is
+#: not sent: it is the largest and least selective text in a transcript, and it
+#: routinely quotes files the message itself never mentioned.
+HISTORY_ROLES = frozenset({"user", "assistant"})
+
+
+def history_budget() -> int:
+    """``decisions.history_budget_chars`` under the keystone ceiling, or 0.
+
+    0 is the fail-closed direction: it sends the message alone, which is exactly
+    what the seam did before prior turns were part of any state.
+    """
+    try:
+        return max(0, int(core.history_budget_chars()))
+    except Exception:
+        logger.debug("decisions: history budget unreadable", exc_info=True)
+        return 0
+
+
+def prior_turns(
+    history_source: Callable[[], Sequence[Mapping[str, Any]]] | None,
+) -> list[Mapping[str, Any]]:
+    """The caller's prior turns, or an empty list. Never raises.
+
+    Called only after the gates, so a transcript read is paid on the sampled
+    turns and nowhere else. A source that raises reads as no history rather than
+    as a failed decision: prior turns make the question better, they are not
+    what makes it answerable.
+    """
+    if history_source is None:
+        return []
+    try:
+        return list(history_source() or [])
+    except Exception:
+        logger.debug("decisions: prior turns unreadable", exc_info=True)
+        return []
+
+
+def build_history(
+    history: Sequence[Mapping[str, Any]] | None,
+    text: str = "",
+    *,
+    history_budget_chars: int | None = None,
+    trace: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Prior turns as ``[{role, text}]``, newest FIRST, inside the char budget.
+
+    Newest first because that is the order the budget spends in: the turn just
+    before this message is the one worth a request, and the oldest reachable turn
+    is the one a small budget should drop. Walking from the newest end is also
+    what makes the truncation land on the LAST entry admitted rather than on the
+    most useful one.
+
+    Only ``user`` and ``assistant`` rows (:data:`HISTORY_ROLES`) are read, so no
+    tool output leaves the machine. A row whose text equals *text* is skipped: the
+    current turn may already be flushed to the transcript, and the caller drops it
+    with ``exclude_last_n``, but a caller that does not must not send the message
+    twice.
+
+    *trace* receives ``history_chars`` (the characters actually admitted) and
+    ``truncated`` (how many entries were clipped to fit -- at most one, since the
+    budget stops the walk). Both are filled even when nothing is admitted, which
+    is what makes "no history was reachable" a row that says ``history_chars=0``
+    rather than a row missing a field.
+    """
+    budget = history_budget() if history_budget_chars is None else max(0, int(history_budget_chars))
+    rows: list[dict[str, str]] = []
+    spent = 0
+    truncated = 0
+    for entry in reversed(list(history or [])):
+        if spent >= budget:
+            break
+        if not isinstance(entry, Mapping):
+            continue
+        role = str(entry.get("role", "") or "")
+        if role not in HISTORY_ROLES:
+            continue
+        content = entry.get("content", "")
+        if not isinstance(content, str) or not content:
+            continue
+        if content == text:
+            continue
+        room = budget - spent
+        if len(content) > room:
+            content = content[:room]
+            truncated += 1
+        rows.append({"role": role, "text": content})
+        spent += len(content)
+    if trace is not None:
+        trace["history_chars"] = spent
+        trace["truncated"] = truncated
+    return rows

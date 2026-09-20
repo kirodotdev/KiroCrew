@@ -7229,7 +7229,8 @@
       "credit_multiplier": "{{value}} le coût en crédits d'Auto",
       "credit_multiplier_baseline": "{{value}}, le coût en crédits de référence",
       "loading_models": "Chargement des modèles…",
-      "no_matches": "Aucun résultat"
+      "no_matches": "Aucun résultat",
+      "auto_jev": "Auto (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gérer dans les paramètres",
@@ -10523,7 +10524,21 @@
         "saved_tokens": "{{tokens}} jetons économisés",
         "sent_history": "historique {{chars}} caractères",
         "sent_label": "Envoyé à Jev",
-        "sent_message": "message {{chars}} caractères"
+        "sent_message": "message {{chars}} caractères",
+        "history_chars_label": "Contexte envoyé (caractères)",
+        "model_baseline_label": "Modèle sans routage",
+        "model_baseline_named": "par défaut : {{model}}",
+        "model_chosen_label": "Modèle utilisé",
+        "model_default": "Modèle par défaut",
+        "model_latency": "{{ms}} ms",
+        "model_not_applied": "non appliqué – exécuté sur {{model}}",
+        "model_tier": "Jev : {{tier}}",
+        "model_tier_label": "Difficulté",
+        "model_unpinned": "(non défini)",
+        "point_model_route": "modèle",
+        "rate_right_model": "Jev a choisi le bon modèle",
+        "rate_wrong_model": "Jev a choisi le mauvais modèle",
+        "truncated_turns_label": "Tours précédents tronqués"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev a examiné cet appel et l'a signalé. Cela n'a rien changé à son autorisation : c'est le réglage d'autorisations de cette session qui en a décidé, et l'appel a pu être refusé malgré tout.",
@@ -10655,7 +10670,8 @@
       "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
       "run_in_terminal_liveness_probe_failed_error": "La commande n'a pas été envoyée au nouveau terminal. Son shell est peut-être toujours en cours d'exécution, son onglet est donc resté ouvert.",
       "run_in_terminal_shell_alive_error": "La commande n'a pas été envoyée au nouveau terminal, mais son shell fonctionne : l'onglet est resté ouvert pour que vous puissiez y exécuter la commande.",
-      "run_in_terminal_dispatch_rolled_back_error": "La commande n'a pas été envoyée au nouveau terminal, donc ce terminal a été fermé."
+      "run_in_terminal_dispatch_rolled_back_error": "La commande n'a pas été envoyée au nouveau terminal, donc ce terminal a été fermé.",
+      "model_auto_jev_description": "Laisser Jev évaluer chaque tour et l'exécuter sur le modèle de ce niveau"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

@@ -492,6 +492,9 @@ def surface_channel_session(
     slot._memory_assignment_from_history = True
     if meta.get("model"):
         slot.model = meta["model"]
+    # `jev_route` is deliberately NOT read back here, for the reason the two
+    # persistence loaders state: it records an owner pick that spends money, and
+    # this file is editable by the agent's own tools.
     if meta.get("autocompact_pct") is not None:
         # Restore the per-session compaction threshold, mirroring the
         # persistence loaders: without this, a surfaced slot's field stays

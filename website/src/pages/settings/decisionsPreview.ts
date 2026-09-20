@@ -33,6 +33,16 @@ export const DECISIONS_LIVE_POINT = 'skills.select'
  */
 export const DECISIONS_STEER_POINT = 'message.steer'
 
+/** The point that chooses which model tier a chat turn runs on.
+ *
+ *  Every deciding point consumes its answer, and each is reached only through a
+ *  choice the owner makes somewhere else: a non-zero `skills.max_triggered` for
+ *  the skill point, the send button's `Auto (Jev)` entry for the steer point, and
+ *  the chat model picker's `Auto (Jev)` entry for this one. The switch on this
+ *  card is what lets any of them be asked at all, never what arms one.
+ */
+export const DECISIONS_MODEL_POINT = 'model.route'
+
 /** Config path of the sampling share; the only decisions value the config PATCH accepts. */
 export const DECISIONS_BUCKET_PATH = 'decisions.bucket'
 

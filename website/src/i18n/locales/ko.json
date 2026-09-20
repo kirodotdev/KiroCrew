@@ -7023,7 +7023,8 @@
       "credit_multiplier": "Auto 크레딧 비용의 {{value}}",
       "credit_multiplier_baseline": "{{value}}, 기준 크레딧 비용",
       "loading_models": "모델 불러오는 중…",
-      "no_matches": "일치 항목 없음"
+      "no_matches": "일치 항목 없음",
+      "auto_jev": "자동 (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "설정에서 관리",
@@ -10237,7 +10238,21 @@
         "saved_tokens": "{{tokens}} 토큰 절약",
         "sent_history": "기록 {{chars}}자",
         "sent_label": "Jev에 보냄",
-        "sent_message": "메시지 {{chars}}자"
+        "sent_message": "메시지 {{chars}}자",
+        "history_chars_label": "보낸 컨텍스트(글자 수)",
+        "model_baseline_label": "라우팅 없는 모델",
+        "model_baseline_named": "기본값: {{model}}",
+        "model_chosen_label": "사용한 모델",
+        "model_default": "기본 제공 모델",
+        "model_latency": "{{ms}} 밀리초",
+        "model_not_applied": "적용되지 않음 — {{model}}에서 실행",
+        "model_tier": "Jev: {{tier}}",
+        "model_tier_label": "난이도",
+        "model_unpinned": "(미지정)",
+        "point_model_route": "모델",
+        "rate_right_model": "Jev가 올바른 모델을 골랐다",
+        "rate_wrong_model": "Jev가 잘못된 모델을 골랐다",
+        "truncated_turns_label": "잘린 이전 대화"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev가 이 호출을 보고 표시했습니다. 표시는 호출이 허용되었는지와 무관합니다. 그것은 이 세션의 권한 설정이 결정하며, 호출은 거부되었을 수도 있습니다.",
@@ -10367,7 +10382,8 @@
       "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
       "run_in_terminal_liveness_probe_failed_error": "새 터미널로 명령이 전송되지 않았습니다. 셸이 아직 실행 중일 수 있으므로 탭을 열어 두었습니다.",
       "run_in_terminal_shell_alive_error": "새 터미널로 명령이 전송되지 않았지만 셸은 실행 중입니다. 거기서 명령을 실행할 수 있도록 탭을 열어 두었습니다.",
-      "run_in_terminal_dispatch_rolled_back_error": "새 터미널로 명령이 전송되지 않아 해당 터미널을 닫았습니다."
+      "run_in_terminal_dispatch_rolled_back_error": "새 터미널로 명령이 전송되지 않아 해당 터미널을 닫았습니다.",
+      "model_auto_jev_description": "Jev가 각 대화의 난이도를 판단해 해당 등급의 모델로 실행합니다"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

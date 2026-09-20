@@ -2139,6 +2139,7 @@ class _ChatSlot:
         "agent",
         "agent_kind",
         "model",
+        "jev_route",
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
@@ -2370,6 +2371,15 @@ class _ChatSlot:
         # notice rather than a per-turn repeat.
         self._welcomed_agent: str = ""
         self.model = model
+        # Whether the owner asked Jev to pick this turn's model tier
+        # (`decisions.points.model_route`), set by the picker's "Auto (Jev)" entry
+        # and cleared by any concrete pick. A FLAG beside `model`, never a
+        # sentinel inside it: `model` is a provider model id -- it reaches
+        # `session/set_model`, the session allocation and the composer chip -- and
+        # a value no provider advertises would have to be filtered at each of
+        # those, which is one filter per reader and a real breakage the first time
+        # one is missed. The flag leaves `model` meaning exactly what it meant.
+        self.jev_route: bool = False
         # Spawn-time withhold verdict for `model`, and the model id it was
         # computed for. Read through the `model_withheld` property, never these
         # two directly: the pairing is what makes the verdict self-invalidating

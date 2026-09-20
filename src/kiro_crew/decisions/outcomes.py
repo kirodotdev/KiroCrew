@@ -5,8 +5,8 @@ before the reply it influenced exists. The chat strip has to ride on THAT reply'
 message record. Nothing already connects the two: the point has a session key and
 no message, and the message finalizer has a session key and no decision.
 
-This module is that one connection, and nothing else. One outcome per session,
-handed over once:
+This module is that one connection, and nothing else. One outcome per POINT per
+session, handed over once:
 
     from kiro_crew.decisions.outcomes import publish
 
@@ -16,7 +16,15 @@ and, at the message boundary:
 
     from kiro_crew.decisions.outcomes import consume
 
-    strip = consume(session_key)   # the dict, once, or None
+    strips = consume(session_key)   # the list, once, or []
+
+Per point, and not one per session, because two points now decide the same turn:
+``skills.select`` runs during prompt assembly and ``model.route`` before the
+prompt is sent, and both describe the SAME reply. One slot per session would make
+the second publish erase the first, so a reader would be told about one decision
+and never learn the other happened. A second publish for the same point still
+replaces -- there is one such decision per turn, and the newer one is the one the
+next reply belongs to.
 
 In process, deliberately
 ------------------------
@@ -41,8 +49,10 @@ A published outcome is not guaranteed a reader: the turn can be cancelled, the
 slot can be closed, a provider can fail before any segment is flushed. Unbounded,
 that leaks one dict per abandoned turn for the life of the process. So:
 
-* one entry per session -- a second publish replaces the first, because the newer
-  decision is the one the next reply belongs to;
+* one entry per (session, point) -- a second publish for the same point replaces
+  the first, because the newer decision is the one the next reply belongs to --
+  and at most :data:`MAX_POINTS_PER_SESSION` points per session, oldest published
+  first, so a point name a caller invents cannot grow the entry without limit;
 * :data:`TTL_SECONDS` -- an outcome older than that is dropped rather than shown,
   since a strip about a decision ten minutes ago is not about the reply it would
   land on;
@@ -90,8 +100,14 @@ TTL_SECONDS = 600.0
 #: published and never read, and the oldest are the least likely to ever be.
 MAX_SESSIONS = 1000
 
-#: ``session_key -> (published_at_monotonic, outcome)``, oldest publish first.
-_pending: "OrderedDict[str, tuple[float, dict[str, Any]]]" = OrderedDict()
+#: Most points one session may hold an unconsumed outcome for. Two ship, so this
+#: is a bound on a caller that publishes under an invented point name rather than
+#: a limit anything real reaches.
+MAX_POINTS_PER_SESSION = 8
+
+#: ``session_key -> (published_at_monotonic, [outcome, ...])``, oldest publish
+#: first, each session's list in publish order.
+_pending: "OrderedDict[str, tuple[float, list[dict[str, Any]]]]" = OrderedDict()
 
 _lock = threading.Lock()
 
@@ -115,8 +131,9 @@ def _drop_expired(now: float) -> None:
 def publish(session_key: str, outcome: dict[str, Any]) -> None:
     """Hand *outcome* to whatever finalizes this session's next assistant message.
 
-    Replaces any outcome this session had not been read yet: see the module
-    docstring for why the newer decision wins.
+    Replaces an unread outcome this session already held FOR THE SAME POINT and
+    keeps the others: see the module docstring for why the newer decision wins
+    within a point and why two points coexist.
 
     A falsy *session_key* or a non-dict *outcome* is DROPPED, not stored and not
     raised: the key is what a consumer matches on, so an outcome filed under
@@ -128,40 +145,61 @@ def publish(session_key: str, outcome: dict[str, Any]) -> None:
     if not session_key or not isinstance(session_key, str) or not isinstance(outcome, dict):
         logger.debug("decisions: outcome dropped (key=%r, type=%s)", session_key, type(outcome))
         return
+    point = _point_of(outcome)
     now = time.monotonic()
     with _lock:
         _drop_expired(now)
         # Re-inserted at the END even when the key was already present: the entry
-        # is the NEW outcome, so it must age from now, and it must be the newest
-        # for the eviction order to mean what it says.
-        _pending.pop(session_key, None)
-        _pending[session_key] = (now, outcome)
+        # carries a NEW outcome, so it must age from now, and it must be the
+        # newest for the eviction order to mean what it says. Ageing the whole
+        # session rather than each outcome is deliberate -- the TTL exists to drop
+        # a session whose reply never arrived, and the reply the list rides on is
+        # one event.
+        prior = _pending.pop(session_key, None)
+        rows = [row for row in (prior[1] if prior else []) if _point_of(row) != point]
+        rows.append(outcome)
+        _pending[session_key] = (now, rows[-MAX_POINTS_PER_SESSION:])
         while len(_pending) > MAX_SESSIONS:
             _pending.popitem(last=False)
 
 
-def consume(session_key: str) -> dict[str, Any] | None:
-    """Pop this session's pending outcome, or ``None`` when there is none.
+def _point_of(outcome: dict[str, Any]) -> str:
+    """The decision point an outcome is about, or ``""`` for one that names none.
 
-    ``None`` is the overwhelmingly common answer -- the seam is off by default and
+    ``""`` is a real key and not a wildcard: two outcomes that both decline to
+    name a point are the same slot, which keeps an unlabelled producer behaving
+    exactly as the single-slot registry did.
+    """
+    value = outcome.get("point")
+    return value if isinstance(value, str) else ""
+
+
+def consume(session_key: str) -> list[dict[str, Any]]:
+    """Pop this session's pending outcomes, in publish order, or ``[]``.
+
+    ``[]`` is the overwhelmingly common answer -- the seam is off by default and
     samples a bucket when on -- so it is the cheap path: one lookup on a bounded
-    mapping, no allocation, no I/O.
+    mapping, no I/O.
 
-    An entry past :data:`TTL_SECONDS` reads as ``None`` and is discarded, so a
-    stale decision is never attached to a reply it does not describe.
+    A LIST rather than one dict, because two points can decide the same turn and
+    the reply is one row: the caller stamps every outcome it is handed, so neither
+    decision is dropped for having been made second.
+
+    An entry past :data:`TTL_SECONDS` reads as ``[]`` and is discarded, so a stale
+    decision is never attached to a reply it does not describe.
     """
     if not session_key:
-        return None
+        return []
     now = time.monotonic()
     with _lock:
         _drop_expired(now)
         entry = _pending.pop(session_key, None)
     if entry is None:
-        return None
-    published_at, outcome = entry
+        return []
+    published_at, outcomes = entry
     if now - published_at > TTL_SECONDS:
-        return None
-    return outcome
+        return []
+    return list(outcomes)
 
 
 def discard(session_key: str) -> bool:
@@ -179,7 +217,7 @@ def discard(session_key: str) -> bool:
     different acts and a reader should not have to infer which one a bare
     ``consume`` meant.
     """
-    return consume(session_key) is not None
+    return bool(consume(session_key))
 
 
 def pending_count() -> int:

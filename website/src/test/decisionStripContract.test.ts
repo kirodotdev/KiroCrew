@@ -8,11 +8,11 @@
  * test, and the feature would look like it had never been wired.
  *
  * This suite closes that hole from the side it can reach. It parses the record
- * fixture out of `docs/system-specs/modules/decisions.md` § 8 — the document
- * both halves are written against — and asserts the reader accepts it field for
- * field. A change to the spec without the matching reader change is now a red
- * test here, and a reader change that drops a field the spec still promises is
- * red too.
+ * fixtures out of `docs/system-specs/modules/decisions.md` — § 8 for the skill
+ * selection, § 9 for the model routing, the document both halves are written
+ * against — and asserts the reader accepts each field for field. A change to the
+ * spec without the matching reader change is now a red test here, and a reader
+ * change that drops a field the spec still promises is red too.
  *
  * It reads the spec rather than restating it on purpose: a copy of the fixture
  * in this file would be a second contract, free to drift from the one the
@@ -23,11 +23,17 @@ import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 
-import { readDecisionStrip, readSteerRecord } from '../pages/chat/decisionRecord'
+import {
+  readDecisionRecord,
+  readDecisionStrip,
+  readModelRecord,
+  readSteerRecord,
+} from '../pages/chat/decisionRecord'
 
 const SPEC = join(__dirname, '../../../docs/system-specs/modules/decisions.md')
 const SECTION = "## 8. The decision strip's record and feedback"
 const STEER_SECTION = '## 10. Mid-turn handling (`message.steer`)'
+const MODEL_SECTION = '## 11. Model routing (`model.route`)'
 
 /** The first fenced JSON block inside *section*. */
 function specFixtureIn(section: string): Record<string, unknown> {
@@ -240,5 +246,65 @@ describe('the feedback vocabulary in the decisions spec', () => {
     // `verdict: null` is the only way a reader takes an answer back; if the spec
     // stops promising it, the second press becomes an undefined request.
     expect(prose.toLowerCase()).toContain('retract')
+  })
+})
+
+describe('the model-routing fixture in the decisions spec', () => {
+  const fixture = specFixtureIn(MODEL_SECTION)
+
+  it('is accepted by the model reader, field for field', () => {
+    expect(readModelRecord(fixture)).toEqual({
+      turnId: 'turn-7b1c40',
+      point: 'model.route',
+      tier: 'complex',
+      modelChosen: 'model-c',
+      baselineModel: 'model-b',
+      p: 0.91,
+      latencyMs: 180,
+      historyChars: 0,
+      truncated: 0,
+      applied: true,
+      modelUsed: 'model-c',
+      error: null,
+    })
+  })
+
+  it('names every key the reader needs, so a dropped promise is visible here', () => {
+    for (const key of [
+      'turn_id', 'point', 'tier', 'model_chosen', 'baseline_model',
+      'p', 'latency_ms', 'history_chars', 'truncated', 'error',
+      // What the turn RAN on, which is not always what was chosen.
+      'applied', 'model_used',
+    ]) {
+      expect(Object.keys(fixture), `the spec fixture no longer carries ${key}`).toContain(key)
+    }
+  })
+
+  it('carries the point, because that is what tells the two records apart', () => {
+    // Dispatched on `point`, never on which fields are present: the whole reason a
+    // model record cannot be rendered as a skill one.
+    expect(fixture.point).toBe('model.route')
+    expect(readDecisionRecord(fixture)).toEqual(readModelRecord(fixture))
+    expect(readDecisionStrip(fixture)).toBeNull()
+  })
+
+  it('needs the tier whole, so a broken producer draws nothing', () => {
+    // The tier IS the answer; a record that cannot name it has no claim to print.
+    expect(readModelRecord({ ...fixture, tier: '' })).toBeNull()
+  })
+
+  it('accepts an empty model, which is the shipped unpinned state', () => {
+    // Every tier of `decisions.model_route` is unpinned until an owner pins one,
+    // because no model id may be a hardcoded default. Refusing the record would
+    // hide the feature on every install that has not been configured yet.
+    expect(readModelRecord({ ...fixture, model_chosen: '' })!.modelChosen).toBe('')
+    expect(readModelRecord({ ...fixture, model_chosen: 42 })!.modelChosen).toBe('')
+  })
+
+  it('carries no message text, description or key — the bound the log section sets', () => {
+    const serialized = JSON.stringify(fixture).toLowerCase()
+    for (const forbidden of ['api_key', 'secret', 'prompt', 'message', 'description', 'content']) {
+      expect(serialized, `the fixture leaks ${forbidden}`).not.toContain(forbidden)
+    }
   })
 })

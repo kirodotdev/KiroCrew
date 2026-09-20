@@ -235,6 +235,13 @@ class SlotProjection:
             "agent_kind": getattr(slot, "agent_kind", ""),
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
+            # Whether this session's turns ask Jev which model tier to run on
+            # (the picker's "Auto (Jev)" entry). Shipped on every slot, not only
+            # the routed ones, so the picker branches on a field that is always
+            # present: an absent key and "the owner picked a model by hand" would
+            # otherwise be the same reading, and a stale client would show a
+            # routed session as pinned.
+            "jev_route": bool(getattr(slot, "jev_route", False)),
             # The backend's own withhold verdict for `model`: true = the account
             # cannot run the pin (this session is on the backend default), false
             # = it can, null = not known yet. Carried so the frontend reads the

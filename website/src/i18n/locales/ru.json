@@ -7332,7 +7332,8 @@
       "credit_multiplier": "{{value}} от стоимости Auto в кредитах",
       "credit_multiplier_baseline": "{{value}}, базовая стоимость в кредитах",
       "loading_models": "Загрузка моделей…",
-      "no_matches": "Совпадений нет"
+      "no_matches": "Совпадений нет",
+      "auto_jev": "Авто (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Открыть настройки",
@@ -10666,7 +10667,21 @@
         "saved_tokens": "сэкономлено токенов: {{tokens}}",
         "sent_history": "история {{chars}} символов",
         "sent_label": "Отправлено в Jev",
-        "sent_message": "сообщение {{chars}} символов"
+        "sent_message": "сообщение {{chars}} символов",
+        "history_chars_label": "Отправленный контекст (символов)",
+        "model_baseline_label": "Модель без маршрутизации",
+        "model_baseline_named": "по умолчанию: {{model}}",
+        "model_chosen_label": "Использованная модель",
+        "model_default": "Модель по умолчанию",
+        "model_latency": "{{ms}} мс",
+        "model_not_applied": "не применено — выполнено на {{model}}",
+        "model_tier": "Jev: {{tier}}",
+        "model_tier_label": "Сложность",
+        "model_unpinned": "(не задана)",
+        "point_model_route": "модель",
+        "rate_right_model": "Jev выбрал верную модель",
+        "rate_wrong_model": "Jev выбрал неверную модель",
+        "truncated_turns_label": "Обрезанные предыдущие сообщения"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev посмотрел на этот вызов и отметил его. Это никак не повлияло на то, был ли вызов разрешён: это решила настройка разрешений самой сессии, и вызов всё равно мог быть отклонён.",
@@ -10799,7 +10814,8 @@
       "could_not_send_to_side_chat": "Не удалось отправить в боковой чат",
       "run_in_terminal_liveness_probe_failed_error": "Команда не была отправлена в новый терминал. Его оболочка, возможно, всё ещё работает, поэтому вкладка осталась открытой.",
       "run_in_terminal_shell_alive_error": "Команда не была отправлена в новый терминал, но его оболочка работает — вкладка осталась открытой, чтобы вы могли выполнить команду там.",
-      "run_in_terminal_dispatch_rolled_back_error": "Команда не была отправлена в новый терминал, поэтому этот терминал был закрыт."
+      "run_in_terminal_dispatch_rolled_back_error": "Команда не была отправлена в новый терминал, поэтому этот терминал был закрыт.",
+      "model_auto_jev_description": "Пусть Jev оценивает каждое сообщение и запускает его на модели этого уровня"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

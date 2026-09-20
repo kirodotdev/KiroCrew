@@ -57,9 +57,10 @@ from kiro_crew.decisions.types import Answer, Answers, Question, is_model_id
 logger = logging.getLogger(__name__)
 
 #: Decision points this build ships; an absent name is refused. Lives with the
-#: seam, not in ``config.sections``: nothing in the config is keyed by point name,
-#: and keeping it here keeps the config loader off a hot path's import graph.
-DECISION_POINT_NAMES = ("skills.select", "tool.risk", "message.steer")
+#: seam, not in ``config.sections``: nothing in the config is keyed by point name
+#: -- ``decisions.model_route`` is keyed by TIER, not by point -- and keeping the
+#: tuple here keeps the config loader off a hot path's import graph.
+DECISION_POINT_NAMES = ("skills.select", "tool.risk", "message.steer", "model.route")
 
 #: Points whose request carries TOOL-CALL ARGUMENTS, and which therefore need the
 #: keystone's ``tool_args`` scope on top of consent itself
@@ -375,6 +376,35 @@ def history_budget_chars(config: Any | None = None) -> int:
         logger.debug("decisions: history ceiling unreadable; sending no prior turns")
         return 0
     return min(asked, ceiling)
+
+
+def model_route_map(config: Any | None = None) -> dict[str, str]:
+    """``decisions.model_route`` as a ``{tier: model_id}`` mapping. Never raises.
+
+    Read here for the same reason :func:`timeout_secs` and
+    :func:`history_budget_chars` are: the snapshot read and its fallbacks live
+    with the gate, so a point never imports the config loader onto its own hot
+    path.
+
+    ``""`` is KEPT for a tier, because it is the shipped value and it means
+    "inherit -- leave this turn's model alone", which the log and the strip report
+    rather than treat as absence. Only a non-string is dropped.
+
+    Returns ``{}`` for an absent or unreadable section. Every tier then reads as
+    unpinned, which applies nothing -- the fail-closed direction for a value that
+    decides what a turn costs.
+    """
+    try:
+        raw = getattr(_decisions_config(config), "model_route", None)
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        tier: model.strip()
+        for tier, model in raw.items()
+        if isinstance(tier, str) and isinstance(model, str)
+    }
 
 
 def _budget(name: str, default: int, config: Any | None = None) -> int:

@@ -255,6 +255,7 @@ import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
@@ -940,15 +941,43 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const hiddenModelIds = hiddenModelsQ.data
   const modelPickerConfigured = useModelPickerConfigured()
   const availableModels = effectiveModels
+  // Whether the picker may offer `Auto (Jev)` (see `lib/jevRoute.ts`): the fleet's
+  // answer AND the owner's keystone consent, both required. Two reads the page
+  // already makes for other reasons, so the row costs no new request.
+  const jevDashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: () => api.dashboardConfig(),
+    staleTime: 30_000,
+  })
+  const jevConsentQ = useQuery({
+    queryKey: ['decisionsConsent'],
+    queryFn: () => api.getDecisionsConsent(),
+    // A 404 is "this gateway predates the keystone", not a transient failure: the
+    // row is simply not offered.
+    retry: false,
+  })
+  // NOT offered for a remote-bound session. Its turns run on the peer through
+  // `relay_remote_turn`, which never reaches the routing hook, and the slot-model
+  // route forwards the resolved `auto` to the peer without the flag — so the entry
+  // would be a control that silently does nothing.
+  // The slot answer is the third gate: without one the entry has nowhere to land.
+  // It returns as soon as a slot exists.
+  const jevRouteOn =
+    jevRouteOffered(jevDashCfgQ.data, jevConsentQ.data, !!activeSlot) && !remoteCrew.isRemote
+  const jevRouteLabel = i18nT('pages.chatPage.model_auto_jev_description')
   const modelPickerModels = useMemo(
     () => {
       const pickerSlot = slots.find(slot => slot.key === activeSlot)
-      return filterInteractiveModels(effectiveModels, hiddenModelIds, [
-        pickerSlot?.model || '',
-        pickerSlot?.served_model || '',
-      ])
+      return withJevRoute(
+        filterInteractiveModels(effectiveModels, hiddenModelIds, [
+          pickerSlot?.model || '',
+          pickerSlot?.served_model || '',
+        ]),
+        jevRouteOn,
+        jevRouteLabel,
+      )
     },
-    [effectiveModels, hiddenModelIds, slots, activeSlot],
+    [effectiveModels, hiddenModelIds, slots, activeSlot, jevRouteOn, jevRouteLabel],
   )
   const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelPickerModels)
   // Whether the composer held focus when the picker was opened from its chip
@@ -3022,7 +3051,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // pick snap straight back to e.g. claude-opus-5 — Auto was unselectable.
     // kiro-cli advertises `auto` as a real model id (and its default_model), and
     // the ChatPane + Alt+Shift model-cycle paths already send it verbatim.
-    if (!activeSlot) { setPendingModel(modelName); return }
+    // `pendingModel` is forwarded into slot creation verbatim, and the sentinel is
+    // not a model any provider serves. So it is held as NOTHING: creation omits the
+    // model and the backend resolves the agent's own chain, which is what a held
+    // `auto` would have resolved to anyway. Routing is armed by a pick made once the
+    // slot exists, where the flag is set with it.
+    if (!activeSlot) {
+      if (modelName === JEV_ROUTE_MODEL) { setPendingModel(''); return }
+      setPendingModel(modelName)
+      return
+    }
     try {
       // performSlotSwitch owns the whole protocol: per-slot+field serialized
       // dispatch, latest-request-wins adjudication, hung-request timeout, and
@@ -3036,7 +3074,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           const r = await api.chatSlotModel(activeSlot, modelName)
           return r?.model ?? modelName
         },
-        (value) => dispatch(updateSlot({ key: activeSlot, model: value })))
+          // The routing flag is written from the REQUEST, not from the response's
+          // `model`: the gateway resolves the sentinel to `auto`, so the stored
+          // model cannot tell a routed pick from a plain Auto one. Written on
+          // every pick, because picking a concrete model is what clears it.
+        (value) => dispatch(updateSlot({
+          key: activeSlot,
+          model: value,
+          jev_route: modelName === JEV_ROUTE_MODEL,
+        })))
     } catch (e) {
       // Same failure surface as the agent switch beside this: the shared
       // notice toast, preferring the server's own message. The chip keeps
@@ -7874,7 +7920,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 inputRef={modelInputRef}
                 onListKeyDown={onModelListKeyDown}
                 models={filteredModels}
-                activeModel={shownModel}
+                activeModel={jevRouteShownModel(shownModel, currentSlot)}
                 onSelectModel={pickModel}
                 modelsLoading={remoteCrew.modelsPending}
                 modelsFailed={remoteCrew.failed}

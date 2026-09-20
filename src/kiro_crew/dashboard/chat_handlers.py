@@ -110,7 +110,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     subagents_attached_async,
 )
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.remote_adopt import (
     ADOPT_PEER_MODE_UNKNOWN,
@@ -7713,6 +7713,26 @@ def _model_rejected_reason(model_name: str, provider: str | None = None) -> str 
     return None
 
 
+#: The chat picker's "Auto (Jev)" entry, as the id a client sends for it. NOT a
+#: provider model id and never stored in ``slot.model``: it asks the
+#: ``model.route`` decision point to pick a difficulty tier for each turn, and
+#: until it answers the session runs on the backend default. The prefix is
+#: ``auto`` so a client too old to know the entry (or a backend without the point)
+#: reads it as the Auto it behaves like, and the colon keeps it outside the model
+#: namespace -- no advertised id carries one.
+JEV_ROUTE_MODEL = "auto:jev"
+
+
+def _is_jev_route_pick(raw: object) -> bool:
+    """Whether a request body's ``model`` is the "Auto (Jev)" sentinel.
+
+    Exact identity on a stripped string. A near-miss spelling is NOT this entry
+    and falls through to the ordinary model path, where the guard refuses it --
+    resolving it loosely would turn a typo into paid third-party egress.
+    """
+    return isinstance(raw, str) and raw.strip() == JEV_ROUTE_MODEL
+
+
 def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     """Translate a canonical model key into the id THIS backend accepts.
 
@@ -7906,7 +7926,29 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    model_name = _normalize_model(body.get("model", ""))
+    # The "Auto (Jev)" entry is resolved HERE and nowhere else: every reader below
+    # -- the guard, the live switch, the reset, the session allocation, the
+    # composer chip -- takes the id it produces, which is the plain ``auto`` the
+    # session actually runs on until a tier is answered. The choice itself
+    # survives as ``slot.jev_route`` alone.
+    jev_route = _is_jev_route_pick(body.get("model", ""))
+    if jev_route and not is_owner_dashboard_request(request):
+        # Arming routing is an OWNER action: it hands the per-turn model choice to
+        # the oracle, and a dear tier spends the owner's credential on a model the
+        # caller never named. The cross-app gate above cannot carry that decision --
+        # it admits an allow-listed non-owner whose ``app`` claim is empty -- so the
+        # arm is gated on the same predicate the decision seam's consent route uses.
+        # Only the arm is refused: a plain pick stays open to the same caller.
+        sel().log_api_access(
+            caller="non-owner",
+            operation="chat_slot_model_jev_route",
+            outcome="denied",
+            source="owner_only",
+            resources=f"slot={name}",
+            error="non-owner identity rejected",
+        )
+        return _owner_denial_response(request, "arming Jev routing is owner-only")
+    model_name = "auto" if jev_route else _normalize_model(body.get("model", ""))
     reason = _model_rejected_reason(model_name)
     if reason:
         logger.warning("Slot %s model rejected: %s", name, reason)
@@ -7983,6 +8025,11 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_model", session_key)
         if denied is not None:
             return denied
+        # The routing flag is committed on each SUCCESS path and nowhere else -- see
+        # the two writes below. Nothing is written here, because the busy check
+        # between this line and the transaction answers 409 without a rollback: a
+        # pick that was refused must not change what the next turn runs on.
+        #
         # Checked INSIDE the locks only: a serialized predecessor targeting the
         # same model may have committed while this request waited, and acting
         # again would tear down the session that predecessor just set up.
@@ -8022,7 +8069,14 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             except Exception:  # pragma: no cover - a frozen/slotted stub client
                 pass
             slot._model_pick_gen += 1
-            return web.json_response({"ok": True, "model": model_name})
+            # The one place the flag is recorded on this path, and the reason it is
+            # not written before the branch: an unpinned slot picking "Auto (Jev)"
+            # resolves to the ``auto`` it already holds and lands HERE, so a write
+            # placed only in the transaction below would never run for the
+            # commonest case. This shortcut is a success, so committing is correct.
+            slot.jev_route = jev_route
+            state.push_slots_update()
+            return web.json_response({"ok": True, "model": model_name, "jev_route": jev_route})
         provider = state.sessions.get_provider(session_key)
         if slot.running or (isinstance(provider, LLMProvider) and provider.has_active_turn()):
             # Never tear down an in-flight turn: _try_live_model_switch
@@ -8048,7 +8102,14 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             )
         prior_model = slot.model
         prior_pick_gen = slot._model_pick_gen
+        prior_jev_route = slot.jev_route
         slot.model = model_name
+        # Set on every pick, not only the Jev one: picking a concrete model is the
+        # owner answering the very question the point asks, so it clears the flag
+        # rather than leaving a routing that the next turn would apply over the
+        # model they just chose. Inside the transaction, so ``_rollback_pick``
+        # covers it.
+        slot.jev_route = jev_route
         # Explicit user pick: bump the pick generation so the model-fallback
         # restore probe never overrides this choice (automatic backfill does NOT
         # bump it).
@@ -8072,6 +8133,10 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             if slot._model_pick_gen == prior_pick_gen + 1 and slot.model == model_name:
                 slot.model = prior_model
                 slot._model_pick_gen = prior_pick_gen
+                # The routing choice is part of the same commit: a refused pick
+                # changed nothing, and leaving the flag would route the next turn
+                # for a request the caller was told had failed.
+                slot.jev_route = prior_jev_route
 
         def _live_serves_target(candidate: object) -> bool:
             """True when the live session's BACKEND-RESOLVED model already
@@ -8178,7 +8243,9 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                     _sync_served_model(slot, recheck)
                     _broadcast_context_reset(state, slot.key, recheck)
                     state.push_slots_update()
-                    return web.json_response({"ok": True, "model": model_name})
+                    return web.json_response(
+                        {"ok": True, "model": model_name, "jev_route": jev_route}
+                    )
                 _rollback_pick()
                 return web.json_response(
                     {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
@@ -8297,7 +8364,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                 )
             _broadcast_context_reset(state, slot.key, None)
     state.push_slots_update()
-    model_resp: dict = {"ok": True, "model": model_name}
+    model_resp: dict = {"ok": True, "model": model_name, "jev_route": jev_route}
     if teardown_incomplete:
         # Advisory only — the switch itself succeeded and the response
         # carries the committed state (agent-handler precedent).
@@ -8610,6 +8677,9 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     switched: list[str] = []
     skipped_running: list[str] = []
     unchanged: list[str] = []
+    # Whether any slot's per-turn routing flag was cleared without its model
+    # changing -- the one bulk outcome that is invisible in the three lists below.
+    routing_cleared = False
     failed: list[str] = []
     # Snapshot the slot keys up front: sessions.reset awaits, so iterating the
     # live dict directly would risk a concurrent-modification surprise.
@@ -8671,6 +8741,17 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
                 # Skipped silently, like every other slot the app does not own.
                 continue
             if slot.model == model_name:
+                # The MODEL is unchanged; the routing choice may not be. A slot
+                # already on this model but routed per turn is a slot whose turns
+                # would still be moved off it, so the flag is cleared here as well
+                # -- otherwise the one case where the bulk switch reports "nothing
+                # to do" is the one case where it silently did nothing at all.
+                # Tracked so the push below fires for a slot whose only change is
+                # this: the picker reads the flag, so without a broadcast the chip
+                # keeps naming a routing this request has just stopped.
+                if slot.jev_route:
+                    slot.jev_route = False
+                    routing_cleared = True
                 unchanged.append(name)
                 continue
             if skip_running and slot.running:
@@ -8764,6 +8845,12 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             slot.model = model_name
             # Explicit pick (bulk): same generation bump as the single-slot pick.
             slot._model_pick_gen += 1
+            # And the same clearing of the routing choice. This surface takes no
+            # "Auto (Jev)" target -- it switches many sessions to one model, which
+            # is the opposite of a per-turn tier -- but it is an explicit pick, so
+            # leaving the flag set would route the next turn away from the model
+            # the owner just chose for this slot.
+            slot.jev_route = False
             _broadcast_context_reset(state, slot.key, None)
             switched.append(name)
 
@@ -8778,6 +8865,9 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
         )
         # Guard the push on real progress so partial switches still broadcast
         # even when a later slot's reset failed.
+        state.push_slots_update()
+    elif routing_cleared:
+        # No model moved, but a routing flag did, and the picker renders that.
         state.push_slots_update()
     return web.json_response(
         {

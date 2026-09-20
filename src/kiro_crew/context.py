@@ -4920,11 +4920,11 @@ class ContextBuilder:
             # reaches `build_message` only through `run_in_embed_pool`, so the
             # loop captured at construction runs only the `decide` await.
             def select() -> list[str] | None:
-                from kiro_crew.decisions.points.skills_select import (
+                from kiro_crew.decisions.points import (
                     HISTORY_ROLES,
                     MAX_HISTORY_MESSAGES,
-                    selected_skills,
                 )
+                from kiro_crew.decisions.points.skills_select import selected_skills
 
                 def prior_turns() -> list[dict]:
                     # The cheapest prior-turn source this method can reach: a

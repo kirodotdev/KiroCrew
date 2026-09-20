@@ -187,7 +187,7 @@ class TestRideAlong:
 
         chat_runner._flush_segment(state, slot, "here is the answer")
 
-        assert _strip_of(_assistant(slot)) == STRIP
+        assert _strip_of(_assistant(slot)) == [STRIP]
 
     def test_the_strip_survives_into_the_persisted_transcript_line(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
@@ -197,10 +197,10 @@ class TestRideAlong:
         entry = _build_message_entry_uncached(_assistant(slot))
 
         assert entry is not None
-        assert entry["meta"]["decisions_strip"] == STRIP
+        assert entry["meta"]["decisions_strip"] == [STRIP]
         # Serializable as written: the transcript is JSONL, so a value the writer
         # cannot dump would cost the whole flush, not just this field.
-        assert json.loads(json.dumps(entry))["meta"]["decisions_strip"] == STRIP
+        assert json.loads(json.dumps(entry))["meta"]["decisions_strip"] == [STRIP]
 
     def test_the_live_frame_carries_it_because_it_is_set_before_the_broadcast(self, tmp_path):
         """``slot.append`` broadcasts from inside the call, so a later write misses it."""
@@ -213,7 +213,7 @@ class TestRideAlong:
 
         assistants = [m for m in broadcast if m.get("role") == "assistant"]
         assert len(assistants) == 1
-        assert assistants[0]["meta"]["decisions_strip"] == STRIP
+        assert assistants[0]["meta"]["decisions_strip"] == [STRIP]
 
     def test_the_row_keeps_its_delivery_identity_alongside_the_strip(self, tmp_path):
         """``append`` merges its minted ``mid`` into meta; it must not replace it."""
@@ -223,7 +223,7 @@ class TestRideAlong:
         chat_runner._flush_segment(state, slot, "here is the answer")
 
         meta = _assistant(slot)["meta"]
-        assert meta["decisions_strip"] == STRIP
+        assert meta["decisions_strip"] == [STRIP]
         assert meta.get("mid")
 
     @pytest.mark.asyncio
@@ -241,7 +241,7 @@ class TestRideAlong:
         rows = _assistant_rows(slot)
         assert rows, f"expected a persisted partial reply, got {slot.messages}"
         assert "half an answer" in rows[0]["content"]
-        assert _strip_of(rows[0]) == STRIP
+        assert _strip_of(rows[0]) == [STRIP]
 
 
 class TestNothingPublished:
@@ -341,7 +341,7 @@ class TestAnOutcomeOnlyReachesItsOwnTurnsReply:
         outcomes.publish(effective_session_key(slot), STRIP)
         chat_runner._flush_segment(state, slot, "here is the answer")
 
-        assert _strip_of(_assistant(slot)) == STRIP
+        assert _strip_of(_assistant(slot)) == [STRIP]
 
     def test_a_failing_registry_cannot_cost_the_turn(self, tmp_path, monkeypatch):
         import kiro_crew.decisions.outcomes as outcomes_mod
@@ -370,5 +370,5 @@ class TestConsumedOnce:
 
         rows = _assistant_rows(slot)
         assert len(rows) == 2
-        assert _strip_of(rows[0]) == STRIP
+        assert _strip_of(rows[0]) == [STRIP]
         assert _strip_of(rows[1]) is None

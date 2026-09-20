@@ -4038,6 +4038,11 @@
       "defaultValue": {
         "bucket": 100,
         "history_budget_chars": 0,
+        "model_route": {
+          "simple": "",
+          "medium": "",
+          "complex": ""
+        },
         "provider": {
           "endpoint": "https://api.typesafe.ai/v1/systemone",
           "api_key": "secret://TYPESAFE_API_KEY",
@@ -4073,6 +4078,38 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "decisions.model_route",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Model per difficulty tier",
+      "help": "Which model answers a chat turn Jev put in each difficulty tier, for a session whose model is set to 'Auto (Jev)' in the chat model picker. Keys are the three tiers the question offers -- 'simple', 'medium', 'complex' -- and each value is a model id the provider advertises to your account, exactly as the chat model picker spells it. Every tier is EMPTY by default, which means inherit: the turn keeps the model its session is already on, and the decision is still recorded so you can see which tier Jev chose before you pin anything. No model id is named for you, because an id your account is not offered would fail on the first prompt. 'auto' means the same as empty. An id your account cannot run keeps the session's model too and records why in the decision log. Routing a turn to a dearer model costs more, which is why it happens only for a session whose owner picked 'Auto (Jev)' -- a manual model choice is never overridden.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "simple": "",
+        "medium": "",
+        "complex": ""
+      }
+    },
+    {
+      "path": "decisions.model_route.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "decisions.provider",

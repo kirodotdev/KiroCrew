@@ -7229,7 +7229,8 @@
       "credit_multiplier": "{{value}} o custo em créditos do Auto",
       "credit_multiplier_baseline": "{{value}}, o custo em créditos de referência",
       "loading_models": "Carregando modelos…",
-      "no_matches": "Nenhuma correspondência"
+      "no_matches": "Nenhuma correspondência",
+      "auto_jev": "Auto (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Gerenciar nas configurações",
@@ -10523,7 +10524,21 @@
         "saved_tokens": "{{tokens}} tokens economizados",
         "sent_history": "histórico {{chars}} caracteres",
         "sent_label": "Enviado ao Jev",
-        "sent_message": "mensagem {{chars}} caracteres"
+        "sent_message": "mensagem {{chars}} caracteres",
+        "history_chars_label": "Contexto enviado (caracteres)",
+        "model_baseline_label": "Modelo sem roteamento",
+        "model_baseline_named": "padrão: {{model}}",
+        "model_chosen_label": "Modelo usado",
+        "model_default": "Modelo padrão",
+        "model_latency": "{{ms}} ms",
+        "model_not_applied": "não aplicado – executado em {{model}}",
+        "model_tier": "Jev: {{tier}}",
+        "model_tier_label": "Dificuldade",
+        "model_unpinned": "(não fixado)",
+        "point_model_route": "modelo",
+        "rate_right_model": "Jev escolheu o modelo certo",
+        "rate_wrong_model": "Jev escolheu o modelo errado",
+        "truncated_turns_label": "Turnos anteriores cortados"
       },
       "toolRiskBadge": {
         "annotation_title": "O Jev olhou esta chamada e sinalizou-a. Isso não mudou nada sobre a chamada ter sido permitida: isso foi decidido pela configuração de permissões desta sessão, e a chamada pode ter sido recusada mesmo assim.",
@@ -10655,7 +10670,8 @@
       "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral",
       "run_in_terminal_liveness_probe_failed_error": "O comando não foi enviado para o novo terminal. O shell dele pode ainda estar em execução, por isso a aba foi mantida aberta.",
       "run_in_terminal_shell_alive_error": "O comando não foi enviado para o novo terminal, mas o shell dele está em execução — a aba foi mantida aberta para você executar o comando ali.",
-      "run_in_terminal_dispatch_rolled_back_error": "O comando não foi enviado para o novo terminal, por isso esse terminal foi fechado."
+      "run_in_terminal_dispatch_rolled_back_error": "O comando não foi enviado para o novo terminal, por isso esse terminal foi fechado.",
+      "model_auto_jev_description": "Deixe o Jev avaliar cada turno e executá-lo no modelo daquele nível"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

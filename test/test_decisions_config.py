@@ -37,6 +37,7 @@ class TestDefaults:
         assert {f.name for f in fields(DecisionsConfig)} == {
             "bucket",
             "history_budget_chars",
+            "model_route",
             "provider",
         }
 
@@ -106,7 +107,7 @@ class TestMigrationFromThePreviewSpelling:
         from dataclasses import asdict
 
         saved = asdict(DecisionsConfig.from_raw({"preview": True, "points": {"a": {"arm": "off"}}}))
-        assert set(saved) == {"bucket", "history_budget_chars", "provider"}
+        assert set(saved) == {"bucket", "history_budget_chars", "model_route", "provider"}
         assert "arm" not in json.dumps(saved)
         assert "enabled" not in json.dumps(saved)
 

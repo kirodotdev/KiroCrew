@@ -15,7 +15,7 @@ import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHig
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import FileChangeChips, { type FileChangeEntry } from '../../components/FileChangeChips'
 import DecisionStrip from './DecisionStrip'
-import { readDecisionStrip } from './decisionRecord'
+import { readDecisionRecords } from './decisionRecord'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
@@ -320,7 +320,9 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // already locale-formatted by the `format.ts` seam.
   // Validated here rather than at the host, so the strip mounts only for a row
   // that really carries one and the hosts stay a one-property read.
-  const decisionRecord = useMemo(() => readDecisionStrip(decisionsStrip), [decisionsStrip])
+  // Every decision this reply carries, not just the first: a turn can be decided
+  // by more than one point, and each gets its own row.
+  const decisionRecords = useMemo(() => readDecisionRecords(decisionsStrip), [decisionsStrip])
   const turnStatsTitle = (() => {
     if (!turnStats) return undefined
     const elapsed = fmtTurnElapsed(turnStats.elapsed_ms)
@@ -541,9 +543,16 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         read as a receipt for something else. Not gated on `isStreaming` — unlike
         the end-of-turn summaries below it, the record is stamped whole or not at
         all, so there is no partial form to withhold. */}
-    {decisionRecord && (
-      <DecisionStrip record={decisionRecord} disclosureKey={messageTs ? `dstrip-${messageTs}` : undefined} />
-    )}
+    {decisionRecords.map(record => (
+      // Keyed by POINT, not by index: the disclosure key is derived from it too, so
+      // an index key would hand one row's remembered expansion to a different
+      // decision the next time the list's order changed.
+      <DecisionStrip
+        key={record.point}
+        record={record}
+        disclosureKey={messageTs ? `dstrip-${record.point}-${messageTs}` : undefined}
+      />
+    ))}
     {fileChanges && fileChanges.length > 0 && !isStreaming && (
       /* Pass `onFileOpen` by IDENTITY — a `(p) => onFileOpen(p)` wrapper here is
          a new function every render, which busts FileChangeChips' memo and

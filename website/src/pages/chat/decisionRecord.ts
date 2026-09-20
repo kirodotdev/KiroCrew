@@ -1,19 +1,26 @@
 /**
  * The read model behind the transcript's decision strip.
  *
- * The gateway stamps one record on the row a decision shaped. A turn whose skill
- * set was chosen by asking Jev (`decisions/points/skills_select.py`) carries it on
- * the ASSISTANT row that ends the turn; a message whose mid-turn handling was
- * chosen (`decisions/points/message_steer.py`) carries it on that message's own
- * USER row, because that is what the decision was about. Both render from the
- * record and nothing else: neither makes a request of its own to learn what
- * happened, so a transcript reloaded from disk and one that arrived live say the
- * same thing.
+ * The gateway stamps one record on the row a decision shaped. The decisions of a
+ * turn ride the ASSISTANT row that ends it: the skill set chosen by asking Jev
+ * (`decisions/points/skills_select.py`) and the model tier it routed the turn to
+ * (`decisions/points/model_route.py`). A message whose mid-turn handling was
+ * chosen (`decisions/points/message_steer.py`) carries its record on that
+ * message's own USER row, because that is what the decision was about. Every one
+ * renders from the record and nothing else: none makes a request of its own to
+ * learn what happened, so a transcript reloaded from disk and one that arrived
+ * live say the same thing.
  *
- * Which record a payload is comes from its own `point`, never from which fields
- * happen to be present: an absent point reads as `skills.select`, which is what
- * the only earlier producer stamped, and a named point this reader does not know
- * draws nothing rather than being guessed at as the older shape.
+ * The field carries a LIST, because two points can decide one reply. A bare
+ * object is still accepted and read as a list of one: rows written before the
+ * second point existed carry that shape, and they are history this reader must
+ * keep rendering.
+ *
+ * Which record a payload is comes from its own `point`, never from its position
+ * in the list or from which fields happen to be present. A record whose point is
+ * unknown to this reader draws nothing rather than being guessed at as the older
+ * shape -- a model row rendered as a skill row would print two empty skill lists
+ * and a check mark saying the sides agreed.
  *
  * Every field is validated here rather than at the render site, for the reason
  * `decisionsPreview.ts` gives about consent: this payload names what left the
@@ -36,7 +43,16 @@
  */
 import type { DecisionFeedbackSide, DecisionVerdictValue } from '../../api/client'
 import type { ChatMessage } from '../../types'
-import { DECISIONS_LIVE_POINT, DECISIONS_STEER_POINT } from '../settings/decisionsPreview'
+import { DECISIONS_LIVE_POINT, DECISIONS_MODEL_POINT, DECISIONS_STEER_POINT } from '../settings/decisionsPreview'
+
+/** Most records one reply may carry, mirroring the gateway's own per-session cap.
+ *
+ *  Two points stamp an assistant row, so this bounds a producer that stamped
+ *  something unexpected rather than anything real: a row is rendered, so an
+ *  unbounded list would be an unbounded number of mounted components in one
+ *  transcript row.
+ */
+const MAX_RECORDS = 8
 
 /** A skill the answer named that the gate then refused, with its own score. */
 export interface DecisionStripDropped {
@@ -87,6 +103,50 @@ export interface DecisionStripRecord {
   dropped: DecisionStripDropped[]
   /** Why the decision failed, or `null` when it did not. */
   error: string | null
+}
+
+/**
+ * One model-routing decision, as the strip prints it.
+ *
+ * `point` is `model.route` and is what tells this record from the skill one, so
+ * it is kept rather than derived: the discriminator has to survive into the
+ * rendered value, or the renderer would have to re-sniff fields.
+ */
+export interface DecisionModelRecord {
+  /** Identifies the turn this decision belongs to; the feedback POST's subject. */
+  turnId: string
+  /** Always `model.route`. */
+  point: typeof DECISIONS_MODEL_POINT
+  /** The difficulty tier Jev answered: `simple`, `medium` or `complex`. */
+  tier: string
+  /** The model the tier routed this turn to, or `''` when that tier is unpinned
+   *  and the turn kept its session's model. */
+  modelChosen: string
+  /** The model the turn would have run on, or `''` when the backend chose. */
+  baselineModel: string
+  /** Jev's own confidence, or `null` when the answer carried none. */
+  p: number | null
+  /** How long the decision took, in whole milliseconds. */
+  latencyMs: number
+  /** Characters of conversation history the question carried. */
+  historyChars: number
+  /** Prior turns clipped to fit the question inside its budget. */
+  truncated: number
+  /** Whether the switch took. `true` for a row that predates the field: only an
+   *  observed failure writes `false`, so an older row must not read as one. */
+  applied: boolean
+  /** The model the turn RAN on, when that was observed. `''` otherwise. */
+  modelUsed: string
+  /** Why the decision failed, or `null` when it did not. */
+  error: string | null
+}
+
+/** Either decision, as the strip receives it. */
+export type DecisionRecord = DecisionStripRecord | DecisionModelRecord
+
+/** Whether *record* is a model-routing decision rather than a skill selection. */
+export function isModelRecord(record: DecisionRecord): record is DecisionModelRecord {
+  return record.point === DECISIONS_MODEL_POINT
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -268,6 +328,94 @@ export function readSteerRecord(raw: unknown): SteerDecisionRecord | null {
     p,
     latencyMs: asCount(root.latency_ms),
   }
+}
+
+/**
+ * Validate one raw model-routing record. `null` means "draw nothing".
+ *
+ * `tier` is required: it IS the answer, and the whole claim this row makes is
+ * which tier the turn landed in. It is NOT held against a fixed list of three --
+ * the tiers are the backend's own question domain, and a reader that refused a
+ * fourth would hide a shipped tier instead of showing it.
+ *
+ * `modelChosen` may be `''`, and that is the SHIPPED state rather than a broken
+ * producer: every tier of `decisions.model_route` is unpinned until an owner pins
+ * one, because no model id may be hardcoded as a default. The row then reads
+ * "complex -> (unpinned)" -- the tier was answered and nothing was applied, which
+ * is exactly the evidence an owner pins from. Refusing it would hide the feature
+ * for every install that has not been configured yet.
+ */
+export function readModelRecord(raw: unknown): DecisionModelRecord | null {
+  const root = asRecord(raw)
+  if (!root) return null
+  const turnId = typeof root.turn_id === 'string' ? root.turn_id : ''
+  if (!turnId) return null
+  const tier = typeof root.tier === 'string' ? root.tier.trim() : ''
+  if (!tier) return null
+  const rawP = root.p
+  const p = typeof rawP === 'number' && Number.isFinite(rawP) && rawP >= 0 && rawP <= 1 ? rawP : null
+  const error = typeof root.error === 'string' && root.error.trim() ? root.error : null
+  return {
+    turnId,
+    point: DECISIONS_MODEL_POINT,
+    tier,
+    // `''` for an unpinned tier, and for a non-string: both mean "no model was
+    // applied", which is what the row prints.
+    modelChosen: typeof root.model_chosen === 'string' ? root.model_chosen.trim() : '',
+    // `''` is a real value and the common one: it is what the gateway records for
+    // a session running the backend's own default, and printing "the default"
+    // needs to be distinguishable from printing a model name.
+    baselineModel: typeof root.baseline_model === 'string' ? root.baseline_model.trim() : '',
+    p,
+    latencyMs: asCount(root.latency_ms),
+    historyChars: asCount(root.history_chars),
+    truncated: asCount(root.truncated),
+    // Only an exact `false` is a failed switch. The field is absent on an
+    // unpinned row, which applied nothing by design, and on rows written before
+    // it existed -- neither is a switch that did not take.
+    applied: root.applied !== false,
+    modelUsed: typeof root.model_used === 'string' ? root.model_used.trim() : '',
+    error,
+  }
+}
+
+/**
+ * Validate one raw record of an assistant row's point. `null` means "draw nothing".
+ *
+ * Dispatched on the payload's own `point`. An absent point reads as
+ * `skills.select`, which is what the older producer stamped and what the skill
+ * reader already defaults to; any other named point draws nothing, because
+ * rendering an unknown record through a known reader is how a row comes to print
+ * a claim nobody made. `message.steer` is among the points that draw nothing
+ * HERE: its record rides the user row and is read by `readSteerRecord`, so an
+ * assistant row carrying one is a producer mistake rather than a row to render.
+ */
+export function readDecisionRecord(raw: unknown): DecisionRecord | null {
+  const root = asRecord(raw)
+  if (!root) return null
+  const point = typeof root.point === 'string' && root.point ? root.point : DECISIONS_LIVE_POINT
+  if (point === DECISIONS_MODEL_POINT) return readModelRecord(root)
+  if (point !== DECISIONS_LIVE_POINT) return null
+  return readDecisionStrip(root)
+}
+
+/**
+ * Every record on one assistant row, in the order the gateway published them.
+ *
+ * Accepts the LIST the gateway stamps and the bare object an earlier release
+ * stamped, so one reader covers a live frame and a reloaded transcript of any
+ * age. An unreadable member is dropped rather than failing the row: the records
+ * are independent decisions, and losing the receipt for one is not a reason to
+ * lose the other's.
+ */
+export function readDecisionRecords(raw: unknown): DecisionRecord[] {
+  const list = Array.isArray(raw) ? raw : [raw]
+  const out: DecisionRecord[] = []
+  for (const entry of list.slice(0, MAX_RECORDS)) {
+    const record = readDecisionRecord(entry)
+    if (record) out.push(record)
+  }
+  return out
 }
 
 /**

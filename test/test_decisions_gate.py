@@ -577,7 +577,12 @@ class TestPointName:
         decides what may send conversation text off the machine, and a test that
         only asked "is my name in it" would let one arrive unnoticed.
         """
-        assert DECISION_POINT_NAMES == ("skills.select", "tool.risk", "message.steer")
+        assert DECISION_POINT_NAMES == (
+            "skills.select",
+            "tool.risk",
+            "message.steer",
+            "model.route",
+        )
 
     @pytest.mark.parametrize("unknown", ["skills.dedupe", "cron.novelty", "", "skills.Select"])
     def test_an_unknown_point_is_refused_even_when_enabled(

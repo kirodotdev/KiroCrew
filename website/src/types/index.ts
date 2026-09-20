@@ -1042,6 +1042,15 @@ export interface ChatSlot {
    *  the absence of an answer, never a denial. DISPLAY only — the pin is
    *  deliberately kept when withheld, so this must not drive a write. */
   model_withheld?: boolean | null
+  /** Whether this session's turns ask Jev which model tier to run on -- the chat
+   *  picker's `Auto (Jev)` entry (`lib/jevRoute.ts`, `decisions/points/model_route.py`).
+   *
+   *  Shipped on every slot, so "the owner picked a model by hand" is a positive
+   *  value rather than an absent key. Unlike `model_withheld` and `served_model`
+   *  this IS the owner's own choice, so it drives the picker's highlight: a routed
+   *  slot stores `model: 'auto'`, and highlighting the Auto row would name a
+   *  behaviour the session does not have. */
+  jev_route?: boolean
   /** The model id the live session actually resolved to; `''`/absent when not
    *  known. A slot with no pin — or one whose pin was withheld — runs on the
    *  backend's own choice, which the pin cannot name, so this is what lets a

@@ -7023,7 +7023,8 @@
       "credit_multiplier": "积分消耗为 Auto 的 {{value}}",
       "credit_multiplier_baseline": "{{value}}，积分消耗基准",
       "loading_models": "正在加载模型…",
-      "no_matches": "无匹配项"
+      "no_matches": "无匹配项",
+      "auto_jev": "自动 (Jev)"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "设置中管理",
@@ -10237,7 +10238,21 @@
         "saved_tokens": "省下 {{tokens}} 个 token",
         "sent_history": "历史 {{chars}} 字符",
         "sent_label": "发送给 Jev",
-        "sent_message": "消息 {{chars}} 字符"
+        "sent_message": "消息 {{chars}} 字符",
+        "history_chars_label": "发送的上下文（字符数）",
+        "model_baseline_label": "未路由时的模型",
+        "model_baseline_named": "默认：{{model}}",
+        "model_chosen_label": "使用的模型",
+        "model_default": "内置默认模型",
+        "model_latency": "{{ms}} 毫秒",
+        "model_not_applied": "未应用 — 在 {{model}} 上运行",
+        "model_tier": "Jev：{{tier}}",
+        "model_tier_label": "难度",
+        "model_unpinned": "(未指定)",
+        "point_model_route": "模型",
+        "rate_right_model": "Jev 选对了模型",
+        "rate_wrong_model": "Jev 选错了模型",
+        "truncated_turns_label": "被截断的历史轮次"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev 看过这次调用并做了标记。标记不会影响这次调用是否被允许：那由本会话自己的权限设置决定，而且这次调用仍可能已被拒绝。",
@@ -10367,7 +10382,8 @@
       "could_not_send_to_side_chat": "无法发送到随手问",
       "run_in_terminal_liveness_probe_failed_error": "命令未发送到新终端。终端进程可能仍在运行，因此标签页保持打开。",
       "run_in_terminal_shell_alive_error": "命令未发送到新终端，但终端进程正在运行，标签页已保持打开，可在其中运行该命令。",
-      "run_in_terminal_dispatch_rolled_back_error": "命令未发送到新终端，因此该终端已关闭。"
+      "run_in_terminal_dispatch_rolled_back_error": "命令未发送到新终端，因此该终端已关闭。",
+      "model_auto_jev_description": "让 Jev 判断每一轮的难度，并用该难度对应的模型来回答"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
