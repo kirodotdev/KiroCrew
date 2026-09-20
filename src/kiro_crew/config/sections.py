@@ -3853,16 +3853,20 @@ class SkillsConfig:
             "per-turn word-overlap trigger matching.",
         ),
     )
-    # ── Lazy skill injection (opt-in, like MCP prewarm) ──
+    # ── Skill index mode ──
     lazy_load: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Lazy Skill Injection",
-            "When true, show a bounded usage-ranked index of on-demand skills instead "
-            "of the default short skill_search discovery entry. Both modes use the "
-            "same Crew background budget, independent of model window size. Pinned "
-            "instructions, native skill mappings, explicit loading and trigger gates "
-            "are preserved.",
+            "When true (the default), show a bounded usage-ranked index of on-demand "
+            "skills, each with its path, plus a line naming the families the index "
+            "leaves out. Set to false for the shorter entry that names only the eight "
+            "hottest skills and points at skill_search for the rest. Both modes use the "
+            "same Crew background budget, independent of model window size, and neither "
+            "applies to an agent with its own skill:// mapping, which gets a bounded "
+            "directory of mapped skills with complete search, paginated listing and exact "
+            "reads on demand. Required pinned instructions share an explicit startup "
+            "capacity; explicit loading and trigger gates are preserved.",
         ),
     )
     # ── Auto skill creation ──

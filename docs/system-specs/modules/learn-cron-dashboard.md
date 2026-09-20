@@ -3756,3 +3756,8 @@ notebook indexes and query failures return `markdown_status: index_unavailable`
 and a notice that missing results do not prove missing memory. Private V2 never
 falls back to Markdown/Global. Lessons remain complete at startup, including
 consolidated corrections; explicit recall spends its budget on facts and episodes.
+
+Installed skill discovery resolves the signed session's active agent mapping and
+project. Search/list/read share that scope, return stable full keys, and use offset
+pagination. Search responses include an incomplete flag while bounded body indexing
+is still progressing; the MCP renderer makes this visible rather than claiming absence.

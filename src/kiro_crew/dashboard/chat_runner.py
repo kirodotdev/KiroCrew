@@ -54,7 +54,11 @@ from kiro_crew.acp.types import (
     classify_stop_reason,
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
-from kiro_crew.agent_discovery import agent_welcome_message, warm_project_agent_names
+from kiro_crew.agent_discovery import (
+    agent_welcome_message,
+    session_skill_globs,
+    warm_project_agent_names,
+)
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
@@ -4686,7 +4690,10 @@ def _expand_dollar_skills(
         return message, 0
     skills = _get_skills(state)
     try:
-        resolved = skills.resolve_dollar_skills(message, slot.project or None)
+        only = session_skill_globs(
+            session_key, slot.agent or "kirocrew", project_dir=slot.project or None
+        )
+        resolved = skills.resolve_dollar_skills(message, slot.project or None, only=only)
     except Exception:
         logger.exception("dollar-skill resolution failed")
         # Audit the failed resolution attempt — the security-controls guideline

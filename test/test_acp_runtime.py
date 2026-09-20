@@ -1803,12 +1803,15 @@ def test_cold_start_admission_registry_releases_contended_closed_loop(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("project_skills", [True, False])
 async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     tmp_path,
     monkeypatch,
+    project_skills,
 ):
     import kiro_crew.acp.runtime as runtime_mod
 
+    monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "1" if project_skills else "0")
     macos_dir = tmp_path / "Kiro CLI.app" / "Contents" / "MacOS"
     macos_dir.mkdir(parents=True)
     executable = macos_dir / "kiro-cli"
@@ -1865,7 +1868,12 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     with pytest.raises(_StopSpawn):
         await runtime.spawn()
 
-    assert wrapped["argv"] == [launch_path, "acp", "--agent", runtime._agent]
+    if project_skills:
+        native_agent = runtime._native_skill_projection.agent(runtime._agent)
+    else:
+        assert runtime._native_skill_projection is None
+        native_agent = runtime._agent
+    assert wrapped["argv"] == [launch_path, "acp", "--agent", native_agent]
     assert wrapped["mode"] == "auto"
     wrap_kwargs = dict(wrapped["kwargs"])
     # The per-process scratch window is allocated at spawn time; its path is
@@ -1883,7 +1891,7 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
         launch_path,
         "acp",
         "--agent",
-        runtime._agent,
+        native_agent,
     )
     spawn_kwargs = wrapped["spawn_kwargs"]
     assert isinstance(spawn_kwargs, dict)
@@ -2467,7 +2475,15 @@ async def test_kill_keeps_the_label_when_no_status_ever_arrives(caplog, monkeypa
     proc.wait = _never
 
     with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
-        await rt.kill(reason="failed session setup cleanup")
+        from kiro_crew import platform_compat
+
+        if platform_compat.IS_WINDOWS:
+            # The owned-handle drain cannot confirm an exit. It preserves the
+            # process for retry and reports the timeout to its caller.
+            with pytest.raises(asyncio.TimeoutError):
+                await rt.kill(reason="failed session setup cleanup")
+        else:
+            await rt.kill(reason="failed session setup cleanup")
 
     summary = rt.death_summary()
     assert summary is not None

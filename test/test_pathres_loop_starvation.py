@@ -52,6 +52,28 @@ def _refuse_candidate_resolution(expanded: str) -> set[str]:
 class TestIsSensitiveResolvedPath:
     """The pre-resolved gate: same verdicts as ``is_sensitive_path``, no pool hop."""
 
+    def test_duplicate_override_leaves_resolve_once_per_fresh_build(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
+        roots = security.paths._resolve_root_anchors(str(tmp_path))
+        calls = []
+        generation = ["one"]
+
+        def resolve(path):
+            calls.append(path)
+            return path + generation[0]
+
+        monkeypatch.setattr(security.paths, "_realpath_or_none", resolve)
+        leaves = [".kiro/crew/token_signing.key", ".kirocrew/token_signing.key"]
+        first = security.paths._home_dir_targets_uncached(leaves, roots)
+        target = os.path.join(roots.crew_home, "token_signing.key")
+        assert calls.count(target) == 1
+        generation[0] = "two"
+        second = security.paths._home_dir_targets_uncached(leaves, roots)
+        assert calls.count(target) == 2
+        assert (target + "one").casefold() in first
+        assert (target + "two").casefold() in second
+        assert (target + "one").casefold() not in second
+
     def test_a_canonical_credential_path_is_still_refused(self, monkeypatch) -> None:
         monkeypatch.setattr(security, "_resolved_forms_bounded", _refuse_candidate_resolution)
         real = os.path.realpath(os.path.expanduser("~/.aws/credentials"))
@@ -73,6 +95,20 @@ class TestIsSensitiveResolvedPath:
         assert parents, "no keystone artifact parent resolved; the fixture home is wrong"
         artifact = os.path.join(sorted(parents)[0], "x.tmp")
         assert security.is_sensitive_resolved_path(artifact) is True
+
+    def test_plain_skill_checks_fresh_sensitive_targets_without_artifact_lookup(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        calls = []
+        original = security.paths._home_dir_targets
+
+        def counted(home_dirs, **kwargs):
+            calls.append(tuple(home_dirs))
+            return original(home_dirs, **kwargs)
+
+        monkeypatch.setattr(security.paths, "_home_dir_targets", counted)
+        assert not security.is_sensitive_resolved_path(os.path.realpath(tmp_path / "SKILL.md"))
+        assert calls == [tuple(security.paths._SENSITIVE_HOME_DIRS)]
 
     def test_the_plain_gate_still_resolves_its_candidate(self, tmp_path) -> None:
         # Control: the ordinary gate keeps submitting the candidate. If this

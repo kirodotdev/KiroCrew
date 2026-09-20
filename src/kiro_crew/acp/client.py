@@ -7560,7 +7560,21 @@ class AcpClient:
             )
             if overlap:
                 raise AcpError(overlap)
-            argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
+            from kiro_crew.acp.skill_projection import prepare_native_skill_projection
+
+            self._native_skill_projection = await asyncio.to_thread(
+                prepare_native_skill_projection, self._work_dir
+            )
+            argv = [
+                kiro_bin,
+                KIRO_CLI_SUBCMD,
+                "--agent",
+                (
+                    self._native_skill_projection.agent(self._agent)
+                    if self._native_skill_projection is not None
+                    else self._agent
+                ),
+            ]
             spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
             stderr_label = KIRO_CLI_BIN
 
@@ -8964,6 +8978,9 @@ class AcpClient:
         if not self._process or not self._process.stdin:
             raise AcpError("ACP process not running")
 
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is not None:
+            params = projection.request(method, params)
         req_id = self._next_req_id()
         req = JsonRpcRequest(method=method, params=params, id=req_id)
         data = json.dumps(req.to_dict()) + "\n"
@@ -9090,6 +9107,9 @@ class AcpClient:
         if isinstance(data, dict) and self.memory_mode == "persistent":
             await record_frame(self.backend, data, len(line))
 
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is not None and isinstance(data, dict):
+            data = projection.frame(data)
         return JsonRpcMessage(
             id=data.get("id"),
             method=data.get("method"),

@@ -51,6 +51,21 @@ def _fake_process_admission(monkeypatch):
     monkeypatch.setattr(client_mod.platform_compat, "create_windows_cleanup_owned_process", create)
 
 
+@pytest.fixture(autouse=True)
+def _native_projection_for_fake_processes(monkeypatch):
+    from kiro_crew.acp import skill_projection
+
+    loop_thread = threading.current_thread()
+
+    def prepare(work_dir):
+        assert threading.current_thread() is not loop_thread
+        return skill_projection.NativeSkillProjection({"kirocrew": "kirocrew-skill-view-test"})
+
+    # Launch lifecycle tests own no native agent tree. Keep the projection hop
+    # real and off-loop; its file and mapping behavior has separate coverage.
+    monkeypatch.setattr(skill_projection, "prepare_native_skill_projection", prepare)
+
+
 async def _stop_stderr_drain(client: AcpClient) -> None:
     """Cancel and await the stderr-drain task a mocked _spawn started.
 

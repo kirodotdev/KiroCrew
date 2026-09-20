@@ -68,6 +68,7 @@ from kiro_crew.solo_spawn import SOLO_SPAWN_REASONS
 # Max lengths for string inputs
 MAX_TOOL_NAME_LEN = 256
 MAX_SHORT_STRING = 500  # names, IDs, categories
+MAX_SKILL_KEY_CHARS = 32768  # nested catalog keys, transported in JSON for exact reads
 MAX_MEDIUM_STRING = 5_000  # messages, rules
 MAX_LONG_STRING = 50_000  # task specs, inline content
 # Longest backend-authored ACP session id Kiro Crew RETAINS in a store of its
@@ -1419,8 +1420,11 @@ UPDATE_MESSAGE_SCHEMA = ToolSchema(
 SKILL_SEARCH_SCHEMA = ToolSchema(
     tool_name="skill_search",
     fields=[
-        FieldSpec("query", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("query", str, max_len=MAX_SHORT_STRING),
         FieldSpec("limit", int),
+        FieldSpec("offset", int),
+        FieldSpec("action", str, allowed=frozenset({"search", "list", "read"})),
+        FieldSpec("key", str, max_len=MAX_SKILL_KEY_CHARS),
     ],
 )
 

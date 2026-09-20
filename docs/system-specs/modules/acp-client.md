@@ -4,6 +4,71 @@
 
 The ACP layer spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for `kiro-cli acp` or `claude-agent-acp`, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. All protocol constants in `acp/types.py`.
 
+## Native skill startup views
+
+Native CLI launches prepare a `skill_projection` after the existing spec freshness
+check. The alias preserves the prompt, approval policy and non-skill resources,
+while Crew retains the authored skill mapping for scoped discovery. A workspace
+CLI overlay suppresses implicit native resource inheritance; explicit steering and
+AGENTS.md resources preserve enabled inheritance. Aliases are excluded from Crew's
+agent roster, translated on `session/set_mode`, and normalized in incoming mode and
+agent-name fields. The original agent name remains the Crew session identity.
+Both the direct client and multiplexed runtime apply the same preparation.
+Projection defaults to enabled. Set `KIROCREW_NATIVE_SKILL_PROJECTION=0` in the
+Crew process environment and restart Crew's native sessions to roll back to
+authored native agents. Disabled launches restore the Crew-owned inheritance
+overlay before spawning and bypass alias translation and projected search
+requirements. Existing governance, sandbox and signed-session identity checks
+still apply. The switch is latched at spawn; mode changes in a running projected
+process keep projection enabled until restart. Rollback restores native skill
+metadata enumeration, so the bounded native startup guarantee no longer applies.
+The new alias integration has fixture coverage; an end-to-end native CLI probe
+remains outstanding. The enabled default is an explicit rollout decision.
+Mapped agents and the default `kirocrew` agent expose the single
+`@kirocrew-core/skill_search` tool when the authored tool list does not already
+include it. Unmapped custom agents gain no tools or servers and have an empty
+discovery scope. The added tool uses the managed server declaration without
+adding auto-approval. Native `/agent` mutations are refused with a pointer to Crew's
+agent selector, which updates both the native mode and Crew's template binding.
+Read-only native agent listing/schema commands remain available. Mode activation
+refreshes the view inside the existing derived-spec freshness bracket.
+The reserved core server's command and environment are pinned to the managed
+declaration. Explicit search exclusions disable that agent's projected view with an
+actionable error. The reserved server's `disabled` must be a boolean and
+`disabledTools` a list of strings; null or malformed values fail only that agent
+with an actionable error instead of aborting preparation of healthy agents.
+Shared runtimes derive session control-plane elements from the
+prepared view, then attach the existing signed session token. An existing broker
+element wins; a configuration whose native restrictions prevent a scoped identity
+element is refused instead of silently falling back to global skill discovery.
+
+The workspace overlay owns `chat.disableInheritingDefaultResources=true` while
+Crew supplies discovery. Only literal JSON `true` in the original native setting
+disables inherited steering/AGENTS files; malformed values such as `"false"` or
+`1` preserve those instructions. Rollback still restores the original local value
+and key presence unchanged. For an inherited global preference, global changes are
+re-read at each launch. A pre-existing local preference is preserved in
+`kirocrew.skillDiscovery.inheritFiles`; edit that boolean to change explicit
+steering/AGENTS inheritance while retaining the native skill metadata bound.
+This overlay also affects standalone native custom agents in that workspace.
+The [Kiro CLI 2.10 release notes](https://kiro.dev/changelog/cli/2-10/)
+document this setting and agent-config hot reload. No documented per-invocation
+settings channel was found; changing `KIRO_HOME` would also relocate native
+identity and session state, so it is not used for this overlay.
+Crew records the original local inheritance key's presence and value in
+`kirocrew.skillDiscovery.previousInheritance`. Rollback restores that snapshot
+only while the native key still equals Crew's asserted `true`, removes Crew's
+overlay markers and preserves unrelated settings and a native key that the
+operator changed or removed. Older overlays use their recorded local/global
+source and boolean preference for restoration. Stop projected sessions before
+rollback so another active Crew process cannot reassert the shared overlay.
+Aliases remain on disk: automatic pruning cannot safely identify obsolete views
+owned by other workspaces or still used by active native processes.
+
+Windows runtime teardown records the reaped return code after the owned-handle
+drain, before dropping the process reference, just as POSIX teardown does. The
+existing death summary is amended without changing its reason or stderr tail.
+
 ## Backend Selection
 
 `AcpSessionHandle.active_agent` records the mode named by session configuration,

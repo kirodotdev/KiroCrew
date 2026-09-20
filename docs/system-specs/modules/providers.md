@@ -576,3 +576,8 @@ shared subagent would strand `spawn_continue` on `conversation_gone`. A differen
 gap, owned by whoever gives KAS a non-destroying teardown. The invariants governing what an
 added harness may and may not change are in
 [harness-parity.md](harness-parity.md).
+
+Native Kiro CLI spawning also prepares a bounded skill discovery view, shared by
+the direct client and runtime. Its workspace settings suppress implicit native skill
+inheritance; authored mappings stay available to Crew scoped search/list/read.
+See [ACP client](acp-client.md#native-skill-startup-views).

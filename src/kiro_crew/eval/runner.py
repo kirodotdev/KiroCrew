@@ -243,6 +243,7 @@ class EvalRunner:
 
         session_mgr = None
         vector_store = None
+        skills = None
         try:
             # Memory-loop components
             conv_log = ConversationLog(base_dir=ws)
@@ -351,6 +352,8 @@ class EvalRunner:
                 await session_mgr.close_all()
             if vector_store:
                 await asyncio.to_thread(vector_store.close)
+            if skills:
+                await asyncio.to_thread(skills.close)
             if old_ws is None:
                 os.environ.pop("KIROCREW_WORKSPACE", None)
             else:

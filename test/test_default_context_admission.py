@@ -261,14 +261,18 @@ class TestAdmissionAndSkills:
             ),
         )
 
-    def test_default_discovery_is_short_and_full_skills_remain_loadable(self, rig):
+    def test_default_discovery_is_bounded_and_full_skills_remain_loadable(self, rig):
         builder, _, skills, _, _ = rig
         for i in range(80):
             seed_skill(skills._dir, f"procedure-{i}")
         text = builder.build_session_context()
-        assert "skill_search(query)" in text
-        shown = [i for i in range(80) if f"- procedure-{i}:" in text]
-        assert 0 < len(shown) <= 8
+        shown = [i for i in range(80) if f"- **procedure-{i}**:" in text]
+        assert 0 < len(shown) < 80
+        # The entry names what it drops, by count and by family, and points at the
+        # tool that reaches them.
+        assert f"{80 - len(shown)} more skill(s) not shown here" in text
+        assert "skill_search" in text
+        assert "Families not shown: procedure-* (" in text
         assert "[Skills:]" in text and "Synthetic procedure" not in text
         hidden = next(i for i in range(80) if i not in shown)
         matches = skills.search_skills(f"procedure-{hidden}")
@@ -277,6 +281,18 @@ class TestAdmissionAndSkills:
         matches = skills.search_skills("procedure-79")
         assert any(s["name"] == "procedure-79" for s in matches)
         assert "Synthetic procedure" in skills.load_skill("procedure-79")
+
+    def test_short_entry_names_at_most_eight_when_selected(self, rig):
+        """`skills.lazy_load = false` selects the shorter eight-name entry."""
+        _, _, skills, _, cfg = rig
+        for i in range(80):
+            seed_skill(skills._dir, f"procedure-{i}")
+        cfg.skills.lazy_load = False
+        text = skills.get_context(budget=4950, discovery_only=True)
+        assert "skill_search(query)" in text
+        shown = [i for i in range(80) if f"- procedure-{i}:" in text]
+        assert 0 < len(shown) <= 8
+        assert "Synthetic procedure" not in text
 
     def test_pinned_body_survives_budget_and_reinjection(self, rig):
         builder, _, skills, _, _ = rig
@@ -287,13 +303,15 @@ class TestAdmissionAndSkills:
             assert body in text
             assert text.endswith("current")
 
-    def test_native_mapped_skills_stay_native(self, rig, monkeypatch):
+    def test_native_mapped_skills_receive_only_scoped_discovery(self, rig, monkeypatch):
         builder, _, skills, _, _ = rig
-        monkeypatch.setattr(ctx, "agent_skill_globs", lambda agent: ["*/mapped/SKILL.md"])
-        monkeypatch.setattr(
-            skills, "get_context", Mock(side_effect=AssertionError("duplicate mapped skills"))
-        )
-        builder.build_session_context(agent="kirocrew", provider_type="acp")
+        mapped = seed_skill(skills._dir, "mapped")
+        seed_skill(skills._dir, "outside")
+        monkeypatch.setattr(ctx, "agent_skill_globs", lambda agent, **kwargs: [str(mapped)])
+        text = builder.build_session_context(agent="kirocrew", provider_type="acp")
+        assert "skill_search" in text and "mapped" in text
+        assert "outside" not in text
+        assert "Synthetic procedure" not in text
 
     def test_lazy_setting_does_not_expand_admission(self, rig):
         builder, _, skills, _, cfg = rig
@@ -439,7 +457,7 @@ def test_first_oversized_summary_is_not_forced_and_footer_is_charged(rig, monkey
     for row in original:
         if row["key"] == "large":
             row["path"] = "x" * 5000
-    monkeypatch.setattr(skills, "list_skills", lambda project=None: original)
+    monkeypatch.setattr(skills, "list_skills", lambda project=None, **kwargs: original)
     monkeypatch.setattr(skills, "_rank_key", lambda row: (row["key"] == "large", 0))
     output = skills.get_context(budget=1000)
     assert len(output) <= 1000
@@ -504,9 +522,13 @@ def test_agent_skill_search_entry_finds_omitted_catalog(rig, monkeypatch):
     from kiro_crew.mcp_tools import skills as tools
 
     builder, _, skills, _, _ = rig
-    path = seed_skill(skills._dir, "notebookquartz")
+    seed_skill(skills._dir, "notebookquartz")
+    for i in range(80):
+        seed_skill(skills._dir, f"filler-{i}")
     greeting, _ = builder.build_message("hi", True)
-    assert "skill_search(query)" in greeting
+    # The entry is bounded, so it names the tool that reaches what it omits.
+    assert "skill_search" in greeting
+    assert "more skill(s) not shown here" in greeting
     monkeypatch.setattr(
         mcp_core, "_get", lambda path, **kwargs: {"matches": skills.search_skills("notebookquartz")}
     )
@@ -514,7 +536,7 @@ def test_agent_skill_search_entry_finds_omitted_catalog(rig, monkeypatch):
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:synthetic")
     output = tools.skill_search("skill_search", {"query": "notebookquartz"})
     assert "notebookquartz" in output
-    assert str(path) in output
+    assert "key='notebookquartz'" in output
     assert "Synthetic procedure" in skills.load_skill("notebookquartz")
 
 

@@ -324,9 +324,9 @@ whether the agent is the built-in `kirocrew`.
 | Agent | `skill://` mapping | Skills it sees | Why |
 |---|---|---|---|
 | `kirocrew` | none | the whole catalog (bounded discovery) | the default path |
-| `kirocrew` | mapped | only the mapped set, on **either** backend | who LOADS it differs: kiro-cli natively, Kiro Crew by injection |
+| `kirocrew` | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
 | custom | none | **nothing** | the agent is expected to bring its own |
-| custom | mapped | only the mapped set, on **either** backend | same split |
+| custom | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
 
 The mapping is read by `agent_discovery.py` → `agent_skill_globs`, which pulls the
 `skill://` entries out of the spec's `resources` (`skill_resource_uris`) and
@@ -336,33 +336,41 @@ against the project root inferred from the spec's location). `file://` steering
 entries are deliberately excluded, and an `only=` list matching nothing yields
 **no** skills rather than the full catalog.
 
-A mapped agent gets its skills on **both** backends; only the loader changes.
-kiro-cli reads `skill://` resources itself when spawned with `--agent`, so
-`_skills_injection_plan` returns false there — not because the skills are absent
-but because injecting them would duplicate what kiro already loaded. On the
-Claude Code backend nothing reads agent `resources`, so Kiro Crew injects the
-mapped set itself, scoped by `only=`. Steering follows the same rule and is
-therefore injected only on the Claude Code backend.
+A mapping defines availability on both backends. Crew supplies a bounded directory
+and an agent-scoped `skill_search` pointer; ordinary bodies load only when selected.
+`skill_search(action="list", offset=...)` pages through the complete resolved set,
+including skills absent from the startup directory. `action="read", key="full/key"`
+loads that exact key. Qualified `$namespace/name` references match complete keys;
+an unqualified leaf is accepted only when unique within the available set.
+
+Native Kiro 2.21.2 loads skill names/descriptions at startup and bodies on demand.
+It does **not** eagerly load every `skill://` body, but its metadata directory is
+unbounded. Crew's native launch view therefore removes `skill://` entries while
+retaining the authored mapping for Crew discovery. Managed transport aliases
+preserve the original agent identity in Crew. The workspace CLI overlay disables
+inherited native resources; inherited steering and AGENTS.md are carried as explicit
+file resources unless inheritance was already disabled. Authored specs stay intact.
+This applies to native CLI launch paths; it does not redefine ACP, which is the
+transport protocol. MCP Tool Search discovers tool schemas, not skill bodies.
 
 ### What "lazy skill loading" means here
 
-Three different things, and only the middle one is the config toggle:
-
-1. **Bounded discovery, always.** `SkillsLoader.get_context` injects pinned
-   (`always: true`) bodies complete, confined project bodies under their own
-   `PROJECT_SKILL_BODY_CAP` allowance, then — with `discovery_only=True`, the production
-   default — a short `skill_search` pointer plus up to eight usage-ranked names.
-   The tail stays reachable via `skill_search`, `skill_fetch`, `$skillname`, `cat`.
-2. **`skills.lazy_load`** (default false) swaps that pointer for the ranked
-   `## Available Skills` index with one summary line per skill, trimmed to the
-   same budget with an "…and N more" footer. Both modes spend the same 15%
-   allowance; neither grows with the model window.
-3. **Trigger-time body injection** (§2) — a matched skill's full procedure arrives
-   mid-conversation rather than at session start, and a skill that declares itself
-   an offer contributes a pointer line instead.
-
-An always-on `skill://` resource is the opposite of all three: kiro-cli loads that
-body at spawn, every session, relevant or not.
+1. **Bounded discovery, always.** Default and mapped agents receive a directory
+   inside the skills section allowance, with list/search/read instructions for
+   the omitted tail. Ordinary trusted project skills also activate on demand,
+   through the descriptor-confined reader rather than a mutable checkout path.
+2. **`skills.lazy_load`** (default true) selects the ranked `## Available Skills`
+   index. False selects the shorter search pointer and up to eight usage-ranked
+   names. Both use the same allowance; mapping never expands it.
+3. **Required instructions.** `always: true` bodies share an explicit 99,000-byte
+   startup capacity, including rendered headings and framing. An unavailable or
+   over-capacity required body fails context construction with an actionable error;
+   required instructions are never silently truncated or deferred.
+4. **Activation.** Search considers metadata and body terms together, ranking
+   overall query coverage before rarity and metadata preference. Incremental body
+   indexing has a short work budget; incomplete results say so and can be retried.
+   Paginated listing and exact reads remain available during indexing. Trigger-time
+   loading (§2), when enabled, is also constrained by an explicit mapping.
 
 ### Consequence for `kirocrew-worker`
 

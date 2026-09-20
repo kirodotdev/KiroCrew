@@ -45,6 +45,7 @@ import yaml  # type: ignore[import-untyped]
 JSON_SUFFIX = ".json"
 MARKDOWN_SUFFIX = ".md"
 AGENT_SPEC_SUFFIXES: tuple[str, ...] = (JSON_SUFFIX, MARKDOWN_SUFFIX)
+NATIVE_SKILL_ALIAS_PREFIX = "kirocrew-skill-view-"
 
 _FRONTMATTER_CLOSE_RE = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
 
@@ -200,6 +201,7 @@ def iter_agent_spec_files(directory: Path, *, ordered: bool = True) -> list[Path
     that scan on the event loop and stop at the first hit.
     """
     live, _shadowed = _split_spec_files(directory)
+    live = [path for path in live if not path.stem.startswith(NATIVE_SKILL_ALIAS_PREFIX)]
     return sorted(live) if ordered else live
 
 

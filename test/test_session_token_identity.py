@@ -429,6 +429,31 @@ async def test_kiro_unpooled_control_plane_receives_session_token(cfg, monkeypat
     assert mcp_core._resolve_session_key_strict() == LIVE_KEY
 
 
+@pytest.mark.asyncio
+async def test_projected_skill_search_receives_the_shared_sessions_identity(cfg, monkeypatch):
+    from test_acp_runtime import _make_runtime
+
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+    entry = {"command": "test-crew", "args": ["mcp"]}
+    spec = {"tools": ["@kirocrew-core/skill_search"], "mcpServers": {"kirocrew-core": entry}}
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: {"tools": []})
+    monkeypatch.setattr(session_mcp, "_global_settings", lambda **kw: {})
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name: entry)
+    runtime, _, _ = _make_runtime()
+    runtime._native_skill_projection = NativeSkillProjection(
+        {"custom": "alias"}, {"custom": spec}, search_agents={"custom"}
+    )
+    servers = await runtime._unpooled_control_planes([], "custom", runtime._work_dir)
+    servers, token = await runtime._own_stub_session(servers, LIVE_KEY)
+    env = {item["name"]: item["value"] for item in servers[0]["env"]}
+    assert env[STUB_SESSION_TOKEN_ENV] == token
+    monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, token)
+    assert mcp_core._resolve_session_key_strict() == LIVE_KEY
+
+
 @pytest.mark.parametrize(
     "restriction",
     ["stub", "unreferenced", "disabled", "tool", "global", "project", "registry", "command"],

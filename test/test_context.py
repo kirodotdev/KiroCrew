@@ -484,7 +484,7 @@ class TestContextBuilder:
         msg, _ = builder.build_message("carry on", is_new_session=False, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" in msg
         assert "[END REINJECTED]" in msg
-        assert "skill_search(query)" in msg
+        assert "## Available Skills" in msg
         assert "widget-maker" in msg
         assert any(
             s["name"] == "widget-maker" for s in builder.skills.search_skills("widget-maker")
@@ -531,7 +531,7 @@ class TestContextBuilder:
             agent="kirocrew",
         )
         assert "[REINJECTED AFTER COMPACTION" in msg
-        assert "skill_search(query)" in msg
+        assert "## Available Skills" in msg
         assert "widget-maker" in msg
 
     def test_build_message_new_session(self, tmp_path):

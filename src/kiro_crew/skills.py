@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -20,7 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator, NamedTuple
 
 from kiro_crew import hooks as hooks_module
 from kiro_crew import pinned_fs, skill_trust
@@ -54,6 +55,11 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.skill_search_index import (
+    SKILL_SEARCH_INDEX_FILENAME,
+    SkillSearchIndex,
+    body_fingerprint,
+)
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
 from kiro_crew.skills_script_validator import validate_scripts
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
@@ -93,6 +99,79 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {
     os.rename,
     os.rmdir,
 }.issubset(os.supports_dir_fd)
+
+
+def _body_term_hits(content: str, terms: Iterable[str]) -> int:
+    """How many of *terms* the body carries, by the SAME rule the index uses.
+
+    Tokenized, then prefix-matched per token, because the persisted index answers
+    that way: it stores `recall_terms` output and matches a query term against
+    stored terms it prefixes. A plain substring scan here would score the two paths
+    differently, so whether a skill ranked at all would depend on which path
+    answered for it -- and both can answer inside ONE search, since the index hands
+    individual keys back for a direct read.
+
+    Concretely, substring scoring let `rollback` match a body whose only occurrence
+    is inside `scrollback`; the index calls that a near miss, and so does this.
+    """
+    body_terms = recall_terms(content)
+    if not body_terms:
+        return 0
+    return sum(1 for term in terms if any(bt.startswith(term) for bt in body_terms))
+
+
+def _namespace_groups(skills: list[dict]) -> list[tuple[str, int]]:
+    """Family label and member count for the skills the discovery entry omits.
+
+    Eight names out of a thousand skills describe what the operator used lately,
+    not what the machine can do, and the tail is reachable only by a search whose
+    keywords the model has to guess. A family label plus its size is the cheapest
+    thing that answers "is there anything here about X": one short line, flat in
+    the number of skills, and phrased in the same vocabulary the keys use, so
+    ``app-* (40)`` is already a usable query.
+
+    The label is the key's FIRST segment — the directory for a nested key
+    (``kirocrew-dev/babysit`` -> ``kirocrew-dev/``), otherwise the leading hyphen
+    token (``web-verify`` -> ``web-*``). One rule, so the line cannot reorder
+    itself as skills are added. A family of one is left out: its label would carry
+    no more than the name already does.
+    """
+    counts: dict[str, int] = {}
+    for skill in skills:
+        key = str(skill.get("key", ""))
+        if "/" in key:
+            label = key.split("/", 1)[0] + "/"
+        elif "-" in key:
+            label = key.split("-", 1)[0] + "-*"
+        else:
+            continue
+        counts[label] = counts.get(label, 0) + 1
+    return sorted(
+        ((label, count) for label, count in counts.items() if count > 1),
+        key=lambda pair: (-pair[1], pair[0]),
+    )
+
+
+#: Labels on one family line. A bound rather than a budget trim, so the line
+#: cannot grow long enough to push a named skill (which carries the description,
+#: the only text saying what a skill does) out of a tight allowance.
+_FAMILY_LINE_MAX_LABELS = 6
+
+
+def _family_line(skills: list[dict]) -> str:
+    """One short line naming the families *skills* belong to, or ``""``.
+
+    Bounded at :data:`_FAMILY_LINE_MAX_LABELS` labels, with the rest reported as
+    a count, so the cost of this line does not scale with the catalog.
+    """
+    groups = _namespace_groups(skills)
+    if not groups:
+        return ""
+    shown, rest = groups[:_FAMILY_LINE_MAX_LABELS], groups[_FAMILY_LINE_MAX_LABELS:]
+    text = ", ".join(f"{label} ({count})" for label, count in shown)
+    if rest:
+        text += f", +{len(rest)} more"
+    return text
 
 
 def _matches_any(path: str, globs: list[str]) -> bool:
@@ -173,6 +252,15 @@ _PROJECT_SKILL_MAX_DEPTH = 64
 # route all read through this one cap, so an oversized project SKILL.md is
 # skipped rather than loaded whole.
 PROJECT_SKILL_BODY_CAP = 24_750
+PINNED_SKILL_BODIES_CAP = 99_000
+
+
+class SkillContextCapacityError(ValueError):
+    """Required instructions cannot fit; never silently cut a required skill."""
+
+
+# The "[Skills:]" opener and "[End of skills]" closer wrapping the whole block.
+_MAPPED_BLOCK_OVERHEAD_BYTES = 64
 
 # ── Auto skill creation ──
 
@@ -648,24 +736,6 @@ def _disabled_app_names() -> frozenset[str]:
         return frozenset()
 
 
-def _skill_content_digest(path: str, cache: dict[str, "bytes | None"]) -> "bytes | None":
-    """SHA-256 of the file at *path*, memoized in *cache*; ``None`` if unreadable.
-
-    Only ever called for rows whose cheap fingerprint already collided, so the
-    read cost is zero on the no-duplicate path and one read per colliding copy
-    otherwise. ``None`` (unreadable) never compares equal — a row that cannot
-    be verified identical is kept, not dropped.
-    """
-    if path in cache:
-        return cache[path]
-    try:
-        digest: bytes | None = hashlib.sha256(Path(path).read_bytes()).digest()
-    except OSError:
-        digest = None
-    cache[path] = digest
-    return digest
-
-
 def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
     """Drop later rows that are verified byte-identical copies of an earlier row.
 
@@ -675,9 +745,9 @@ def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
        fields a summary line is rendered from, all already loaded by
        ``list_skills()``. No collision (the overwhelmingly common case) means
        no file I/O at all.
-    2. **Content verification** — on a fingerprint collision only, hash the
-       actual file bytes of both rows and drop the later row **only when the
-       digests match**. Equal-metadata skills whose bodies differ (which the
+    2. **Content verification** — compare the SHA-256 digests captured when
+       metadata was safely read, and drop the later row **only when the digests
+       match**. Equal-metadata skills whose bodies differ (which the
        pinned path would inject in full) are all kept; an unreadable file is
        kept, never dropped.
 
@@ -687,7 +757,6 @@ def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
     only arise from unconfined trees anyway.
     """
     seen: dict[tuple[str, str, int], list[dict]] = {}
-    digest_cache: dict[str, bytes | None] = {}
     out: list[dict] = []
     for s in skills:
         if s.get("confine_root"):
@@ -695,13 +764,9 @@ def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
             continue
         fp = (str(s.get("name", "")), str(s.get("description", "")), int(s.get("size_bytes") or 0))
         rivals = seen.setdefault(fp, [])
-        this_digest = None
         if rivals:
-            this_digest = _skill_content_digest(str(s.get("path", "")), digest_cache)
-            if this_digest is not None and any(
-                _skill_content_digest(str(r.get("path", "")), digest_cache) == this_digest
-                for r in rivals
-            ):
+            this_digest = s.get("content_digest")
+            if this_digest and any(r.get("content_digest") == this_digest for r in rivals):
                 continue  # verified byte-identical copy of an earlier row
         rivals.append(s)
         out.append(s)
@@ -727,8 +792,36 @@ def _builtin_dir_app_name(pkg_dir: str) -> str | None:
         return None
 
 
+def _walk_mapping_tree(
+    base: Path, excluded: tuple[str, ...]
+) -> Iterator[tuple[str, list[str], list[str]]]:
+    """Prune catalog names before even following a directory entry's links."""
+    pending = [str(base)]
+    while pending:
+        directory = pending.pop()
+        dirs: list[str] = []
+        files: list[str] = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if _within_any(os.path.abspath(entry.path), excluded):
+                        continue
+                    try:
+                        (dirs if entry.is_dir() else files).append(entry.name)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+        yield directory, dirs, files
+        # The caller prunes and sorts dirs for containment and cycle detection.
+        pending.extend(os.path.join(directory, name) for name in reversed(dirs))
+
+
 def _iter_skill_files(
-    base: Path, *, confine_to: tuple[str, ...] | None = None
+    base: Path,
+    *,
+    confine_to: tuple[str, ...] | None = None,
+    exclude_roots: tuple[str, ...] = (),
 ) -> list[tuple[str, Path]]:
     """Recursively find all SKILL.md files under *base*.
 
@@ -764,8 +857,19 @@ def _iter_skill_files(
     # construction — allow those provider roots, and nothing else.
     allowed_roots = (real_base,) + _trusted_skill_roots()
     seen_real: set[str] = set()
-    for dirpath, _dirs, files in os.walk(base, followlinks=True):
+    walk = (
+        _walk_mapping_tree(base, exclude_roots)
+        if exclude_roots
+        else os.walk(base, followlinks=True)
+    )
+    for dirpath, _dirs, files in walk:
+        if exclude_roots and _within_any(os.path.abspath(dirpath), exclude_roots):
+            _dirs.clear()
+            continue
         real = os.path.realpath(dirpath)
+        if exclude_roots and _within_any(real, exclude_roots):
+            _dirs.clear()
+            continue
         if real in seen_real:
             _dirs.clear()  # prune this branch — symlink loop
             continue
@@ -779,7 +883,15 @@ def _iter_skill_files(
         # guard keeps exactly one — and without a sort ``os.walk`` picks the
         # winner in arbitrary ``scandir`` order, giving the same skill a
         # different key on different machines.
-        _dirs[:] = sorted(d for d in _dirs if not d.startswith("."))
+        _dirs[:] = sorted(
+            d
+            for d in _dirs
+            if not d.startswith(".")
+            and (
+                not exclude_roots
+                or not _within_any(os.path.abspath(os.path.join(dirpath, d)), exclude_roots)
+            )
+        )
         # Path containment: stay inside the skills base, or inside a trusted
         # skill-provider root reached through an app's registered symlink.
         if not _within_any(real, allowed_roots):
@@ -801,6 +913,8 @@ def _iter_skill_files(
         if "SKILL.md" in files:
             skill_file = Path(dirpath) / "SKILL.md"
             real_file = os.path.realpath(str(skill_file))
+            if exclude_roots and _within_any(real_file, exclude_roots):
+                continue
             if is_sensitive_resolved_path(real_file):
                 continue
             # Containment for the FILE, not just its directory. The directory
@@ -1952,6 +2066,15 @@ def remove_retired_conductor_skill() -> bool:
         os.close(root_fd)
 
 
+class _ScopedSkillEntry(NamedTuple):
+    """Admission provenance travels with the entry, independently of its key."""
+
+    key: str
+    path: Path
+    project_root: str | None
+    mapping_root: str | None = None
+
+
 class SkillsLoader:
     """Load skill markdown files from ~/.kiro/crew/skills/.
 
@@ -2068,6 +2191,18 @@ class SkillsLoader:
                 exc_info=True,
             )
             self._usage = None
+        # Term index behind `search_skills`'s body fallback, in the same home as
+        # the usage ledger. Best-effort for the same reason: an unusable index
+        # only costs the search its old per-file read path.
+        self._search_index: SkillSearchIndex | None
+        try:
+            self._search_index = SkillSearchIndex(self._dir.parent / SKILL_SEARCH_INDEX_FILENAME)
+        except Exception:  # pragma: no cover — index is best-effort
+            logger.warning(
+                "skill-search-index: init failed; search reads bodies from disk",
+                exc_info=True,
+            )
+            self._search_index = None
         # `skills.extra_paths` is a set of source ROOTS, so it is pushed rather than
         # read at use: re-resolving every root (a realpath plus a sensitivity check
         # per entry) on every message is exactly the cost the iter-cache exists to
@@ -2076,6 +2211,11 @@ class SkillsLoader:
         self._config_sub = live.subscribe(
             "skills.extra_paths", callback=self._on_config_change, name="SkillsLoader"
         )
+
+    def close(self) -> None:
+        """Release persistent resources owned by this loader."""
+        if self._search_index is not None:
+            self._search_index.close()
 
     async def _on_config_change(self, change: "live.ConfigChange") -> None:
         # The screening stats every configured root (resolve + is_dir), and a root
@@ -2379,6 +2519,7 @@ class SkillsLoader:
         *,
         max_bytes: int | None = None,
         refusal_reasons: list[str] | None = None,
+        canonical_root: str | None = None,
     ) -> bytes | None:
         """Read a file `_iter` enumerated, re-checking the root it was vetted against.
 
@@ -2396,10 +2537,12 @@ class SkillsLoader:
 
         A path with no recorded root (global skills dir, extra paths, edition
         roots) is read UNCONFINED, which preserves the app-provider symlink that
-        `_trusted_skill_roots` exists to allow. Confinement applies to project
-        paths only.
+        `_trusted_skill_roots` exists to allow. External mappings instead carry
+        ``canonical_root``: the resolved root admitted during enumeration,
+        including an admitted provider target. Never resolve that root again
+        after an ancestor swap. Their bodies retain the global read budget.
         """
-        if within is None:
+        if within is None and canonical_root is None:
             # No project grant is involved: the global skills dir, extra paths,
             # edition roots, and the paths writers construct themselves. These
             # are operator-installed, so there is no directory to confine them
@@ -2417,7 +2560,12 @@ class SkillsLoader:
                 if max_bytes is None
                 else min(max_bytes, hooks_module.MAX_FILE_BYTES)
             )
-            raw = safe_read_file_bytes_nolink(str(path), within_root=within, max_bytes=confined_max)
+            raw = safe_read_file_bytes_nolink(
+                str(path),
+                within_root=canonical_root or within,
+                max_bytes=confined_max,
+                within_root_is_canonical=canonical_root is not None,
+            )
         except FileTooLargeError:
             # A REFUSAL, not an error: an oversized SKILL.md must not abort a
             # chat turn, and the global path applies no cap at all today.
@@ -2436,14 +2584,18 @@ class SkillsLoader:
         return None
 
     def _cached_frontmatter(
-        self, path: Path, mtime: float | None = None, *, within: str | None
+        self,
+        path: Path,
+        mtime: float | None = None,
+        *,
+        within: str | None,
+        canonical_root: str | None = None,
     ) -> dict[str, str]:
         """Parse frontmatter with mtime-based caching.
 
         *mtime* lets a caller that already stat()'d the file reuse that result.
         ``list_skills()`` needs the size from the same stat, and this path runs
-        on the event loop during context assembly — one syscall per skill, not
-        two.
+        on a worker during context assembly — one syscall per skill, not two.
 
         Confined project metadata cannot stat by path: `_iter` is TTL-cached,
         so an attacker can replace the enumerated file with a link before this
@@ -2474,7 +2626,7 @@ class SkillsLoader:
         # containment, no O_NOFOLLOW, no regular-file check and no size cap --
         # so an out-of-project `description` reached the injected skills index
         # verbatim and attacker-set `triggers`/`always` decided what auto-loaded.
-        raw = self._read_enumerated_skill_bytes(path, within)
+        raw = self._read_enumerated_skill_bytes(path, within, canonical_root=canonical_root)
         if raw is None:
             logger.warning("Refusing metadata for a skill outside its vetted root: %s", path)
             return {}
@@ -2483,6 +2635,8 @@ class SkillsLoader:
         # as update_auto_skill, which must retain strict decoding so a rewrite
         # cannot silently replace undecodable metadata and lose version fields.
         meta = self._parse_frontmatter_text(_decode_skill_text(raw, strict=within is None))
+        if within is None:
+            meta["_content_digest"] = hashlib.sha256(raw).hexdigest()
         self._fm_cache[key] = (mtime, meta)
         return meta
 
@@ -2512,7 +2666,12 @@ class SkillsLoader:
         self._fm_cache[key] = (token, meta)
         return meta, len(raw)
 
-    def list_skills(self, project_dir: str | Path | None = None) -> list[dict]:
+    def list_skills(
+        self,
+        project_dir: str | Path | None = None,
+        *,
+        _entries: list[_ScopedSkillEntry] | None = None,
+    ) -> list[dict]:
         """Return per-skill metadata for the dashboard's Skills page.
 
         Carries the three fields the injection-cost control needs alongside the
@@ -2536,31 +2695,61 @@ class SkillsLoader:
         through ``skills.extra_paths`` is listed but not ours to edit, so the UI
         must not offer a toggle the endpoint will refuse.
 
-        This runs on the event loop as part of context assembly (the skill
-        index). Unconfined rows take exactly one stat and reuse its mtime for
+        This is blocking filesystem/SQLite work; async callers must offload it.
+        Unconfined rows take exactly one stat and reuse its mtime for
         the frontmatter cache. Confined project rows perform no path stat; their
         size and cache token come from bytes admitted by the no-link reader.
         """
+        started = time.monotonic()
+        cached_metadata = self._search_index.metadata_snapshot() if self._search_index else {}
+        changed_metadata: list[tuple[str, str, dict]] = []
+        skill_reads = 0
         skills: list[dict] = []
-        for name, skill_file, _within in self._iter_visible(project_dir):
-            if _within is not None:
-                meta, size_bytes = self._confined_frontmatter_and_size(skill_file, _within)
+        entries = (
+            [_ScopedSkillEntry(*entry) for entry in self._iter_visible(project_dir)]
+            if _entries is None
+            else _entries
+        )
+        scan_ms = (time.monotonic() - started) * 1000
+        for name, skill_file, project_root, mapping_root in entries:
+            if project_root is not None:
+                meta, size_bytes = self._confined_frontmatter_and_size(skill_file, project_root)
             else:
                 try:
                     st: os.stat_result | None = skill_file.stat()
                 except OSError:
                     st = None
-                meta = self._cached_frontmatter(
-                    skill_file,
-                    mtime=st.st_mtime if st is not None else None,
-                    within=None,
+                fingerprint = (
+                    f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
+                    if st is not None
+                    else ""
                 )
+                if fingerprint and mapping_root:
+                    fingerprint += f":{mapping_root}"
+                cached = cached_metadata.get(str(skill_file))
+                if cached and cached[0] == fingerprint and cached[1].get("_catalog_key") == name:
+                    meta = cached[1]
+                else:
+                    skill_reads += 1
+                    self._fm_cache.pop(str(skill_file), None)
+                    meta = self._cached_frontmatter(
+                        skill_file,
+                        mtime=st.st_mtime if st is not None else None,
+                        within=None,
+                        canonical_root=mapping_root,
+                    )
+                    meta["_catalog_key"] = name
+                    if fingerprint:
+                        changed_metadata.append((str(skill_file), fingerprint, meta))
+                if st is not None and meta:
+                    self._fm_cache[str(skill_file)] = (st.st_mtime, meta)
                 size_bytes = st.st_size if st is not None else 0
             skills.append(
                 {
                     # Internal: lets a later re-read (see _rank_key) reuse the root
                     # this row was read under instead of guessing at one.
-                    "confine_root": _within,
+                    "confine_root": project_root,
+                    "mapping_root": mapping_root,
                     "key": name,
                     "name": meta.get("name", name),
                     "description": meta.get("description", name),
@@ -2579,14 +2768,31 @@ class SkillsLoader:
                     # the body; only an explicit `false` on an unconfined skill
                     # opts out. A malformed value therefore reads as injecting.
                     "inject_on_trigger": (
-                        _within is not None
+                        project_root is not None
                         or meta.get("inject_on_trigger", "").strip().lower() != "false"
                     ),
                     "size_bytes": size_bytes,
+                    "fingerprint": fingerprint if project_root is None else "",
+                    "content_digest": (
+                        meta.get("_content_digest", "") if project_root is None else ""
+                    ),
+                    "metadata_indexed": project_root is None and bool(fingerprint),
                     "deliveries": self._delivery_count(name),
                     "owned": self._owned_hint(skill_file),
                 }
             )
+        if self._search_index and not self._search_index.store_metadata(changed_metadata):
+            changed_paths = {path for path, _, _ in changed_metadata}
+            for row in skills:
+                if row["path"] in changed_paths:
+                    row["metadata_indexed"] = False
+        logger.debug(
+            "skill catalog: %.2fms total, %.2fms scan, %d rows, %d metadata reads",
+            (time.monotonic() - started) * 1000,
+            scan_ms,
+            len(skills),
+            skill_reads,
+        )
         return skills
 
     def _owning_app(self, name: str, skill_file: Path) -> str | None:
@@ -2900,7 +3106,9 @@ class SkillsLoader:
         _t0 = time.monotonic()
         skill_file = self._dir / name / "SKILL.md"
         if skill_file.exists():
-            content = skill_file.read_text(encoding="utf-8")
+            content = self._read_global_skill_text(skill_file, max_bytes)
+            if content is None:
+                return None
             self._emit_lazy_load_metric(_t0, hit=True)
             return content
         # Check extra paths
@@ -2911,7 +3119,9 @@ class SkillsLoader:
                 if resolved is None:
                     logger.warning("Refusing to load skill from sensitive path: %s", skill_file)
                     continue
-                content = Path(resolved).read_text(encoding="utf-8")
+                content = self._read_global_skill_text(Path(resolved), max_bytes)
+                if content is None:
+                    return None
                 self._emit_lazy_load_metric(_t0, hit=True)
                 return content
         # A trusted project's own skills, last — same order as _iter_uncached.
@@ -2967,6 +3177,42 @@ class SkillsLoader:
                 return content
         self._emit_lazy_load_metric(_t0, hit=False)
         return None
+
+    def _read_global_skill_text(
+        self, path: Path, max_bytes: int | None, *, canonical_root: str | None = None
+    ) -> str | None:
+        """A global skill body, bounded by *max_bytes* and decode-safe.
+
+        ``max_bytes=None`` reads up to the shared file safety cap with strict
+        UTF-8, preserving the global listing path's decode behavior. Every body
+        read uses the shared validated reader without project confinement:
+        sensitive paths, hardlinks and identity changes are refused on the
+        descriptor supplying the bytes.
+
+        With a bound, refuse rather than truncate. A caller that asked for at
+        most N bytes is deciding whether the body FITS, and half a skill is not
+        a smaller skill: it is a body whose instructions stop mid-sentence.
+        ``None`` says "this one cannot be delivered", which the caller reports
+        instead of silently dropping.
+        """
+        try:
+            raw = safe_read_file_bytes_nolink(
+                str(path),
+                max_bytes=max_bytes,
+                within_root=canonical_root,
+                within_root_is_canonical=canonical_root is not None,
+            )
+        except FileTooLargeError:
+            if max_bytes is None:
+                logger.debug("skill body at %s exceeds the shared file-read bound; refusing", path)
+            else:
+                logger.debug(
+                    "skill body at %s exceeds the %d byte bound; refusing", path, max_bytes
+                )
+            return None
+        if raw is None:
+            return None
+        return _decode_skill_text(raw, strict=max_bytes is None)
 
     @staticmethod
     def _emit_lazy_load_metric(t0: float, *, hit: bool) -> None:
@@ -5225,58 +5471,26 @@ class SkillsLoader:
         discovery_only: bool = False,
         required_parts_out: list[str] | None = None,
     ) -> str:
-        """Build skills context for prompt injection (lazy-loaded).
+        """Build a bounded directory over the agent's resolved available set.
 
-        Unconfined pinned skills (``always: true`` frontmatter) get full content,
-        always — this is the "core" set (mark core skills ``always: true`` to pin
-        them). Confined project skills use bodies instead of mutable checkout
-        paths, up to *project_body_budget*. The remaining unconfined on-demand
-        skills are ranked by usage (hottest first, with a recency boost for
-        freshly-added skills) and summarized top-down until *budget* chars are
-        consumed; the long tail is left discoverable via the ``skill_search``
-        tool, the ``$skillname`` inline token, ``cat``, and the per-message
-        trigger auto-loader. This bounds the unconfined summary block so no
-        single section can blow the context budget.
+        Mapping grants availability, not eager body delivery. Ordinary global and
+        confined skills load on demand through scoped search/list/read. Required
+        ``always:true`` bodies share PINNED_SKILL_BODIES_CAP; exceeding it raises
+        SkillContextCapacityError instead of silently dropping instructions.
 
-        ``discovery_only=True`` with an integer budget keeps pinned/confined
-        instructions but replaces the ordinary index with a short search pointer.
-        Production uses this by default; explicit lazy-index preferences and
-        native-mapped sets retain the ranked index. Native gates live in context.py.
-
-        ``budget=None`` returns the legacy full-dump
-        block — every on-demand skill summarized, unranked and untruncated,
-        byte-for-byte the pre-lazy-load behavior for explicit callers. An integer
-        budget bounds discovery; protected pinned instructions remain complete.
-
-        *project_body_budget* bounds all confined project bodies independently
-        of optional discovery. Reads remain descriptor-pinned and byte-limited.
-        With *required_parts_out*, append complete wrapped pinned bodies there
-        and return only optional content; the caller must reserve those required
-        parts before shared admission. Without it, required content spends the
-        allowance before optional entries but is never truncated.
-
-        *only* restricts the block to skills whose ``SKILL.md`` path matches one
-        of the given fnmatch globs — the agent template's ``skill://`` mapping
-        (see ``agent_discovery.agent_skill_globs``). ``None`` (the default) means
-        no restriction. An *only* list that matches nothing yields ``""`` rather
-        than silently falling back to the full catalog: an agent mapped to a
-        skill that has since been deleted must not inherit every other skill.
+        ``budget`` bounds optional discovery characters. ``discovery_only`` selects
+        the shorter pointer; both variants expose complete paginated discovery.
+        ``required_parts_out`` separates complete required bodies for the caller's
+        protected-content admission. ``only=[]`` admits nothing. The explicit
+        ``budget=None`` catalog reader retains its legacy unbudgeted rendering.
         """
-        all_skills = self.list_skills(project_dir)
-        if only is not None:
-            all_skills = [s for s in all_skills if _matches_any(s.get("path", ""), only)]
+        all_skills = self.scoped_skills(project_dir=project_dir, only=only)
         # Scope BEFORE anything is rendered. Dropping a repo-scoped skill only
         # from the injected body still leaves its summary line in the index, and
         # the index tells the agent to read the full file for anything related —
         # so an out-of-scope skill stays one `cat` away and its repo-specific
         # procedure gets applied to the wrong project. Filtering the list is the
         # single place that covers the index, both renderers, and the pinned set.
-        all_skills = [
-            s
-            for s in all_skills
-            if not s.get("repo_scope")
-            or self._repo_scope_satisfied(str(s["repo_scope"]), project_dir)
-        ]
         # Collapse verified byte-identical copies of the same skill before
         # anything is rendered, for the same reason the scope filter above
         # lives here: this is the single place that covers the index, both
@@ -5304,29 +5518,44 @@ class SkillsLoader:
         # pinned check below, _record_use() (also called with the _iter
         # identifier), and _rank_key()'s score(s["key"]) are all consistently
         # keyed by "key" — there is no key/name mismatch here.
-        pinned = set(self.get_always_skills(project_dir))
+        pinned = {str(s["key"]) for s in all_skills if s.get("always")}
 
         parts: list[str] = []
+        pinned_spent = 0
 
         # Pinned global skills: full content, always injected.
         # A confined path must never be offered to the agent for a later direct
         # read, because that read would sit outside the descriptor-pinned gate.
         for s in all_skills:
-            if s.get("confine_root") or s["key"] not in pinned:
+            if s["key"] not in pinned:
                 continue
-            content = self.load_skill(s["key"], project_dir)
-            if content:
-                stripped = self.strip_frontmatter(content)
-                parts.append(f"### Skill: {s['key']}\n\n{stripped}")
-
-        # Keep confined pinned bodies on the descriptor-pinned, byte-capped
-        # path. Their delivery allowance is separate from optional discovery.
-        self._append_project_skill_bodies(
-            parts,
-            [s for s in all_skills if s.get("confine_root")],
-            project_dir,
-            project_body_budget if project_body_budget is not None else budget,
-        )
+            remaining = max(0, PINNED_SKILL_BODIES_CAP - pinned_spent)
+            if s.get("confine_root"):
+                remaining = min(remaining, PROJECT_SKILL_BODY_CAP)
+            content = self.read_scoped_skill(
+                str(s["key"]), only=only, project_dir=project_dir, max_bytes=remaining
+            )
+            if content is None:
+                detail = (
+                    f"the {PROJECT_SKILL_BODY_CAP}-byte per-project-skill limit, "
+                    if s.get("confine_root")
+                    else ""
+                )
+                raise SkillContextCapacityError(
+                    f"Required skill {s['key']!r} could not be loaded within {detail}"
+                    f"the {PINNED_SKILL_BODIES_CAP}-byte total startup instruction "
+                    "capacity, or its file was unreadable. Reduce always:true skills "
+                    "or their bodies and verify the file before retrying."
+                )
+            stripped = self.strip_frontmatter(content)
+            rendered = f"### Skill: {s['key']}\n\n{stripped}"
+            pinned_spent += len(rendered.encode("utf-8")) + 8
+            if pinned_spent + 64 > PINNED_SKILL_BODIES_CAP:
+                raise SkillContextCapacityError(
+                    f"Required skills exceed the {PINNED_SKILL_BODIES_CAP}-byte "
+                    "startup instruction capacity; reduce always:true skills."
+                )
+            parts.append(rendered)
 
         def wrap(items: list[str]) -> str:
             if not items:
@@ -5342,19 +5571,33 @@ class SkillsLoader:
         # allowance before optional entries. They are never clipped to fit it.
         optional_budget = max(0, budget - (len(required) if required_parts_out is None else 0))
         optional: list[str] = []
-        on_demand = [s for s in all_skills if s["key"] not in pinned or s.get("confine_root")]
+        on_demand = [s for s in all_skills if s["key"] not in pinned]
         if on_demand and discovery_only:
             pointer = (
                 "## Skill discovery\n\n"
-                "Use skill_search(query) with short keywords, not full sentences. "
+                "Use skill_search(query) to search this agent’s available skills. "
+                "Use skill_search(action='list', offset=0) to browse all pages and "
+                "skill_search(action='read', key='full/key') for exact instructions. "
                 "Search returns confined project bodies safely; never read project paths directly. "
                 "Read returned instructions before use; $skillname loads an explicit skill.\n"
             )
             # Equal usage ranks fall back to key order so the eight names shown
             # do not depend on directory iteration order.
             by_key = sorted(on_demand, key=lambda s: s["key"])
+            named: set[str] = set()
             for skill in sorted(by_key, key=self._rank_key, reverse=True)[:8]:
                 line = f"- {skill['key']}: {self._short_desc(skill['description'])[:100]}\n"
+                if len(wrap([pointer + line])) <= optional_budget:
+                    pointer += line
+                    named.add(str(skill["key"]))
+            # Families last, and only over what was NOT named: the line exists to
+            # cover what the entry hides, so repeating a family whose members are
+            # all listed spends the budget saying nothing and can crowd out a
+            # family that is genuinely unreachable. A name that did not fit is
+            # still hidden, so only an admitted one is excluded here.
+            groups = _family_line([s for s in on_demand if str(s["key"]) not in named])
+            if groups:
+                line = f"More families: {groups}\n"
                 if len(wrap([pointer + line])) <= optional_budget:
                     pointer += line
             if len(wrap([pointer])) <= optional_budget:
@@ -5363,23 +5606,26 @@ class SkillsLoader:
             ranked = sorted(on_demand, key=self._rank_key, reverse=True)
             header = (
                 "## Available Skills\n\n"
-                "The most-used skills are listed below. If a request relates to "
-                "one, read its full file with `cat <path>` first. To run a "
-                "skill's scripts, `cd` into its directory. Relevant skills also "
-                "auto-load when your message matches their triggers.\n\n"
+                "Search this agent's scope with skill_search(query). "
+                "Browse all pages with skill_search(action='list', offset=0); "
+                "load instructions with skill_search(action='read', key='full/key'). "
+                "Read instructions before use; run scripts from the skill directory.\n\n"
             )
 
-            def summary(lines: list[str]) -> str:
-                remaining = len(ranked) - len(lines)
-                footer = (
-                    [
-                        f"- _...and {remaining} more skill(s) not shown here. Find them "
-                        "with the `skill_search` tool (grep by keyword), the "
-                        "`$skillname` inline token, or `cat` a known path._"
-                    ]
-                    if remaining
-                    else []
-                )
+            def summary(lines: list[str], hidden: list[dict]) -> str:
+                # *hidden* is passed in rather than derived from the row count: the
+                # admission loop below SKIPS a row that does not fit and keeps
+                # trying later ones, so the admitted rows are not a prefix of
+                # `candidates` and a tail slice would name the wrong skills.
+                footer: list[str] = []
+                if hidden:
+                    footer.append(
+                        f"- _...and {len(hidden)} more skill(s) not shown here. Find them "
+                        "with scoped search or paginated list above._"
+                    )
+                    families = _family_line(hidden)
+                    if families:
+                        footer.append(f"- _Families not shown: {families}._")
                 return header + "\n".join(lines + footer)
 
             candidates = [
@@ -5388,18 +5634,31 @@ class SkillsLoader:
                 for s in ranked
             ]
             lines: list[str] = []
-            if len(wrap(optional + [summary(candidates)])) <= optional_budget:
+            admitted: list[int] = []
+            hidden: list[dict] = []
+            if len(wrap(optional + [summary(candidates, [])])) <= optional_budget:
                 # A complete index needs no omission footer; reserve none when
                 # it fits, including the exact-fit boundary.
                 lines = candidates
             else:
-                for line in candidates:
-                    candidate = lines + [line]
-                    # Charge wrappers, separators AND the actual footer. Never
-                    # force an oversized first row into optional context.
-                    if len(wrap(optional + [summary(candidate)])) <= optional_budget:
-                        lines = candidate
-            block = summary(lines)
+                remaining = optional_budget - len(wrap([summary([], ranked)]))
+                for index, candidate in enumerate(candidates):
+                    cost = len(candidate) + 1
+                    if cost <= remaining:
+                        admitted.append(index)
+                        remaining -= cost
+                taken = set(admitted)
+                lines = [candidates[i] for i in admitted]
+                hidden = [s for i, s in enumerate(ranked) if i not in taken]
+            block = summary(lines, hidden)
+            # Removing rows can change which family labels win the bounded hint.
+            # Reconcile that exact footer without slicing a name or instruction.
+            while lines and len(wrap(optional + [block])) > optional_budget:
+                admitted.pop()
+                taken = set(admitted)
+                lines = [candidates[i] for i in admitted]
+                hidden = [row for i, row in enumerate(ranked) if i not in taken]
+                block = summary(lines, hidden)
             if len(wrap(optional + [block])) <= optional_budget:
                 optional.append(block)
 
@@ -5544,63 +5803,264 @@ class SkillsLoader:
             cut = cut[:space]
         return cut.rstrip() + suffix
 
-    def search_skills(
-        self, query: str, limit: int = 20, *, project_dir: str | Path | None = None
-    ) -> list[dict]:
-        """Grep skills by keyword for on-demand discovery (the skill_search tool).
+    def _body_hits(
+        self,
+        skills: list[dict],
+        terms: Iterable[str],
+        live_keys: list[str],
+        project_dir: str | Path | None,
+    ) -> dict[str, int]:
+        return {
+            key: len(hits)
+            for key, hits in self._body_matches(skills, terms, live_keys, project_dir).items()
+        }
 
-        Scores each skill by how many query terms appear in its key / name /
-        description; only when the metadata misses entirely does it fall back to
-        grepping the skill body (bounded cost, and only on an explicit tool
-        call — never per message). Results are ranked by match strength then
-        usage, capped at *limit*. Does NOT record usage — searching is not using.
-        """
-        q = (query or "").strip().lower()
-        if not q:
+    def _body_matches(
+        self,
+        skills: list[dict],
+        terms: Iterable[str],
+        live_keys: list[str],
+        project_dir: str | Path | None,
+    ) -> dict[str, set[str]]:
+        """Refresh once per query, with bounded work and explicit incomplete recall."""
+        terms = tuple(terms)
+        hits: dict[str, set[str]] = {}
+        unconfined = [s for s in skills if not s.get("confine_root")]
+        fallback = [s for s in skills if s.get("confine_root")]
+        indexed = None
+        started = time.monotonic()
+        if unconfined and self._search_index is not None:
+            rows = []
+            for skill in unconfined:
+                path = str(skill.get("path", ""))
+                fingerprint = skill.get("fingerprint") or body_fingerprint(path)
+                if fingerprint:
+                    rows.append((str(skill["key"]), path, fingerprint))
+            # A scoped query cannot evict the other agents' persistent entries.
+            deferred = self._search_index.sync(
+                rows,
+                budget_seconds=0.25,
+                canonical_roots={
+                    str(s["key"]): str(s["mapping_root"])
+                    for s in unconfined
+                    if s.get("mapping_root")
+                },
+            )
+            if deferred is not None:
+                pending = self._search_index.pending_keys
+                self.search_incomplete = bool(pending)
+                answered = [str(s["key"]) for s in unconfined if str(s["key"]) not in deferred]
+                indexed = self._search_index.body_matches(answered, terms)
+                if indexed is not None:
+                    fallback += [
+                        s
+                        for s in unconfined
+                        if str(s["key"]) in deferred and str(s["key"]) not in pending
+                    ]
+        logger.debug("skill body index refresh/query: %.2fms", (time.monotonic() - started) * 1000)
+        if indexed is None:
+            fallback += unconfined
+        else:
+            hits.update(indexed)
+        deadline = time.monotonic() + 0.25
+        for skill in fallback:
+            if time.monotonic() >= deadline:
+                self.search_incomplete = True
+                break
+            cap = PROJECT_SKILL_BODY_CAP if skill.get("confine_root") else None
+            if cap is not None and int(skill.get("size_bytes", 0)) > cap:
+                continue
+            if skill.get("mapping_root") is not None:
+                body = self._read_global_skill_text(
+                    Path(skill["path"]), cap, canonical_root=skill.get("mapping_root")
+                )
+            else:
+                body = self.load_skill(str(skill["key"]), project_dir, max_bytes=cap)
+            content = (body or "").lower()
+            matched = {term for term in terms if _body_term_hits(content, [term])}
+            if matched:
+                hits[str(skill["key"])] = matched
+        return hits
+
+    def _scoped_entries(
+        self,
+        project_dir: str | Path | None,
+        only: list[str] | None,
+    ) -> list[_ScopedSkillEntry]:
+        if only == []:
             return []
-        terms = recall_terms(q)
+        entries = [_ScopedSkillEntry(*entry) for entry in self._iter_visible(project_dir)]
+        if only is None:
+            return entries
+        selected = [entry for entry in entries if _matches_any(str(entry[1]), only)]
+        known = {os.path.normcase(os.path.abspath(entry[1])) for entry in entries}
+        # Mapping paths are spec-owned, never caller-supplied read keys. Walk the
+        # literal prefix through the same provider/sensitive-path fence as the
+        # global catalog; do not use glob's unconstrained link traversal.
+        for pattern in only:
+            prefix = Path(pattern)
+            while any(char in str(prefix) for char in "*?["):
+                prefix = prefix.parent
+            catalog_roots = [self._dir, *self._extra_paths]
+            if project_dir:
+                catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
+            if any(
+                _within_any(os.path.abspath(prefix), (os.path.abspath(root),))
+                for root in catalog_roots
+            ):
+                # The regular enumerator owns precedence, disabled apps and
+                # project consent. A mapping must not re-admit a filtered row.
+                continue
+            root = prefix.parent if prefix.name == "SKILL.md" else prefix
+            if not root.is_absolute() or validate_file_path(str(root)) is None:
+                continue
+            admitted_roots = (os.path.realpath(root), *_trusted_skill_roots())
+            # An ancestor glob must not descend through a catalog's filtered
+            # rows or probe a project skills junction before consent admission.
+            excluded = tuple(os.path.abspath(path) for path in catalog_roots)
+            for _name, path in _iter_skill_files(root, exclude_roots=excluded):
+                identity = os.path.normcase(os.path.abspath(path))
+                if identity in known or not _matches_any(str(path), [pattern]):
+                    continue
+                target = os.path.realpath(path)
+                admitted_root = next(
+                    (
+                        candidate
+                        for candidate in admitted_roots
+                        if _within_any(target, (candidate,))
+                    ),
+                    None,
+                )
+                if admitted_root is None:
+                    continue
+                known.add(identity)
+                digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+                selected.append(
+                    _ScopedSkillEntry(
+                        f"mapped/{digest}/{path.parent.name}", path, None, admitted_root
+                    )
+                )
+        return selected
+
+    def scoped_skills(
+        self,
+        *,
+        project_dir: str | Path | None = None,
+        only: list[str] | None = None,
+    ) -> list[dict]:
+        """The same available set for directory, search, list and explicit reads."""
+        started = time.monotonic()
+        entries = self._scoped_entries(project_dir, only)
+        logger.debug(
+            "skill enumeration: %.2fms, %d entries",
+            (time.monotonic() - started) * 1000,
+            len(entries),
+        )
+        rows = self.list_skills(project_dir, _entries=entries)
+        return [
+            row
+            for row in rows
+            if not row.get("repo_scope")
+            or self._repo_scope_satisfied(str(row["repo_scope"]), project_dir)
+        ]
+
+    def read_scoped_skill(
+        self,
+        key: str,
+        *,
+        only: list[str] | None = None,
+        project_dir: str | Path | None = None,
+        max_bytes: int = 99_000,
+    ) -> str | None:
+        """Read an exact catalog key, never an ambiguous leaf or caller path."""
+        entry = next(
+            (entry for entry in self._scoped_entries(project_dir, only) if entry[0] == key), None
+        )
+        if entry is None:
+            return None
+        if entry.mapping_root is not None:
+            content = self._read_global_skill_text(
+                entry.path, max_bytes, canonical_root=entry.mapping_root
+            )
+        else:
+            content = self.load_skill(key, project_dir, max_bytes=max_bytes)
+        if content is None:
+            return None
+        meta = self._parse_frontmatter_text(content)
+        if meta.get("repo_scope") and not self._repo_scope_satisfied(
+            meta["repo_scope"], project_dir
+        ):
+            return None
+        return content
+
+    def search_skills(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        project_dir: str | Path | None = None,
+        only: list[str] | None = None,
+        offset: int = 0,
+        browse: bool = False,
+    ) -> list[dict]:
+        """Rank total query coverage before rarity, metadata preference and usage.
+
+        Partial matches remain available, with stable full keys and pagination.
+        An empty browse request lists the complete resolved scope in key order.
+        """
+        self.search_incomplete = False
+        rows = self.scoped_skills(project_dir=project_dir, only=only)
+        offset = max(0, offset)
+        if browse:
+            return sorted(rows, key=lambda s: str(s["key"]))[offset : offset + limit]
+        rows = _dedupe_identical_skills(rows)
+        terms = sorted(recall_terms((query or "").strip().lower()))
         if not terms:
             return []
-        scored: list[tuple[int, float, dict]] = []
-        visible = [
-            s
-            for s in self.list_skills(project_dir)
-            if not s.get("repo_scope")
-            or self._repo_scope_satisfied(str(s["repo_scope"]), project_dir)
-        ]
-        for s in _dedupe_identical_skills(visible):
-            hay = f"{s['key']} {s['name']} {s['description']}".lower()
-            meta_hits = sum(1 for t in terms if t in hay)
-            body_hits = 0
-            if meta_hits == 0:
-                # A confined project body is read only under the same byte cap the
-                # context path uses; a larger file is skipped, never loaded whole.
-                # Global skills keep their unbounded body grep.
-                max_bytes: int | None = None
-                if s.get("confine_root"):
-                    if int(s.get("size_bytes", 0)) > PROJECT_SKILL_BODY_CAP:
-                        continue
-                    max_bytes = PROJECT_SKILL_BODY_CAP
-                content = (
-                    self.load_skill(s["key"], project_dir, max_bytes=max_bytes) or ""
-                ).lower()
-                body_hits = sum(1 for t in terms if t in content)
-            total = meta_hits * 10 + body_hits
-            if total <= 0:
-                continue
-            usage = self._usage.score(s["key"])[0] if self._usage else 0.0
-            scored.append((total, usage, s))
-        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
-        return [s for _, _, s in scored[:limit]]
+        # Ask every term across both surfaces: a metadata hit must not suppress
+        # the other query words found only in the procedure.
+        matched: dict[str, set[str]] = {}
+        meta_counts: dict[str, int] = {}
+        frequencies: dict[str, int] = {}
+        live = [str(s["key"]) for s in rows if not s.get("confine_root")]
+        bodies = self._body_matches(rows, terms, live, project_dir)
+        metadata = self._search_index.metadata_matches(terms) if self._search_index else None
+        for row in rows:
+            key = str(row["key"])
+            if metadata is None or not row.get("metadata_indexed"):
+                vocabulary = recall_terms(f"{key} {row['name']} {row['description']}".lower())
+                meta_hits = {t for t in terms if any(word.startswith(t) for word in vocabulary)}
+            else:
+                meta_hits = metadata.get(str(row["path"]), set())
+            hits = meta_hits | bodies.get(key, set())
+            if hits:
+                matched[key] = hits
+                meta_counts[key] = len(meta_hits)
+                for term in hits:
+                    frequencies[term] = frequencies.get(term, 0) + 1
+
+        def rank(row: dict) -> tuple:
+            key = str(row["key"])
+            hits = matched.get(key, set())
+            rarity = sum(math.log1p(len(rows) / max(1, frequencies[t])) for t in hits)
+            usage = self._usage.score(key)[0] if self._usage else 0.0
+            return (-len(hits), -rarity, -meta_counts.get(key, 0), -usage, key)
+
+        candidates = [s for s in rows if str(s["key"]) in matched]
+        return sorted(candidates, key=rank)[offset : offset + limit]
 
     def resolve_dollar_skills(
-        self, text: str, project_dir: str | Path | None = None
+        self,
+        text: str,
+        project_dir: str | Path | None = None,
+        *,
+        only: list[str] | None = None,
     ) -> list[tuple[str, str, str]]:
         """Resolve ``$skillname`` tokens in *text* to loadable skills.
 
         Scans *text* for ``$token`` occurrences (anywhere, multiple allowed) and
-        matches each token against the **last path segment** of every enumerated
-        skill key — so ``$oncall-handover`` resolves the skill whose key is
+        matches a qualified token against its complete key first. An unqualified
+        token matches a unique last path segment of an enumerated skill key — so ``$oncall-handover`` resolves the skill whose key is
         ``WorkforceEmploymentKnowledgeBase/oncall-handover``. Matching is
         case-insensitive on the leaf.
 
@@ -5619,25 +6079,23 @@ class SkillsLoader:
         if not text or "$" not in text:
             return []
 
-        # Build leaf → full-key map once from the enumerated (allowlisted) set.
-        # _iter() already applies local > extra-path precedence and dedupes
-        # by full key, so the first full key seen for a given leaf wins.
-        leaf_to_name: dict[str, str] = {}
-        for name, skill_file, _within in self._iter_visible(project_dir):
-            leaf = name.rsplit("/", 1)[-1].lower()
-            leaf_to_name.setdefault(leaf, name)
+        names = [str(s["key"]) for s in self.scoped_skills(project_dir=project_dir, only=only)]
+        exact = {name: name for name in names}
+        leaves: dict[str, list[str]] = {}
+        for name in names:
+            leaves.setdefault(name.rsplit("/", 1)[-1].casefold(), []).append(name)
 
         resolved: list[tuple[str, str, str]] = []
         seen_names: set[str] = set()
         for match in _DOLLAR_SKILL_PATTERN.finditer(text):
             token = match.group(1)
-            # Match on the leaf segment of the token (supports ``$a/b`` typed by
-            # the user, though the common case is a bare leaf).
-            leaf = token.rsplit("/", 1)[-1].lower()
-            matched: str | None = leaf_to_name.get(leaf)
+            matched = exact.get(token)
+            if matched is None and "/" not in token:
+                choices = leaves.get(token.casefold(), [])
+                matched = choices[0] if len(choices) == 1 else None
             if matched is None or matched in seen_names:
                 continue
-            content = self.load_skill(matched, project_dir)
+            content = self.read_scoped_skill(matched, only=only, project_dir=project_dir)
             if content is None:
                 continue
             seen_names.add(matched)

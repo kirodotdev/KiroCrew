@@ -308,6 +308,9 @@ class TestSandboxClassification:
 
         monkeypatch.setattr("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", fake_bin)
         monkeypatch.setattr("kiro_crew.agent.ensure_agent_materialized", lambda _agent: None)
+        monkeypatch.setattr(
+            "kiro_crew.acp.skill_projection.prepare_native_skill_projection", lambda _work_dir: None
+        )
         runtime = AcpRuntime(work_dir=tmp_path / "sbx2", sandbox_mode="off")
         with patch("kiro_crew.acp.runtime.wrap_argv", side_effect=fake_wrap):
             with pytest.raises(self._Abort):

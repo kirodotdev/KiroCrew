@@ -1086,7 +1086,12 @@ class TestChompingCannotFlipAnActivationFlag:
         calls = re.findall(r"self\._repo_scope_satisfied\(([^,]+),", src)
         assert len(calls) >= 3, calls
         for call in calls:
-            assert call.strip() in {"scope", 'str(s["repo_scope"])'}, call
+            assert call.strip() in {
+                "scope",
+                'meta["repo_scope"]',
+                'str(s["repo_scope"])',
+                'str(row["repo_scope"])',
+            }, call
 
     def test_the_raw_value_really_does_carry_the_breaks(self) -> None:
         # Guard the test above against becoming vacuous: it only proves anything while at

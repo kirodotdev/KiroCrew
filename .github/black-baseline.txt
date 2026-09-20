@@ -880,7 +880,6 @@ test/test_skill_script_validator.py
 test/test_skill_trigger_pointer.py
 test/test_skill_update_flow.py
 test/test_skill_versioning.py
-test/test_skills.py
 test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
 test/test_slack_handler_coverage_branches.py

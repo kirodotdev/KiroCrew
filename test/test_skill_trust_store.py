@@ -2339,8 +2339,11 @@ class TestProjectSkillsIndexConfinement:
 
         context = loader.get_context(budget=budget, project_dir=project)
 
-        assert "CONFINED RELEASE BODY" in context
+        assert ("CONFINED RELEASE BODY" in context) is (budget is None)
         assert str(skill_file) not in context
+        assert "CONFINED RELEASE BODY" in (
+            loader.read_scoped_skill("release", project_dir=project) or ""
+        )
 
     def test_project_bodies_stop_at_the_skills_section_budget(self, project, tmp_path):
         """Many large confined bodies must not be accumulated before truncation."""

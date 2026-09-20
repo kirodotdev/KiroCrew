@@ -68,7 +68,7 @@
       "/opt/bin/kiro-cli",
       "acp",
       "--agent",
-      "kirocrew"
+      "kirocrew-skill-view-golden"
     ],
     "env_added": {
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
@@ -85,7 +85,7 @@
       "/opt/bin/kiro-cli",
       "acp",
       "--agent",
-      "kirocrew"
+      "kirocrew-skill-view-golden"
     ],
     "env_added": {
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",

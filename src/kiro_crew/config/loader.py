@@ -3617,26 +3617,55 @@ def _build_instances_config(
 
 
 def _build_skills_config(skills_data: dict) -> SkillsConfig:
+    # Every default here is READ FROM THE DATACLASS, never written a second time.
+    # A config.json omits any key it predates, so a literal in this function is a
+    # second declaration of the same default that can drift from the first and then
+    # answer with the opposite value, silently, for exactly the installs that have
+    # not touched the setting.
+    d = SkillsConfig()
     return SkillsConfig(
-        max_triggered=_safe_int(skills_data.get("max_triggered", 0), 0),
-        lazy_load=bool(skills_data.get("lazy_load", False)),
-        auto_create_from_sessions=bool(skills_data.get("auto_create_from_sessions", False)),
-        auto_refine_on_deviation=bool(skills_data.get("auto_refine_on_deviation", False)),
-        auto_min_tool_calls=_safe_int(skills_data.get("auto_min_tool_calls", 5), 5),
-        auto_similarity_threshold=_safe_float(
-            skills_data.get("auto_similarity_threshold", 0.85), 0.85
+        max_triggered=_safe_int(skills_data.get("max_triggered", d.max_triggered), d.max_triggered),
+        lazy_load=_safe_bool(skills_data.get("lazy_load", d.lazy_load), d.lazy_load),
+        auto_create_from_sessions=_safe_bool(
+            skills_data.get("auto_create_from_sessions", d.auto_create_from_sessions),
+            d.auto_create_from_sessions,
         ),
-        approval_required=bool(skills_data.get("approval_required", True)),
-        max_auto_skills=_safe_int(skills_data.get("max_auto_skills", 100), 100),
-        stale_after_days=_safe_int(skills_data.get("stale_after_days", 30), 30),
-        archive_after_days=_safe_int(skills_data.get("archive_after_days", 90), 90),
-        pending_ttl_days=_safe_int(skills_data.get("pending_ttl_days", 30), 30),
-        generate_scripts=bool(skills_data.get("generate_scripts", True)),
-        judge_model=str(skills_data.get("judge_model", "auto") or "auto"),
+        auto_refine_on_deviation=_safe_bool(
+            skills_data.get("auto_refine_on_deviation", d.auto_refine_on_deviation),
+            d.auto_refine_on_deviation,
+        ),
+        auto_min_tool_calls=_safe_int(
+            skills_data.get("auto_min_tool_calls", d.auto_min_tool_calls), d.auto_min_tool_calls
+        ),
+        auto_similarity_threshold=_safe_float(
+            skills_data.get("auto_similarity_threshold", d.auto_similarity_threshold),
+            d.auto_similarity_threshold,
+        ),
+        approval_required=_safe_bool(
+            skills_data.get("approval_required", d.approval_required), d.approval_required
+        ),
+        max_auto_skills=_safe_int(
+            skills_data.get("max_auto_skills", d.max_auto_skills), d.max_auto_skills
+        ),
+        stale_after_days=_safe_int(
+            skills_data.get("stale_after_days", d.stale_after_days), d.stale_after_days
+        ),
+        archive_after_days=_safe_int(
+            skills_data.get("archive_after_days", d.archive_after_days), d.archive_after_days
+        ),
+        pending_ttl_days=_safe_int(
+            skills_data.get("pending_ttl_days", d.pending_ttl_days), d.pending_ttl_days
+        ),
+        generate_scripts=_safe_bool(
+            skills_data.get("generate_scripts", d.generate_scripts), d.generate_scripts
+        ),
+        judge_model=str(skills_data.get("judge_model", d.judge_model) or d.judge_model),
         extra_paths=[p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)],
         # Security off-switch: malformed values must not become truthy
         # through Python coercion (for example, the string "false").
-        project_skills_enabled=(skills_data.get("project_skills_enabled", True) is True),
+        project_skills_enabled=(
+            skills_data.get("project_skills_enabled", d.project_skills_enabled) is True
+        ),
     )
 
 

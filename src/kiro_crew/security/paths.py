@@ -1896,6 +1896,16 @@ def _home_dir_targets_uncached(
     secrets. On POSIX a single-segment entry splits to a 1-element list, so
     this is a no-op there.
     """
+    # Both supported Crew home prefixes map to the same override leaves.
+    # Resolve each identical spelling once within this build; never carry these
+    # answers across builds or cache keys, so root and leaf freshness is unchanged.
+    resolved_paths: dict[str, str | None] = {}
+
+    def resolve_target(path: str) -> str | None:
+        if path not in resolved_paths:
+            resolved_paths[path] = _realpath_or_none(path)
+        return resolved_paths[path]
+
     resolved = roots if roots is not None else _resolved_root_key()
     home = resolved.home
     crew_home = resolved.crew_home
@@ -1944,14 +1954,14 @@ def _home_dir_targets_uncached(
     if os_home:
         for d in home_dirs:
             sensitive_targets |= _anchor_both_separators(os_home, d)
-        os_home_real = _realpath_or_none(os_home) or os_home
+        os_home_real = resolve_target(os_home) or os_home
         if os_home_real.casefold() != os_home.casefold():
             for d in home_dirs:
                 sensitive_targets |= _anchor_both_separators(os_home_real, d)
     # ``home`` arrives RESOLVED from the cache key, so this is normally a no-op;
     # it still opens the directory on Windows, which is why the whole rebuild
     # runs off the loop.  None degrades to the lexical anchors already in the set.
-    home_real = _realpath_or_none(home) or home
+    home_real = resolve_target(home) or home
     if home_real.casefold() != home.casefold():
         sensitive_targets |= {_anchor(home_real, d) for d in home_dirs}
     # ``home`` arrives RESOLVED (the cache is keyed on the resolved roots), so
@@ -1985,7 +1995,7 @@ def _home_dir_targets_uncached(
                     sensitive_targets.add(full.casefold())
                     # Also add the resolved form in case the env value itself has
                     # symlinks (matches the home/home_real duality above).
-                    full_real = _realpath_or_none(full)
+                    full_real = resolve_target(full)
                     if full_real is not None:
                         sensitive_targets.add(full_real.casefold())
                     break
@@ -2005,7 +2015,7 @@ def _home_dir_targets_uncached(
     if kiro_home_override and _KIRO_AGENTS_DIR in home_dirs:
         agents_full = os.path.join(kiro_home_override, "agents")
         sensitive_targets.add(agents_full.casefold())
-        agents_real = _realpath_or_none(agents_full)
+        agents_real = resolve_target(agents_full)
         if agents_real is not None:
             sensitive_targets.add(agents_real.casefold())
     # An ACP adapter's OAuth token follows that adapter's own home override, so
@@ -2024,7 +2034,7 @@ def _home_dir_targets_uncached(
                 continue
             _full = os.path.join(_root, *_leaf_segments(_under_root))
             sensitive_targets.add(_full.casefold())
-            _full_real = _realpath_or_none(_full)
+            _full_real = resolve_target(_full)
             if _full_real is not None:
                 sensitive_targets.add(_full_real.casefold())
     return sensitive_targets
@@ -2583,9 +2593,10 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     calling thread inside ``realpath``, exactly as that thread's own walk of the
     same mount would. Nothing is admitted while it blocks.
     """
-    return _path_in_home_dirs(
-        resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True
-    ) or _is_keystone_publish_artifact(resolved, pre_resolved=True)
+    return _path_in_home_dirs(resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True) or (
+        resolved.casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
+        and _is_keystone_publish_artifact(resolved, pre_resolved=True)
+    )
 
 
 #: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a

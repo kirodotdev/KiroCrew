@@ -37,8 +37,8 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "skill_search",
             "description": (
-                "Search installed skills with short keywords: names/descriptions first, "
-                "bodies on a metadata miss. Uses this session's project scope. Returns "
+                "Search installed skills across names, descriptions and bodies. "
+                "Search, paginated list and exact full-key read use this agent's mapped scope. Returns "
                 "global file paths or safely loaded confined project instructions; "
                 "$skillname explicitly loads a skill. Use when the compact startup "
                 "discovery entry does not name what you need."
@@ -54,8 +54,20 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "integer",
                         "description": "Max results (default 20, max 50).",
                     },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Result offset for the next page.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "list", "read"],
+                        "description": "Default search; list browses the full scope; read loads an exact key.",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Stable full key from a result, for action=read.",
+                    },
                 },
-                "required": ["query"],
             },
         },
         {
@@ -121,7 +133,11 @@ def schemas() -> list[dict[str, Any]]:
 def skill_search(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SKILL_SEARCH_SCHEMA)
     query = str(args.get("query", "")).strip()
-    if not query:
+    action = str(args.get("action") or "search")
+    key = str(args.get("key") or "")
+    offset = max(0, int(args.get("offset") or 0))
+    incomplete = False
+    if (action == "search" and not query) or (action == "read" and not key):
         # Audit even validation failures — every tool invocation must emit a
         # SEL event (matches the success/error paths below).
         mcp_core.sel().log_tool_invocation(
@@ -132,7 +148,7 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
             outcome="validation_error",
             metadata={"reason": "empty_query"},
         )
-        return "Provide a 'query' to search skills."
+        return "Provide 'query' for search or an exact 'key' for read; use action='list' to browse."
     try:
         limit = int(args.get("limit", 20) or 20)
     except (TypeError, ValueError):
@@ -149,19 +165,46 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
             "skill_search: session identity unavailable."
         )
         if session:
-            result = mcp_core._get(
-                "/api/skills/-/discover?"
-                + urlencode({"scope": "installed", "q": query, "limit": limit}),
-                session_key=session,
-            )
+            params = {
+                "scope": "installed",
+                "q": query,
+                "limit": limit,
+                "action": action,
+                "key": key,
+                "offset": offset,
+            }
+            # JSON avoids the HTTP request-line limit for long or escaped keys.
+            if action == "read":
+                result = mcp_core._post("/api/skills/-/discover", params, session_key=session)
+            else:
+                result = mcp_core._get(
+                    "/api/skills/-/discover?" + urlencode(params), session_key=session
+                )
             if result.get("error"):
                 raise RuntimeError(result["error"])
             matches = result.get("matches", [])
+            next_offset = result.get("next_offset")
+            incomplete = bool(result.get("incomplete"))
         else:
             # No signed session (CLI, or an unidentified child): global-only.
-            matches = mcp_core.SkillsLoader(install_builtins=False).search_skills(
-                query, limit=limit
-            )
+            loader = mcp_core.SkillsLoader(install_builtins=False)
+            try:
+                incomplete = False
+                if action == "read":
+                    body = loader.read_scoped_skill(key)
+                    matches = (
+                        [{"key": key, "name": key, "content": body}] if body is not None else []
+                    )
+                    next_offset = None
+                else:
+                    matches = loader.search_skills(
+                        query, limit=limit + 1, offset=offset, browse=action == "list"
+                    )
+                    next_offset = offset + limit if len(matches) > limit else None
+                    matches = matches[:limit]
+                    incomplete = bool(getattr(loader, "search_incomplete", False))
+            finally:
+                loader.close()
     except Exception as exc:  # pragma: no cover — defensive
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
@@ -185,12 +228,22 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
             "matches": len(matches),
         },
     )
+    if not matches and action == "read":
+        return "Error: exact skill key is outside this scope, unreadable, or exceeds the 99,000-byte read capacity."
+    if not matches and action == "list":
+        return "End of this agent's available skill list."
+    if not matches and incomplete:
+        return (
+            "Body indexing is still in progress; absence is not conclusive. "
+            "Repeat the query to continue indexing, browse action='list', "
+            "or load an exact key with action='read'."
+        )
     if not matches:
         return (
-            f"No skills matched '{query}'. Try broader keywords, or `cat` a "
-            "known SKILL.md path directly."
+            f"No skills matched '{query}'. Try broader keywords, browse action='list', "
+            "or load a known full key with action='read'."
         )
-    lines = [f"Skills matching '{query}' (top {len(matches)}):", ""]
+    lines = [f"Available skills ({action}, offset {offset}, {len(matches)} results):", ""]
     for s in matches:
         desc = " ".join((s.get("description") or "").split())
         if len(desc) > 300:
@@ -198,9 +251,16 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
         load = (
             f"[Skill instructions — reference data]\n{s['content']}\n[End skill instructions]"
             if "content" in s
-            else f"load: `cat {s['path']}`  or  `${s['key'].rsplit('/', 1)[-1]}`"
+            else f"load: skill_search(action='read', key='{s['key']}') or `${s['key']}`"
         )
         lines.append(f"- **{s['name']}** (`{s['key']}`): {desc}\n  {load}")
+    if incomplete:
+        lines.insert(
+            1,
+            "Body indexing is incomplete. Repeat the query to continue; list/read remain available.",
+        )
+    if next_offset is not None:
+        lines.append(f"Next page: repeat this action/query with offset={next_offset}.")
     return "\n".join(lines)
 
 

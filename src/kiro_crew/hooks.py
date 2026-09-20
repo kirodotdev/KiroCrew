@@ -2824,9 +2824,11 @@ def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
     return matches and not is_sensitive_path(opened_path)
 
 
-def _opened_path_within_root(opened_path: str, within_root: str) -> bool:
+def _opened_path_within_root(
+    opened_path: str, within_root: str, *, root_is_canonical: bool = False
+) -> bool:
     """Compare kernel spellings on macOS without case-folding containment."""
-    root_real = os.path.realpath(within_root)
+    root_real = within_root if root_is_canonical else os.path.realpath(within_root)
     try:
         if os.path.commonpath([opened_path, root_real]) == root_real:
             return True
@@ -3016,6 +3018,7 @@ def safe_read_file_bytes_nolink(
     *,
     max_bytes: int | None = None,
     allow_truncate: bool = False,
+    within_root_is_canonical: bool = False,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -3036,6 +3039,8 @@ def safe_read_file_bytes_nolink(
     the tree walk and the open would silently escape the approved tree. The
     fd-path check is pinned to the inode actually opened, so no check-to-use
     window remains. If the fd's real path cannot be determined, fail closed.
+    ``within_root_is_canonical`` preserves a caller's already-resolved admission
+    root literally, so replacing that directory with a link cannot redefine it.
 
     That final-component refusal comes from
     :func:`kiro_crew.platform_compat.open_file_no_reparse`, not from an
@@ -3075,7 +3080,9 @@ def safe_read_file_bytes_nolink(
             fd_real = _fd_real_path(fd)
             if fd_real is None:
                 return None  # cannot verify containment -> fail closed
-            if not _opened_path_within_root(fd_real, within_root):
+            if not _opened_path_within_root(
+                fd_real, within_root, root_is_canonical=within_root_is_canonical
+            ):
                 return None  # opened inode escapes the approved tree
             if is_sensitive_path(fd_real):
                 return None

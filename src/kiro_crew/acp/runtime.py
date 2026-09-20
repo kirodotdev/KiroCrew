@@ -2132,6 +2132,16 @@ class AcpRuntime:
             plan = await self._resolve_spawn_plan()
             self._max_rss_depth = plan.rss_depth
             argv = plan.argv
+            if self.acp_backend == ACP_BACKEND_KIRO:
+                from kiro_crew.acp.skill_projection import prepare_native_skill_projection
+
+                self._native_skill_projection = await asyncio.to_thread(
+                    prepare_native_skill_projection, self._work_dir
+                )
+                if self._native_skill_projection is not None:
+                    argv = list(argv)
+                    agent_position = argv.index("--agent") + 1
+                    argv[agent_position] = self._native_skill_projection.agent(self._agent)
         except _KiroExecutableTrustError as exc:
             raise AcpRuntimeError(str(exc)) from exc
         # The handshake declaration is the harness's constant. A host that takes
@@ -3699,6 +3709,9 @@ class AcpRuntime:
                 if self.recording_allowed:
                     await record_frame(self._acp_backend, data, len(line))
 
+                projection = getattr(self, "_native_skill_projection", None)
+                if projection is not None:
+                    data = projection.frame(data)
                 msg = JsonRpcMessage.from_dict(data)
 
                 # Route responses
@@ -4312,6 +4325,9 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is not None:
+            params = projection.request(method, params)
         req_id = self._next_id
         self._next_id += 1
 
@@ -4855,6 +4871,14 @@ class AcpRuntime:
                 await self.terminate_session(session_id)
                 raise AcpRuntimeError(str(exc)) from exc
         try:
+            if getattr(self, "_native_skill_projection", None) is not None:
+                from kiro_crew.acp.skill_projection import prepare_native_skill_projection
+
+                # Keep the transport mode selected at spawn for this process.
+                # The rollback environment switch takes effect after restart.
+                self._native_skill_projection = await asyncio.to_thread(
+                    prepare_native_skill_projection, self._work_dir, enabled=True
+                )
             # set_mode is a handshake request: switching to an agent boots THAT
             # agent's MCP servers, the same server (re-)initialization that gives
             # session/new and session/load their 90s budget. A switched-to server
@@ -5255,12 +5279,28 @@ class AcpRuntime:
         if self.acp_backend == ACP_BACKEND_KIRO:
             from kiro_crew.acp.session_mcp import kiro_control_plane_servers
 
+            projection = getattr(self, "_native_skill_projection", None)
+            projection_kwargs: dict[str, Any] = (
+                {"spec_override": projection.specs.get(agent or self._agent)}
+                if projection is not None
+                else {}
+            )
             native = await asyncio.to_thread(
                 kiro_control_plane_servers,
                 agent,
                 work_dir=work_dir,
                 existing_names={str(entry.get("name")) for entry in entries},
+                **projection_kwargs,
             )
+            if (
+                projection is not None
+                and (agent or self._agent) in projection.search_agents
+                and not any(entry.get("name") == "kirocrew-core" for entry in [*entries, *native])
+            ):
+                raise AcpRuntimeError(
+                    "Cannot bind skill_search to this session without losing native MCP restrictions. "
+                    "Check the agent's kirocrew-core server configuration."
+                )
             return [*entries, *native]
         return entries
 
@@ -6366,6 +6406,9 @@ class AcpRuntime:
         req_id = self._next_id
         self._next_id += 1
 
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is not None:
+            params = projection.request(method, params)
         req = JsonRpcRequest(method=method, params=params, id=req_id)
         data = json.dumps(req.to_dict()) + "\n"
 

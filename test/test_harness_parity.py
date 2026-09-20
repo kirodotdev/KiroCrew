@@ -962,6 +962,11 @@ _RUNTIME_PATH_MODULES = (
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
         "src/kiro_crew/acp/runtime.py",
+        "_spawn_admitted",
+    ): "Only native Kiro loads the alias agent files and workspace resource-inheritance "
+    "setting used to bound skill metadata. Other harnesses must keep their own spawn plans.",
+    (
+        "src/kiro_crew/acp/runtime.py",
         "_unpooled_control_planes",
     ): "Kiro alone loads its native agent spec without a mirror or wire agent. "
     "Its unpooled managed stdio declarations need a per-session token override; "

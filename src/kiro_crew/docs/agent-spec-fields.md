@@ -353,3 +353,9 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | the provider and backend axes | `src/kiro_crew/agent_sdk/provider_identity.py`, `src/kiro_crew/agent_sdk/backend_identity.py` |
 | Template pane GET / PATCH | `src/kiro_crew/dashboard/handlers/agents.py` |
 | fork / publish field handling | `src/kiro_crew/agent_capabilities.py` |
+
+Skill resource mappings define the available set, not startup body injection. Crew
+resolves the winning project/global spec for directory, search, list and exact read.
+Native CLI execution uses a managed view without skill resources; the original spec
+remains unchanged and supplies the mapping. Internal `kirocrew-skill-view-` specs
+are omitted from Crew agent discovery. See [context management](../../../docs/architecture/context-management.md).

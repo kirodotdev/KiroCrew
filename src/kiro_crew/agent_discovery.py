@@ -899,7 +899,9 @@ def _extract_skills(data: dict[str, Any]) -> list[str]:
     return out
 
 
-def expand_skill_uri(uri: str, agent_path: Path) -> str | None:
+def expand_skill_uri(
+    uri: str, agent_path: Path, *, project_dir: str | Path | None = None
+) -> str | None:
     """Expand a ``skill://`` resource URI into an fnmatch glob over real paths.
 
     kiro-cli accepts ``skill://~/.kiro/skills/*/SKILL.md`` (global),
@@ -919,9 +921,10 @@ def expand_skill_uri(uri: str, agent_path: Path) -> str | None:
     raw = uri[len(SKILL_URI_PREFIX) :]
     if raw.startswith("~/"):
         return str(Path.home() / raw[2:])
-    if raw.startswith("/"):
+    if raw.startswith("/") or Path(raw).is_absolute():
         return raw
-    return str(agent_path.parent.parent.parent / raw)
+    base = Path(project_dir) if project_dir else agent_path.parent.parent.parent
+    return str(base / raw)
 
 
 def parsed_agent_specs(
@@ -1031,17 +1034,49 @@ def cached_agent_specs(
     return rows
 
 
-def agent_skill_globs(agent: str, agents_dir: Path | None = None) -> list[str]:
+class SkillScopeResolutionError(ValueError):
+    """The bound agent has an unavailable skill scope."""
+
+
+def agent_skill_globs(
+    agent: str,
+    agents_dir: Path | None = None,
+    *,
+    project_dir: str | Path | None = None,
+    strict: bool = False,
+) -> list[str]:
     """Return fnmatch globs for the skills mapped to *agent*, or ``[]``.
 
-    An empty list means "this agent has no explicit skill mapping" — callers
-    treat that as the legacy all-or-nothing default rather than as "no skills".
-    Best-effort and never raises: an unreadable, invalid, or sensitive-path
-    agent file yields ``[]``. Resolved from the :func:`parsed_agent_specs`
-    snapshot, so a warm call parses nothing.
+    An empty list means "this agent has no explicit skill mapping". Session
+    discovery distinguishes the default catalog from an empty custom scope.
+    Listing callers are best-effort: an unreadable, invalid, or sensitive-path
+    agent file yields ``[]``. Session callers use ``strict=True`` so a missing
+    custom template cannot silently widen its scope to the global catalog.
+    Resolved from the :func:`parsed_agent_specs` snapshot when no project is supplied.
     """
     if not agent:
         return []
+    if project_dir:
+        rows = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
+        winner = next((row for row in rows if row.name == agent), None)
+        if winner is None or not winner.filename:
+            if strict and agent != "kirocrew":
+                raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
+            return []
+        directory = (
+            project_agents_dir(str(project_dir))
+            if winner.scope == SCOPE_PROJECT
+            else (agents_dir if agents_dir is not None else _kiro_agents_dir())
+        )
+        path = directory / winner.filename
+        data = _read_agent_spec(path, operation="agent_skill_globs", source="unknown")
+        if strict and data is None:
+            raise SkillScopeResolutionError(f"Cannot read skill scope for agent {agent!r}")
+        return [
+            g
+            for uri in skill_resource_uris(data or {})
+            if (g := expand_skill_uri(uri, path, project_dir=project_dir))
+        ]
     # ``f`` is the ORIGINAL path: ``f.stem`` and ``expand_skill_uri`` below
     # must see it so a symlinked spec's relative globs stay anchored where
     # the symlink lives.
@@ -1049,7 +1084,22 @@ def agent_skill_globs(agent: str, agents_dir: Path | None = None) -> list[str]:
         if data.get("name") != agent and f.stem != agent:
             continue
         return [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
+    if strict and agent != "kirocrew":
+        raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
     return []
+
+
+# This is called on the discovery/expansion worker, never on the event loop.
+def session_skill_globs(
+    session_key: str, fallback_agent: str, *, project_dir: str | Path | None = None
+) -> list[str] | None:
+    """Use a member's bound template, not its dashboard display alias."""
+    from kiro_crew.execution_context import read_session_execution
+
+    execution = read_session_execution(session_key) if session_key else None
+    template = execution.template_id if execution and execution.template_id else fallback_agent
+    mapped = agent_skill_globs(template, project_dir=project_dir, strict=True)
+    return None if template == "kirocrew" and not mapped else mapped
 
 
 #: Ceiling on a ``welcomeMessage`` rendered into a chat transcript. The field is

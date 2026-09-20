@@ -62,6 +62,19 @@ _POSIX_EXEC_PATHS_ONLY = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _native_projection_for_fake_processes(monkeypatch):
+    from kiro_crew.acp import skill_projection
+
+    # These protocol/process doubles do not own installed native agent specs.
+    # The projection contract is exercised in test_native_skill_projection.
+    monkeypatch.setattr(
+        skill_projection,
+        "prepare_native_skill_projection",
+        lambda work_dir: skill_projection.NativeSkillProjection({"kirocrew": "kirocrew"}),
+    )
+
+
 async def _stop_stderr_drain(client: "AcpClient") -> None:
     """Cancel and await the background stderr-drain task a mocked _spawn started.
 

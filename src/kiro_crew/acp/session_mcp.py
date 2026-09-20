@@ -800,6 +800,7 @@ def kiro_control_plane_servers(
     *,
     work_dir: str | Path | None,
     existing_names: Collection[str] = (),
+    spec_override: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Carry ordinary session identity without widening Kiro's native tool surface.
 
@@ -809,7 +810,7 @@ def kiro_control_plane_servers(
     """
     if not agent or _registry_mode():
         return []
-    spec = _agent_spec_for(agent, work_dir)
+    spec = spec_override if spec_override is not None else _agent_spec_for(agent, work_dir)
     if not isinstance(spec, dict) or not isinstance(spec.get("mcpServers"), dict):
         return []
     allow = _tools_allowlist(spec)

@@ -881,6 +881,7 @@ class TestProjectNamesDenialAttribution:
 # Forwarding helpers are pinned as forwarding rather than forced to use a fixed
 # literal that would erase the caller's attribution.
 _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/acp/skill_projection.py": [("native_skill_projection", "acp")],
     # Two reads, deliberately labelled apart: the session-MCP translation resolves
     # the PROJECT checkout first (kiro-cli resolves --agent there before the user
     # level) and falls back to the user-level spec, so a refusal names which of the
@@ -895,6 +896,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/agent_capabilities.py": [("capability_publish", "dashboard")],
     "kiro_crew/agent_discovery.py": [
+        ("agent_skill_globs", "unknown"),
         # ``agent_welcome_message`` reads the PROJECT checkout's specs itself
         # (project scope shadows the user level, as `list_agents` resolves it),
         # so it names the hint read rather than forwarding: a refused checkout

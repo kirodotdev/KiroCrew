@@ -45,6 +45,7 @@ from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.harness import codex as codex_harness_mod
 from kiro_crew.acp.runtime import AcpRuntime
+from kiro_crew.acp.skill_projection import NativeSkillProjection
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
@@ -311,6 +312,10 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path) -> None:
                 client_mod, "_resolve_kiro_bin_for_spawn", new=AsyncMock(return_value=_KIRO_BIN)
             ),
             patch.object(client_mod, "ensure_agent_materialized", return_value=None),
+            patch(
+                "kiro_crew.acp.skill_projection.prepare_native_skill_projection",
+                return_value=NativeSkillProjection({"kirocrew": "kirocrew-skill-view-golden"}),
+            ),
             patch.object(client_mod, "require_fresh_derived_spec", return_value=None),
             patch.object(client_mod, "require_fork_governance", return_value=None),
             patch.object(

@@ -520,6 +520,16 @@ def _fake_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") ->
 class TestCommandProviderNoShellAndTimeout:
     """CommandProvider fail-closed shell + timeout + stderr redaction."""
 
+    @pytest.fixture(autouse=True)
+    def _fake_process_tree(self, monkeypatch):
+        # This class owns only process doubles. PID 4242 is not ours to signal.
+        tree = AsyncMock()
+        monkeypatch.setattr("kiro_crew.platform_compat.kill_process_tree_async", tree)
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat._shares_own_process_group", lambda pid: False
+        )
+        return tree
+
     @pytest.mark.asyncio
     async def test_check_no_trusted_shell(self) -> None:
         p = CommandProvider(check_command="echo hi", apply_command="echo ok")
@@ -540,7 +550,7 @@ class TestCommandProviderNoShellAndTimeout:
             assert await p.apply() is False
 
     @pytest.mark.asyncio
-    async def test_check_timeout_kills_proc(self) -> None:
+    async def test_check_timeout_kills_proc(self, _fake_process_tree) -> None:
         p = CommandProvider(check_command="sleep 100", apply_command="echo ok")
         proc = _fake_proc(returncode=0)
         with (
@@ -558,6 +568,9 @@ class TestCommandProviderNoShellAndTimeout:
             result = await p.check()
         assert result.error == "check_command timed out"
         proc.kill.assert_called_once()
+        _fake_process_tree.assert_awaited_once()
+        assert _fake_process_tree.await_args.args[0] == proc.pid
+        proc.communicate.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_check_file_not_found(self) -> None:
@@ -583,7 +596,7 @@ class TestCommandProviderNoShellAndTimeout:
         assert result.error and result.available is False
 
     @pytest.mark.asyncio
-    async def test_apply_timeout_kills_proc(self) -> None:
+    async def test_apply_timeout_kills_proc(self, _fake_process_tree) -> None:
         p = CommandProvider(check_command="echo hi", apply_command="sleep 100")
         proc = _fake_proc(returncode=0)
         with (
@@ -600,6 +613,9 @@ class TestCommandProviderNoShellAndTimeout:
         ):
             assert await p.apply() is False
         proc.kill.assert_called_once()
+        _fake_process_tree.assert_awaited_once()
+        assert _fake_process_tree.await_args.args[0] == proc.pid
+        proc.communicate.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_apply_file_not_found(self) -> None:

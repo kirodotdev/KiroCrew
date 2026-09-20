@@ -82,6 +82,14 @@ The store is thread-safe. A module-level singleton is available via
 `get_default_store()`; pass an explicit `root` to `ArtifactStore(root=...)`
 for isolated test instances.
 
+`list()` returns newest first on a TOTAL order, `(updated_at, slug)` descending.
+The tie-break is load-bearing, not cosmetic: `updated_at` is microsecond ISO, so
+two artifacts written inside one microsecond carry the identical stamp, and
+sorting on it alone is a stable sort over equal keys that preserves directory
+scan order — which differs per platform and per filesystem, making the library
+UI, the MCP list tool and the auto-widget pruning sweep disagree about which
+artifact is newest on otherwise identical data.
+
 ### Kind inference
 
 `store.create()` (and every path that funnels through it — the HTTP create

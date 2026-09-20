@@ -1005,6 +1005,34 @@ class TestSkillSearch:
     """A session-bound call searches through the gateway (project scope); a
     session-less CLI call falls back to the local loader."""
 
+    def test_exact_read_uses_json_and_retains_signed_session(self, monkeypatch):
+        from kiro_crew.validation import MAX_SKILL_KEY_CHARS
+
+        key = "nested/" + "x" * (MAX_SKILL_KEY_CHARS - len("nested/"))
+        seen = []
+        monkeypatch.setattr(
+            mcp_core, "require_strict_session_key", lambda *args: ("dashboard:signed", None)
+        )
+        monkeypatch.setattr(
+            mcp_core, "_get", lambda *args, **kwargs: pytest.fail("exact read used URL")
+        )
+        monkeypatch.setattr(
+            mcp_core, "SkillsLoader", lambda **kwargs: pytest.fail("signed read fell back")
+        )
+
+        def post(path, body, *, session_key):
+            seen.append((path, body, session_key))
+            return {"matches": [{"key": key, "name": key, "content": "read marker"}]}
+
+        monkeypatch.setattr(mcp_core, "_post", post)
+        result = _call_tool("skill_search", {"action": "read", "key": key})
+        assert "read marker" in result
+        assert len(seen) == 1
+        assert seen[0][0] == "/api/skills/-/discover"
+        assert seen[0][1]["key"] == key
+        assert seen[0][1]["scope"] == "installed"
+        assert seen[0][2] == "dashboard:signed"
+
     @staticmethod
     def _gateway(monkeypatch: pytest.MonkeyPatch, matches: list[dict]) -> list[str]:
         seen: list[str] = []
@@ -1030,6 +1058,8 @@ class TestSkillSearch:
             "scope": ["installed"],
             "q": [query],
             "limit": [str(limit)],
+            "action": ["search"],
+            "offset": ["0"],
         }
 
     def test_matches_are_rendered_with_load_hints(self, monkeypatch: pytest.MonkeyPatch):
@@ -1043,11 +1073,11 @@ class TestSkillSearch:
         ]
         seen = self._gateway(monkeypatch, matches)
         out = _call_tool("skill_search", {"query": "babysit"})
-        assert "Skills matching 'babysit' (top 1)" in out
+        assert "Available skills (search, offset 0, 1 results)" in out
         # Whitespace in the description is collapsed.
         assert "Monitor a PR" in out
-        assert "cat /skills/kirocrew-dev/babysit/SKILL.md" in out
-        assert "$babysit" in out
+        assert "key='kirocrew-dev/babysit'" in out
+        assert "$kirocrew-dev/babysit" in out
         self._assert_gateway_query(seen, query="babysit", limit=20)
 
     def test_confined_match_renders_its_body_instead_of_a_path(
@@ -1082,17 +1112,20 @@ class TestSkillSearch:
             "_get",
             lambda *_a, **_kw: pytest.fail("unsigned identity reached the gateway"),
         )
+        closed: list[bool] = []
         monkeypatch.setattr(
             mcp_core,
             "SkillsLoader",
             lambda **_kw: SimpleNamespace(
-                search_skills=lambda q, limit: [
+                search_skills=lambda q, limit, **kwargs: [
                     {"name": "global-only", "key": "g/global-only", "description": q, "path": "/g"}
-                ]
+                ],
+                close=lambda: closed.append(True),
             ),
         )
         out = _call_tool("skill_search", {"query": "x"})
         assert "global-only" in out
+        assert closed == [True]
 
     def test_gateway_error_is_reported_not_swallowed(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(mcp_core, "_get", lambda *_a, **_kw: {"error": "project not trusted"})
@@ -1119,18 +1152,20 @@ class TestSkillSearch:
             mcp_core, "_get", lambda *_a, **_kw: pytest.fail("no session: no gateway call")
         )
         seen: list[int] = []
+        closed: list[bool] = []
 
         def _loader(**_kw: object) -> SimpleNamespace:
-            def _search(_q: str, limit: int) -> list[dict]:
+            def _search(_q: str, limit: int, **kwargs) -> list[dict]:
                 seen.append(limit)
                 return [{"name": "s", "key": "s", "description": "d", "path": "/p"}]
 
-            return SimpleNamespace(search_skills=_search)
+            return SimpleNamespace(search_skills=_search, close=lambda: closed.append(True))
 
         monkeypatch.setattr(mcp_core, "SkillsLoader", _loader)
         out = _call_tool("skill_search", {"query": "x", "limit": 7})
-        assert seen == [7]
-        assert "Skills matching 'x' (top 1)" in out
+        assert seen == [8]
+        assert closed == [True]
+        assert "Available skills (search, offset 0, 1 results)" in out
 
     def test_loader_failure_is_reported_not_raised(self, monkeypatch: pytest.MonkeyPatch):
         def _boom(**_kw: object) -> SimpleNamespace:

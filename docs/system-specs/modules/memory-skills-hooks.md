@@ -3014,18 +3014,11 @@ trust-preview catalog omits the row, and direct project `load_skill` applies the
 cap. Oversize and outside-root refusals have distinct log messages. No confined path
 stat is added.
 
-No confined project path is rendered into agent-facing context. Both the legacy and
-budgeted initial skills blocks inject admitted project skills as bodies through
-`load_skill(..., project_dir)` and reserve path summaries for unconfined skills. The
-trigger split and pointer-hint renderer enforce the same rule later in a turn. This
-prevents a checkout from replacing an already-enumerated `SKILL.md` with an escaping link
-and persuading the agent to reopen it directly after the descriptor-confined read. Session
-start and post-compaction callers also pass the skills section cap as a confined-body
-budget even when lazy loading is off. Bodies that fit are injected whole; bodies that do
-not fit are omitted rather than exposed as unsafe paths. The loader checks the enumerated
-size before opening and passes the remaining budget into the descriptor-pinned read, so a
-replacement race or many large project skills cannot materialize more body text than the
-section can retain.
+No confined project path is rendered into agent-facing context. Startup lists
+project skills with a scoped exact-read pointer, and only required project bodies
+are read at startup. Explicit reads and trigger delivery retain the descriptor-pinned
+reader and project byte cap. This prevents a checkout from replacing an enumerated
+file with an escaping link and persuading the agent to reopen that path directly.
 
 The mutable trust-store reader likewise refuses a non-object grant row instead of
 filtering it: grant and revoke must never rewrite a partially unknown store and silently
@@ -3086,9 +3079,8 @@ serve the prior project's fresh catalog for the cache TTL. Both production compo
 provide that project identity. A caller that cannot provide it gets a zero-staleness
 fallback, so closing and reopening the picker revalidates the ambiguous cache key.
 
-**`search_skills` stays project-blind.** Only a session key reaches that boundary and
-resolving a project from it needs a seam that does not exist yet, so the MCP tool
-continues to search locally installed skills only.
+**Search is session-scoped.** Signed sessions resolve their project and active
+agent mapping at the gateway; unsigned MCP fallback remains global-only.
 
 The bundled `session-summaries` skill is on-demand, guidance-only: it explains the
 chat session summary panel (see [session-summary](session-summary.md)) — what it
@@ -3160,19 +3152,143 @@ or authentication refusal never falls back to the costly legacy loop.
 
 Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can `cd` and run them.
 
-**Discovery (`skills.lazy_load`, default false):** startup and post-compaction
-assembly always use a bounded skills entry. OFF selects a short `skill_search`
-pointer for ordinary unmapped skills; ON selects the existing usage-ranked
-index within the same section allowance. Neither increases the shared background
-budget. Direct `get_context(budget=None)` remains available to explicit catalog
-readers, but is no longer the startup default. Pinned full instructions, confined
-project-body reads, native mapping gates, explicit `$skill` loads, trigger settings
-and byte-identical deduplication are preserved. No final slicing may cut pinned
-instructions or the discovery footer.
+**Discovery (`skills.lazy_load`, default true):** startup and post-compaction use
+one bounded directory. The default is the usage-ranked index with a family hint
+for omitted rows; false selects a shorter search pointer. A `skill://` mapping
+restricts availability, not eager body delivery. Directory, search, paginated
+list, exact reads and `$full/key` expansion resolve the same project-aware mapping.
+Unqualified `$leaf` fallback is permitted only when unique. External mapped files
+use stable `mapped/<path digest>/<leaf>` keys; a mapping cannot re-admit disabled
+apps or bypass the existing project consent boundary.
+
+Ordinary mapped and project skills are activated on demand. `skill_search` always
+provides `action="list"` plus `offset` for complete discovery and `action="read"`
+plus the exact `key` for activation, even while the body index is incomplete.
+Required `always:true` bodies share `PINNED_SKILL_BODIES_CAP` (99,000 UTF-8 bytes),
+including rendered framing. Exceeding the capacity or refusing a required read
+raises `SkillContextCapacityError`; no final slice may silently discard required
+instructions. Bounded global reads use `safe_read_file_bytes_nolink`, retaining
+sensitive-path, descriptor identity and hardlink checks while allowing validated
+provider links. Project reads retain descriptor confinement and their byte cap.
+The explicit unbudgeted catalog renderer remains available to non-startup callers.
+
+Native Kiro 2.21.2 progressively loads bodies but places every mapped skill's
+metadata into startup context. Native CLI launch views omit those skill resources
+and suppress implicit native skill inheritance; Crew supplies the bounded directory.
+The authored agent spec remains the mapping authority. See
+[context management](../../architecture/context-management.md#4-default-agent-vs-other-agents)
+for native view and inherited steering behavior.
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
-**`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using. Scope is **locally installed skills only**.
+**`skill_search` MCP tool (`kirocrew-core`):** supports `search`, `list` and `read`.
+A signed session resolves its active template and project at the gateway. An
+unreadable or missing custom template fails scope resolution rather than widening
+to the global catalog. A custom template with no mapping has an empty scope; only
+the default `kirocrew` template without mappings gets the global catalog. An
+unsigned caller searches the global installed catalog, without borrowing a session.
+Search combines metadata and body term matches: query coverage first, then inverse
+term frequency, metadata coverage, usage and stable full key. This prevents common
+metadata words from burying a result carrying multiple query words in its body.
+Search/list have stable-key results and offset pagination; search does not record
+usage. Exact reads share the resolved mapping and the bounded file reader.
+An external mapping rooted above a catalog prunes that catalog before descent.
+Its entries come only from normal discovery, retaining project consent, no-link
+confinement, disabled-app filtering and first-wins precedence.
+Each literal external `SKILL.md` mapping scans its own directory, so sibling
+skills are not scanned again for every explicit mapping.
+
+**Term index (`skill_search_index.py`, `SkillSearchIndex`):** metadata and body
+queries answer from a SQLite term index at `skill_search_index.sqlite3`
+(`SKILL_SEARCH_INDEX_FILENAME`, beside the usage ledger), not by reading files. Read
+from disk, the fallback cost one file read per skill on every call, so the query that
+needs the body most — one matching no metadata — was the one that read every
+`SKILL.md` present, at a cost following total body bytes rather than the number of
+matches. Global metadata is persisted beside body terms with the same file identity
+fingerprint; a new loader can reuse both without reading unchanged skill files.
+Metadata also stores a digest of the complete global skill file. Ranked search
+uses that digest to collapse byte-identical mirrors without reopening their bodies;
+paginated listing and exact-key reads retain every key. Schema changes rebuild this
+disposable index. Short-lived consumers close their loader's SQLite handle before
+returning or removing an owned temporary data home.
+Enumeration and stat checks still run, so zero reads does not mean zero filesystem
+work. Cold body refresh is incremental (250 ms per query), with a separately bounded
+read fallback and an explicit incomplete flag. Repeating a query advances refresh;
+listing and exact reads do not wait for the index. Debug timings distinguish catalog
+enumeration, metadata reads and body-index refresh/query work. Confined metadata and
+bodies are never persisted in this global index. The index stores each skill's distinct body terms, from the same
+`recall_terms` tokenizer the query goes through. Indexed bodies are admitted through
+`safe_read_file_bytes_nolink`, so a link, hardlink, sensitive target, non-regular file
+or file swapped between validation and open cannot place terms in SQLite. Rows use a
+`device:inode:ctime_ns:mtime_ns:size` fingerprint: the added inode identity and change
+time distinguish a same-path replacement that preserves modification time and byte
+size, while keeping the warm path metadata-only. These properties are load-bearing:
+
+- **Confined project bodies are never indexed.** A project skill is read through the
+  descriptor-pinned reader under `PROJECT_SKILL_BODY_CAP`, and its text belongs to
+  that checkout; a home-level copy of its terms would outlive the grant and be
+  visible to a session that never opened the project. Those skills keep the
+  read-at-search path, bounded by the project's own skill count.
+- **Prefix, not free substring.** A stored term matches a query term that is its
+  prefix, so `deploy` still reaches a body saying `deployment`, and the range scan
+  replaces the corpus-sized read. The exclusive upper bound is the term with its
+  last code point incremented (skipping the surrogate block, `None` above the
+  maximum), not a high sentinel: `\uffff` encodes as `EF BF BF` while an astral
+  character starts at `F0`, so a sentinel bound sorted BELOW the astral terms it
+  was meant to include. A query term strictly INSIDE a body word stops matching:
+  the query is tokenized the same way, so that case is a near-miss rather than a
+  hit — `rollback` no longer matches a body whose only occurrence is inside
+  `scrollback`.
+- **One lock-guarded connection.** The connection is opened with
+  `check_same_thread=False` and every public method takes an `RLock`. A skill
+  search legitimately arrives on different threads (the dashboard route hands it
+  to a thread, the MCP tool runs in its own subprocess), and because a raise
+  latches the index unusable, a thread-bound connection would drop every later
+  search back to reading files for the life of the process.
+- **The tokenizer is part of the key.** Stored terms are `recall_terms` output, so a
+  change in how it splits or normalizes leaves rows a new query can no longer match —
+  a miss, with nothing raised and nothing logged. `tokenizer_signature()` hashes the
+  tokenizer's ANSWER on a fixed probe and sits beside the schema version, so a
+  mismatch drops and rebuilds without any future editor having to remember a bump.
+  Hashing its source was rejected: a comment or a rename would discard every row for
+  no behavioural reason.
+- **Both paths score alike.** The direct read tokenizes and prefix-matches through
+  `_body_term_hits`, the same rule the index applies, because both can answer inside
+  one search. A substring scan on the read side would make a skill's rank depend on
+  which side answered for it.
+- **A declined body costs only itself.** `sync` answers with the set of keys it
+  cannot store. The caller retries those through the bounded safe reader with
+  the same admitted root; hardlinks and other unsafe files remain refused. One
+  pathological file does not send the whole catalog back to reading every body.
+  Stale terms for a refused key are deleted and no fingerprint is stored, so the
+  refusal is retried rather than cached.
+- **Best effort.** A read-only home or a corrupt file makes methods return `None`;
+  search falls back to bounded body reads and reports incomplete recall when its
+  work budget expires. Discovery does not require a writable database. A BUSY or
+  locked database does not latch the index unusable: another process holding the
+  write lock past the two-second timeout says nothing about the file's health.
+  Deleting the file costs one re-index; a schema bump drops and rebuilds it.
+
+Ranking orders distinct query-term coverage, then term rarity, metadata coverage,
+usage, and the stable key. A term found in metadata and body counts once; metadata
+coverage breaks a tie rather than outweighing other words found in the procedure.
+
+Explicit entry provenance distinguishes project, global and external mapped rows;
+a legitimate `mapped/...` catalog key never changes its admission or body budget.
+External mapped rows retain the canonical root admitted during enumeration for
+metadata, indexed/fallback body search, exact reads and `$` activation. A later
+ancestor swap must not redefine that root. Approved provider targets retain their
+own admitted roots; external mappings retain the global body allowance rather
+than the smaller project-body allowance.
+
+Installed exact reads also accept POST `/api/skills/-/discover` JSON with
+`scope="installed"`, `action="read"` and `key`. MCP uses this transport so URL
+escaping and HTTP request-line limits do not truncate nested keys. GET remains
+compatible. Both gateway and MCP accept up to 32,768 key characters; the POST
+request envelope is bounded at 512 KiB, and existing body-response limits remain.
+The same signed session, app-slot guard, mapping and project consent determine
+access. An unresolvable bound agent fails closed with HTTP 409 and
+`skill_scope_unavailable`, without falling back to the global catalog.
 
 **Direct reads.** The model reaches most skills by reading `SKILL.md` itself — a
 file-read tool, or `cat` in a shell — which bypasses the loader and so recorded

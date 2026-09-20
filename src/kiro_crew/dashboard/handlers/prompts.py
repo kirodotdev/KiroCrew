@@ -9,13 +9,18 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
 from kiro_crew import pinned_fs
-from kiro_crew.agent_discovery import agent_skill_globs
+from kiro_crew.agent_discovery import (
+    SkillScopeResolutionError,
+    agent_skill_globs,
+    session_skill_globs,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
@@ -41,6 +46,7 @@ from kiro_crew.skill_trust import (
     revoke_project_trust,
 )
 from kiro_crew.skills import PROJECT_SKILL_BODY_CAP
+from kiro_crew.validation import MAX_SKILL_KEY_CHARS
 
 from ._shared import (
     _capability_manager,
@@ -50,6 +56,7 @@ from ._shared import (
     active_project_dir,
     collect_skills_blocking,
     list_skill_tree,
+    read_bounded_json,
     read_skill_file,
     requesting_slot_project,
 )
@@ -2215,22 +2222,86 @@ async def api_skills(request: web.Request) -> web.Response:
     # Strict: must match what SkillsLoader will resolve for THIS chat, or the
     # catalog advertises a skill whose $token expands to nothing.
     project_dir: Path | None = requesting_slot_project(state, session_key)
-    if "q" in request.query:
-        query = request.query.get("q", "").strip()
-        if not query or len(query) > 2000:
+    params: Mapping[str, Any] = request.query
+    if request.method == "POST":
+        body, error = await read_bounded_json(request, max_bytes=512 * 1024)
+        if error is not None:
+            return error
+        assert body is not None
+        if body.get("scope") != "installed" or body.get("action") != "read":
+            return web.json_response(
+                {"error": "POST requires an installed exact read.", "code": "invalid_skill_action"},
+                status=400,
+            )
+        params = body
+    if "q" in params or request.method == "POST":
+        query = params.get("q", "")
+        action = params.get("action", "search")
+        key = params.get("key", "")
+        if not all(isinstance(value, str) for value in (query, action, key)):
+            return web.json_response(
+                {"error": "Skill query, action and key must be strings.", "code": "invalid_query"},
+                status=400,
+            )
+        query = query.strip()
+        if action not in {"search", "list", "read"} or (action == "read" and not key):
+            return web.json_response(
+                {
+                    "error": "Invalid skill action or missing exact key.",
+                    "code": "invalid_skill_action",
+                },
+                status=400,
+            )
+        if len(key) > MAX_SKILL_KEY_CHARS:
+            return web.json_response(
+                {
+                    "error": f"Skill keys must be at most {MAX_SKILL_KEY_CHARS} characters.",
+                    "code": "invalid_skill_key",
+                },
+                status=400,
+            )
+        if (action == "search" and not query) or len(query) > 2000:
             return web.json_response(
                 {"error": "Use 1–2000 characters of short keywords.", "code": "invalid_query"},
                 status=400,
             )
         try:
-            limit = max(1, min(50, int(request.query.get("limit", "20"))))
-        except ValueError:
+            limit = max(1, min(50, int(params.get("limit", "20"))))
+            offset = max(0, int(params.get("offset", "0")))
+        except (ValueError, TypeError, OverflowError):
             return web.json_response(
                 {"error": "Invalid search limit.", "code": "invalid_limit"}, status=400
             )
 
         def search():
-            matches = skills.search_skills(query, limit=limit, project_dir=project_dir)
+            slot = _named_slot(state, session_key)
+            agent = str(getattr(slot, "agent", "") or "kirocrew")
+            sessions = getattr(state, "sessions", None)
+            if session_key and sessions is not None:
+                active = sessions.get_agent(session_key)
+                if isinstance(active, str) and active:
+                    agent = active
+            only = session_skill_globs(session_key, agent, project_dir=project_dir)
+            if action == "read":
+                body = skills.read_scoped_skill(key, only=only, project_dir=project_dir)
+                return {
+                    "matches": (
+                        [{"key": key, "name": key, "description": "", "content": body}]
+                        if body is not None
+                        else []
+                    ),
+                    "next_offset": None,
+                }
+            matches = skills.search_skills(
+                query,
+                limit=limit + 1,
+                project_dir=project_dir,
+                only=only,
+                offset=offset,
+                browse=action == "list",
+            )
+            next_offset = offset + limit if len(matches) > limit else None
+            matches = matches[:limit]
             result = []
             remaining = PROJECT_SKILL_BODY_CAP
             for row in matches:
@@ -2245,9 +2316,23 @@ async def api_skills(request: web.Request) -> web.Response:
                 else:
                     item["path"] = row["path"]
                 result.append(item)
-            return result
+            return {
+                "matches": result,
+                "next_offset": next_offset,
+                "incomplete": bool(getattr(skills, "search_incomplete", False)),
+            }
 
-        return web.json_response({"matches": await asyncio.to_thread(search)})
+        try:
+            result = await asyncio.to_thread(search)
+        except SkillScopeResolutionError:
+            return web.json_response(
+                {
+                    "error": "The session's bound agent skill scope is unavailable.",
+                    "code": "skill_scope_unavailable",
+                },
+                status=409,
+            )
+        return web.json_response(result)
     result = await _assemble_skills_catalog(skills, project_dir)
     agent = request.query.get("agent") or None
     if agent:

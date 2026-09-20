@@ -156,6 +156,13 @@ class TestExtractSkills:
 
 
 class TestExpandSkillUri:
+    def test_global_spec_relative_resource_uses_the_session_working_directory(self, tmp_path):
+        path = tmp_path / "home" / ".kiro" / "agents" / "custom.json"
+        project = tmp_path / "project"
+        assert expand_skill_uri(
+            "skill://.kiro/skills/*/SKILL.md", path, project_dir=project
+        ) == str(project / ".kiro/skills/*/SKILL.md")
+
     def test_home_relative(self, fake_home):
         assert expand_skill_uri("skill://~/.kiro/skills/foo/SKILL.md", fake_home / "a.json") == str(
             fake_home / ".kiro/skills/foo/SKILL.md"
@@ -177,6 +184,10 @@ class TestExpandSkillUri:
 
 
 class TestAgentSkillGlobs:
+    def test_missing_custom_template_cannot_fall_back_to_global_skills(self, fake_home):
+        with pytest.raises(ValueError, match="Cannot resolve skill scope"):
+            agent_skill_globs("removed", agents_dir=_agents_dir(fake_home), strict=True)
+
     def test_returns_expanded_globs_for_mapped_agent(self, fake_home):
         d = _agents_dir(fake_home)
         (d / "mapped.json").write_text(
@@ -579,9 +590,8 @@ class TestSessionContextGate:
         assert "alpha" in ctx
         assert "beta" not in ctx
 
-    def test_mapped_agent_on_kiro_defers_to_native_resource_load(self, fake_home):
-        """kiro-cli loads ``skill://`` resources itself when spawned with
-        ``--agent``, so injecting them again would duplicate every SKILL.md."""
+    def test_mapped_agent_on_kiro_gets_scoped_discovery(self, fake_home):
+        """Native startup uses the Crew directory and loads bodies on demand."""
         skills_root = fake_home / "skills"
         _make_skill(skills_root, "alpha")
         d = _agents_dir(fake_home)
@@ -598,7 +608,9 @@ class TestSessionContextGate:
         ctx = self._builder(fake_home, skills_root).build_session_context(
             agent="specialist", provider_type="acp"
         )
-        assert "[Skills:]" not in ctx
+        assert "skill_search" in ctx
+        assert "alpha" in ctx
+        assert "Body of alpha" not in ctx
 
     def test_unmapped_custom_agent_still_gets_nothing(self, fake_home):
         skills_root = fake_home / "skills"
@@ -610,6 +622,10 @@ class TestSessionContextGate:
             agent="plain", provider_type="claude_code"
         )
         assert "[Skills:]" not in ctx
+        from kiro_crew.agent_discovery import session_skill_globs
+
+        assert session_skill_globs("", "plain") == []
+        assert session_skill_globs("", "kirocrew") is None
 
     def test_mapped_kirocrew_is_scoped_not_full_catalog(self, fake_home):
         """The mapping bounds the kirocrew agent too: before this feature it
@@ -634,9 +650,8 @@ class TestSessionContextGate:
         assert "alpha" in ctx
         assert "beta" not in ctx
 
-    def test_mapped_kirocrew_on_kiro_defers_to_native_load(self, fake_home):
-        """On the kiro backend the mapped SKILL.md files are loaded by kiro-cli
-        from ``resources``, so KiroCrew must not inject them a second time."""
+    def test_mapped_kirocrew_on_kiro_gets_scoped_discovery(self, fake_home):
+        """A mapped default agent gets only its scoped discovery directory."""
         skills_root = fake_home / "skills"
         _make_skill(skills_root, "alpha")
         _make_skill(skills_root, "beta")
@@ -654,7 +669,9 @@ class TestSessionContextGate:
         ctx = self._builder(fake_home, skills_root).build_session_context(
             agent="kirocrew", provider_type="acp"
         )
-        assert "[Skills:]" not in ctx
+        assert "skill_search" in ctx
+        assert "alpha" in ctx and "beta" not in ctx
+        assert "Body of alpha" not in ctx
 
     def test_unmapped_kirocrew_gets_short_discovery(self, fake_home):
         skills_root = fake_home / "skills"
@@ -665,5 +682,7 @@ class TestSessionContextGate:
         ctx = self._builder(fake_home, skills_root).build_session_context(
             agent="kirocrew", provider_type="claude_code"
         )
-        assert "skill_search(query)" in ctx
+        # The default entry is the bounded usage-ranked index; an unmapped agent
+        # gets it rather than a full catalog dump.
+        assert "## Available Skills" in ctx
         assert "alpha" in ctx and "beta" in ctx

@@ -2737,22 +2737,23 @@ def build_session_replay(
     return replay.translate(_MULTIBYTE_TABLE)
 
 
-def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, list[str]]:
+def _skills_injection_plan(
+    agent: str | None, *, is_cc: bool, project_dir: str | Path | None = None
+) -> tuple[bool, list[str]]:
     """Whether to inject skills for *agent*, plus the glob restriction to apply.
 
     THE single source of truth for the agent-scoping rule, shared by the
     session-start injection and the post-compaction re-injection. Mapped agents
-    (a ``skill://`` resource in their agent JSON) are Claude-Code-only, since
-    kiro loads those natively; an unmapped agent gets skills only when it is the
-    default one.
+    receive the same scoped directory on either backend; an unmapped agent
+    gets the startup directory only when it is the default one.
 
     Deliberately one function rather than the same expression written twice: a
     hand-copied second gate is exactly what let the re-injection path ship
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
-    globs = agent_skill_globs(agent) if agent else []
+    globs = agent_skill_globs(agent, project_dir=project_dir) if agent else []
     is_custom = bool(agent) and agent != "kirocrew"
-    return (is_cc if globs else not is_custom), globs
+    return (bool(globs) or not is_custom), globs
 
 
 def _emit_context_section_timings(
@@ -3952,9 +3953,9 @@ class ContextBuilder:
         # on-demand skills (plus always:true pinned) and leave the tail to
         # skill_search, keeping the block bounded instead of dumping every
         # skill's summary. The slice below is a defensive backstop only.
-        # Mapped: CC only (kiro loads them natively). Unmapped: kirocrew only.
+        # Mapped agents get scoped discovery on both backends. Unmapped: kirocrew only.
         # Shared with the post-compaction re-injection in build_message.
-        inject_skills, skill_globs = _skills_injection_plan(agent, is_cc=is_cc)
+        inject_skills, skill_globs = _skills_injection_plan(agent, is_cc=is_cc, project_dir=project)
         if inject_skills:
             required_skills: list[str] = []
             skills_ctx = self.skills.get_context(
@@ -4588,7 +4589,7 @@ class ContextBuilder:
                 parts.append(
                     "[Memory tools] Call memory_recall with specific keywords for prior facts and tasks.\n"
                 )
-            _inject, _globs = _skills_injection_plan(agent, is_cc=is_cc)
+            _inject, _globs = _skills_injection_plan(agent, is_cc=is_cc, project_dir=project)
             if _inject:
                 _cfg = KiroCrewConfig.load()
                 lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))
@@ -4941,6 +4942,13 @@ class ContextBuilder:
                 )
 
             triggered = self.skills.get_triggered_skills(text, project_dir=project, select=select)
+            mapped = agent_skill_globs(agent, project_dir=project) if agent else []
+            if mapped:
+                allowed = {
+                    row["key"]
+                    for row in self.skills.scoped_skills(project_dir=project, only=mapped)
+                }
+                triggered = [key for key in triggered if key in allowed]
 
             if triggered:
                 enforced, pointer_only = self.skills.split_triggered(triggered, project)

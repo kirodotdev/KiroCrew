@@ -684,3 +684,8 @@ it only for a harness the core does not ship at all, not to make a shipped one
 reachable. Everything below it is still incoherent: the behaviour a companion must
 supply is delivered through three different kinds of undeclared hole, none
 type-checked and none failing loudly when omitted.
+
+Native CLI skill resources are projected into Crew-managed launch views: ordinary
+skills use the bounded Crew directory and scoped search/list/read on both direct and
+shared transports. Authored mappings remain unchanged; native aliases normalize back
+to the authored agent identity. Required skill bodies have an explicit total capacity.

@@ -2091,12 +2091,9 @@ class ArtifactStore:
         candidates = [art for art in self.list() if self._is_sweepable_auto_widget(art)]
         if len(candidates) <= keep:
             return 0
-        # ``list()`` sorts by ``updated_at`` alone, which is not a total order:
-        # two widgets registered in the same microsecond tie-break by directory
-        # scan order, making WHICH of them gets deleted nondeterministic. Re-sort
-        # on ``(updated_at, slug)`` so the kept/dropped boundary is stable and
-        # testable. Kept local to the sweep — ``list()``'s ordering is shared with
-        # the library UI and is not this change's to redefine.
+        # ``list()`` already sorts on ``(updated_at, slug)``, so the kept/dropped
+        # boundary is stable. Re-sorting here is belt-and-braces: this sweep DELETES,
+        # so it must not inherit an ordering assumption from a caller-supplied list.
         candidates.sort(key=lambda a: (a.updated_at, a.slug), reverse=True)
         # Newest-first, so everything past `keep` is the oldest tail.
         deleted = 0
@@ -2425,7 +2422,14 @@ class ArtifactStore:
             if pinned is not None and bool(art.pinned) is not pinned:
                 continue
             results.append(art)
-        results.sort(key=lambda a: a.updated_at, reverse=True)
+        # ``updated_at`` alone is not a total order: it is microsecond ISO, so two
+        # artifacts written inside one microsecond carry the identical stamp, and a
+        # stable sort then leaves the tie to directory scan order -- "newest first"
+        # becomes whatever the filesystem enumerated first, which differs per
+        # platform. Windows CI failed ``test_artifacts_handlers`` on exactly that.
+        # ``slug`` makes the order total, and every caller (the library UI, the MCP
+        # list tool, the pruning sweep) gets the same answer on every host.
+        results.sort(key=lambda a: (a.updated_at, a.slug), reverse=True)
         return results
 
     def migrate_kinds(self, *, apply: bool = False) -> _List[dict[str, Any]]:

@@ -358,9 +358,11 @@ def test_project_body_and_discovery_survive(rig, tmp_path, pinned, reinject):
     text, _ = builder.build_message(
         "current", not reinject, project=str(project), needs_reinjection=reinject
     )
-    assert body in text and "skill_search" in text
+    assert (body in text) is pinned
+    assert "skill_search" in text
     assert str(path) not in text
     assert skills.search_skills("payment这个PR", project_dir=project)
+    assert body in (skills.read_scoped_skill("payment", project_dir=project) or "")
 
 
 def test_skill_search_reads_project_bodies_only_under_the_body_cap(rig, tmp_path, monkeypatch):
@@ -412,7 +414,10 @@ def test_skill_search_reads_project_bodies_only_under_the_body_cap(rig, tmp_path
     assert str(huge_path) not in skills._fm_cache
     assert all(key != "huge" for key, _ in reads)
     assert ("small", skills_mod.PROJECT_SKILL_BODY_CAP) in reads
-    assert ("big-global", None) in reads
+    # An unconfined body is served by the term index, so the search does not read
+    # it through the loader at all; "big-global" in `names` above is what proves
+    # it is still matched. The project body cap stays a confined-only rule.
+    assert all(key != "big-global" for key, _ in reads)
 
 
 @pytest.mark.asyncio
