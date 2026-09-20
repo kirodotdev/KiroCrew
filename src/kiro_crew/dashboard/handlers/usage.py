@@ -1200,16 +1200,28 @@ def read_effective_model(source: object) -> str:
     Walks the wrapper chain via :func:`_wrapper_chain` rather than a fixed depth,
     because a default Kiro turn hides the resolved id two levels down.
 
-    Two passes over the collected chain, because a resolved id **anywhere** beats
-    a plain ``_model`` anywhere: ``_resolved_model_id`` is the id the backend
-    actually settled on (the same precedence ``AcpClient`` uses internally,
-    ``self._resolved_model_id or self._model``), while ``_model`` may still hold
-    the ``"auto"`` sentinel or a pre-resolution request. Skips ``"auto"``. Never
-    raises.
+    Three passes over the collected chain, in falling order of authority.
+    ``served_model`` is the PUBLIC accessor ``providers/base.py`` declares so that
+    callers do not reach through provider internals, and two properties earn it the
+    first pass. It applies the provider's own per-shape rule for what counts as
+    served: on a raw ``AcpClient`` that rule excludes ``_model``, which there holds
+    the REQUESTED id, while the session path reads the handle's backend-confirmed
+    value — so a hit is backend-served by definition rather than by whichever
+    attribute the walk lands on first. And it is answered on the OUTERMOST node and
+    delegates inward itself, so it does not depend on the walk reaching the node
+    that holds a private attribute at all, including past
+    :data:`_WRAPPER_CHAIN_MAX_NODES`. This is also the order
+    ``llm_helpers.provider_active_model`` and ``provider_raw_model`` use.
+
+    Then ``_resolved_model_id``, the id the backend settled on (the precedence
+    ``AcpClient`` uses internally, ``self._resolved_model_id or self._model``), and
+    only then ``_model``, which may still hold the ``"auto"`` sentinel or a
+    pre-resolution request. A hit ANYWHERE on an earlier attribute beats a hit
+    anywhere on a later one. Skips ``"auto"``. Never raises.
     """
     try:
         chain = _wrapper_chain(source)
-        for attr in ("_resolved_model_id", "_model"):
+        for attr in ("served_model", "_resolved_model_id", "_model"):
             for node in chain:
                 candidate = getattr(node, attr, "")
                 if isinstance(candidate, str) and candidate and candidate.strip().lower() != "auto":
