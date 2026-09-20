@@ -747,7 +747,7 @@ def test_slot_spend_applies_per_row_timestamp_cutoff(
 
 
 def tree_cap() -> int:
-    from kiro_crew.crew_log.tree import TREE_UNIT_CAP
+    from kiro_crew.crew_log.session_tree import TREE_UNIT_CAP
 
     return TREE_UNIT_CAP
 
@@ -843,7 +843,7 @@ async def test_logs_past_the_scan_cap_are_counted_on_the_payload_not_dropped_sil
     # neither read nor cached, and the payload says how many, on every sample.
     # The live rows' own logs are admitted first, so what goes unread is a
     # closed session's log and every row on screen still folds.
-    from kiro_crew.crew_log import tree as tree_mod
+    from kiro_crew.crew_log import session_tree as tree_mod
 
     _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
     # A third, closed session's log sorts first in the store: with a cap of two

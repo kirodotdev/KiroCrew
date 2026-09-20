@@ -1,7 +1,7 @@
 """Which session HOLDS a referenced pull request -- decided on the creator tree.
 
 :mod:`kiro_crew.crew_log.projection` folds ONE log and reads nothing else (RFC
-FR-4). :mod:`kiro_crew.crew_log.tree` is the reader that looks across logs for
+FR-4). :mod:`kiro_crew.crew_log.session_tree` is the reader that looks across logs for
 the creator edge. This module is the second such reader, and it exists because
 the question consumers actually ask is not answerable from either one alone:
 "which session is holding pull request X" needs the references (this module's
@@ -31,7 +31,7 @@ So the candidates are ranked only after the lineage has been applied:
    count and then to the slot key, so two scans of the same files agree.
 
 Ancestry is the TREE's relation, not a second opinion about it. An edge is
-followed only where :func:`~kiro_crew.crew_log.tree.fold_tree` followed it --
+followed only where :func:`~kiro_crew.crew_log.session_tree.fold_tree` followed it --
 onto a slot with a log of its own -- and a slot the fold marked as lying on a
 cycle is never walked through. That is the whole reason this module imports the
 tree rather than re-reading ``session/opened``: two readers with two folds would
@@ -40,7 +40,7 @@ use them would see two answers.
 
 The answer carries the owner's CITED creator (:attr:`Holder.parent_slot`) even
 where the tree could not follow that citation, for the same reason
-:class:`~kiro_crew.crew_log.tree.TreeNode` retains it: the citation is the
+:class:`~kiro_crew.crew_log.session_tree.TreeNode` retains it: the citation is the
 child's own record, not the fold's verdict on it.
 
 What counts as a reference
@@ -104,6 +104,12 @@ from typing import Any, Final
 
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, MAX_ENTRY_BYTES, Entry
+from kiro_crew.crew_log.session_tree import (
+    TREE_UNIT_CAP,
+    SessionTree,
+    TreeNode,
+    header_unreadable,
+)
 from kiro_crew.crew_log.store import (
     oldest_segment,
     read_head,
@@ -111,12 +117,6 @@ from kiro_crew.crew_log.store import (
     segment_paths,
     unit_dir_for,
     unit_dirs,
-)
-from kiro_crew.crew_log.tree import (
-    TREE_UNIT_CAP,
-    SessionTree,
-    TreeNode,
-    header_unreadable,
 )
 from kiro_crew.jsonl_util import UnreadableRecord, strict_raw_records
 from kiro_crew.session_ledger import _store_name
@@ -632,7 +632,7 @@ class ReferenceScanner:
     directories and reads files, so call it off the event loop.
 
     One instance per reader. It OWNS a
-    :class:`~kiro_crew.crew_log.tree.SessionTree` so both halves of an answer are
+    :class:`~kiro_crew.crew_log.session_tree.SessionTree` so both halves of an answer are
     folded from the same scan: a caller holding its own tree could hand this one a
     lineage taken at a different moment, and the ancestor rule would then be
     applied to a population that never existed together.
@@ -1182,7 +1182,7 @@ def _unit_identity(directory: Path) -> tuple["tuple[str, str] | None", bool]:
     report a partial read as complete.
 
     The refusal is the same one
-    :func:`~kiro_crew.crew_log.tree.opened_record` makes: a directory carrying
+    :func:`~kiro_crew.crew_log.session_tree.opened_record` makes: a directory carrying
     another unit's id would answer for that unit, so a header whose own id does not
     fold back to this directory is refused. The LENGTH bounds are that function's
     too, and deliberately the same constants: both of these strings are RETAINED,

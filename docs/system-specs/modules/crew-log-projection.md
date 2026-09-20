@@ -417,7 +417,7 @@ can tell exactly what happened. Only `turn/completed` closes a turn.
 ## 6. The session tree -- the one fold across logs
 
 Every fold above reads its own unit's file and nothing else (FR-4). The session
-tree (`crew_log/tree.py`) is the one reader that looks across logs, and it is a
+tree (`crew_log/session_tree.py`) is the one reader that looks across logs, and it is a
 different kind of thing on purpose: the `session_create` edge is recorded on the
 CHILD (`crew-log-core.md` section 5), so "which session opened which" is not in
 any one log. It is a fold over the collection, the shape dsh's `flattenLineage`
@@ -526,7 +526,7 @@ scan on the executor beside its other filesystem work, and the page polls every
 5 s, so a store at the cap costs about 2% of one core while the Sessions tab is
 open and nothing while it is not. The cap is far above any population retention leaves; a
 store that reaches it usually has retention disabled, though a store with more
-than that many unexpired logs reaches it too. `test_crew_log_tree.py` measures
+than that many unexpired logs reaches it too. `test_crew_log_session_tree.py` measures
 the invariant rather than reading it off the code: a scan handed ten times the
 cap in absent ids makes exactly the cap's worth of probes, a store three times
 the cap is examined for cap + 1 candidates, and the cache never exceeds the cap.

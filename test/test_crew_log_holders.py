@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.crew_log import holders as holders_mod
+from kiro_crew.crew_log import session_tree as tree_mod
 from kiro_crew.crew_log import store as crew_store
-from kiro_crew.crew_log import tree as tree_mod
 from kiro_crew.crew_log.holders import (
     MAX_ENTRY_BYTES,
     MAX_OWNER_CHARS,
@@ -36,7 +36,7 @@ from kiro_crew.crew_log.holders import (
     parse_references,
 )
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
-from kiro_crew.crew_log.tree import SessionTree, TreeNode, TreeReading
+from kiro_crew.crew_log.session_tree import SessionTree, TreeNode, TreeReading
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
 
 #: The repository this suite's fixtures name. Split from the SLUG rather than
@@ -1082,7 +1082,7 @@ class TestScannerBounds:
         def failing_listing(kind: str, **kwargs: object) -> tuple[list[Path], bool, bool]:
             return [], False, True
 
-        monkeypatch.setattr("kiro_crew.crew_log.tree.unit_dirs", failing_listing)
+        monkeypatch.setattr("kiro_crew.crew_log.session_tree.unit_dirs", failing_listing)
         assert SessionTree().reading(preferred=("sid-c",)).incomplete is True
 
     def test_the_preferred_list_is_bounded_before_it_is_materialized(self, store: _Store) -> None:

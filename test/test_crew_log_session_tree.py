@@ -16,10 +16,9 @@ import pytest
 
 from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import CrewLog
+from kiro_crew.crew_log import CrewLog, session_tree
 from kiro_crew.crew_log import store as crew_store
-from kiro_crew.crew_log import tree
-from kiro_crew.crew_log.tree import OpenedRecord, SessionTree, fold_tree, parent_payload
+from kiro_crew.crew_log.session_tree import OpenedRecord, SessionTree, fold_tree, parent_payload
 from kiro_crew.session_ledger import _store_name
 
 GATEWAY = "gateway"
@@ -215,7 +214,7 @@ def test_a_second_scan_costs_no_read_for_an_unchanged_log(monkeypatch) -> None:
     def _no_reads(*_args, **_kwargs):
         raise AssertionError("an unchanged log was re-read")
 
-    monkeypatch.setattr(tree, "read_head", _no_reads)
+    monkeypatch.setattr(session_tree, "read_head", _no_reads)
     assert sorted(scanner.records(), key=lambda r: r.sid) == sorted(first, key=lambda r: r.sid)
 
 
@@ -229,13 +228,13 @@ def test_a_refused_unit_is_cached_and_costs_one_read(monkeypatch) -> None:
     scanner = SessionTree()
     assert [r.sid for r in scanner.records()] == ["p-sid"]
     reads: list[Path] = []
-    real = tree.read_head
+    real = session_tree.read_head
 
     def _counting(path: Path):
         reads.append(path)
         return real(path)
 
-    monkeypatch.setattr(tree, "read_head", _counting)
+    monkeypatch.setattr(session_tree, "read_head", _counting)
     assert [r.sid for r in scanner.records()] == ["p-sid"]
     assert reads == []
 
@@ -248,7 +247,7 @@ def test_a_read_that_fails_is_not_cached_and_the_next_scan_reads_the_log(monkeyp
     _opened(_log("p-sid", "chat-1"), "chat-1")
     child = _log("c-sid", "chat-2")
     _opened(child, "chat-2", parent={"slot": "chat-1", "sid": "p-sid"})
-    real = tree.read_head
+    real = session_tree.read_head
     failures = {"left": 1}
 
     def _flaky(path: Path):
@@ -257,7 +256,7 @@ def test_a_read_that_fails_is_not_cached_and_the_next_scan_reads_the_log(monkeyp
             raise OSError(5, "input/output error")
         return real(path)
 
-    monkeypatch.setattr(tree, "read_head", _flaky)
+    monkeypatch.setattr(session_tree, "read_head", _flaky)
     scanner = SessionTree()
     # The failed read leaves that unit out of THIS pass only, and caches nothing
     # for it; the parent's log, read fine, is cached as usual.
@@ -289,29 +288,29 @@ def test_a_retained_string_past_its_bound_refuses_the_whole_record() -> None:
 
     entry = Entry.from_dict(opened)
     assert entry is not None
-    good = tree.opened_record(directory, header, entry)
+    good = session_tree.opened_record(directory, header, entry)
     assert good is not None and good.parent_slot == "chat-1"
 
     long_sid = "s" * (MAX_ACP_SESSION_ID_LEN + 1)
     long_slot = "k" * (MAX_SHORT_STRING + 1)
     over_slot = Entry.from_dict({**opened, "data": {"parent": {"slot": long_slot}}})
-    assert tree.opened_record(directory, header, over_slot) is None
-    assert tree.opened_record(directory, {**header, "slot": long_slot}, entry) is None
+    assert session_tree.opened_record(directory, header, over_slot) is None
+    assert session_tree.opened_record(directory, {**header, "slot": long_slot}, entry) is None
     # ``parent.sid`` is not read (the tree is keyed by slot), so it is neither
     # retained nor bounded: an oversize one changes nothing about the record.
     over_sid = Entry.from_dict({**opened, "data": {"parent": {"slot": "chat-1", "sid": long_sid}}})
-    with_over_sid = tree.opened_record(directory, header, over_sid)
+    with_over_sid = session_tree.opened_record(directory, header, over_sid)
     assert with_over_sid is not None and with_over_sid.parent_slot == "chat-1"
     # A header id past the bound can never fold to a real directory anyway; the
     # bound refuses it before the fold is even computed.
     assert (
-        tree.opened_record(
+        session_tree.opened_record(
             Path("/units") / _store_name(long_sid), {**header, "id": long_sid}, entry
         )
         is None
     )
     # Within the bounds, a slot-less header is a legal record with no place in the tree.
-    slotless = tree.opened_record(directory, {**header, "slot": None}, entry)
+    slotless = session_tree.opened_record(directory, {**header, "slot": None}, entry)
     assert slotless is not None and slotless.slot == ""
 
 
@@ -396,15 +395,15 @@ def test_units_past_the_cap_are_neither_read_nor_cached_and_the_overflow_is_repo
     # rows named, that is not something the page depends on.
     for sid, slot in (("a-sid", "chat-1"), ("b-sid", "chat-2"), ("c-sid", "chat-3")):
         _opened(_log(sid, slot), slot)
-    monkeypatch.setattr(tree, "TREE_UNIT_CAP", 2)
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 2)
     reads: list[Path] = []
-    real = tree.read_head
+    real = session_tree.read_head
 
     def _counting(path: Path):
         reads.append(path)
         return real(path)
 
-    monkeypatch.setattr(tree, "read_head", _counting)
+    monkeypatch.setattr(session_tree, "read_head", _counting)
     scanner = SessionTree()
     assert scanner.over_cap is False
     admitted = sorted(r.sid for r in scanner.records())
@@ -423,7 +422,7 @@ def test_a_unit_that_falls_past_the_cap_is_evicted_so_the_cache_never_exceeds_it
 ) -> None:
     for sid, slot in (("b-sid", "chat-2"), ("c-sid", "chat-3")):
         _opened(_log(sid, slot), slot)
-    monkeypatch.setattr(tree, "TREE_UNIT_CAP", 2)
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 2)
     scanner = SessionTree()
     assert sorted(r.sid for r in scanner.records()) == ["b-sid", "c-sid"]
     assert scanner.over_cap is False
@@ -448,7 +447,7 @@ def test_live_units_are_admitted_first_so_past_the_cap_only_closed_logs_go_unrea
     for sid, slot in (("a-sid", "chat-1"), ("b-sid", "chat-2"), ("c-sid", "chat-3")):
         _opened(_log(sid, slot), slot)
     _opened(_log("c-child", "chat-4"), "chat-4", parent={"slot": "chat-3", "sid": "c-sid"})
-    monkeypatch.setattr(tree, "TREE_UNIT_CAP", 2)
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 2)
     scanner = SessionTree()
     assert sorted(r.sid for r in scanner.records(["c-sid", "c-child", "ghost-sid"])) == [
         "c-child",
@@ -467,7 +466,7 @@ def test_live_units_are_admitted_first_so_past_the_cap_only_closed_logs_go_unrea
 def test_the_preferred_set_is_itself_bounded_by_the_cap(monkeypatch) -> None:
     for sid, slot in (("a-sid", "chat-1"), ("b-sid", "chat-2"), ("c-sid", "chat-3")):
         _opened(_log(sid, slot), slot)
-    monkeypatch.setattr(tree, "TREE_UNIT_CAP", 2)
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 2)
     scanner = SessionTree()
     # Three live ids, cap two: the first two named are admitted, the third is
     # left with the rest, and the cache never exceeds the cap.
@@ -484,17 +483,17 @@ def test_every_loop_of_a_scan_is_cut_by_the_cap_whatever_the_input(monkeypatch) 
     # most cap + 1 candidates (the excluded live units aside); the cache holds
     # at most the cap.
     cap = 3
-    monkeypatch.setattr(tree, "TREE_UNIT_CAP", cap)
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", cap)
     for n in range(cap * 3):
         _opened(_log(f"unit-{n}", f"chat-{n}"), f"chat-{n}")
     probes: list[str] = []
-    real_dir_for = tree.unit_dir_for
+    real_dir_for = session_tree.unit_dir_for
 
     def _probing(kind: str, unit_id: str):
         probes.append(unit_id)
         return real_dir_for(kind, unit_id)
 
-    monkeypatch.setattr(tree, "unit_dir_for", _probing)
+    monkeypatch.setattr(session_tree, "unit_dir_for", _probing)
     examined: list[Path] = []
     real_is_link = crew_store.is_link
 
@@ -621,13 +620,13 @@ def test_a_damaged_announce_record_is_a_fault_every_time_it_is_served(monkeypatc
     scanner = SessionTree()
     assert scanner.reading().incomplete is True
     reads: list[Path] = []
-    real = tree.read_head
+    real = session_tree.read_head
 
     def _counting(path: Path):
         reads.append(path)
         return real(path)
 
-    monkeypatch.setattr(tree, "read_head", _counting)
+    monkeypatch.setattr(session_tree, "read_head", _counting)
     assert scanner.reading().incomplete is True
     assert reads == []
 
@@ -638,13 +637,13 @@ def test_a_damaged_first_entry_is_refused_once_not_read_every_scan(monkeypatch) 
     scanner = SessionTree()
     assert scanner.records() == []
     reads: list[Path] = []
-    real = tree.read_head
+    real = session_tree.read_head
 
     def _counting(path: Path):
         reads.append(path)
         return real(path)
 
-    monkeypatch.setattr(tree, "read_head", _counting)
+    monkeypatch.setattr(session_tree, "read_head", _counting)
     assert scanner.records() == []
     assert reads == []
 

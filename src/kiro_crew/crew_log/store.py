@@ -691,7 +691,7 @@ def unit_dir_for(kind: str, unit_id: str) -> "Path | None":
 
     One ``stat``, no read. For the one reader that must find NAMED units ahead
     of the store's order (the session tree admits the live sessions' logs first,
-    :mod:`kiro_crew.crew_log.tree`). None for an absent directory, a linked entry
+    :mod:`kiro_crew.crew_log.session_tree`). None for an absent directory, a linked entry
     (it answers for a directory outside the tree), a root the store refuses
     (:func:`_checked_crew_log_root`) and an id that cannot be named; a caller
     reads None as "nothing to read here", never as an error.
@@ -715,7 +715,7 @@ def unit_dirs(
     *exclude* is neither listed nor counted: the caller already holds it.
 
     The enumeration for the one reader that looks ACROSS units (the session
-    tree, :mod:`kiro_crew.crew_log.tree`). Bounded in WORK, not only in what it
+    tree, :mod:`kiro_crew.crew_log.session_tree`). Bounded in WORK, not only in what it
     retains: the listing stops as soon as *limit* candidates are in hand and one
     more has been seen, so a root holding a million unit directories costs the
     caller *limit* + 1 candidate checks and never a walk of the million. The

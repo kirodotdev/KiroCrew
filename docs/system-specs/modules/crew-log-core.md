@@ -293,7 +293,7 @@ those tools precisely so nothing in it can be forged as gateway-authored, so `_c
 from transcript metadata is restored for authorization but never promoted to lineage, and the sid is
 not persisted at all. A child whose gateway restarted between mint and its first turn therefore
 writes no `parent`. `sid` is a citation of the creator's unit, not the tree key -- a slot outlives its ACP
-session, so the fold that builds the session tree (`crew_log/tree.py`, `crew-log-projection.md` section 6)
+session, so the fold that builds the session tree (`crew_log/session_tree.py`, `crew-log-projection.md` section 6)
 keys it by `slot`, reads the first `session/opened` of each crew log, takes the parent from any log of
 the slot that carries one, and never lets a log without one retract it.
 

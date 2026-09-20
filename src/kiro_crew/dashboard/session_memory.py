@@ -46,7 +46,7 @@ from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.subagent import _CLK_TCK, _subtree_cpu_jiffies
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
-    from kiro_crew.crew_log.tree import SessionTree, TreeNode
+    from kiro_crew.crew_log.session_tree import SessionTree, TreeNode
     from kiro_crew.session import SessionManager
     from kiro_crew.subagent import SubagentManager
 
@@ -210,10 +210,10 @@ class SessionMemorySampler:
         if not crew_log_emit.enabled():
             return {}, False, 0
         if self._tree is None:
-            from kiro_crew.crew_log.tree import SessionTree
+            from kiro_crew.crew_log.session_tree import SessionTree
 
             self._tree = SessionTree()
-        from kiro_crew.crew_log.tree import TREE_UNIT_CAP
+        from kiro_crew.crew_log.session_tree import TREE_UNIT_CAP
 
         live = [sid for sid in (row.get("sid") for row in rows) if isinstance(sid, str)]
         nodes = self._tree.snapshot(live)
@@ -431,7 +431,7 @@ class SessionMemorySampler:
             # the only place that loads it, and only behind the flag.
             if not lineage or not isinstance(key, str):
                 return None
-            from kiro_crew.crew_log.tree import parent_payload
+            from kiro_crew.crew_log.session_tree import parent_payload
 
             node = next((lineage[s] for s in slot_spellings(key) if s in lineage), None)
             return parent_payload(node, live_key_of, key)
