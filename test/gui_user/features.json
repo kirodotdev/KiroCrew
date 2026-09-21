@@ -6410,8 +6410,8 @@
     {
       "id": "settings-display-terminal-settings",
       "feature": "settings",
-      "title": "Configure built-in terminal (shell, font, size, completion)",
-      "user_story": "As a developer, I want to set the terminal shell, font, font size and command completion in Settings > Display, so that the built-in terminal matches my workflow.",
+      "title": "Configure built-in terminal (shell, font, size, completion, reuse-current)",
+      "user_story": "As a developer, I want to set the terminal shell, font, font size, command completion, and reuse-current-terminal in Settings > Display, so that the built-in terminal matches my workflow.",
       "start_url": "/settings/display",
       "entry_path": "Settings > Display > Terminal section",
       "preconditions": {

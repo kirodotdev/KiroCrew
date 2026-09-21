@@ -99,6 +99,27 @@ describe('useBottomTerminal — hydrate-time reconciliation', () => {
     expect(store.isTerminalHydratePending()).toBe(false)
   })
 
+  it('reuseCurrentTab refuses a still-pending restored tab, then reuses it once hydration settles', async () => {
+    // #11641 F1: a restored tab is a hydration SUSPECT until a live probe
+    // confirms it. Reusing it before then copies the command against a tab
+    // reconciliation may drop, leaving no terminal AND no fresh-tab fallback.
+    const store = await bootWith([{ id: 'restored' }])
+    expect(store.isTerminalHydratePending()).toBe(true)
+
+    let reused: string | null = 'x'
+    act(() => { reused = store.reuseCurrentTab() })
+    // Null while pending -> the caller mints a fresh tab it fully owns.
+    expect(reused).toBeNull()
+
+    // The probe confirms the shell is live; hydration settles.
+    store.reconcileRestoredTabs(listing(['restored', true]))
+    expect(store.isTerminalHydratePending()).toBe(false)
+
+    act(() => { reused = store.reuseCurrentTab() })
+    // Now it is safe to reuse the confirmed tab.
+    expect(reused).toBe('restored')
+  })
+
   it('settles at once, keeping every tab, when the first look finds no suspect', async () => {
     const store = await bootWith([{ id: 'a' }, { id: 'b' }])
 

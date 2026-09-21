@@ -511,6 +511,16 @@ class TestDeclaredDictProperties:
         assert entry.type == "boolean"
         assert entry.default_value is True
 
+    def test_reuse_current_is_first_class_entry(self) -> None:
+        # The Settings "Reuse the current terminal" toggle references it by
+        # configKey; it must flatten into SCHEMA_REGISTRY and default OFF so the
+        # fresh-shell behavior is unchanged for anyone who never set it.
+        index = {e.path: e for e in SCHEMA_REGISTRY}
+        entry = index.get("dashboard.terminal.reuse_current")
+        assert entry is not None, "nested declared sub-key did not flatten"
+        assert entry.type == "boolean"
+        assert entry.default_value is False
+
     def test_completion_dict_stays_open_for_undeclared_keys(self) -> None:
         # `completion.commands` (the subcommand-probe allowlist) is documented
         # and undeclared; declaring `enabled` must not invalidate it.

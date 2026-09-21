@@ -10547,7 +10547,9 @@
       "run_in_terminal_liveness_probe_failed_error": "Der Befehl wurde nicht an das neue Terminal gesendet. Seine Shell läuft möglicherweise noch, daher bleibt der Tab geöffnet.",
       "run_in_terminal_shell_alive_error": "Der Befehl wurde nicht an das neue Terminal gesendet, aber seine Shell läuft — der Tab bleibt geöffnet, damit Sie den Befehl dort ausführen können.",
       "run_in_terminal_dispatch_rolled_back_error": "Der Befehl wurde nicht an das neue Terminal gesendet, daher wurde dieses Terminal geschlossen.",
-      "model_auto_jev_description": "Jev bewertet jeden Beitrag und führt ihn auf dem Modell dieser Stufe aus"
+      "model_auto_jev_description": "Jev bewertet jeden Beitrag und führt ihn auf dem Modell dieser Stufe aus",
+      "run_in_terminal_copy_failed_error": "Der Befehl konnte nicht kopiert werden, daher wurde nichts an das Terminal gesendet. Kopiere ihn aus dem Codeblock und füge ihn selbst ein.",
+      "run_in_terminal_no_tab_error": "Der Befehl konnte nicht ausgeführt werden: Es ließ sich kein neues Terminal öffnen, weil bereits zu viele offen sind. Schließe eines und versuche es erneut."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
@@ -13903,6 +13905,9 @@
         "terminal_completion": "Befehlsvervollständigung",
         "terminal_completion_desc": "Vervollständigungs-Popup beim Tippen im Terminal anzeigen. Eingabe führt die getippte Zeile aus; um einen Vorschlag zu übernehmen, drücke ↑/↓ und dann Eingabe, oder Tab. Aus blendet das Popup aus; die Tab-Vervollständigung deiner Shell funktioniert weiterhin.",
         "terminal_completion_save_failed": "Einstellung zur Befehlsvervollständigung konnte nicht gespeichert werden",
+        "terminal_reuse_current": "Aktuelles Terminal wiederverwenden",
+        "terminal_reuse_current_desc": "Kopiert den Befehl, statt ihn auszuführen: „Im Terminal ausführen“ fokussiert den ausgewählten Terminal-Tab und kopiert den Befehl. Du kannst ihn in diese Shell einfügen und behältst dabei Arbeitsverzeichnis, Umgebung und eine aktive Anmeldesitzung. Ist kein Terminal geöffnet, wird ein neues geöffnet und der Befehl dort ausgeführt.",
+        "terminal_reuse_current_save_failed": "Die Einstellung zur Terminal-Wiederverwendung konnte nicht gespeichert werden",
         "theme": "Theme",
         "theme_source": "Theme-Quelle",
         "theme_source_location": "Speicherort der Theme-Quelle",

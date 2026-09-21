@@ -1565,6 +1565,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.reuse-the-current-terminal",
+    "label": "Reuse the current terminal",
+    "labelKey": "pages.settings.displayPanel.terminal_reuse_current",
+    "description": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it opens a new terminal and runs the command there.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.reuse_current"
+  },
+  {
     "id": "display.spend-a-few-credits-to-check-your-balance",
     "label": "Spend a few credits to check your balance",
     "labelKey": "pages.settings.displayPanel.credit_usage_scrape",

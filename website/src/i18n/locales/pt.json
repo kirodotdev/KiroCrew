@@ -10691,7 +10691,9 @@
       "run_in_terminal_liveness_probe_failed_error": "O comando não foi enviado para o novo terminal. O shell dele pode ainda estar em execução, por isso a aba foi mantida aberta.",
       "run_in_terminal_shell_alive_error": "O comando não foi enviado para o novo terminal, mas o shell dele está em execução — a aba foi mantida aberta para você executar o comando ali.",
       "run_in_terminal_dispatch_rolled_back_error": "O comando não foi enviado para o novo terminal, por isso esse terminal foi fechado.",
-      "model_auto_jev_description": "Deixe o Jev avaliar cada turno e executá-lo no modelo daquele nível"
+      "model_auto_jev_description": "Deixe o Jev avaliar cada turno e executá-lo no modelo daquele nível",
+      "run_in_terminal_copy_failed_error": "Não foi possível copiar o comando, por isso nada foi enviado ao terminal. Copie-o do bloco de código e cole você mesmo.",
+      "run_in_terminal_no_tab_error": "Não foi possível executar o comando: não foi possível abrir um novo terminal porque já há muitos abertos. Feche um e tente novamente."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",
@@ -14089,6 +14091,9 @@
         "terminal_completion": "Conclusão de comandos",
         "terminal_completion_desc": "Mostrar o menu de conclusão ao digitar no Terminal. Enter executa a linha que você digitou; para aceitar uma sugestão, pressione ↑/↓ e depois Enter, ou Tab. Desativado oculta o menu; a conclusão por Tab do seu shell continua funcionando.",
         "terminal_completion_save_failed": "Não foi possível salvar a configuração de conclusão de comandos",
+        "terminal_reuse_current": "Reutilizar o terminal atual",
+        "terminal_reuse_current_desc": "Copia o comando em vez de executá-lo: \"Executar no terminal\" foca a aba de terminal que você selecionou e copia o comando, para que você o cole naquela shell mantendo o diretório de trabalho, o ambiente e qualquer sessão de login ativa. Sem nenhum terminal aberto, abre um novo e executa o comando nele.",
+        "terminal_reuse_current_save_failed": "Não foi possível salvar a configuração de reutilização do terminal",
         "theme": "Tema",
         "theme_source": "Origem do tema",
         "theme_source_location": "Local da origem do tema",

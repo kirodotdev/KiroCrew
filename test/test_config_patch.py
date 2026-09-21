@@ -275,6 +275,56 @@ class TestTerminalCompletionEnabled:
             assert resp.status == 400
 
 
+# ── Terminal tab reuse (dashboard.terminal.reuse_current) ─────────────────
+
+
+class TestTerminalReuseCurrent:
+    """The Settings → Display → Terminal "Reuse the current terminal" toggle."""
+
+    @pytest.mark.asyncio
+    async def test_true_written_nested(self, tmp_config) -> None:
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.reuse_current", True)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["terminal"]["reuse_current"] is True
+
+    @pytest.mark.asyncio
+    async def test_write_keeps_sibling_terminal_keys(self, tmp_config) -> None:
+        # The shell and completion keys live in the same `terminal` object;
+        # flipping reuse must not drop them.
+        tmp_config.write_text(
+            json.dumps(
+                {
+                    "dashboard": {
+                        "terminal": {"shell": "/bin/bash", "completion": {"enabled": False}}
+                    }
+                }
+            )
+        )
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.reuse_current", True)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["terminal"] == {
+            "shell": "/bin/bash",
+            "completion": {"enabled": False},
+            "reuse_current": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_boolean_rejected(self, tmp_config) -> None:
+        # `bool("true")` is True: the route must refuse rather than coerce, so
+        # the handler's literal-``True`` check keeps meaning "on" only for a
+        # real boolean.
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.reuse_current", "true")
+            assert resp.status == 400
+
+
 class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_unknown_field_returns_400(self, tmp_config) -> None:

@@ -53,8 +53,9 @@ import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
 import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
-import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal } from '../hooks/useBottomTerminal'
-import { isPopoutOpen as isTerminalPopoutOpen } from '../utils/terminalPopout'
+import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal } from '../hooks/useBottomTerminal'
+import { isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout } from '../utils/terminalPopout'
+import { copyToClipboard } from '../utils/clipboard'
 import { disposeTerminalSession, useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { triggerRefresh, updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
@@ -2010,6 +2011,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // event time, so it is declared before the controller and refreshed every render.
   const currentProjectRef = useRef<string | undefined>(undefined)
   currentProjectRef.current = slots.find(s => s.key === activeSlot)?.project || undefined
+
+  // Opt-in "reuse the current terminal" for Run-in-terminal
+  // (dashboard.terminal.reuse_current, default off — the fresh-shell default is
+  // unchanged). Read from the shared kirocrewConfig query and mirrored onto a
+  // ref because the run-in-terminal handler below installs once ([]-deps) and
+  // reads it at event time, not at mount. Only a literal `true` turns it on —
+  // the same "one literal decides it" rule the completion toggle uses, so a
+  // hand-edited non-boolean cannot half-enable it.
+  const { data: terminalCfg } = useQuery<{ dashboard?: { terminal?: { reuse_current?: boolean } } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    staleTime: 30_000,
+  })
+  const terminalReuseRef = useRef(false)
+  terminalReuseRef.current = terminalCfg?.dashboard?.terminal?.reuse_current === true
+
   const resources = useChatPageResourcesController({
     activeSlot,
     activeSlotRef,
@@ -3588,6 +3605,45 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const reqId: string = detail.reqId
       const lang: string | undefined = typeof detail.lang === 'string' ? detail.lang : undefined
       if (typeof code !== 'string' || !code) return
+      // Opt-in reuse focuses the terminal tab the user selected and copies the
+      // command for a manual paste. Sending raw bytes into a live terminal is
+      // unsafe: a partially typed shell command or a foreground program owns
+      // stdin, so appending `text + "\\n"` could merge and execute unrelated
+      // input. The dashboard has no shell-prompt protocol that can prove an
+      // empty, idle prompt, so manual paste is the safe boundary. With no
+      // existing terminal to focus, fall through and mint a fresh tab, where
+      // this dispatch owns the entire input stream and can safely send.
+      if (terminalReuseRef.current) {
+        const reusedId = reuseDockTerminal()
+        if (reusedId) {
+          // When the terminal lives in a popped-out window, activating the tab
+          // in the shared store does not raise that other window — focus it so
+          // the reused shell the user is about to paste into is actually in
+          // front, not hidden behind the dashboard.
+          if (isTerminalPopoutOpen()) focusTerminalPopout()
+          const text = runInTerminalText(
+            code, lang, getTerminalShell(reusedId), getTerminalFenceShells(reusedId),
+          )
+          void copyToClipboard(text).then(copied => {
+            // A refused copy is a user-facing failure, not a transient icon:
+            // route it through ErrorNotice (errors-use-error-notice) so the
+            // command the user asked to run is not silently lost.
+            if (!copied) {
+              showActionError(i18nT('pages.chatPage.run_in_terminal_copy_failed_error'))
+            }
+            window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', {
+              detail: { reqId, ok: copied, copied },
+            }))
+          })
+          return
+        }
+      }
+      // When reuse is off — whether the user set it off, or its config query is
+      // still loading or errored so the saved value is unknowable — the command
+      // opens a fresh terminal. That fresh tab IS the shipped default, so no
+      // notice fires: a reuse-downgrade notice here would assert a reuse
+      // preference the off-majority never set (it cannot be distinguished from
+      // a genuinely-off setting while the query is pending or errored).
       const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
       let settled = false
       const emit = (ok: boolean) => {
@@ -3595,7 +3651,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         settled = true
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
       }
-      if (!sessionId) { emit(false); return }
+      if (!sessionId) {
+        // F3: no fresh tab could be minted (the terminal cap is full). The
+        // command is neither copied nor run, so say so through ErrorNotice
+        // rather than leaving only the button's error glyph
+        // (errors-use-error-notice).
+        showActionError(i18nT('pages.chatPage.run_in_terminal_no_tab_error'))
+        emit(false); return
+      }
       // The shell is known only once `ready` has arrived, which is exactly when
       // this fires — so read it here, not at dispatch time.
       const unsub = onTerminalReady(sessionId, () => {
