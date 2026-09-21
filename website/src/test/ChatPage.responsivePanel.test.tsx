@@ -90,7 +90,29 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
-globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
+
+// The activity panel's beside-vs-overlay decision reads ChatPage's MEASURED
+// container width (via ResizeObserver on chatContainerRef), not window.innerWidth
+// — because the app-wide terminal sits above the page and winW cannot see it. So
+// the stub must (a) fire its callback and (b) report a clientWidth that tracks
+// the window, or the decision can never leave its containerW===0 wide-first
+// default. clientWidth = innerWidth - 236 (the nav rail track), matching the
+// arithmetic the old fill tests used (`800 - 236 - 260`).
+const __roCallbacks = new Set<() => void>()
+globalThis.ResizeObserver = class {
+  cb: ResizeObserverCallback
+  constructor(cb: ResizeObserverCallback) { this.cb = cb }
+  observe() { const fire = () => this.cb([], this); __roCallbacks.add(fire); fire() }
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver
+Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+  configurable: true,
+  get() { return Math.max(0, (window.innerWidth || 0) - 236) },
+})
+Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+  configurable: true, get() { return 900 },
+})
 
 import ChatPage from '../pages/ChatPage'
 
@@ -100,6 +122,8 @@ const setWindowWidth = (w: number) => {
 const resizeTo = (w: number) => act(() => {
   setWindowWidth(w)
   window.dispatchEvent(new Event('resize'))
+  // Drive the ResizeObserver-backed container measurement too.
+  __roCallbacks.forEach(fire => fire())
 })
 
 function renderChat(store = createTestStore()) {
@@ -197,47 +221,43 @@ describe('ChatPage — activity panel open state is resize-independent', () => {
   })
 })
 
-describe('ChatPage — activity slot self-healing', () => {
+describe('ChatPage — activity panel renders inline (no actbar portal)', () => {
   beforeEach(() => setWindowWidth(1400))
   afterEach(() => {
     document.getElementById('activity-bar-slot')?.remove()
   })
 
-  it('renders the panel inline when no slot exists, then migrates into a slot that appears later', async () => {
+  it('renders the panel inline in ChatPage’s own tree, not in the actbar slot', async () => {
     const { store, container } = renderChat()
     act(() => { store.dispatch(toggleActivity()) })
 
-    // No slot div in the DOM -> inline fallback inside ChatPage's own tree.
+    // The panel is a flex sibling of the chat pane inside ChatPage's own
+    // subtree — it composes with the chat/terminal flow rather than being
+    // portaled into the App shell's grid column.
     const inline = await screen.findByTestId('side-panel')
     expect(container.contains(inline)).toBe(true)
-
-    // The App shell (re)creates the slot — e.g. after a mobile -> desktop
-    // crossing where ChatPage's lookup ran before the shell re-rendered.
-    // The MutationObserver must latch it and portal the panel there.
-    const slot = document.createElement('div')
-    slot.id = 'activity-bar-slot'
-    act(() => { document.body.appendChild(slot) })
-
-    await waitFor(() => {
-      const panel = screen.getByTestId('side-panel')
-      expect(slot.contains(panel)).toBe(true)
-    })
   })
 
-  it('uses the slot directly when it already exists at mount', async () => {
+  it('ignores #activity-bar-slot even when the shell provides one (portal removed)', async () => {
+    // The App shell may still render the legacy actbar slot; ChatPage no longer
+    // portals into it. The panel stays inline and the slot stays empty.
     const slot = document.createElement('div')
     slot.id = 'activity-bar-slot'
     document.body.appendChild(slot)
 
-    const { store } = renderChat()
+    const { store, container } = renderChat()
     act(() => { store.dispatch(toggleActivity()) })
 
     await waitFor(() => {
       const panel = screen.getByTestId('side-panel')
-      expect(slot.contains(panel)).toBe(true)
+      expect(container.contains(panel)).toBe(true)
+      expect(slot.contains(panel)).toBe(false)
+      // The inline wrapper keeps the overflow-visible motion column, not the
+      // clipped fallback.
       expect(panel.parentElement).toHaveClass('overflow-visible')
       expect(panel.parentElement).not.toHaveClass('overflow-hidden')
     })
+    expect(slot.childElementCount).toBe(0)
   })
 })
 
@@ -291,22 +311,24 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '')
   })
 
-  it('opens FILLING the chat column when the rail + sidebar leave too little', async () => {
+  it('OVERLAYS the panel when the rail + sidebar leave too little room beside the chat', async () => {
     renderWithSlot()
-    resizeTo(800) // 800 - 236 - 260 = 304 < 640
+    resizeTo(800) // clientWidth 800-236=564 < 320+320 -> cannot dock beside
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
-    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '320')
+    const panel = await screen.findByTestId('side-panel')
+    // The placement lives on the motion wrapper (the stub's parent).
+    expect(panel.parentElement).toHaveAttribute('data-placement', 'overlay')
   })
 
-  it('switches an already-open panel from beside to fill on resize, without remounting it', async () => {
+  it('switches an already-open panel from docked to overlay on resize, without remounting it', async () => {
     renderWithSlot()
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     const before = await screen.findByTestId('side-panel')
-    expect(before).toHaveAttribute('data-fill-width', '')
+    expect(before.parentElement).toHaveAttribute('data-placement', 'docked')
 
     resizeTo(800)
     const after = await screen.findByTestId('side-panel')
-    expect(after).toHaveAttribute('data-fill-width', '320')
+    expect(after.parentElement).toHaveAttribute('data-placement', 'overlay')
     // Same DOM node: the mode change must not tear the panel down (live PTYs).
     expect(after).toBe(before)
   })
@@ -440,10 +462,11 @@ describe('ChatPage — focus-mode caption reserve on the title row', () => {
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     await screen.findByTestId('side-panel')
 
-    // Bottom-docked the panel sits under the chat, so the title row still owns
-    // the corner even with the panel open.
+    // Bottom-docked, the panel sits in a full-width row BELOW the sessions+chat
+    // (hosted inline as the container-column's 2nd child now, not the old shell
+    // actbar row), so it does NOT hold the window's right edge — the title row
+    // still owns the caption gutter and keeps the reserve.
     const group = reserved()
     expect(group, 'reserve survives an open bottom-docked panel').not.toBeNull()
-    expect(group!.classList.contains('ml-auto')).toBe(true)
   })
 })

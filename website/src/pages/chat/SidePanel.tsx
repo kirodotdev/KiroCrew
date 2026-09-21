@@ -392,30 +392,6 @@ export const SIDE_PANEL_RESERVED_W = 560
 export const CHAT_PANE_MIN_W = 320
 
 /**
- * Decide the panel's mode from the width left for the CHAT, not from the
- * viewport: subtract the shell's hideable chrome (nav rail track, session
- * sidebar) and ask whether the remainder seats the panel at SIDE_PANEL_MIN_W
- * beside a CHAT_PANE_MIN_W chat pane.
- *
- * Returns `undefined` for BESIDE mode, or the px width the panel should take to
- * FILL the chat column. Mobile always fills (its viewport cannot seat both, and
- * its sidebar is a fixed-position drawer that consumes no row width).
- *
- * Pure and loop-free on purpose: every input is a shell-level fact that does
- * NOT change when the panel opens. Feeding it the chat container's painted
- * width instead would oscillate, since opening the panel shrinks that width.
- */
-export function sidePanelFillWidth(
-  { winW, railW, sidebarW, isMobile }:
-  { winW: number; railW: number; sidebarW: number; isMobile: boolean },
-): number | undefined {
-  if (isMobile) return Math.max(SIDE_PANEL_MIN_W, winW)
-  const chatAvail = winW - railW - sidebarW
-  if (chatAvail >= SIDE_PANEL_MIN_W + CHAT_PANE_MIN_W) return undefined
-  return Math.max(SIDE_PANEL_MIN_W, chatAvail)
-}
-
-/**
  * Resolve the panel's rendered width.
  *
  * Order matters. FILL (an explicit px width) wins over the mobile percentage:

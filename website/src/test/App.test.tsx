@@ -1235,13 +1235,13 @@ describe('App routing', () => {
 
     const shell = screen.getByTestId('dashboard-shell')
     expect(shell).toHaveStyle({
-      gridTemplateColumns: '236px minmax(0,1fr) auto',
+      gridTemplateColumns: '236px minmax(0,1fr)',
       transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
     expect(shell).toHaveStyle({
-      gridTemplateColumns: '74px minmax(0,1fr) auto',
+      gridTemplateColumns: '74px minmax(0,1fr)',
       transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
     })
     localStorage.removeItem('mc-nav')
