@@ -34,6 +34,7 @@ prefix until the mount answers again.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import os
@@ -2676,6 +2677,34 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
         resolved.casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
         and _is_keystone_publish_artifact(resolved, pre_resolved=True)
     )
+
+
+def is_sensitive_canonical_path(resolved: str) -> bool:
+    """The sensitive-path verdict for a path the CALLER already canonicalised.
+
+    The one entry point for a reader that computed ``os.path.realpath`` or
+    ``Path.resolve`` itself and would otherwise hand the result to
+    :func:`is_sensitive_path`, which resolves it again on the ``mc-pathres``
+    pool and fails closed when the pool misses its budget. Which gate answers
+    depends on the calling thread, and that is decided here rather than by the
+    caller's say-so:
+
+    * Off the event loop, :func:`is_sensitive_resolved_path` answers inline: no
+      pool submission, so a saturated pool cannot refuse a healthy file.
+    * On the event loop, :func:`is_sensitive_path` answers, bounded: the inline
+      anchor ``realpath`` the pre-resolved gate performs is the blocking call
+      the pool exists to keep off the loop, and the anchors (the override
+      roots) need not share the caller's mount.
+
+    The decision is the same gate list either way; only the submission path
+    differs. The canonical-spelling half of the contract stays the caller's:
+    hand this the resolved spelling, never the raw one.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return is_sensitive_resolved_path(resolved)
+    return is_sensitive_path(resolved)
 
 
 #: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a

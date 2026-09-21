@@ -187,7 +187,7 @@ class TestAgentSpecReadsAreHardened:
         (tmp_path / "huge.json").write_text(json.dumps({"name": "huge", "model": "m"}))
         monkeypatch.setattr(
             agent_discovery,
-            "safe_read_file_bytes",
+            "_read_spec_bytes",
             lambda _p: (_ for _ in ()).throw(FileTooLargeError()),
         )
         assert KiroCrewConfig._resolve_named_agent_model("huge", agents_dir=tmp_path) == ""
@@ -237,7 +237,7 @@ class TestAgentSpecReadsAreHardened:
             seen["called"] = True
             raise FileTooLargeError()
 
-        monkeypatch.setattr(agent_discovery, "safe_read_file_bytes", _refusing_read)
+        monkeypatch.setattr(agent_discovery, "_read_spec_bytes", _refusing_read)
         result = KiroCrewConfig._resolve_agent_model()
         assert seen["called"] is True
         assert result != "pinned"

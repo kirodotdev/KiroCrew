@@ -1183,7 +1183,9 @@ def test_a_sensitive_symlink_at_the_spec_path_never_reaches_the_plan(
         encoding="utf-8",
     )
     (_agents_dir / AGENT_FILENAME).symlink_to(target)
-    monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+    monkeypatch.setattr(
+        agent_discovery, "is_sensitive_canonical_path", lambda p: str(target) in str(p)
+    )
 
     plan = warm._warm_spec_plan([_provider("acme")])
 
@@ -1246,7 +1248,9 @@ def test_a_sensitive_symlink_at_a_warm_spec_path_is_never_judged_ours(
     target.write_text(_ours_shaped_spec_text(stem), encoding="utf-8")
     link = _agents_dir / f"{stem}.json"
     link.symlink_to(target)
-    monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+    monkeypatch.setattr(
+        agent_discovery, "is_sensitive_canonical_path", lambda p: str(target) in str(p)
+    )
 
     assert warm._warm_spec_is_foreign(link) is True
 

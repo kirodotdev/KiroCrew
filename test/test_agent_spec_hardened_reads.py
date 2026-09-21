@@ -532,7 +532,10 @@ class TestDenialAuditNeverRaises:
     def _break_sel(monkeypatch):
         from kiro_crew import agent_discovery
 
+        # Every fence refuses: the project-directory and cache-key checks ask
+        # is_sensitive_path, the spec readers ask is_sensitive_canonical_path.
         monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda _p: True)
+        monkeypatch.setattr(agent_discovery, "is_sensitive_canonical_path", lambda _p: True)
 
         def _explode():
             raise OSError("SEL home is not writable")
@@ -579,7 +582,9 @@ class TestSensitiveSymlinkGuard:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "linked.json").symlink_to(target)
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_canonical_path", lambda p: str(target) in str(p)
+        )
         monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
 
         out = _build_kiro_model_map()
@@ -657,7 +662,9 @@ class TestAgentSpecEntryMissing:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / AGENT_FILENAME).symlink_to(target)
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_canonical_path", lambda p: str(target) in str(p)
+        )
         monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
 
         assert mint._agent_spec_entry_missing("probe") is True
@@ -723,7 +730,9 @@ class TestDenialAttribution:
 
         path = tmp_path / "protected.json"
         path.write_text(json.dumps({"name": "linked"}), encoding="utf-8")
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(path) in str(p))
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_canonical_path", lambda p: str(path) in str(p)
+        )
         events: list[dict] = []
         monkeypatch.setattr(
             agent_discovery,

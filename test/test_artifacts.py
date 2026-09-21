@@ -584,7 +584,10 @@ class TestSecurity:
         self, store: ArtifactStore, monkeypatch
     ) -> None:
         # _snapshot_version() reads through self._read_text(), not src.read_text()
-        # directly, so the is_sensitive_path() gate always applies.
+        # directly, so the sensitive-path gate always applies. The helper hands
+        # the gate the realpath it already computed through
+        # is_sensitive_canonical_path; that is the name to patch, since the
+        # bounded is_sensitive_path is not on this read path.
         # If the gate ever started flagging artifact-internal paths (e.g. a
         # symlink expansion landing on a sensitive path), the snapshot read
         # must refuse rather than silently leak. Verify the gated helper is
@@ -592,20 +595,20 @@ class TestSecurity:
         from kiro_crew import artifacts as art_mod
 
         store.create(name="x", content="v1")
-        # First update succeeds — is_sensitive_path() returns False normally.
+        # First update succeeds: the gate returns False normally.
         store.update("x", content="v2", snapshot=True)
 
-        # Now make is_sensitive_path() return True for current.html only.
+        # Now make the gate return True for current.html only.
         # _snapshot_version reads from current.html via self._read_text() now;
         # that read must surface ArtifactError.
-        original = art_mod.is_sensitive_path
+        original = art_mod.is_sensitive_canonical_path
 
         def _selective(p: str) -> bool:
             if "current.html" in p:
                 return True
             return original(p)
 
-        monkeypatch.setattr(art_mod, "is_sensitive_path", _selective)
+        monkeypatch.setattr(art_mod, "is_sensitive_canonical_path", _selective)
         with pytest.raises(ArtifactError):
             store.update("x", content="v3", snapshot=True)
 

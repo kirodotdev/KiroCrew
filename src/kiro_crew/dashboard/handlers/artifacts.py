@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import functools
 import getpass
 import json
 import logging
@@ -1126,18 +1127,27 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     )
     try:
         store = get_default_store()
-        items = store.list(
-            tag=tag,
-            kind=kind,
-            # When content-matching, don't let the store's name-only filter
-            # exclude content/tag matches — filter in this layer instead.
-            name_contains=None if do_content else q,
-            source=source,
-            source_path=source_path,
-            folder=folder,
-            session_key=session,
-            touched_by_session=touched_by,
-            pinned=pinned,
+        # The listing reads one meta.json per artifact through the store's
+        # sensitive-path fence. Off the loop that fence asks about the path the
+        # store already canonicalised with no resolver-pool hop (see
+        # ``ArtifactStore._read_text`` / ``_fence_refuses``), and a slow mount
+        # stalls this worker rather than every other request.
+        items = await asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                store.list,
+                tag=tag,
+                kind=kind,
+                # When content-matching, don't let the store's name-only filter
+                # exclude content/tag matches: filter in this layer instead.
+                name_contains=None if do_content else q,
+                source=source,
+                source_path=source_path,
+                folder=folder,
+                session_key=session,
+                touched_by_session=touched_by,
+                pinned=pinned,
+            ),
         )
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact list failed: %s", exc)

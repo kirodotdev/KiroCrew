@@ -567,7 +567,7 @@ def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch
     # API; this test is about the lockdown of what gets WRITTEN, so read the
     # fixture plainly at both seams.
     monkeypatch.setattr(
-        "kiro_crew.agent_discovery.safe_read_file_bytes", lambda raw: Path(raw).read_bytes()
+        "kiro_crew.agent_discovery._read_spec_bytes", lambda real: Path(real).read_bytes()
     )
     monkeypatch.setattr("kiro_crew.hooks.safe_read_file_bytes", lambda raw: Path(raw).read_bytes())
     # Forwarding ON or the env-declaring fixture is declassified and no sidecar
@@ -823,7 +823,7 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
     # Same as the lockdown test above: keep the hardened spec read and source
     # fingerprint off the real Win32 open the simulated flag would select.
     monkeypatch.setattr(
-        "kiro_crew.agent_discovery.safe_read_file_bytes", lambda raw: Path(raw).read_bytes()
+        "kiro_crew.agent_discovery._read_spec_bytes", lambda real: Path(real).read_bytes()
     )
     monkeypatch.setattr("kiro_crew.hooks.safe_read_file_bytes", lambda raw: Path(raw).read_bytes())
     with (

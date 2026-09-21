@@ -46,6 +46,7 @@ from pathlib import Path, PurePath
 from typing import Callable
 
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew.platform_compat import open_file_no_reparse
 
 __all__ = [
     "PUT_BACK_FAILED",
@@ -487,6 +488,58 @@ def fd_real_path(fd: int) -> str | None:
     except (OSError, ValueError, ImportError):
         pass
     return None
+
+
+def open_fenced_for_read(
+    resolved: Path | str,
+    *,
+    fence: Callable[[str], bool],
+    refusal: type[Exception] = OSError,
+) -> int:
+    """Open *resolved* for reading and return a descriptor validated as an inode.
+
+    *resolved* is a path the caller has already canonicalised and judged with
+    *fence* (``True`` means refuse). A by-name open after that judgement is a
+    check-to-open window: the artifact directory and the agents directories are
+    agent-writable, so the name can be re-pointed at a credential file between
+    the two. The open refuses a link at the final component on every platform
+    (:func:`kiro_crew.platform_compat.open_file_no_reparse`), the descriptor
+    must be a regular file with a single link (a hardlink to a credential file
+    has a benign ``realpath``, so the link count is the only tell), and the
+    kernel's own path for the opened inode is read back with
+    :func:`fd_real_path`. *fence* is asked again exactly when that path differs
+    from *resolved*: a matching path is the question the caller already
+    answered, and on the event loop every extra call is a resolver-pool
+    submission. A missing kernel path fails closed.
+
+    The caller owns the returned descriptor. Every refusal closes it first and
+    raises *refusal*; a missing file surfaces as the ordinary
+    ``FileNotFoundError`` from the open.
+    """
+    resolved_str = os.fspath(resolved)
+    try:
+        fd = open_file_no_reparse(resolved_str, nonblocking=True)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise refusal(f"refusing to read through a link: {resolved_str}") from exc
+        raise
+
+    try:
+        opened = os.fstat(fd)
+        if not _stat.S_ISREG(opened.st_mode):
+            raise refusal(f"refusing to read a non-regular file: {resolved_str}")
+        if opened.st_nlink != 1:
+            raise refusal(f"refusing to read a hardlinked file: {resolved_str}")
+        fd_real = fd_real_path(fd)
+        if fd_real is None:
+            raise refusal(f"refusing to read an unverifiable file: {resolved_str}")
+        if os.path.normcase(fd_real) != os.path.normcase(resolved_str):
+            if fence(fd_real):
+                raise refusal(f"refusing to read sensitive path: {fd_real}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def is_reparse_point(path: str | Path) -> bool:

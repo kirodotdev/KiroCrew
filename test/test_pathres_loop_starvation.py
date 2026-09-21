@@ -180,6 +180,27 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # the candidate there is what this endpoint must not do at all, since on Windows
     # it would follow a junction aimed at a share.
     "kiro_crew/dashboard/handlers/files.py": 3,
+    # ``security.is_sensitive_canonical_path``: the shared entry point for a
+    # reader that canonicalised its path itself. It picks the gate by thread --
+    # this pre-resolved gate off the event loop, the bounded gate on it -- so
+    # only an offloaded caller reaches this call, and the caller's say-so is
+    # never consulted. Its callers today: the artifact store's four file helpers
+    # (``_read_text`` / ``_write_text`` / ``_read_bytes`` / ``_write_bytes``,
+    # each handing it the ``os.path.realpath`` computed on the line above;
+    # ``GET /api/artifacts`` runs ``store.list()`` on a worker for that reason,
+    # since the listing reads one ``meta.json`` per artifact and the bounded
+    # gate's two pool hops per call filled the pool from a single listing and
+    # dropped healthy artifacts on the stall) and the two agent-spec readers
+    # (``_read_agent_spec`` / ``read_agent_spec_strict``, each handing it the
+    # ``Path.resolve(strict=True)`` result; the native skill projection reads
+    # every spec under ``asyncio.to_thread``, and a stalled pool there dropped
+    # agents silently and surfaced as ``no prepared skill discovery view``).
+    # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
+    # the canonical spelling and the thread split for each caller. The store's
+    # root check and ``source_path`` pointers, and the reader module's project
+    # root and cache key checks, stay on ``is_sensitive_path``: none of those
+    # values is canonicalised first.
+    "kiro_crew/security/paths.py": 1,
 }
 
 

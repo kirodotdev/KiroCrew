@@ -428,7 +428,9 @@ class TestKasProjection:
         except (OSError, NotImplementedError):
             pytest.skip("symlinks unavailable on this platform")
         monkeypatch.setattr(
-            agent_discovery, "is_sensitive_path", lambda p: str(p) == str(secret.resolve())
+            agent_discovery,
+            "is_sensitive_canonical_path",
+            lambda p: str(p) == str(secret.resolve()),
         )
 
         with pytest.raises(KasAgentTranslationError, match="sensitive"):
@@ -720,11 +722,13 @@ class TestRewriter:
         from kiro_crew.mcp_gateway import rewriter
 
         # Both the fingerprint (rewriter._source_sig) and the rewrite loop's
-        # strict read (agent_discovery) vet the resolved target.
-        for module in (agent_discovery, rewriter):
-            monkeypatch.setattr(
-                module, "is_sensitive_path", lambda p: str(p) == str(secret.resolve())
-            )
+        # strict read (agent_discovery) vet the resolved target; the strict read
+        # asks is_sensitive_canonical_path, the fingerprint is_sensitive_path.
+        for module, gate in (
+            (agent_discovery, "is_sensitive_canonical_path"),
+            (rewriter, "is_sensitive_path"),
+        ):
+            monkeypatch.setattr(module, gate, lambda p: str(p) == str(secret.resolve()))
 
         results, _env = _rewrite(tmp_path)
 
@@ -901,7 +905,9 @@ def test_doctor_dead_path_walk_reads_through_the_hardened_gate(
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable on this platform")
     monkeypatch.setattr(
-        agent_discovery, "is_sensitive_path", lambda p: str(p) == str(secret.resolve())
+        agent_discovery,
+        "is_sensitive_canonical_path",
+        lambda p: str(p) == str(secret.resolve()),
     )
     dead, unreadable = dp._walk_spec(tmp_path / "bot.md")
     assert dead == []

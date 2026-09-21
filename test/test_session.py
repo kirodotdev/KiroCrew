@@ -2949,7 +2949,9 @@ class TestResolveAgentModelResolution:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "linked.json").symlink_to(target)
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+        monkeypatch.setattr(
+            agent_discovery, "is_sensitive_canonical_path", lambda p: str(target) in str(p)
+        )
 
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents):
             assert SessionManager._resolve_agent_model("linked") == "auto"

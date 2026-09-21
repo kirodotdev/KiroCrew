@@ -929,12 +929,16 @@ async def test_project_shadow_scan_fails_closed(tmp_path, monkeypatch, failure):
 
         monkeypatch.setattr(Path, method, denied)
     elif failure == "unreadable-spec":
-        original_read = agent_discovery.safe_read_file_bytes
+        original_read = agent_discovery._read_spec_bytes
 
-        def unreadable(path):
-            return None if path == str(spec.resolve()) else original_read(path)
+        def unreadable(real):
+            # The pinned reader reports an unreadable spec by raising OSError
+            # (the old by-name reader returned None for the same condition).
+            if Path(real) == spec.resolve():
+                raise PermissionError("project agent spec cannot be read")
+            return original_read(real)
 
-        monkeypatch.setattr(agent_discovery, "safe_read_file_bytes", unreadable)
+        monkeypatch.setattr(agent_discovery, "_read_spec_bytes", unreadable)
     elif failure == "oversized-spec":
         monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 4096)
         spec.write_text(json.dumps({"name": "unrelated", "prompt": "x" * 4096}), encoding="utf-8")

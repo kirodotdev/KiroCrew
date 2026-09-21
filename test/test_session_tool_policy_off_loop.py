@@ -9,8 +9,8 @@ resolved the agent's config file inline::
 
 all three on the single event loop every other gateway request shares.
 
-The proof below is thread identity at the real filesystem seam -- the hardened
-``safe_read_file_bytes`` gate the strict spec reader opens the file through --
+The proof below is thread identity at the real filesystem seam -- the pinned
+``_read_spec_bytes`` open the strict spec reader reads the file through --
 not an assertion that ``asyncio.to_thread`` was called. A spy on the offload
 would keep passing if the call were later moved back inline behind some other
 wrapper; the thread the read actually runs on cannot be faked.
@@ -71,13 +71,13 @@ async def test_the_agent_config_read_runs_off_the_event_loop(
     )
 
     read_threads: list[int] = []
-    real_read = agent_discovery.safe_read_file_bytes
+    real_read = agent_discovery._read_spec_bytes
 
-    def recording_read(raw: str) -> bytes | None:
+    def recording_read(real: Path) -> bytes:
         read_threads.append(threading.get_ident())
-        return real_read(raw)
+        return real_read(real)
 
-    monkeypatch.setattr(agent_discovery, "safe_read_file_bytes", recording_read)
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", recording_read)
 
     loop_thread = threading.get_ident()
     response = await _call(monkeypatch, tmp_path)

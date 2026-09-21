@@ -357,8 +357,9 @@ class TestResolveAgentName:
         monkeypatch.setattr(h, "kiro_agents_dir", lambda: agents)
         # The hardened reader vets the RESOLVED target in the same step as the
         # read, so the refusal is injected at its gate, not at a path check
-        # here.
-        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda _p: True)
+        # here. That gate is is_sensitive_canonical_path; is_sensitive_path in
+        # agent_discovery gates only the project dir and the cache key.
+        monkeypatch.setattr(agent_discovery, "is_sensitive_canonical_path", lambda _p: True)
         assert h._resolve_agent_name("helper") is None
 
     def test_unparseable_spec_falls_back_to_the_file_stem(self, monkeypatch, tmp_path):
