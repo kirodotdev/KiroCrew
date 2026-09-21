@@ -488,10 +488,14 @@ MAX_MONITOR_CONDITION_KEY_CHARS = 200
 #: blockers, silently, exactly when a subject has the most wrong with it. The
 #: check expansion is the only unbounded input and the canonical projection
 #: already bounds each check bucket, so the honest cap is that bound plus the
-#: fixed keys an adapter adds beside it (a review verdict, unresolved threads,
-#: and one mergeability condition). Derived rather than written out, so widening
-#: either half cannot leave the other behind.
-MAX_MONITOR_FIXED_CONDITIONS = 4
+#: fixed keys an adapter adds beside it: a review verdict, the unresolved-thread
+#: count, one mergeability condition, and the PR-level-comment-body digest --
+#: which wakes on an in-place comment edit a count cannot see. Four fixed keys
+#: can co-occur (conflict and behind are mutually exclusive), and the cap keeps
+#: the same one-key margin over that population the original carried. Derived
+#: rather than written out, so widening either half cannot leave the other
+#: behind.
+MAX_MONITOR_FIXED_CONDITIONS = 5
 MAX_MONITOR_CONDITIONS = MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET + MAX_MONITOR_FIXED_CONDITIONS
 
 

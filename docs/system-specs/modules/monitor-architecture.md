@@ -933,15 +933,30 @@ Both are properties of the engine rather than of the key, and both are what an
 operator is actually buying, so the key's help text names them.
 
 **Half of a review-ready objective is invisible to the typed provider.** A
-structured observation carries lifecycle, checks, mergeability, review decision
-and review-thread counts, and nothing else; `docs/architecture/mcp.md` states the
-same boundary from the tool's side ("requests that need comments or advisory
-findings route directly to the finite legacy tool whose agent turn can inspect
-them"). On this repository that is not a corner case: a pull request reaches
-`readiness: passed` only once every non-PASS whole-design verdict carries a
-disposition, and those verdicts live in comment bodies. A green typed board and an
-unanswered advisory finding are indistinguishable to a probe, which is why the
-prompt loop keeps `gate=false` for that evidence in both positions of this key.
+structured observation carries lifecycle, checks, mergeability, review decision,
+review-thread counts and a digest over the PR-level comment bodies, and nothing
+else; `docs/architecture/mcp.md` states the same boundary from the tool's side
+("requests that need comments or advisory findings route directly to the finite
+legacy tool whose agent turn can inspect them"). On this repository that is not a
+corner case: a pull request reaches `readiness: passed` only once every non-PASS
+whole-design verdict carries a disposition, and those verdicts live in comment
+bodies. The digest wakes the owner when such a body changes, but a green typed
+board with an unanswered advisory finding whose text never changed is still
+indistinguishable to a probe, which is why the prompt loop keeps `gate=false` for
+that evidence in both positions of this key.
+
+The PR-level comment-body digest is carried as one condition,
+`review_comment_bodies:<digest>`, with severity `WAKE` and `resets_on` `NEVER`:
+a comment belongs to the conversation, not to the commit under review, so a
+force-push must not replay it. The digest is inside the KEY rather than only the
+brief, because the engine dedupes per condition key and a stable key with a
+changing brief would be masked and never wake again -- a bot rewrites its verdict
+in place, so `created_at` does not move and only a digest over the bodies sees the
+change. An empty digest carries no condition, and the provider emits an empty
+digest on an incomplete comment read, so a page that keeps failing cannot wake the
+owner forever. Each comment body is reduced to a fixed-width fingerprint at the
+point of retention, so what the probe keeps does not scale with how much a
+reviewer wrote and no body text survives into the condition key.
 
 **An armed structured monitor is not freely swappable, though the key is.**
 Flipping the key back restores the previous wording on the next tool-list build

@@ -263,9 +263,13 @@ The babysit skill no longer registers new script jobs.
 
 ## Non-goals
 
-The structured GitHub monitor does not parse generic comment bodies or decide
-whether an advisory finding is valid. It reports typed provider facts and leaves
-judgment, source inspection, and any reply to the reactivated babysit session.
+The structured GitHub monitor digests PR-level comment bodies to detect that
+one changed, so an in-place edit whose `created_at` never moves still wakes the
+owner. It never interprets what a comment says or decides whether an advisory
+finding is valid, and it deliberately does not read inline review-thread bodies
+at all -- it reports only the count of unresolved, non-outdated threads there. It
+reports typed provider facts and leaves judgment, source inspection, and any
+reply to the reactivated babysit session.
 `monitor_start` remains appropriate when each delivered cycle requires the agent
 to make progress, the objective requires untyped evidence, or the watched subject
 is unsupported by a structured provider.

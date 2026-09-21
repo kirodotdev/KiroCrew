@@ -558,3 +558,119 @@ class TestTheConditionCapHoldsEverythingABoundedProbeCanName:
         assert keys[0] != keys[1]
         for key in keys:
             assert len(key) <= MAX_MONITOR_CONDITION_KEY_CHARS
+
+
+_COMMENT = MonitorCondition(
+    key="review_comment_bodies:cccc",
+    severity=MonitorSeverity.WAKE,
+    resets_on=MonitorResetsOn.NEVER,
+)
+_COMMENT_CHANGED = MonitorCondition(
+    key="review_comment_bodies:dddd",
+    severity=MonitorSeverity.WAKE,
+    resets_on=MonitorResetsOn.NEVER,
+)
+
+
+class TestTheReviewCommentBodyCondition:
+    """A monitor also wakes when a PR-LEVEL comment body changes.
+
+    The review-bot verdicts (design-review, codex-ai-review, ...) post as
+    PR-level issue comments, not review threads, and a bot rewrites its verdict
+    IN PLACE, so this is the surface that carries the motivating signal. It is a
+    SEPARATE key from the thread digest, so a change on one surface is
+    distinguishable from a change on the other.
+    """
+
+    @staticmethod
+    def _comment_keys(conditions: object) -> list[str]:
+        return [c.key for c in conditions if c.key.startswith("review_comment_bodies:")]
+
+    def test_a_digest_emits_one_sticky_comment_condition(self) -> None:
+        conditions = pull_request_conditions(
+            {"checks": {"failed": []}, "pr_comment_body_digest": "beadfeed"}
+        )
+        keyed = {c.key: c for c in conditions}
+        assert "review_comment_bodies:beadfeed" in keyed
+        condition = keyed["review_comment_bodies:beadfeed"]
+        assert condition.severity is MonitorSeverity.WAKE
+        assert condition.resets_on is MonitorResetsOn.NEVER
+
+    def test_an_absent_or_empty_digest_emits_no_comment_condition(self) -> None:
+        """The fail-closed representation at the adapter: the provider emits "" on
+        an incomplete or empty read, and an absent or empty digest yields no
+        condition. The provider-side incomplete-read assertion lives in the
+        GitHub monitor tests."""
+        assert self._comment_keys(pull_request_conditions({"checks": {"failed": []}})) == []
+        assert (
+            self._comment_keys(
+                pull_request_conditions({"checks": {"failed": []}, "pr_comment_body_digest": ""})
+            )
+            == []
+        )
+
+    def test_the_adapter_carries_the_comment_digest_only_when_non_empty(self) -> None:
+        without = build_pull_request_probe_result(
+            _facts(checks=(PullRequestCheck("build", "failed"),))
+        ).canonical
+        assert "pr_comment_body_digest" not in without
+
+        with_digest = build_pull_request_probe_result(
+            _facts(
+                checks=(PullRequestCheck("build", "failed"),),
+                pr_comment_body_digest="c0ffee",
+            )
+        ).canonical
+        assert with_digest["pr_comment_body_digest"] == "c0ffee"
+
+    def test_a_changed_comment_digest_wakes(self) -> None:
+        state = _state()
+        assert _decide(state, _actionable(_COMMENT), now=0.0) is MonitorDecision.WAKE_ACTIONABLE
+        stamp_monitor_alerted(state, now=0.0)
+        changed = _actionable(_COMMENT_CHANGED, fingerprint="fp-2")
+        assert _decide(state, changed, now=_FLOOR * 1.1) is MonitorDecision.WAKE_ACTIONABLE
+
+    def test_an_unchanged_comment_digest_does_not_wake_again(self) -> None:
+        state = _state()
+        assert _decide(state, _actionable(_COMMENT), now=0.0) is MonitorDecision.WAKE_ACTIONABLE
+        stamp_monitor_alerted(state, now=0.0)
+        assert _decide(state, _actionable(_COMMENT), now=1.0) is MonitorDecision.NO_CHANGE
+
+    def test_the_comment_condition_survives_a_head_change(self) -> None:
+        """Sticky: a force-push does not answer a PR-level comment either."""
+        state = _state()
+        assert _decide(state, _actionable(_COMMENT), now=0.0) is MonitorDecision.WAKE_ACTIONABLE
+        stamp_monitor_alerted(state, now=0.0)
+        pushed = _actionable(_COMMENT, fingerprint="fp-2", head_changed=True)
+        assert _decide(state, pushed, now=10.0) is MonitorDecision.NO_CHANGE
+        assert monitor_condition_dedupe_key(_COMMENT) in state.coalesce_alerted
+
+    def test_a_fully_loaded_subject_with_the_comment_digest_loses_no_blocker(self) -> None:
+        """Four fixed conditions co-occur (a review verdict, the unresolved-thread
+        count, one mergeability condition, and the comment digest), plus every
+        check the projection admits; the cap, five fixed, covers them."""
+        failed = [f"check-{index}" for index in range(MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET)]
+        conditions = pull_request_conditions(
+            {
+                "checks": {"failed": failed},
+                "review_decision": "changes_requested",
+                "unresolved_review_threads": 3,
+                "mergeability": "conflicting",
+                "pr_comment_body_digest": "bbbb",
+            }
+        )
+        keys = [condition.key for condition in conditions]
+        assert len(keys) == len(failed) + 4
+        assert len(keys) == len(set(keys))
+        for fixed in (
+            "changes_requested",
+            "unresolved_threads",
+            "conflict",
+            "review_comment_bodies:bbbb",
+        ):
+            assert fixed in keys
+        MonitorObservation(
+            "fp",
+            MonitorObservationStatus.ACTIONABLE,
+            conditions=conditions,
+        )
