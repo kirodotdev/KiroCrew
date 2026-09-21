@@ -239,6 +239,12 @@ def _real_dir_under_data_home(leaf: str) -> Path:
     the gateway and read by nothing else; the other holds the human-authored
     TEMPLATE whose separation from crew DATA is the containment story -- replacing
     it is authoring markup, not changing a setting.
+
+    The same reasoning has since been applied to the whole masked population by
+    ``sandbox._refuse_aliased_masked_leaves``, which refuses a symlink at every masked
+    leaf but the hand-authored ``.env``. So the sibling leaves this one is grouped with
+    above -- ``ledger``, ``routing`` and ``webhooks`` -- now refuse an aliased name too,
+    rather than going unreported because nothing materialises them.
     """
     target = data_home() / leaf
     try:

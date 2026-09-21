@@ -1679,10 +1679,12 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 
 #: Protected leaves where an ALIASED name is a hard spawn failure, not a warning.
 #:
-#: ``_warn_if_alias_backed`` warns for every other ceiling, deliberately: those are
-#: an operator's config files and a dotfile manager (chezmoi, stow) legitimately
-#: symlinks them, so refusing would turn a normal setup into a spawn failure for a
-#: hole that is pre-existing and narrower than the breakage.
+#: These two are reached by the SEALING loop, where ``_warn_if_alias_backed`` warns
+#: deliberately: a sealed ceiling is an operator's config file and a dotfile manager
+#: (chezmoi, stow) legitimately symlinks one, so refusing would turn a normal setup into a
+#: spawn failure for a hole that is pre-existing and narrower than the breakage. The
+#: MASKED leaves are a different population and refuse through
+#: :func:`_refuse_aliased_masked_leaves`; this set is what the sealing loop refuses.
 #:
 #: These two are not config files and nothing has a reason to link them:
 #:
@@ -1698,6 +1700,39 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 #: So for these, a link is refused: the disposition must attach to the same name the
 #: reader uses, and following a link is exactly the gap that voids it.
 _CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset({"crew-panels", "panel-templates"})
+
+#: Masked leaves where a SYMLINK is tolerated, and why. Every other entry in
+#: :data:`_CREW_HIDDEN_LEAVES` refuses one through :func:`_refuse_aliased_masked_leaves`,
+#: so this set is the whole exception list and each member states its own reason.
+#:
+#: * ``.env`` -- the operator's OWN channel-credential file, authored by hand and
+#:   documented as such (``docs/architecture/overview.md`` lists it as "channel tokens,
+#:   owner id"). It is the clearest member of the class ``_warn_if_alias_backed`` exists
+#:   for: a dotfile manager (chezmoi, stow) symlinks exactly this file, so refusing it
+#:   would turn an ordinary setup into a spawn failure for every agent on the host.
+#:
+#: Deliberately NOT here, having been checked for a supported second name and found to
+#: have none -- both resolve to one managed path with no override, so a link is not a
+#: relocation the product offers:
+#:
+#: * ``scratch`` -- ``agent_scratch.scratch_root()`` is ``config_dir() / "scratch"``;
+#: * ``backup`` -- no resolver in the tree reads an override for it either.
+#:
+#: The HARDLINK shape is tolerated for every leaf, which is why it is a property of the
+#: pass rather than an entry here: see :func:`_refuse_aliased_masked_leaves`.
+_CREW_ALIAS_TOLERATED_LEAVES: frozenset[str] = frozenset({".env"})
+
+
+#: Masked leaves whose NAME must be the masked name. DERIVED, so a leaf added to
+#: :data:`_CREW_HIDDEN_LEAVES` inherits the refusal instead of needing a reviewer to
+#: notice it was left out -- the failure mode a hand-copied list has every time.
+_CREW_NO_ALIAS_MASKED_LEAVES: tuple[str, ...] = tuple(
+    leaf for leaf in _CREW_HIDDEN_LEAVES if leaf not in _CREW_ALIAS_TOLERATED_LEAVES
+)
+assert _CREW_ALIAS_TOLERATED_LEAVES <= set(_CREW_HIDDEN_LEAVES)
+assert len(_CREW_NO_ALIAS_MASKED_LEAVES) + len(_CREW_ALIAS_TOLERATED_LEAVES) == len(
+    _CREW_HIDDEN_LEAVES
+)
 
 
 def _refuse_if_aliased_protected_leaf(target: str) -> None:
@@ -2281,6 +2316,69 @@ def _materialize_maskable_dirs() -> list[str]:
             ) from exc
         created.append(target)
     return created
+
+
+def _refuse_aliased_masked_leaves() -> None:
+    """Refuse the spawn when a MASKED leaf is reachable under a second name.
+
+    The mask is a bind mount, so it attaches to the path the leaf RESOLVES to while the
+    leaf's own name stays in the writable data home. A symlinked leaf therefore reads as
+    masked and is not: a sandboxed process unlinks the name, drops its own directory or
+    file there, and every later read goes to bytes it controls -- past whatever ownership
+    check or redactor the gateway applies to the masked path. Warning and continuing is
+    what made that silent, which is the whole reason this pass refuses.
+
+    Creates NOTHING. An ABSENT leaf is skipped, and that is what makes one pass safe over
+    EVERY masked leaf rather than only the materialised ones: a store that has not been
+    used yet offers no name to alias, and the retired ``ledgers`` root must not be
+    re-materialised on every machine (see its entry in :data:`_CREW_HIDDEN_LEAVES`, which
+    says so). Giving the leaves that need a mount target one is a different job, and
+    :func:`_materialize_maskable_dirs` does it for the nine it covers.
+
+    Runs LAST on the spawn path, after every materialiser, so a leaf with its own tailored
+    refusal answers first and keeps its own sentence: ``live_target.json`` shares its
+    wording with ``kirocrew doctor`` and the md-notebook leaves name their own documents,
+    and a generic message arriving first would replace both.
+
+    SYMLINKS only. The other shape :func:`_warn_if_alias_backed` reports -- a regular file
+    carrying an extra hardlink -- stays a warning for every leaf, which is why it is a
+    property of this pass rather than a per-leaf exception: a hardlink does not make the
+    masked NAME replaceable, and ``rsync --link-dest`` and hardlinking snapshot tools
+    leave one behind on ordinary hosts, so refusing it would cost every sandboxed spawn on
+    a machine whose backups are working correctly.
+
+    Ancestors are deliberately not walked: ``config_dir()`` documents that a symlinked
+    data HOME is supported, so only the leaf's own name is checked -- the same line
+    ``agent_panel._real_dir_under_data_home`` draws.
+    """
+    try:
+        root = str(config_dir())
+    except Exception as exc:
+        # Fail CLOSED, like every other reason on this path: a spawn that skipped the
+        # check would run the agent against leaves whose masks may be attached to
+        # somewhere else entirely.
+        raise SandboxCeilingUnsealable(
+            f"cannot resolve the crew data home to check the masked leaves for an alias: {exc}"
+        ) from exc
+    for leaf in _CREW_NO_ALIAS_MASKED_LEAVES:
+        target = os.path.join(root, leaf)
+        try:
+            info = os.lstat(target)
+        except OSError:
+            # Absent, or an absent parent. Nothing is aliased, and nothing is created.
+            continue
+        if not stat.S_ISLNK(info.st_mode):
+            continue
+        pointed_at = "(unreadable)"
+        with contextlib.suppress(OSError):
+            pointed_at = os.readlink(target)
+        raise SandboxCeilingUnsealable(
+            f"the masked path {safe_terminal_line(target)} is a SYMLINK -> "
+            f"{safe_terminal_line(pointed_at)}. The mask binds whatever the link "
+            "resolves to, so this NAME would stay writable inside the sandbox while "
+            "reads and writes reached an unmasked target. Remove the link and keep a "
+            "real directory or file under this name."
+        )
 
 
 def _materialize_live_target_mask_target() -> str | None:
@@ -6731,6 +6829,12 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target()
+    # LAST of the pre-spawn checks, and last on purpose: every masked leaf's NAME must be
+    # the name the mask binds, and the leaves above have already answered for themselves
+    # with sentences tailored to what they hold. This pass covers the rest -- the masked
+    # leaves nothing materialises, whose alias went unreported entirely -- and creates
+    # nothing, so an unused store stays absent.
+    _refuse_aliased_masked_leaves()
     # A pre-upgrade orphan already ON disk is a different problem from an absent mask
     # target, and this one is not Linux-specific: see the sweep's own docstring for why
     # the macOS path calls it too.

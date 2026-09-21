@@ -24,6 +24,7 @@ direction by the bind mount itself.
 from __future__ import annotations
 
 import errno
+import inspect
 import json
 import os
 import re
@@ -300,9 +301,10 @@ class TestALinkedProtectedLeafRefusesTheSpawn:
     The link name stays in the writable data home, so a sandboxed process can unlink
     it and drop a directory of its own.
 
-    Refused rather than warned, unlike every other ceiling: see
+    Refused rather than warned, unlike every other SEALED ceiling: see
     ``sandbox._CREW_NO_ALIAS_LEAVES`` for why the chezmoi/stow argument that earns
-    the warning elsewhere does not apply to these two.
+    the warning elsewhere does not apply to these two. The MASKED leaves refuse through
+    their own pass; ``TestEveryMaskedLeafRefusesAnAliasedName`` below covers those.
     """
 
     @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_NO_ALIAS_LEAVES))
@@ -355,6 +357,198 @@ class TestALinkedProtectedLeafRefusesTheSpawn:
         assert (
             sandbox._CREW_NO_ALIAS_LEAVES <= materialised
         ), "a no-alias leaf that is never materialised is never checked"
+
+
+class TestEveryMaskedLeafIsEnumerated:
+    """No masked leaf may be silently outside the alias decision.
+
+    The gap this closes was not a weak rule, it was an ABSENT one: a masked leaf that
+    nothing materialises reached neither the sealing loop's warning nor the maskable-dir
+    refusal, so its alias went unreported. The partition below is what makes a leaf added
+    later inherit a decision instead of inheriting silence.
+    """
+
+    def test_the_buckets_sum_to_every_masked_leaf(self):
+        refused = set(sandbox._CREW_NO_ALIAS_MASKED_LEAVES)
+        tolerated = set(sandbox._CREW_ALIAS_TOLERATED_LEAVES)
+        every = set(sandbox._CREW_HIDDEN_LEAVES)
+
+        assert refused | tolerated == every, "a masked leaf in neither bucket is undecided"
+        assert not (refused & tolerated), "a leaf cannot both refuse and be tolerated"
+        assert len(refused) + len(tolerated) == len(every)
+
+    def test_the_siblings_the_module_groups_together_all_refuse(self):
+        """``agent_panel`` names this group; ``crew-panels`` already refused, these did not."""
+        for leaf in ("ledger", "routing", "webhooks", "ledgers", "work-ledger"):
+            assert leaf in sandbox._CREW_NO_ALIAS_MASKED_LEAVES, f"{leaf} may still be aliased"
+
+    def test_a_relocatable_looking_leaf_refuses_because_nothing_relocates_it(self):
+        """``scratch`` and ``backup`` read like relocation candidates and are not.
+
+        Each resolves to one managed path with no override, so a second name is not a
+        layout the product offers and the refusal costs no supported setup.
+        """
+        from kiro_crew import agent_scratch
+
+        assert "scratch" in sandbox._CREW_NO_ALIAS_MASKED_LEAVES
+        assert "backup" in sandbox._CREW_NO_ALIAS_MASKED_LEAVES
+        assert agent_scratch.scratch_root() == sandbox.config_dir() / "scratch"
+
+    def test_every_tolerated_leaf_states_its_reason(self):
+        """A bare exception is how a hole gets inherited; each one is argued in the source.
+
+        Scoped to the contiguous ``#:`` block directly above the set, not to the module: a
+        whole-module search passes for any leaf whose name appears anywhere earlier, which
+        is every masked leaf, so it would assert nothing.
+        """
+        source = inspect.getsource(sandbox)
+        before = source.split("_CREW_ALIAS_TOLERATED_LEAVES: frozenset")[0]
+        block = []
+        for line in reversed(before.splitlines()):
+            if line.startswith("#:") or line == "#:":
+                block.append(line)
+            elif block:
+                break
+        doc = "\n".join(block)
+        assert doc, "the tolerated set has no doc-comment block above it"
+        for leaf in sandbox._CREW_ALIAS_TOLERATED_LEAVES:
+            assert leaf in doc, f"{leaf} is tolerated with no reason recorded beside it"
+
+
+@_POSIX_ONLY
+class TestEveryMaskedLeafRefusesAnAliasedName:
+    """A SYMLINKED masked leaf refuses the spawn, for every leaf but the argued exceptions.
+
+    ``mount(2)`` binds what the leaf RESOLVES to, so a symlinked leaf reads as masked and
+    is not: the name stays in the writable data home, and a sandboxed process unlinks it
+    and puts its own directory or file there. Warning about that is what made it silent.
+    """
+
+    @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_NO_ALIAS_MASKED_LEAVES))
+    def test_a_symlinked_masked_leaf_refuses(self, crew_home, tmp_path, leaf):
+        elsewhere = tmp_path / f"target-{leaf.replace('/', '-')}"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        link = crew_home / leaf
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            link.unlink()
+        elif link.is_dir():
+            shutil.rmtree(link)
+        elif link.exists():
+            link.unlink()
+        link.symlink_to(elsewhere, target_is_directory=True)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as caught:
+            sandbox._refuse_aliased_masked_leaves()
+        assert "SYMLINK" in str(caught.value)
+        assert os.path.basename(leaf) in str(caught.value)
+
+    @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_NO_ALIAS_MASKED_LEAVES))
+    def test_nothing_was_written_through_the_link(self, crew_home, tmp_path, leaf):
+        """It must REFUSE, not report the path masked and carry on."""
+        elsewhere = tmp_path / f"probe-{leaf.replace('/', '-')}"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        link = crew_home / leaf
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            link.unlink()
+        elif link.is_dir():
+            shutil.rmtree(link)
+        elif link.exists():
+            link.unlink()
+        link.symlink_to(elsewhere, target_is_directory=True)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._refuse_aliased_masked_leaves()
+        assert not list(elsewhere.iterdir())
+
+    def test_a_real_directory_or_file_is_accepted(self, crew_home):
+        """The ordinary case must not be refused, or the pass is a blanket outage."""
+        for leaf in sandbox._CREW_NO_ALIAS_MASKED_LEAVES:
+            target = crew_home / leaf
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if "." in os.path.basename(leaf):
+                target.write_text("{}\n", encoding="utf-8")
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+
+        sandbox._refuse_aliased_masked_leaves()  # does not raise
+
+
+@_POSIX_ONLY
+class TestTheDeliberateAliasExceptions:
+    """Each tolerated shape gets a test asserting it is NOT refused.
+
+    An exception nobody exercises is indistinguishable from a leaf the pass forgot, so the
+    permissive direction is pinned as hard as the refusal.
+    """
+
+    def test_a_symlinked_env_file_is_tolerated(self, crew_home, tmp_path):
+        """``.env`` is the operator's own file and the dotfile-manager case."""
+        real = tmp_path / "dotfiles-env"
+        real.write_text("SLACK_BOT_TOKEN=x\n", encoding="utf-8")
+        link = crew_home / ".env"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(real)
+
+        sandbox._refuse_aliased_masked_leaves()  # does not raise
+        assert link.is_symlink(), "the operator's link is not ours to remove"
+
+    def test_an_extra_hardlink_is_tolerated(self, crew_home, tmp_path):
+        """``rsync --link-dest`` and snapshot tools leave one on a healthy host.
+
+        A hardlink does not make the masked NAME replaceable, which is why the shape is
+        tolerated for every leaf rather than per leaf.
+        """
+        target = crew_home / "token_signing.key"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"key")
+        alias = tmp_path / "backup-hardlink"
+        os.link(target, alias)
+        assert target.stat().st_nlink == 2
+
+        sandbox._refuse_aliased_masked_leaves()  # does not raise
+
+    def test_an_absent_leaf_is_skipped_and_nothing_is_created(self, crew_home):
+        """The pass must create NOTHING, which is what lets it cover unmaterialised leaves.
+
+        ``ledgers`` is the case that forces this: its own entry says precreating it would
+        re-materialise a retired name on every machine.
+        """
+        before = sorted(p.name for p in crew_home.iterdir())
+
+        sandbox._refuse_aliased_masked_leaves()  # does not raise
+
+        assert sorted(p.name for p in crew_home.iterdir()) == before
+        assert not (crew_home / "ledgers").exists(), "the retired root must stay absent"
+
+    def test_an_unresolvable_data_home_refuses(self, monkeypatch):
+        """Fail CLOSED, like every other reason on this path."""
+
+        def boom():
+            raise OSError("data home unavailable")
+
+        monkeypatch.setattr(sandbox, "config_dir", boom)
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._refuse_aliased_masked_leaves()
+
+    def test_the_pass_runs_after_every_materialiser(self):
+        """Order is load-bearing: a leaf with its own sentence must answer first.
+
+        ``live_target.json`` shares its wording with ``kirocrew doctor`` and the
+        md-notebook leaves name their own documents, so a generic message arriving first
+        would replace a sentence another surface is pinned to.
+        """
+        source = inspect.getsource(sandbox.namespace_argv)
+        order = [
+            source.index("_materialize_sealable_ceilings()"),
+            source.index("_materialize_maskable_dirs()"),
+            source.index("_materialize_md_notebook_mask_targets()"),
+            source.index("_materialize_live_target_mask_target()"),
+            source.index("_refuse_aliased_masked_leaves()"),
+        ]
+        assert order == sorted(order), "the alias pass must run last"
 
 
 @_POSIX_ONLY

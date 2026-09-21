@@ -45,7 +45,7 @@ threat and the read is not.
 
 Both are also in `sandbox._CREW_NO_ALIAS_LEAVES`, which REFUSES the spawn when the
 leaf is reachable under a second name — a symlink, or a regular file carrying an
-extra hardlink. Every other protected leaf only warns and continues, because a
+extra hardlink. Every other SEALED ceiling only warns and continues, because a
 user who symlinks a config file into a dotfiles repository is doing something
 ordinary and refusing would turn a normal setup into a spawn failure over a
 pre-existing hole. Neither of these is a config file and nothing has a reason to
@@ -56,6 +56,23 @@ records the gateway reads back as authoritative past both the ownership check an
 the redactors; and replacing `panel-templates/` is authoring markup that renders
 in the panel rather than changing a setting. A warning was what made this silent —
 the log said the path was sealed while the writes went elsewhere.
+
+The MASKED leaves are a separate population with a separate pass.
+`sandbox._refuse_aliased_masked_leaves` refuses a SYMLINK at every entry in
+`_CREW_HIDDEN_LEAVES` except the ones in `_CREW_ALIAS_TOLERATED_LEAVES`, and it runs last
+on the spawn path so a leaf carrying its own tailored refusal (`live_target.json`, whose
+sentence is shared with `kirocrew doctor`, and the md-notebook state leaves) answers first
+and keeps its own wording. It creates nothing, so an absent store is skipped rather than
+materialised — which is what lets one pass cover the masked leaves nothing precreates,
+including the retired `ledgers` root that must not be re-created on every machine. Two
+exceptions are deliberate and each has a test asserting it is NOT refused: `.env`, the
+operator's hand-authored channel-credential file and the clearest dotfile-manager case in
+the list; and the extra-hardlink shape for every leaf, because a hardlink does not make
+the masked NAME replaceable while `rsync --link-dest` and hardlinking snapshot tools leave
+one behind on hosts whose backups are working correctly. `scratch` and `backup` were
+checked for a supported second name and refuse: each resolves to one managed path
+(`agent_scratch.scratch_root()` is `config_dir() / "scratch"`) with no override, so a link
+there is not a relocation the product offers.
 
 Memory V2 separates members' learning and work context; it does not promise
 confidentiality between agents running as the same host operator. One stable
