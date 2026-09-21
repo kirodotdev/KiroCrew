@@ -251,6 +251,26 @@ class DispatchView:
     slot_of_unit: Mapping[str, str]
     #: slot -> its node in the folded tree, carrying the creator it cites.
     nodes: Mapping[str, TreeNode]
+    #: Whether the scan these maps came from saw the whole store. True when a unit's
+    #: bytes could not be read, when the population ran past the scanner's cap, or
+    #: when the scan failed outright.
+    #:
+    #: It is on the view because every consumer here DECIDES on an edge, and
+    #: :meth:`dispatched_by` answers False for a missing one -- so a lost edge and a
+    #: real absence of lineage are the same answer from that method and can only be
+    #: told apart here. Without it a scan that could not read part of the store
+    #: refuses a conductor its own child's log and words the refusal as "out of
+    #: scope", which is a confident wrong answer rather than a missing one; with it,
+    #: an OPERATOR gets that distinction. The caller deliberately does not: the
+    #: refusal text is identical either way, because the per-unit door passes the
+    #: requested unit as the scan's ``preferred``, so a caller-visible difference
+    #: would tell a guessed id that exists-and-is-unreadable apart from one that does
+    #: not exist. This is the same reason
+    #: :class:`~kiro_crew.crew_log.session_tree.TreeReading` carries the flag, and it
+    #: is carried rather than re-derived for the same reason too: one tree serves
+    #: every reader in the process, so a flag read in a second, unlocked call can
+    #: belong to another reader's scan.
+    incomplete: bool = False
 
     def slot_of(self, unit: str) -> str:
         """The slot *unit*'s log belongs to, or ``""`` when this scan has no log for it."""
@@ -309,17 +329,28 @@ def dispatch_view(preferred: Iterable[str] = ()) -> DispatchView:
     *preferred* names unit ids to admit FIRST, which the caller uses to put the
     units a request is actually about ahead of the scanner's cap.
 
+    Through :meth:`~kiro_crew.crew_log.session_tree.SessionTree.reading`, never
+    :meth:`~kiro_crew.crew_log.session_tree.SessionTree.records`, and the difference
+    is the whole point: ``records`` drops whether the scan faulted, and every
+    consumer of this view DECIDES on an edge. ``reading`` is also what
+    :class:`~kiro_crew.crew_log.holders.ReferenceScanner` uses for the same reason,
+    so the fault bit reaches a decider through ONE mechanism rather than two
+    spellings of it. The ``sid -> slot`` map is built from that same reading's own
+    records, so the map, the nodes and the flag all describe one scan under one take
+    of the tree's lock.
+
     Never raises: a store fault must leave the caller able to refuse rather than
-    500, so a failed scan reports an empty view, in which no unit is placeable and
-    every dispatch test is therefore false.
+    500, so a failed scan reports an empty view -- in which no unit is placeable and
+    every dispatch test is therefore false, and which says so through
+    ``incomplete`` instead of reading as a store that holds no lineage.
     """
     try:
-        records = _TREE.records(preferred)
+        reading = _TREE.reading(preferred)
     except Exception:
         logger.warning("dispatch scope scan failed; reporting no lineage", exc_info=True)
-        return DispatchView(slot_of_unit={}, nodes={})
-    slots = {record.sid: record.slot for record in records if record.sid and record.slot}
-    return DispatchView(slot_of_unit=slots, nodes=session_tree.fold_tree(records))
+        return DispatchView(slot_of_unit={}, nodes={}, incomplete=True)
+    slots = {record.sid: record.slot for record in reading.records if record.sid and record.slot}
+    return DispatchView(slot_of_unit=slots, nodes=reading.nodes, incomplete=reading.incomplete)
 
 
 def read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
@@ -565,7 +596,14 @@ def list_session_units(
 
     Reports ``scanned`` and ``truncated`` rather than only the rows: a caller that
     cannot tell a short list from a cut one would read "3 sessions" off a host
-    running three hundred.
+    running three hundred. ``truncated`` covers both causes -- a cut this function
+    made, and a lineage scan that could not read the whole store, which drops rows
+    before they are counted so ``scanned`` never sees them. The two are not
+    distinguished on the wire because no reader wants them apart; the second is
+    recorded for an operator by the PRODUCER --
+    :meth:`~kiro_crew.crew_log.session_tree.SessionTree._read` warns once, naming the
+    unit, at the arm that judges a permanent fault -- because this path reaches no
+    refusal door and so nothing that door writes could account for it.
 
     ``scope_unit`` and ``scope_slot`` narrow the listing, and between them they
     express the three scopes a route hands down. Both empty is NO narrowing, the
@@ -640,11 +678,28 @@ def list_session_units(
             global_counts.update(row["type_counts"])
         rows.append(row)
     rows.sort(key=lambda item: (item["last_ts"], item["unit"]), reverse=True)
+    # A lineage scan that could not read the whole store drops rows this listing
+    # would otherwise have admitted, and it drops them BEFORE they are counted --
+    # ``scanned`` never sees them. So it sets ``truncated``: every caller reads that
+    # field as "this is not the whole set", and leaving it false would tell all of
+    # them the list is complete while the tree was short an edge.
+    #
+    # It gets no field of its own. A separate ``lineage_incomplete`` key would let a
+    # caller tell a cut this function made from a population it could not test, which
+    # is a real distinction -- but no reader in the product wants it, and a response
+    # key with no consumer is a contract to keep for nobody. The fold above is what
+    # carries the safety property; the cause is recorded for an operator by
+    # :meth:`session_tree.SessionTree._read`, which warns once, naming the unit, at
+    # the arm that judges a permanent fault. That record is at the producer, so a
+    # caller that only ever LISTS is covered by it: this path reaches no refusal door,
+    # and a permanent fault would otherwise latch ``truncated`` with nothing anywhere
+    # saying why.
+    lineage_incomplete = view is not None and view.incomplete
     out: dict[str, Any] = {
         "kind": KIND_SESSION,
         "units": rows,
         "scanned": scanned,
-        "truncated": truncated,
+        "truncated": truncated or lineage_incomplete,
         "limit": capped,
     }
     if with_type_counts:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -1430,6 +1431,166 @@ class TestTheDispatchFence:
         response = asyncio.run(routes.api_crew_log_unit_page(request))
         assert response.status == 403
         assert "does not record what kind of session it is" in json.loads(response.text)["error"]
+
+    def test_an_unreadable_middle_log_refuses_as_unknown_lineage_not_out_of_scope(
+        self, monkeypatch, caplog
+    ):
+        """MUTATION-SENSITIVE: the scan's fault bit reaches the refusal SITE, not the caller.
+
+        The conductor really did dispatch the grandchild, transitively, and the
+        grandchild's own log is intact -- nothing about this request is out of scope.
+        What breaks the chain is the CHILD in the middle: its announce record is
+        present and cannot be read as an entry, so the scan drops that unit's record
+        and the walk finds no node for its slot. ``dispatched_by`` answers False for a
+        missing node whatever put it there, so the only thing that can tell a real
+        absence of lineage from an edge the scan never read is the flag the reading
+        carries.
+
+        What the caller is told is DELIBERATELY the same either way. This door passes
+        the requested unit as the scan's ``preferred``, and a named unit's own read
+        fault feeds the scan's flag, so a caller-visible distinction would let a
+        guessed id that exists-and-is-unreadable be told apart from one that does not
+        exist -- an existence oracle on the boundary this fence exists to keep closed.
+        So the assertion is on the OPERATOR's record: the refusal site says the scan
+        was incomplete, and the wire says only "out of scope".
+
+        Reverting ``dispatch_view`` to ``SessionTree.records()`` reddens it: that
+        accessor drops the fault bit, ``view.incomplete`` is then False, and nothing
+        is logged -- the refusal goes out with no account of why the tree was short.
+
+        The damage is planted as BYTES rather than monkeypatched, because this is the
+        non-transient case: a log is append-only, so a line that cannot be read as an
+        entry stays unreadable for the life of the file, and the scanner caches that
+        verdict. A patched read would exercise the transient case and leave the one
+        that never clears unpinned.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        child_log = lg.crew_log_path(lg.KIND_SESSION, CHILD_UNIT)
+        lines = child_log.read_bytes().split(b"\n")
+        # Line 1 is the header and stays intact, so the unit is still PROVABLE and is
+        # not simply skipped as a stray directory; line 2 is the announce record the
+        # creator edge lives on. It is replaced with a well-formed JSON object that is
+        # not an entry, which is what makes the head read "announced, unreadable"
+        # rather than "not announced yet".
+        assert len(lines) >= 2, lines
+        lines[1] = b'{"not": "an entry"}'
+        child_log.write_bytes(b"\n".join(lines))
+        from kiro_crew.crew_log import read as crew_log_read
+
+        crew_log_read._TREE._heads.clear()
+
+        request = _as_conductor(
+            f"/api/crew-log/units/{GRANDCHILD_UNIT}/page", match={"unit": GRANDCHILD_UNIT}
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.crew_log"):
+            response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        # The wire carries the ordinary refusal and nothing that distinguishes this
+        # case, which is the security half of the change.
+        assert "does not fall inside that scope" in json.loads(response.text)["error"]
+        # The operator's half: the fault bit reached the refusal site and was recorded
+        # there. This is what fails when the view stops carrying it.
+        assert any("lineage scan was INCOMPLETE" in record.message for record in caplog.records)
+
+    def test_an_intact_store_logs_no_incomplete_scan_when_it_refuses(self, monkeypatch, caplog):
+        """The allow-direction control: the operator signal discriminates.
+
+        Without it, a refusal site that logged "INCOMPLETE" on every denial would
+        satisfy the assertion above while saying nothing true -- the same shape as a
+        guard verified only in its blocking direction. Nothing is damaged here, so the
+        scan is complete, a session in another tree is still refused, and no
+        incomplete-scan record is written.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        request = _as_conductor(
+            f"/api/crew-log/units/{STRANGER_UNIT}/page", match={"unit": STRANGER_UNIT}
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.crew_log"):
+            response = asyncio.run(routes.api_crew_log_unit_page(request))
+        assert response.status == 403
+        assert "does not fall inside that scope" in json.loads(response.text)["error"]
+        assert not any("lineage scan was INCOMPLETE" in r.message for r in caplog.records)
+
+    def test_the_refusal_text_is_identical_whether_the_scan_was_short(self, monkeypatch):
+        """MUTATION-SENSITIVE: no existence oracle at this door.
+
+        The two cases above differ in exactly the way a caller could steer -- this
+        door passes the requested unit as the scan's ``preferred``, so a guessed id
+        that exists and cannot be read sets the flag while a guessed id that does not
+        exist does not. Re-introducing any caller-visible difference between them
+        reddens this: it compares the two bodies for equality rather than asserting a
+        phrase, so it catches a new wording however it is spelled.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        intact = _as_conductor(
+            f"/api/crew-log/units/{STRANGER_UNIT}/page", match={"unit": STRANGER_UNIT}
+        )
+        intact_body = json.loads(asyncio.run(routes.api_crew_log_unit_page(intact)).text)["error"]
+
+        child_log = lg.crew_log_path(lg.KIND_SESSION, CHILD_UNIT)
+        lines = child_log.read_bytes().split(b"\n")
+        lines[1] = b'{"not": "an entry"}'
+        child_log.write_bytes(b"\n".join(lines))
+        from kiro_crew.crew_log import read as crew_log_read
+
+        crew_log_read._TREE._heads.clear()
+
+        short = _as_conductor(
+            f"/api/crew-log/units/{GRANDCHILD_UNIT}/page", match={"unit": GRANDCHILD_UNIT}
+        )
+        short_body = json.loads(asyncio.run(routes.api_crew_log_unit_page(short)).text)["error"]
+        assert short_body == intact_body
+
+    def test_a_listing_only_lineage_fault_is_recorded_by_the_producer_once(
+        self, monkeypatch, caplog
+    ):
+        """MUTATION-SENSITIVE: the listing consumer gets an operator record too.
+
+        A caller that only LISTS never reaches the per-unit refusal door, so the
+        warning that door writes cannot account for the ``truncated`` it is handed.
+        And this fault never clears: a log is append-only, so the scanner caches the
+        verdict and every later reading is short for the life of the file. With no
+        record at the producer, such a caller sees ``truncated`` forever while nothing
+        anywhere says why -- the same failure indistinguishable to an operator that
+        this change exists to remove, one consumer over.
+
+        So the record is asserted at the layer that knows both the cause and WHICH
+        unit carries it, and asserted to fire ONCE across two scans. That second half
+        is the discriminating one: the cache serves every later scan without
+        re-judging, so a warning placed where the cache is READ would satisfy a
+        presence check while writing one line per scan for the life of the log.
+        """
+        _flag_on(monkeypatch)
+        _dispatch_tree()
+        child_log = lg.crew_log_path(lg.KIND_SESSION, CHILD_UNIT)
+        lines = child_log.read_bytes().split(b"\n")
+        assert len(lines) >= 2, lines
+        lines[1] = b'{"not": "an entry"}'
+        child_log.write_bytes(b"\n".join(lines))
+        from kiro_crew.crew_log import read as crew_log_read
+
+        crew_log_read._TREE._heads.clear()
+
+        # The scope_slot is load-bearing: ``list_session_units`` builds its dispatch
+        # view only when a slot is in scope, so an unscoped owner listing never
+        # consults lineage and cannot reach this fault at all. The consumer the gap
+        # belongs to is a conductor listing what it dispatched.
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.session_tree"):
+            first = crew_log_read.list_session_units(limit=50, scope_slot=CONDUCTOR_SLOT)
+            second = crew_log_read.list_session_units(limit=50, scope_slot=CONDUCTOR_SLOT)
+
+        # The listing still tells its caller the set is short, exactly as before.
+        assert first["truncated"] is True
+        assert second["truncated"] is True
+        # The producer accounted for it, naming the unit whose bytes carry the fault.
+        judged = [r for r in caplog.records if "creator edge is unknown" in r.message]
+        assert len(judged) == 1, [r.message for r in judged]
+        unit_name = child_log.parent.name
+        assert unit_name, "the fixture resolved no unit directory name"
+        assert unit_name in judged[0].message
 
     @pytest.mark.parametrize(
         ("recorded", "word"),

@@ -561,6 +561,14 @@ _OUT_OF_SCOPE_REFUSAL: Final[str] = (
     "dispatched, and this request does not fall inside that scope; the owner's own "
     "dashboard session reads any unit"
 )
+#: There is deliberately no second refusal for a lineage scan that came back short.
+#: The distinction is real and worth recording -- an edge the scan never read is not
+#: the same fact as a unit outside the caller's tree -- but a caller-visible one
+#: would be an existence oracle: this door passes the REQUESTED unit as the scan's
+#: ``preferred``, and a named unit's own read fault feeds the scan's flag, so a
+#: guessed id that exists and cannot be read would word the refusal differently from
+#: one that does not exist. The fact goes to the operator's log at the refusal site
+#: instead, which is the half that needed it.
 
 LIST_SCOPE_KEY: Final[str] = "crew_log_list_scope"
 
@@ -1121,6 +1129,33 @@ async def _read_scope_refusal(request: web.Request, session_key: str, unit: str)
     if class_refusal:
         return class_refusal
     if not view.dispatched_by(unit, slot):
+        # A false answer here has two causes and only one of them is about the
+        # request. The scan may have placed every unit it read and this one is simply
+        # not in the caller's tree; or the scan could not read part of the store, in
+        # which case the edge that would have placed it may never have been looked
+        # at. ``dispatched_by`` cannot tell them apart -- it answers False for a
+        # missing node either way -- and the view's ``incomplete`` flag now can.
+        #
+        # The CALLER is told neither: one refusal text for both, because this door
+        # hands its answer to an authenticated caller that may be guessing unit ids,
+        # and the flag is STEERABLE by that guess. The probe passes the requested
+        # unit as ``preferred`` (see ``_probe`` below), the scan admits a named unit
+        # first and folds its own read fault into the scan's bit
+        # (``session_tree._records_with_fault``), so a guessed id that exists AND
+        # cannot be read would flip the wording while an id that does not exist
+        # would not -- an existence oracle on exactly the boundary
+        # ``_OUT_OF_SCOPE_REFUSAL`` exists to keep closed. The incompleteness goes
+        # to the operator instead, where it answers "why can my conductor not read
+        # its own child" without answering "does this unit exist" for anyone else.
+        if view.incomplete:
+            logger.warning(
+                "crew log dispatch scope refused a read while the lineage scan was "
+                "INCOMPLETE: part of the store could not be read on this pass, so "
+                "this unit's place in the caller's tree is unknown rather than known "
+                "to be outside it. unit=%r caller slot=%r",
+                unit,
+                slot,
+            )
         return _OUT_OF_SCOPE_REFUSAL
     # The target test, and only once the unit is known to be in this caller's tree: a
     # caller outside the tree must not be able to tell a refused class from a refused

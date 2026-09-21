@@ -107,9 +107,9 @@ class TreeNode:
 
 @dataclass(frozen=True)
 class TreeReading:
-    """One scan's nodes, and whether that scan saw every unit the store holds.
+    """One scan's nodes and records, and whether that scan saw every unit the store holds.
 
-    The two travel together on purpose. A reader that only DISPLAYS lineage can
+    The three travel together on purpose. A reader that only DISPLAYS lineage can
     ignore ``incomplete`` -- a missing edge renders as "no creator known", which
     is what it looked like before this reader existed. A reader that DECIDES on
     an edge cannot: dropping a candidate because it is an ancestor, on a tree
@@ -119,10 +119,22 @@ class TreeReading:
     ``incomplete`` is computed in the call that produced ``nodes`` rather than
     left on the tree, for the reason :class:`SessionTree` is shared: a flag read
     in a second, unlocked call can belong to another reader's scan.
+
+    ``records`` is the same reason one step further. A consumer that places a UNIT
+    rather than a slot needs the scan's ``sid -> slot`` map, which the fold drops:
+    :func:`fold_tree` is keyed by slot and a unit id appears nowhere in its output.
+    Asking :meth:`records` for it separately would be a SECOND scan, under a second
+    take of the lock, so its map could describe a different population than the
+    nodes and the flag do -- and the ancestor rule would then be applied across two
+    moments. Carrying the records the scan already read costs nothing and makes that
+    impossible rather than discouraged.
     """
 
     nodes: dict[str, TreeNode]
     incomplete: bool
+    #: Every provable record this scan read, unordered. Empty when the scan failed,
+    #: which is the same answer ``nodes`` gives and is why it needs no separate flag.
+    records: tuple[OpenedRecord, ...] = ()
 
 
 def fold_tree(records: Iterable[OpenedRecord]) -> dict[str, TreeNode]:
@@ -347,8 +359,10 @@ class SessionTree:
     def records(self, preferred: Iterable[str] = ()) -> list[OpenedRecord]:
         """One record per provable session log on disk, unordered.
 
-        Drops whether the scan faulted. :meth:`reading` is the caller that keeps
-        it; this one stays for callers that only want the records.
+        Drops whether the scan faulted, so it is the wrong projection for a
+        reader that DECIDES on a lineage edge; :meth:`reading` is the caller that
+        keeps the bit. This one is the raw-records view over the same locked
+        scan, without the fold :meth:`reading` builds.
         """
         return self._records_with_fault(preferred)[0]
 
@@ -478,6 +492,21 @@ class SessionTree:
             # so those bytes cannot become readable and re-reading them every scan
             # buys nothing -- but the verdict is a fault every time it is served,
             # which a cached absence would not be.
+            #
+            # Recorded HERE, and only here, because this is the one arm that knows
+            # both the cause and WHICH unit carries it. Every later scan is served by
+            # the cache above and never reaches this line, so the operator gets one
+            # record per damaged unit instead of one per scan; and because it sits at
+            # the producer, it covers every consumer of the fault bit -- the per-unit
+            # refusal door and the unit listing alike -- rather than one call site.
+            # The other fault arms are deliberately silent: each is transient or
+            # re-judged on the next scan, so logging them would be per-scan noise.
+            logger.warning(
+                "crew log unit %s: its announce record is present and could not be read, "
+                "so this session's creator edge is unknown. Lineage readings will report "
+                "themselves incomplete for as long as these bytes stand.",
+                name,
+            )
             self._heads[name] = _Head(
                 segment, stat.st_dev, stat.st_ino, stat.st_size, None, faulted=True
             )
@@ -512,7 +541,11 @@ class SessionTree:
         """
         try:
             records, faulted, over_cap = self._records_with_fault(preferred)
-            return TreeReading(nodes=fold_tree(records), incomplete=faulted or over_cap)
+            return TreeReading(
+                nodes=fold_tree(records),
+                incomplete=faulted or over_cap,
+                records=tuple(records),
+            )
         except Exception:  # pragma: no cover -- defensive; the store calls are guarded
             logger.warning("session tree scan failed; reporting no lineage", exc_info=True)
             return TreeReading(nodes={}, incomplete=True)
