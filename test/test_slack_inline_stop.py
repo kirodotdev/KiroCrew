@@ -38,6 +38,25 @@ class TestBuildWorkingBlocks:
         btn = blocks[1]["elements"][0]
         assert btn["style"] == "danger"
 
+    def test_no_dashboard_link_by_default(self):
+        """Default shape is unchanged: exactly one button, the Stop button."""
+        blocks = build_working_blocks("k")
+        elements = blocks[1]["elements"]
+        assert len(elements) == 1
+        assert elements[0]["action_id"] == "mc_inline_stop_k"
+
+    def test_dashboard_link_appended_when_requested(self):
+        from kiro_crew.slack.format import LINK_DASHBOARD_ACTION
+
+        blocks = build_working_blocks("k", include_dashboard_link=True)
+        elements = blocks[1]["elements"]
+        assert len(elements) == 2
+        # Stop stays first so the layout users know is preserved.
+        assert elements[0]["action_id"] == "mc_inline_stop_k"
+        assert elements[1]["action_id"] == LINK_DASHBOARD_ACTION
+        # Same unstyled button the footer posts — one control, one look.
+        assert "style" not in elements[1]
+
 
 # ---------------------------------------------------------------------------
 # session_task_card — End button
@@ -297,3 +316,65 @@ class TestHandleSessionEnd:
         mock_orch.slack.update_message.assert_called_once()
         call_args = mock_orch.slack.update_message.call_args
         assert "ended" in call_args[1]["text"]
+
+
+class TestInlineStopStaleGuard:
+    """GPT F2: ``stop_turn`` is session-keyed, so a leftover Stop control
+    must never be honored — it would cancel whichever turn runs next."""
+
+    def _registry(self):
+        from kiro_crew.slack import handler
+        return handler._INFLIGHT_TURNS
+
+    @pytest.mark.asyncio
+    async def test_stale_stop_while_new_turn_running_refused(self, setup_interactions, mock_orch):
+        """A Stop whose message is NOT the thread's live marker (a new turn's
+        marker is) must not call stop_turn — that click would cancel the NEW
+        turn, not the one the button was rendered for."""
+        interactions = setup_interactions
+        reg = self._registry()
+        reg["100.0"] = "new_turn_marker_ts"
+        try:
+            payload = {"user": {"id": "U_OWNER"}, "message": {"thread_ts": "100.0"}}
+            action = {"value": "sess-key"}
+            with patch("kiro_crew.slack.interactions.sel") as mock_sel:
+                mock_sel.return_value.log_api_access = MagicMock()
+                mock_sel.return_value.log_tool_invocation = MagicMock()
+                await interactions._handle_inline_stop(payload, action, "C1", "old_marker_ts", "U_OWNER")
+            mock_orch.sessions.stop_turn.assert_not_called()
+            mock_orch.slack.update_message.assert_any_call(
+                "C1", "old_marker_ts", text="⏹ Nothing running."
+            )
+        finally:
+            reg.pop("100.0", None)
+
+    @pytest.mark.asyncio
+    async def test_stale_stop_with_no_live_marker_refused(self, setup_interactions, mock_orch):
+        """No live marker for the thread (turn finished; deletion swallowed) —
+        the leftover control is neutralized without touching stop_turn."""
+        interactions = setup_interactions
+        payload = {"user": {"id": "U_OWNER"}, "message": {"thread_ts": "100.0"}}
+        action = {"value": "sess-key"}
+        with patch("kiro_crew.slack.interactions.sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            await interactions._handle_inline_stop(payload, action, "C1", "old_marker_ts", "U_OWNER")
+        mock_orch.sessions.stop_turn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_live_marker_stop_still_allowed(self, setup_interactions, mock_orch):
+        """The thread's live marker IS the clicked message — the stop is for
+        the running turn and must go through."""
+        interactions = setup_interactions
+        reg = self._registry()
+        reg["100.0"] = "marker_ts"
+        try:
+            payload = {"user": {"id": "U_OWNER"}, "message": {"thread_ts": "100.0"}}
+            action = {"value": "sess-key"}
+            with patch("kiro_crew.slack.interactions.sel") as mock_sel:
+                mock_sel.return_value.log_api_access = MagicMock()
+                mock_sel.return_value.log_tool_invocation = MagicMock()
+                await interactions._handle_inline_stop(payload, action, "C1", "marker_ts", "U_OWNER")
+            mock_orch.sessions.stop_turn.assert_called_once()
+        finally:
+            reg.pop("100.0", None)

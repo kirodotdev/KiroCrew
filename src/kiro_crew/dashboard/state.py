@@ -2124,6 +2124,7 @@ class _ChatSlot:
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
+        "_imported_slack_ts",
         "channel_origin",
         "folder_id",
         "_folder_changed",
@@ -2588,6 +2589,9 @@ class _ChatSlot:
         self._slack_linked: bool = False  # True when linked to a Slack thread
         self._slack_channel: str = ""
         self._slack_thread_ts: str = ""
+        # Slack ts of messages captured by a mid-turn thread import; the
+        # turn-end mirror dedups its delivery against this set (handler.py).
+        self._imported_slack_ts: set[str] = set()
         self.folder_id: str = ""  # project folder assignment
         self._folder_changed: bool = False  # re-inject [FOLDER] breadcrumb next turn after move
         # One-shot claim for the post-titling folder suggestion (see
