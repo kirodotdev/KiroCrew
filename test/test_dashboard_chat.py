@@ -3688,10 +3688,15 @@ class TestPrepareMessages:
 class TestKiroReadinessQueueHandoff:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("wait_end", ["stop", "deadline"])
-    async def test_memory_preparation_wait_precedes_turn_identity_and_survives_stop(
+    async def test_turn_identity_precedes_memory_preparation_wait_and_is_retired_on_stop(
         self, tmp_path, monkeypatch, wait_end
     ):
-        """A transient startup fence delays a turn without becoming its failure."""
+        """A transient startup fence delays a turn without becoming its failure.
+
+        The turn's identity is published BEFORE the fence (a cancel or a
+        sibling switch's busy scan must see which session the parked turn is
+        starting on) and retired by the refused turn itself afterwards.
+        """
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 
@@ -3731,7 +3736,7 @@ class TestKiroReadinessQueueHandoff:
         slot.task = turn
         try:
             await asyncio.sleep(0)
-            assert slot._active_turn_session_key == ""
+            assert slot._active_turn_session_key == "dashboard:memory-startup-admission"
             state.sessions.get_or_create.assert_not_awaited()
 
             if wait_end == "stop":

@@ -324,7 +324,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.security.readonly_bash import is_read_only_bash, unsafe_bash_reason
 from kiro_crew.sel import SecurityEvent, sel, sel_is_warm
-from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
+from kiro_crew.session import SessionBusyError, SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.session_agent_selection import (
     record_agent_selection,
     record_provider_agent_switch,
@@ -9135,6 +9135,9 @@ async def _run_chat(
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)
     _acquired = False
+    # Whether this turn holds the session-switch lock (see the acquire below);
+    # read by the finally so an exit between acquire and release never leaks it.
+    _dispatch_lock_held = False
     _mirror_stream_ts: str = ""
     _mirror_chan: str | None = ""
     _mirror_active_task = ""
@@ -9146,12 +9149,27 @@ async def _run_chat(
     # for shared memory preparation, before any provider is allocated.
     client: Any = None
     try:
+        # Publish the immutable identity BEFORE the first admission await, as
+        # the first statement the enclosing finally covers. From here down the
+        # local session_key is what the turn acquires, audits and releases
+        # while slot.linked_session_key remains mutable underneath it -- and
+        # the admission awaits below are exactly where a rebind can land: a
+        # cron injection reassigns the routing with no ``running`` gate, so a
+        # key published only after admission would leave this turn's session
+        # invisible to every reader of the turn key (the cancel routes and
+        # the slot-switch busy scan, ``_switch_target_busy``) for the whole
+        # memory-preparation wait, while ``slot.task`` already says a turn is
+        # running. A turn refused at admission (timeout, Stop) leaves through
+        # the same finally, which compare-and-clears only an identity this
+        # turn actually published, so a successor's key is never wiped.
+        slot._active_turn_session_key = session_key
+
         # The gateway publishes this shared task before READY, then performs the
         # restore/open/rebuild work after READY. Wait at the one dashboard turn
-        # admission seam before expiring controls, publishing a turn identity,
-        # resolving bindings, allocating a provider or writing metadata. The
-        # turn's grace period is bounded; timeout and Stop leave the shared
-        # worker alive and retain queued intent until a later admitted turn.
+        # admission seam before expiring controls, resolving bindings,
+        # allocating a provider or writing metadata. The turn's grace period
+        # is bounded; timeout and Stop leave the shared worker alive and
+        # retain queued intent until a later admitted turn.
         from kiro_crew.memory_startup import wait_for_memory_preparation
 
         await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
@@ -9164,13 +9182,6 @@ async def _run_chat(
         # commands returned above, so they do not consume a still-valid control.
         if _prompt_depth == 0:
             await expire_slack_options(state, session_key)
-
-        # Publish the immutable identity only after every admission await. From
-        # here down the local session_key is what the turn acquires, audits and
-        # releases while slot.linked_session_key remains mutable underneath it.
-        # The enclosing finally compare-and-clears only an identity this turn
-        # actually published.
-        slot._active_turn_session_key = session_key
 
         # Resolve agent bindings early so we pass the correct kiro-cli
         # agent name (e.g. "kirocrew") instead of the KiroCrew slot name
@@ -9217,6 +9228,32 @@ async def _run_chat(
                 effective_session_key(slot),
             )
 
+        # Serialize this turn's binding capture and session registration
+        # against the slot-switch transaction of every alias on this session
+        # (the same ``slot_switch_session_lock`` the switch handlers hold
+        # across their busy scan and reset, and the refusal-fallback restore
+        # takes during the turn). Without it a switch can scan (no sibling
+        # yet), this dispatch can capture the pre-switch bindings, the reset
+        # can find no registered session and "succeed", and the session then
+        # registers on the old bindings. Under the lock the two are atomic
+        # with respect to each other: this turn either registers first (the
+        # scan then sees it and refuses) or captures after the switch's commit
+        # and reset (so it starts on the NEW bindings). Held only through the
+        # COLD-START registration inside ``get_or_create`` and released right
+        # after -- never while waiting for an existing session's turn lease
+        # (see the allocation site below) and never across the turn itself,
+        # whose refusal-fallback helpers take this same non-reentrant lock.
+        # Every await inside the span is a thread offload, a config/binding
+        # read, or a SessionManager call that takes no lock another turn holds
+        # while wanting this one. Lock order: this task holds no slot lock,
+        # so a switch handler holding ``slot._lock`` and waiting here cannot
+        # be waited on in turn. Exits between acquire and release (a binding
+        # that changed during preparation, a provider that failed to start,
+        # cancellation) reach the enclosing finally, which releases first
+        # thing.
+        _dispatch_lock = slot_switch_session_lock(session_key)
+        await _dispatch_lock.acquire()
+        _dispatch_lock_held = True
         selected_binding = _current_binding()
         registered_slot = state._slots.get(slot.key)
 
@@ -9443,6 +9480,45 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        _allocation_kwargs: dict[str, Any] = dict(
+            agent=kiro_agent or slot.agent or None,
+            # Same canonical crew identity as the eager-spawn path — the two
+            # must agree or an eager session and its real first turn would
+            # carry different watchdog windows.
+            crew_agent=crew_alias,
+            model=_requested_model or None,
+            cwd=slot.project or None,
+            # The persisted channel stays separate from the dashboard-owned key
+            # so provider startup can distinguish a linked dispatcher from a
+            # direct dashboard turn.
+            channel_id=_provider_channel_id or None,
+            reasoning_effort_override=slot.reasoning_effort or None,
+        )
+
+        def _release_dispatch_lock() -> None:
+            nonlocal _dispatch_lock_held
+            if _dispatch_lock_held:
+                _dispatch_lock_held = False
+                _dispatch_lock.release()
+
+        # The switch lock is held for the COLD START only: the window it
+        # closes is "no session registered yet, so the switch handlers' busy
+        # scan and reset see nothing". A session that is already registered
+        # is already visible to that scan, so the lock has nothing left to
+        # protect -- and waiting on that session's turn lease while holding it
+        # would deadlock: the lease is held by a sibling alias's live turn,
+        # whose refusal-fallback restore takes this same lock. So: registered
+        # -> release, then wait for the lease outside the lock. Not registered
+        # -> allocate under the lock but never wait for a lease there
+        # (``wait_if_busy=False``): if a session was registered by a path that
+        # does not take this lock (an eager prewarm, a channel-side turn)
+        # between the check and the claim, the busy refusal comes back
+        # instead of a wait, and the claim is retried outside the lock.
+        if state.sessions.has_session(session_key):
+            _release_dispatch_lock()
+            _wait_if_busy = True
+        else:
+            _wait_if_busy = False
         # The crew log this slot was last writing to, read BEFORE allocation
         # publishes the successor's id over it. A slot outlives its ACP session, so
         # when the session below cold-starts under a NEW id the crew log gains a new
@@ -9479,21 +9555,24 @@ async def _run_chat(
         # which a walker steps over with no signal. That is a recorded residual,
         # tracked with the superseded-tail work rather than handled here.
         slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))
-        client, is_new, resumed = await state.sessions.get_or_create(
-            session_key,
-            agent=kiro_agent or slot.agent or None,
-            # Same canonical crew identity as the eager-spawn path — the two
-            # must agree or an eager session and its real first turn would
-            # carry different watchdog windows.
-            crew_agent=crew_alias,
-            model=_requested_model or None,
-            cwd=slot.project or None,
-            # The persisted channel stays separate from the dashboard-owned key
-            # so provider startup can distinguish a linked dispatcher from a
-            # direct dashboard turn.
-            channel_id=_provider_channel_id or None,
-            reasoning_effort_override=slot.reasoning_effort or None,
-        )
+        # ONE allocation site (the crew-log latch above must sit right before
+        # it): the cold-start branch claims under the lock without waiting for
+        # a lease; a busy refusal there means a session registered underneath
+        # us, so drop the lock and claim again with the normal lease wait.
+        for _claim in (0, 1):
+            try:
+                client, is_new, resumed = await state.sessions.get_or_create(
+                    session_key, wait_if_busy=_wait_if_busy, **_allocation_kwargs
+                )
+                break
+            except SessionBusyError:
+                if _wait_if_busy or _claim:
+                    raise
+                _release_dispatch_lock()
+                _wait_if_busy = True
+        # Registered: the switch handlers' busy scan sees this session from
+        # here on, so the lock has done its job and the turn must not hold it.
+        _release_dispatch_lock()
         if is_new and not resumed:
             # This call allocated the live session, so its own selection is the
             # provenance -- overwriting whatever a previous session left behind.
@@ -17010,6 +17089,14 @@ async def _run_chat(
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
+        # First: hand back the session-switch lock if this turn exited between
+        # its acquire and its post-registration release. Before anything that
+        # can await, and before the refusal-fallback restore below takes the
+        # same lock -- otherwise a turn that failed to register would block
+        # every switch on its session until the gateway restarts.
+        if _dispatch_lock_held:
+            _dispatch_lock_held = False
+            _dispatch_lock.release()
         # The turn's crew log closers, in the one order a reader can trust: every
         # `message/sent` for this turn has now been flushed, so the tool closer,
         # the last step's completion and the turn's own completion land after the

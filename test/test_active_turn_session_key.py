@@ -59,6 +59,27 @@ def _stream_empty(client: MagicMock) -> None:
     client.stream_command = _empty
 
 
+def _stream_completes(client: MagicMock, on_stream=None) -> None:
+    """A stream that yields text and completes, so no empty-response recovery re-runs the turn.
+
+    ``_stream_empty`` triggers the runner's empty-response replay, which
+    dispatches a SECOND ``_run_chat`` in the background; a test that asserts on
+    shared state (the session-switch lock) after the first turn returns would
+    race that replay. *on_stream* runs inside the live turn.
+    """
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    async def _complete(msg):
+        if on_stream is not None:
+            on_stream()
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ready")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    client.stream = _complete
+    client.stream_command = _complete
+    client.context_usage_pct = MagicMock(return_value=1.0)
+
+
 def _stream_observes(client: MagicMock, sink: list) -> None:
     """A stream that records the slot's identity from INSIDE the live turn."""
 
@@ -250,3 +271,199 @@ class TestThePromptsGetReEntry:
             ("expanded prompt body", "dashboard:turn-id-slot")
         ], "the real turn ran without a published identity"
         assert slot._active_turn_session_key == ""
+
+
+class TestTheKeyIsPublishedBeforeAdmission:
+    """The identity is installed BEFORE the first admission await, not after it.
+
+    The admission awaits (the shared memory-preparation wait, the OPTIONS
+    expiry) are where a cron rebind can land on a live slot, and ``slot.task``
+    already reports the turn as running there. A key published only after
+    admission leaves that whole window with no turn identity, so every reader
+    of it -- the cancel routes, the slot-switch busy scan -- falls back to the
+    mutable routing and can miss the session the turn is actually starting.
+    Refusal at admission must retire the key through the same compare-and-clear
+    the normal path uses: the turn's own key goes, a successor's stays.
+    """
+
+    @pytest.mark.asyncio
+    async def test_visible_while_admission_is_pending_and_retired_on_refusal(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.memory_startup import MemoryStartupUnavailable
+
+        state, slot, client = _state_and_slot(tmp_path)
+        _stream_empty(client)
+        # Rebind BEFORE the turn: the captured key is the channel session, the
+        # value a later cancel or busy scan must find during admission.
+        slot.linked_session_key = LINKED_KEY
+        parked = asyncio.Event()
+        release = asyncio.Event()
+        verdict: dict[str, str] = {"admit": "refuse"}
+
+        async def _park_then_decide(task) -> None:
+            parked.set()
+            await release.wait()
+            if verdict["admit"] == "refuse":
+                raise MemoryStartupUnavailable("Memory preparation is still running.")
+
+        monkeypatch.setattr(
+            "kiro_crew.memory_startup.wait_for_memory_preparation", _park_then_decide
+        )
+
+        # Phase 1: the key is visible while the turn is parked on admission,
+        # and a routing rebind landing in that window does not move it.
+        turn = asyncio.create_task(_run_chat(state, slot, "test message"))
+        await asyncio.wait_for(parked.wait(), timeout=5)
+        assert (
+            slot._active_turn_session_key == LINKED_KEY
+        ), "the turn was parked on admission with no published identity"
+        slot.linked_session_key = "cron:nightly-report"
+        await asyncio.sleep(0)
+        assert slot._active_turn_session_key == LINKED_KEY
+        # Refused: the turn retires the key it published.
+        release.set()
+        await asyncio.wait_for(turn, timeout=5)
+        assert slot._active_turn_session_key == "", "a refused turn left its identity behind"
+
+        # Phase 2: the same refusal must not clobber a successor's key. While
+        # this turn is parked, a successor publishes; the refusal's
+        # compare-and-clear sees a key that is not its own and leaves it.
+        parked.clear()
+        release.clear()
+        slot.linked_session_key = LINKED_KEY
+        slot.append("user", "again", "msg msg-u2")
+        turn = asyncio.create_task(_run_chat(state, slot, "test message"))
+        await asyncio.wait_for(parked.wait(), timeout=5)
+        assert slot._active_turn_session_key == LINKED_KEY
+        slot._active_turn_session_key = "dashboard:successor"
+        release.set()
+        await asyncio.wait_for(turn, timeout=5)
+        assert (
+            slot._active_turn_session_key == "dashboard:successor"
+        ), "the refused turn erased its successor's identity"
+
+
+class TestDispatchSerializesWithTheSwitchLock:
+    """Binding capture + session registration run under the slot-switch lock.
+
+    The switch handlers hold ``slot_switch_session_lock(session_key)`` across
+    their busy scan and their reset. A dispatch that captured its bindings
+    before that scan and registered its session after the reset would start
+    the shared session on the pre-switch bindings while the switch reports
+    success. So the dispatch takes the same lock from binding capture through
+    ``get_or_create`` (registration happens inside it): started while a switch
+    holds the lock, it parks, then captures whatever the switch committed --
+    and it releases before the turn streams, since the refusal-fallback
+    helpers take the same non-reentrant lock during the turn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dispatch_parks_on_a_held_switch_lock_and_starts_on_new_bindings(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        class _ObservedLock(asyncio.Lock):
+            def __init__(self) -> None:
+                super().__init__()
+                self.waiting = asyncio.Event()
+
+            async def acquire(self) -> bool:
+                self.waiting.set()
+                return await super().acquire()
+
+        observed = _ObservedLock()
+        keys_seen: list[str] = []
+
+        def _lock_for(key: str) -> asyncio.Lock:
+            keys_seen.append(key)
+            return observed
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.slot_switch_session_lock", _lock_for)
+
+        state, slot, client = _state_and_slot(tmp_path)
+        # A cold start: nothing registered for this session yet.
+        state.sessions.has_session = MagicMock(return_value=False)
+        slot.linked_session_key = LINKED_KEY
+        slot.model = "claude-opus-4.8"
+        held_while_streaming: list[bool] = []
+        _stream_completes(client, lambda: held_while_streaming.append(observed.locked()))
+
+        # A switch transaction on the shared session is in progress.
+        async with observed:
+            turn = asyncio.create_task(_run_chat(state, slot, "test message"))
+            await asyncio.wait_for(observed.waiting.wait(), timeout=5)
+            # Parked: nothing registered while the switch holds the lock.
+            await asyncio.sleep(0)
+            state.sessions.get_or_create.assert_not_awaited()
+            # The switch commits its new binding inside its critical section.
+            slot.model = "gpt-5.6-sol"
+        await asyncio.wait_for(turn, timeout=5)
+
+        assert keys_seen == [
+            LINKED_KEY
+        ], "the dispatch keyed the lock on something other than its session"
+        state.sessions.get_or_create.assert_awaited_once()
+        assert (
+            state.sessions.get_or_create.await_args.kwargs["model"] == "gpt-5.6-sol"
+        ), "the session registered on the pre-switch binding"
+        assert (
+            state.sessions.get_or_create.await_args.kwargs["wait_if_busy"] is False
+        ), "a cold start under the switch lock must never wait for a turn lease"
+        assert held_while_streaming == [False], "the dispatch held the switch lock into the turn"
+        assert not observed.locked(), "the dispatch leaked the switch lock"
+
+
+class TestDispatchNeverWaitsForALeaseUnderTheSwitchLock:
+    """A busy, already-registered session: the lease wait happens OUTSIDE the lock.
+
+    Alias A dispatches onto a session whose turn lease alias B's live turn
+    holds. B's turn will, before it releases the lease, take the switch lock
+    (its refusal-fallback restore does). If A waited for the lease while
+    holding the switch lock, A and B would wait on each other until the lease
+    timeout. A registered session is already visible to the switch handlers'
+    busy scan, so the lock protects nothing there: A must drop it before
+    waiting.
+    """
+
+    @pytest.mark.asyncio
+    async def test_busy_session_lease_wait_does_not_hold_the_switch_lock(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.llm_helpers import slot_switch_session_lock
+
+        state, slot, client = _state_and_slot(tmp_path)
+        slot.linked_session_key = LINKED_KEY
+        # B's turn is live on this session: registered, lease held.
+        state.sessions.has_session = MagicMock(return_value=True)
+        lock = slot_switch_session_lock(LINKED_KEY)
+        lease_released = asyncio.Event()
+        real_get_or_create = state.sessions.get_or_create
+
+        async def _wait_for_lease(key, **kwargs):
+            # Stands in for ``await session.semaphore.acquire()`` on a busy
+            # session: returns only once B's turn has let go of the lease.
+            await lease_released.wait()
+            return await real_get_or_create(key, **kwargs)
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_wait_for_lease)
+        _stream_completes(client)
+
+        async def _b_turn_restore_then_release() -> None:
+            # B's refusal-fallback restore: needs the switch lock, then B's
+            # turn ends and the lease is released.
+            async with lock:
+                await asyncio.sleep(0)
+            lease_released.set()
+
+        a_turn = asyncio.create_task(_run_chat(state, slot, "alias A message"))
+        # Let A reach its lease wait before B's turn goes for the lock.
+        for _ in range(50):
+            await asyncio.sleep(0)
+        b_turn = asyncio.create_task(_b_turn_restore_then_release())
+        await asyncio.wait_for(asyncio.gather(a_turn, b_turn), timeout=5)
+
+        state.sessions.get_or_create.assert_awaited_once()
+        assert (
+            state.sessions.get_or_create.await_args.kwargs["wait_if_busy"] is True
+        ), "a registered session is claimed with the normal lease wait"
+        assert not lock.locked(), "the dispatch leaked the switch lock"

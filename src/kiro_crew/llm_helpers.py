@@ -31,6 +31,7 @@ from kiro_crew.hooks import (
     get_global_hook_store,
     hook_gate_kwargs,
 )
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -716,6 +717,13 @@ def slot_switch_session_lock(session_key: str) -> asyncio.Lock:
     ``chat_handlers`` because ``chat_handlers`` imports from the runner —
     the runner could not import it back without a cycle.
 
+    Keyed on the CANONICAL spelling of the session key: a Slack session can
+    be addressed by its bare legacy ``thread_ts`` (a slot restored from an
+    old transcript) and by ``slack:<thread_ts>`` (its canonical sibling), and
+    ``SessionManager`` folds the two onto one live session. Two spellings
+    that name one session must take one lock, or two aliases would serialize
+    against nobody; ``canonical_key`` is the same fold the manager applies.
+
     A ``WeakValueDictionary`` so a session's lock is collected once no
     request holds it; unrelated sessions resolve different keys and so take
     different locks.
@@ -728,6 +736,7 @@ def slot_switch_session_lock(session_key: str) -> asyncio.Lock:
     replaced rather than returned. Holders on the old loop keep their lock;
     the two loops cannot contend with each other in any case.
     """
+    session_key = canonical_key(session_key)
     lock = _slot_switch_session_locks.get(session_key)
     if lock is not None and _bound_to_other_loop(lock):
         lock = None
