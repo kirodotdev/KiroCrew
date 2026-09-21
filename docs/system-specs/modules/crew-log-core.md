@@ -251,6 +251,25 @@ same entry, so no reader can observe a phase that moved without its reason. No
 happened to be inside, and the record is folded across every session unit of the
 slot (`session-work-ledger.md`).
 
+### Observed objects
+
+| Type | `data` | Emitter |
+|---|---|---|
+| `object/observed` | `{producer: probe, kind, target, fingerprint, facts, facts_omitted?, observed_at}` — the state of an object outside the session, as one named producer observed it | yes |
+
+One entry per CHANGE of the producer's fingerprint for one subject, never one per
+poll, appended into the log of the session the producer works for. `producer` is a
+CLOSED vocabulary (`probe`, the structured monitor's provider probe) and the emitter
+refuses a value outside it rather than coercing it: the value is what lets a reader
+tell a measured record from a sentence an agent typed, and a coerced producer would
+attribute the record to a mechanism that did not make it. `facts` is the probe's
+canonical snapshot verbatim, so its members are the monitored kind's own vocabulary
+and a fact the probe could not establish stays absent; a snapshot too large for one
+line is recorded short by a NAMED member in `facts_omitted` rather than dropped or
+trimmed silently. No `turn`: a probe runs without a model turn, so the observation
+belongs to no turn. The monitor's state document still holds no history of the
+subject -- this entry is that history (`monitor-architecture.md`).
+
 ### Background and children
 
 | Type | `data` | Emitter |
@@ -301,7 +320,7 @@ the slot that carries one, and never lets a log without one retract it.
 
 Every refusal is a `CrewLogError` carrying a stable `code`; the codes are API surface and are additive-only.
 
-**Ownership** answers whether a kind of unit has such events at all. `schema.TYPE_OWNERSHIP` maps kind to owned `type` domains -- crew: `member` `activity` `slot` `patrol` `message` `crew` `item` `memory`; session: `session` `turn` `step` `tool` `approval` `model` `compaction` `plan` `ledger` `message` `request` `context` `background` `subagent` `write` -- and anything else is `event_type_not_owned`. It is prefix-based, so a new action under an owned domain needs no change: `crew/dispatch` and `crew/report` are owned by the `crew` domain the registry already lists. `message` appears in both registries, which is what ownership means: a crew forwards messages and a session records its own bodies, so both kinds have such events and neither name is a collision.
+**Ownership** answers whether a kind of unit has such events at all. `schema.TYPE_OWNERSHIP` maps kind to owned `type` domains -- crew: `member` `activity` `slot` `patrol` `message` `crew` `item` `memory`; session: `session` `turn` `step` `tool` `approval` `model` `compaction` `plan` `ledger` `object` `message` `request` `context` `background` `subagent` `write` -- and anything else is `event_type_not_owned`. It is prefix-based, so a new action under an owned domain needs no change: `crew/dispatch` and `crew/report` are owned by the `crew` domain the registry already lists. `message` appears in both registries, which is what ownership means: a crew forwards messages and a session records its own bodies, so both kinds have such events and neither name is a collision.
 
 **Namespacing** answers whether an emitter may write it, and it is a rule about `src`. Two halves:
 

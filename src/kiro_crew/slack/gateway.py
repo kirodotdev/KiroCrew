@@ -7846,7 +7846,27 @@ class GatewayOrchestrator:
             on_fire=_fire,
             on_monitor_tick=_monitor_tick,
         )
-        controller = MonitorController(self.autonudge_svc, _fire_monitor)
+
+        def _monitor_owner_session_id(loop: NudgeLoop) -> str:
+            """The crew log unit the loop's owner slot is serving on, or ``""``.
+
+            The same resolver the session ledger uses: an exact registry read plus
+            an attribute read, no disk and no session state mutated by asking. A
+            slot with no live session answers ``""`` and the controller records
+            nothing for it -- a probe runs without a model turn and must not start
+            a session to file its result.
+            """
+            if self.dashboard_state is None:
+                return ""
+            from kiro_crew.crew_log.resolve import unit_for_session_key
+
+            return unit_for_session_key(self.dashboard_state.sessions, loop.slot_key)
+
+        controller = MonitorController(
+            self.autonudge_svc,
+            _fire_monitor,
+            owner_session_id=_monitor_owner_session_id,
+        )
         # Timers can complete while start() awaits store repair. Install the
         # observer first so that transition cannot fall between startup and
         # terminal replay.

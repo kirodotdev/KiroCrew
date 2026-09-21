@@ -98,7 +98,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -4388,6 +4388,77 @@ def ledger_entry_fits(data: dict[str, Any]) -> bool:
     consumes the budget.
     """
     return _entry_line_fits("ledger/recorded", data, src=_SRC_GATEWAY)
+
+
+def on_object_observed(
+    session_id: str,
+    *,
+    producer: str,
+    kind: str,
+    target: str,
+    fingerprint: str,
+    facts: "Mapping[str, Any]",
+    observed_at: float,
+) -> None:
+    """Record the state of an object outside the session, as *producer* observed it.
+
+    The producer half of the crew log's external-state record. A structured
+    monitor's probe computes a canonical snapshot of the pull request it watches
+    and, before this, threw that snapshot away once the wake was decided. This
+    appends it into the OWNER session's log -- the session the monitor works for --
+    so "what state is that pull request in" becomes a typed read beside the holder
+    fold's "which session holds it", instead of a text search over whatever an
+    agent happened to say about it.
+
+    *producer* is refused outside
+    :data:`~kiro_crew.crew_log.entry_types.OBJECT_PRODUCERS`, and refused HERE
+    rather than coerced. The value is the point of the entry: a reader trusts a
+    measured record because it can see which mechanism measured it, and a producer
+    coerced to some default would attribute the record to a mechanism that did not
+    make it. The ``ValueError`` is a programming error surfaced at the site that
+    made it; the registry's closed enum behind this is the guard a caller cannot
+    skip by writing around this function.
+
+    The caller decides WHEN: one call per change of the probe's fingerprint, never
+    one per poll, so the log holds distinct states rather than a heartbeat.
+
+    *facts* is recorded verbatim. When the whole line would cross the store's
+    ceiling -- a review host reporting hundreds of long check identities can do
+    it -- the largest members are removed until it fits and are named in
+    ``facts_omitted``, so the record is short by a NAMED part rather than lost
+    whole or silently trimmed. Recording nothing was rejected: the change
+    happened, and a reader that finds no entry cannot tell "unchanged" from
+    "did not fit".
+    """
+    from kiro_crew.crew_log.entry_types import OBJECT_PRODUCERS
+
+    if producer not in OBJECT_PRODUCERS:
+        raise ValueError(
+            f"object/observed producer must be one of {list(OBJECT_PRODUCERS)}, not {producer!r}"
+        )
+    # Off is free: the fit loop below serializes the snapshot and reaches the
+    # storage package, work no disabled launch should do on the event loop.
+    if not session_id or not enabled():
+        return
+    snapshot: dict[str, Any] = dict(facts)
+    data: dict[str, Any] = {
+        "producer": producer,
+        "kind": str(kind),
+        "target": str(target),
+        "fingerprint": str(fingerprint),
+        "facts": snapshot,
+        "observed_at": float(observed_at),
+    }
+    omitted: list[str] = []
+    while snapshot and not _entry_line_fits("object/observed", data, src=_SRC_GATEWAY):
+        largest = max(
+            snapshot,
+            key=lambda name: len(json.dumps(snapshot[name], ensure_ascii=True, default=str)),
+        )
+        del snapshot[largest]
+        omitted.append(largest)
+        data["facts_omitted"] = omitted
+    _write(session_id, "object/observed", data, src=_SRC_GATEWAY)
 
 
 def on_session_closed(session_id: str, reason: str) -> None:

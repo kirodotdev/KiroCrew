@@ -66,6 +66,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `subagent/completed` | the exclusive terminal report, for outcome `completed` | child id, elapsed ms |
 | `subagent/failed` | the same report, for outcome `failed` or `stopped` | child id, reason, which outcome it was, elapsed ms |
 | `write/dropped` | writer recovery, before that session's next ordinary append | dropped count and bytes |
+| `object/observed` | `monitoring.controller.MonitorController.tick`, after the service has published a probe's observation whose fingerprint differs from the one it held; into the log of the monitor's OWNER session, named by the host's resolver | `producer` (closed: `probe`), the monitored `kind`, the subject's full `target` URL, the probe's `fingerprint`, the canonical `facts` snapshot verbatim (short by named members in `facts_omitted` only when the line would not fit), `observed_at` -- no turn |
 
 `tool/called` and `tool/completed` gained payload accounting: `args_hash` and
 `args_bytes` on the call, `result_hash`, `result_bytes` and `is_error` on the

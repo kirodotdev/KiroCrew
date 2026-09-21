@@ -582,6 +582,19 @@ will try to read the subject out of it and find only alert timestamps.
 The document is rewritten whole and atomically, so it is a snapshot rather than
 a log. Anything that needs a history needs its own append-only file.
 
+The subject's own history has one: the owner session's crew log. When the service
+publishes an observation whose fingerprint differs from the one it held, the
+delivery controller appends one `object/observed` entry -- producer `probe`, the
+kind, the subject's full URL, the fingerprint and the canonical snapshot verbatim --
+into the log of the session the monitor was armed from
+(`crew-log-core.md`, `docs/reference/crew-log/session-types.md`). Once per change
+of fingerprint, never per poll, and independent of the wake decision, because the
+record is about the subject rather than about what the engine chose to do about it.
+A failed read, an observation taken under a superseded configuration generation,
+and a slot with no live session each append nothing; the persistence-only shadow
+path has no owner session and appends nothing either. The state document is
+unchanged by this: the history lives in the log, not beside the bookkeeping.
+
 ### 6. Driver
 
 A driver decides when a tick happens. Two are supported, and the difference

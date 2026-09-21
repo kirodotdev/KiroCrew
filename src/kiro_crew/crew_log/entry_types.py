@@ -216,6 +216,15 @@ _SESSION_CLASS_FIELDS: tuple[Field, ...] = (
     ),
 )
 
+#: Who may write an ``object/observed`` entry. CLOSED, and closed on purpose: the
+#: value is what lets a reader tell a measured record from anything an agent typed,
+#: so the emitter REFUSES a value outside this tuple rather than coercing it -- a
+#: coerced producer would be a record attributed to a mechanism that did not make
+#: it. ``probe`` is the structured monitor's provider probe. A second producer (a
+#: recogniser on the tool-result path, say) is added here, in one commit with the
+#: site that writes it, or not at all.
+OBJECT_PRODUCER_PROBE = "probe"
+OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
 
 _SESSION_TYPES: tuple[EntryType, ...] = (
     # -- session, turn ------------------------------------------------------ #
@@ -761,6 +770,92 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "ledger therefore DEPENDS on this log: a gateway started without "
             "``KIROCREW_CREW_LOG=1`` records none, and the tool refuses rather than "
             "keeping a document of its own."
+        ),
+    ),
+    # -- object ------------------------------------------------------------- #
+    EntryType(
+        "object/observed",
+        "The state of an object outside the session, as one named producer observed it.",
+        (
+            Field(
+                "producer",
+                JSON_STRING,
+                required=True,
+                enum=OBJECT_PRODUCERS,
+                enum_closed=True,
+                note=(
+                    "Which mechanism made the observation. Closed: the emitter refuses a "
+                    "value outside the vocabulary instead of coercing it, so a reader can "
+                    "tell a measured record from a sentence an agent typed. probe is the "
+                    "structured monitor's provider probe."
+                ),
+            ),
+            Field(
+                "kind",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The monitored kind of the subject, as the monitoring registry names "
+                    "it -- github_pull_request, gitlab_merge_request, and so on. Passed "
+                    "through from the armed monitor, which validated it at arm time."
+                ),
+            ),
+            Field(
+                "target",
+                JSON_STRING,
+                required=True,
+                note="The subject's full URL, exactly as the monitor was armed on it.",
+            ),
+            Field(
+                "fingerprint",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The probe's own dedupe digest of the facts it acts on. An entry is "
+                    "written only when this differs from the previous observation's, so "
+                    "consecutive entries for one subject are consecutive DISTINCT states, "
+                    "never one per poll."
+                ),
+            ),
+            Field(
+                "facts",
+                JSON_OBJECT,
+                required=True,
+                note=(
+                    "The canonical facts snapshot the probe computed, verbatim -- the "
+                    "object the wake envelope is rendered from, including its own kind "
+                    "and target. The members are the kind's canonical vocabulary, so "
+                    "they are deliberately not declared here: a fact the probe could not "
+                    "establish is absent or carries the kind's own unknown marker, never "
+                    "a default this registry invented."
+                ),
+            ),
+            Field(
+                "facts_omitted",
+                JSON_ARRAY,
+                item_type=JSON_STRING,
+                note=(
+                    "Members removed from facts so the entry fits the line ceiling, "
+                    "largest first. Absent when nothing was removed, which is the "
+                    "ordinary case."
+                ),
+            ),
+            Field(
+                "observed_at",
+                JSON_FLOAT,
+                required=True,
+                note=(
+                    "When the producer observed the subject, seconds since the epoch. "
+                    "Distinct from the envelope's time, which is when the append landed."
+                ),
+            ),
+        ),
+        note=(
+            "One entry per CHANGE of the subject's fingerprint, appended into the log of "
+            "the session the producer works for -- the monitor's owner session. A typed "
+            "record carrying its producer is what a reader can trust about an object "
+            "outside the session; the agent's own report about that object is a "
+            "message/sent entry and is evidence of nothing but the report."
         ),
     ),
 )

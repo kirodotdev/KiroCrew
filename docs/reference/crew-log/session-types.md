@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Twenty-seven types. Read [envelope.md](envelope.md) first for the fields every entry
+Twenty-nine types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -53,6 +53,7 @@ its **Since** line. A type this kind owns with no emitter anywhere is under
 | [`subagent/completed`](#subagentcompleted) | A child finished its work. | live | `gateway` | closer, by `agent_id` |
 | [`subagent/failed`](#subagentfailed) | A child did not finish its work. | live | `gateway` | closer, by `agent_id` |
 | [`ledger/recorded`](#ledgerrecorded) | One session-ledger update: the fields it set and the event explaining them. | live | `gateway` | — |
+| [`object/observed`](#objectobserved) | The state of an object outside the session, as a named producer observed it. | live | `gateway` | — |
 
 ## Session and turn
 
@@ -1043,6 +1044,55 @@ ran under; a later entry's set fields overwrite an earlier one's, and an omitted
 field leaves the folded value unchanged.
 
 **Since** — #11185.
+
+## Observed objects
+
+### `object/observed`
+
+The state of an object outside the session — a pull request the session is watching —
+as one named producer observed it.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per CHANGE of the producer's fingerprint for one subject, never
+once per poll. The structured monitor's probe writes it into the log of the session the
+monitor was armed from, right after the monitor's persisted observation moved to the new
+fingerprint; a poll that saw the same fingerprint, a failed read, an observation the
+monitor declined, and a slot with no live session each write nothing. The record is
+independent of whether anyone was woken: a subject that moved from one pending state to
+another is recorded even though the engine delivered nothing for it.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `producer` | string | required | Which mechanism made the observation. Closed: the emitter refuses a value outside the vocabulary instead of coercing it, so a reader can tell a measured record from a sentence an agent typed. `probe` is the structured monitor's provider probe. | `probe` |
+| `kind` | string | required | The monitored kind of the subject, as the monitoring registry names it — `github_pull_request`, `gitlab_merge_request`, and so on. Passed through from the armed monitor, which validated it at arm time. | |
+| `target` | string | required | The subject's full URL, exactly as the monitor was armed on it. | |
+| `fingerprint` | string | required | The probe's own dedupe digest of the facts it acts on. An entry is written only when this differs from the previous observation's, so consecutive entries for one subject are consecutive DISTINCT states. | |
+| `facts` | object | required | The canonical facts snapshot the probe computed, verbatim — the object the wake envelope is rendered from, including its own `kind` and `target`. The members are the kind's canonical vocabulary and are deliberately not declared: a fact the probe could not establish is absent or carries the kind's own unknown marker, never a default the registry invented. | |
+| `facts_omitted` | array[string] | optional | Members removed from `facts` so the entry fits the line ceiling, largest first. Absent when nothing was removed, which is the ordinary case. | |
+| `observed_at` | float | required | When the producer observed the subject, seconds since the epoch. Distinct from the envelope's `time`, which is when the append landed. | |
+
+**Invariants** — `producer` is a closed vocabulary, and the closure is enforced twice:
+the emitter raises on a value outside it and the registry refuses the entry on append.
+A typed record carrying its producer is what a reader can trust about an object outside
+the session; the agent's own report about that object is a `message/sent` entry and is
+evidence of nothing but the report. `facts` is never defaulted: a snapshot too large for
+one line is recorded short by a NAMED member rather than dropped or trimmed silently,
+so a reader cannot mistake "did not fit" for "unchanged".
+
+```json
+{"type":"object/observed","seq":81,"time":1789000002700,"src":"gateway","data":{"producer":"probe","kind":"github_pull_request","target":"https://github.com/acme/widgets/pull/7","fingerprint":"9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b9f2b","facts":{"kind":"github_pull_request","target":"https://github.com/acme/widgets/pull/7","state":"open","draft":false,"head_revision":"abc123","mergeability":"mergeable","review_decision":"approved","blocking_review":"none","unresolved_review_threads":0,"review_threads_complete":true,"checks":{"failed":[],"passed":["ci"],"pending":[],"unknown":[]},"checks_complete":true},"observed_at":1789000002.5}}
+```
+
+**Reader hint** — Group by `target` and take the newest entry for the subject's current
+state; an entry's `facts` is complete in itself, so nothing needs to be folded across
+entries. Read `state`, `mergeability`, `review_decision` and the `checks` buckets off
+`facts` for a review subject, and treat a member that is absent or listed in
+`facts_omitted` as unknown, never as its default.
+
+**Since** — the producer half of #12397.
 
 ## Removed types
 

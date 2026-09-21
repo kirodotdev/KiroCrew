@@ -1033,9 +1033,35 @@ class TestAutonudgeRouterAndObserver:
                 mock_svc.return_value = inst
                 await orch._init_autonudge()
                 inst.monitor_dispatch = mock_controller.call_args.args[1]
+                inst.owner_session_id = mock_controller.call_args.kwargs["owner_session_id"]
         on_fire = mock_svc.call_args.kwargs["on_fire"]
         observer = inst.subscribe.call_args.args[0]
         return on_fire, observer, inst
+
+    @pytest.mark.asyncio
+    async def test_the_controller_is_handed_a_resolver_for_the_owner_session(self):
+        """The observation recorder names the owner's crew log unit through the registry.
+
+        No disk and no session opened: an exact registry read answers the unit the
+        slot is serving on. A slot with no live session, and a gateway with no
+        dashboard, answer the empty string the controller treats as a no-op.
+        """
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        _on_fire, _observer, inst = await self._wire(orch)
+        assert inst.owner_session_id(_loop("chat-1")) == ""
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        live = SimpleNamespace(session_id="acp-77")
+        ds.sessions = MagicMock()
+        ds.sessions.get_provider = MagicMock(
+            side_effect=lambda key: live if key in {"chat-1", "dashboard:chat-1"} else None
+        )
+        orch.dashboard_state = ds
+        _on_fire, _observer, inst = await self._wire(orch)
+        assert inst.owner_session_id(_loop("chat-1")) == "acp-77"
+        assert inst.owner_session_id(_loop("chat-9")) == ""
 
     @pytest.mark.asyncio
     async def test_slack_key_routes_to_slack_fire(self):
