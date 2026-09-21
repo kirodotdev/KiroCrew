@@ -1365,6 +1365,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
+    "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_compaction",
+    "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. This is the widest of the three, so it is off until you turn it on, even if the switches above are already on.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
     "label": "Also send tool-call arguments so Jev can flag risky calls",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_tool_args",

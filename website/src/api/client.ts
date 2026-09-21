@@ -430,6 +430,14 @@ export interface DecisionsConsentData {
    * consent recorded before this existed authorizes only what its owner reviewed.
    */
   tool_args?: boolean
+  /**
+   * Whether the owner consented to sending a WHOLE SLOT TRANSCRIPT — the conversation
+   * text and every tool-call input in it — which is what `compaction.keep` scores.
+   * Absent on a gateway older than the scope and reads as not consented, the same way
+   * the keystone's own absent value does, so neither of the narrower yeses above is
+   * ever read as this one.
+   */
+  compaction?: boolean
 }
 
 /** Which side of a logged decision a reader's verdict is about. */
@@ -4967,14 +4975,31 @@ export const api = {
   getDecisionsConsent: () => get('/api/decisions/consent').then(j) as Promise<DecisionsConsentData>,
   // Enabling echoes the endpoint the card showed: the gateway binds consent to
   // that address and answers 409 if config.json moved it since the read.
-  // `toolArgs` is OMITTED when the caller does not pass one, and that omission is
-  // meaningful: the gateway preserves the recorded scope for an absent field, so
-  // an ordinary switch flip can neither grant nor erase it. Pass a boolean only
-  // when the owner acted on the tool-argument switch itself.
-  saveDecisionsConsent: (enabled: boolean, endpoint?: string, toolArgs?: boolean) =>
-    put('/api/decisions/consent', enabled
-      ? (toolArgs === undefined ? { enabled, endpoint } : { enabled, endpoint, tool_args: toolArgs })
-      : { enabled }).then(j) as Promise<DecisionsConsentData>,
+  // `toolArgs` and `compaction` are each OMITTED when the caller does not pass one,
+  // and that omission is meaningful: the gateway preserves the recorded scope for an
+  // absent field, so an ordinary switch flip can neither grant nor erase it. Pass a
+  // boolean only for the switch the owner actually acted on — including `false`,
+  // because on this route a revoke has to be written and cannot be left out.
+  // `enabled` is OPTIONAL, and leaving it out is what makes a scope write safe rather
+  // than careful: a body that carries the switch can only carry what this client last
+  // read, so a view read before a revoke turns egress back on. Omitted, the route reads
+  // the switch and the endpoint off the keystone under its own lock, and the write moves
+  // only the scopes named. A body with neither the switch nor a scope is a 400.
+  saveDecisionsConsent: (enabled?: boolean, endpoint?: string, toolArgs?: boolean, compaction?: boolean) =>
+    put('/api/decisions/consent', enabled === undefined
+      ? {
+        endpoint,
+        ...(toolArgs === undefined ? {} : { tool_args: toolArgs }),
+        ...(compaction === undefined ? {} : { compaction }),
+      }
+      : enabled
+        ? {
+          enabled,
+          endpoint,
+          ...(toolArgs === undefined ? {} : { tool_args: toolArgs }),
+          ...(compaction === undefined ? {} : { compaction }),
+        }
+        : { enabled }).then(j) as Promise<DecisionsConsentData>,
   // One reader's verdict on one side of one decision, from the transcript's
   // decision strip. `verdict: null` takes an answer back, which is why the field
   // is nullable rather than absent — the server records the retraction.

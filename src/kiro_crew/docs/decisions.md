@@ -56,7 +56,9 @@ Create the API-key secret through the existing [secrets vault](secrets-vault.md)
 
 `bucket` chooses a percentage of sessions. It is a fixed sample, not a random draw per message. A session stays selected or unselected while its key and bucket remain unchanged. `0` samples none and `100` samples all otherwise eligible sessions. Its default is `100`, so with the switch on and no `bucket` set, every otherwise-eligible session is sampled. A value that is not a whole number reads as `0`, so a typo never widens the sample.
 
-`history_budget_chars` bounds how much of the conversation so far is sent with one decision, in characters, on top of the current message. **Its default is `0`: no earlier turns are sent.** Raise it and earlier user and assistant turns are added newest first until the budget is spent, with the last one admitted clipped to fit. At most the 20 most recent turns are read, so a budget far above a few thousand characters stops adding turns. Tool output is never sent. A value that does not parse reads as `0`, so a typo never widens what leaves the machine.
+`history_budget_chars` bounds how much of the conversation so far is sent with one decision, in characters, on top of the current message. **Its default is `0`: no earlier turns are sent.** Raise it and earlier user and assistant turns are added newest first until the budget is spent, with the last one admitted clipped to fit. At most the 20 most recent turns are read, so a budget far above a few thousand characters stops adding turns. Tool output is never sent, by any of the features on this page. A value that does not parse reads as `0`, so a typo never widens what leaves the machine.
+
+This ceiling does not govern compaction scoring, which is a separate switch and sends a whole transcript when you turn it on — see [Measuring what a compaction should keep](#measuring-what-a-compaction-should-keep) below.
 
 This setting alone does not permit the transfer. Your consent record holds a **ceiling** for it, and Kiro Crew sends the smaller of the two. Lowering the setting works on its own; raising it above the ceiling does nothing until you consent again with the larger figure. The reason is that `config.json` can be written by an agent working on your machine, while the consent record cannot: if the permission lived only in the settings file, an agent reading your conversation could raise it and send that conversation. A consent recorded before this ceiling existed has no figure in it, which reads as `0` — so an upgrade never starts sending your earlier turns.
 
@@ -144,6 +146,51 @@ The mode only appears while the switch is on, your fleet permits the feature, an
 Auto applies only while a turn is actually running, and only to messages you send yourself: an app, an integration or a scheduled job is never decided for. Its request carries the message you just typed. It also carries a short extract of the turn in progress -- what you asked it and the newest thing it printed -- but only as far as the same `history_budget_chars` ceiling above allows, so at the default of `0` your new message is all that leaves the machine. Anything that looks like a credential or a data-collecting URL is removed from that extract first.
 
 The decision appears on your own message in the transcript: one line saying what Jev chose, how sure it was and how long it took, with the same thumbs you can use on a skill decision. It says the CHOICE rather than what then happened, because the two can differ — a chosen interruption cannot always be delivered, and the message then runs after the work in progress like a queued one. A message nobody decided for shows nothing.
+
+## Measuring what a compaction should keep
+
+When a conversation fills its context window, Kiro Crew compacts it automatically. What survives is the conversation text: your messages and the assistant's replies. Every tool call and every tool result is dropped, and that is where most of the conversation was — in a measured sample of real sessions, tool calls and their output are about seven eighths of everything the window held.
+
+Jev can be asked, at each of those automatic compactions, which of those tool calls were worth keeping. **Nothing is kept.** The compaction happens exactly as it does today whatever Jev answers, and the answer appears as one line on the compaction notice in the chat: *Jev would keep 23 of 61 tool calls · 41% of the characters*, with a thumbs pair beside it. The word is "would". This is a measurement, so that a later version of Kiro Crew can be argued about with numbers instead of guesses.
+
+This is off until you turn it on, and it needs a switch of its own — **Also send the conversation and tool-call inputs so Jev can score compaction**, under the tool-argument one. Turning on the main switch does not turn this on, and neither does turning on the tool-argument switch: that one was about the arguments of the single call about to run, and this is about everything the session has run, in a request one to two orders of magnitude larger. An owner who granted either of the others has not granted this.
+
+Manual `/compact` is never measured. If you typed the command yourself, nothing is sent.
+
+Nor is a compaction Kiro Crew did not carry out itself. Some backends shrink their own context and just tell Kiro Crew afterwards — Claude Code does it inside the reply, and KAS summarizes on its own schedule. There is nothing for this to measure on those, because the compacting is not happening here. What is measured is the automatic compaction Kiro Crew runs when a session crosses the threshold, including the restart it falls back to when that compaction does not work.
+
+| Your session | What you see |
+|---|---|
+| This switch is off | Nothing — no transcript is sent and no line appears |
+| You ran `/compact` yourself | Nothing — the manual command is never scored |
+| An automatic compaction Kiro Crew ran, and Jev answered | One line on the compaction notice, with thumbs |
+| A backend that compacts itself and reports it (Claude Code, KAS) | Nothing — Kiro Crew is not the one compacting |
+| An automatic compaction with no tool calls in it | Nothing — there is nothing to score |
+| Jev was too slow, refused, or answered only part of it | Nothing — the compaction notice looks as it always did |
+
+### What leaves the machine
+
+The conversation text of that session, and the INPUT of each tool call in it — the command, the path, the arguments. **Tool output is never sent.** Each result is replaced by how many characters it was, so a question can ask whether the output still matters without the output leaving. Passwords, keys and data-collecting URLs in the inputs are replaced with a placeholder before anything is sent.
+
+A whole transcript is far larger than one question can carry, so it is cut down in steps until it fits: tool inputs to 1000 characters, then 200, then 60, then your messages to half their length, then to a quarter with each call on one line. The mildest step that fits is the one used. About one session in twelve does not fit even at the last step; that one is recorded as too large and nothing is sent for it.
+
+If your organisation ships its own list of things that count as a secret, that list is applied here too, not just the one Kiro Crew ships. On a machine where that list cannot be loaded, the field is dropped rather than sent with the shorter list.
+
+Your private reasoning is not part of this. Neither is any other session: one compaction sends one conversation.
+
+### Waiting time, and what it costs
+
+Nothing. The scoring runs beside the compaction, not in front of it: the compaction never waits for Jev and never changes because of it. If the scoring is slower than the compaction it is dropped and no line appears. A session with many tool calls needs several requests, and the whole run is capped at ten seconds however slow the provider is.
+
+### What lands in the log
+
+One row per request, as for every other decision, plus one row per compaction carrying the counts: how many tool calls there were, how many were kept whole, how many kept without their result, how many dropped, how many were pinned and never asked about (the first message and the six newest), how many were past the limit and never looked at, and three character figures — everything the transcript held, what today's compaction is eligible to keep, and what Jev's answer would have kept. That last comparison is the whole point of the exercise.
+
+The two "eligible" figures are upper bounds, and the line says "up to" for the same reason. They count the messages a restart is allowed to bring back; the restart also has its own limits on how many messages and how many characters it will carry, so a long conversation comes back with less than these numbers say.
+
+A compaction that could not be measured is recorded too, with its reason: the state did not fit, the run ran out of time, or only some of the batches answered. A partial answer is never shown in the chat, because "23 of 61" over a count that includes calls nobody was asked about is a wrong number rather than an incomplete one. A session with more than a thousand tool calls is measured over the newest thousand — the newest, because those are the ones the assistant is still working from — and the line says how many it did not look at — "23 of 61 (+140 not scored)" — so the count beside it is not mistaken for the whole session.
+
+A measurement that finishes after its own compaction's notice has already been drawn is recorded and then dropped, rather than shown on the next compaction's notice.
 
 ## Basic logs
 

@@ -42,7 +42,7 @@ A SECOND consent, not a wider reading of the first
 This point sends a category ``skills.select`` never did -- the tool's name and its
 arguments -- so consent to send is not consent to send this. The keystone records
 the two separately (``consent.consented_tool_args``), absent reads as NOT
-consented, and ``gate._tool_args_scoped`` refuses the point without it. An install
+consented, and ``gate._scope_consented`` refuses the point without it. An install
 that consented before the scope existed is therefore INERT here rather than
 retroactively signed up, which is the same argument that gave
 ``history_budget_chars`` a keystone ceiling instead of a config value.

@@ -4323,6 +4323,14 @@
         "rate_wrong_jev": "Jev read the risk wrong",
         "tier_caution": "worth a look",
         "tier_risky": "risky"
+      },
+      "compactionKeep": {
+        "summary": "Jev would keep {{kept}} of {{total}} tool calls",
+        "chars_share": "up to {{percent}} of the characters",
+        "rate_label": "Rate this keep estimate",
+        "rate_right": "Jev read this compaction right",
+        "rate_wrong": "Jev read this compaction wrong",
+        "not_scored": "(+{{count}} not scored)"
       }
     },
     "chatPage": {
@@ -6658,7 +6666,10 @@
         "decisions_config_unavailable": "Could not read the settings, so this switch is not offered. Reload to try again.",
         "decisions_save_failed": "Could not save this setting. The switch is showing the saved value again.",
         "decisions_tool_args": "Also send tool-call arguments so Jev can flag risky calls",
-        "decisions_tool_args_desc": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
+        "decisions_tool_args_desc": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on.",
+        "decisions_compaction": "Also send the conversation and tool-call inputs so Jev can score compaction",
+        "decisions_compaction_desc": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. This is the widest of the three, so it is off until you turn it on, even if the switches above are already on.",
+        "decisions_point_compaction_keep": "Which tool calls a compaction would keep (measured only)"
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

@@ -10556,6 +10556,14 @@
         "rate_wrong_jev": "Jev a mal évalué le risque",
         "tier_caution": "à regarder",
         "tier_risky": "risqué"
+      },
+      "compactionKeep": {
+        "summary": "Jev garderait {{kept}} appels d’outil sur {{total}}",
+        "chars_share": "jusqu’à {{percent}} des caractères",
+        "rate_label": "Évalue cette estimation",
+        "rate_right": "Jev a bien lu ce compactage",
+        "rate_wrong": "Jev a mal lu ce compactage",
+        "not_scored": "(+{{count}} non évalués)"
       }
     },
     "chatPage": {
@@ -11415,7 +11423,10 @@
         "decisions_config_unavailable": "Impossible de lire les réglages, ce commutateur n'est donc pas proposé. Rechargez pour réessayer.",
         "decisions_save_failed": "Impossible d'enregistrer ce réglage. Le commutateur affiche à nouveau la valeur enregistrée.",
         "decisions_tool_args": "Envoyer aussi les arguments des appels pour que Jev signale les appels risqués",
-        "decisions_tool_args_desc": "Dans une session qui approuve elle-même ses appels d'outil, cela envoie en plus le nom et les arguments de chaque appel à Jev, qui signale ceux qui lui paraissent mériter un coup d'œil. Les mots de passe et les clés sont remplacés avant tout envoi. Cela ne change rien aux appels autorisés. Désactivé jusqu'à ce que vous l'activiez, même si l'interrupteur ci-dessus l'est déjà."
+        "decisions_tool_args_desc": "Dans une session qui approuve elle-même ses appels d'outil, cela envoie en plus le nom et les arguments de chaque appel à Jev, qui signale ceux qui lui paraissent mériter un coup d'œil. Les mots de passe et les clés sont remplacés avant tout envoi. Cela ne change rien aux appels autorisés. Désactivé jusqu'à ce que vous l'activiez, même si l'interrupteur ci-dessus l'est déjà.",
+        "decisions_compaction": "Envoyer aussi la conversation et les entrées des appels d’outil pour que Jev évalue le compactage",
+        "decisions_compaction_desc": "Chaque fois que le contexte se remplit et que {{productName}} compacte une session tout seul, ceci envoie à Jev cette conversation et les entrées des appels d’outil qu’elle contient, et lui demande lesquels auraient valu la peine d’être gardés. La SORTIE des outils n’est jamais envoyée : seulement son nombre de caractères. Les mots de passe et les clés sont remplacés avant tout envoi. C’est une mesure : le compactage se passe exactement comme aujourd’hui, quoi que Jev réponde, et la réponse s’affiche sur une ligne de l’avis de compactage. C’est le plus large des trois, donc c’est éteint jusqu’à ce que tu l’allumes, même si les interrupteurs au-dessus sont déjà allumés.",
+        "decisions_point_compaction_keep": "Quels appels d’outil un compactage garderait (mesure seulement)"
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",

@@ -60,7 +60,13 @@ logger = logging.getLogger(__name__)
 #: seam, not in ``config.sections``: nothing in the config is keyed by point name
 #: -- ``decisions.model_route`` is keyed by TIER, not by point -- and keeping the
 #: tuple here keeps the config loader off a hot path's import graph.
-DECISION_POINT_NAMES = ("skills.select", "tool.risk", "message.steer", "model.route")
+DECISION_POINT_NAMES = (
+    "skills.select",
+    "tool.risk",
+    "message.steer",
+    "model.route",
+    "compaction.keep",
+)
 
 #: Points whose request carries TOOL-CALL ARGUMENTS, and which therefore need the
 #: keystone's ``tool_args`` scope on top of consent itself
@@ -71,6 +77,15 @@ DECISION_POINT_NAMES = ("skills.select", "tool.risk", "message.steer", "model.ro
 #: outright, which is what makes an already-consented install inert for it rather
 #: than retroactively signed up.
 POINTS_NEEDING_TOOL_ARGS = frozenset({"tool.risk"})
+
+#: Points whose request carries a WHOLE SLOT TRANSCRIPT -- the conversation text and
+#: every tool input in it -- and which therefore need the keystone's ``compaction``
+#: scope (``consent.consented_compaction``). A THIRD set rather than a wider reading
+#: of the one above, because the two categories were reviewed as different things:
+#: ``tool_args`` is the arguments of the call about to run, this is everything the
+#: session has run, in a request one to two orders of magnitude larger. An install
+#: that granted only the narrower scope is inert here.
+POINTS_NEEDING_COMPACTION = frozenset({"compaction.keep"})
 
 #: The model id sent when the config leaves ``provider.model`` empty -- the same
 #: fallback ``impl_jev`` applies, so the id the scrub clears is the id sent.
@@ -243,8 +258,9 @@ def _consented_for(
     an auditor needs recorded.
 
     *point* names the caller's decision point, so a point in
-    :data:`POINTS_NEEDING_TOOL_ARGS` can be refused on a keystone that consents to
-    sending but not to sending TOOL ARGUMENTS. Checked here rather than in
+    :data:`POINTS_NEEDING_TOOL_ARGS` or :data:`POINTS_NEEDING_COMPACTION` can be
+    refused on a keystone that consents to sending but not to sending THAT
+    category. Checked here rather than in
     :func:`_sampled` because the state this needs is the one read this function
     already did -- ``_sampled`` is deliberately IO-free -- so the scope costs no
     second keystone read, and because this is the documented chokepoint every
@@ -254,7 +270,7 @@ def _consented_for(
     state = _consent.load_state()
     endpoint = configured_endpoint(config)
     if _consent.permits(endpoint, state):
-        if not _tool_args_scoped(point, state):
+        if not _scope_consented(point, state):
             return False
         return not _capability_denied(session_key)
     if _consent.is_enabled(state) and endpoint not in _unconsented_warned:
@@ -271,34 +287,55 @@ def _consented_for(
 _unscoped_warned: set[str] = set()
 
 
-def _tool_args_scoped(point: str | None, state: dict) -> bool:
-    """Whether *point*'s tool-argument egress is consented to. Never raises.
+#: What each scoped point needs, as ``point -> (keystone reader, the switch's own
+#: words)``. ONE table rather than a predicate per scope: every entry is the same
+#: three facts, and a second copy of the walk is a second place to forget a scope --
+#: which for a gate whose open state sends conversation text means sending a
+#: category nobody consented to.
+_POINT_SCOPES: dict[str, tuple[str, str]] = {
+    **{p: ("consented_tool_args", "tool-call arguments") for p in POINTS_NEEDING_TOOL_ARGS},
+    **{
+        p: ("consented_compaction", "the conversation and its tool-call inputs")
+        for p in POINTS_NEEDING_COMPACTION
+    },
+}
 
-    ``True`` for every point that does not send tool arguments, so
-    ``skills.select`` is untouched by this and pays nothing for it.
+
+def _scope_consented(point: str | None, state: dict) -> bool:
+    """Whether *point*'s EXTRA egress category is consented to. Never raises.
+
+    ``True`` for every point that sends nothing beyond what the main switch
+    records, so ``skills.select`` is untouched by this and pays nothing for it.
 
     A missing scope is said out loud ONCE per point, at WARNING, for the reason the
     endpoint mismatch beside it is: an owner who consented before this scope existed
     sees the feature do nothing, and "you consented to sending, but not to sending
     this" is the one fact that tells that apart from a broken build.
     """
-    if point is None or point not in POINTS_NEEDING_TOOL_ARGS:
+    # Bound to a local ``str`` so the warning set below is keyed by a name rather
+    # than by an optional: ``""`` is not a member of the table, so a caller with no
+    # point of its own takes the first return.
+    name = point or ""
+    scope = _POINT_SCOPES.get(name)
+    if scope is None:
         return True
+    reader_name, category = scope
     try:
-        if _consent.consented_tool_args(state):
+        if bool(getattr(_consent, reader_name)(state)):
             return True
     except Exception:
         # An unreadable scope is an unconsented scope: this decides whether a new
         # category of conversation content leaves the machine.
-        logger.debug("decisions: tool-argument scope unreadable; refusing %s", point)
+        logger.debug("decisions: %s scope unreadable; refusing %s", category, name)
         return False
-    if point not in _unscoped_warned:
-        _unscoped_warned.add(point)
+    if name not in _unscoped_warned:
+        _unscoped_warned.add(name)
         logger.warning(
-            "decisions: %s needs consent to send tool-call arguments, which this "
-            "machine has not given; turn on the tool-argument switch in Settings to "
-            "enable it. Nothing is sent for this point until then",
-            point,
+            "decisions: %s needs consent to send %s, which this machine has not "
+            "given; turn on that switch in Settings to enable it. Nothing is sent "
+            "for this point until then",
+            name,
+            category,
         )
     return False
 

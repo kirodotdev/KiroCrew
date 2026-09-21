@@ -9,7 +9,7 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
-import { DECISIONS_LIVE_POINT, readDecisions } from './decisionsPreview'
+import { DECISIONS_COMPACTION_POINT, DECISIONS_LIVE_POINT, readDecisions } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -215,13 +215,21 @@ function DecisionsPreviewCard() {
     // wrote the same value again.
     onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
   })
-  // The tool-argument scope is a SECOND consent, so it is a second write: it sends
-  // `enabled: true` alongside, because the scope is only meaningful while the seam
-  // is on and the route records both under one lock. Its own pending state, so the
-  // two switches disable independently rather than one freezing the other.
+  // A scope is a SECOND consent, so each scope switch is its own write. Neither sends
+  // the main switch: `enabled` is omitted, and the route then reads the switch and the
+  // endpoint off the keystone under its own lock. That is the invariant these two rely
+  // on -- a scope write cannot grant or revoke consent, whatever this view believes the
+  // switch to be, and a view is always something read at some earlier moment. Each also
+  // omits the OTHER scope, and an omitted scope is preserved, so one switch never moves
+  // the one beside it. Own pending state each, so the three disable independently.
   const scopeMut = useMutation({
     mutationFn: (value: boolean) =>
-      api.saveDecisionsConsent(true, view.configuredEndpoint, value),
+      api.saveDecisionsConsent(undefined, view.configuredEndpoint, value),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
+  })
+  const compactionMut = useMutation({
+    mutationFn: (value: boolean) =>
+      api.saveDecisionsConsent(undefined, view.configuredEndpoint, undefined, value),
     onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
   })
   // "Old gateway" and "could not read the settings" are different facts and must
@@ -255,14 +263,37 @@ function DecisionsPreviewCard() {
 
   return (
     <SettingsCard>
+      {/* The main switch's `disabled` reasoning lives here rather than inside the tag:
+          `settingsExtract` scans from the opening SettingsToggle tag to its closing angle
+          bracket and reads an apostrophe as a string opener even in a comment, so prose in
+          the props region can run the scan into its 4000-char ceiling and drop this entry
+          from the settings registry and the command palette. For the same reason this
+          comment names the primitive without a leading angle bracket: the scanner finds tags
+          by regex over the raw source, so the spelled-out tag would be read as an element
+          of its own and counted as a label-less skip.
+
+          A keystone that has not been read, or could not be, is no basis for offering a
+          write against the value it holds.
+
+          BOTH scope writes are named, and for one reason rather than one per scope: two
+          writes to one keystone in flight at once is a race whoever lands second wins, and
+          the owner reads the result as their click not taking. The route settles the
+          SAFETY of it — a scope write carries no switch, so it can never re-grant a
+          revoked consent — and this condition settles the ORDER, so the record the card
+          then re-reads is the one the owner's last click produced. */}
       <SettingsToggle
         label={i18nT('pages.developer.featurePreviewsTab.decisions')}
         description={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
         checked={view.enabled}
         onChange={v => mut.mutate(v)}
-        // A keystone that has not been read, or could not be, is no basis for
-        // offering a write against the value it holds.
-        disabled={loading || readFailed || !view.supported || mut.isPending}
+        disabled={
+          loading
+          || readFailed
+          || !view.supported
+          || mut.isPending
+          || scopeMut.isPending
+          || compactionMut.isPending
+        }
         describedBy={describedBy}
       />
       {/* The egress fact carries body weight, not muted fine print: it is what a
@@ -292,6 +323,25 @@ function DecisionsPreviewCard() {
           checked={view.toolArgs}
           onChange={v => scopeMut.mutate(v)}
           disabled={loading || readFailed || !view.supported || mut.isPending || scopeMut.isPending}
+        />
+      )}
+      {/* The whole-transcript scope. A THIRD switch rather than a wider reading of
+          either of the two above, for the reason the second one exists: this sends the
+          conversation and every tool-call input the session has accumulated, which is
+          the largest category by far and was reviewed by nobody who only turned on the
+          other two. Drawn only while the main switch is on, and it starts off even for
+          an owner who already granted tool arguments. What it buys is a MEASUREMENT --
+          the compaction itself is unchanged whatever Jev answers -- which is why the
+          description says so rather than promising a better compaction. */}
+      {view.enabled && (
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.decisions_compaction')}
+          description={i18nT('pages.developer.featurePreviewsTab.decisions_compaction_desc')}
+          checked={view.compaction}
+          onChange={v => compactionMut.mutate(v)}
+          disabled={
+            loading || readFailed || !view.supported || mut.isPending || compactionMut.isPending
+          }
         />
       )}
       {/* WHERE the messages go, as a fact beside the switch: consent is given for
@@ -338,6 +388,22 @@ function DecisionsPreviewCard() {
           message={i18nT('pages.developer.featurePreviewsTab.decisions_save_failed')}
         />
       )}
+      {/* The same notice for the scope this PR adds. Without it a refused scope write is
+          silent: the switch snaps back to the stored value on the refetch and nothing
+          says why, which reads as the click not having registered. The hand-off is on
+          for the reason the two above have it -- nothing on this card is an unsaved
+          draft, so navigating to the agent destroys nothing. The message is shared
+          rather than a second string: the failure is the same one (this route refused a
+          write), and a scope-specific sentence would claim to know something the error
+          does not carry. */}
+      {compactionMut.isError && (
+        <ErrorNotice
+          variant="inline"
+          className="mt-1"
+          askAgent
+          message={i18nT('pages.developer.featurePreviewsTab.decisions_save_failed')}
+        />
+      )}
       {/* Only rendered against a gateway that carries the field: on an older one
           there is no point wired at all, so a row would describe a check that
           does not exist. */}
@@ -362,6 +428,22 @@ function DecisionsPreviewCard() {
               </span>
             </span>
           </div>
+          {/* The compaction point, on the same one-row shape. Drawn only while its own
+              scope is granted: without it the point is inert, and a row naming a check
+              that cannot run reads as a feature that is on. */}
+          {view.compaction && (
+            <div className="flex items-center justify-between gap-3 text-[12px] mt-1">
+              <span className="text-text">
+                {i18nT('pages.developer.featurePreviewsTab.decisions_point_compaction_keep')}
+              </span>
+              <span className="text-muted">
+                {i18nT('pages.developer.featurePreviewsTab.decisions_point_logged_as')}{' '}
+                <span className="font-mono" title={DECISIONS_COMPACTION_POINT}>
+                  {DECISIONS_COMPACTION_POINT}
+                </span>
+              </span>
+            </div>
+          )}
           {/* The share is printed in both switch states, as "while this is on":
               the shipped default is 100, and a reader must see "all of your
               sessions" BEFORE consenting, not discover it afterwards. Only a

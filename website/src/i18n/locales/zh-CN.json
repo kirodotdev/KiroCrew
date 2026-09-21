@@ -10270,6 +10270,14 @@
         "rate_wrong_jev": "Jev 判断的风险是错的",
         "tier_caution": "值得看一眼",
         "tier_risky": "有风险"
+      },
+      "compactionKeep": {
+        "summary": "Jev 会在 {{total}} 次工具调用中保留 {{kept}} 次",
+        "chars_share": "最多占字符数 {{percent}}",
+        "rate_label": "评价此保留估算",
+        "rate_right": "Jev 判断正确",
+        "rate_wrong": "Jev 判断错误",
+        "not_scored": "（另有 {{count}} 次未评分）"
       }
     },
     "chatPage": {
@@ -11101,7 +11109,10 @@
         "decisions_config_unavailable": "无法读取设置，因此不提供此开关。请重新加载后再试。",
         "decisions_save_failed": "无法保存此设置。开关已恢复为已保存的值。",
         "decisions_tool_args": "同时发送工具调用的参数，让 Jev 标记有风险的调用",
-        "decisions_tool_args_desc": "在自动批准工具调用的会话里，每次调用的名称和参数也会发给 Jev；Jev 觉得值得看一眼，就给那次调用加上标记。发送前会替换掉密码和密钥。它不会改变哪些工具调用被允许。你打开它之前一直关着，即使上面那个开关已经打开。"
+        "decisions_tool_args_desc": "在自动批准工具调用的会话里，每次调用的名称和参数也会发给 Jev；Jev 觉得值得看一眼，就给那次调用加上标记。发送前会替换掉密码和密钥。它不会改变哪些工具调用被允许。你打开它之前一直关着，即使上面那个开关已经打开。",
+        "decisions_compaction": "也发送对话和工具调用输入，让 Jev 为压缩打分",
+        "decisions_compaction_desc": "每次上下文满了、{{productName}} 自己压缩一个会话时，这会把那段对话和里面的工具调用输入发给 Jev，问它哪些值得留下。工具输出从不发送，只发送它有多少个字符。密码和密钥在发送前会被替换掉。这只是一次测量：无论 Jev 怎么答，压缩都和现在一样进行，答案会在压缩提示上显示为一行。三者中它最宽，所以在你打开之前它是关着的，即使上面两个开关已经打开。",
+        "decisions_point_compaction_keep": "一次压缩会保留哪些工具调用（仅测量）"
       },
       "kiroSignInCard": {
         "title": "Kiro 登录",

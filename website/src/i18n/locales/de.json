@@ -10413,6 +10413,14 @@
         "rate_wrong_jev": "Jev hat das Risiko falsch eingeschätzt",
         "tier_caution": "einen Blick wert",
         "tier_risky": "riskant"
+      },
+      "compactionKeep": {
+        "summary": "Jev würde {{kept}} von {{total}} Tool-Aufrufen behalten",
+        "chars_share": "bis zu {{percent}} der Zeichen",
+        "rate_label": "Bewerte diese Einschätzung",
+        "rate_right": "Jev hat diese Verdichtung richtig eingeschätzt",
+        "rate_wrong": "Jev hat diese Verdichtung falsch eingeschätzt",
+        "not_scored": "(+{{count}} nicht bewertet)"
       }
     },
     "chatPage": {
@@ -11258,7 +11266,10 @@
         "decisions_config_unavailable": "Die Einstellungen konnten nicht gelesen werden, daher wird dieser Schalter nicht angeboten. Neu laden und erneut versuchen.",
         "decisions_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Der Schalter zeigt wieder den gespeicherten Wert.",
         "decisions_tool_args": "Auch die Argumente der Aufrufe senden, damit Jev riskante markiert",
-        "decisions_tool_args_desc": "In einer Sitzung, die ihre Tool-Aufrufe selbst genehmigt, sendet dies zusätzlich Name und Argumente jedes Aufrufs an Jev, das die markiert, die es für einen Blick wert hält. Passwörter und Schlüssel werden vor dem Senden ersetzt. Es ändert nichts daran, welche Aufrufe erlaubt sind. Aus, bis Sie es einschalten, auch wenn der Schalter darüber schon an ist."
+        "decisions_tool_args_desc": "In einer Sitzung, die ihre Tool-Aufrufe selbst genehmigt, sendet dies zusätzlich Name und Argumente jedes Aufrufs an Jev, das die markiert, die es für einen Blick wert hält. Passwörter und Schlüssel werden vor dem Senden ersetzt. Es ändert nichts daran, welche Aufrufe erlaubt sind. Aus, bis Sie es einschalten, auch wenn der Schalter darüber schon an ist.",
+        "decisions_compaction": "Auch das Gespräch und die Eingaben der Tool-Aufrufe senden, damit Jev die Verdichtung bewerten kann",
+        "decisions_compaction_desc": "Jedes Mal, wenn der Kontext voll wird und {{productName}} eine Sitzung von selbst verdichtet, sendet das dieses Gespräch und die Eingaben der Tool-Aufrufe darin an Jev und fragt, welche es wert gewesen wären, behalten zu werden. Die AUSGABE der Tools wird nie gesendet – nur wie viele Zeichen sie war. Passwörter und Schlüssel werden vor dem Senden ersetzt. Es ist eine Messung: Die Verdichtung läuft genau wie heute, was Jev auch antwortet, und die Antwort erscheint als eine Zeile auf dem Verdichtungshinweis. Das ist das Weiteste der drei, also ist es aus, bis du es einschaltest, auch wenn die Schalter darüber schon an sind.",
+        "decisions_point_compaction_keep": "Welche Tool-Aufrufe eine Verdichtung behalten würde (nur gemessen)"
       },
       "kiroSignInCard": {
         "title": "Kiro-Anmeldung",

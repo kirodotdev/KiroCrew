@@ -10556,6 +10556,14 @@
         "rate_wrong_jev": "Jev falló con el riesgo",
         "tier_caution": "conviene mirarla",
         "tier_risky": "arriesgada"
+      },
+      "compactionKeep": {
+        "summary": "Jev conservaría {{kept}} de {{total}} llamadas a herramientas",
+        "chars_share": "hasta {{percent}} de los caracteres",
+        "rate_label": "Valora esta estimación",
+        "rate_right": "Jev leyó bien esta compactación",
+        "rate_wrong": "Jev leyó mal esta compactación",
+        "not_scored": "(+{{count}} sin evaluar)"
       }
     },
     "chatPage": {
@@ -11415,7 +11423,10 @@
         "decisions_config_unavailable": "No se pudieron leer los ajustes, por lo que este interruptor no se ofrece. Recarga para volver a intentarlo.",
         "decisions_save_failed": "No se pudo guardar este ajuste. El interruptor muestra de nuevo el valor guardado.",
         "decisions_tool_args": "Enviar también los argumentos de las llamadas para que Jev marque las arriesgadas",
-        "decisions_tool_args_desc": "En una sesión que aprueba sus propias llamadas de herramienta, esto envía además el nombre y los argumentos de cada llamada a Jev, que pone una nota en las que le parecen dignas de mirar. Las contraseñas y claves se sustituyen antes de enviar nada. No cambia qué llamadas están permitidas. Está apagado hasta que lo enciendas, aunque el interruptor de arriba ya esté encendido."
+        "decisions_tool_args_desc": "En una sesión que aprueba sus propias llamadas de herramienta, esto envía además el nombre y los argumentos de cada llamada a Jev, que pone una nota en las que le parecen dignas de mirar. Las contraseñas y claves se sustituyen antes de enviar nada. No cambia qué llamadas están permitidas. Está apagado hasta que lo enciendas, aunque el interruptor de arriba ya esté encendido.",
+        "decisions_compaction": "Enviar también la conversación y las entradas de las llamadas a herramientas para que Jev puntúe la compactación",
+        "decisions_compaction_desc": "Cada vez que el contexto se llena y {{productName}} compacta una sesión por su cuenta, esto envía a Jev esa conversación y las entradas de las llamadas a herramientas que hay en ella, y le pregunta cuáles habría valido la pena guardar. La SALIDA de las herramientas nunca se envía: solo cuántos caracteres tenía. Las contraseñas y las claves se sustituyen antes de enviar nada. Es una medición: la compactación ocurre igual que ahora, responda lo que responda Jev, y la respuesta sale como una línea en el aviso de compactación. Es la más amplia de las tres, así que está apagada hasta que la enciendes, aunque los interruptores de arriba ya estén encendidos.",
+        "decisions_point_compaction_keep": "Qué llamadas a herramientas guardaría una compactación (solo medición)"
       },
       "kiroSignInCard": {
         "title": "Inicio de sesión en Kiro",

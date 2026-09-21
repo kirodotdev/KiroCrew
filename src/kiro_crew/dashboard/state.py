@@ -996,6 +996,31 @@ def row_mid(row: Any) -> str | None:
     return mid if isinstance(mid, str) and mid else None
 
 
+def _compaction_keep_record(key: str) -> dict[str, Any] | None:
+    """This session's pending ``compaction.keep`` record, or ``None``. Never raises.
+
+    ``None`` is the overwhelmingly common answer -- the seam is off until the owner
+    consents to a third, whole-transcript scope -- and it is also what a scoring run
+    that missed the compaction produces. The notice row then looks exactly as it does
+    without the seam, which is the point's own stated contract: the measurement may
+    cost an observation and must never cost the notice.
+
+    The read is DESTRUCTIVE (``take_record``): the record describes ONE compaction, so
+    leaving it in place would attach it to the next one on this key.
+
+    Imported inside the function and guarded as a whole: the decisions package is an
+    optional subsystem and this module is on the gateway boot path, so a build without
+    it -- or with a broken point file -- still appends the notice.
+    """
+    try:
+        from kiro_crew.decisions.points.compaction_keep import take_record
+
+        return take_record(key)
+    except Exception:
+        logger.debug("compact notice: no decision record for %s", key, exc_info=True)
+        return None
+
+
 def append_and_surface(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -4768,6 +4793,15 @@ class DashboardState:
             else:
                 template = _AUTO_COMPACT_NOTICE
             message = template.format(pct=pct)
+            meta: dict[str, Any] = {"kind": "compaction"}
+            record = _compaction_keep_record(key)
+            if record is not None:
+                # The SAME field the two other decision receipts ride
+                # (``meta.decisions_strip``), so the reserved-key protection, the
+                # history reload and the live websocket door are all the ones already
+                # in place. The frontend dispatches on the record's own ``point``, so
+                # a reader that predates this one draws nothing rather than guessing.
+                meta["decisions_strip"] = record
             try:
                 # Tag kind="compaction" so this proactive auto-compact notice
                 # (fired at session.autocompact_pct) is skipped by the dashboard's
@@ -4777,7 +4811,7 @@ class DashboardState:
                 # (Routing through the chat_utils chokepoint would create a
                 # state<->chat_utils import cycle; the notice is a hardcoded
                 # template with no LLM content, so its redaction pass is moot.)
-                slot.append("assistant", message, "msg msg-a", meta={"kind": "compaction"})
+                slot.append("assistant", message, "msg msg-a", meta=meta)
             except Exception:
                 logging.getLogger(__name__).exception(
                     "Failed to append compact notice to slot %s", slot_key

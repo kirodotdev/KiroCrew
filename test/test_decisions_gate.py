@@ -582,6 +582,7 @@ class TestPointName:
             "tool.risk",
             "message.steer",
             "model.route",
+            "compaction.keep",
         )
 
     @pytest.mark.parametrize("unknown", ["skills.dedupe", "cron.novelty", "", "skills.Select"])
@@ -600,13 +601,15 @@ class TestPointName:
     def test_every_shipped_name_is_admitted(self, install_impl, monkeypatch):
         """Each shipped point, given the egress scope its own request needs.
 
-        ``tool.risk`` carries tool-call arguments, so consent alone does not admit
-        it -- the keystone's ``tool_args`` scope does, and this test grants it rather
-        than dropping the point from the loop, because "every shipped name" is the
-        claim and a loop that skipped one would stop making it.
+        Two points carry a category the main switch never described, so consent alone
+        does not admit either -- ``tool.risk`` needs the keystone's ``tool_args``
+        scope and ``compaction.keep`` needs its ``compaction`` one. Both are granted
+        here rather than dropping those points from the loop, because "every shipped
+        name" is the claim and a loop that skipped one would stop making it.
         """
         install_impl(_RecordingOracle())
         monkeypatch.setattr(consent_mod, "consented_tool_args", lambda *_a, **_kw: True)
+        monkeypatch.setattr(consent_mod, "consented_compaction", lambda *_a, **_kw: True)
         for name in DECISION_POINT_NAMES:
             assert is_enabled(name, config=_config()) is True
 
@@ -620,6 +623,18 @@ class TestPointName:
         install_impl(_RecordingOracle())
         assert is_enabled("skills.select", config=_config()) is True
         assert is_enabled("tool.risk", config=_config()) is False
+
+    def test_the_compaction_point_is_refused_without_its_own_scope(self, install_impl, monkeypatch):
+        """And the tool-argument scope does not grant the wider one.
+
+        ``tool_args`` was reviewed as the arguments of the one call about to run;
+        ``compaction.keep`` sends the conversation and every tool input the session
+        has accumulated. An install that granted the narrower yes must be inert here.
+        """
+        install_impl(_RecordingOracle())
+        monkeypatch.setattr(consent_mod, "consented_tool_args", lambda *_a, **_kw: True)
+        assert is_enabled("tool.risk", config=_config()) is True
+        assert is_enabled("compaction.keep", config=_config()) is False
 
 
 # ---------------------------------------------------------------------------

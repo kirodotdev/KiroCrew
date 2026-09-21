@@ -22,6 +22,13 @@ What makes it un-flippable by the agent:
 * every read fails soft to ``{}`` -> **NOT CONSENTED**. A missing, unreadable,
   truncated or hand-mangled file must never mean "send".
 
+Three scopes sit on the keystone beside the switch, and each is a SEPARATE yes:
+``tool_args`` (the arguments of the one call about to run), ``compaction`` (a whole
+slot transcript, conversation text and every tool input in it) and
+``history_budget_chars`` (a ceiling on prior turns). Absent reads as not consented
+in every case, so a record written before a scope existed authorizes exactly the
+text its owner reviewed and never a category added later.
+
 The ``decisions`` section of ``config.json`` keeps the knobs that grant nothing on
 their own -- the sampling share and the provider -- so there is exactly one place
 the seam can be switched on.
@@ -65,6 +72,15 @@ STATE_KEY_HISTORY_BUDGET = "history_budget_chars"
 #: such record meaning what its owner agreed to.
 STATE_KEY_TOOL_ARGS = "tool_args"
 
+#: Whether the owner consented to sending a WHOLE SLOT TRANSCRIPT -- the
+#: conversation text and every tool-call input in it -- which is what
+#: ``compaction.keep`` scores and neither of the scopes above covers. A third leaf
+#: for the reason there is a second: consent is recorded against the text the owner
+#: reviewed, and ``tool_args`` was reviewed as "the arguments of the one call about
+#: to run", not as "everything this session has ever run". Absent reads as NOT
+#: consented, so an install that granted either of the others is inert here.
+STATE_KEY_COMPACTION = "compaction"
+
 #: "Keep whatever ceiling is recorded" for :func:`save_enabled`. A distinct object,
 #: because ``0`` is a ceiling an owner may choose and no number can mean "not asked".
 #: Resolved inside the read-modify-write, so the value written comes from the same
@@ -77,6 +93,22 @@ KEEP_HISTORY_BUDGET: object = object()
 #: boolean can also mean "not asked", and it is resolved inside the lock so an
 #: enabling PUT cannot restore a scope a concurrent revoking PUT just cleared.
 KEEP_TOOL_ARGS: object = object()
+
+#: "Keep whatever compaction scope is recorded", on the same terms as the two
+#: sentinels above and resolved inside the same lock, so an enabling PUT cannot
+#: restore a scope a concurrent revoking PUT just cleared.
+KEEP_COMPACTION: object = object()
+
+#: "Keep whatever the keystone records" -- the switch AND the endpoint it is bound to.
+#: A distinct object for the reason the three above are: ``False`` is a state an owner
+#: may choose, so no boolean can also mean "not asked".
+#:
+#: It exists so a write that only moves a SCOPE never carries the switch. A caller that
+#: had to pass ``enabled`` could only pass what it last read, and a view read before a
+#: revoke would hand ``True`` back and re-grant egress the owner just withdrew. With this,
+#: the switch is resolved from the keystone inside :data:`_SAVE_LOCK`, so a scope write
+#: cannot move it in either direction whatever the caller believes.
+KEEP_ENABLED: object = object()
 
 # Owner-only: the file records a security decision.
 _STATE_FILE_MODE = 0o600
@@ -172,6 +204,24 @@ def consented_tool_args(state: "dict | None" = None) -> bool:
     return data.get(STATE_KEY_TOOL_ARGS) is True
 
 
+def consented_compaction(state: "dict | None" = None) -> bool:
+    """Whether the owner consented to sending a whole transcript. Absent reads False.
+
+    Only a literal ``True``, the exactness :func:`consented_tool_args` applies and
+    for the same reason: this value decides whether a new -- and by far the
+    largest -- category of conversation content leaves the machine, so a value
+    nobody can read back as a deliberate yes is a no.
+
+    NOT implied by :func:`consented_tool_args`. That scope was reviewed as the
+    arguments of the one call that is about to run; this one sends the conversation
+    and every tool input the session has accumulated, in a request one to two
+    orders of magnitude larger. Reading the narrower record as permission for the
+    wider egress is exactly what a separate leaf exists to prevent.
+    """
+    data = load_state() if state is None else state
+    return data.get(STATE_KEY_COMPACTION) is True
+
+
 def permits(endpoint: object, state: "dict | None" = None) -> bool:
     """Whether the keystone consents to sending to *endpoint*, exactly.
 
@@ -211,11 +261,12 @@ def read_state_strict() -> dict:
 
 
 def save_enabled(
-    enabled: bool,
+    enabled: object,
     *,
     endpoint: str,
     history_budget_chars: object = 0,
     tool_args: object = False,
+    compaction: object = False,
 ) -> dict:
     """Record *enabled* for *endpoint* atomically, owner-only; return the state written.
 
@@ -251,8 +302,26 @@ def save_enabled(
     mention tool arguments consents to none. :data:`KEEP_TOOL_ARGS` leaves a
     recorded scope alone and is resolved inside the same lock, so an enabling PUT
     cannot hand back a scope a revoking PUT had already cleared.
+
+    *compaction* is the WHOLE-TRANSCRIPT egress scope ``compaction.keep`` needs, on
+    exactly the terms *tool_args* is recorded on: written on enable, cleared on
+    disable, defaulting to ``False`` so a caller that does not mention it consents
+    to none, and :data:`KEEP_COMPACTION` leaves a recorded scope alone from inside
+    this same lock.
+
+    Pass :data:`KEEP_ENABLED` for a write that moves only a scope. The switch and the
+    endpoint are then taken from the keystone inside this lock and written back
+    unchanged, and the scopes are applied under the RECORDED switch -- so a scope write
+    against a revoked keystone leaves it revoked and stores no scope, because a scope is
+    only meaningful while the seam is on. *endpoint* is ignored in that case rather than
+    trusted: the recorded binding is the one the owner reviewed.
+
+    This is what makes the route safe rather than careful. A caller that must supply
+    ``enabled`` can only supply what it last read, so a view read before a revoke
+    re-grants egress; with the switch resolved here, no scope write can move it.
     """
-    if not isinstance(enabled, bool):
+    keep_enabled = enabled is KEEP_ENABLED
+    if not keep_enabled and not isinstance(enabled, bool):
         raise ValueError("enabled must be a bool")
     keep = history_budget_chars is KEEP_HISTORY_BUDGET
     if not keep:
@@ -263,18 +332,30 @@ def save_enabled(
     keep_scope = tool_args is KEEP_TOOL_ARGS
     if not keep_scope and not isinstance(tool_args, bool):
         raise ValueError("tool_args must be a bool")
+    keep_compaction = compaction is KEEP_COMPACTION
+    if not keep_compaction and not isinstance(compaction, bool):
+        raise ValueError("compaction must be a bool")
     target = normalize_endpoint(endpoint)
-    if enabled and not target:
+    if enabled is True and not target:
         raise ValueError("consent needs the endpoint it is given for")
     with _SAVE_LOCK:
         state: dict[str, Any] = dict(read_state_strict())
+        if keep_enabled:
+            # Both, together: the switch and the address it is bound to are one fact,
+            # and writing the switch from the record while re-deriving the address from
+            # a caller's argument would rebind a consent nobody re-reviewed.
+            enabled = is_enabled(state)
+            target = consented_endpoint(state)
         if keep:
             history_budget_chars = consented_history_budget(state)
         if keep_scope:
             tool_args = consented_tool_args(state)
+        if keep_compaction:
+            compaction = consented_compaction(state)
         state[STATE_KEY_ENABLED] = enabled
         state[STATE_KEY_ENDPOINT] = target if enabled else ""
         state[STATE_KEY_HISTORY_BUDGET] = history_budget_chars if enabled else 0
         state[STATE_KEY_TOOL_ARGS] = tool_args is True if enabled else False
+        state[STATE_KEY_COMPACTION] = compaction is True if enabled else False
         atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
     return state

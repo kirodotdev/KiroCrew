@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 
 import {
+  readCompactionKeepRecord,
   readDecisionRecord,
   readDecisionStrip,
   readModelRecord,
@@ -34,6 +35,7 @@ const SPEC = join(__dirname, '../../../docs/system-specs/modules/decisions.md')
 const SECTION = "## 8. The decision strip's record and feedback"
 const STEER_SECTION = '## 10. Mid-turn handling (`message.steer`)'
 const MODEL_SECTION = '## 11. Model routing (`model.route`)'
+const COMPACTION_SECTION = '## 12. Compaction scoring (`compaction.keep`)'
 
 /** The first fenced JSON block inside *section*. */
 function specFixtureIn(section: string): Record<string, unknown> {
@@ -305,6 +307,75 @@ describe('the model-routing fixture in the decisions spec', () => {
     const serialized = JSON.stringify(fixture).toLowerCase()
     for (const forbidden of ['api_key', 'secret', 'prompt', 'message', 'description', 'content']) {
       expect(serialized, `the fixture leaks ${forbidden}`).not.toContain(forbidden)
+    }
+  })
+})
+
+describe('the compaction record fixture in the decisions spec', () => {
+  const fixture = specFixtureIn(COMPACTION_SECTION)
+
+  it('is a record, so the fence really held the payload', () => {
+    expect(Object.keys(fixture).length).toBeGreaterThan(10)
+  })
+
+  it('is accepted by the reader, field for field', () => {
+    const read = readCompactionKeepRecord(fixture)
+    expect(read).toMatchObject({
+      turnId: 'cmp-7ab419',
+      point: 'compaction.keep',
+      totalCalls: 61,
+      // DERIVED from the two keep tallies, never read as a field: the line prints
+      // "N of M", so a count that disagreed with the log's own tallies would be
+      // irreconcilable with it.
+      keptCalls: 23,
+    })
+    expect(read?.charsShare).toBeCloseTo(fixture.chars_jev_eligible as number / (fixture.chars_all as number))
+  })
+
+  it('carries the overflow count the line states', () => {
+    // A truncated walk's total is the walk's cap rather than the session's call count,
+    // so the record must be able to SAY how much it missed; a fixture without the field
+    // would let the gateway drop it without a red test.
+    expect(fixture).toHaveProperty('calls_truncated')
+    expect(readCompactionKeepRecord({ ...fixture, calls_truncated: 140 })?.truncatedCalls).toBe(140)
+  })
+
+  it('keeps the numerator inside the denominator', () => {
+    // The invariant that makes the card's percentage a percentage. Held on the fixture
+    // as well as in the point's own tests, because this is the shape the two halves
+    // agreed on.
+    expect(fixture.chars_today_eligible as number).toBeLessThanOrEqual(fixture.chars_jev_eligible as number)
+    expect(fixture.chars_jev_eligible as number).toBeLessThanOrEqual(fixture.chars_all as number)
+  })
+
+  it('names the three tallies the reader sums', () => {
+    // A rename on the gateway side would otherwise hide the line with no red test:
+    // the reader's fail-safe is to draw nothing, which looks like a healthy release
+    // that stamped no record.
+    for (const field of ['total_calls', 'kept_both', 'kept_call', 'dropped']) {
+      expect(fixture).toHaveProperty(field)
+    }
+  })
+
+  it('names both sides of the character comparison', () => {
+    // The eligible arm is what Jev is measured against; without it the record says what
+    // Jev would keep and nothing about what today keeps, which is the whole comparison
+    // this point exists for. Both names carry `_eligible` because both are upper bounds
+    // — the replay applies quotas and a budget the gateway does not re-derive.
+    for (const field of ['chars_all', 'chars_today_eligible', 'chars_jev_eligible']) {
+      expect(fixture).toHaveProperty(field)
+    }
+  })
+
+  it('carries only counts and short identifiers, never conversation content', () => {
+    // The row is a measurement, never a second copy of the conversation. Asserted on
+    // the SHAPE rather than on a word list, because a word list would have to name
+    // every spelling a transcript could contain: every value here is a number, a
+    // boolean, null, or a short identifier, and a list or an object is content.
+    for (const [field, value] of Object.entries(fixture)) {
+      if (value === null || typeof value === 'number' || typeof value === 'boolean') continue
+      expect(typeof value, field).toBe('string')
+      expect((value as string).length, field).toBeLessThanOrEqual(40)
     }
   })
 })

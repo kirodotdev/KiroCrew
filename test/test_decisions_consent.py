@@ -236,6 +236,7 @@ class TestWrite:
             # Enabling alone consents to no tool arguments: the default is the
             # narrowest scope, so a caller that does not mention them grants none.
             "tool_args": False,
+            "compaction": False,
         }
         assert consent.permits(CUSTOM) is True
         assert consent.permits(DEFAULT_ENDPOINT) is False
@@ -252,6 +253,7 @@ class TestWrite:
             # Cleared on the same terms as the endpoint and the ceiling, so a later
             # re-enable cannot inherit a tool-argument scope nobody re-reviewed.
             "tool_args": False,
+            "compaction": False,
         }
         assert consent.permits(CUSTOM) is False
 
@@ -264,6 +266,7 @@ class TestWrite:
             "endpoint": DEFAULT_ENDPOINT,
             "history_budget_chars": 0,
             "tool_args": False,
+            "compaction": False,
         }
 
     def test_records_the_history_ceiling_it_was_given(self, keystone):
@@ -469,6 +472,7 @@ class TestHandler:
             # Reported so the card draws the scope actually recorded rather than
             # inferring it from ``enabled``; absent on this keystone reads false.
             "tool_args": False,
+            "compaction": False,
         }
         keystone.write_text(
             json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
@@ -691,13 +695,14 @@ class TestHandler:
         seen: list = []
         real = consent.save_enabled
 
-        def _spy(enabled, *, endpoint, history_budget_chars=0, tool_args=False):
+        def _spy(enabled, *, endpoint, history_budget_chars=0, tool_args=False, compaction=False):
             seen.append(history_budget_chars)
             return real(
                 enabled,
                 endpoint=endpoint,
                 history_budget_chars=history_budget_chars,
                 tool_args=tool_args,
+                compaction=compaction,
             )
 
         monkeypatch.setattr(consent, "save_enabled", _spy)

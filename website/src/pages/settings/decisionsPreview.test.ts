@@ -18,6 +18,7 @@ import {
   readBucket,
   readConsent,
   readDecisions,
+  DECISIONS_COMPACTION_POINT,
 } from './decisionsPreview'
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
@@ -29,6 +30,8 @@ const OFF = {
   // The tool-argument egress scope reads FALSE for an unreadable body, on the same
   // fail-closed terms as `enabled`: a body nobody could parse grants nothing.
   toolArgs: false,
+  // And so does the whole-transcript scope, for the same reason.
+  compaction: false,
 }
 
 describe('readConsent', () => {
@@ -48,6 +51,8 @@ describe('readConsent', () => {
         // Consent to SEND is not consent to send tool arguments: a body that does
         // not mention the scope grants none of it.
         toolArgs: false,
+        // Nor is it consent to send a whole transcript, which is wider still.
+        compaction: false,
       })
     for (const sloppy of [false, 'true', 1, null]) {
       expect(readConsent({ enabled: sloppy, configured_endpoint: ENDPOINT, permits: false }).enabled).toBe(false)
@@ -118,13 +123,29 @@ describe('readDecisions', () => {
         endpointMoved: false,
         bucket: 25,
         toolArgs: false,
+        compaction: false,
       })
     expect(readDecisions(off, { decisions: { bucket: 100 } }).bucket).toBe(100)
     expect(readDecisions(off, undefined).bucket).toBeNull()
   })
 
+  it('reads the whole-transcript scope as an exact true, and never off the narrower one', () => {
+    // The widest of the three categories, so the same exactness applies -- and
+    // `tool_args` must NOT grant it: that scope was reviewed as the arguments of the
+    // one call about to run, not as everything the session has run.
+    const base = { enabled: true, configured_endpoint: ENDPOINT, permits: true }
+    expect(readConsent({ ...base, compaction: true }).compaction).toBe(true)
+    expect(readConsent({ ...base, tool_args: true }).compaction).toBe(false)
+    for (const sloppy of ['true', 1, 'yes', null, undefined]) {
+      expect(readConsent({ ...base, compaction: sloppy }).compaction).toBe(false)
+    }
+  })
+
   it('spells the constants the backend spells', () => {
     expect(DECISIONS_BUCKET_PATH).toBe('decisions.bucket')
+    // The compaction point's identifier, which the card names and the card's record
+    // dispatches on.
+    expect(DECISIONS_COMPACTION_POINT).toBe('compaction.keep')
     // Singular on purpose: `skills.dedupe` and `cron.novelty` shipped as rows in
     // the shadow release and are retired here, because a row for an answer
     // nothing consumes described a comparison rather than a thing being on.

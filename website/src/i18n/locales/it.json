@@ -10556,6 +10556,14 @@
         "rate_wrong_jev": "Jev ha valutato male il rischio",
         "tier_caution": "vale un'occhiata",
         "tier_risky": "rischiosa"
+      },
+      "compactionKeep": {
+        "summary": "Jev terrebbe {{kept}} chiamate di strumento su {{total}}",
+        "chars_share": "fino al {{percent}} dei caratteri",
+        "rate_label": "Valuta questa stima",
+        "rate_right": "Jev ha letto bene questa compattazione",
+        "rate_wrong": "Jev ha letto male questa compattazione",
+        "not_scored": "(+{{count}} non valutate)"
       }
     },
     "chatPage": {
@@ -11415,7 +11423,10 @@
         "decisions_config_unavailable": "Non è stato possibile leggere le impostazioni, quindi questo interruttore non viene offerto. Ricarica per riprovare.",
         "decisions_save_failed": "Non è stato possibile salvare questa impostazione. L'interruttore mostra di nuovo il valore salvato.",
         "decisions_tool_args": "Invia anche gli argomenti delle chiamate così Jev segnala quelle rischiose",
-        "decisions_tool_args_desc": "In una sessione che approva da sé le proprie chiamate di strumento, questo invia a Jev anche il nome e gli argomenti di ogni chiamata, e Jev segnala quelle che gli sembrano da guardare. Password e chiavi vengono sostituite prima di inviare qualsiasi cosa. Non cambia quali chiamate sono permesse. È spento finché non lo accendi, anche se l'interruttore sopra è già acceso."
+        "decisions_tool_args_desc": "In una sessione che approva da sé le proprie chiamate di strumento, questo invia a Jev anche il nome e gli argomenti di ogni chiamata, e Jev segnala quelle che gli sembrano da guardare. Password e chiavi vengono sostituite prima di inviare qualsiasi cosa. Non cambia quali chiamate sono permesse. È spento finché non lo accendi, anche se l'interruttore sopra è già acceso.",
+        "decisions_compaction": "Invia anche la conversazione e gli input delle chiamate di strumento così Jev valuta la compattazione",
+        "decisions_compaction_desc": "Ogni volta che il contesto si riempie e {{productName}} compatta una sessione da sé, questo invia a Jev quella conversazione e gli input delle chiamate di strumento che contiene, e gli chiede quali valeva la pena tenere. L’OUTPUT degli strumenti non viene mai inviato: solo quanti caratteri era. Password e chiavi vengono sostituite prima di inviare qualsiasi cosa. È una misura: la compattazione avviene esattamente come adesso, qualunque cosa risponda Jev, e la risposta compare come una riga sull’avviso di compattazione. È la più ampia delle tre, quindi è spenta finché non la accendi, anche se gli interruttori sopra sono già accesi.",
+        "decisions_point_compaction_keep": "Quali chiamate di strumento una compattazione terrebbe (solo misura)"
       },
       "kiroSignInCard": {
         "title": "Accesso a Kiro",

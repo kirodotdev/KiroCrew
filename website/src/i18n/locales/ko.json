@@ -10270,6 +10270,14 @@
         "rate_wrong_jev": "Jev가 위험을 틀리게 봤어요",
         "tier_caution": "한 번 볼 만함",
         "tier_risky": "위험"
+      },
+      "compactionKeep": {
+        "summary": "Jev는 도구 호출 {{total}}개 중 {{kept}}개를 남깁니다",
+        "chars_share": "문자 수의 최대 {{percent}}",
+        "rate_label": "이 예상 평가",
+        "rate_right": "Jev의 판단이 맞음",
+        "rate_wrong": "Jev의 판단이 틀림",
+        "not_scored": "(+{{count}}개는 평가 안 함)"
       }
     },
     "chatPage": {
@@ -11101,7 +11109,10 @@
         "decisions_config_unavailable": "설정을 읽을 수 없어 이 스위치를 제공하지 않습니다. 새로 고침한 뒤 다시 시도하세요.",
         "decisions_save_failed": "이 설정을 저장할 수 없습니다. 스위치는 저장된 값으로 되돌아갔습니다.",
         "decisions_tool_args": "Jev가 위험한 호출을 표시할 수 있도록 호출 인자도 보내기",
-        "decisions_tool_args_desc": "도구 호출을 스스로 승인하는 세션에서는 각 호출의 이름과 인자도 Jev에 보내고, Jev는 한 번 볼 만하다고 판단한 호출에 표시를 남깁니다. 보내기 전에 비밀번호와 키는 대체됩니다. 어떤 호출이 허용되는지는 바뀌지 않습니다. 위 스위치가 켜져 있어도, 이 항목은 직접 켤 때까지 꺼져 있습니다."
+        "decisions_tool_args_desc": "도구 호출을 스스로 승인하는 세션에서는 각 호출의 이름과 인자도 Jev에 보내고, Jev는 한 번 볼 만하다고 판단한 호출에 표시를 남깁니다. 보내기 전에 비밀번호와 키는 대체됩니다. 어떤 호출이 허용되는지는 바뀌지 않습니다. 위 스위치가 켜져 있어도, 이 항목은 직접 켤 때까지 꺼져 있습니다.",
+        "decisions_compaction": "Jev가 압축을 채점할 수 있도록 대화와 도구 호출 입력도 보냅니다",
+        "decisions_compaction_desc": "컨텍스트가 차서 {{productName}}이(가) 세션을 스스로 압축할 때마다, 그 대화와 안에 있는 도구 호출 입력을 Jev에 보내 어떤 것을 남길 만했는지 묻습니다. 도구 출력은 절대 보내지 않습니다. 몇 글자였는지만 보냅니다. 비밀번호와 키는 보내기 전에 바뀝니다. 이것은 측정입니다. Jev가 무엇이라고 답해도 압축은 지금과 똑같이 일어나고, 답은 압축 알림에 한 줄로 나옵니다. 셋 중에서 가장 넓으므로, 위의 스위치가 이미 켜져 있어도 켤 때까지는 꺼져 있습니다.",
+        "decisions_point_compaction_keep": "압축이 남길 도구 호출 (측정만)"
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",
