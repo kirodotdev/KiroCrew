@@ -554,6 +554,73 @@ def test_kiro_identity_projection_fails_closed_on_settings_errors(
     assert session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path) == []
 
 
+def test_the_control_plane_element_env_matches_the_spec_writing_consumer(tmp_path, monkeypatch):
+    """The projected element's env is the one the disk path writes, and then the token.
+
+    ``kiro_control_plane_servers`` re-declares Crew's OWN managed servers, and a
+    session-injected element outranks the spec's same-named entry at launch -- so
+    this ``env`` is the whole environment that shim receives, on the one element
+    that also carries this session's identity token. It is held to
+    ``agent._enforce_managed_mcp_ownership``'s result for the same input: EQUAL, not
+    merely safe. Equality is what makes this refuse both directions -- a
+    launcher-exec or home-deriving name reaching the element, and an ordinary user
+    variable dropped here while the disk path keeps it.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
+
+    withheld = agent_mod._HOME_DERIVING_ENV_KEYS | agent_mod._LAUNCHER_EXEC_ENV_KEYS
+    # PRECONDITION -- the control being mirrored exists for this population, so what
+    # follows measures parity with a live rule rather than stating a preference.
+    assert {"BASH_ENV", "NODE_OPTIONS", "PATH"} <= withheld, "launcher-exec class absent"
+    assert "HOME" in withheld, "home-deriving class absent"
+
+    managed_home = str(tmp_path / "managed-home")
+    monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": managed_home})
+    declared = {
+        "BASH_ENV": "/tmp/preload.sh",
+        "NODE_OPTIONS": "--require /tmp/preload.js",
+        "PATH": "/tmp/shadow-bin",
+        "HOME": "/tmp/fake-home",
+        "KIROCREW_SESSION_KEY": "forged:session",
+        "KIROCREW_HOME": "/tmp/spec-home",
+        "RUST_LOG": "debug",
+    }
+    managed = {"command": "test-crew", "args": ["mcp"]}
+    entry = {**managed, "env": dict(declared)}
+    spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": entry}}
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_global_settings", lambda **kwargs: {})
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name: dict(managed))
+
+    elements = session_mcp.kiro_control_plane_servers("an-agent", work_dir=None)
+
+    # PRECONDITION -- the entry really is projected, so every env assertion below is
+    # about a value that reaches a session, not about an element that was dropped.
+    assert [e.get("name") for e in elements] == ["kirocrew-core"], "the entry was not projected"
+    env = {p["name"]: p["value"] for p in elements[0]["env"]}
+
+    # The user's own ordinary variable survives, which is the half a stricter rule
+    # would silently cost them.
+    assert env["RUST_LOG"] == "debug"
+    leaked = sorted(name for name in env if name.upper() in withheld)
+    assert leaked == [], f"a spec chose what Crew's own shim executes or reads: {leaked}"
+    # Crew's managed value is pinned LAST, so the spec's spelling of the same name loses.
+    assert env["KIROCREW_HOME"] == managed_home
+    assert "KIROCREW_SESSION_KEY" not in env
+
+    disk_entry = {**managed, "env": dict(declared)}
+    agent_mod._enforce_managed_mcp_ownership(disk_entry, {}, False, auto_approve="own")
+    assert env == disk_entry["env"], "the two consumers of one managed population disagree"
+
+    # The identity token still lands on that same element, after everything above.
+    stamped = attach_stub_session_token(elements, TOKEN)
+    assert stamped[0]["env"][-1] == {"name": STUB_SESSION_TOKEN_ENV, "value": TOKEN}
+    assert {p["name"]: p["value"] for p in stamped[0]["env"][:-1]} == env
+
+
 class TestSweep:
     def test_aged_mappings_are_pruned_and_fresh_ones_kept(self, tmp_path):
         fresh = tmp_path / "session_token_aaa.sig"

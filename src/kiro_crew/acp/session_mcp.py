@@ -89,6 +89,7 @@ from kiro_crew.agent import (
 )
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
+from kiro_crew.env import sanitize_spec_env
 
 logger = logging.getLogger(__name__)
 
@@ -795,6 +796,49 @@ def session_mcp_servers(
     return out
 
 
+def _managed_element_env(declared: Any) -> dict[str, str]:
+    """One managed control plane's element ``env``, owned the way the disk path owns it.
+
+    :func:`kiro_control_plane_servers` re-declares Crew's OWN servers, and a
+    session-injected element outranks the spec's same-named entry at launch, so
+    this ``env`` is the whole environment that shim receives. It therefore answers
+    to the same rules ``agent._enforce_managed_mcp_ownership`` applies to the entry
+    it writes for this same population, in the same order and no wider: a non-dict
+    declaration is nothing, ``sanitize_spec_env`` drops Crew's reserved namespace
+    and the loader channels, the home-deriving and launcher-exec classes are
+    dropped, and Crew's own managed env is pinned last.
+
+    Parity in BOTH directions is the property. Granting less would cost a user the
+    ordinary variable they declared, for no reason but which backend the session
+    happened to run on; granting more would let a spec that copies the managed
+    command choose what Crew's own shim executes and which data home it reads, on
+    the one element that also carries this session's identity token.
+
+    A mirror rather than a shared helper: the disk consumer mutates a dict entry in
+    place while this builds one array element. The key classes are read from
+    ``agent`` rather than restated here, and the regression test derives its
+    withheld set from those same frozensets, so the two cannot drift apart.
+    """
+    env = sanitize_spec_env(declared.items()) if isinstance(declared, dict) else {}
+    for home_key in [k for k in env if k.upper() in _agent_mod._HOME_DERIVING_ENV_KEYS]:
+        env.pop(home_key, None)
+        logger.warning(
+            "session MCP: dropping %r from a managed control plane's element env: it would"
+            " move the data home this shim shares with the gateway",
+            home_key,
+        )
+    for exec_key in [k for k in env if k.upper() in _agent_mod._LAUNCHER_EXEC_ENV_KEYS]:
+        env.pop(exec_key, None)
+        logger.warning(
+            "session MCP: dropping %r from a managed control plane's element env: it would"
+            " choose what this shim executes rather than configure it (see"
+            " agent._LAUNCHER_EXEC_ENV_KEYS)",
+            exec_key,
+        )
+    env.update(_agent_mod._managed_mcp_env())
+    return env
+
+
 def kiro_control_plane_servers(
     agent: str | None,
     *,
@@ -807,6 +851,8 @@ def kiro_control_plane_servers(
     Only an existing managed stdio declaration can be overridden. Native-only
     restrictions stay in the native declaration instead of being discarded by
     ACP shaping. Registry entries remain the enterprise catalog's responsibility.
+    The element's ``env`` is owned by :func:`_managed_element_env`, which holds it to
+    the rule the disk-writing consumer applies to this same population.
     """
     if not agent or _registry_mode():
         return []
@@ -848,7 +894,8 @@ def kiro_control_plane_servers(
             for source in sources
         ):
             continue
-        element = acp_server_element(name, entry)
+        owned = {**entry, "env": _managed_element_env(entry.get("env"))}
+        element = acp_server_element(name, owned)
         if element is not None:
             out.append(element)
     return out
