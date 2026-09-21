@@ -118,7 +118,7 @@ Enabling an app can add to your **agent picker** and your skill list, because an
 may ship its own. Registration happens on enable and is undone on disable.
 
 - **Agents.** Meetings ships three (a note taker, a sketch artist, a task
-  extractor), PPTX Maker four, Mochi two, Auto-Improvement two, Personal Shopper
+  extractor), PPTX Maker four, Mochi two, Auto-Improvement four, Personal Shopper
   one. They are registered under the app's own namespace, so two apps can ship an
   agent with the same name without colliding.
 - **Skills.** Code Review Sage, Design Critique, Design Tweak, Spec Builder,
