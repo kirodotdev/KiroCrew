@@ -22,6 +22,7 @@ organized for someone browsing the repository.
 | Doc | Covers |
 |---|---|
 | [agents.md](agents.md) | Switching between specialized agents per conversation, thread, or cron job. |
+| [crew-members.md](crew-members.md) | Named crewmates, their standing DM threads, and routing work to one with `select_crew` / `route_crew`. |
 | [agent-spec-fields.md](agent-spec-fields.md) | Every agent-spec field, what it does, and how that differs per ACP backend. |
 | [skills.md](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows. |
 | [monitoring.md](monitoring.md) | Token-efficient pull-request monitoring and finite legacy fallbacks. |

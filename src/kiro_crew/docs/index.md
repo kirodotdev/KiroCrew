@@ -39,6 +39,7 @@ index, first-time setup, and connecting messaging channels.
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
 | Chat Channels | DM-based chat with tool approval — [Slack](slack-integration.md), [Discord](discord-integration.md), [Telegram](telegram-integration.md), [Teams](teams-integration.md), [Webex](webex-integration.md), [WeCom](wecom-integration.md), [WeChat](weixin-integration.md), [iMessage](imessage-integration.md), [WhatsApp](whatsapp-integration.md), [Feishu](feishu-integration.md); per-channel capabilities in each guide |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
+| [Crew Members](crew-members.md) | Keep named crewmates — each with its own workspace, memory, template and model — talk to each in a standing thread, and route work to one |
 | [Skills](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows |
 | [Dynamic Workflows](workflows.md) | Multi-phase agent orchestration authored from a plain-language goal: watch a run, restart part of it from cache, save it for reuse |
 | [Artifacts](artifacts.md) | Save, version, and revert generated UI and documents so they outlive the chat scrollback |
