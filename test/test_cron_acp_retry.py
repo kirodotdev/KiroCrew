@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.cron import CronJob, CronSchedule
 
 
@@ -206,3 +206,791 @@ class TestCronAcpRetry:
 
         # No retry for non-retryable errors
         assert call_count == 1
+
+
+class TestCronAcpDeathIsTyped:
+    """The retry decision reads the classification, not the wording of the message.
+
+    ``AcpProcessDied`` is raised at every site that discovers a dead child and states
+    whether resubmitting the turn is safe. Wording cannot carry that: the most common
+    death is discovered as a broken pipe on the next write and reads ``ACP process
+    pipe broken: <cause>``, matching neither legacy substring, so a wording test
+    skips the branch built for process death on the signature that produces it most
+    often.
+    """
+
+    def test_acp_pipe_broken_triggers_retry(self, gw_and_cb: tuple[Any, Any, Any]) -> None:
+        """The real ``pipe broken`` wording resets the session and retries once.
+
+        Returning a result rather than raising is also what keeps a recovered child
+        death off the auto-pause ladder: ``CronService._execute`` calls
+        ``record_failure()`` only in its ``except`` arm and ``record_success()`` --
+        which zeroes ``consecutive_failures`` -- when the callback returns. So the
+        assertion that this callback returns is the assertion that one transient
+        death does not march the job toward ``_AUTO_PAUSE_THRESHOLD``.
+        """
+        gw, get_cb, capture_cron = gw_and_cb
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Verbatim shape of the message raised by _send_request /
+                # _send_response / _send_error when the child is already gone.
+                raise AcpProcessDied(
+                    "ACP process pipe broken: Connection lost", resubmit_safe=True
+                )
+            return "recovered"
+
+        job = CronJob(
+            id="j5",
+            name="test5",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            result = asyncio.run(_init_and_run())
+
+        assert call_count == 2
+        assert result == "recovered"
+        gw.sessions.reset.assert_awaited()
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ACP process pipe broken: Broken pipe",
+            "something nobody predicted",
+            "a wording that happens to say process exited",
+        ],
+    )
+    def test_resubmit_safe_death_retries_regardless_of_wording(
+        self, gw_and_cb: tuple[Any, Any, Any], message: str
+    ) -> None:
+        """A resubmit-safe ``AcpProcessDied`` retries whatever it says.
+
+        The second case shares no substring with the legacy guard, pinning the
+        decision to the classification rather than to the current vocabulary. The
+        third is its mirror: wording that DOES match a legacy substring must not be
+        what earns the retry either, or the guard is still a wording test wearing a
+        type test's clothes.
+
+        Every case states ``resubmit_safe=True`` explicitly, because the default is
+        ``None`` and an unclassified death is decided by the wording fallback instead
+        -- which is what the next test covers. Wording independence is a claim about
+        deaths already classified safe, not about unclassified ones.
+        """
+        gw, get_cb, capture_cron = gw_and_cb
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise AcpProcessDied(message, resubmit_safe=True)
+            return "recovered"
+
+        job = CronJob(
+            id="j6",
+            name="test6",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            result = asyncio.run(_init_and_run())
+
+        assert call_count == 2
+        assert result == "recovered"
+
+    def test_pipe_broken_retries_only_once(self, gw_and_cb: tuple[Any, Any, Any]) -> None:
+        """A child that dies twice is not retried forever -- the ``_acp_retried``
+        marker bounds the new type arm exactly as it bounds the substring arm."""
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.dashboard_state = MagicMock()
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            raise AcpProcessDied("ACP process pipe broken: Connection lost", resubmit_safe=True)
+
+        job = CronJob(
+            id="j8",
+            name="test8",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            with pytest.raises(AcpProcessDied):
+                asyncio.run(_init_and_run())
+
+        assert call_count == 2
+        gw.dashboard_state.notify.assert_called_once()
+
+    def test_non_process_death_acp_error_still_not_retried(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """Control: widening to the type must not widen to every AcpError. A plain
+        AcpError with no death wording is still a single-shot failure.
+
+        ``call_count`` is the only sound discriminator here. ``sessions.reset`` is
+        NOT: the callback's own cleanup awaits it on every failure, retry or no
+        retry, so asserting it was never awaited would fail on fixed and unfixed
+        source alike.
+        """
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.dashboard_state = MagicMock()
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            raise AcpError("model refused the request")
+
+        job = CronJob(
+            id="j9",
+            name="test9",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            with pytest.raises(AcpError):
+                asyncio.run(_init_and_run())
+
+        assert call_count == 1
+
+
+class TestAcpProcessDiedRaiseSites:
+    """The wording the guard has to survive is not a paraphrase -- it comes out of
+    the real transport methods, so pin it there rather than only in the mock."""
+
+    def test_send_request_broken_pipe_message_matches_no_legacy_substring(self) -> None:
+        from kiro_crew.acp.client import AcpClient
+
+        client = AcpClient.__new__(AcpClient)
+        client._process = MagicMock()
+        client._process.stdin = MagicMock()
+        client._process.stdin.write = MagicMock(side_effect=BrokenPipeError("Connection lost"))
+        client._next_req_id = MagicMock(return_value=1)
+
+        with pytest.raises(AcpProcessDied) as excinfo:
+            asyncio.run(client._send_request("session/prompt", {}))
+
+        message = str(excinfo.value).lower()
+        assert "pipe broken" in message
+        # The exact reason the substring guard could not see this death.
+        assert "not running" not in message
+        assert "process exited" not in message
+
+    def test_prompt_write_retags_the_death_safe_but_a_bare_write_stays_unsafe(self) -> None:
+        """Drive the REAL client on both paths -- the whole design in one test.
+
+        Same transport, same ``BrokenPipeError``, two different verdicts, decided by
+        whether the write was starting a turn:
+
+        * ``_send_prompt`` -- the prompt was never delivered, so no tool can have
+          run. Safe, and this is the shape that silently auto-pauses a cron job.
+        * a bare ``_send_request`` -- also serves ``session/steer`` and
+          ``commands/execute``, and its siblings answer mid-turn child requests, so
+          it must not claim safety on its own behalf.
+
+        Without the retag the reported defect goes unfixed; with the retag on the
+        shared write instead, a mid-turn permission reply replays a completed tool.
+        """
+        from kiro_crew.acp.client import AcpClient
+
+        def _dead_client() -> Any:
+            c = AcpClient.__new__(AcpClient)
+            c._process = MagicMock()
+            c._process.stdin = MagicMock()
+            c._process.stdin.write = MagicMock(side_effect=BrokenPipeError("Connection lost"))
+            c._next_req_id = MagicMock(return_value=1)
+            c._session_id = "s1"
+            return c
+
+        with pytest.raises(AcpProcessDied) as prompt_exc:
+            asyncio.run(_dead_client()._send_prompt("hello"))
+        assert prompt_exc.value.resubmit_safe is True, (
+            "the prompt-initiating write is the one place a death is safe to "
+            "resubmit; without this the reported auto-pause defect is not fixed"
+        )
+
+        with pytest.raises(AcpProcessDied) as bare_exc:
+            asyncio.run(_dead_client()._send_request("session/steer", {}))
+        assert bare_exc.value.resubmit_safe is None, (
+            "the shared transport write cannot know turn state -- steer and the "
+            "mid-turn permission replies go through it, and a completed tool "
+            "mutation would be replayed"
+        )
+
+    def test_broken_pipe_death_is_unclassified_for_the_transient_ladder(self) -> None:
+        """The generic transient ladder cannot cover the gap either: the raise site
+        passes no ``transient=`` and the message carries no throttle/5xx marker, so
+        the fallback classifier says not-transient."""
+        from kiro_crew.llm_helpers import acp_error_is_transient
+
+        exc = AcpProcessDied("ACP process pipe broken: Connection lost")
+        assert exc.transient is None
+        assert acp_error_is_transient(exc) is False
+
+
+class TestResubmitSafetyContract:
+    """A death discovered with a turn in flight must NOT be retried.
+
+    Such a death can follow a tool that already dispatched and landed its side
+    effects -- the stall detector fires on "tool dispatched but no data for Ns" and
+    kills the agent, and a mid-prompt exit can arrive after a completed tool call.
+    Resubmitting the prompt would run those effects a second time, so the invariant
+    is about WHEN the death was discovered, not which subsystem noticed.
+
+    Two independent properties are pinned here, because either alone permits the
+    replay: the raise sites must not over-claim safety, and the consumer must not
+    reach the retry by a route that ignores what they claimed.
+    """
+
+    def test_tool_stall_is_not_retried(self, gw_and_cb: tuple[Any, Any, Any]) -> None:
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.dashboard_state = MagicMock()
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            raise AcpProcessDied(
+                "tool stalled -- no data for 300s; agent killed to recover",
+                resubmit_safe=False,
+            )
+
+        job = CronJob(
+            id="j10",
+            name="test10",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            with pytest.raises(AcpProcessDied):
+                asyncio.run(_init_and_run())
+
+        assert call_count == 1, (
+            "a dispatched tool may have completed its side effects; resubmitting "
+            "the prompt can repeat them"
+        )
+
+    def test_resubmit_safe_states_the_verdict_without_exporting_the_hierarchy(self) -> None:
+        """The ACP layer answers "may I re-run this turn?" on the exception itself.
+
+        Application code outside the agent-SDK boundary must not grow its ACP import
+        surface (``scripts/check_agent_sdk_boundary.py`` refuses a new symbol on an
+        added line), so the cron retry reads this attribute instead of importing
+        a second ACP symbol. Mirrors the existing ``AcpError.transient`` precedent.
+        """
+        assert AcpProcessDied("ACP process pipe broken: x", resubmit_safe=True).resubmit_safe is True
+        assert AcpProcessDied("tool stalled -- no data for 300s").resubmit_safe is None
+        # The default is None, NOT False: a death raised without an opinion carries no
+        # verdict, and the consumer decides it by wording instead. A refusing default
+        # would instead delete the retry the shared runtime's deaths already get --
+        # see test_an_unclassified_death_keeps_the_retry_it_had_before_the_verdict_existed.
+        assert AcpProcessDied("a death nobody classified").resubmit_safe is None
+
+    def test_tool_stall_is_a_process_death_for_every_other_handler(self) -> None:
+        """Subclass, so `except AcpProcessDied` elsewhere keeps catching it. Only
+        callers that RESUBMIT work single it out."""
+        exc = AcpProcessDied("tool stalled -- no data for 300s", resubmit_safe=False)
+        assert isinstance(exc, AcpProcessDied)
+        assert isinstance(exc, AcpError)
+
+    def test_only_the_audited_sites_claim_resubmit_safety(self) -> None:
+        """Enumerate the sites that OPT IN, which is the enumerable direction.
+
+        The in-flight sites cannot be listed reliably: they outnumber the safe ones,
+        several are reachable only through indirection, and two independent audits of
+        this class each missed some. So nothing here asserts that list is complete.
+
+        What this pins is the small, checkable converse: exactly two sites claim
+        ``resubmit_safe=True``, and each is one where the turn provably never
+        started. A third appearing without a matching case here is the regression to
+        catch.
+
+        Opting in is NOT the only route to the resubmit path. An unclassified death
+        reaches it through the consumer's wording fallback, so this test bounds the
+        EXPLICIT claims only. The wording route is bounded separately, by
+        ``test_every_wording_matching_death_states_its_verdict_explicitly``. Neither
+        test is sufficient alone, which is why both exist.
+
+        Counted over the AST rather than the module text, because the same phrases
+        occur in the prose that explains them -- the mistake the sibling AST test
+        documents.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew.acp import client as _client
+        from kiro_crew.acp import session_handle as _sh
+        from kiro_crew.acp import session_provider as _sp
+
+        # module -> (how many sites may claim the turn never started, why)
+        AUDITED_SAFE = {
+            "client": (_client, 1, "_send_prompt, the only write that starts a turn"),
+            "session_provider": (_sp, 1, "the pre-conversation liveness check"),
+            "session_handle": (_sh, 0, "every death here is reachable with a turn live"),
+        }
+        for name, (mod, expected, why) in AUDITED_SAFE.items():
+            tree = ast.parse(inspect.getsource(mod))
+            found = 0
+            for node in ast.walk(tree):
+                # Spelling 1: the raise-site keyword, AcpProcessDied(..., safe=True).
+                if isinstance(node, ast.keyword) and node.arg == "resubmit_safe":
+                    if isinstance(node.value, ast.Constant) and node.value.value is True:
+                        found += 1
+                # Spelling 2: the retag on a caught death, exc.resubmit_safe = True.
+                elif isinstance(node, ast.Assign):
+                    if not (
+                        isinstance(node.value, ast.Constant) and node.value.value is True
+                    ):
+                        continue
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Attribute) and tgt.attr == "resubmit_safe":
+                            found += 1
+            assert found == expected, (
+                f"{name}: {found} site(s) claim resubmit-safety, {expected} audited "
+                f"({why}). A new one must prove the turn never started -- otherwise a "
+                "tool that already completed gets its side effects replayed. Note this "
+                "bounds the EXPLICIT claims only; an unclassified death can still reach "
+                "the resubmit path through the consumer's wording fallback."
+            )
+
+    def test_transport_writes_do_not_claim_safety_themselves(self) -> None:
+        """The transport write cannot know whether a turn is in flight.
+
+        ``_send_request`` also carries ``session/steer`` and ``commands/execute``,
+        and ``_send_response`` / ``_send_error`` exist ONLY to answer requests the
+        child raises mid-turn -- tool-permission replies and unknown-method
+        rejections. A broken pipe on any of those means a turn WAS live and an
+        earlier tool may already have completed, so tagging the shared write safe
+        mislabels the majority of its callers. The claim lives in ``_send_prompt``,
+        which is the one caller that provably precedes any tool call.
+        """
+        import inspect
+
+        from kiro_crew.acp import client as _client
+
+        src = inspect.getsource(_client)
+        pipe_broken = 'raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc'
+        assert src.count(pipe_broken) == 3, (
+            "the three transport writes must raise with NO safety claim; a kwarg "
+            "here would re-tag the mid-turn permission-reply and steer paths as "
+            "resubmit-safe"
+        )
+
+    def test_mid_prompt_death_is_not_retried_despite_legacy_wording(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """The retained substring arm must not out-vote the type's own verdict.
+
+        ``client.py`` raises ``AcpProcessDied("Process exited during prompt ...")``
+        with a turn in flight, so it takes the refusing default -- but that wording
+        CONTAINS ``process exited``, which the legacy arm matches. Scoping that arm
+        to plain ``AcpError`` is what stops the wording from resurrecting a death
+        the classification already refused, and this test is the difference: without
+        the scoping it retries and a completed tool mutation is replayed.
+        """
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.dashboard_state = MagicMock()
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            # Mirrors the raise site EXACTLY, kwarg included: under a
+            # three-valued verdict, fabricating this death without the kwarg
+            # would test an unclassified death instead of the real one.
+            raise AcpProcessDied(
+                "Process exited during prompt (exit code 1)", resubmit_safe=False
+            )
+
+        job = CronJob(
+            id="j-inflight",
+            name="inflight",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            with pytest.raises(AcpProcessDied):
+                asyncio.run(_init_and_run())
+
+        assert call_count == 1, (
+            "the wording matched the legacy substring arm and out-voted this "
+            "death's own resubmit_safe=False -- a tool that already completed "
+            "mid-prompt gets its side effects replayed"
+        )
+
+    def test_plain_acp_error_still_matches_the_legacy_wording_arm(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """Control for the scoping above: the five plain-``AcpError`` death sites
+        keep their retry. They are NOT ``AcpProcessDied``, so restricting the
+        substring arm to plain errors leaves them matched -- if this stopped holding,
+        the scoping fix would have narrowed the guard past the defect it repairs.
+
+        Driven through the real cron callback, not asserted as a type relation. An
+        ``isinstance`` check alone reduces to "``AcpError`` is not a subclass of
+        ``AcpProcessDied``", which is true of the language and would pass against any
+        gateway, including one that dropped the arm entirely.
+
+        This pins the arm's CURRENT reach, and does not claim that reach is correct.
+        Four of those five sites are mid-turn-capable (`_send_response` and
+        `_send_error` answer child requests raised mid-turn; `_read_message` runs from
+        the prompt loop), so the arm retries deaths the typed path would refuse. That
+        is a pre-existing residual the typed verdict cannot see, because those sites
+        do not raise ``AcpProcessDied`` at all. Closing it means re-raising them typed
+        and deleting this arm -- a behaviour change for every untyped death.
+        """
+        gw, get_cb, capture_cron = gw_and_cb
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # A plain AcpError, exactly as the five untyped sites raise it.
+                raise AcpError("ACP process not running")
+            return "recovered"
+
+        job = CronJob(
+            id="j-plain",
+            name="plain",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=capture_cron),
+            ),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            result = asyncio.run(_init_and_run())
+
+        assert not isinstance(AcpError("ACP process not running"), AcpProcessDied)
+        assert call_count == 2, (
+            "a plain AcpError worded 'not running' must still reach the wording arm "
+            "and retry; scoping the arm to unclassified deaths must not narrow it "
+            "past the five untyped sites it exists to serve"
+        )
+        assert result == "recovered"
+
+    def test_an_unclassified_death_keeps_the_retry_it_had_before_the_verdict_existed(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """The shared-runtime path: no verdict must not read as a refusing verdict.
+
+        ``session_provider._translate_dead`` rebuilds every ``AcpRuntimeDead`` as
+        ``AcpProcessDied(str(exc))`` with no kwarg, so the five ``runtime.py``
+        ``"process not running"`` raises reach the cron handler UNCLASSIFIED. Under a
+        two-valued flag they read as "unsafe" and lost the retry the wording arm had
+        been giving them -- the default backend's only cron death retry, deleted by
+        omission rather than decided.
+
+        Three-valued fixes it at the root: ``None`` falls through to the wording arm,
+        so an unclassified death behaves exactly as it did before the attribute
+        existed, and only an explicit verdict can change that.
+        """
+        gw, get_cb, capture_cron = gw_and_cb
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Byte-for-byte what _translate_dead builds: no kwarg at all.
+                raise AcpProcessDied("process not running")
+            return "recovered"
+
+        job = CronJob(
+            id="j-unclassified",
+            name="unclassified",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=capture_cron),
+            ),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            result = asyncio.run(_init_and_run())
+
+        assert AcpProcessDied("process not running").resubmit_safe is None, (
+            "the default must be UNCLASSIFIED; a False default is what deleted this retry"
+        )
+        assert call_count == 2, (
+            "an unclassified death must fall back to the wording arm and retry -- "
+            "reading no-verdict as refuse silently removes the default backend's "
+            "only cron death retry"
+        )
+        assert result == "recovered"
+
+    def test_every_wording_matching_death_states_its_verdict_explicitly(self) -> None:
+        """The invariant that makes the tri-state safe, checked mechanically.
+
+        ``None`` means "use the wording arm", so any ``AcpProcessDied`` whose MESSAGE
+        would match that arm inherits a retry unless it says otherwise. For a death
+        discovered mid-turn that is exactly the replay this PR exists to prevent.
+
+        So the rule is narrow and checkable: a raise site whose message literal
+        contains a legacy substring must pass ``resubmit_safe`` explicitly. Sites
+        whose wording cannot match are free to stay unclassified -- they fall back to
+        an arm that does not match them and are not retried either way.
+
+        AST, not a text scan. A regex over the source also matches PROSE: the class
+        docstring discusses ``AcpProcessDied(str(exc))`` and quotes ``"process not
+        running"`` while explaining this very design, and a text scan reported that
+        sentence as an unclassified raise site. Only real call nodes count.
+
+        WHAT THIS CANNOT SEE, so the check is not read as total: only string LITERALS
+        reachable from the call's positional args are inspected. A message composed at
+        runtime is invisible -- ``session_handle._died`` builds
+        ``f"{base} — {summary}"`` where ``summary`` embeds the runtime's ``"process
+        exited (rc=N)"``, and that death IS retried by the wording arm. It is named in
+        the ``slack/gateway.py`` comment as a known residual rather than caught here,
+        because catching it needs the message's runtime value, not its source. Sites
+        built from a module-level constant are invisible for the same reason.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew.acp import client as _client
+        from kiro_crew.acp import session_handle as _sh
+        from kiro_crew.acp import session_provider as _sp
+
+        offenders: list[str] = []
+        # All three modules that construct the exception, not just the one this
+        # change edits: a literal-worded site added to any of them inherits a retry.
+        for mod in (_client, _sp, _sh):
+            tree = ast.parse(inspect.getsource(mod))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if name != "AcpProcessDied":
+                    continue
+                # Every string that ends up in the message, f-string parts included.
+                literals = []
+                for arg in node.args:
+                    for sub in ast.walk(arg):
+                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                            literals.append(sub.value)
+                blob = " ".join(literals).lower()
+                if "not running" not in blob and "process exited" not in blob:
+                    continue
+                if not any(kw.arg == "resubmit_safe" for kw in node.keywords):
+                    offenders.append(
+                        f"{mod.__name__.rsplit('.', 1)[-1]}.py:{node.lineno}: {blob[:60]!r}"
+                    )
+
+        assert not offenders, (
+            "a death whose message matches the legacy wording arm must state its "
+            "verdict explicitly; left unclassified it falls back to that arm and is "
+            f"retried even though a turn was in flight. Offending: {offenders}"
+        )
+
+
+class TestTheSafeClaimIsNotInheritedByARePrompt:
+    """A resubmit-safe claim states that ONE write never reached the child.
+
+    It does not state that nothing ran before that write, and two callers
+    re-prompt a session that has already done work: ``stream_and_collect``
+    replays the prompt while no text has streamed, and the cron post-token
+    resume sends a continuation. Either one can follow a completed tool, and the
+    cron ACP-death retry re-runs the ORIGINAL message on a fresh session, so an
+    inherited claim replays that tool's side effects -- the exact harm the explicit
+    ``False`` verdicts and these two withdrawals exist to prevent.
+    """
+
+    def test_a_fired_tool_withdraws_the_claim_before_it_reaches_the_caller(self) -> None:
+        """``stream_and_collect`` withdraws the claim once any tool has fired.
+
+        Load-bearing: without the withdrawal the death leaves the call still
+        claiming resubmit-safety, and the cron branch replays a prompt whose
+        tool already mutated something.
+        """
+        from kiro_crew.acp.types import AcpEvent
+        from kiro_crew.llm_helpers import stream_and_collect
+        from kiro_crew.providers.base import EVENT_TOOL_CALL
+
+        died = AcpProcessDied("ACP process pipe broken: Connection lost")
+        died.resubmit_safe = True
+
+        class _Provider:
+            async def stream(self, message: str) -> Any:
+                yield AcpEvent(
+                    kind=EVENT_TOOL_CALL, tool_call_id="t1", title="write_file", tool_input="{}"
+                )
+                raise died
+
+        with pytest.raises(AcpProcessDied) as caught:
+            asyncio.run(stream_and_collect(_Provider(), "p"))
+
+        assert caught.value is died
+        assert died.resubmit_safe is False, (
+            "a tool fired in this call, so resubmitting the original prompt would "
+            "run it again -- the claim must not reach the cron retry"
+        )
+
+    def test_a_death_on_the_continuation_prompt_is_not_retried(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """The cron post-token resume withdraws the claim on its continuation.
+
+        The first attempt streams text and then hits a transient, so the helper
+        re-prompts the live session once. A death on THAT write is tagged safe by
+        its raise site, which cannot see that a turn is already in progress.
+        Load-bearing: without the withdrawal the callback is replayed a third
+        time with the original message.
+        """
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.dashboard_state = MagicMock()
+        calls = 0
+
+        async def mock_stream(*args: Any, on_chunk: Any = None, **kwargs: Any) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                if on_chunk:
+                    on_chunk("partial output")
+                raise AcpError("throttling exception", transient=True)
+            died = AcpProcessDied("ACP process pipe broken: Connection lost")
+            died.resubmit_safe = True
+            raise died
+
+        job = CronJob(
+            id="j-continue",
+            name="continue",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.transient_retry_delay", return_value=0),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=capture_cron),
+            ),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            with pytest.raises(AcpProcessDied):
+                asyncio.run(_init_and_run())
+
+        assert calls == 2, (
+            "the continuation prompt's death inherited resubmit-safety, so the "
+            "whole callback was replayed and a tool the interrupted turn "
+            "completed can run a second time"
+        )
