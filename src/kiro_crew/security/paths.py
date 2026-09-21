@@ -2623,8 +2623,9 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     prove containment, and only then asks whether the entry is fenced.
 
     Why a separate entry point rather than "just call the pool anyway": the pool
-    is sized for the event loop (two workers, so a wedged mount can pin at most
-    two threads), and it is FIFO. A walk over a thousand skill directories, each
+    is sized for the event loop (two workers by default --
+    ``executors._MAX_PATH_RESOLVE_WORKERS`` -- so a wedged mount can pin at most
+    that many threads), and it is FIFO. A walk over a thousand skill directories, each
     submitting a resolution the walk had already performed plus an anchor
     resolution per call, fills that queue from worker threads while the loop's
     own latency-critical resolutions wait behind it -- not for a slow disk, for

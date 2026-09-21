@@ -70,9 +70,13 @@ from __future__ import annotations
 import asyncio
 import atexit
 import functools
+import logging
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable, TypeVar
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -269,16 +273,89 @@ _MAX_STT_WORKERS = 2
 # The caller bounds its wait and REFUSES the path on timeout (fail-closed --
 # a lexical-only fallback would let a symlink into a credential store ride a
 # stall; only a resolution that FAILS with OSError keeps the lexical forms);
-# the wait does NOT free the worker, so this is its OWN tiny pool: a wedged
+# the wait does NOT free the worker, so this is its OWN pool: a wedged
 # resolution can only ever starve other path resolution, never the sweeps or
-# the default executor's DNS.  Two workers is deliberate -- healthy resolution is
-# microseconds, so sustained queueing means the filesystem is wedged, and
-# queueing behind a wedged sibling can only time out.  The cap also bites under
-# plain concurrency (simultaneous cron fires submitting at once); a queued
-# resolution that never starts is cancelled on timeout and refused for that
-# call alone, charging no prefix cooldown (see
+# the default executor's DNS.
+#
+# Sized like ``mc-pathprobe`` below, and for the same reason: the number is a
+# ceiling on how many resolutions can be WEDGED at once, not on ordinary
+# throughput.  It is 2, justified by "healthy resolution is microseconds, so
+# sustained queueing means the filesystem is wedged".  That premise holds on the
+# host it was written for and does NOT hold on every host.  It fails for the ANCHOR
+# REBUILD, which performs ~130 ``realpath`` calls behind a 0.1s cache
+# (``security.paths._HOME_TARGETS_TTL_SECS``) and so runs near-continuously under
+# ordinary tool traffic, and it fails under sustained GIL contention, where a
+# rebuild costing 0.9ms on an idle interpreter was measured at 873ms with one
+# CPU-bound sibling thread and 4.0s with four -- none of which is filesystem
+# latency.  Where both hold at once the pool sits at its ``wedged >= 2`` floor in
+# steady state and refuses every path under every prefix while the mount is
+# perfectly healthy.  That is why the number is now an operator knob rather than a
+# constant: the premise is a property of the host, not of the code.
+#
+# The cap still bites under plain concurrency (simultaneous cron fires submitting
+# at once); a queued resolution that never starts is cancelled on timeout and
+# refused for that call alone, charging no prefix cooldown (see
 # ``security.paths._run_resolution_bounded``).
-_MAX_PATH_RESOLVE_WORKERS = 2
+#
+# The DEFAULT stays 2, which is the right number for the premise it was written
+# for: a host where healthy resolution really is microseconds, where sustained
+# queueing is evidence of a wedged mount and a low ceiling is what makes the wedge
+# signal meaningful. Raising it for everyone would make ordinary contention
+# indistinguishable from a dead mount on exactly those hosts.
+#
+# An operator whose gateway resolves under sustained GIL contention -- many
+# concurrent sessions, an anchor rebuild running near-continuously behind its 0.1s
+# cache -- raises it for THEIR box instead. Read once at import, because the pool
+# is a module-level singleton; an unparseable or out-of-range value keeps the
+# default rather than failing the import, since a gateway that will not start is a
+# worse outcome than one resolving with the shipped ceiling.
+#
+# The floor is 2, not 1, and the reason is the leave-one-free guard in
+# ``security.paths._run_resolution_bounded``: a prefix with a stall on record is
+# refused before submission once ``W - 1`` workers are pinned, so that its re-probe
+# cannot take the last free worker.  With ``W = 1`` that test is ``wedged >= 0``,
+# true with nothing pinned at all, and since only a resolution that RUNS can clear
+# a prefix's record, one transient stall would refuse that prefix until restart.
+_PATH_RESOLVE_WORKERS_ENV = "KIROCREW_PATH_RESOLVE_WORKERS"
+_PATH_RESOLVE_WORKERS_DEFAULT = 2
+_PATH_RESOLVE_WORKERS_MIN = 2
+_PATH_RESOLVE_WORKERS_MAX = 64
+
+
+def _path_resolve_worker_count() -> int:
+    """The resolver pool size: :data:`_PATH_RESOLVE_WORKERS_DEFAULT` unless overridden.
+
+    Fail-soft TO THE DEFAULT, which is the conservative direction here: the default
+    is the LOWER ceiling, so a bad value can only ever leave the shipped behaviour
+    in place, never widen it.
+    """
+    raw = os.environ.get(_PATH_RESOLVE_WORKERS_ENV, "").strip()
+    if not raw:
+        return _PATH_RESOLVE_WORKERS_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer; using the default of %d resolver worker(s)",
+            _PATH_RESOLVE_WORKERS_ENV,
+            raw,
+            _PATH_RESOLVE_WORKERS_DEFAULT,
+        )
+        return _PATH_RESOLVE_WORKERS_DEFAULT
+    if not _PATH_RESOLVE_WORKERS_MIN <= value <= _PATH_RESOLVE_WORKERS_MAX:
+        logger.warning(
+            "%s=%d is outside %d..%d; using the default of %d resolver worker(s)",
+            _PATH_RESOLVE_WORKERS_ENV,
+            value,
+            _PATH_RESOLVE_WORKERS_MIN,
+            _PATH_RESOLVE_WORKERS_MAX,
+            _PATH_RESOLVE_WORKERS_DEFAULT,
+        )
+        return _PATH_RESOLVE_WORKERS_DEFAULT
+    return value
+
+
+_MAX_PATH_RESOLVE_WORKERS = _path_resolve_worker_count()
 
 # Dashboard file endpoints take a path from the REQUEST, so which mount it lands
 # on is the caller's choice, and a probe on an unresponsive mount blocks its
