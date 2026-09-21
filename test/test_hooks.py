@@ -1344,6 +1344,161 @@ class TestSafeReadFile:
         with pytest.raises(FileNotFoundError):
             safe_read_file(str(tmp_path / "does-not-exist.txt"))
 
+    def test_refuses_a_file_already_past_the_ceiling(self, tmp_path, monkeypatch):
+        """A file whose open-time size exceeds MAX_FILE_BYTES is refused unread.
+
+        EFBIG as an OSError, not a bespoke type: most callers already wrap this
+        read in ``except OSError`` (``json.loads(safe_read_file(...))`` sites),
+        so the refusal degrades there instead of escaping as a crash.
+        """
+        import errno
+
+        from kiro_crew import hooks
+
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 16)
+        f = tmp_path / "big.json"
+        f.write_bytes(b"x" * 17)
+        with pytest.raises(OSError) as caught:
+            safe_read_file(str(f))
+        assert caught.value.errno == errno.EFBIG
+        assert not isinstance(caught.value, PermissionError)
+
+    def test_refuses_a_file_that_grows_after_the_open(self, tmp_path, monkeypatch):
+        """Growth between the size check and the read is refused mid-read.
+
+        ``fstat`` describes the file as it was at open time, so a writer holding
+        the same path can append while it is consumed. The append is driven from
+        the identity check because that is the real seam between the open and the
+        read — without the per-read charge this returns the grown content.
+        """
+        import errno
+
+        from kiro_crew import hooks
+
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 16)
+        f = tmp_path / "grows.json"
+        f.write_bytes(b"x" * 8)
+        real_check = hooks._opened_file_matches_validated_path
+
+        def append_then_check(fd: int, path: str) -> bool:
+            with open(f, "ab") as sink:
+                sink.write(b"y" * 64)
+            return real_check(fd, path)
+
+        monkeypatch.setattr(hooks, "_opened_file_matches_validated_path", append_then_check)
+        with pytest.raises(OSError) as caught:
+            safe_read_file(str(f))
+        assert caught.value.errno == errno.EFBIG
+
+    def test_collapses_crlf_like_the_text_handle_it_replaced(self, tmp_path):
+        """CRLF still arrives as "\\n".
+
+        The read moved from a text-mode handle to bytes plus a decode, and text
+        mode was collapsing line endings on the way out; a caller comparing
+        against a "\\n" literal would otherwise start seeing carriage returns.
+        """
+        f = tmp_path / "crlf.txt"
+        f.write_bytes(b"one\r\ntwo\rthree\n")
+        assert safe_read_file(str(f)) == "one\ntwo\nthree\n"
+
+    def test_identity_check_still_sees_the_opened_file_and_still_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        """The authorization hook gets the REAL fd, and refusing it still raises.
+
+        The hook runs on the raw descriptor before any content reader is built.
+        A hook handed some other descriptor would leave this check comparing the
+        wrong file and passing everything, so the fd is pinned to the file's
+        identity rather than only asserting that the refusal fires.
+        """
+        import os
+
+        from kiro_crew import hooks
+
+        f = tmp_path / "watched.txt"
+        f.write_bytes(b"payload")
+        expected = os.stat(f)
+        seen: list[os.stat_result] = []
+
+        def refuse(fd: int, path: str) -> bool:
+            seen.append(os.fstat(fd))
+            return False
+
+        monkeypatch.setattr(hooks, "_opened_file_matches_validated_path", refuse)
+        with pytest.raises(PermissionError, match="no longer matches safe path"):
+            safe_read_file(str(f))
+        assert [(s.st_dev, s.st_ino) for s in seen] == [(expected.st_dev, expected.st_ino)]
+
+    def test_a_refused_descriptor_never_reaches_a_content_reader(self, tmp_path, monkeypatch):
+        """Authorization runs before the handle is built, not after it is yielded.
+
+        Routing the read through a context manager that opens AND wraps before
+        yielding puts the wrapping first, which is how this ordering was lost
+        once already.
+        """
+        import os
+
+        from kiro_crew import hooks
+
+        f = tmp_path / "refused.txt"
+        f.write_bytes(b"must not be read")
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("Refused descriptor reached the content reader")
+
+        monkeypatch.setattr(hooks, "_opened_file_matches_validated_path", lambda _fd, _p: False)
+        monkeypatch.setattr(os, "fdopen", forbidden)
+        with pytest.raises(PermissionError, match="no longer matches safe path"):
+            safe_read_file(str(f))
+
+    def test_the_opener_receives_the_resolved_path_as_a_str(self, tmp_path, monkeypatch):
+        """The leaf opener is a seam other suites stub, and those stubs match on ``str``.
+
+        Handing it a ``Path`` silently bypasses such a stub, which reads as the
+        stubbed refusal never firing rather than as a type mismatch.
+        """
+        import os
+
+        from kiro_crew import platform_compat
+
+        f = tmp_path / "plain.txt"
+        f.write_bytes(b"content")
+        real = platform_compat.open_file_no_reparse
+        seen: list[object] = []
+
+        def record(path, **kwargs):
+            seen.append(path)
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(platform_compat, "open_file_no_reparse", record)
+        assert safe_read_file(str(f)) == "content"
+        assert seen == [os.path.realpath(f)]
+        assert all(isinstance(p, str) for p in seen)
+
+    def test_an_unrelated_einval_is_not_renamed_into_a_safety_refusal(self, tmp_path, monkeypatch):
+        """EINVAL is overloaded, so only the opener's own non-regular refusal may be remapped.
+
+        A filesystem raising EINVAL for its own reason describes a legitimate file
+        that could not be opened; reporting it as a safe-path mismatch tells the
+        caller its file was refused on security grounds, which is a false claim.
+        """
+        import errno
+
+        from kiro_crew import platform_compat
+
+        f = tmp_path / "plain.txt"
+        f.write_bytes(b"content")
+
+        def einval(path, **kwargs):
+            raise OSError(errno.EINVAL, "invalid argument for this filesystem", str(path))
+
+        monkeypatch.setattr(platform_compat, "open_file_no_reparse", einval)
+        with pytest.raises(OSError) as caught:
+            safe_read_file(str(f))
+        assert not isinstance(caught.value, PermissionError)
+        assert caught.value.errno == errno.EINVAL
+        assert "invalid argument for this filesystem" in str(caught.value)
+
 
 class TestShouldAutoApproveSpawn:
     """Test _should_auto_approve_spawn helper from handler.py."""

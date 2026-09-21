@@ -28,7 +28,7 @@ from dataclasses import replace as dataclasses_replace
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import pinned_fs, platform_compat, security, webhooks
+from kiro_crew import jsonl_util, pinned_fs, platform_compat, security, webhooks
 
 # The xattr ACL-carry policy is shared with atomic_write.atomic_write: both
 # install a fresh inode and must reproduce the source's access controls or
@@ -2855,17 +2855,30 @@ def safe_read_file(path: str) -> str:
     Canonicalizes the path (following every symlink), re-checks the RESOLVED
     target against ``is_sensitive_path`` — so a symlink pointing into ``~/.aws``
     etc. is refused through the link — then re-opens the canonical path through
-    :func:`kiro_crew.platform_compat.open_file_no_reparse` as defense-in-depth
+    :func:`kiro_crew.jsonl_util.open_regular_nofollow` as defense-in-depth
     against a TOCTOU swap of the final component into a link after the check.
-    That helper carries the refusal on Windows too, where ``O_NOFOLLOW`` does not
+    That opener carries the refusal on Windows too, where ``O_NOFOLLOW`` does not
     exist and a plain open would resolve a junction planted at the name.
     Opening the
     already-resolved canonical path never rejects a legitimate file (its final
     component is not a symlink by construction), so this only closes the race.
 
-    Raises ``PermissionError`` if the path is sensitive or a symlink race is
-    detected. Other read errors (missing file, permission denied) propagate
-    unchanged so callers surface accurate messages.
+    The read is bounded by ``MAX_FILE_BYTES``, the same ceiling
+    :func:`safe_read_file_bytes` applies, so a path an agent can write cannot
+    drive an unbounded allocation here. The ceiling is charged against every
+    read rather than checked once, so a file that GROWS after the open is
+    refused mid-read instead of being materialised.
+
+    The descriptor is authorized through the opener's ``authorize`` hook rather
+    than after it yields, so a descriptor this function rejects is closed having
+    never been wrapped in a content reader.
+
+    Raises ``PermissionError`` if the path is sensitive, a symlink race is
+    detected, or the opened node is not the regular file that was validated.
+    Other read errors (missing file, permission denied, ``EFBIG`` past the
+    ceiling) propagate as ``OSError`` so callers surface accurate messages — and
+    so the many callers that already wrap this in ``except OSError`` degrade
+    rather than crash.
     """
     resolved = os.path.realpath(os.path.expanduser(path))
     refusal = sensitive_path_refusal(resolved)
@@ -2879,22 +2892,31 @@ def safe_read_file(path: str) -> str:
         if not is_unverifiable_path_refusal(refusal):
             refusal = f"Blocked: access to sensitive path: {resolved!r}"
         raise PermissionError(refusal)
-    try:
-        fd = platform_compat.open_file_no_reparse(resolved, nonblocking=True)
-    except OSError as exc:
-        # ELOOP on the canonical (symlink-free) path means a concurrent TOCTOU
-        # swap of the final component into a symlink — refuse it. Any other
-        # OSError (ENOENT, EACCES) is a normal read error; re-raise as-is.
-        if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1)):
-            raise PermissionError(f"Blocked: refusing to follow symlink at {resolved!r}") from exc
-        raise
-    try:
+
+    def authorize(fd: int) -> None:
         if not _opened_file_matches_validated_path(fd, resolved):
             raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
-        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as fh:
-            return fh.read()
-    finally:
-        os.close(fd)
+
+    try:
+        with jsonl_util.open_regular_nofollow(
+            resolved, max_bytes=MAX_FILE_BYTES, authorize=authorize
+        ) as handle:
+            data = handle.read()
+    except PermissionError:
+        raise
+    except OSError as exc:
+        # ELOOP on the canonical (symlink-free) path means a concurrent TOCTOU
+        # swap of the final component into a symlink — refuse it.
+        if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1)):
+            raise PermissionError(f"Blocked: refusing to follow symlink at {resolved!r}") from exc
+        # EINVAL is shared, so only the opener's own refusal may be remapped this way.
+        if exc.errno == errno.EINVAL and exc.strerror == jsonl_util.NOT_REGULAR_FILE:
+            raise PermissionError(
+                f"Blocked: opened file no longer matches safe path: {resolved!r}"
+            ) from exc
+        raise
+    # Text mode collapsed these on the way out; decoding bytes does not.
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB safety cap
