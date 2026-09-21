@@ -1061,12 +1061,28 @@ The third layer is defense in depth for hosts that ignore `disabledTools`. When 
 policy cannot be read, what it does depends on WHY, because the reasons differ in
 kind and its two consumers carry different risk.
 
-`tools/call` fails **closed** on `policy_unreadable`, the gateway's `409`: a spec for
-this session exists and its policy could not be determined, so an operator exclusion may
-exist and be withheld. The call is refused with an error naming the reason and audited as
-`rejected_policy_unresolved`. The test for admitting a reason here is that it means ONE
-thing, because a refusal derived from an ambiguous reason is wrong for half the callers
-it hits.
+`tools/call` fails **closed** on two reasons, and both mean "an operator exclusion may
+exist and this process could not read it". `policy_unreadable` is the gateway's `409`
+whose body carries `"code": "policy_unreadable"`: a spec for this session exists and its
+policy could not be determined. `identity_unattested` is the gateway's `409` whose body
+carries `"code": "member_identity_unavailable"`: the gateway could not establish the
+execution identity behind the declared `X-Session-Key`. Usually the request carries no
+`X-Session-Token`, or one that vouches for another key; an attested key whose execution
+record cannot be read, or a `cron:` key the scheduler has no record for, answers the
+same way. In every case the spec was never consulted, so whatever it excludes is unknown
+here. The two
+share a status, so the MCP side tells them apart by the body's `code`; a `409` whose body
+cannot be read or carries no `code` takes the `policy_unreadable` arm, the status's
+meaning for the unreadable-spec condition, so an unknown `409` is never read as anything
+narrower. The call is refused with an error naming the reason -- the `identity_unattested`
+text names the missing token, its usual cause, the `policy_unreadable` text the agents
+directory -- and
+audited as `rejected_policy_unresolved`; the read that produced `identity_unattested` is
+itself audited as `tool_policy.unattested`. A control-plane backend
+(`CONTROL_PLANE_BACKENDS` in `mcp_gateway/gatewayd.py`) is handed the token per frame in
+the caller block and the policy read sends it, so its calls do not land there. The test
+for admitting a reason here is that it means ONE thing, because a refusal derived from an
+ambiguous reason is wrong for half the callers it hits.
 
 `resolution_failed` -- no usable answer, meaning nothing came back or a `5xx` said the
 gateway is broken -- passes that test and is still permissive, which is the one place
@@ -1116,12 +1132,13 @@ gets a 400/404, never an empty policy.
 An empty body from that endpoint means one thing only: this agent genuinely
 declares no exclusions. A spec that EXISTS and cannot be read -- unparseable,
 valid JSON that is not an object, a `managedToolPolicy` of the wrong shape, or two
-specs declaring one agent name -- answers `409` with `{"error":
-"policy_unreadable"}` and a SEL `denied` record. Sharing the empty body with those
+specs declaring one agent name -- answers `409` with `"code": "policy_unreadable"` in the
+body and a SEL `denied` record. Sharing the empty body with those
 cases would make an unreadable deny indistinguishable from no deny on the wire, so
 no caller could tell them apart however carefully it fails closed. The MCP side
-maps that `409` to `unresolved="policy_unreadable"` and does NOT negative-cache
-it: the answer is immediate so there is no timeout to debounce, and both negative
+maps a `409` carrying that code to `unresolved="policy_unreadable"` and does NOT
+negative-cache it, nor its `identity_unattested` sibling: the answer is immediate so
+there is no timeout to debounce, and both negative
 clocks are process-global, so caching one session's malformed spec there would
 refuse calls for every sibling session in a pooled backend.
 
