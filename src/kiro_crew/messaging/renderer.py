@@ -17,7 +17,13 @@ a widget-capable renderer that skips the helper fails that test.
 Channels declaring ``max_buttons=0`` render no widget and route the whole
 trailer through :func:`render_options_as_text`, which reaches the same helper
 with zero widget slots: every choice becomes a numbered line the user answers by
-typing, rather than being deleted along with the trailer.
+typing, rather than being deleted along with the trailer. Four channels deliver the
+numbered list -- Weixin, iMessage and Feishu through this function, WeCom through
+its own streaming-aware copy (see below) -- and
+``test/test_options_cap_contract.py`` drives each one. WhatsApp declares ``max_buttons=0`` and does NOT: its renderer strips a
+complete trailer (``whatsapp/turn_renderer.py::_strip_options``) and the choices
+are lost, which is a gap rather than a position -- so a ``0`` here is not on its
+own a promise that the list survives.
 
 Webex is the widget channel that ALSO always ships the numbered text: it declares
 Adaptive Card actions, but the inbound half of a press rides an undocumented
@@ -578,10 +584,16 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
 def render_options_as_text(text: str, capabilities: TransportCapabilities) -> str:
     """Rewrite a trailing ``[OPTIONS:]`` trailer in *text* as numbered text.
 
-    The whole trailer handling for a channel that renders no widget, so every
-    channel that renders none shares one implementation instead of a copy each.
+    The whole trailer handling for a channel that renders no widget, so a channel
+    that renders none shares one implementation instead of keeping a copy each.
     Returns the body only; the widget half of :func:`apply_options_cap` has
     nothing to keep at ``max_buttons == 0``.
+
+    Three of the five zero-widget channels call it: Weixin, iMessage and Feishu.
+    WeCom reaches the same outcome through its own ``_render_options_as_text``, for
+    the ``hide_partial`` reason below, so it does not call this one. WhatsApp is the
+    channel that reaches the outcome NOWHERE: its renderer strips the trailer
+    instead, so its choices never arrive here or anywhere.
 
     Parsing is :func:`split_options_trailer`, at its buffered default: this path's
     callers do not stream — they buffer a whole turn and send once — so an

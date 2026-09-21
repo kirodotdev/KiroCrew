@@ -79,7 +79,12 @@ class TransportCapabilities:
       list in the body. Channels declaring 0 render no widget and route the
       WHOLE list through ``messaging.renderer.render_options_as_text``, which is
       the same helper with zero widget slots, so every choice arrives as a
-      numbered line rather than being deleted with the trailer.
+      numbered line rather than being deleted with the trailer. WhatsApp is the
+      one zero-widget channel that does NOT do this: its renderer strips a
+      complete trailer (``whatsapp/turn_renderer.py::_strip_options``) and the
+      choices are lost. Do not read a 0 here as a promise that the list survives
+      -- ``test_options_cap_contract.py`` drives the four channels that honour it,
+      and WhatsApp is deliberately absent from that set.
 
     * ``rich_blocks`` — gates whether a renderer attaches a native widget at
       all. Webex reads it before building an Adaptive Card, for both the

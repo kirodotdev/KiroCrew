@@ -221,10 +221,13 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
 - **Formatting**: Markdown is converted to WhatsApp's dialect (`*bold*`,
   `_italic_`, ` ``` `code` ``` `); headings become bold lines, bullets become
   `•`, links become `label (url)`.
-- **Interactive choices** degrade to numbered text options: reply with the
-  number. Tappable buttons are not used here. That is this channel's deliberate
-  choice rather than a protocol limit, because whether a recipient's app renders
-  a button sent from a personal linked device is not something we can promise.
+- **Interactive choices are dropped, not numbered**: a completed `[OPTIONS:]`
+  trailer is removed from the reply rather than degraded to a numbered list, so a
+  question whose choices live only there arrives without them. Tappable buttons
+  are not used here either. Not using buttons is this channel's deliberate choice
+  rather than a protocol limit, because whether a recipient's app renders a button
+  sent from a personal linked device is not something we can promise; losing the
+  list is a gap, and [Channel capabilities](channel-capabilities.md) records it.
 - **Reconnect floods**: after a reconnect WhatsApp replays recent history;
   the channel drops replayed messages older than the connection moment
   instead of answering a backlog.

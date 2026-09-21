@@ -59,7 +59,7 @@ legacy metadata do not override a canonical execution.
 | `messaging/transport.py` | **Layer 1** — `MessagingTransport` ABC + the `TransportCapabilities`, `InboundMessage`, and `ConfiguredChannelTarget` value objects (stdlib-only) |
 | `messaging/attachments.py` | Channel-neutral attachment classification, bounded streaming download, extraction/redaction, opaque-file preservation, temp ownership, and SEL audit |
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
-| `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `session_provenance_tag` (stable callback affinity without exposing session keys), `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement), `split_options_trailer` (the ONE `[OPTIONS:]` parse — see below), and `render_options_as_text` — the whole-trailer path for a channel with no widget, which reaches the same cap with zero slots so every choice becomes a numbered line. Also `credential_redaction_notice(count)` — the one sentence a channel sends when credential redaction rewrote text it already delivered, so the reader learns a pasted command will not run. Shared so the wording cannot fork per channel and each spelling need its own audit for leaked bytes; it carries only the count, never secret bytes, and is plain text with no markup or emoji because one string ships to platforms that render different dialects (or none). `redaction_notice(cred_count, url_count)` is the by-kind superset every channel delivery surface now posts through: it delegates to `credential_redaction_notice` byte-for-byte when `url_count` is zero, and otherwise names the suspicious-URL rewrite (`security.EXFILTRATION_REDACTION_TAG_PREFIX`, counted by prefix because the tag interpolates the domain) with the URL remedy — re-check the link against a trusted source — because telling a reader whose URL was rewritten to "supply the secret" names a remedy that cannot help them. Zero/zero is a `ValueError`, never an empty message |
+| `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `session_provenance_tag` (stable callback affinity without exposing session keys), `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement), `split_options_trailer` (the ONE `[OPTIONS:]` parse — see below), and `render_options_as_text` — the whole-trailer path for a channel with no widget, which reaches the same cap with zero slots so every choice becomes a numbered line (WeCom, Weixin, iMessage and Feishu call it; WhatsApp declares `max_buttons=0` and strips the trailer instead, so a `0` alone does not promise the list survives). Also `credential_redaction_notice(count)` — the one sentence a channel sends when credential redaction rewrote text it already delivered, so the reader learns a pasted command will not run. Shared so the wording cannot fork per channel and each spelling need its own audit for leaked bytes; it carries only the count, never secret bytes, and is plain text with no markup or emoji because one string ships to platforms that render different dialects (or none). `redaction_notice(cred_count, url_count)` is the by-kind superset every channel delivery surface now posts through: it delegates to `credential_redaction_notice` byte-for-byte when `url_count` is zero, and otherwise names the suspicious-URL rewrite (`security.EXFILTRATION_REDACTION_TAG_PREFIX`, counted by prefix because the tag interpolates the domain) with the URL remedy — re-check the link against a trusted source — because telling a reader whose URL was rewritten to "supply the secret" names a remedy that cannot help them. Zero/zero is a `ValueError`, never an empty message |
 | `messaging/approval.py` | Two channel-neutral approval styles behind one INTERACTIVE `decider`, both deny-by-default on timeout and keyed `session_key`+`request_id`. **Typed reply** (`TEXT_APPROVAL_TIMEOUT_S`, the verdict vocabulary, `TextReplyApprovalDecider`) for a `max_buttons=0` channel, with Trust recorded as the session's own approval policy rather than a second trust store. **Widget awaiter** (`PendingApprovals` + `SessionApprovalDecider`) for a press whose correlation id and per-prompt nonce travel a round trip this module cannot see (a Webex Adaptive Card over the device websocket); a typed answer has no nonce, a press has no free text |
 | `messaging/driver.py` `deny_all_tools` | Rejects EVERY permission request ahead of every approve path. The approval ladder cannot express "this sender is not the operator" on its own: the PreToolUse hook may answer `auto_approve` and the Trust/YOLO predicates approve and short-circuit, both BEFORE the ladder is consulted, so setting the mode to `interactive` without a decider is not sufficient. Defaults False |
 | `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel |
@@ -3937,7 +3937,9 @@ the only progress signal the channel has.
 **Capabilities.** `streaming=False` and `edit=False` (no message mutation
 exists), `reactions=False`, `files_inbound=False`, `files_outbound=False`,
 `threads=False`, `max_buttons=0` (no tappable choices — a trailing `[OPTIONS:]`
-trailer is stripped like on the other button-less channels),
+trailer becomes a numbered list through the shared `render_options_as_text`, the
+same as WeCom, Weixin and Feishu; WhatsApp is the button-less channel that strips
+it instead),
 `supports_proactive_send=True` (a Mac may message a handle at any time; there is
 no 24-hour window), `supports_session_resume=False` (inbound routes off the
 handle, not a mirrored session binding). `max_message_chars=4000` is declared
@@ -4102,8 +4104,18 @@ and cron results deliver at any time), `supports_session_resume=False` (inbound
 derives its key from the chat JID and never resolves a dashboard mirror binding,
 so a dashboard connect is outbound-only).
 
-`max_buttons=0` is a conservative CHOICE, recorded as unverified rather than as a
-platform ceiling. The pinned wheel ships a complete interactive-message builder
+`max_buttons=0` here also means the choices are LOST, not degraded: this renderer
+strips a complete `[OPTIONS:]` trailer (`turn_renderer._strip_options`) rather than
+routing it through `render_options_as_text` like the other four zero-widget
+channels, so a question whose choices live only in the trailer reaches the user
+without them. A tool approval is unaffected (`on_prompt_choice` builds its own
+numbered prompt). That half is a gap rather than a position, and
+`test_options_cap_contract.py` cannot see it: WhatsApp is absent from its
+`_all_channel_capabilities()` map, so the exhaustiveness ratchet judges nine
+channels in a ten-channel repo.
+
+Declaring no widget at all is a conservative CHOICE, recorded as unverified rather
+than as a platform ceiling. The pinned wheel ships a complete interactive-message builder
 (`neonize/ext/interactive_message/`, `send_interactive_message`) and a poll builder
 (`build_poll_vote_creation` / `decrypt_poll_vote`); what nothing in this repo could
 establish is whether a recipient's client RENDERS a native-flow message sent from a
