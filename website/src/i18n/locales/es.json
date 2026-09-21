@@ -7496,7 +7496,7 @@
       "no_description_was_provided": "No se proporcionó ninguna descripción.",
       "open_pull_request": "Abrir la pull request",
       "open_slack_settings": "Abrir ajustes de Slack",
-      "owner_not_configured_guidance": "Esta acción necesita un propietario configurado, que {{productName}} identifica por el ID de miembro de Slack. Establece \"Owner Slack member ID\" en Ajustes → Canales → Slack, reinicia el gateway y vuelve a iniciar sesión.",
+      "owner_not_configured_guidance": "Esta acción necesita un propietario configurado, que {{productName}} identifica por el ID de miembro de Slack. Establece \"Owner Slack member ID\" en Ajustes → Plataformas de chat → Slack, reinicia el gateway y vuelve a iniciar sesión.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Los resultados del proveedor pueden estar incompletos en {{sections}}. Abre la merge request para ver el conjunto completo.",
       "provider_results_may_be_partial_pull_request": "Los resultados del proveedor pueden estar incompletos en {{sections}}. Abre la pull request para ver el conjunto completo.",
@@ -13234,7 +13234,7 @@
       "retried_n_times_other": "{{count}} reintentos"
     },
     "servicesTab": {
-      "channels": "Canales",
+      "channels": "Plataformas de chat",
       "connect_error": "Error de conexión",
       "connected": "Conectado",
       "cpu": "CPU %",
@@ -13732,7 +13732,7 @@
         "threshold_description": "Propone {{compact}} o {{new}} cuando el contexto de la sesión supera este porcentaje."
       },
       "channelsPanel": {
-        "channels": "Canales",
+        "channels": "Plataformas de chat",
         "chat_channels": "Canales de chat",
         "checking": "Comprobando…",
         "connected": "Conectado",
@@ -15928,7 +15928,7 @@
       },
       "channels": {
         "description": "Plataformas de chat en las que el agente puede enviar y recibir mensajes",
-        "label": "Canales"
+        "label": "Plataformas de chat"
       },
       "chat": {
         "description": "Comportamiento de los mensajes, historial, marcas de tiempo y contexto",

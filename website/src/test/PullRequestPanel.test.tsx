@@ -74,7 +74,7 @@ describe('source read retry policy', () => {
 describe('owner-not-configured mutation refusal', () => {
   it('recognizes the code and swaps in the localized guidance', () => {
     const denied = apiError({
-      error: 'this action needs a configured owner; set the Owner ID in Settings → Channels → Slack, then sign in again',
+      error: 'this action needs a configured owner; set the Owner ID in Settings → Messaging Channels → Slack, then sign in again',
       code: 'owner_not_configured',
     })
     const details = pullRequestErrorDetails(denied)

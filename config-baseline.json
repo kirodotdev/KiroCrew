@@ -5572,7 +5572,7 @@
         "whatsapp"
       ],
       "label": "Enabled",
-      "help": "Enable the WhatsApp channel (QR-linked personal account over the WhatsApp Web protocol). Pair a device from Settings > Channels; needs the 'whatsapp' dependency extra installed.",
+      "help": "Enable the WhatsApp channel (QR-linked personal account over the WhatsApp Web protocol). Pair a device from Settings > Messaging Channels; needs the 'whatsapp' dependency extra installed.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

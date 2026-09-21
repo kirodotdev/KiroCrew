@@ -5,7 +5,7 @@ the *personal* WeChat path (QR-login bot identity, e.g. ``...@im.bot``) and is
 distinct from the enterprise WeCom channel in :mod:`kiro_crew.wechat`
 (``wss://openws.work.weixin.qq.com``).
 
-Setup is dashboard-driven (Settings > Channels > WeChat): the user scans a QR
+Setup is dashboard-driven (Settings > Messaging Channels > WeChat): the user scans a QR
 code, the server persists the returned bot token + account id into the shared
 credential store, and the transport reads them on boot -- mirroring every other
 channel (no terminal wizard).

@@ -7102,7 +7102,7 @@ class WeixinConfig:
     """Weixin (personal WeChat) channel via Tencent's iLink Bot API.
 
     Distinct from :class:`WeComConfig` (enterprise WeCom over WebSocket). The
-    bot ``token`` + ``account_id`` are obtained through the Settings > Channels
+    bot ``token`` + ``account_id`` are obtained through the Settings > Messaging Channels
     QR-login flow; prefer the WEIXIN_TOKEN credential over storing the token
     here.
     """
@@ -7205,7 +7205,7 @@ class WhatsAppConfig:
 
     Pairs as a linked device on the operator's own WhatsApp account — there is
     no bot token. Pairing state lives in a local session database under the
-    data home (``whatsapp/session.db``), created by the Settings > Channels QR
+    data home (``whatsapp/session.db``), created by the Settings > Messaging Channels QR
     flow. Requires the optional ``whatsapp`` dependency
     (``pip install 'neonize==0.4.3.post0'``; see :mod:`kiro_crew.extras`).
 
@@ -7219,7 +7219,7 @@ class WhatsAppConfig:
         metadata=_meta(
             "Enabled",
             "Enable the WhatsApp channel (QR-linked personal account over the "
-            "WhatsApp Web protocol). Pair a device from Settings > Channels; "
+            "WhatsApp Web protocol). Pair a device from Settings > Messaging Channels; "
             "needs the 'whatsapp' dependency extra installed.",
             tags=["whatsapp"],
         ),

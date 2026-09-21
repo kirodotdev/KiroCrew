@@ -2640,7 +2640,7 @@
       "state_draft": "Draft",
       "state_merged": "Merged",
       "state_open": "Open",
-      "owner_not_configured_guidance": "This action needs a configured owner, which {{productName}} identifies by Slack member ID. Set \"Owner Slack member ID\" in Settings → Channels → Slack, restart the gateway, then sign in again.",
+      "owner_not_configured_guidance": "This action needs a configured owner, which {{productName}} identifies by Slack member ID. Set \"Owner Slack member ID\" in Settings → Messaging Channels → Slack, restart the gateway, then sign in again.",
       "open_slack_settings": "Open Slack settings"
     },
     "registryManager": {
@@ -5572,7 +5572,7 @@
       "retried_n_times_other": "Retried {{count}} times"
     },
     "servicesTab": {
-      "channels": "Channels",
+      "channels": "Messaging Channels",
       "connect_error": "Connection error",
       "discord": "Discord",
       "imessage": "iMessage",
@@ -6802,7 +6802,7 @@
       },
       "channels": {
         "description": "Chat platforms the agent can send and receive on",
-        "label": "Channels"
+        "label": "Messaging Channels"
       },
       "chat": {
         "description": "Message behavior, history, timestamps, and context",

@@ -1,7 +1,7 @@
 """WhatsApp channel via a QR-linked personal account (WhatsApp Web protocol).
 
 The channel pairs as a *linked device* on the operator's own WhatsApp account
-(no bot identity, no Business API): scan a QR code from Settings > Channels
+(no bot identity, no Business API): scan a QR code from Settings > Messaging Channels
 once, and the session persists in a local database. Inbound and outbound ride
 the shared ``kiro_crew.messaging`` pipeline; the protocol layer is `neonize
 <https://github.com/krypton-byte/neonize>`_ (Apache-2.0 Python bindings to

@@ -4110,7 +4110,7 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     if not wa.enabled:
         print("  status:      ⏭  not enabled (optional)")
         print("  setup:       run 'kirocrew setup --whatsapp', or enable it from")
-        print("               the dashboard (Settings → Channels → WhatsApp)")
+        print("               the dashboard (Settings → Messaging Channels → WhatsApp)")
         return
 
     if neonize_available():
@@ -4135,7 +4135,7 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
         # make progress.
         print("  session:     ⚠️  not paired yet, so the channel starts unpaired")
         print(f"               Expected store: {store}")
-        print("               Pair from the dashboard (Settings → Channels → WhatsApp)")
+        print("               Pair from the dashboard (Settings → Messaging Channels → WhatsApp)")
 
     groups = [g for g in (wa.groups or []) if isinstance(g, dict) and str(g.get("jid", "")).strip()]
     if groups:
@@ -4849,7 +4849,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         print("  status:      ⚠️  channel roster unavailable")
     if rows and not any(row.enabled for row in rows):
         print("  status:      ⏭  none enabled (optional)")
-        print("  setup:       connect one from the dashboard's Settings > Channels")
+        print("  setup:       connect one from the dashboard's Settings > Messaging Channels")
     for row in rows:
         if not row.enabled:
             continue
@@ -4870,7 +4870,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print(f"  {name + ':':12} ❌ enabled but missing {missing}")
             print(
                 "               The channel will not start. Set it in "
-                "Settings > Channels, or in ~/.kiro/crew/.env"
+                "Settings > Messaging Channels, or in ~/.kiro/crew/.env"
             )
             issues.append(f"{name}: missing {missing}")
 

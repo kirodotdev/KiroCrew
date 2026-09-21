@@ -39,7 +39,7 @@ configuration allows, and rate-limits unprompted group replies.
    `whatsapp.enabled` for you. It collects no credentials: there is no token, and
    pairing still happens in step 3 below.
 
-3. Open **Settings → Channels → WhatsApp**. With the channel enabled and no
+3. Open **Settings → Messaging Channels → WhatsApp**. With the channel enabled and no
    session on disk, the gateway begins pairing as it starts the channel and holds
    a rotating code. Click **Show pairing code** to see it, then scan with your
    phone: WhatsApp, Settings, Linked devices, Link a device. The code rotates
@@ -150,7 +150,7 @@ listed. Each entry:
   caps unprompted replies per group regardless.
 - `mode: "off"` — keep the entry, mute the group.
 
-Groups are configured from **Settings → Channels → WhatsApp → Groups** rather
+Groups are configured from **Settings → Messaging Channels → WhatsApp → Groups** rather
 than by hand. The picker lists the groups the linked account has joined, which the
 gateway can only report while the channel is connected, and each row carries that
 group's mode, its free-text rules and its cooldown. A group is added at `mention`,

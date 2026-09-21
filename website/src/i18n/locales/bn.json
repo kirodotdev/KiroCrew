@@ -7388,7 +7388,7 @@
       "no_description_was_provided": "কোনো বিবরণ দেওয়া হয়নি।",
       "open_pull_request": "পুল রিকোয়েস্ট খুলুন",
       "open_slack_settings": "Slack সেটিংস খুলুন",
-      "owner_not_configured_guidance": "এই কাজের জন্য একজন কনফিগার করা মালিক প্রয়োজন, যাকে {{productName}} Slack member ID দিয়ে শনাক্ত করে। Settings → Channels → Slack-এ \"Owner Slack member ID\" সেট করুন, গেটওয়ে রিস্টার্ট করুন, তারপর আবার সাইন ইন করুন।",
+      "owner_not_configured_guidance": "এই কাজের জন্য একজন কনফিগার করা মালিক প্রয়োজন, যাকে {{productName}} Slack member ID দিয়ে শনাক্ত করে। Settings → চ্যাট প্ল্যাটফর্ম → Slack-এ \"Owner Slack member ID\" সেট করো, গেটওয়ে রিস্টার্ট করো, তারপর আবার সাইন ইন করো।",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য মার্জ রিকোয়েস্টটি খোলো।",
       "provider_results_may_be_partial_pull_request": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য পুল রিকোয়েস্টটি খোলো।",
@@ -13055,7 +13055,7 @@
       "retried_n_times_other": "{{count}} বার পুনরায় চেষ্টা করা হয়েছে"
     },
     "servicesTab": {
-      "channels": "চ্যানেল",
+      "channels": "চ্যাট প্ল্যাটফর্ম",
       "connect_error": "কানেকশন ত্রুটি",
       "connected": "সংযুক্ত",
       "cpu": "CPU %",
@@ -13546,7 +13546,7 @@
         "threshold_description": "সেশন কনটেক্সট এই শতাংশ ছাড়ালে {{compact}} বা {{new}} করার প্রম্পট দেখাও।"
       },
       "channelsPanel": {
-        "channels": "চ্যানেল",
+        "channels": "চ্যাট প্ল্যাটফর্ম",
         "chat_channels": "চ্যাট চ্যানেল",
         "checking": "যাচাই করা হচ্ছে…",
         "connected": "সংযুক্ত",
@@ -15728,7 +15728,7 @@
       },
       "channels": {
         "description": "এজেন্ট যেসব চ্যাট প্ল্যাটফর্মে বার্তা পাঠাতে ও গ্রহণ করতে পারে",
-        "label": "চ্যানেল"
+        "label": "চ্যাট প্ল্যাটফর্ম"
       },
       "chat": {
         "description": "বার্তার আচরণ, ইতিহাস, টাইমস্ট্যাম্প, এবং কনটেক্সট",

@@ -8252,7 +8252,7 @@
         "your_organization_s_security_policy_disables_thi": "Your organization's security policy disables this channel. Its settings\n        are unavailable and any configuration here would not take effect."
       },
       "channelsPanel": {
-        "channels": "Channels",
+        "channels": "Messaging Channels",
         "chat_channels": "Chat channels",
         "off_by_admin": "Off by admin"
       },

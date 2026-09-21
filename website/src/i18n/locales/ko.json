@@ -7280,7 +7280,7 @@
       "no_description_was_provided": "설명이 제공되지 않았습니다.",
       "open_pull_request": "풀 리퀘스트 열기",
       "open_slack_settings": "Slack 설정 열기",
-      "owner_not_configured_guidance": "이 작업에는 구성된 소유자가 필요하며, {{productName}}은(는) 소유자를 Slack 멤버 ID로 식별합니다. 설정 → 채널 → Slack에서 \"Owner Slack member ID\"를 설정하고 게이트웨이를 재시작한 뒤 다시 로그인하세요.",
+      "owner_not_configured_guidance": "이 작업에는 구성된 소유자가 필요하며, {{productName}}은(는) 소유자를 Slack 멤버 ID로 식별합니다. 설정 → 채팅 플랫폼 → Slack에서 \"Owner Slack member ID\"를 설정하고 게이트웨이를 재시작한 뒤 다시 로그인하세요.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "{{sections}}에 대한 공급자 결과가 일부일 수 있습니다. 전체를 보려면 머지 리퀘스트를 여세요.",
       "provider_results_may_be_partial_pull_request": "{{sections}}에 대한 공급자 결과가 일부일 수 있습니다. 전체를 보려면 풀 리퀘스트를 여세요.",
@@ -12876,7 +12876,7 @@
       "retried_n_times_other": "{{count}}회 재시도했습니다"
     },
     "servicesTab": {
-      "channels": "채널",
+      "channels": "채팅 플랫폼",
       "connect_error": "연결 오류",
       "connected": "연결됨",
       "cpu": "CPU %",
@@ -13359,7 +13359,7 @@
         "threshold_description": "세션 컨텍스트가 이 비율을 넘으면 {{compact}} 또는 {{new}}을(를) 안내합니다."
       },
       "channelsPanel": {
-        "channels": "채널",
+        "channels": "채팅 플랫폼",
         "chat_channels": "채팅 채널",
         "checking": "확인 중…",
         "connected": "연결됨",
@@ -15527,7 +15527,7 @@
       },
       "channels": {
         "description": "에이전트가 송수신할 수 있는 채팅 플랫폼",
-        "label": "채널"
+        "label": "채팅 플랫폼"
       },
       "chat": {
         "description": "메시지 동작, 기록, 타임스탬프, 컨텍스트",

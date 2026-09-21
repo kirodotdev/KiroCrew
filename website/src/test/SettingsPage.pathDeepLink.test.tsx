@@ -102,7 +102,7 @@ beforeEach(() => {
 })
 
 describe('path deep link /settings/channels/slack — cold open', () => {
-  it('mobile: opens the Slack pane under a single "Channels" back bar', async () => {
+  it('mobile: opens the Slack pane under a single "Messaging Channels" back bar', async () => {
     mobile = true
     mockWidth = 390
     renderAt('/settings/channels/slack')
@@ -114,14 +114,14 @@ describe('path deep link /settings/channels/slack — cold open', () => {
     expect(screen.queryByRole('list', { name: 'Settings' })).toBeNull()
 
     // Exactly ONE back bar, the SubNav's, labeled after the parent level.
-    expect(screen.getByRole('button', { name: 'Channels' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Messaging Channels' })).toBeInTheDocument()
     // SidePanelLayout's own "‹ Settings" bar and big-title header yield —
     // path depth >= 2 on a hostsSubNav tab means the SubNav owns navigation.
     expect(screen.queryByRole('button', { name: /Settings/ })).toBeNull()
     expect(screen.queryByTestId('mobile-detail-header')).toBeNull()
   })
 
-  it('wide: highlights Channels in the rail and marks Slack selected in the SubNav', async () => {
+  it('wide: highlights Messaging Channels in the rail and marks Slack selected in the SubNav', async () => {
     mobile = false
     mockWidth = 1000
     renderAt('/settings/channels/slack')
@@ -133,7 +133,7 @@ describe('path deep link /settings/channels/slack — cold open', () => {
     // Rail selection: the Channels tab carries the active tint, Overview
     // does not. (The rail rows are plain buttons; the SubNav's rows are
     // role="option", so the name query cannot cross-match them.)
-    expect(screen.getByRole('button', { name: 'Channels' }).className).toContain('bg-accent-subtle')
+    expect(screen.getByRole('button', { name: 'Messaging Channels' }).className).toContain('bg-accent-subtle')
     expect(screen.getByRole('button', { name: 'Overview' }).className).not.toContain('bg-accent-subtle')
 
     // SubNav selection: the path's segment[1] is the selected option.

@@ -7496,7 +7496,7 @@
       "no_description_was_provided": "Nenhuma descrição foi fornecida.",
       "open_pull_request": "Abrir pull request",
       "open_slack_settings": "Abrir configurações do Slack",
-      "owner_not_configured_guidance": "Esta ação precisa de um proprietário configurado, que o {{productName}} identifica pelo ID de membro do Slack. Defina \"Owner Slack member ID\" em Configurações → Canais → Slack, reinicie o gateway e entre novamente.",
+      "owner_not_configured_guidance": "Esta ação precisa de um proprietário configurado, que o {{productName}} identifica pelo ID de membro do Slack. Defina \"Owner Slack member ID\" em Configurações → Plataformas de chat → Slack, reinicie o gateway e entre novamente.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Os resultados do provedor podem estar incompletos em {{sections}}. Abra o merge request para ver o conjunto completo.",
       "provider_results_may_be_partial_pull_request": "Os resultados do provedor podem estar incompletos em {{sections}}. Abra o pull request para ver o conjunto completo.",
@@ -13234,7 +13234,7 @@
       "retried_n_times_other": "{{count}} novas tentativas"
     },
     "servicesTab": {
-      "channels": "Canais",
+      "channels": "Plataformas de chat",
       "connect_error": "Erro de conexão",
       "connected": "Conectado",
       "cpu": "CPU %",
@@ -13731,7 +13731,7 @@
         "threshold_description": "Sugerir {{compact}} ou {{new}} quando o contexto da sessão passar desta porcentagem."
       },
       "channelsPanel": {
-        "channels": "Canais",
+        "channels": "Plataformas de chat",
         "chat_channels": "Canais de chat",
         "checking": "Verificando…",
         "connected": "Conectado",
@@ -15927,7 +15927,7 @@
       },
       "channels": {
         "description": "Plataformas de chat em que o agente pode enviar e receber mensagens",
-        "label": "Canais"
+        "label": "Plataformas de chat"
       },
       "chat": {
         "description": "Comportamento das mensagens, histórico, marcações de hora e contexto",

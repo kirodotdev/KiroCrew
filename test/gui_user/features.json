@@ -4419,7 +4419,7 @@
       "title": "Settings › Channels",
       "user_story": "As a team lead, I want to configure Slack, Discord, Telegram, WhatsApp, Teams and more, so that the crew reaches my team where they are.",
       "start_url": "/settings/channels",
-      "entry_path": "Settings → Channels → provider panel",
+      "entry_path": "Settings → Messaging Channels → provider panel",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4502,7 +4502,7 @@
       "title": "Edit allowed user IDs and context thresholds for a bot channel",
       "user_story": "As an operator, I want to set Allowed user IDs and Soft context threshold for Telegram, so that only I can message the bot and compaction is suggested in time.",
       "start_url": "/settings/channels/telegram",
-      "entry_path": "Settings > Channels > Telegram > Allowed user IDs > Soft context threshold % > Save",
+      "entry_path": "Settings > Messaging Channels > Telegram > Allowed user IDs > Soft context threshold % > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4529,7 +4529,7 @@
       "title": "Enable File sessions in a folder for a bot channel (Discord/Telegram)",
       "user_story": "As an operator, I want channel sessions filed into a named sidebar folder, so that Discord or Telegram chats stay grouped.",
       "start_url": "/settings/channels/discord",
-      "entry_path": "Settings > Channels > Discord > File sessions in a folder toggle > Folder name input > Save",
+      "entry_path": "Settings > Messaging Channels > Discord > File sessions in a folder toggle > Folder name input > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4556,7 +4556,7 @@
       "title": "See a channel disabled by governance policy",
       "user_story": "As a governed user, I want to see 'Off by admin' on a channel denied by policy, so that I understand why I cannot edit its config.",
       "start_url": "/settings/channels/slack",
-      "entry_path": "Settings > Channels > select a channel whose governance policy is false > ChannelDisabledPanel shown",
+      "entry_path": "Settings > Messaging Channels > select a channel whose governance policy is false > ChannelDisabledPanel shown",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4582,7 +4582,7 @@
       "title": "Toggle Slack Show thinking without a live connection",
       "user_story": "As an operator, I want to toggle Show thinking for Slack, so that reasoning is or is not posted as a thread reply.",
       "start_url": "/settings/channels/slack",
-      "entry_path": "Settings > Channels > Slack > Show thinking toggle",
+      "entry_path": "Settings > Messaging Channels > Slack > Show thinking toggle",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4633,7 +4633,7 @@
       "title": "Connect Slack in the Slack channel panel",
       "user_story": "As an operator, I want to connect a Slack workspace, so that the bot can DM me.",
       "start_url": "/settings/channels/slack",
-      "entry_path": "Settings > Channels > Slack > enter tokens > Connect",
+      "entry_path": "Settings > Messaging Channels > Slack > enter tokens > Connect",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4662,7 +4662,7 @@
       "title": "Configure Feishu / WeCom channels",
       "user_story": "As an operator, I want to configure Feishu or WeCom credentials and allowlists, so that colleagues on those platforms can use the agent.",
       "start_url": "/settings/channels/feishu",
-      "entry_path": "Settings > Channels > Feishu (or WeCom) > credentials > Save",
+      "entry_path": "Settings > Messaging Channels > Feishu (or WeCom) > credentials > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4689,7 +4689,7 @@
       "title": "Configure iMessage channel (enable, allowed handles, service, DB path)",
       "user_story": "As a Mac user, I want to enable the iMessage channel and allow my handle, so that I can message the agent from my phone.",
       "start_url": "/settings/channels/imessage",
-      "entry_path": "Settings > Channels > iMessage > Enable > Allowed handles > Send replies over > Messages database path",
+      "entry_path": "Settings > Messaging Channels > iMessage > Enable > Allowed handles > Send replies over > Messages database path",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4715,7 +4715,7 @@
       "title": "Configure Microsoft Teams channel (App ID, password, tenant, allowed users)",
       "user_story": "As an operator, I want to enter Azure Bot App ID, client secret and allowed users, so that Teams users can DM the agent.",
       "start_url": "/settings/channels/teams",
-      "entry_path": "Settings > Channels > Microsoft Teams > Enable > App ID > App password > Allowed users > Save",
+      "entry_path": "Settings > Messaging Channels > Microsoft Teams > Enable > App ID > App password > Allowed users > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4741,7 +4741,7 @@
       "title": "Configure Webex channel (token, allowed emails, group spaces, thread reply)",
       "user_story": "As an operator, I want to set the Webex bot token, allowed emails and group-space options, so that the bot answers only approved people.",
       "start_url": "/settings/channels/webex",
-      "entry_path": "Settings > Channels > Webex > Enable > token > Allowed emails > Answer in group spaces > Save",
+      "entry_path": "Settings > Messaging Channels > Webex > Enable > token > Allowed emails > Answer in group spaces > Save",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4767,7 +4767,7 @@
       "title": "Configure WeChat (Weixin) channel",
       "user_story": "As an operator, I want to enable the WeChat channel and set who can message the bot, so that only allowed WeChat users reach the agent.",
       "start_url": "/settings/channels/weixin",
-      "entry_path": "Settings > Channels > WeChat > Enable > Who can message the bot > Allowed user IDs > Folder",
+      "entry_path": "Settings > Messaging Channels > WeChat > Enable > Who can message the bot > Allowed user IDs > Folder",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -4793,7 +4793,7 @@
       "title": "Configure WhatsApp channel (enable, who can message, how the agent joins in)",
       "user_story": "As an operator, I want to enable WhatsApp and choose who can message and when the agent speaks, so that group chats are handled safely.",
       "start_url": "/settings/channels/whatsapp",
-      "entry_path": "Settings > Channels > WhatsApp > Enable > Who can message > How the agent joins in > Seconds between unprompted replies",
+      "entry_path": "Settings > Messaging Channels > WhatsApp > Enable > Who can message > How the agent joins in > Seconds between unprompted replies",
       "preconditions": {
         "seed": "minimal",
         "members": [],

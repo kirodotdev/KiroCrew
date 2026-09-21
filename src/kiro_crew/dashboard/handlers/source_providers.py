@@ -6647,7 +6647,7 @@ def _authorize_owner_request(
                     "error": (
                         "this action needs a configured owner, which Kiro Crew"
                         " identifies by Slack member ID; set 'Owner Slack member"
-                        " ID' in Settings → Channels → Slack, restart the"
+                        " ID' in Settings → Messaging Channels → Slack, restart the"
                         " gateway, then sign in again"
                     ),
                     "code": OWNER_NOT_CONFIGURED_CODE,

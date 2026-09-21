@@ -375,7 +375,7 @@ def _setup_impl(
         print("  The dashboard works without any messaging credentials.")
         print("  Connect Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat,")
         print("  WhatsApp, or iMessage (macOS only)")
-        print("  later from the dashboard (Settings → Channels) or run")
+        print("  later from the dashboard (Settings → Messaging Channels) or run")
         print("  'kirocrew setup --slack' or 'kirocrew setup --whatsapp' for a")
         print("  guided setup.\n")
 
@@ -849,12 +849,12 @@ def _setup_whatsapp() -> None:
         print(f"  ✅ A paired session store already exists: {store}")
     else:
         print("  ℹ️  Not paired yet. Pairing is a QR scan from the dashboard:")
-        print("     Settings → Channels → WhatsApp, with the gateway running.")
+        print("     Settings → Messaging Channels → WhatsApp, with the gateway running.")
     print()
 
     answer = _input_or_skip("  Enable the WhatsApp channel? [y/N]: ")
     if not answer or answer.lower() not in ("y", "yes"):
-        print("  ⏭  Left disabled. Enable it later from Settings → Channels.\n")
+        print("  ⏭  Left disabled. Enable it later from Settings → Messaging Channels.\n")
         return
 
     cfg_file = config_path()
@@ -904,14 +904,14 @@ def _setup_whatsapp() -> None:
         return
     except OSError as exc:
         print(f"  ⚠️  Could not write {cfg_file}: {exc}")
-        print("     Nothing was enabled. Enable it from Settings → Channels instead.\n")
+        print("     Nothing was enabled. Enable it from Settings → Messaging Channels instead.\n")
         return
     if section_clash:
         print("  ⚠️  'whatsapp' section is not an object; leaving config untouched.\n")
         return
     print("  ✅ Recorded: whatsapp.enabled = true")
     print("     Next: start the gateway, then scan the QR from")
-    print("     Settings → Channels → WhatsApp.\n")
+    print("     Settings → Messaging Channels → WhatsApp.\n")
 
 
 _CUSTOM_DOMAIN = "kirocrew.localhost"

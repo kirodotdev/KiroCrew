@@ -89,7 +89,7 @@ async def _check_configured_groups(client: "WhatsAppClient", groups: object) -> 
     # startup log and reads as several unrelated faults instead of one stale list.
     logger.warning(
         "whatsapp: %d of %d configured group(s) are not groups this account is in, "
-        "so messages there are ignored: %s. Re-pick them in Settings > Channels.",
+        "so messages there are ignored: %s. Re-pick them in Settings > Messaging Channels.",
         len(missing),
         len(configured),
         ", ".join(missing),

@@ -7604,7 +7604,7 @@
       "no_description_was_provided": "Описание не указано.",
       "open_pull_request": "Открыть пул-реквест",
       "open_slack_settings": "Открыть настройки Slack",
-      "owner_not_configured_guidance": "Для этого действия нужен настроенный владелец, которого {{productName}} определяет по Slack member ID. Укажите \"Owner Slack member ID\" в разделе Настройки → Каналы → Slack, перезапустите шлюз, затем войдите снова.",
+      "owner_not_configured_guidance": "Для этого действия нужен настроенный владелец, которого {{productName}} определяет по Slack member ID. Укажите \"Owner Slack member ID\" в разделе Настройки → Чат-платформы → Slack, перезапустите шлюз, затем войдите снова.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Результаты провайдера могут быть неполными для {{sections}}. Открой мерж-реквест, чтобы увидеть полный набор.",
       "provider_results_may_be_partial_pull_request": "Результаты провайдера могут быть неполными для {{sections}}. Открой пул-реквест, чтобы увидеть полный набор.",
@@ -13413,7 +13413,7 @@
       "retried_n_times_other": "{{count}} повторные попытки"
     },
     "servicesTab": {
-      "channels": "Каналы",
+      "channels": "Чат-платформы",
       "connect_error": "Ошибка подключения",
       "connected": "Подключено",
       "cpu": "CPU %",
@@ -13918,7 +13918,7 @@
         "threshold_description": "Предлагать {{compact}} или {{new}}, когда контекст сессии превысит этот процент."
       },
       "channelsPanel": {
-        "channels": "Каналы",
+        "channels": "Чат-платформы",
         "chat_channels": "Каналы чата",
         "checking": "Проверка...",
         "connected": "Подключено",
@@ -16128,7 +16128,7 @@
       },
       "channels": {
         "description": "Платформы для общения, через которые агент может отправлять и получать сообщения",
-        "label": "Каналы"
+        "label": "Чат-платформы"
       },
       "chat": {
         "description": "Поведение сообщений, история, метки времени и контекст",

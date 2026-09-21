@@ -167,7 +167,7 @@ export interface StatusData {
    * AMBIGUOUS by construction: it is what an unconfigured channel and a
    * configured one that never started both look like. Nothing in this payload
    * separates them — each channel's own config endpoint reports `configured`,
-   * which is what Settings > Channels reads.
+   * which is what Settings > Messaging Channels reads.
    */
   channels?: Record<string, { connected: boolean; error: string }>
   /** Governance enforcement health. */

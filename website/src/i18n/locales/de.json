@@ -7388,7 +7388,7 @@
       "no_description_was_provided": "Es wurde keine Beschreibung angegeben.",
       "open_pull_request": "Pull Request öffnen",
       "open_slack_settings": "Slack-Einstellungen öffnen",
-      "owner_not_configured_guidance": "Diese Aktion erfordert einen konfigurierten Besitzer, den {{productName}} über die Slack-Mitglieds-ID identifiziert. Legen Sie \"Owner Slack member ID\" unter Einstellungen → Kanäle → Slack fest, starten Sie das Gateway neu und melden Sie sich dann erneut an.",
+      "owner_not_configured_guidance": "Diese Aktion erfordert einen konfigurierten Besitzer, den {{productName}} über die Slack-Mitglieds-ID identifiziert. Legen Sie \"Owner Slack member ID\" unter Einstellungen → Chat-Plattformen → Slack fest, starten Sie das Gateway neu und melden Sie sich dann erneut an.",
       "pr_number": "PR #{{number}}",
       "provider_results_may_be_partial_merge_request": "Die Anbieterergebnisse können für {{sections}} unvollständig sein. Öffne den Merge Request für den vollständigen Satz.",
       "provider_results_may_be_partial_pull_request": "Die Anbieterergebnisse können für {{sections}} unvollständig sein. Öffne den Pull Request für den vollständigen Satz.",
@@ -13055,7 +13055,7 @@
       "retried_n_times_other": "{{count}} Mal erneut versucht"
     },
     "servicesTab": {
-      "channels": "Kanäle",
+      "channels": "Chat-Plattformen",
       "connect_error": "Verbindungsfehler",
       "connected": "Verbunden",
       "cpu": "CPU %",
@@ -13545,7 +13545,7 @@
         "threshold_description": "Zu {{compact}} oder {{new}} auffordern, wenn der Sitzungskontext diesen Prozentsatz überschreitet."
       },
       "channelsPanel": {
-        "channels": "Kanäle",
+        "channels": "Chat-Plattformen",
         "chat_channels": "Chat-Kanäle",
         "checking": "Wird geprüft…",
         "connected": "Verbunden",
@@ -15727,7 +15727,7 @@
       },
       "channels": {
         "description": "Chat-Plattformen, über die der Agent senden und empfangen kann",
-        "label": "Kanäle"
+        "label": "Chat-Plattformen"
       },
       "chat": {
         "description": "Nachrichtenverhalten, Verlauf, Zeitstempel und Kontext",
