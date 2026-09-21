@@ -115,6 +115,12 @@ from kiro_crew.dashboard.handlers._shared import (
     apply_skill_mapping,
     read_bounded_json,
 )
+from kiro_crew.dashboard.handlers.agent_templates import (
+    TEMPLATE_DEFINITION_KEYS,
+    apply_definition_patch,
+    read_only_reason_for_path,
+    validate_definition_patch,
+)
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
@@ -3465,7 +3471,23 @@ async def api_agent_detail(request: web.Request) -> web.Response:
     # directory must not stall every other request on the loop. Only the specs
     # that claim *name* come back, in scan order, so the body below keeps its
     # skip-to-next-file shape over exactly the files it would have acted on.
-    for f, spec in await asyncio.to_thread(_agent_detail_candidates, name):
+    candidates = await asyncio.to_thread(_agent_detail_candidates, name)
+    if request.method == "PATCH" and patch_body is not None and len(candidates) > 1:
+        # A PATCH rewrites ONE file -- model, skills, prompt, tools alike. Two
+        # files claiming the name (``atlas.json`` beside ``SomePkg-atlas.json``,
+        # or a hand-edited declared name colliding with another file's stem)
+        # would be resolved by unordered scan order, so the file the roster
+        # showed and the file overwritten could differ. Refused for every key,
+        # like the fork/publish resolvers refuse ``_AmbiguousTemplateName``;
+        # the same check runs again under the write lock below.
+        return web.json_response(
+            {
+                "error": f"'{name}' matches more than one template file; rename one first.",
+                "code": "ambiguous_template_name",
+            },
+            status=409,
+        )
+    for f, spec in candidates:
         # Two-step so ``data`` stays typed ``dict`` for the PATCH branch's
         # re-read below, which reassigns it from a raw ``json.loads``.
         data = spec
@@ -3510,6 +3532,28 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         return web.json_response(
                             {"error": f"at most {MAX_AGENT_SKILLS} skills per agent"},
                             status=400,
+                        )
+                if TEMPLATE_DEFINITION_KEYS & patch_body.keys():
+                    # The templates tab's definition edit (prompt, description,
+                    # tools). Shape-checked here; refused for a spec the tab
+                    # cannot own -- a package or runtime file would be reverted
+                    # on its next install, a private copy belongs to its crew's
+                    # pane. ``model`` / ``skills`` keep their existing reach: the
+                    # crew pane writes those onto private copies.
+                    problem = validate_definition_patch(patch_body)
+                    if problem is not None:
+                        return web.json_response(
+                            {"error": problem, "code": "invalid_definition"}, status=400
+                        )
+                    read_only = await asyncio.to_thread(read_only_reason_for_path, f)
+                    if read_only is not None:
+                        return web.json_response(
+                            {
+                                "error": f"Template '{name}' is read-only ({read_only})",
+                                "code": "template_read_only",
+                                "reason": read_only,
+                            },
+                            status=409,
                         )
                 mapped: list[str] = []
                 loop = asyncio.get_running_loop()
@@ -3603,6 +3647,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         # before persisting (same contract as
                         # _write_spec_file and the PUT handler).
                         with agents_spec_lock(f.parent):
+                            # The pre-lock ambiguity check re-run where it
+                            # decides: a second claimant that landed after the
+                            # scan (a package install) must refuse, not let
+                            # the stale single match be overwritten.
+                            if [c for c, _spec in _agent_detail_candidates(name)] != [f]:
+                                raise _AmbiguousTemplateName(name)
                             fresh = _read_agent_spec(
                                 f, operation="api_agent_detail", source="dashboard"
                             )
@@ -3621,6 +3671,7 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                     clear_model_pin(data, agent_name)
                                 else:
                                     agent_state.set_model_managed(agent_name, False)
+                            apply_definition_patch(data, patch_body)
                             agent_state.lift_and_strip_bookkeeping(data, agent_name)
                             for key, value in data.items():
                                 if key not in before_patch or before_patch[key] != value:
@@ -3640,6 +3691,15 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     except CapabilityError as exc:
                         return web.json_response(
                             {"error": exc.code, "code": exc.code}, status=exc.status
+                        )
+                    except _AmbiguousTemplateName:
+                        return web.json_response(
+                            {
+                                "error": f"'{name}' matches more than one template file; "
+                                "rename one first.",
+                                "code": "ambiguous_template_name",
+                            },
+                            status=409,
                         )
                     except FileNotFoundError:
                         return web.json_response(

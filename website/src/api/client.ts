@@ -3692,6 +3692,14 @@ export const api = {
   mcpProbeCache: () => fetch('/api/mcp/probe').then(j),
   // Agents
   agentsInstalled: () => fetch('/api/agents/installed').then(j),
+  // The Agent templates tab: roster with editability + references, create, delete.
+  // Editing goes through `agentPatch` (description, prompt, tools, allowedTools,
+  // model, skills); the server refuses the definition keys on a read-only spec
+  // (409 template_read_only) and a delete on a referenced one (409
+  // template_referenced, body.references lists what).
+  agentTemplates: () => fetch('/api/agents/templates').then(j),
+  agentTemplateCreate: (body: { name: string; description?: string; from?: string }) => post('/api/agents/templates', body).then(j),
+  agentTemplateDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
   agentDetail: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name)).then(j),
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentFork: (name: string, crew: string) => fetch('/api/agents/detail/' + encodeURIComponent(name) + '/fork', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crew }) }).then(j),

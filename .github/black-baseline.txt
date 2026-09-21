@@ -581,7 +581,6 @@ test/test_file_stream.py
 test/test_file_watch.py
 test/test_fire_tool_hooks.py
 test/test_fixtures_helper.py
-test/test_folder_store_writer.py
 test/test_folder_watch_handlers.py
 test/test_folder_watcher.py
 test/test_frontend_dist_resolve.py

@@ -69,6 +69,55 @@ class TestJobAgentNamesFromDisk:
         self._write_store([{"id": "", "message": "x", "agent_id": "spec"}])
         assert cron.job_agent_names_from_disk() == [("<unnamed job>", "spec")]
 
+    def test_shared_walk_carries_job_ids_and_gates_on_loadability(self) -> None:
+        """One walk serves doctor and the templates delete guard: the id rides
+        along for the guard, and only the guard asks for loadable records (a
+        record with no ``schedule`` never fires, so it pins no template, but
+        doctor still warns about the name written on disk)."""
+        self._write_store([{"id": "a1", "name": "nightly", "message": "x", "agent_id": "spec"}])
+        assert cron.dispatched_agents_from_disk(loadable_only=False) == [("a1", "nightly", "spec")]
+        assert cron.dispatched_agents_from_disk(loadable_only=True) == []
+        assert cron.job_agent_names_from_disk() == [("nightly", "spec")]
+
+    def test_captured_execution_names_the_template_the_job_runs(self) -> None:
+        """A schedule created from a template chat with no ``agent`` stores its
+        template only in the captured execution (``agent_id`` empty); the walk
+        reports THAT, since the dispatcher reads it there -- and prefers it over
+        a stale ``agent_id`` when both are present. A malformed context falls
+        back to ``agent_id``."""
+        ctx = {
+            "member_id": None,
+            "store": {"store_id": "default", "member_id": None},
+            "selection_kind": "template",
+            "template_id": "spec",
+            "memory_mode": "persistent",
+            "app": "",
+        }
+        self._write_store(
+            [
+                {"id": "t1", "name": "from-chat", "message": "x", "execution_context": ctx},
+                {
+                    "id": "t2",
+                    "name": "stale",
+                    "message": "x",
+                    "agent_id": "old",
+                    "execution_context": ctx,
+                },
+                {
+                    "id": "t3",
+                    "name": "broken",
+                    "message": "x",
+                    "agent_id": "old",
+                    "execution_context": "?",
+                },
+            ]
+        )
+        assert cron.dispatched_agents_from_disk(loadable_only=False) == [
+            ("t1", "from-chat", "spec"),
+            ("t2", "stale", "spec"),
+            ("t3", "broken", "old"),
+        ]
+
     def test_dispatching_sequence_makes_agent_id_dormant(self) -> None:
         # A sequence of more than one agent is what dispatch runs; agent_id is
         # dormant and must not fail doctor.

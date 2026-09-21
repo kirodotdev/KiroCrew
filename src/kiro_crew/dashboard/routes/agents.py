@@ -13,6 +13,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import agent_templates
 from kiro_crew.dashboard.handlers.agent_catalog import api_agent_catalog
 
 
@@ -26,11 +27,15 @@ def register(app: web.Application) -> None:
     # Agents
     app.router.add_get("/api/agents/catalog", api_agent_catalog)
     app.router.add_get("/api/agents/installed", handlers.api_agents_installed)
+    # The templates tab: roster with editability + references, create, delete.
+    app.router.add_get("/api/agents/templates", agent_templates.api_agent_templates)
+    app.router.add_post("/api/agents/templates", agent_templates.api_agent_template_create)
     app.router.add_get("/api/models", handlers.api_models)
     app.router.add_get("/api/effort-levels", handlers.api_effort_levels)
     app.router.add_get("/api/slash-commands", handlers.api_slash_commands)
     app.router.add_get("/api/agents/detail/{name}", handlers.api_agent_detail)
     app.router.add_patch("/api/agents/detail/{name}", handlers.api_agent_detail)
+    app.router.add_delete("/api/agents/detail/{name}", agent_templates.api_agent_template_delete)
     app.router.add_post("/api/agents/detail/{name}/fork", handlers.api_agent_fork)
     app.router.add_post("/api/agents/detail/{name}/publish", handlers.api_agent_publish)
     app.router.add_post("/api/agents/detail/{name}/reset", handlers.api_agent_reset)

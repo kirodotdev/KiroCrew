@@ -6904,6 +6904,16 @@ class DashboardState:
         """Run a synchronous reader against committed folder state."""
         return await _FOLDER_REPOSITORY.read(lambda: self._folders, self._folders_lock, read)
 
+    async def hold_folders(self, section: Callable[[list[dict[str, Any]]], Awaitable[_T]]) -> _T:
+        """Hold the folder store lock across an awaitable, read-only section.
+
+        The section sees a snapshot of the committed folders and may hop off
+        the loop; no folder mutation can commit until it returns. This is how
+        a delete elsewhere excludes a concurrent folder pin (the agent
+        templates guard) without doing its file work on the loop.
+        """
+        return await _FOLDER_REPOSITORY.hold(lambda: self._folders, self._folders_lock, section)
+
     def _write_folders_confirmed(self, path: Path, snapshot: list[dict[str, Any]]) -> None:
         """Persist the complete folder value and prove it landed."""
         _FOLDER_REPOSITORY.write_confirmed(path, snapshot, self._atomic_write_json)

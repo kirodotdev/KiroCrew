@@ -8,6 +8,7 @@ of a call that never became a run.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -237,6 +238,67 @@ class TestTokenEndpoints:
         )
         assert unknown.status == 400
         assert (await _payload(unknown))["code"] == "destination_agent_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_pin_commits_under_the_agents_spec_lock_and_reverifies(self, wired, monkeypatch):
+        """The template delete unlinks a spec while holding ``agents_spec_lock``
+        and counts webhook pins first; a mint or re-pin must therefore commit
+        under that lock and re-check the agent THERE, or a token can validate
+        against a file the delete is about to remove. Here the agent vanishes
+        between the loop-side pre-check and the locked commit: nothing is
+        minted, and a re-pin leaves the stored pin alone."""
+        names = [{"kirocrew", "code-reviewer", "oncall"}]
+        monkeypatch.setattr(H, "_installed_agent_names", lambda: names[-1])
+        held: list[bool] = []
+        vanish: list[str] = ["code-reviewer"]  # what a concurrent delete removes, once
+        real_lock = H.agents_spec_lock
+
+        @contextlib.contextmanager
+        def _spy_lock(agents_dir):
+            with real_lock(agents_dir):
+                held.append(True)
+                if vanish:  # the delete landed while we waited for the lock
+                    names.append(names[-1] - {vanish.pop()})
+                yield
+
+        monkeypatch.setattr(H, "agents_spec_lock", _spy_lock)
+        gone = await H.api_webhook_token_create(
+            _req("POST", "/api/webhooks/tokens", {"label": "Review Bot", "agent": "code-reviewer"})
+        )
+        assert gone.status == 400
+        assert (await _payload(gone))["code"] == "destination_agent_unavailable"
+        assert held == [True]
+        assert webhooks.token_store().count() == 0
+
+        # A re-pin walks the same path; a change that leaves the pin alone does not.
+        minted = await _payload(
+            await H.api_webhook_token_create(
+                _req("POST", "/api/webhooks/tokens", {"label": "Pager", "agent": "oncall"})
+            )
+        )
+        token_id = minted["entry"]["id"]
+        held.clear()
+        relabel = await H.api_webhook_token_update(
+            _req(
+                "PATCH",
+                f"/api/webhooks/tokens/{token_id}",
+                {"label": "Pager 2"},
+                match_info={"token_id": token_id},
+            )
+        )
+        assert relabel.status == 200 and held == []
+        vanish.append("oncall")
+        repin = await H.api_webhook_token_update(
+            _req(
+                "PATCH",
+                f"/api/webhooks/tokens/{token_id}",
+                {"agent": "oncall"},
+                match_info={"token_id": token_id},
+            )
+        )
+        assert repin.status == 400 and held == [True]
+        assert (await _payload(repin))["code"] == "destination_agent_unavailable"
+        assert webhooks.token_store().entry_for(token_id)["agent"] == "oncall"
 
     @pytest.mark.asyncio
     async def test_create_rejects_bad_label(self, wired):

@@ -9,12 +9,18 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 import aiohttp
 from aiohttp import web
 
 from kiro_crew import webhooks
-from kiro_crew.agent import _VALID_HOOK_EVENTS, _shipped_defaults, kiro_agents_dir_path
+from kiro_crew.agent import (
+    _VALID_HOOK_EVENTS,
+    _shipped_defaults,
+    agents_spec_lock,
+    kiro_agents_dir_path,
+)
 from kiro_crew.agent_discovery import _read_agent_spec, list_agents
 from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
@@ -579,6 +585,34 @@ def _legacy_hook_token() -> str:
 def _installed_agent_names() -> set[str]:
     """Return currently dispatchable global agent names (blocking filesystem read)."""
     return {agent.name for agent in list_agents()}
+
+
+_T = TypeVar("_T")
+
+
+class _DestinationAgentGone(Exception):
+    """The pinned agent was installed at the pre-check but not at commit time."""
+
+
+def _commit_pinned_token(agent: str, commit: Callable[[], _T]) -> _T:
+    """Thread-side: re-verify *agent* and run *commit* under the agents spec lock.
+
+    The template delete guard counts webhook pins and unlinks the spec file
+    while holding ``agents_spec_lock``; a token that pins an agent must therefore
+    be COMMITTED under that same lock, or it can validate against a file the
+    delete is about to remove and land pointing at nothing. Lock order matches
+    the delete's (spec lock, then the token store's own file lock), so the two
+    writers serialize instead of deadlocking. The loop-side pre-check stays for
+    the fast, friendly 400; this is the one that decides.
+    """
+    agents_dir = kiro_agents_dir_path()
+    # The lockfile lives beside the specs; the pinned agent's own file is in
+    # this directory, so creating it is never a surprise.
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    with agents_spec_lock(agents_dir):
+        if agent not in _installed_agent_names():
+            raise _DestinationAgentGone(agent)
+        return commit()
 
 
 async def _json_object(request: web.Request, *, default_empty: bool = False) -> dict | None:
@@ -1784,10 +1818,21 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
         )
     try:
         raw, signing_secret, entry = await asyncio.to_thread(
-            webhooks.token_store().create,
-            body.get("label", ""),
-            require_signature=require_signature,
-            agent=agent,
+            _commit_pinned_token,
+            agent,
+            lambda: webhooks.token_store().create(
+                body.get("label", ""),
+                require_signature=require_signature,
+                agent=agent,
+            ),
+        )
+    except _DestinationAgentGone:
+        return web.json_response(
+            {
+                "error": "destination agent is not installed",
+                "code": "destination_agent_unavailable",
+            },
+            status=400,
         )
     except webhooks.WebhookError as exc:
         _sel().log_api_access(
@@ -1882,13 +1927,29 @@ async def api_webhook_token_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "label must be a string", "code": "label_not_a_string"}, status=400
         )
-    try:
-        entry = await asyncio.to_thread(
-            webhooks.token_store().update,
+
+    def _update() -> dict[str, Any] | None:
+        return webhooks.token_store().update(
             token_id,
             agent=agent,
             enabled=body.get("enabled") if "enabled" in body else None,
             label=body.get("label") if "label" in body else None,
+        )
+
+    try:
+        # A re-pin commits under the agents spec lock, like a mint; a change
+        # that leaves the pin alone has nothing to serialize with.
+        if agent is not None:
+            entry = await asyncio.to_thread(_commit_pinned_token, agent, _update)
+        else:
+            entry = await asyncio.to_thread(_update)
+    except _DestinationAgentGone:
+        return web.json_response(
+            {
+                "error": "destination agent is not installed",
+                "code": "destination_agent_unavailable",
+            },
+            status=400,
         )
     except webhooks.WebhookStoreUnreadable:
         raise

@@ -200,5 +200,13 @@
   "pages.worldsPage.agent",
   "pages.worldsPage.slot",
   "utils.toolCallTitle.and_more",
-  "components.notifications.notificationBanner.show_more_notifications_count"
+  "components.notifications.notificationBanner.show_more_notifications_count",
+  "pages.overview.agentTemplatesTab.cannot_delete_body",
+  "pages.overview.agentTemplatesTab.schedules_count",
+  "pages.overview.agentTemplatesTab.webhooks_count",
+  "pages.overview.agentTemplatesTab.folders_count",
+  "pages.overview.agentTemplatesTab.private_copies_count",
+  "pages.overview.agentTemplatesTab.crewmates_count",
+  "pages.overview.agentTemplatesTab.affects_crewmates",
+  "pages.overview.agentTemplatesTab.chars_count"
 ]
