@@ -952,7 +952,7 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     MCP server (``kirocrew-cron`` / ``kirocrew-core``).
 
     Prefers a standalone ``kirocrew`` binary when one resolves. Falls back
-    to ``<interpreter> [-s] -m kiro_crew <subcommand>`` when
+    to ``<interpreter> [-s] -P -m kiro_crew <subcommand>`` when
     :func:`_resolve_kirocrew_bin` cannot find a usable standalone binary --
     e.g. an install whose launcher is not on the service PATH (the gateway
     running as a systemd user service is the common case): there
@@ -961,12 +961,13 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     ``kirocrew.json`` on every config refresh.
 
     ``sys.executable`` is the absolute path of the running interpreter, so it
-    needs no PATH entry and ignores any broken launcher. ``python -m
-    kiro_crew`` dispatches the same CLI as the ``kirocrew`` console script.
+    needs no PATH entry and ignores any broken launcher. ``python -P -m
+    kiro_crew`` dispatches the same CLI as the ``kirocrew`` console script
+    while keeping the spawn CWD off ``sys.path``.
 
     A resolved ``bin\\kirocrew.cmd`` (the Windows bundle's relocatable shim,
     see :func:`_kirocrew_bin_subpath`) is unwrapped to the sibling
-    interpreter — ``<root>\\python.exe -P -s -m kiro_crew <sub>`` — instead of
+    interpreter — ``<root>\\python.exe -s -P -m kiro_crew <sub>`` — instead of
     being emitted verbatim. This mirrors ``website/electron/main.js``, which
     refuses to spawn the shim it resolved (Node's ``spawn()`` rejects
     ``.cmd``/``.bat`` without ``shell:true``, CVE-2024-27980 hardening) and
@@ -979,25 +980,21 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     """
     bin_path = _resolve_kirocrew_bin()
     if bin_path == "kirocrew":  # unresolved sentinel from _resolve_kirocrew_bin
-        argv = platform_compat.isolated_python_argv("-m", "kiro_crew", subcommand)
+        argv = platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", subcommand)
         return argv[0], argv[1:]
     if bin_path.endswith(".cmd"):
         interpreter = Path(bin_path).parent.parent / "python.exe"
         if _interpreter_runnable(interpreter):
-            # ``-P`` (safe path, 3.11+) keeps the spawn CWD off ``sys.path``:
-            # kiro-cli spawns managed servers with the user's project as CWD,
-            # so with ``-m`` alone a cloned repo carrying a ``kiro_crew/``
-            # package would shadow the real one and run unconfined. Safe to
-            # pin here because this interpreter is always the bundle's own
-            # python-build-standalone 3.12 (packaging/build-desktop.sh); the
-            # generic ``sys.executable`` fallbacks below and above stay
-            # ``-P``-free because the project still supports Python 3.10,
-            # which lacks the flag.
+            # ``-P`` keeps the spawn CWD off ``sys.path`` on every supported
+            # interpreter, so a project package cannot shadow this install.
+            # The bundle also pins ``-s`` because its package never relies on
+            # per-user site-packages. Keep the shared ``-s -P -m`` order used
+            # whenever the helper adds user-site isolation to a fallback.
             argv = platform_compat.isolated_python_argv(
-                "-P", "-s", "-m", "kiro_crew", subcommand, executable=interpreter
+                "-s", "-P", "-m", "kiro_crew", subcommand, executable=interpreter
             )
             return argv[0], argv[1:]
-        argv = platform_compat.isolated_python_argv("-m", "kiro_crew", subcommand)
+        argv = platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", subcommand)
         return argv[0], argv[1:]
     return bin_path, [subcommand]
 

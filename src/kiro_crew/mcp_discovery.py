@@ -1168,10 +1168,10 @@ def _fix_stale_managed_command(name: str, spec: dict) -> None:
     source of truth for the managed invocation. That handles every layout:
     a standalone ``bin/kirocrew`` (POSIX) / ``Scripts\\kirocrew.exe`` (Windows
     pip install) console script when one resolves, the Windows bundle's
-    ``bin\\kirocrew.cmd`` shim (unwrapped to ``<root>\\python.exe -P -s -m
-    kiro_crew <sub>``), and otherwise the ``<interpreter> [-s] -m kiro_crew
+    ``bin\\kirocrew.cmd`` shim (unwrapped to ``<root>\\python.exe -s -P -m
+    kiro_crew <sub>``), and otherwise the ``<interpreter> [-s] -P -m kiro_crew
     <sub>`` fallback. Both ``command`` AND ``args`` are rewritten — the fallback
-    needs its optional isolation prefix plus ``["-m", "kiro_crew", <sub>]``,
+    needs its optional isolation prefix plus ``["-P", "-m", "kiro_crew", <sub>]``,
     so re-resolving the command
     alone (the old behavior) silently dropped the args and spawned a bare
     ``kirocrew`` that isn't on PATH (Windows: ``command not found: kirocrew``;

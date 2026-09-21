@@ -1886,19 +1886,20 @@ class TestKirocrewMcpInvocation:
     def test_falls_back_to_interpreter_module_when_unresolved(
         self, nonbundled_python_without_user_site
     ):
+        """Module fallback excludes the project CWD before importing Kiro Crew."""
         from kiro_crew.agent import _kirocrew_mcp_invocation
 
         # Bare "kirocrew" is the unresolved sentinel from _resolve_kirocrew_bin.
         with patch("kiro_crew.agent._resolve_kirocrew_bin", return_value="kirocrew"):
             cmd, args = _kirocrew_mcp_invocation("mcp-core")
         assert cmd == sys.executable
-        assert args == ["-s", "-m", "kiro_crew", "mcp-core"]
+        assert args == ["-s", "-P", "-m", "kiro_crew", "mcp-core"]
 
     def test_unwraps_cmd_shim_to_sibling_interpreter(self, tmp_path: Path):
         """A resolved bin/kirocrew.cmd is never emitted verbatim.
 
         Mirrors website/electron/main.js: the shim is unwrapped to
-        ``<root>/python.exe -s -m kiro_crew <sub>`` so kiro-cli spawns the
+        ``<root>/python.exe -s -P -m kiro_crew <sub>`` so kiro-cli spawns the
         interpreter, not a batch file.
         """
         from kiro_crew.agent import _kirocrew_mcp_invocation
@@ -1914,9 +1915,8 @@ class TestKirocrewMcpInvocation:
         with patch("kiro_crew.agent._resolve_kirocrew_bin", return_value=str(shim)):
             cmd, args = _kirocrew_mcp_invocation("mcp-cron")
         assert cmd == str(interpreter)
-        # -P keeps the spawn CWD off sys.path (the bundle interpreter is
-        # pinned 3.12, so the 3.11+ flag is safe); -s drops user site-packages.
-        assert args == ["-P", "-s", "-m", "kiro_crew", "mcp-cron"]
+        # -P keeps the spawn CWD off sys.path; -s drops user site-packages.
+        assert args == ["-s", "-P", "-m", "kiro_crew", "mcp-cron"]
 
     def test_cmd_shim_without_interpreter_falls_back_to_sys_executable(
         self, tmp_path: Path, nonbundled_python_without_user_site
@@ -1932,7 +1932,7 @@ class TestKirocrewMcpInvocation:
         with patch("kiro_crew.agent._resolve_kirocrew_bin", return_value=str(shim)):
             cmd, args = _kirocrew_mcp_invocation("mcp-core")
         assert cmd == sys.executable
-        assert args == ["-s", "-m", "kiro_crew", "mcp-core"]
+        assert args == ["-s", "-P", "-m", "kiro_crew", "mcp-core"]
 
 
 class TestKiroHooksMerge:

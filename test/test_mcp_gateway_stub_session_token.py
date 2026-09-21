@@ -1524,32 +1524,38 @@ def test_control_plane_backends_contain_session_mcp_and_justify_the_difference()
     survive a ``disabledTools`` entry; ``CONTROL_PLANE_BACKENDS`` decides who is
     handed a bearer token. Containment holds in one direction only: a server
     mounted in every session posts back for that session, so it needs the token.
-    The reverse does not, and ``kirocrew-dashboard`` is why -- it posts back for the
-    CALLING session, so it needs the token, but it is ``opt_in``, so naming it in
-    the first set would mount it everywhere and make an operator's decision to
-    switch its tools off unenforceable.
+    The reverse does not, and the opt-in servers are why -- each posts back for
+    the CALLING session, so it needs the token, but naming one in the first set
+    would mount it everywhere and make an operator's decision to switch its
+    tools off unenforceable.
 
-    The extras are pinned BY NAME to exactly ``kirocrew-dashboard`` and each is
-    also checked BY PROPERTY. The name pin makes a new recipient an explicit,
-    reviewable change; the property check stops a typo'd or third-party name from
-    being handed a token even if someone edits the pin.
+    The extras are pinned BY NAME to exactly the opt-in managed servers plus the
+    spec-gated ``kirocrew-computer`` and each is also checked BY PROPERTY. The name
+    pin makes a new recipient an explicit, reviewable change; the property check
+    stops a typo'd or third-party name from being handed a token even if someone
+    edits the pin. The whole set is also pinned equal to
+    ``acp.session_mcp.IDENTITY_BOUND_SERVERS`` -- the kiro-backend element list that
+    carries the same token -- so the two identity paths grant the same servers.
     """
-    from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS
+    from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, IDENTITY_BOUND_SERVERS
     from kiro_crew.agent import _MANAGED_MCP_SERVERS
+    from kiro_crew.mcp_cleanup import OPT_IN_BIN_MCP_SERVERS
 
-    assert frozenset(CONTROL_PLANE_SERVERS) <= gw.CONTROL_PLANE_BACKENDS
+    assert gw.CONTROL_PLANE_BACKENDS == frozenset(IDENTITY_BOUND_SERVERS)
+    assert frozenset(CONTROL_PLANE_SERVERS) < gw.CONTROL_PLANE_BACKENDS
 
     token_only = gw.CONTROL_PLANE_BACKENDS - frozenset(CONTROL_PLANE_SERVERS)
-    assert token_only == frozenset({"kirocrew-dashboard"}), (
+    assert token_only == frozenset(OPT_IN_BIN_MCP_SERVERS) | {"kirocrew-computer"}, (
         "a new token recipient must be added to this pin in the same commit that adds it "
-        "to CONTROL_PLANE_BACKENDS"
+        "to mcp_cleanup's managed-server tuples"
     )
     for name in sorted(token_only):
         spec = _MANAGED_MCP_SERVERS.get(name)
         assert isinstance(spec, dict), f"{name!r} is handed a token but is not a managed server"
-        assert spec.get("opt_in"), (
-            f"{name!r} is token-only, which is only justified for an opt_in server; "
-            "one mounted in every session belongs in CONTROL_PLANE_SERVERS as well"
+        assert spec.get("opt_in") or callable(spec.get("spec_gate")), (
+            f"{name!r} is token-only, which is only justified for a server that is NOT "
+            "unconditionally mounted (opt_in, or behind a spec_gate); one mounted in every "
+            "session belongs in CONTROL_PLANE_SERVERS as well"
         )
 
 
@@ -1598,6 +1604,63 @@ class TestTokenOnlyControlPlane:
         assert entry is not None
         assert entry["args"][-1] == "mcp-dashboard"
         assert gw._spawns_own_control_plane(self.NAME, entry["command"], entry["args"], env={})
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("LD_PRELOAD", "/tmp/x.so"),
+            ("DYLD_INSERT_LIBRARIES", "/tmp/x.dylib"),
+        ],
+    )
+    def test_the_real_dashboard_entry_rejects_native_loader_injection(
+        self,
+        key: str,
+        value: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A managed argv cannot earn the token while its loader can replace code."""
+        from kiro_crew.agent import managed_mcp_spec_entry
+
+        entry = managed_mcp_spec_entry(self.NAME, include_opt_in=True)
+        assert entry is not None
+        with caplog.at_level(logging.WARNING, logger=gw.__name__):
+            assert not gw._spawns_own_control_plane(
+                self.NAME,
+                entry["command"],
+                entry["args"],
+                env={key: value},
+            )
+        (record,) = [r for r in caplog.records if "denied the session token" in r.message]
+        assert f"child environment carries non-empty {key}" in record.message
+        assert gw._spawns_own_control_plane(
+            self.NAME,
+            entry["command"],
+            entry["args"],
+            env={key: ""},
+        )
+
+    def test_control_plane_target_resolver_strips_inherited_native_loader_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The classifier receives no inherited loader channel to reject."""
+        frame = _register(PARENT_KEY)
+        frame["server_name"] = self.NAME
+        key = PoolKey.from_register(frame)
+        monkeypatch.setenv("MC_MCP_TARGET_KIROCREW_DASHBOARD", "kirocrew mcp-dashboard")
+        monkeypatch.setenv("LD_PRELOAD", "/host/preload.so")
+
+        resolved = gw.env_target_resolver(key)
+
+        assert resolved is not None
+        _command, _args, env, _work_dir = resolved
+        assert "LD_PRELOAD" not in env
+
+        third_party = _register(PARENT_KEY)
+        monkeypatch.setenv("MC_MCP_TARGET_ECHO_MCP", "echo-mcp --stdio")
+        resolved = gw.env_target_resolver(PoolKey.from_register(third_party))
+        assert resolved is not None
+        _command, _args, env, _work_dir = resolved
+        assert env["LD_PRELOAD"] == "/host/preload.so"
 
     def test_the_real_dashboard_entry_is_checked_not_trusted(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1967,7 +2030,10 @@ class TestModuleFormShadowing:
 
     @pytest.fixture
     def module_entry(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-        entry = {"command": sys.executable, "args": ["-s", "-m", "kiro_crew", self.SUB]}
+        entry = {
+            "command": sys.executable,
+            "args": ["-s", "-P", "-m", "kiro_crew", self.SUB],
+        }
         import kiro_crew.agent as agent_mod
 
         monkeypatch.setattr(

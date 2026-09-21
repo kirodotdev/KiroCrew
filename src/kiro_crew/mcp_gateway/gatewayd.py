@@ -58,6 +58,9 @@ import kiro_crew
 from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.loader import config_dir as _config_dir
+
+# This light leaf keeps ``kiro_crew.agent`` off the daemon's boot path.
+from kiro_crew.env import _SPEC_ENV_DENIED_PREFIXES
 from kiro_crew.executors import (
     configure_default_executor,
     maintenance_executor,
@@ -66,6 +69,7 @@ from kiro_crew.executors import (
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
 from kiro_crew.mcp_caller import new_tenant_nonce
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway import credwatch, hazards, socketsec, tool_surface, transport
 from kiro_crew.mcp_gateway.admission import (
     DEFAULT_CAPACITY,
@@ -147,31 +151,32 @@ from kiro_crew.sel import SecurityEventLog
 
 logger = logging.getLogger(__name__)
 
-#: Kiro Crew's own control planes: the only backends handed the per-session
-#: token, because only they post back to the gateway for the session they act on
-#: behalf of.
+#: Kiro Crew's own pooled backends handed the per-session token: every managed
+#: Crew server, because each reads the session's tool policy through
+#: ``mcp_shared`` and posts back to the gateway for the session it acts on
+#: behalf of, and the gateway reads a declared session key only behind that
+#: attestation. Not only the two always-on control planes: an opt-in server
+#: (``kirocrew-dashboard``, ``kirocrew-work``, ...) that is routed here but
+#: denied the token comes up present-but-unusable, refusing every call as
+#: ``identity_unattested``.
 #:
 #: This is NOT a mirror of ``acp.session_mcp.CONTROL_PLANE_SERVERS`` -- the two
-#: answer different questions, and the ratchet pins CONTAINMENT rather than
-#: equality for that reason. That set decides which servers every session mounts
-#: and which survive a ``disabledTools`` entry (``session_mcp`` subtracts it from
-#: the disabled set); this one decides who is handed a bearer token.
-#: ``kirocrew-dashboard`` belongs in the second and NOT the first: it posts back
-#: to the gateway for the CALLING session (``session_create``, ``session_send``,
-#: the folder and tag tools), which is exactly what the token is for -- but it is
-#: ``opt_in``, so naming it there would mount it in every session and make an
-#: operator's decision to switch its tools off unenforceable.
+#: answer different questions. That set decides which servers every session
+#: mounts and which survive a ``disabledTools`` entry (``session_mcp`` subtracts
+#: it from the disabled set); this one decides who is handed a bearer token. An
+#: opt-in server belongs in the second and NOT the first: naming it there would
+#: mount it in every session and make an operator's decision to switch its tools
+#: off unenforceable. Read from :mod:`kiro_crew.mcp_cleanup`, a leaf that imports
+#: nothing heavier than ``config.paths`` (``kiro_crew.agent`` stays off the
+#: daemon's boot path); a ratchet test pins it equal to
+#: ``acp.session_mcp.IDENTITY_BOUND_SERVERS``.
 #:
 #: Membership is necessary and NOT sufficient. ``_spawns_own_control_plane`` still
 #: compares the spawned binary by realpath and the argv exactly against the
-#: managed spec for this name, and refuses a child carrying ``PYTHON*`` env or an
-#: import root that shadows ``kiro_crew``, so the name alone hands over nothing.
-CONTROL_PLANE_BACKENDS = frozenset({"kirocrew-core", "kirocrew-cron", "kirocrew-dashboard"})
-
-# Python treats its environment namespace as an extensible interpreter control
-# surface. A prefix rule fails closed when a later Python release adds another
-# import hook or root instead of silently granting a bearer token around it.
-_CONTROL_PLANE_PYTHON_ENV_PREFIX = "PYTHON"
+#: managed spec for this name, and refuses a child carrying non-empty ``LD_*``,
+#: ``DYLD_*``, or ``PYTHON*`` env, or an import root that shadows
+#: ``kiro_crew``, so the name alone hands over nothing.
+CONTROL_PLANE_BACKENDS = frozenset(KIROCREW_BIN_MCP_SERVERS)
 
 
 def _spawns_own_control_plane(
@@ -194,23 +199,23 @@ def _spawns_own_control_plane(
     spec writer and this check read. Anything unresolvable is not ours.
 
     The invocation being ours is still not proof of what RUNS: the managed
-    spec falls back to ``<python> -m kiro_crew <sub>`` when no launcher
-    resolves, and the child's working directory can carry foreign code under
-    our name. Python's ``PYTHON*`` environment namespace is an extensible
-    interpreter control surface: entries can add roots, execute hooks, or move
-    user-site without changing the command. Any non-empty entry therefore
-    denies the token instead of enumerating current Python variables or
-    modelling their version-specific semantics. The managed resolver removes
-    that whole namespace from its inherited environment, so a value at this
-    point is a hand-declared overlay or a non-managed resolver. The remaining
-    fixed root -- the CWD for module form, or the launcher's directory for
-    script form -- must hold either nothing named ``kiro_crew`` or THIS
-    process's package (a dev checkout running from its own ``src/``).
+    spec's module fallback excludes the child's working directory, but a
+    hand-declared environment can still change the code the launcher executes.
+    The dynamic-loader ``LD_*`` / ``DYLD_*`` namespaces and Python's ``PYTHON*``
+    namespace are extensible execution surfaces. Any non-empty entry therefore
+    denies the token instead of enumerating current variables or modelling
+    platform- and version-specific semantics. The managed resolver removes all
+    three namespaces from its inherited environment, so a value at this point is
+    a hand-declared overlay or a non-managed resolver. The remaining fixed root --
+    the CWD for module form, or the launcher's directory for script form -- must
+    hold either nothing named ``kiro_crew`` or THIS process's package (a dev
+    checkout running from its own ``src/``).
 
     A denial for a reserved name is logged once, at spawn, naming the condition
     that failed: a legitimate install that trips it (a stray ``kiro_crew.py`` on
-    ``PYTHONPATH``, a spec edited by hand) otherwise presents only as every
-    cron tool answering 403 with nothing in the daemon log to point at.
+    ``PYTHONPATH``, a declared ``LD_PRELOAD``, a spec edited by hand) otherwise
+    presents only as every cron tool answering 403 with nothing in the daemon log
+    to point at.
 
     Reads config and the filesystem: call it off the event loop, and BEFORE the
     child is spawned. The spawn site still launches an accepted control plane
@@ -255,16 +260,17 @@ def _spawns_own_control_plane(
     if argv != expected_argv:
         return _deny_control_plane(server_name, f"args {argv!r} differ from spec {expected_argv!r}")
     child_env = env if env is not None else os.environ
-    import_env = next(
+    loader_env = next(
         (
             str(key).upper()
             for key, value in child_env.items()
-            if str(key).upper().startswith(_CONTROL_PLANE_PYTHON_ENV_PREFIX) and value
+            if any(str(key).upper().startswith(prefix) for prefix in _SPEC_ENV_DENIED_PREFIXES)
+            and value
         ),
         "",
     )
-    if import_env:
-        return _deny_control_plane(server_name, f"child environment carries non-empty {import_env}")
+    if loader_env:
+        return _deny_control_plane(server_name, f"child environment carries non-empty {loader_env}")
     shadow = _kiro_crew_import_is_shadowed(command, argv, work_dir)
     if shadow:
         return _deny_control_plane(server_name, f"import root {shadow!r} shadows kiro_crew")
@@ -2013,17 +2019,17 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
         return None
     command, *args = parts
     env = _scrub_sensitive_env(dict(os.environ))
-    # A reserved control plane receives the session token only after the whole
-    # extensible Python namespace is gone. Third-party backends never receive
-    # that token and keep settings outside the four interpreter roots that can
-    # make them load Kiro Crew's Python packages instead of their own.
-    python_env_prefixes = (
-        (_CONTROL_PLANE_PYTHON_ENV_PREFIX,)
+    # A reserved control plane receives the session token only after every
+    # launcher-injection namespace is gone. Third-party backends never receive
+    # that token and keep settings outside the four Python interpreter roots
+    # that can make them load Kiro Crew's packages instead of their own.
+    denied_env_prefixes = (
+        _SPEC_ENV_DENIED_PREFIXES
         if pool_key.server_name in CONTROL_PLANE_BACKENDS
         else tuple(_PYTHON_ENV_PREFIXES)
     )
     for key in tuple(env):
-        if any(key.upper().startswith(prefix) for prefix in python_env_prefixes):
+        if any(key.upper().startswith(prefix) for prefix in denied_env_prefixes):
             env.pop(key, None)
     # No KIROCREW_CHANNEL_ID is exported into the backend env. Copying it from
     # PoolKey.channel_id would only make sense while a backend was owned by one
@@ -4362,9 +4368,9 @@ async def _acquire_backend(
         )
         if control_plane:
             # Defense in depth after the verdict: the fence above already
-            # rejects declared Python import roots and checks the fixed CWD or
-            # launcher directory without relying on interpreter-version rules.
-            # Control planes only: a third-party backend may rely on the
+            # rejects declared launcher-control variables and checks the fixed
+            # CWD or launcher directory without relying on interpreter-version
+            # rules. Control planes only: a third-party backend may rely on the
             # interpreter's default ``sys.path[0]``.
             spawn_env["PYTHONSAFEPATH"] = "1"
             # Per-user site-packages runs code at interpreter startup through
@@ -4377,12 +4383,12 @@ async def _acquire_backend(
             if not _user_site_holds_our_package():
                 spawn_env["PYTHONNOUSERSITE"] = "1"
         # Kiro Crew's own UTF-8 pinning, applied after the verdict for every
-        # pooled backend. The classifier must see a PYTHON*-free environment,
-        # so these keys cannot be present earlier without every control plane
-        # denying its own token; and the child must still build its stdio from
-        # UTF-8 rather than a Windows ANSI codepage or a hostile inherited
-        # encoding. The one constant keeps this site and the gateway's own
-        # process environment in step.
+        # pooled backend. The classifier must see every launcher-injection
+        # namespace removed, so these Python keys cannot be present earlier
+        # without every control plane denying its own token; and the child must
+        # still build its stdio from UTF-8 rather than a Windows ANSI codepage or
+        # a hostile inherited encoding. The one constant keeps this site and the
+        # gateway's own process environment in step.
         spawn_env.update(_UTF8_PROCESS_ENV)
         backend = await spawn_backend(
             pool_key=pool_key,

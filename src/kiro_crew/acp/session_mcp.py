@@ -90,6 +90,7 @@ from kiro_crew.agent import (
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
 from kiro_crew.env import sanitize_spec_env
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,30 @@ logger = logging.getLogger(__name__)
 # set the loop below REPLACES from the managed source: the element's command, args
 # and env are Crew's own by construction, not the spec's.
 CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron")
+
+# Every managed Crew server that must be handed the session's IDENTITY when it
+# is mounted -- a wider set than the control plane above, and a different
+# question. The control plane is what a session gets whether or not its spec
+# names it; this is what a session's tool calls on any Crew server need to
+# succeed. Each of these servers runs through ``mcp_shared.run_mcp_stdio_loop``,
+# whose ``tools/call`` reads the session's tool policy from the gateway, and the
+# gateway reads a declared session key only behind an attestation. A server that
+# is granted (``@kirocrew-dashboard`` in ``tools``) but carries no token comes up
+# present-but-unusable: it resolves the session key through the pid sidecar and
+# then refuses every call as ``identity_unattested``. On the kiro backend the
+# runtime is session-unbound, so identity travels per MCP element
+# (:func:`kiro_control_plane_servers`), and that carriage has to cover the
+# opt-in servers too, not only the two always-on ones.
+#
+# Derived from the managed set rather than spelled out so a server added to it
+# later is covered by construction; gatewayd mirrors this for its per-frame
+# token hand-off (``CONTROL_PLANE_BACKENDS``) and a ratchet test pins the two.
+# The control plane leads, in ITS order: a session that grants only the two
+# always-on servers emits the same elements in the same order it always did,
+# and the opt-in servers follow in the managed set's order.
+IDENTITY_BOUND_SERVERS: tuple[str, ...] = CONTROL_PLANE_SERVERS + tuple(
+    name for name in KIROCREW_BIN_MCP_SERVERS if name not in CONTROL_PLANE_SERVERS
+)
 
 # kiro-cli's enterprise-governance discriminator, mirrored rather than imported
 # (``agent._MCP_REGISTRY_TYPE`` is private; a ratchet test pins the two equal).
@@ -853,6 +878,17 @@ def kiro_control_plane_servers(
     ACP shaping. Registry entries remain the enterprise catalog's responsibility.
     The element's ``env`` is owned by :func:`_managed_element_env`, which holds it to
     the rule the disk-writing consumer applies to this same population.
+
+    Covers every server in :data:`IDENTITY_BOUND_SERVERS` the spec grants, not
+    only the control plane: an opt-in server such as ``kirocrew-dashboard`` is
+    mounted by kiro-cli straight from the spec with no session-valued environment,
+    so this element is the ONLY way its calls can carry the attestation the
+    gateway's tool-policy read demands. The grant itself is still the spec's --
+    ``allow.grants`` -- and the expected invocation is resolved with
+    :func:`~kiro_crew.agent.managed_mcp_spec_entry` under ``include_opt_in=True``,
+    the same form ``mcp_gateway.gatewayd`` reads: it answers for a granted opt-in
+    server where the writers' emission question would refuse to mint one, and
+    still yields ``None`` behind a closed ``spec_gate``.
     """
     if not agent or _registry_mode():
         return []
@@ -869,11 +905,11 @@ def kiro_control_plane_servers(
         return []
     supported = {"command", "args", "env", "type", "autoApprove", "disabled", "disabledTools"}
     out = []
-    for name in CONTROL_PLANE_SERVERS:
+    for name in IDENTITY_BOUND_SERVERS:
         if name in existing_names or not allow.grants(name):
             continue
         entry = spec["mcpServers"].get(name)
-        managed = managed_mcp_spec_entry(name)
+        managed = managed_mcp_spec_entry(name, include_opt_in=True)
         if not isinstance(entry, dict) or not isinstance(managed, dict):
             continue
         sources = [entry]

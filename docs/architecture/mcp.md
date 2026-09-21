@@ -1813,12 +1813,16 @@ can persist it.
 gatewayd spawns a pooled backend from its OWN environment, so the per-session
 token the stub carries never reaches the backend's `os.environ`. That is right
 for a third-party server, which has no business proving a session to anyone.
-`kirocrew-core`, `kirocrew-cron` and `kirocrew-dashboard` are different: they
+`kirocrew-core`, `kirocrew-cron` and the opt-in Crew servers (`kirocrew-dashboard`,
+`kirocrew-work`, `kirocrew-crew-log`, `kirocrew-panel`) are different: they
 post back to the gateway over loopback (`/api/crons/tools`, the memory routes,
-the session and folder routes) on behalf of the session they act for, and since
+the session and folder routes) on behalf of the session they act for, and every
+one of them reads the session's tool policy through `mcp_shared`, a read the
+gateway answers only behind the attestation; since
 #11780 the gateway requires `X-Session-Token` on that
 transport when no kernel peer attestation is present — which a gatewayd child
-never has. So for exactly `gatewayd.CONTROL_PLANE_BACKENDS` the connection
+never has. So for exactly `gatewayd.CONTROL_PLANE_BACKENDS` -- every managed
+Crew server, read from `mcp_cleanup.KIROCREW_BIN_MCP_SERVERS` -- the connection
 handler copies `conn.stub_session_token` onto the injected `CallerContext`
 (`session_token`), `build_caller_meta` emits it as `sessionToken` only when set,
 and `mcp_core._session_token_header` reads the gateway-injected caller's token
@@ -1834,9 +1838,12 @@ only. The invocation being ours is still not proof of what runs: the managed
 spec falls back to `<python> -m kiro_crew <sub>` when no launcher resolves, and
 the child's CWD could carry foreign code under our name. Python's `PYTHON*`
 environment namespace is an extensible interpreter control surface: entries can add roots, execute hooks, select an executable, or move
-user-site without changing the command. For a control-plane backend, the
-gateway's pooled-backend resolver removes that whole namespace from the operator
-environment. Any non-empty `PYTHON*` entry present at the verdict therefore came
+user-site without changing the command, and the dynamic-loader `LD_*` / `DYLD_*`
+namespaces replace code in every binary of the spawn chain. For a control-plane
+backend, the
+gateway's pooled-backend resolver removes all three namespaces
+(`env._SPEC_ENV_DENIED_PREFIXES`) from the operator
+environment. Any non-empty entry in them present at the verdict therefore came
 from a hand-declared overlay or another resolver and denies the token without
 value inspection. The prefix rule fails closed when Python adds a variable; it
 cannot drift into a false grant through an incomplete list. Third-party pooled
@@ -1874,7 +1881,7 @@ and for every pooled backend, the spawn site re-applies Kiro Crew's own UTF-8
 pinning (`platform_compat._UTF8_PROCESS_ENV`: `PYTHONUTF8` and
 `PYTHONIOENCODING`) to the child environment, so a pooled interpreter builds
 its stdio from UTF-8 rather than a Windows ANSI codepage. The order is the
-guarantee: the classifier sees a `PYTHON*`-free environment, and the pinning
+guarantee: the classifier sees an environment free of every denied namespace, and the pinning
 lands on a child whose verdict is already fixed -- the same pair present before
 the verdict would deny every control plane its own token.
 `Backend.control_plane` is set from that pre-spawn verdict and never recomputed.
@@ -1888,29 +1895,37 @@ the frames the session forwards afterwards decide against whatever backend now
 serves it — so a control plane that died is not a warrant for the fresh process
 spawned under its name. A denial for a reserved name is logged at spawn
 (`_deny_control_plane`) naming the backend and the condition that failed — no
-spec entry, a different binary, different args, a non-empty `PYTHON*` variable,
+spec entry, a different binary, different args, a non-empty `PYTHON*` / `LD_*` /
+`DYLD_*` variable,
 or a root that shadows `kiro_crew` (named in the message, so per-user site-packages
 is distinguishable from the local one) — so an
 install that trips the check has more to read than every cron tool answering
 403.
 
 `CONTROL_PLANE_BACKENDS` is named in gatewayd itself (importing
-`acp.session_mcp` would put `kiro_crew.agent` on the daemon's boot path). It is
+`acp.session_mcp` would put `kiro_crew.agent` on the daemon's boot path; the
+set is read from the `mcp_cleanup` leaf instead). It is
 a superset of `acp.session_mcp.CONTROL_PLANE_SERVERS`, not a mirror, because the
 two answer different questions: `CONTROL_PLANE_SERVERS` decides which servers
 every session mounts and which survive a `disabledTools` entry;
 `CONTROL_PLANE_BACKENDS` decides who is handed the token. Containment holds in
 one direction: a server mounted in every session posts back for that session,
-so it needs the token. `kirocrew-dashboard` is the reverse case -- it posts back
-for the CALLING session (`session_create`, `session_send`, the folder and tag
-tools), so it needs the token, but it is `opt_in`, so naming it in
+so it needs the token. The opt-in Crew servers are the reverse case --
+`kirocrew-dashboard` posts back for the CALLING session (`session_create`,
+`session_send`, the folder and tag tools), so it needs the token, but it is
+`opt_in`, so naming it in
 `CONTROL_PLANE_SERVERS` would mount it in every session and make an operator's
 decision to switch its tools off unenforceable. A ratchet test pins that
-relationship rather than equality: it asserts `CONTROL_PLANE_SERVERS` is
+relationship rather than equality with `CONTROL_PLANE_SERVERS`: it asserts
+`CONTROL_PLANE_SERVERS` is
 contained in `CONTROL_PLANE_BACKENDS`, pins the token-only extras to exactly
-`kirocrew-dashboard`, and requires every extra to be a managed `opt_in` server,
-so a new recipient has to update the pin in the same commit. Because the
-dashboard is `opt_in`, `_spawns_own_control_plane` asks
+`mcp_cleanup.OPT_IN_BIN_MCP_SERVERS` plus the spec-gated `kirocrew-computer`,
+requires every extra to be a managed server that is not unconditionally mounted
+(`opt_in`, or behind a `spec_gate`), and pins the whole set equal to
+`acp.session_mcp.IDENTITY_BOUND_SERVERS` -- the kiro-backend element list that
+carries the same token per element -- so the two identity paths grant the same
+servers and a new recipient has to update both in the same commit. Because the
+opt-in servers are `opt_in`, `_spawns_own_control_plane` asks
 `agent.managed_mcp_spec_entry` for the invocation with `include_opt_in=True`,
 which skips only the `opt_in` emission disqualifier; a closed `spec_gate` still
 yields no invocation, and therefore no token. The stub-strip in
