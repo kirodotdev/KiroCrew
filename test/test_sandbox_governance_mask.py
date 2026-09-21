@@ -76,15 +76,30 @@ def _expected_exceptions() -> set[str]:
     }
 
 
-@pytest.mark.parametrize("leaf", ("subagents", "member-memory-bindings"))
-def test_run_authority_file_edits_are_refused_but_reads_remain_allowed(tmp_path, monkeypatch, leaf):
+@pytest.mark.parametrize(
+    ("leaf", "read_refused"),
+    (
+        # The canonical run records. Write-protected so an agent cannot rewrite the app
+        # owner a cold continuation restores, and READABLE because a run's results are
+        # the product working.
+        ("subagents", False),
+        # Its retained V1 companion, on the read+write floor instead: a legacy binding
+        # record carries a raw session key, so the agent may not open one. The edit
+        # refusal below is identical either way, which is why both leaves stay in one
+        # test and only the read expectation is per-leaf.
+        ("member-memory-bindings", True),
+    ),
+)
+def test_run_authority_file_edits_are_refused_on_both_run_roots(
+    tmp_path, monkeypatch, leaf, read_refused
+):
     from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     target = tmp_path / leaf / "run-one" / "state.json"
     target.parent.mkdir(parents=True)
     target.write_text('{"app":"original-app"}', encoding="utf-8")
-    assert not security.is_sensitive_path(str(target))
+    assert security.is_sensitive_path(str(target)) is read_refused
     assert security.is_sensitive_write_path(str(target))
     gate = HookManager(HooksConfig.from_dict({}))
     decision = gate.on_tool_call(

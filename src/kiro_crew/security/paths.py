@@ -400,6 +400,26 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``workspace/`` was itself replaceable with one ``ln -s``, and the app opens the
     # path directly (as keystone writers must), so it would have followed the link.
     "trust",
+    # Retained V1 member-memory binding records. The leaf name says "bindings",
+    # but a binding FILE carries the RAW session key it binds: a record on disk
+    # holds ``{"version": 1, "session_key": <raw>, "memory_store": ...}`` under
+    # ``sessions/<digest>/`` and ``pids/``, so reading the directory hands over a
+    # usable key rather than a digest of one. Memory V2 writes no such record and
+    # migrates none, so an upgraded install keeps every one it already has and the
+    # READ side needs this floor rather than write protection alone.
+    #
+    # ``sandbox._CREW_CHILD_WITHHELD_LEAVES`` classifies the leaf as one no child
+    # may read; this entry is what makes that classification enforceable, because
+    # ``agent_sdk.tool_gate.adapter_hidden_credential_dirs`` projects THIS floor
+    # into an enforced adapter's OS mask rather than that list.
+    #
+    # The one legitimate reader, ``subagent_persistence.read_run_execution``,
+    # opens the path directly in the gateway -- the keystone-reader pattern every
+    # reader of a floor leaf uses -- so cold continuation of a retained V1 run is
+    # unaffected. Crew's own sandbox keeps the directory OS-readable through
+    # ``sandbox._CREW_READONLY_LEAVES``, which this entry does not touch: the
+    # reader it fences is the AGENT'S OWN FILE TOOLS.
+    "member-memory-bindings",
     "security_events.jsonl",
     # Rotated SEL segments. sel.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
@@ -849,15 +869,20 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # turn the browser sandbox OFF for every later browse, and the change persists
     # until the next gateway start re-converges the file. Kiro Crew generates it
     # directly and does NOT route through this gate, so its own write still works.
-    # Cold continuation restores app ownership from canonical run records, or
-    # the retained V1 sidecar. Gateway writers bypass this tool gate; agents
-    # may read results but cannot turn an app-owned run into a personal run.
+    # subagents: the canonical run records a cold continuation restores app
+    # ownership from. Gateway writers bypass this tool gate; an agent may read a
+    # run's results but cannot turn an app-owned run into a personal run. Its
+    # retained V1 companion ``member-memory-bindings`` belongs on the read+write
+    # floor above instead, because a legacy binding record carries a raw session
+    # key while a V2 run's results live in the run record here -- so the agent may
+    # NOT read that leaf, and an entry on this tier as well would make
+    # ``security_posture`` publish "Reads allowed" for a path the read gate
+    # refuses.
     for leaf in (
         "config.json",
         "config.local.json",
         "playwright-cli-config.json",
         "subagents",
-        "member-memory-bindings",
     )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
