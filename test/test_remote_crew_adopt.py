@@ -697,6 +697,21 @@ class TestInheritedMetadata:
         # Pinned, so the background auto-title cannot rename a session the peer owns.
         assert slot._titled is True
 
+    async def test_the_agent_namespace_comes_from_the_peer_row(self, tmp_path, no_mint):
+        """An adopted same-name selection must keep the namespace the peer chose."""
+        mgr = _manager(
+            slots=[_peer_row(agent="reviewer", agent_kind="template")],
+            transcript=_msgs(),
+        )
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        slot = state._slots[body["key"]]
+        metadata = state.conversation_log.get_metadata(f"dashboard:{slot.key}")
+        assert (slot.agent, slot.agent_kind) == ("reviewer", "template")
+        assert metadata["agent_kind"] == "template"
+
     async def test_the_peers_title_wins_over_a_caller_supplied_one(self, tmp_path, no_mint):
         """Inheritance is an OVERRIDE, not a fallback.
 
