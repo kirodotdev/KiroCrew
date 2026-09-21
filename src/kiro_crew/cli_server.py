@@ -1471,6 +1471,36 @@ def _restart(cli_port: int | None = None) -> None:
     _print_token_url(port)
 
 
+def _snapshot_memory_or_exit() -> None:
+    """Copy every memory store, or refuse to let the caller rewrite this install.
+
+    Called immediately before each updater, never once at the top of ``_update``: the
+    interval guard is bypassed here, so a no-op or refused update must not spend a
+    retention slot on a copy nothing was going to change. ``memory.backup_keep`` is
+    passed for the same reason -- the sweep's own default would prune a longer
+    configured history. A copy that did not land exits 1, because rewriting the install
+    around the one store nothing else can rebuild is the loss this prevents.
+    """
+    from kiro_crew import memory_backup
+
+    try:
+        keep = int(KiroCrewConfig.load().memory.backup_keep)
+        snapshot = memory_backup.back_up_all_stores(keep, force=True)
+        failure = f"{snapshot['failed']} store(s) not copied" if snapshot["failed"] else ""
+    except Exception as exc:
+        snapshot, failure = {"backed_up": 0}, str(exc) or exc.__class__.__name__
+    if failure:
+        print(f"  ❌ Pre-update memory snapshot failed: {failure}")
+        print("     Not updating: the store would be rewritten with no fresh copy of it.")
+        print("     Check the log for the reason, then repair it: kirocrew memory backups")
+        sys.exit(1)
+    # Named as the DEFAULT store's directory: a bare path beside a count covering every
+    # store would point at the wrong place.
+    newest = memory_backup.newest_backup()
+    where = f"; default store copies in {newest.parent}" if newest is not None else ""
+    print(f"  💾 Memory snapshot: {snapshot['backed_up']} store(s) copied{where}\n")
+
+
 def _update(force: bool = False) -> None:
     """Update Kiro Crew — dispatches based on install layout.
 
@@ -1498,8 +1528,13 @@ def _update(force: bool = False) -> None:
     # A policy-defined provider OWNS the update on this host. Checked before any
     # layout dispatch so a manual `kirocrew update` cannot run the built-in
     # git/CDN mechanism the administrator excluded.
-    from kiro_crew.platform.update_provider import apply_policy_update
+    from kiro_crew.platform.update_provider import apply_policy_update, resolve_provider
 
+    # A provider that is not configured to apply -- check-only, or on Windows, where
+    # every provider command refuses -- is not about to rewrite anything.
+    _provider = resolve_provider()
+    if _provider is not None and _provider.can_apply():
+        _snapshot_memory_or_exit()
     applied = asyncio.run(apply_policy_update())
     if applied is not None:
         if applied:
@@ -1788,6 +1823,7 @@ def _update(force: bool = False) -> None:
         print(f"      Reconcile with: git rebase origin/{branch}")
         sys.exit(1)
 
+    _snapshot_memory_or_exit()
     print(f"  🔄 git reset --hard origin/{branch} ({target[:12]})…")
     try:
         result = subprocess.run(
@@ -2016,6 +2052,7 @@ def _update_wheel(layout) -> None:
     # other shape (pipx, a bare venv the operator manages) keeps the
     # installer re-run, whose behavior is owned by cli.sh.
     if running_from_managed_venv():
+        _snapshot_memory_or_exit()
         print("\n  🔄 Building the new version beside the current one…")
         try:
             promoted = apply_wheel_update(
@@ -2067,6 +2104,8 @@ def _update_wheel(layout) -> None:
         print(f"    {cmd}")
         sys.exit(1)
 
+    # After the Windows refusal, so a host that cannot self-update never spends a copy.
+    _snapshot_memory_or_exit()
     try:
         result = subprocess.run(
             ["sh", "-c", cmd],

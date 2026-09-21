@@ -280,6 +280,7 @@ def back_up_all_stores(
     *,
     now: datetime | None = None,
     should_stop: Callable[[], bool] | None = None,
+    force: bool = False,
 ) -> dict[str, int]:
     """Back up and prune every active store: the default, named V1 and active V2.
 
@@ -291,19 +292,34 @@ def back_up_all_stores(
     the caller: one unreadable silo must not cost the default store its backup. Counted
     rather than raised so the periodic caller can log a number without a try of its own,
     and so a store that starts failing is visible as a non-zero count.
+
+    ``force`` takes the copy even when the newest one is inside
+    :data:`MIN_BACKUP_INTERVAL_HOURS`. The interval exists to stop a restart loop
+    collapsing the retention window on a TIMER; a caller about to rewrite the install
+    needs a copy of the store as it is now, not one from up to a day ago.
     """
     from kiro_crew.memory_startup import require_memory_prepared, require_memory_ready
 
     require_memory_prepared()
     result = {"backed_up": 0, "skipped": 0, "pruned": 0, "failed": 0}
     stamp = now or datetime.now(timezone.utc)
-    for path in _stores_to_back_up():
+    stores = _stores_to_back_up()
+    # An active name the resolve-then-confirm could not turn into a path is a store this
+    # pass did NOT copy, and the loop below never sees it. Counted here so ONE number
+    # answers "did every active store get a copy": a caller that needs all-or-nothing
+    # otherwise has to infer the omission from the backup directory.
+    result["failed"] = max(0, len(active_store_names()) - len(stores))
+    for path in stores:
         if should_stop is not None and should_stop():
             break
         try:
             require_memory_ready(named_store_of_db(path))
             existing = list_backups(path)
-            if existing and _age_hours(existing[0], stamp) < MIN_BACKUP_INTERVAL_HOURS:
+            if (
+                not force
+                and existing
+                and _age_hours(existing[0], stamp) < MIN_BACKUP_INTERVAL_HOURS
+            ):
                 result["skipped"] += 1
                 continue
             if backup_store(path, now=stamp) is None:
