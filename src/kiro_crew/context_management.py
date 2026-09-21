@@ -35,7 +35,7 @@ RESULT_SUMMARY_WORDS = 200
 
 # Default character cap for the completion event injected into the parent
 # session. The full transcript stays in result.txt (capped by
-# RESULT_FILE_MAX_BYTES above) until cleanup removes it after delivery.
+# RESULT_FILE_MAX_BYTES above) for a retention window after delivery.
 # Override per-installation via ``agent.completion_keep_chars`` in
 # ``~/.kiro/crew/config.json``. Pair with ``agent.completion_keep`` to choose
 # whether the head, tail, or both ends of the transcript are kept (see
@@ -731,11 +731,11 @@ def apply_completion_keep(text: str, mode: str, max_chars: int) -> str:
     in ``config/loader.py``; callers may rely on receiving one of
     ``head``/``tail``/``both``.
 
-    The full untruncated transcript stays in
-    ``~/.kiro/crew/subagents/<id>/result.txt`` until the completion event is
-    delivered to the parent session, after which it is cleaned up by
-    ``subagent.py`` (see ``delete_agent_folder``). Use the ``spawn_status``
-    MCP tool to read it before delivery completes.
+    The transcript stays in ``~/.kiro/crew/subagents/<id>/result.txt``, trimmed towards
+    ``RESULT_FILE_MAX_BYTES``, for at least ``agent.subagent_result_ttl_secs`` (default
+    3600) after the completion event reaches the parent: delivery writes a
+    ``cause="delivered"`` tombstone instead of deleting the folder, and the reaper prunes
+    a tombstoned folder once that window closes. Read it there with ``spawn_status``.
     """
     if max_chars <= 0 or len(text) <= max_chars:
         return text
