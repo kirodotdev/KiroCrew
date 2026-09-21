@@ -17,7 +17,7 @@ const CSV_EXTS = new Set(['.csv', '.tsv'])
 // .ogg goes to audio -- the extension is overwhelmingly audio in practice and
 // the .ogv variant exists for video.
 const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.mkv', '.ogv'])
-const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga'])
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga', '.opus'])
 const JSON_EXTS = new Set(['.json'])
 const JSONL_EXTS = new Set(['.jsonl'])
 const HTML_EXTS = new Set(['.html', '.htm'])
