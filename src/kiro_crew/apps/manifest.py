@@ -2317,6 +2317,176 @@ class Contributes:
         return errors
 
 
+#: Most an app may declare in one ``contributions`` list. A pattern is a grant,
+#: and a grant list long enough to be unreadable is one nobody reviews.
+_MAX_CONTRIBUTION_PATTERNS = 32
+
+
+def _known_unit_kinds() -> frozenset[str]:
+    """Unit kinds this gateway has a log for, or empty when unavailable.
+
+    Function-local import: ``kiro_crew.eventlog`` pulls in the members layer,
+    and this module is imported by the installer and the CLI, which must parse a
+    manifest without that. An empty answer skips the kind check rather than
+    failing the install -- see ``Contributions.validate``.
+    """
+    try:
+        from kiro_crew.eventlog.contrib import unit_kinds
+
+        return frozenset(unit_kinds())
+    except Exception:  # pragma: no cover - defensive
+        return frozenset()
+
+
+@dataclass
+class Contributions:
+    """What an app may read, append and publish on a unit's append-only log.
+
+    The contribution protocol's §2 declaration. Distinct from
+    :class:`Contributes` next door, which is UI: a contributed command or panel
+    tab is a row the host renders, while a contribution here is authority over a
+    unit's log -- which event types this app may append, which projection keys it
+    may publish, and which unit kinds it may reach at all.
+
+    Every pattern MUST begin with the app's own name followed by ``/``, which is
+    what makes a grant unforgeable by inspection: reading ``["mochi/*"]`` in
+    ``mochi``'s manifest is the whole check. ``units`` is a plain list of kinds
+    (``member``), so an app that declares none can do nothing here.
+
+    Declaring this grants the ``/api/eventlog/`` paths and the ``eventlog_*``
+    frames; no separate ``permissions.api`` entry is needed. The HTTP handlers
+    re-derive ownership per request from this same declaration, so the path grant
+    confers no authority over another app's namespace.
+    """
+
+    events: list[str] = field(default_factory=list)
+    projections: list[str] = field(default_factory=list)
+    units: list[str] = field(default_factory=list)
+    #: Whether the manifest's ``contributions`` was present but not an object.
+    #: Same reason as ``Contributes.bad_block``: coercing to empty reads as "this
+    #: app contributes nothing", so the author sees neither an error nor any
+    #: working append. Not serialized.
+    bad_block: bool = False
+    #: Which of the three keys was present but not an array. Not serialized.
+    bad_lists: list[str] = field(default_factory=list)
+
+    def declared(self) -> bool:
+        """Whether this app declared anything at all under ``contributions``."""
+        return bool(self.events or self.projections or self.units)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.events:
+            d["events"] = self.events
+        if self.projections:
+            d["projections"] = self.projections
+        if self.units:
+            d["units"] = self.units
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Contributions:
+        bad: list[str] = []
+        for key in ("events", "projections", "units"):
+            if key in data and not isinstance(data.get(key), list):
+                bad.append(key)
+        return cls(
+            events=_granted_list(data.get("events")),
+            projections=_granted_list(data.get("projections")),
+            units=_granted_list(data.get("units")),
+            bad_lists=bad,
+        )
+
+    def validate(self, app_name: str, known_kinds: frozenset[str]) -> list[str]:
+        """Errors for this declaration, checked against *app_name* and the kinds.
+
+        *known_kinds* is passed in rather than imported: the manifest layer must
+        parse without pulling in the event-log package, and an installer running
+        against a newer gateway should not fail on a kind this build knows about.
+        An empty set skips the kind check for that reason.
+        """
+        errors: list[str] = []
+        if self.bad_block:
+            errors.append(
+                "contributions must be an object -- a non-object value validates as "
+                "contributing nothing, so the app installs clean and then every "
+                "append it makes is refused with no explanation"
+            )
+        for key in self.bad_lists:
+            errors.append(
+                f"contributions.{key} must be an array -- a non-array value passes as "
+                "empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor a working grant"
+            )
+        prefix = f"{app_name}/"
+        # Longest one contribution pattern may be. The count limit does not cap
+        # the strings themselves, and the grant cache retains every pattern and
+        # matches each append against it, so length needs its own ceiling.
+        _MAX_CONTRIBUTION_PATTERN_CHARS = 200
+        for field_name, patterns in (("events", self.events), ("projections", self.projections)):
+            if len(patterns) > _MAX_CONTRIBUTION_PATTERNS:
+                errors.append(
+                    f"contributions.{field_name}: {len(patterns)} patterns exceeds the "
+                    f"limit of {_MAX_CONTRIBUTION_PATTERNS}"
+                )
+            for pattern in patterns:
+                # Bounded in LENGTH as well as in count. The grant cache retains
+                # these strings and matches every append against them, so a
+                # manifest with the maximum number of megabyte-long patterns costs
+                # memory and match time without limit even though the count check
+                # above is satisfied.
+                if isinstance(pattern, str) and len(pattern) > _MAX_CONTRIBUTION_PATTERN_CHARS:
+                    errors.append(
+                        f"contributions.{field_name}: a pattern is {len(pattern)} characters, "
+                        f"over the limit of {_MAX_CONTRIBUTION_PATTERN_CHARS}"
+                    )
+                if not app_name:
+                    # No name to check against; the manifest's own name error
+                    # already fails this install.
+                    continue
+                if not pattern.startswith(prefix):
+                    errors.append(
+                        f"contributions.{field_name}: {pattern!r} must begin with "
+                        f"{prefix!r} -- a contributor may only name its own namespace"
+                    )
+                elif len(pattern) == len(prefix):
+                    errors.append(
+                        f"contributions.{field_name}: {pattern!r} names the prefix and "
+                        f"nothing else; use {prefix + '*'!r} to mean every key"
+                    )
+        # `units` is bounded on both axes too, but with its own check rather than in
+        # the loop above: a unit kind is a bare name like `member`, so the
+        # own-namespace prefix rule that governs an event or projection pattern
+        # would reject every legitimate entry. Without a bound a manifest can
+        # declare the same kind arbitrarily many times and the grant cache retains
+        # all of them.
+        if len(self.units) > _MAX_CONTRIBUTION_PATTERNS:
+            errors.append(
+                f"contributions.units: {len(self.units)} entries exceeds the "
+                f"limit of {_MAX_CONTRIBUTION_PATTERNS}"
+            )
+        for kind_name in self.units:
+            if isinstance(kind_name, str) and len(kind_name) > _MAX_CONTRIBUTION_PATTERN_CHARS:
+                errors.append(
+                    f"contributions.units: an entry is {len(kind_name)} characters, "
+                    f"over the limit of {_MAX_CONTRIBUTION_PATTERN_CHARS}"
+                )
+        if known_kinds:
+            for kind in self.units:
+                if kind not in known_kinds:
+                    errors.append(
+                        f"contributions.units: unknown unit kind {kind!r} "
+                        f"(known: {', '.join(sorted(known_kinds))})"
+                    )
+        if (self.events or self.projections) and not self.units:
+            errors.append(
+                "contributions declares events or projections but no units -- with no "
+                "unit kind granted the declaration reaches nothing, which reads as a "
+                "broken app rather than as a manifest to fix"
+            )
+        return errors
+
+
 _KNOWN_FIELDS = frozenset(
     {
         "name",
@@ -2344,6 +2514,7 @@ _KNOWN_FIELDS = frozenset(
         "publishProvider",
         "notifications",
         "contributes",
+        "contributions",
     }
 )
 
@@ -2413,6 +2584,15 @@ class AppManifest:
     # ``extra`` is by definition the un-checked bucket. Being a known field is what
     # makes ``validate()`` see it on every parse.
     contributes: Contributes = field(default_factory=Contributes)
+
+    # --- Contributions to a unit's append-only log (contribution protocol §2) ---
+    #
+    # Authority, not UI: which event types this app may append, which projection
+    # keys it may publish, and which unit kinds it may reach. Typed for the same
+    # reason as ``contributes`` -- ``extra`` is the un-checked bucket, and a grant
+    # that decides what an out-of-process contributor may write to the operator's
+    # crew log has to be seen by ``validate()`` on every parse.
+    contributions: Contributions = field(default_factory=Contributions)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -2623,6 +2803,12 @@ class AppManifest:
                     "(no traversal, no other app's namespace, no core route)"
                 )
 
+        # Log contributions: the `<app>/` prefix rule and the unit kinds. The kind
+        # set is read from the event-log registry HERE, where a manifest is being
+        # validated against THIS gateway, rather than baked into the manifest layer
+        # -- which must stay parseable without the event-log package.
+        errors.extend(self.contributions.validate(self.name, _known_unit_kinds()))
+
         return errors
 
     def signing_payload(self) -> bytes:
@@ -2694,6 +2880,14 @@ class AppManifest:
             # so rewriting it on a signed app redirects that dispatch while every visible
             # character of the row, and the signature, stay exactly as published.
             body["contributes"] = self.contributes.to_dict()
+        if self.contributions.declared():
+            # A contribution grant is authority over the operator's own crew log:
+            # widening `events` or `projections` on a signed app would let it write
+            # event types and publish views the publisher never declared, with every
+            # visible character of the app and the signature unchanged. Included only
+            # when declared, so manifests signed before this field existed keep
+            # producing the identical payload.
+            body["contributions"] = self.contributions.to_dict()
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -2755,6 +2949,9 @@ class AppManifest:
         contrib_d = self.contributes.to_dict()
         if contrib_d:
             d["contributes"] = contrib_d
+        contributions_d = self.contributions.to_dict()
+        if contributions_d:
+            d["contributions"] = contributions_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -2832,6 +3029,15 @@ class AppManifest:
             else Contributes(bad_block=True)
         )
 
+        contributions_raw = data.get("contributions", {})
+        contributions = (
+            Contributions.from_dict(contributions_raw)
+            if isinstance(contributions_raw, dict)
+            # Same fail-loud shape as `contributes` above: a non-object here would
+            # validate as "grants nothing" and then refuse every append the app makes.
+            else Contributions(bad_block=True)
+        )
+
         return cls(
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
@@ -2860,6 +3066,7 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
+            contributions=contributions,
             tags=[str(t) for t in data.get("tags", []) if t],
             jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
             extra=extra,

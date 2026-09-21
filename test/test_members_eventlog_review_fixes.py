@@ -847,3 +847,20 @@ class TestAnUpdateDoesNotLeaveSubscriptionsAuthorized:
     keeps streaming a unit the app has lost the right to read. Disabling the app
     closes its sockets; an update that changes the same permissions must too.
     """
+
+    def test_the_update_route_closes_the_apps_event_log_sockets(self):
+        """Source pin on the defect itself: a call that has to be present.
+
+        Anchored on the update handler's own body, so it stays true under any
+        rename of the hub method's caller, and on `close_app` because that is the
+        established teardown verb -- the same one disabling an app uses.
+        """
+        import inspect
+
+        from kiro_crew.apps import routes as routes_mod
+
+        src = inspect.getsource(routes_mod.handle_update_app)
+        assert "close_app" in src, (
+            "a successful app update does not close the app's event-log sockets, "
+            "so a subscription authorized under the old manifest keeps streaming"
+        )

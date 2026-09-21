@@ -894,6 +894,25 @@ async def handle_update_app(request: web.Request) -> web.Response:
             )
             return web.json_response(up_result.to_dict(), status=400)
 
+        # Close this app's event-log sockets, the way disabling it does. The
+        # update may have NARROWED permissions.contributions, and a subscription
+        # is authorized once at subscribe time: invalidating the cached grants
+        # (which update_app does) stops the next subscribe and says nothing about
+        # a socket already streaming. The app reconnects and is re-authorized
+        # against the manifest it now has.
+        try:
+            from kiro_crew.dashboard.eventlog_ws import get_hub
+
+            await get_hub().close_app(name)
+        except Exception:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_update",
+                outcome="sockets_not_closed",
+                resources=name,
+                error="could not close the app's event-log sockets after the update",
+            )
+
         # Re-register with the new manifest only if the app is STILL enabled.
         # ``update_app`` drops ``enabled`` when the new version adds
         # ``permissions.sessionApproval``, so the pre-update ``info`` snapshot

@@ -1424,6 +1424,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "its raw value for server-side folds while nothing leaves unredacted.",
     ),
     (
+        "Contributor catch-up read",
+        "dashboard/handlers/eventlog.py",
+        "Event envelopes served by `GET /api/eventlog/{kind}/{id}/events`, the "
+        "contribution-protocol catch-up read a granted contributor uses to fold "
+        "the log. `events_after` returns each envelope raw, and an event's `data` "
+        "carries agent-authored free-text (an activity `project`, message "
+        "previews) of the same class the sibling member `/history` and "
+        "`/activity` reads redact. Each event's `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before egress, so a credential or presigned URL smuggled into an event "
+        "does not reach the browser.",
+    ),
+    (
         "Live event-log frame broadcast",
         "dashboard/eventlog_ws.py",
         "The `eventlog_event` WS frame `EventLogHub.publish` fans out to every "

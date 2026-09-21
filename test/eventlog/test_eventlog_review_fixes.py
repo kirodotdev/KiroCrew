@@ -137,6 +137,13 @@ def test_a_value_inside_the_depth_bound_is_still_redacted_in_full():
     assert _TOO_DEEP not in repr(out)
 
 
+def test_the_bound_and_the_door_read_the_same_number():
+    """Two constants that disagree would be a payload accepted and then unreadable."""
+    from kiro_crew.eventlog import contrib
+
+    assert contrib.MAX_VALUE_DEPTH == types.MAX_VALUE_DEPTH
+
+
 # ---------------------------------------------------------------------------
 # F1 -- the ledger key is the member's PERSISTED identity
 # ---------------------------------------------------------------------------
@@ -198,6 +205,25 @@ def test_emit_for_member_writes_under_the_persisted_identity(tmp_path, monkeypat
 # ---------------------------------------------------------------------------
 # Contributed projection rows are authority, so they live inside the fences
 # ---------------------------------------------------------------------------
+def test_contributed_projection_rows_live_under_the_fenced_crew_log_tree():
+    """`store.values()` trusts the file and the drawer renders it.
+
+    Outside the fences an agent's own file tools could plant a row, so the answer
+    is the same one the member log got: live under the leaf both fences name.
+    """
+    from kiro_crew.crew_log.store import crew_log_tree_root
+    from kiro_crew.eventlog.contrib import contrib_root
+
+    root = contrib_root()
+    tree = crew_log_tree_root()
+    assert tree == root.parent or tree in root.parents
+
+
+def test_the_file_tool_gate_refuses_a_contributed_projection_path(tmp_path):
+    from kiro_crew.eventlog.contrib import contrib_root
+    from kiro_crew.security.paths import is_sensitive_path
+
+    assert is_sensitive_path(str(contrib_root() / "member" / "alice.json"))
 
 
 def test_the_sandbox_masks_the_tree_those_rows_are_in():
