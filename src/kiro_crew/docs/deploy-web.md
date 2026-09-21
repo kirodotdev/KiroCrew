@@ -231,7 +231,8 @@ The generated IAM policy conditions every mutating and deleting action on
 `aws:ResourceTag/kirocrew:managed=true`, and Kiro Crew tags each resource at creation. An unrelated
 production bucket, distribution, or API in the same account carries no such tag, so it cannot be
 modified or deleted through this policy even with its id in hand. Resource names are additionally
-scoped to the `kirocrew-deploy-*` prefix, and the audit-log bucket is covered by an explicit Deny.
+scoped to the `kirocrew-deploy-*` and `kirocrew-web-*` prefixes, and the audit-log bucket is
+covered by an explicit Deny.
 
 ### 6.5 Pre-publish content scan
 - Before upload, content runs through Kiro Crew's credential patterns plus data-leak heuristics

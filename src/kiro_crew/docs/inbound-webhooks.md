@@ -277,7 +277,7 @@ than looping forever.
 ### The tradeoff, plainly
 
 Verifying an HMAC means the gateway must be able to **recompute** it, so the
-signing secret is stored retrievably in `webhook_tokens.json` (0600, same file as
+signing secret is stored retrievably in `webhooks/tokens.json` (0600, same file as
 the token metadata). That is weaker at rest than the bearer token, which is
 stored only as a SHA-256 hash and cannot be read back out of the file at all.
 

@@ -46,8 +46,8 @@ A campaign can instead use **workflow** mode, which runs the Dynamic Workflow te
 ├── guidance.txt           # user nudge: agent reads + incorporates each cycle
 ├── emergent_questions.json # agent writes findings-driven follow-ups; ingested + consumed
 ├── findings/
-│   ├── cycle_001.json      # { cycle, summary, key_insight, sources_checked,
-│   ├── cycle_002.json      #   sources_empty, evidence_strength, verification }
+│   ├── cycle_001.json      # { cycle, summary, key_insight, sources_checked, sources_empty,
+│   ├── cycle_002.json      #   new_findings_count, evidence_strength, verification }
 │   └── ...
 └── FINDINGS.md            # cumulative report
 ```

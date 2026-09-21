@@ -28,8 +28,12 @@ not supposed to operate. Only globally routable addresses are accepted.
 
 ## Settings → Browser
 
-Two things live there:
+Three things live there:
 
+- **Use the built-in browser.** On by default in the desktop app, and only
+  settable there — in a plain browser or on a remote gateway it reads off and is
+  not editable. Off, the agent browses through `playwright-cli` rather than
+  driving the panel.
 - **Install the browser engine.** Driving a page needs a browser binary. The panel
   installs it for you and shows whether it is present.
 - **Attach to your own browser.** Attach mode drives your everyday browser, with
