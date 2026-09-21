@@ -25,11 +25,21 @@ KiroCrew implements defense-in-depth security across multiple layers: OS-level p
 
 Cold subagent continuation restores app ownership from the canonical
 `subagents/` run records; retained V1 runs can still read their existing
-`member-memory-bindings/` sidecar. Both roots use ordinary sandbox read-only
-protection and the file-tool write-only gate, including empty-root precreation
-and refusal of redirected roots. Results remain readable and Gateway writers
-remain functional. This protects app authorization integrity without a separate
-grant, duplicate execution record or cross-member read restriction.
+`member-memory-bindings/` sidecar. Both roots keep ordinary sandbox read-only
+protection, including empty-root precreation and refusal of redirected roots,
+and writes through the agent's file tools stay refused for both. They differ on
+the READ side, and what separates them is the record's contents rather than its
+position. `subagents/` is on the file-tool write-only gate, so its results
+remain readable. A `member-memory-bindings/` record carries the RAW session key
+it binds, so the leaf is on the read+write floor (`_CREW_SECRET_LEAVES`): the
+agent's own file tools may not open one, and
+`agent_sdk.tool_gate.adapter_hidden_credential_dirs` projects that floor into an
+enforced adapter's OS credential mask. The one legitimate reader,
+`subagent_persistence.read_run_execution`, opens the sidecar directly in the
+gateway and never consults this gate, so cold continuation of a retained V1 run
+still resolves its app owner, and Gateway writers remain functional. This
+protects app authorization integrity without a separate grant, duplicate
+execution record or cross-member read restriction.
 
 Memory V2 separates members' learning and work context; it does not promise
 confidentiality between agents running as the same host operator. One stable
