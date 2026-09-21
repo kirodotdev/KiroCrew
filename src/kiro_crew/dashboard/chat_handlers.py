@@ -10505,6 +10505,15 @@ def _hydrate_slot_from_history(
             slot.mode = _mode
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
+    # The namespace the agent was picked in rides with the pick itself, exactly
+    # as in the two persistence loaders (same position, same two-value guard on
+    # the operator-editable transcript). Restoring the name without it leaves
+    # the dropdown's name-only fallback lighting the same-name MEMBER row for a
+    # template-picked slot, and the next canonical full save -- which rebuilds
+    # meta_line from the live slot -- then omits the empty field and strips the
+    # recorded namespace from disk.
+    if meta.get("agent_kind") in ("member", "template"):
+        slot.agent_kind = meta["agent_kind"]
     if meta.get("project"):
         slot.project = meta["project"]
     if meta.get("channel_folder_filed"):
