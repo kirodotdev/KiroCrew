@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import Mock, patch
 
 import pytest
@@ -1379,9 +1380,35 @@ class TestLessonsCap:
 
         assert "CRITICAL ERROR — LESSONS FILE TOO LARGE" not in ctx
         assert "[lessons truncated]" not in ctx
-        assert lessons.get_context() in ctx
-        for i in range(_LESSONS_CAP // 1000 + 5):
-            assert f"{i}-{rule}" in ctx
+        # The rule budget BINDS on the startup path. What it must never do is emit
+        # a partial rule: trimming is by whole entry, so every rule that appears
+        # appears in full, and the ones that did not fit are reported with exact
+        # counts instead of vanishing.
+        total = _LESSONS_CAP // 1000 + 5
+        # Match the whole rendered entry, not the rule text: these fixture rules
+        # are prefix-ambiguous ("0-xxx…" is a substring of "10-xxx…"), so a bare
+        # ``in`` reports a rule as present that was never emitted. Anchoring on the
+        # "- " bullet and the terminating newline both disambiguates the index AND
+        # proves the entry is complete rather than a truncated prefix.
+        entries = {i: f"- {i}-{rule}\n" for i in range(total)}
+        present = [i for i, entry in entries.items() if entry in ctx]
+        assert present, "the rule budget must still admit rules"
+        assert len(present) < total, "this fixture is sized to overflow the rule budget"
+        # FULL ACCOUNTING, which is the invariant a subset check does not carry: a
+        # subset assertion holds even if rules vanish, so the count the prompt
+        # reports as omitted must exactly equal the count missing from the prompt.
+        # Every rule is then either rendered in full or named in the notice, and a
+        # rule cannot disappear unaccounted for.
+        notice = re.search(r"omitted (\d+) of (\d+) retained rules", ctx)
+        assert notice, "an overflow must report itself"
+        omitted, reported_total = int(notice.group(1)), int(notice.group(2))
+        assert reported_total == total
+        assert len(present) + omitted == total
+        assert "read them with learn_list" in ctx
+        # And the block stays inside the budget it names.
+        start = ctx.index("[Learned corrections")
+        end = ctx.index("[End of learned corrections]", start)
+        assert end - start <= _LESSONS_CAP
 
     def test_under_cap_no_error_block(self, tmp_path):
         from kiro_crew.learn import Lesson
@@ -1563,7 +1590,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap: "",
             get_preferences_context=lambda: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: True,
         )
         builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
@@ -1584,7 +1611,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap: "",
             get_preferences_context=lambda: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: False,
         )
         builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
@@ -1629,7 +1656,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=lambda query_text, cap: "[EPISODIC-SENTINEL]",
             get_semantic_context=lambda query_text, cap: "",
             get_preferences_context=lambda: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: True,
         )
         msg, _ = builder.build_message("q", True, "s1")
@@ -1651,7 +1678,7 @@ class TestMemoryGetContextQueryWiring:
             get_episodic_context=_episodic,
             get_semantic_context=lambda query_text, cap: "",
             get_preferences_context=lambda: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: True,
         )
         builder.build_message("find my tokyo notes", True, "s2")
@@ -1699,7 +1726,7 @@ class TestDurableModelVersionLessonContext:
             get_episodic_context=lambda query_text, cap: "",
             get_semantic_context=lambda query_text, cap: "",
             get_preferences_context=lambda: "",
-            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: False,
         )
         assert builder.lessons.save(Lesson(ts="t", rule=self.RULE, category="tool")) == "inserted"

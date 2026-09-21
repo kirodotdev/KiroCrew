@@ -49,7 +49,16 @@ from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_
 from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
-from kiro_crew.lesson_validation import contains_volatile_lesson_fact
+from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_ON_TOPIC,
+    LESSON_APPLIES_UNSTATED,
+    LESSON_APPLIES_VALUES,
+    LESSON_REFUSED_AT_CAPACITY,
+)
+from kiro_crew.lesson_validation import authored_lesson_applies as _authored_lesson_applies
+from kiro_crew.lesson_validation import (
+    contains_volatile_lesson_fact,
+)
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
@@ -259,7 +268,7 @@ async def _classify_contradiction(state: DashboardState, prompt: str) -> str:
 
 async def _resolve_contradictions(
     state: DashboardState, new_rule: str, candidates: list[dict]
-) -> list[str]:
+) -> list[tuple[str, str | None]]:
     """Use an LLM to identify which candidate lessons contradict the new rule.
 
     Each candidate is classified independently on a fresh ``_bg`` runtime
@@ -267,8 +276,12 @@ async def _resolve_contradictions(
     is swallowed so one bad verdict never aborts the sweep — the lesson is
     already persisted, and a missed verdict self-heals on the next ``learn_add``
     touching the topic.
+
+    Each entry is ``(key, value_json)``: the key alone is not enough to delete
+    safely, because the body under it can be replaced while this loop waits on a
+    verdict. The caller hands the body back as ``expect_value_json``.
     """
-    to_delete: list[str] = []
+    to_delete: list[tuple[str, str | None]] = []
     for candidate in candidates:
         prompt = _CONTRADICTION_PROMPT.format(old_rule=candidate["rule"], new_rule=new_rule)
         try:
@@ -283,8 +296,39 @@ async def _resolve_contradictions(
                 candidate["rule"][:60],
                 candidate["similarity"],
             )
-            to_delete.append(candidate["key"])
+            # ``None`` when the candidate carried no body: an unguarded delete is
+            # the pre-existing behaviour, so a caller shaping its own candidates
+            # keeps working rather than silently never deleting.
+            body = candidate.get("value_json")
+            to_delete.append((candidate["key"], body if isinstance(body, str) else None))
     return to_delete
+
+
+def _candidate_applies(candidate: object) -> str:
+    """The authored tier of a contradiction candidate, or ``unstated``.
+
+    The candidate rows this sweep receives are shaped by
+    ``find_contradiction_candidates``, so the tier may arrive already decoded or
+    still inside ``value_json``. Both are read, and anything unreadable answers
+    ``unstated`` -- the protected side, so a row this cannot classify is never
+    deleted by a finding.
+    """
+    if not isinstance(candidate, dict):
+        return LESSON_APPLIES_UNSTATED
+    direct = candidate.get("applies")
+    if isinstance(direct, str) and direct.strip().lower() in LESSON_APPLIES_VALUES:
+        return direct.strip().lower()
+    raw = candidate.get("value_json")
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return LESSON_APPLIES_UNSTATED
+        if isinstance(decoded, dict):
+            nested = decoded.get("applies")
+            if isinstance(nested, str) and nested.strip().lower() in LESSON_APPLIES_VALUES:
+                return nested.strip().lower()
+    return LESSON_APPLIES_UNSTATED
 
 
 async def _resolve_and_supersede(
@@ -313,7 +357,7 @@ async def _resolve_and_supersede(
         # the failure — operators need the visibility.
         logger.warning("Background contradiction sweep failed", exc_info=True)
         return
-    for key in contradicted:
+    for key, expect_body in contradicted:
         try:
             # Audit the supersede DECISION *before* the destructive delete: a
             # lesson must never be deleted without a SEL record, so if the audit
@@ -326,9 +370,31 @@ async def _resolve_and_supersede(
                 source="dashboard",
                 resources=key,
             )
+            # COMPARE-AND-DELETE on the body read at write time. The candidates are
+            # a write-time snapshot and this runs after a per-candidate LLM verdict,
+            # so the row under this key can have been replaced in between --
+            # ``_lesson_key`` keys on rule text plus scope alone, and re-tiering a
+            # rule is a delete plus a re-add under that same key. An unconditional
+            # delete here tombstones the replacement, which defeats the tier filter
+            # in ``api_lessons_create``: the replacement can be the `always` row the
+            # filter refuses to let a finding retire. Same guard the inline dedup
+            # pass applies to its own deferred supersedes, for the same reason.
+            #
             # delete_semantic is a sync FAISS op; off-load so this background
             # sweep doesn't block concurrent dashboard/Slack requests on the loop.
-            await asyncio.to_thread(vs.delete_semantic, key, "contradiction_superseded")
+            deleted = await asyncio.to_thread(
+                vs.delete_semantic,
+                key,
+                "contradiction_superseded",
+                expect_value_json=expect_body,
+            )
+            if not deleted:
+                # Not an error: the row changed or went while the verdict was
+                # pending, so what this decided to retire is already gone.
+                # A contradiction against whatever replaced it is re-nominated by
+                # the next write touching the topic.
+                logger.info("Contradicted lesson %s changed while its verdict ran; kept", key)
+                continue
             logger.info("Deleted contradicted lesson: %s", key)
         except Exception:
             # per-key so one bad/already-deleted key doesn't abort the batch (a
@@ -2469,6 +2535,11 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # Both write paths carry it, so the JSONL fallback store gates identically to
     # the vector store rather than injecting a scoped lesson the other withholds.
     repo_scope = cleaned.get("repo_scope") or None
+    # Which startup tier this correction belongs to, as STATED by the caller (the
+    # learn_add tool, the dashboard, the CLI). Absent leaves the row unstated,
+    # which the context builder serves as a standing rule. Both write paths carry
+    # it so the JSONL fallback tiers identically to the vector store.
+    applies = cleaned.get("applies") or None
     # Write to vector store if available, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -2516,6 +2587,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             rule_emb,
             rule_emb_generation,
             repo_scope,
+            applies=applies,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and
@@ -2543,6 +2615,27 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             candidates = await asyncio.to_thread(
                 vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb, repo_scope
             )
+            # A second deletion route, and it needs the same tier guard write_lesson's
+            # own dedup scan carries: this sweep ends in delete_semantic, so an
+            # `on_topic` submission could retire a standing rule here even though the
+            # scan refuses to. A finding may retire only another finding; an unstated
+            # candidate is protected too, because injection serves it AS a standing
+            # rule and on a store predating the field every row is unstated.
+            #
+            # Read the PERSISTED tier, not the submitted one. The tier is write-once,
+            # so a clause-only re-submit of a stored finding -- the ordinary
+            # enrichment this route documents below -- omits `applies`, which arrives
+            # as None while the row keeps `on_topic`. Gating on the submitted value
+            # therefore skipped the guard on exactly that input and let the sweep
+            # retire a contradictory standing rule, with no recovery: the
+            # "self-heals on the next learn_add" note covers a MISSED sweep, not a
+            # wrong deletion.
+            if result.applies == LESSON_APPLIES_ON_TOPIC:
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if _candidate_applies(candidate) == LESSON_APPLIES_ON_TOPIC
+                ]
             if candidates:
                 # Fire-and-forget via this module's _background_tasks
                 # pattern. The sweep only supersedes OTHER (older) lessons, never
@@ -2558,6 +2651,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             category=category,
             negative=negative,
             repo_scope=repo_scope,
+            applies=applies,
             ts=datetime.now(timezone.utc).isoformat(),
         )
         store = _lesson_jsonl_store(state, _lesson_silo, scope, cleaned.get("workspace"))
@@ -2572,7 +2666,20 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # refusal the fallback owns, and its string outcome matches
         # LessonWriteOutcome on the wire.
         outcome = await asyncio.to_thread(store.save_or_enrich, lesson)
-        reason = "volatile_session_fact" if outcome == "refused" else None
+        # This store has exactly TWO refusal paths -- the volatile-text predicate
+        # and the row cap -- and both answer with the bare ``refused`` string, so
+        # the cause has to be re-derived here. Re-running the predicate is exact
+        # rather than a guess: it is the same pure-text call the store made, and
+        # ``_lesson_withheld`` above re-derives it the same way for its own surface.
+        # Reporting every refusal as ``volatile_session_fact`` told a user at the
+        # row cap to reword a rule whose wording was never the problem.
+        reason = None
+        if outcome == "refused":
+            reason = (
+                "volatile_session_fact"
+                if contains_volatile_lesson_fact(rule, negative)
+                else LESSON_REFUSED_AT_CAPACITY
+            )
         stored = outcome != "refused"
         # A genuine empty, not an unfilled field. ``_insert_or_enrich`` has no dedup
         # rule that supersedes: it matches on exact rule text plus scope and either
@@ -3226,6 +3333,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         repo_scope: object = None,
         *,
         tier: tuple[str, str | None] | None = None,
+        applies: object = None,
     ) -> dict:
         """One sanitization chokepoint for every branch of this endpoint.
 
@@ -3262,6 +3370,16 @@ async def api_lessons(request: web.Request) -> web.Response:
             result["scope"] = tier[0]
             if tier[1] is not None:
                 result["workspace"] = tier[1]
+        # Only an AUTHORED tier is reported. A row nobody tiered is served as a
+        # standing rule, so emitting a value for it would name a distinction the
+        # injection path does not make, and the key's absence is what says "this
+        # row carries no author's answer". This is the surface every overflow
+        # notice sends the reader to, so a row filed as a finding has to be
+        # visible HERE -- without it a rule misfiled as on_topic silently stops
+        # arriving and the listing that is supposed to explain it shows nothing.
+        authored_applies = _authored_lesson_applies(applies)
+        if authored_applies is not None:
+            result["applies"] = authored_applies
         if contains_volatile_lesson_fact(rule, negative):
             result["withheld_reason"] = "volatile_session_fact"
         return result
@@ -3331,7 +3449,17 @@ async def api_lessons(request: web.Request) -> web.Response:
         # nowhere to carry a scope and reads as global, exactly as the
         # store's own ``_lesson_scope`` / ``_lesson_scope_unusable`` read it.
         raw_scope = decoded.get("repo_scope") if isinstance(decoded, dict) else None
-        data.append(_safe_lesson(rule, raw_category, e.get("updated_at", ""), negative, raw_scope))
+        raw_applies = decoded.get("applies") if isinstance(decoded, dict) else None
+        data.append(
+            _safe_lesson(
+                rule,
+                raw_category,
+                e.get("updated_at", ""),
+                negative,
+                raw_scope,
+                applies=raw_applies,
+            )
+        )
     # The population is measured by the rows THIS list renders: everything
     # that decodes (legacy strings and rule-less mappings included, marked
     # withheld), which is what ``has_any_decodable_lesson()`` asks. A page with
@@ -3372,7 +3500,21 @@ async def api_lessons(request: web.Request) -> web.Response:
         # tier where ``offset`` also counts back from the newest row.
         end = max(0, total - offset)
         data = [
-            _safe_lesson(le.rule, le.category, le.ts, le.negative, le.repo_scope, tier=tier)
+            _safe_lesson(
+                le.rule,
+                le.category,
+                le.ts,
+                le.negative,
+                le.repo_scope,
+                tier=tier,
+                # ``getattr``, not ``le.applies``: this branch renders whatever
+                # the JSONL loader produced, and a row from an older file (or a
+                # caller passing a lighter row shape) carries no tier attribute at
+                # all. Absent reads the same as unstated, which is the tier every
+                # row written before the field existed is in -- the same policy
+                # the rule/scope reads above already apply to a malformed row.
+                applies=getattr(le, "applies", None),
+            )
             for le, tier in tiered[max(0, end - limit) : end]
         ]
     return _page_body(data, total)

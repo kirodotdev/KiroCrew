@@ -1221,6 +1221,135 @@ class TestLessonsRouteReportsTheOutcome:
         assert store.load_all() == []
         state.push_refresh.assert_called_once_with("lessons")
 
+    async def test_a_clause_only_enrichment_still_guards_the_sweep(self, tmp_path) -> None:
+        """The guard must read the PERSISTED tier, not the submitted one.
+
+        The tier is write-once, so enriching a stored finding with a new clause --
+        the ordinary re-submit this route documents -- omits ``applies``. That
+        arrives as ``None`` while the row keeps ``on_topic``, so a guard gated on
+        the submitted value is skipped on exactly that input and the sweep can
+        retire a contradictory standing rule. There is no recovery: the
+        self-heals-next-time note covers a MISSED sweep, not a wrong deletion.
+        """
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+        from kiro_crew.lesson_validation import LESSON_APPLIES_ON_TOPIC
+
+        store = _store(tmp_path)
+        try:
+            # A stored FINDING, and a standing rule the sweep must not touch.
+            store.write_lesson("flush the widget cache", applies="on_topic")
+            store.write_lesson("never force push to a protected branch", applies="always")
+
+            # Re-submit the finding with a clause only -- no `applies`.
+            request, state = self._request(
+                "flush the widget cache", negative="do not flush it mid-deploy"
+            )
+            captured: dict = {}
+
+            async def fake_sweep(_state, _sk, _rule, candidates, _vs):
+                captured["candidates"] = candidates
+
+            with (
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+                patch.object(cron, "_resolve_and_supersede", new=fake_sweep),
+                patch.object(
+                    store,
+                    "find_contradiction_candidates",
+                    return_value=[
+                        {
+                            "key": "lesson.standing",
+                            "rule": "never force push to a protected branch",
+                            "similarity": 0.6,
+                            "applies": "always",
+                        }
+                    ],
+                ),
+            ):
+                await cron.api_lessons_create(request)
+            for task in list(state._background_tasks):
+                await task
+
+            # The write enriched the stored finding, so the effective tier is the
+            # PERSISTED one and the guard has to fire. Filtering every candidate out
+            # leaves nothing to sweep, so the route schedules no task at all -- both
+            # "never scheduled" and "scheduled with an empty list" are the guard
+            # holding; a standing rule appearing here is the defect.
+            reached = captured.get("candidates") or []
+            assert (
+                reached == []
+            ), f"a standing rule reached the sweep on a clause-only enrichment: {reached}"
+            rules = {_json.loads(row["value_json"])["rule"] for row in store.get_lessons()}
+            assert "never force push to a protected branch" in rules
+            result = store.write_lesson(
+                "flush the widget cache", negative="another clause", applies=None
+            )
+            assert (
+                result.applies == LESSON_APPLIES_ON_TOPIC
+            ), "the write must report the persisted tier, not the submitted None"
+        finally:
+            store.close()
+
+    async def test_jsonl_capacity_refusal_is_not_reported_as_volatile_text(self, tmp_path) -> None:
+        """The JSONL store's TWO refusals must not collapse into one reason.
+
+        Both the volatile-text predicate and the row cap answer with the bare
+        ``refused`` string, so the route re-derives the cause. Reporting a
+        capacity refusal as ``volatile_session_fact`` sends a user whose store is
+        full to reword a rule whose wording was never the problem -- advice that
+        cannot succeed, on the one write outcome a caller has to act on.
+        """
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+        from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
+        from kiro_crew.lesson_validation import (
+            LESSON_APPLIES_ALWAYS,
+            LESSON_REFUSED_AT_CAPACITY,
+            contains_volatile_lesson_fact,
+        )
+
+        # A full store of AUTHORED rules: every retained row outranks an incoming
+        # finding, so the prune drops the submission itself.
+        store = LessonStore(base_dir=tmp_path)
+        store._write_all(
+            [
+                Lesson(
+                    ts=f"2026-01-{i % 28 + 1:02d}",
+                    rule=f"standing rule number {i} about deploy step {i}",
+                    category="preference",
+                    applies=LESSON_APPLIES_ALWAYS,
+                )
+                for i in range(_MAX_LESSONS_TOTAL)
+            ]
+        )
+        submitted = "flush the widget cache after a rebuild"
+        assert not contains_volatile_lesson_fact(submitted, None), "fixture must be ordinary text"
+
+        request, state = self._request(submitted, category="knowledge")
+        state.lessons = store
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+        ):
+            resp = await cron.api_lessons_create(request)
+
+        assert _json.loads(resp.text) == {
+            "ok": False,
+            "outcome": "refused",
+            "reason": LESSON_REFUSED_AT_CAPACITY,
+            "superseded": [],
+        }
+        # The rule the user did submit is genuinely absent, and no authored row
+        # was evicted to make room for it.
+        rules = [le.rule for le in store.load_all()]
+        assert submitted not in rules
+        assert len(rules) == _MAX_LESSONS_TOTAL
+
     async def test_list_marks_legacy_volatile_jsonl_row_withheld(self, tmp_path) -> None:
         import json as _json
 

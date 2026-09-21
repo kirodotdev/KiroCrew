@@ -16,7 +16,17 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.lesson_validation import contains_volatile_lesson_fact
+from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_ALWAYS,
+    LESSON_APPLIES_ON_TOPIC,
+    LESSON_APPLIES_VALUES,
+    any_request_overlap,
+    contains_volatile_lesson_fact,
+    order_by_request_relevance,
+    render_lesson_tier,
+    render_withheld_tier,
+    tighter_lesson_budget,
+)
 from kiro_crew.memory_startup import require_memory_ready
 from kiro_crew.memory_stores import named_store_operation
 from kiro_crew.project_scope import (
@@ -117,9 +127,75 @@ class Lesson:
     # lesson keeps applying exactly as before, and only a lesson that opts in is
     # ever withheld. See ``kiro_crew.project_scope``.
     repo_scope: str | None = None
+    # Which tier this correction belongs to: a standing rule the session must
+    # follow regardless of topic, or a past finding worth having when the task
+    # touches it. ``None`` is the default and reads as unclassified, which every
+    # row written before this field carries; readers give that class the standing
+    # rule's treatment. The value is AUTHORED at the write surface, never derived
+    # from ``category``, ``ts`` or wording -- see
+    # ``kiro_crew.lesson_validation.normalize_lesson_applies``.
+    applies: str | None = None
 
 
 # ── Storage ──
+
+
+def _serializable(lesson: Lesson) -> dict:
+    """The row as stored, omitting ``applies`` when the writer named no tier.
+
+    A bare ``asdict`` emits ``"applies": null`` on every row, which rewrites every
+    legacy line the next time any lesson is saved and contradicts the additive
+    contract the vector writer keeps ("absent when unset"). The two stores must
+    agree on that, because the same absence has to read as unstated in both. Every
+    other field is emitted unconditionally, including a ``None`` ``negative`` and
+    ``repo_scope``, so existing rows are byte-identical.
+    """
+    row = asdict(lesson)
+    if row.get("applies") is None:
+        row.pop("applies", None)
+    return row
+
+
+def _prune_to_total(lessons: list[Lesson]) -> list[Lesson]:
+    """Trim *lessons* to ``_MAX_LESSONS_TOTAL``, evicting past findings first.
+
+    A plain ``lessons[-_MAX_LESSONS_TOTAL:]`` here is tier-blind, and that is a
+    durability hazard rather than a cosmetic one: findings are the cheap,
+    high-volume class, so accumulating them deletes the user's oldest authored
+    standing rules from disk. That is strictly worse than omitting one from a
+    prompt -- an omission is announced and recoverable through ``learn_list``,
+    while a pruned row is gone.
+
+    Eviction order is therefore experiences, then unclassified rows, then
+    authored directives, each oldest-first within its class. Authored directives
+    are evicted only when they alone exceed the cap; a user who really has 200+
+    standing rules still hits a bound, and that bound is the honest one rather
+    than a silent preference for whatever was typed most recently.
+
+    Order among the KEPT rows is preserved (oldest-first, as stored), so the file
+    layout and every reader that depends on it are unchanged.
+    """
+    if len(lessons) <= _MAX_LESSONS_TOTAL:
+        return lessons
+    over = len(lessons) - _MAX_LESSONS_TOTAL
+    # Index-based so the survivors can be returned in their original order.
+    by_class: dict[int, list[int]] = {0: [], 1: [], 2: []}
+    for index, lesson in enumerate(lessons):
+        if lesson.applies == LESSON_APPLIES_ON_TOPIC:
+            by_class[0].append(index)
+        elif lesson.applies == LESSON_APPLIES_ALWAYS:
+            by_class[2].append(index)
+        else:
+            by_class[1].append(index)
+    drop: set[int] = set()
+    for rank in (0, 1, 2):
+        for index in by_class[rank]:
+            if len(drop) >= over:
+                break
+            drop.add(index)
+        if len(drop) >= over:
+            break
+    return [lesson for index, lesson in enumerate(lessons) if index not in drop]
 
 
 class LessonStore:
@@ -240,7 +316,7 @@ class LessonStore:
             mode = 0o600
         atomic_write(
             self._path,
-            "".join(json.dumps(asdict(le)) + "\n" for le in lessons),
+            "".join(json.dumps(_serializable(le)) + "\n" for le in lessons),
             mode=mode,
             newline="",
         )
@@ -374,9 +450,27 @@ class LessonStore:
             if not matched:
                 # Insert the normalised clause too, so a whitespace-only one is stored
                 # as absent rather than as blanks.
-                updated.append(replace(lesson, negative=wanted_negative, repo_scope=wanted_scope))
+                submitted = replace(lesson, negative=wanted_negative, repo_scope=wanted_scope)
+                updated.append(submitted)
                 if len(updated) > _MAX_LESSONS_TOTAL:
-                    updated = updated[-_MAX_LESSONS_TOTAL:]
+                    updated = _prune_to_total(updated)
+                    # The submission is itself prunable, and at the cap it is the
+                    # FIRST candidate when it is the oldest row of the lowest
+                    # surviving class -- an `on_topic` write against a full store
+                    # hits this deterministically. Reporting "inserted" for a row
+                    # that is not in the file is a silent false success on a memory
+                    # write, which is the one outcome a caller cannot recover from:
+                    # it never learns to retry. Identity is by object here, not by
+                    # text, because a same-text row already present took the
+                    # `matched` branch above.
+                    if not any(row is submitted for row in updated):
+                        logger.info(
+                            "Refused lesson: the store is at its %d-row cap and every "
+                            "retained row outranks this one: %s",
+                            _MAX_LESSONS_TOTAL,
+                            lesson.rule,
+                        )
+                        return "refused"
             self._write_all(updated)
         logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
         return outcome
@@ -496,6 +590,16 @@ class LessonStore:
                         category=data.get("category", "knowledge"),
                         negative=data.get("negative"),
                         repo_scope=raw_scope,
+                        # A stored tier the vocabulary does not recognize reads as
+                        # unclassified rather than raising: this is the READ path,
+                        # and a hand-edited or future-schema row must not take down
+                        # prompt assembly for every other lesson in the file.
+                        applies=(
+                            data["applies"].strip().lower()
+                            if isinstance(data.get("applies"), str)
+                            and data["applies"].strip().lower() in LESSON_APPLIES_VALUES
+                            else None
+                        ),
                     )
                 )
             except (json.JSONDecodeError, KeyError):
@@ -519,53 +623,151 @@ class LessonStore:
         ]
 
     @named_store_operation
-    def get_context(self, project_dir: str | Path | None = None, *, cap: int = 0) -> str:
+    def get_context(
+        self,
+        project_dir: str | Path | None = None,
+        *,
+        cap: int = 0,
+        directive_budget: int = 0,
+        experience_budget: int = 0,
+        query_text: str = "",
+    ) -> str:
         """Format lessons as context for injection into prompts.
 
         *project_dir* is the session's active project, used only by the
         ``repo_scope`` gate; omitting it withholds every scoped lesson. ``cap``
         is a model-safety ceiling for this rendered block, not the ordinary
-        background budget. Content at or below it is byte-identical to the
-        uncapped result; overflow keeps the newest complete lessons first.
+        background budget.
+
+        *directive_budget* and *experience_budget* are the startup allowances for
+        the two authored tiers. Both default to ``0`` (unbounded), which keeps
+        every caller predating them byte-identical; ``context.py`` passes real
+        values on the session-start path. Standing rules -- plus every row whose
+        author named no tier -- are served first and from the larger budget, so a
+        crowd of past findings cannot displace a rule the user expects enforced.
+
+        JSONL carries no relevance signal, so newest-first is the only stable
+        ranking available when a budget forces a choice, and it is applied within
+        each tier separately.
         """
         lessons = self._applicable(self.load_all(), project_dir)
         if not lessons:
             return ""
+        # Newest-first, then split. Ordering before the split gives each tier a
+        # newest-first baseline, which the per-tier relevance sort below preserves
+        # for rows of equal overlap.
+        #
+        # Within the rule tier, AUTHORED directives are ordered ahead of
+        # unclassified rows, and that precedence is load-bearing rather than
+        # cosmetic. Unclassified is this reader's safe-direction guess about a row
+        # whose author never said what it was; an authored directive is the user
+        # stating outright that it must always apply. Ordered in one pool, a pile of
+        # untagged notes displaces exactly the rules the user was most explicit
+        # about -- measured on a synthetic store, six authored directives all fell
+        # out of a 7.4K budget behind forty newer untagged rows. Sorting the two
+        # sub-lists SEPARATELY is what keeps that precedence while still letting
+        # relevance decide inside each of them.
+        authored: list[Lesson] = []
+        unclassified: list[Lesson] = []
+        experiences_rows: list[Lesson] = []
+        for lesson in reversed(lessons):
+            if lesson.applies == LESSON_APPLIES_ON_TOPIC:
+                experiences_rows.append(lesson)
+            elif lesson.applies == LESSON_APPLIES_ALWAYS:
+                authored.append(lesson)
+            else:
+                unclassified.append(lesson)
 
-        def render(selected: list[Lesson], omitted: int = 0) -> str:
-            lines = [
+        def entries(rows: list[Lesson]) -> list[tuple[object, str]]:
+            return [
+                (
+                    lesson,
+                    f"{lesson.rule} — {lesson.negative}" if lesson.negative else lesson.rule,
+                )
+                for lesson in rows
+            ]
+
+        # Every tier is ordered by relevance to this request before the budget cuts,
+        # and ordered PER TIER so authored rules keep their precedence over untagged
+        # rows. Newest-first alone drops a row the task actually needs: measured on a
+        # 199-lesson store, a relevant-but-old finding fell outside the findings
+        # budget while newer irrelevant ones fitted, and on a 100-row store whose
+        # rows all predate the tier field an exact-topic match fell outside the RULE
+        # budget the same way -- every such row lands in the rule tier, so leaving
+        # that tier unordered lost a match the vector store kept, which ranks its
+        # whole eligible set. Ordering is not admission: it decides which rows
+        # survive a truncation that is going to happen anyway.
+        ranked_directives = order_by_request_relevance(entries(authored), query_text)
+        ranked_directives += order_by_request_relevance(entries(unclassified), query_text)
+        directive_room = tighter_lesson_budget(directive_budget, cap)
+        directive_block, _ = render_lesson_tier(
+            ranked_directives,
+            directive_room,
+            header=(
                 "[Learned corrections — user-taught rules from past mistakes.\n"
                 "ALWAYS follow these. They override default behavior.]"
-            ]
-            for lesson in selected:
-                entry = f"- {lesson.rule}"
-                if lesson.negative:
-                    entry += f" — {lesson.negative}"
-                lines.append(entry)
-            lines.append("[End of learned corrections]\n")
-            context = "\n".join(lines)
-            if omitted:
-                context += (
-                    f"[Context budget: omitted {omitted} lessons above the model-safe "
-                    "protected-content ceiling; use memory_recall.]\n\n"
-                )
-            return context
-
-        full = render(lessons)
-        if not cap or len(full) <= cap:
-            return full
-
-        # JSONL has no relevance signal. Newest-first is the only stable ranking
-        # available when the model-safe ceiling forces a choice. Keep the longest
-        # newest-first prefix that fits, reserving room for the omission notice
-        # at its widest (every lesson omitted), so one pass over the list decides.
-        frame = len(render([], len(lessons)))
-        budget = cap - frame
-        selected: list[Lesson] = []
-        for lesson in reversed(lessons):
-            entry = len(lesson.rule) + 3 + (len(lesson.negative) + 3 if lesson.negative else 0)
-            if entry > budget:
-                break
-            budget -= entry
-            selected.append(lesson)
-        return render(selected, len(lessons) - len(selected))
+            ),
+            footer="[End of learned corrections]",
+            omission=(
+                "[Context budget: omitted {count} of {total} retained rules above the "
+                "{limit}-character rule budget. This is a BUDGET limit, not a judgement "
+                "that they stopped applying: read them with learn_list.]"
+            ),
+        )
+        # ``max(1, …)`` because ``tighter_lesson_budget`` reads 0 as unbounded, so a
+        # directive block that consumed the whole ceiling would otherwise hand this
+        # tier no limit at all.
+        experience_room = tighter_lesson_budget(
+            experience_budget,
+            max(1, cap - len(directive_block)) if cap else 0,
+        )
+        experience_entries = entries(experiences_rows)
+        if (
+            experience_entries
+            and query_text.strip()
+            and not any_request_overlap(experience_entries, query_text)
+        ):
+            # Nothing here is about this request, so spend none of the allowance on
+            # it. A finding is DEFINED as material worth having when the task
+            # touches them; newest-first filler is not a weaker version of that, it
+            # is unrelated to the task by construction -- and it never rescued a
+            # near-miss either, because it surfaces the NEWEST rows rather than the
+            # ones the request is closest to. A bare greeting lands here too: it
+            # names no topic, so no finding is on it. The frame still renders, which
+            # is what turns "you have findings, none matched, go ask" into something
+            # the next turn can act on rather than an absence it cannot see.
+            experience_block = render_withheld_tier(
+                len(experience_entries),
+                header="[Learned experience — past findings]",
+                footer="[End of learned experience]",
+                notice=(
+                    "[Withheld all {total} past findings: none of them share wording "
+                    "with this request. They are NOT gone and this is not a budget "
+                    "limit -- call memory_recall with a specific question, or "
+                    "learn_list, when the task turns out to touch one.]"
+                ),
+            )
+        else:
+            experiences = order_by_request_relevance(experience_entries, query_text)
+            experience_block, _ = render_lesson_tier(
+                experiences,
+                experience_room,
+                header=(
+                    # "relevant ones first", matching the vector tier's wording, because
+                    # ``order_by_request_relevance`` runs above: claiming "newest first"
+                    # here would describe the pre-sort order, and the sort deliberately
+                    # lets an OLDER relevant finding outrank newer irrelevant ones. The
+                    # sort is stable, so equal-overlap rows -- and a store with no
+                    # overlap at all -- still read newest-first underneath.
+                    "[Learned experience — past findings, relevant ones first.\n"
+                    "Reference material, not standing rules; call memory_recall for more.]"
+                ),
+                footer="[End of learned experience]",
+                omission=(
+                    "[Context budget: omitted {count} of {total} past findings above the "
+                    "{limit}-character findings budget. This is a BUDGET limit, not a "
+                    "judgement that they stopped applying: call memory_recall or "
+                    "learn_list for the rest.]"
+                ),
+            )
+        return directive_block + experience_block

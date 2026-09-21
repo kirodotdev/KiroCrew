@@ -1021,6 +1021,12 @@ _MEMORY_PREFS_CAP = _budget(0.026)  # user preferences                     = 2.6
 _MEMORY_PROJECTS_CAP = _budget(0.039)  # active projects                      = 3.9%
 _MEMORY_HISTORY_CAP = _budget(0.16)  # daily history (multi-tier decay)     = 16%
 _LESSONS_CAP = _budget(0.226)  # learned corrections (high priority)  = 22.6%
+# Past findings the author marked as experience rather than as standing rules.
+# A SEPARATE, deliberately smaller allowance instead of a share of
+# ``_LESSONS_CAP``: the two tiers answer different questions, so a user with many
+# findings must not be able to crowd out their own standing rules, and a user with
+# many rules must not lose the findings budget. Both are window-independent.
+_LESSON_EXPERIENCE_CAP = _budget(0.05)  # learned experience (on-demand tier)  = 5%
 _SEMANTIC_MEMORY_CAP = _budget(0.077)  # semantic memory (vector)             = 7.7%
 _EPISODIC_MEMORY_CAP = _budget(0.077)  # episodic memory (vector)             = 7.7%
 _SKILLS_CAP = _budget(0.15)  # skills top-K block (lazy-loaded)     = 15%
@@ -1100,6 +1106,7 @@ class _ResolvedCaps:
     projects: int
     memory_history: int
     lessons: int
+    lesson_experience: int
     semantic: int
     episodic: int
     skills: int
@@ -1156,6 +1163,7 @@ def _resolve_caps_cached(window: int) -> _ResolvedCaps:
         projects=_scaled(_MEMORY_PROJECTS_CAP),
         memory_history=_scaled(_MEMORY_HISTORY_CAP),
         lessons=_scaled(_LESSONS_CAP),
+        lesson_experience=_scaled(_LESSON_EXPERIENCE_CAP),
         semantic=_scaled(_SEMANTIC_MEMORY_CAP),
         episodic=_scaled(_EPISODIC_MEMORY_CAP),
         skills=_scaled(_SKILLS_CAP),
@@ -4034,6 +4042,8 @@ class ContextBuilder:
                         project_dir=project,
                         background=True,
                         hard_cap=hard_cap,
+                        directive_budget=caps.lessons,
+                        experience_budget=caps.lesson_experience,
                     )
 
                 lessons_renderer = _render_member_lessons
@@ -4049,6 +4059,8 @@ class ContextBuilder:
                         project_dir=project,
                         background=True,
                         hard_cap=hard_cap,
+                        directive_budget=caps.lessons,
+                        experience_budget=caps.lesson_experience,
                     )
 
                 lessons_renderer = _render_vector_lessons
@@ -4056,13 +4068,25 @@ class ContextBuilder:
                 lesson_store = self.get_lessons_for(workspace, memory_store)
 
                 def _render_named_jsonl_lessons(hard_cap: int) -> str:
-                    return lesson_store.get_context(project_dir=project, cap=hard_cap)
+                    return lesson_store.get_context(
+                        project_dir=project,
+                        cap=hard_cap,
+                        directive_budget=caps.lessons,
+                        experience_budget=caps.lesson_experience,
+                        query_text=query_text,
+                    )
 
                 lessons_renderer = _render_named_jsonl_lessons
             else:
 
                 def _render_default_jsonl_lessons(hard_cap: int) -> str:
-                    return self.lessons.get_context(project_dir=project, cap=hard_cap)
+                    return self.lessons.get_context(
+                        project_dir=project,
+                        cap=hard_cap,
+                        directive_budget=caps.lessons,
+                        experience_budget=caps.lesson_experience,
+                        query_text=query_text,
+                    )
 
                 lessons_renderer = _render_default_jsonl_lessons
 

@@ -187,7 +187,13 @@ class TestProtectedContextCeiling:
         assert "JSONL LESSON 59" in text
         assert "JSONL LESSON 00" not in text
         assert "[Context budget: omitted " in text
-        assert "lessons above the model-safe protected-content ceiling; use memory_recall." in text
+        # The notice now names the RULE BUDGET it hit rather than the model-safe
+        # ceiling, and points at ``learn_list`` rather than ``memory_recall``:
+        # every row here is unclassified, so it is the rule tier that filled up,
+        # and the withheld rows are read back by listing lessons, not by recall.
+        assert "retained rules above the" in text
+        assert "-character rule budget" in text
+        assert "read them with learn_list" in text
         assert "[CURRENT DATE]" in text
 
     def test_oversized_vector_lessons_are_trimmed(self, rig, tmp_path):
@@ -238,9 +244,9 @@ class TestProtectedContextCeiling:
             assert preference in text
             assert "PRIORITY VECTOR LESSON" in text
             assert "[Context budget: omitted " in text
-            assert (
-                "lessons above the model-safe protected-content ceiling; use memory_recall." in text
-            )
+            assert "retained rules above the" in text
+            assert "-character rule budget" in text
+            assert "read them with learn_list" in text
             assert "[CURRENT DATE]" in text
         finally:
             vector.close()

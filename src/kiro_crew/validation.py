@@ -46,6 +46,7 @@ from kiro_crew.constants import (
 # the role pin / provider default"). Import-safe: ``effort`` pulls in only
 # ``model_registry`` (stdlib-only), so no cycle back into validation.
 from kiro_crew.effort import EFFORT_VALUES
+from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_AGENT_TURNS,
     MAX_MONITOR_CADENCE_SECS,
@@ -142,6 +143,9 @@ def normalize_lesson_category(value: object, *, strict: bool) -> str:
 
 # Allowed scopes for lessons (mirrors the learn_add MCP inputSchema enum).
 ALLOWED_LESSON_SCOPES = frozenset({"global", "workspace"})
+# Derived from the vocabulary module rather than restated, so a new tier cannot be
+# accepted by one surface and refused by the other.
+ALLOWED_LESSON_APPLIES = frozenset(LESSON_APPLIES_VALUES)
 
 # The ``GET /api/lessons`` window: how many lessons one call returns when the
 # caller names no ``limit``, and the most it may ask for. Both the route and the
@@ -1188,6 +1192,11 @@ LEARN_ADD_SCHEMA = ToolSchema(
         # rather than stored as a lesson that reports success and applies nowhere.
         # Whether the named path exists is still the gate's business, at injection.
         FieldSpec("repo_scope", str, max_len=MAX_SHORT_STRING, pattern=SCOPE_FRAGMENT_RE),
+        # Which startup tier the correction belongs to, as STATED by the caller.
+        # Nothing infers it from category, source or wording, because none of
+        # those separates a standing rule from a past finding. Absent leaves the
+        # row unstated, which is served as a standing rule.
+        FieldSpec("applies", str, allowed=ALLOWED_LESSON_APPLIES),
         # scope/workspace: the /api/lessons handler stores and lists
         # workspace-scoped lessons, but that tier does NOT reach a prompt -- the
         # context builder gates injected lessons on repo_scope instead. The

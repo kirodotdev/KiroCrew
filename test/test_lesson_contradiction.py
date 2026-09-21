@@ -197,7 +197,7 @@ class TestResolveContradictions:
         candidates = [{"key": "lesson.old", "rule": "Use X format", "similarity": 0.65}]
         result = await _resolve_contradictions(state, "Do NOT use X format", candidates)
 
-        assert result == ["lesson.old"]
+        assert result == [("lesson.old", None)]
         # The contradiction model preference ("auto", the governed default) is
         # passed to set_model, which resolves it against the advertised list at
         # the wire chokepoint (AcpSessionHandle.set_model). The fake bg session
@@ -243,7 +243,7 @@ class TestResolveContradictions:
         with patch("kiro_crew.llm_helpers._sel") as mock_sel:
             result = await cron._resolve_contradictions(state, "Do NOT use X", candidates)
 
-        assert result == ["lesson.old"]
+        assert result == [("lesson.old", None)]
         session.reject_tool.assert_awaited_once_with("req-1")
         # Denied tool invocation is audited (security-controls rule).
         mock_sel.return_value.log_tool_invocation.assert_called_once()
@@ -364,10 +364,14 @@ class TestResolveAndSupersede:
         candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
         with patch(
             "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-            new=AsyncMock(return_value=["lesson.old"]),
+            new=AsyncMock(return_value=[("lesson.old", '{"rule": "Use X"}')]),
         ), patch("kiro_crew.dashboard.handlers.cron._sel"):
             await _resolve_and_supersede(state, "dashboard:ui", "Do NOT use X", candidates, vs)
-        vs.delete_semantic.assert_called_once_with("lesson.old", "contradiction_superseded")
+        # COMPARE-AND-DELETE: the body read at write time rides along, so a row
+        # replaced while the verdict ran is not tombstoned by key alone.
+        vs.delete_semantic.assert_called_once_with(
+            "lesson.old", "contradiction_superseded", expect_value_json='{"rule": "Use X"}'
+        )
 
     async def test_swallows_exceptions(self):
         """A failed sweep must not propagate — the lesson is already persisted."""
@@ -394,11 +398,58 @@ class TestResolveAndSupersede:
         candidates = [{"key": "lesson.a", "rule": "r", "similarity": 0.6}]
         with patch(
             "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-            new=AsyncMock(return_value=["lesson.a", "lesson.b"]),
+            new=AsyncMock(return_value=[("lesson.a", None), ("lesson.b", None)]),
         ), patch("kiro_crew.dashboard.handlers.cron._sel"):
             await _resolve_and_supersede(state, "dashboard:ui", "new", candidates, vs)
         # Both keys attempted despite the first raising.
         assert vs.delete_semantic.call_count == 2
+
+    async def test_a_rule_retiered_while_the_verdict_ran_is_not_tombstoned(self, tmp_path):
+        """The tier filter must not be defeatable by timing.
+
+        ``api_lessons_create`` refuses to let a finding retire a standing rule,
+        but it decides that on a WRITE-TIME snapshot while the delete runs after a
+        per-candidate LLM verdict. ``_lesson_key`` keys on rule text plus scope
+        alone, and re-tiering a rule is a delete plus a re-add under that same
+        key -- so an unconditional delete here tombstones the replacement, which
+        can be the ``always`` row the filter exists to protect.
+        """
+        import json as _json
+
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
+
+        vs = VectorMemoryStore(db_path=tmp_path / "memory.db")
+        await asyncio.to_thread(vs.init)
+        try:
+            key = "lesson.retiered"
+            # What the sweep SAW at write time: an ordinary finding.
+            snapshot = {"rule": "flush the widget cache", "category": "knowledge"}
+            await asyncio.to_thread(vs.set_semantic, key, snapshot, 1.0, "user_explicit")
+            seen_body = (await asyncio.to_thread(vs.get_lessons))[0]["value_json"]
+
+            # What is under that key by the time the verdict lands: the same rule,
+            # re-authored as a standing rule.
+            await asyncio.to_thread(
+                vs.set_semantic,
+                key,
+                {"rule": "flush the widget cache", "category": "knowledge", "applies": "always"},
+                1.0,
+                "user_explicit",
+            )
+
+            with patch(
+                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                new=AsyncMock(return_value=[(key, seen_body)]),
+            ), patch("kiro_crew.dashboard.handlers.cron._sel"):
+                await _resolve_and_supersede(MagicMock(), "dashboard:ui", "new rule", [], vs)
+
+            survivor = await asyncio.to_thread(vs.get_semantic, key)
+            assert survivor is not None, "the re-authored standing rule was tombstoned"
+            rows = await asyncio.to_thread(vs.get_lessons)
+            stored = _json.loads(next(r["value_json"] for r in rows if r["key"] == key))
+            assert stored["applies"] == "always", "the surviving row is not the re-authored one"
+        finally:
+            await asyncio.to_thread(vs.close)
 
 
 @pytest.mark.asyncio

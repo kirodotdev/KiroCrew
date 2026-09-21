@@ -54,7 +54,17 @@ from kiro_crew.embeddings import (
     PRIORITY_NORMAL,
     bulk_pace_delay,
 )
-from kiro_crew.lesson_validation import contains_volatile_lesson_fact
+from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_ON_TOPIC,
+    LESSON_APPLIES_UNSTATED,
+    LESSON_APPLIES_VALUES,
+    authored_lesson_applies,
+    contains_volatile_lesson_fact,
+    normalize_lesson_applies,
+    render_lesson_tier,
+    render_withheld_tier,
+    tighter_lesson_budget,
+)
 from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.project_scope import (
@@ -340,6 +350,16 @@ class LessonWriteResult:
     #: -- ``LessonWriteResult(OUTCOME)`` and ``LessonWriteResult(OUTCOME, reason)``
     #: -- are unchanged, and any surface that ignores the field keeps its behaviour.
     superseded: tuple[str, ...] = ()
+    #: The tier the STORED row actually carries after this write, which is not the
+    #: submitted one on an enrichment: the tier is write-once, so a clause-only
+    #: re-submit omitting ``applies`` keeps the persisted value while the submitted
+    #: value is ``None``. A caller that guards a DELETION on the tier has to read
+    #: this, because the submitted value answers a different question -- gating on
+    #: it let an ordinary enrichment of a stored finding skip the guard entirely and
+    #: retire a standing rule. ``None`` means the row is unstated, which every read
+    #: path serves AS a standing rule. Defaults to ``None`` so the ~60 existing
+    #: construction sites are unchanged.
+    applies: str | None = None
 
     def __bool__(self) -> bool:
         """``wrote`` -- the exact predicate the old ``bool`` return answered.
@@ -767,6 +787,47 @@ def _lesson_scope_unusable(decoded: object) -> bool:
     # still counted as stored knowledge -- which silenced the JSONL store and lost
     # the lessons the user saved. Deferring here is what keeps the two in step.
     return not scope_is_admissible(scope)
+
+
+def _decoded_lesson_value(row: object) -> object:
+    """Decode a lesson row's stored value, answering ``None`` on anything malformed.
+
+    Used by the write scan's tier guard, which runs per candidate row. A raise here
+    would abort the whole write over one unreadable neighbour, and the guard's
+    fail-safe direction is "cannot tell" -> the row reads as UNSTATED, which every
+    path treats as a standing rule and therefore protects: a finding cannot retire
+    a row this cannot classify, and a standing submission is not declined as
+    covered by one. Protecting a row that may be a mere finding costs a duplicate;
+    the other direction silently deletes a rule.
+    """
+    try:
+        value = row["value_json"]  # type: ignore[index]
+    except (TypeError, KeyError, IndexError):
+        return None
+    if not isinstance(value, str):
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lesson_applies(decoded: object) -> str:
+    """Read a lesson's authored tier, or ``unclassified`` when it has none.
+
+    Only the mapping shape can carry a tier. A legacy string row has nowhere to
+    put one and reads as unclassified, which is what an existing store expects.
+    The vocabulary and the reason the tier is authored rather than derived live in
+    ``lesson_validation``; this function is only the mapping-shape reader, the
+    same split ``_lesson_scope`` uses for ``repo_scope``.
+    """
+    if not isinstance(decoded, dict):
+        return LESSON_APPLIES_UNSTATED
+    applies = decoded.get("applies")
+    if not isinstance(applies, str):
+        return LESSON_APPLIES_UNSTATED
+    normalized = applies.strip().lower()
+    return normalized if normalized in LESSON_APPLIES_VALUES else LESSON_APPLIES_UNSTATED
 
 
 def _lesson_display_text(decoded: object) -> str:
@@ -5134,6 +5195,7 @@ class VectorMemoryStore:
         rule_emb_generation: int | None = None,
         repo_scope: str | None = None,
         *,
+        applies: str | None = None,
         facets: "memory_schema.MemoryFacets | None" = None,
     ) -> LessonWriteResult:
         """Write a lesson as a semantic entry with key lesson.<hash>.
@@ -5255,6 +5317,19 @@ class VectorMemoryStore:
         # (a dict or list from the LLM) that would make a raw set membership
         # test raise and abort consolidation instead of clamping.
         category = normalize_lesson_category(category, strict=True)
+        # The tier goes the other way from the category, which CLAMPS an unusable
+        # label so a bad string cannot cost the user the whole lesson. There is no
+        # safe clamp for a tier: picking "directive" would inject a note into every
+        # session, and picking "experience" would demote a standing rule. Both are
+        # silent. So a misspelled tier raises here, which is a caller bug and
+        # reaches that caller, while an OMITTED tier is the supported choice to
+        # leave the row unclassified.
+        applies = normalize_lesson_applies(applies)
+        # What the STORED row will carry. Equal to the submission on an insert,
+        # but the enrich branch below replaces it with the persisted value,
+        # because the tier is write-once. Reported back so a caller guarding a
+        # DELETION on the tier reads what is stored rather than what was sent.
+        effective_applies = applies
         rule_words = self._lesson_keywords(rule_lower)
         # Same reasoning as write_episodic: carry the space generation to the write
         # so a swap landing between the embed and the lock cannot commit a vector
@@ -5300,6 +5375,12 @@ class VectorMemoryStore:
         # the exact stored shape it has always had and no existing row is churned.
         if repo_scope:
             lesson_value["repo_scope"] = repo_scope
+        # Same additive rule for the tier: a caller that names none leaves the key
+        # ABSENT, so the row is byte-identical to what this writer produced before
+        # the field existed and reads as unclassified. Absent and "not applicable"
+        # are the same answer here, which is why there is no stored sentinel.
+        if applies:
+            lesson_value["applies"] = applies
         value: object = lesson_value
         confidence = 1.0 if source == "user_explicit" else 0.9
         preflight = self.validate_semantic(key, value, confidence, source)
@@ -5469,6 +5550,16 @@ class VectorMemoryStore:
                 stored_scope = _lesson_scope(decoded)
                 if stored_scope:
                     enriched["repo_scope"] = stored_scope
+                # The tier is WRITE-ONCE for exactly the same reason, and carrying
+                # the STORED value forward is what keeps enrichment from silently
+                # demoting a standing rule to a past finding. Re-tiering is a
+                # delete + re-add, like re-scoping and recategorizing.
+                stored_applies = _lesson_applies(decoded)
+                if stored_applies != LESSON_APPLIES_UNSTATED:
+                    enriched["applies"] = stored_applies
+                    effective_applies = stored_applies
+                else:
+                    effective_applies = None
                 target: object = enriched
             else:
                 # Legacy string row. Recompose from the STORED base so a
@@ -5650,8 +5741,42 @@ class VectorMemoryStore:
             # the row it names.
             existing_report = _as_report_text(existing) or existing_text
 
+            # A finding must never retire a standing rule. The three delete branches
+            # below decide on text alone, so a longer `on_topic` write that merely
+            # OVERLAPS an authored `always` rule tombstones it and leaves only the
+            # topic-scoped row -- the same durability loss the JSONL prune is ordered
+            # to avoid, and worse here because a tombstone is silent and every read
+            # path filters it. Asymmetric on purpose: an `always` write may still
+            # retire an `on_topic` row, because promoting guidance to a standing rule
+            # is the direction the user is asking for.
+            #
+            # An `on_topic` write may retire ONLY another `on_topic` row. Comparing
+            # against `always` alone leaves every UNSTATED row unprotected, which is
+            # the inconsistency that matters most in practice: an unstated row is
+            # served AS a standing rule at injection, and on an install whose lessons
+            # predate this field every row is unstated -- so the narrow form protects
+            # nothing on exactly the stores that hold the user's real corrections.
+            # Read-side and write-side must classify a row the same way.
+            existing_applies = _lesson_applies(_decoded_lesson_value(existing))
+            existing_is_finding = existing_applies == LESSON_APPLIES_ON_TOPIC
+            submission_is_standing = applies != LESSON_APPLIES_ON_TOPIC
+            may_retire_existing = submission_is_standing or existing_is_finding
+
+            # The DECLINE needs the mirror of that rule, for the same reason. A
+            # submission is "already covered" only while the covering row arrives at
+            # least as often as the submission would, and tiering is what makes that
+            # conditional: a covering `on_topic` row arrives only when the request is
+            # about it, so declining a STANDING submission contained in one drops the
+            # rule from every unrelated turn and reports `substring_covered` for a
+            # row that does not cover it there. A re-submit is declined identically,
+            # so nothing recovers it. In that one direction the submission is stored
+            # instead, which can leave the standing rule beside the longer finding
+            # that contains it -- the price of not silently refusing to create the
+            # rule, and the safe side of it.
+            covering_row_arrives_less_often = submission_is_standing and existing_is_finding
+
             # Substring dedup
-            if rule_lower in existing_lower:
+            if rule_lower in existing_lower and not covering_row_arrives_less_often:
                 logger.info(
                     "Lesson dedup: %s already covered by %s [%s]", key, existing["key"], category
                 )
@@ -5683,9 +5808,10 @@ class VectorMemoryStore:
                 # anything, so this adds no weak-hashing exposure -- ``_lesson_key``
                 # already derived these ids, and CodeQL flags that derivation at its own
                 # site, not at a line that merely logs the result.
-                deferred_supersedes.append(
-                    (existing["key"], existing_report, existing["value_json"], "contains")
-                )
+                if may_retire_existing:
+                    deferred_supersedes.append(
+                        (existing["key"], existing_report, existing["value_json"], "contains")
+                    )
                 continue
 
             # Topic overlap dedup
@@ -5702,14 +5828,15 @@ class VectorMemoryStore:
                     # two rules to genuinely be about the same thing.
                     ratio = len(overlap) / max(len(rule_words), len(existing_words))
                     if ratio >= 0.5:
-                        deferred_supersedes.append(
-                            (
-                                existing["key"],
-                                existing_report,
-                                existing["value_json"],
-                                "%.0f%% keyword overlap" % (ratio * 100),
+                        if may_retire_existing:
+                            deferred_supersedes.append(
+                                (
+                                    existing["key"],
+                                    existing_report,
+                                    existing["value_json"],
+                                    "%.0f%% keyword overlap" % (ratio * 100),
+                                )
                             )
-                        )
                         continue
 
             # Semantic dedup via embeddings (use stored embedding when available)
@@ -5780,14 +5907,15 @@ class VectorMemoryStore:
                         # supersede -- a later row can still decline the write
                         # via ``substring_covered``, and a declined write
                         # executes no deletion at all.
-                        deferred_supersedes.append(
-                            (
-                                existing["key"],
-                                existing_report,
-                                existing["value_json"],
-                                "%.2f cosine" % sim,
+                        if may_retire_existing:
+                            deferred_supersedes.append(
+                                (
+                                    existing["key"],
+                                    existing_report,
+                                    existing["value_json"],
+                                    "%.2f cosine" % sim,
+                                )
                             )
-                        )
                         continue
 
         # No pending backfill is dropped for a queued row. The queue is a list of
@@ -5878,6 +6006,7 @@ class VectorMemoryStore:
         return LessonWriteResult(
             LessonWriteOutcome.ENRICHED if matched else LessonWriteOutcome.INSERTED,
             superseded=tuple(superseded),
+            applies=effective_applies,
         )
 
     @staticmethod
@@ -5946,6 +6075,12 @@ class VectorMemoryStore:
         global one inside its own tree does not contradict it anywhere else --
         sweeping across scopes would retire the global rule for every other
         repository on the strength of one repo's exception.
+
+        Each row carries its authored ``applies`` tier. The caller refuses to let
+        a past finding retire a standing or untiered rule, and it can only apply
+        that refusal to a row whose tier it can read -- omitting the tier here
+        made every row read as untiered, which turned that narrowing into a
+        blanket no-op for findings rather than a guard.
         """
         if rule_emb is None:
             rule_emb = self._try_embed(rule) if self.embed_fn else None
@@ -5974,7 +6109,33 @@ class VectorMemoryStore:
                 existing_val = _lesson_display_text(decoded)
                 if not existing_val:
                     continue
-                candidates.append({"key": existing["key"], "rule": existing_val, "similarity": sim})
+                # The tier travels WITH the candidate. The sweep's caller refuses to
+                # let a finding retire a standing or legacy rule, and it can only
+                # apply that rule to a row whose tier it can read -- a candidate
+                # shaped {key, rule, similarity} reads as unstated for every row,
+                # which turns "narrow the sweep" into "disable the sweep" for every
+                # on_topic write.
+                #
+                # The stored BODY travels with it too, exactly as read here. The
+                # sweep's delete runs minutes later, after a per-candidate LLM
+                # verdict, so this row is a write-time snapshot: ``_lesson_key``
+                # keys on rule text plus scope alone, so re-tiering that rule in
+                # the meantime (a delete plus a re-add, the documented way to
+                # change a tier) puts a DIFFERENT row under the same key. An
+                # unconditional delete then tombstones the replacement -- and if
+                # the replacement is the `always` tier, it destroys exactly the
+                # row the filter above exists to protect. Handing this body back
+                # as ``expect_value_json`` makes the delete compare-and-delete,
+                # the same guard the inline dedup pass already applies.
+                candidates.append(
+                    {
+                        "key": existing["key"],
+                        "rule": existing_val,
+                        "similarity": sim,
+                        "applies": _lesson_applies(decoded),
+                        "value_json": existing["value_json"],
+                    }
+                )
         candidates.sort(key=lambda x: x["similarity"], reverse=True)
         return candidates[:5]
 
@@ -6158,6 +6319,8 @@ class VectorMemoryStore:
         recall_query: _RecallQuery | None = None,
         background: bool = False,
         hard_cap: int = 0,
+        directive_budget: int = 0,
+        experience_budget: int = 0,
     ) -> str:
         """Format lessons for prompt injection, most relevant first.
 
@@ -6208,12 +6371,22 @@ class VectorMemoryStore:
         if not entries:
             return ""
         if background:
-            # Extraction provenance cannot distinguish advice from a user's
-            # explicit safety correction. Keep every eligible, in-scope rule
-            # until the separate model-safety ceiling is reached. Ranking still
-            # puts rules relevant to this request first, lexically only: startup
-            # never spends an embedding inference.
-            kept = (
+            # Two tiers, two budgets, and the split is AUTHORED rather than
+            # inferred (see ``_lesson_applies``). Standing rules -- plus every row
+            # whose author named no tier -- go in the directive block, which is
+            # the one the prompt tells the agent to always follow. Rows the
+            # author marked as past findings go in a separate, much smaller
+            # experience block, because carrying every past finding into an
+            # unrelated conversation is what made a bare "hi" expensive.
+            #
+            # Both budgets are supplied by the caller and are window-INDEPENDENT.
+            # Deriving one shared allowance from the model window instead makes
+            # startup injection scale with the window, so moving from a 200K to a
+            # 1M model multiplies it about fivefold for a user who changed nothing.
+            #
+            # Ranking still puts rules relevant to this request first, lexically
+            # only: startup never spends an embedding inference.
+            ranked = (
                 self._rank_lessons(
                     entries,
                     query_text,
@@ -6222,48 +6395,136 @@ class VectorMemoryStore:
                 if query_text
                 else entries
             )
-
-            def render_background(rows: list[tuple[dict, str]], omitted: int = 0) -> str:
-                context = (
+            # Within the rule tier, AUTHORED directives are ordered ahead of
+            # unclassified rows. Unclassified is this reader's safe-direction guess
+            # about a row whose author never said what it was; an authored directive
+            # is the user stating outright that it must always apply. Ranked
+            # together, a pile of untagged rows displaces exactly the rules the user
+            # was most explicit about.
+            authored: list[tuple[dict, str]] = []
+            untagged: list[tuple[dict, str]] = []
+            experiences: list[tuple[dict, str]] = []
+            for entry in ranked:
+                applies = _lesson_applies(json.loads(entry[0]["value_json"]))
+                if applies == LESSON_APPLIES_ON_TOPIC:
+                    experiences.append(entry)
+                elif applies == LESSON_APPLIES_UNSTATED:
+                    untagged.append(entry)
+                else:
+                    authored.append(entry)
+            directives = authored + untagged
+            unclassified = len(untagged)
+            # The model-safety ceiling bounds the two blocks TOGETHER, and the
+            # directive block is served first: when room is short, a past finding
+            # yields to a standing rule rather than the two sharing the shortfall.
+            directive_tier = {
+                "header": (
                     "[Learned corrections — retained rules from past mistakes.\n"
-                    "Follow explicit user rules; stored inferences do not override the current user.]\n"
-                    + "\n".join(f"- {text}" for _, text in rows)
-                    + "\n[End of learned corrections]\n"
+                    "Follow explicit user rules; stored inferences do not override "
+                    "the current user.]"
+                ),
+                "footer": "[End of learned corrections]",
+                "omission": (
+                    "[Context budget: omitted {count} of {total} retained rules above the "
+                    "{limit}-character rule budget. This is a BUDGET limit, not a judgement "
+                    "that they stopped applying: read them with learn_list or use "
+                    "memory_recall.]"
+                ),
+            }
+            if directive_budget:
+                directive_room = tighter_lesson_budget(directive_budget, hard_cap)
+            else:
+                # A caller that names NO tier budget keeps the shipped two-stage
+                # contract: the rule block is COMPLETE below the model-safe ceiling
+                # whatever ``cap`` says -- the pinned retain-every-eligible-in-scope-
+                # rule invariant -- and only an overflow, where that invariant is
+                # already unmet, falls back to the ordinary lessons budget. Naming a
+                # tier budget is what asks for a window-independent bound instead,
+                # so the two mechanisms never both decide one block.
+                whole = render_lesson_tier(directives, 0, **directive_tier)[0]
+                directive_room = (
+                    0
+                    if not hard_cap or len(whole) <= hard_cap
+                    else tighter_lesson_budget(cap, hard_cap)
                 )
-                if omitted:
-                    context += (
-                        f"[Context budget: omitted {omitted} lessons above the model-safe "
-                        "protected-content ceiling; use memory_recall.]\n\n"
-                    )
-                return context
-
-            full = render_background(kept)
-            # Unchanged from main: below the model-safe ceiling the block is
-            # returned complete, so the retain-every-eligible-in-scope-rule
-            # invariant holds exactly as the specification pins it. A ``hard_cap``
-            # of 0 keeps admission unbounded, preserving every existing caller.
-            if not hard_cap or len(full) <= hard_cap:
-                return full
-            # Above the ceiling the retain-everything invariant is already unmet
-            # -- the block must drop rules whatever budget is chosen, and the
-            # ceiling was never a statement about which to keep here. Fall back
-            # to the ordinary lessons budget ``cap`` (still bounded by
-            # ``hard_cap``), leaving the omission notice pointing the model at
-            # memory_recall. A ``cap`` of 0 keeps the historical ``hard_cap``
-            # budget. Longest relevance-ordered prefix that fits, with room
-            # reserved for the omission notice at its widest; one pass over the
-            # rows.
-            budget = (min(cap, hard_cap) if cap else hard_cap) - len(
-                render_background([], len(kept))
+            directive_block, directive_omitted = render_lesson_tier(
+                directives,
+                directive_room,
+                **directive_tier,
             )
-            fitted: list[tuple[dict, str]] = []
-            for entry in kept:
-                line = len(entry[1]) + 3
-                if line > budget:
-                    break
-                budget -= line
-                fitted.append(entry)
-            return render_background(fitted, len(kept) - len(fitted))
+            # ``max(1, …)`` rather than the bare remainder: ``tighter_lesson_budget``
+            # reads 0 as "no limit from this source", so a directive block that
+            # consumed the whole ceiling would hand the experience tier an
+            # UNBOUNDED budget -- the exact inversion of what no room left means.
+            # A budget of 1 fits no lesson and renders the labelled
+            # everything-omitted block, which overshoots the ceiling by the notice
+            # and is the documented trade: a silent empty block is indistinguishable
+            # from "this user has no findings".
+            experience_room = tighter_lesson_budget(
+                experience_budget,
+                max(1, hard_cap - len(directive_block)) if hard_cap else 0,
+            )
+            if (
+                experiences
+                and query_text.strip()
+                and not self._any_lesson_overlap(experiences, query_text)
+            ):
+                # Nothing here is about this request, so spend none of the allowance
+                # on it. A finding is DEFINED as material worth having when the task
+                # touches it; newest-first filler is not a weaker version of that, it
+                # is unrelated by construction -- and it never rescued a near-miss
+                # either, since it surfaces the NEWEST rows rather than the closest
+                # ones. A bare greeting lands here too: it names no topic, so no
+                # finding is on it. The frame still renders, which is what turns "you
+                # have findings, none matched, go ask" into something the next turn
+                # can act on rather than an absence it cannot see.
+                experience_block = render_withheld_tier(
+                    len(experiences),
+                    header="[Learned experience — past findings]",
+                    footer="[End of learned experience]",
+                    notice=(
+                        "[Withheld all {total} past findings: none of them share "
+                        "wording with this request. They are NOT gone and this is not "
+                        "a budget limit -- call memory_recall with a specific "
+                        "question, or learn_list, when the task turns out to touch "
+                        "one.]"
+                    ),
+                )
+                experience_omitted = len(experiences)
+            else:
+                experience_block, experience_omitted = render_lesson_tier(
+                    experiences,
+                    experience_room,
+                    header=(
+                        "[Learned experience — past findings, relevant ones first.\n"
+                        "Reference material, not standing rules; call memory_recall for more.]"
+                    ),
+                    footer="[End of learned experience]",
+                    omission=(
+                        "[Context budget: omitted {count} of {total} past findings above the "
+                        "{limit}-character findings budget. This is a BUDGET limit, not a "
+                        "judgement that they stopped applying: call memory_recall or "
+                        "learn_list for the rest.]"
+                    ),
+                )
+            # Observability without new state: the two blocks are separately
+            # labelled in the prompt and each omission notice names its own
+            # counts, so what was injected is readable from the prompt itself.
+            # A counter stashed on the store would race between two sessions
+            # rendering against one instance and could report either one's
+            # numbers to the other.
+            logger.debug(
+                "background lessons: directives=%d/%d chars=%d unclassified=%d "
+                "experiences=%d/%d chars=%d",
+                len(directives) - directive_omitted,
+                len(directives),
+                len(directive_block),
+                unclassified,
+                len(experiences) - experience_omitted,
+                len(experiences),
+                len(experience_block),
+            )
+            return directive_block + experience_block
         total = len(entries)
         ranked = (
             self._rank_lessons(entries, query_text, recall_query=recall_query)
@@ -6341,6 +6602,28 @@ class VectorMemoryStore:
             scored.append((score, entry))
         scored.sort(key=lambda pair: -pair[0])
         return [entry for _, entry in scored]
+
+    def _any_lesson_overlap(self, entries: list[tuple[dict, str]], query_text: str) -> bool:
+        """Whether ANY entry shares a stemmed word with *query_text*.
+
+        The admission test for the findings tier, and deliberately the same
+        tokenization ``_rank_lessons`` scores with -- ordering and admission must
+        read one signal, or the tier is suppressed for a match its own ranking
+        found. That is also why this is not the shared unstemmed helper the JSONL
+        store uses: stemming matches strictly more, so borrowing that answer would
+        discard this store's stem-only hits.
+
+        Only the KEYWORD half is consulted, which is exactly right on the startup
+        path: it passes a recall query whose vector is ``None``, so the similarity
+        term contributes nothing there and the keyword overlap IS the whole score.
+        """
+        if not entries or not query_text.strip():
+            return False
+        query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
+        if not query_words:
+            return False
+        row_tokens = _row_stem_tokens_for_scan(len(entries))
+        return any(query_words & row_tokens(text.lower()) for _, text in entries)
 
     @staticmethod
     def _stored_similarity_scorer(
@@ -7380,12 +7663,23 @@ class VectorMemoryStore:
                     # Carry the scope across. Dropping it would silently widen a
                     # repository-scoped correction into a global one, which is the
                     # one direction the scope gate must never move.
+                    #
+                    # Carry the authored tier across for the same reason, in the same
+                    # direction: an omitted `applies` reads as unstated, which every
+                    # read path serves AS a standing rule, so dropping it promotes a
+                    # row the user filed as a past finding into one injected in every
+                    # session -- silently widening exactly what the tier exists to
+                    # bound. READ-safe normalization, not the write path's: this loop
+                    # reads the file directly, so a hand-edited or future-schema value
+                    # must migrate the row as unstated rather than abort the migration.
+                    applies = authored_lesson_applies(data.get("applies"))
                     if rule and self.write_lesson(
                         rule,
                         data.get("category", "knowledge"),
                         negative,
                         source="migration",
                         repo_scope=raw_scope,
+                        applies=applies,
                     ):
                         counts["semantic"] += 1
                     else:
