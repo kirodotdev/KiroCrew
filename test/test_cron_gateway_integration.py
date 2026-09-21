@@ -2833,3 +2833,131 @@ class TestACancellationAtTheClaimAwaitKeepsItsOneShot:
 
         await asyncio.to_thread(svc._merge_job_result, created)
         assert any(j.id == created.id for j in svc.list_jobs()), "a denied one-shot was consumed"
+
+
+class TestCronDefaultAgent:
+    """The configured default agent must reach dispatch for an agent-less cron.
+
+    Regression cover for a silent-no-op class rather than for one bug site.
+    ``_cron_callback`` captures its selectors up front -- "captured selectors,
+    never the scheduler's mutable job" -- and every downstream consumer reads
+    the resulting ``cron_agent``, never ``job.agent_id`` again. A default
+    resolved anywhere BELOW that capture therefore reaches nothing: no error,
+    no conflict, no failing assertion elsewhere, just a cron quietly running
+    as AcpClient's ``CLIENT_NAME`` floor with none of the default agent's MCP
+    servers. These assert on the ``agent`` kwarg ``get_or_create`` actually
+    receives, which is the only place the difference is observable.
+    """
+
+    @staticmethod
+    def _dispatched_agent(gw):
+        return gw.sessions.get_or_create.call_args_list[0].kwargs["agent"]
+
+    @pytest.mark.asyncio
+    async def test_agentless_job_runs_the_configured_default(self):
+        gw = _make_gw_for_llm()
+        gw._cfg.agent.default_agent = "configured-default"
+        job = _make_llm_job(agent_id="")
+
+        result, _ = await _run_llm_callback(gw, job)
+
+        assert self._dispatched_agent(gw) == "configured-default"
+        assert result == "Agent response here"
+
+    @pytest.mark.asyncio
+    async def test_explicit_agent_id_is_not_overridden(self):
+        gw = _make_gw_for_llm()
+        gw._cfg.agent.default_agent = "configured-default"
+        job = _make_llm_job(agent_id="pinned-agent")
+
+        await _run_llm_callback(gw, job)
+
+        assert self._dispatched_agent(gw) == "pinned-agent"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_agent_id_is_treated_as_absent(self):
+        gw = _make_gw_for_llm()
+        gw._cfg.agent.default_agent = "configured-default"
+        job = _make_llm_job(agent_id="   ")
+
+        await _run_llm_callback(gw, job)
+
+        assert self._dispatched_agent(gw) == "configured-default"
+
+    @pytest.mark.asyncio
+    async def test_no_configured_default_keeps_the_client_name_floor(self):
+        gw = _make_gw_for_llm()
+        gw._cfg.agent.default_agent = ""
+        job = _make_llm_job(agent_id="")
+
+        await _run_llm_callback(gw, job)
+
+        assert self._dispatched_agent(gw) == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_non_str_configured_default_degrades_to_the_floor(self):
+        """A non-str configured default must not reach ``template_id``.
+
+        ``ExecutionContext.__post_init__`` requires a str template_id, so an
+        unset (or, here, mocked) config attribute that is merely truthy and
+        ``.strip()``-able would abort the whole dispatch with "missing
+        execution template" instead of degrading to the floor.
+        """
+        gw = _make_gw_for_llm()
+        # _make_gw_for_llm leaves _cfg a MagicMock, so .default_agent is a
+        # MagicMock: truthy and .strip()-able, but not a str.
+        assert not isinstance(gw._cfg.agent.default_agent, str)
+        job = _make_llm_job(agent_id="")
+
+        result, _ = await _run_llm_callback(gw, job)
+
+        assert self._dispatched_agent(gw) == "kirocrew"
+        assert result == "Agent response here"
+
+    @pytest.mark.asyncio
+    async def test_a_dispatching_sequence_keeps_its_own_agents(self):
+        gw = _make_gw_for_llm()
+        gw._cfg.agent.default_agent = "configured-default"
+        job = _make_llm_job(agent_id="", agent_sequence=["seq-a", "seq-b"])
+
+        await _run_llm_callback(gw, job)
+
+        dispatched = [c.kwargs.get("agent") for c in gw.sessions.get_or_create.call_args_list]
+        assert "configured-default" not in dispatched
+
+    @pytest.mark.asyncio
+    async def test_the_shared_job_record_is_never_mutated(self):
+        """The scheduler hands the callback its LIVE stored CronJob.
+
+        CronService passes the object straight out of ``self._jobs``
+        (``await self._on_job(job)``) and ``_save()`` reserialises ``self._jobs``
+        wholesale, so writing a resolved default onto ``job.agent_id`` would pin
+        an agent-less cron to a concrete agent name in ``crons.json`` on its
+        first completed run -- the job would silently stop tracking
+        ``agent.default_agent``, and an operator who later changed the default
+        would keep running the old agent. The default must therefore reach
+        dispatch without the stored record changing at all.
+        """
+        gw = _make_gw_for_llm()
+        gw._cfg.agent.default_agent = "configured-default"
+        job = _make_llm_job(agent_id="")
+
+        await _run_llm_callback(gw, job)
+
+        assert self._dispatched_agent(gw) == "configured-default"
+        assert job.agent_id == "", "the stored CronJob must not carry the resolved default"
+
+    @pytest.mark.asyncio
+    async def test_a_dormant_lone_sequence_still_gets_the_default(self):
+        """A one-entry sequence is dormant (agent_sequence_dispatches is False).
+
+        Dispatch falls through to agent_id, so the default still applies --
+        gating on a bare ``job.agent_sequence`` would deny it here.
+        """
+        gw = _make_gw_for_llm()
+        gw._cfg.agent.default_agent = "configured-default"
+        job = _make_llm_job(agent_id="", agent_sequence=["lonely"])
+
+        await _run_llm_callback(gw, job)
+
+        assert self._dispatched_agent(gw) == "configured-default"
