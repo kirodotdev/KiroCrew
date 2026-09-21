@@ -33,6 +33,7 @@ import { ApiError, type LaunchJob, type LaunchJobStatus, type LaunchStep } from 
 
 const cloudLaunches = vi.fn()
 const listInstances = vi.fn()
+const cloudLaunchTask = vi.fn()
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>()
   return {
@@ -40,6 +41,7 @@ vi.mock('../../api/client', async (importOriginal) => {
     api: {
       cloudLaunches: (...a: unknown[]) => cloudLaunches(...a),
       listInstances: (...a: unknown[]) => listInstances(...a),
+      cloudLaunchTask: (...a: unknown[]) => cloudLaunchTask(...a),
     },
   }
 })
@@ -202,8 +204,19 @@ describe('deployView', () => {
   it('is finished, not deployed, when the registry does not confirm the machine', () => {
     expect(deployView([job()], EMPTY_REGISTRY)).toMatchObject({ kind: 'finished', liveness: 'gone' })
     expect(deployView([job()], undefined)).toMatchObject({ kind: 'finished', liveness: 'unknown' })
+  })
+
+  // The Fargate lane never reaches the registry-keyed states: its truth is ECS,
+  // read by its own view, whatever the launch's status and whatever the
+  // registry holds.
+  it('hands a Fargate launch to the task view in every status', () => {
     const fargate = job({ provider_id: 'aws_fargate', instance_id: 'arn:aws:ecs:us-west-2:1:task/c/1' })
-    expect(deployView([fargate], REGISTERED)).toMatchObject({ kind: 'finished', liveness: 'unknown' })
+    expect(deployView([fargate], REGISTERED)).toMatchObject({ kind: 'task' })
+    expect(deployView([fargate], undefined)).toMatchObject({ kind: 'task' })
+    expect(deployView([job({ provider_id: 'aws_fargate', status: 'running', instance_id: '' })], REGISTERED)).toMatchObject({ kind: 'task' })
+    expect(deployView([job({ provider_id: 'aws_fargate', status: 'failed', instance_id: '' })], REGISTERED)).toMatchObject({ kind: 'task' })
+    // A lane this panel does not know stays on the registry-keyed states.
+    expect(deployView([job({ provider_id: 'some_future_lane' })], undefined)).toMatchObject({ kind: 'finished' })
   })
 
   it('describes the NEWEST launch even when an older one finished', () => {
@@ -480,8 +493,6 @@ describe('the panel', () => {
       // unknown glyph.
       expect(screen.getByTestId('deploy-stat-since').textContent).not.toBe('\u2013')
       expect(screen.getByTestId('deploy-address-value').textContent).toBe('i-0abc123def4567890')
-      // The row and the no-target sentence are exclusive.
-      expect(screen.queryByTestId('deploy-no-target')).toBeNull()
 
       fireEvent.click(screen.getByTestId('deploy-address-copy'))
       expect(writeText).toHaveBeenCalledWith('i-0abc123def4567890')
@@ -538,36 +549,53 @@ describe('the panel', () => {
     await waitFor(() => expect(screen.getByTestId('deploy-state-finished')).toBeTruthy())
     expect(screen.queryByTestId('deploy-state-deployed')).toBeNull()
     expect(screen.queryByTestId('deploy-address')).toBeNull()
-    // No sentence either: "was a container task" would be false of an EC2
-    // launch that simply recorded no machine.
-    expect(screen.queryByTestId('deploy-no-target')).toBeNull()
     expect(screen.getByTestId('deploy-check-console')).toBeInTheDocument()
   })
 
-  it('says a Fargate launch finished, in the past tense, with no address and no claim about now', async () => {
+  it('hands a finished Fargate launch to its own view, which reads the task from ECS', async () => {
     const arn = 'arn:aws:ecs:us-west-2:123456789012:task/crew/0f1e2d3c'
-    cloudLaunches.mockResolvedValue({ jobs: [job({ provider_id: 'aws_fargate', instance_id: arn })] })
+    cloudLaunches.mockResolvedValue({ jobs: [job({ id: 'jf', provider_id: 'aws_fargate', instance_id: arn })] })
+    cloudLaunchTask.mockResolvedValue({
+      job_id: 'jf', task_arn: arn, read_at: 1_700_000_000,
+      task: { task_arn: arn, cluster: 'crew', task_id: '0f1e2d3c', last_status: 'RUNNING', desired_status: 'RUNNING', started_at: 1_699_999_000, stopped_at: null, stopped_reason: '' },
+    })
     renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
-    const state = await screen.findByTestId('deploy-state-finished')
-    // The registry cannot speak to a Fargate task, so nothing says it IS deployed
-    // and nothing says it is not; the sentence names the event and the region.
+    const state = await screen.findByTestId('deploy-task-state-running')
+    // None of the registry-keyed EC2 states render for this lane, in either
+    // direction: not "deployed" (the registry never held the task) and not
+    // "finished" (that sentence belongs to the lane the registry speaks for).
     expect(screen.queryByTestId('deploy-state-deployed')).toBeNull()
-    expect(state.textContent).toContain('A deploy finished')
-    expect(state.textContent).toContain('us-west-2')
-    expect(state.textContent).toContain('cannot tell whether it is still running')
-    expect(screen.getByTestId('deploy-check-console').textContent).toContain('AWS console')
-    // The sentence is the link, to that region's console, in a new tab.
-    const link = screen.getByTestId('deploy-console-link')
-    expect(link.getAttribute('href')).toBe('https://us-west-2.console.aws.amazon.com/console/home?region=us-west-2')
-    expect(link.getAttribute('target')).toBe('_blank')
-    expect(link.getAttribute('rel')).toContain('noreferrer')
-    expect(screen.queryByTestId('deploy-stats')).toBeNull()
+    expect(screen.queryByTestId('deploy-state-finished')).toBeNull()
     expect(screen.queryByTestId('deploy-address')).toBeNull()
-    // Said in words where the row would be, past tense like the headline.
-    expect(screen.getByTestId('deploy-no-target').textContent).toContain('was a container task')
-    expect(screen.getByTestId('deploy-no-target').textContent).toContain('Details')
+    expect(state.textContent).toContain('running as a container task')
+    expect(cloudLaunchTask).toHaveBeenCalledWith('jf')
     // The ARN is still there for the owner who needs it, in the Details line.
     expect(within(screen.getByTestId('deploy-details')).getByTestId('deploy-launch').textContent).toContain(arn)
+  })
+
+  // The task view's truth is ECS, so the registry read must neither hide it
+  // (a failed read is an EC2 and earlier-launch concern) nor delay it.
+  it('shows the task view beside a failed registry read instead of behind it', async () => {
+    const arn = 'arn:aws:ecs:us-west-2:123456789012:task/crew/0f1e2d3c'
+    cloudLaunches.mockResolvedValue({ jobs: [job({ id: 'jf', provider_id: 'aws_fargate', instance_id: arn })] })
+    cloudLaunchTask.mockResolvedValue({ job_id: 'jf', task_arn: arn, read_at: 1_700_000_000, task: null })
+    listInstances.mockRejectedValue(new ApiError(500, 'registry unavailable'))
+    renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
+    await screen.findByTestId('deploy-task-state-missing')
+    // The registry failure is still reported: it is what silences the
+    // earlier-launch line, and Try again re-reads the registry.
+    await waitFor(() => expect(screen.getByTestId('deploy-error')).toBeTruthy(), { timeout: 8000 })
+    expect(screen.getByTestId('deploy-task-state-missing')).toBeInTheDocument()
+  }, 15000)
+
+  it('does not wait for the registry before showing the task view', async () => {
+    const arn = 'arn:aws:ecs:us-west-2:123456789012:task/crew/0f1e2d3c'
+    cloudLaunches.mockResolvedValue({ jobs: [job({ id: 'jf', provider_id: 'aws_fargate', instance_id: arn })] })
+    cloudLaunchTask.mockResolvedValue({ job_id: 'jf', task_arn: arn, read_at: 1_700_000_000, task: null })
+    listInstances.mockReturnValue(new Promise(() => {})) // never answers
+    renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
+    await screen.findByTestId('deploy-task-state-missing')
+    expect(screen.queryByTestId('deploy-loading')).toBeNull()
   })
 
   it('shows the recorded error through the error surface after a failed launch, and the deploy action', async () => {
@@ -672,7 +700,13 @@ describe('the panel', () => {
     const state = await screen.findByTestId('deploy-state-finished')
     expect(state.textContent).toContain('cannot tell whether it is still running')
     expect(state.textContent).not.toContain('no longer in your instances list')
-    expect(screen.getByTestId('deploy-check-console')).toBeInTheDocument()
+    expect(screen.getByTestId('deploy-check-console').textContent).toContain('AWS console')
+    // The sentence is the link, to that region's console, in a new tab.
+    const link = screen.getByTestId('deploy-console-link')
+    expect(link.getAttribute('href')).toBe('https://us-west-2.console.aws.amazon.com/console/home?region=us-west-2')
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(link.getAttribute('rel')).toContain('noreferrer')
+    expect(screen.queryByTestId('deploy-stats')).toBeNull()
     // A 403 is not retried: the feature being off does not change on retry.
     expect(listInstances).toHaveBeenCalledTimes(1)
   })
@@ -702,7 +736,8 @@ describe('the panel', () => {
   }, 15000)
 
   it('keeps the console words without a link when the record has no usable region', async () => {
-    cloudLaunches.mockResolvedValue({ jobs: [job({ provider_id: 'aws_fargate', instance_id: 'arn:aws:ecs:x', region: '' })] })
+    cloudLaunches.mockResolvedValue({ jobs: [job({ region: '' })] })
+    listInstances.mockRejectedValue(new ApiError(403, 'Instances feature is disabled'))
     renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
     await screen.findByTestId('deploy-state-finished')
     expect(screen.getByTestId('deploy-check-console').textContent).toContain('AWS console')

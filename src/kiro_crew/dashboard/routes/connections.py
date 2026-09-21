@@ -154,6 +154,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/cloud/launch", handlers_cloud.api_cloud_launch_list)
     app.router.add_post("/api/cloud/launch", handlers_cloud.api_cloud_launch_create)
     app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)
+    # The ECS task a Fargate launch started, read live: the cloud panel's
+    # liveness source for that lane (the EC2 lane's is the Instances registry).
+    app.router.add_get("/api/cloud/launch/{id}/task", handlers_cloud.api_cloud_launch_task)
     app.router.add_post("/api/cloud/launch/{id}/cancel", handlers_cloud.api_cloud_launch_cancel)
     app.router.add_post("/api/cloud/launch/{id}/signin", handlers_cloud.api_cloud_launch_signin)
     # Re-runs ONLY the sign-in step on a crew that ended up unsigned; never

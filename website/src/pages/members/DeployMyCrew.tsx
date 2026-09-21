@@ -17,6 +17,7 @@
  *
  * ONE STATE, ONE ACTION. The newest launch decides which sentence is shown:
  *
+ *   task        the launch is on the Fargate lane  -> its own view, FargateCrewView
  *   none        the crew runs only here            -> Deploy to the cloud
  *   deploying   step N of M                        -> wait; a link to the launch in Settings
  *   signin      the launch needs the user's code   -> Finish the sign-in
@@ -24,6 +25,12 @@
  *   finished    a deploy completed, then, there    -> Deploy again (machine gone)
  *                                                  or check the AWS console (unknown)
  *   failed      the recorded error                 -> Deploy to the cloud
+ *
+ * TWO LANES, TWO VIEWS. The states below `task` are the EC2 lane's, and their
+ * truth is the Instances registry. The Fargate lane registers nothing, so its
+ * truth is ECS, read live; that view lives in FargateCrewView.tsx and shares
+ * only vocabulary with this one (deployShared.tsx). The dispatch is the one
+ * line in `deployView` that reads `provider_id`.
  *
  * "Deployed" is said only while the Instances registry still holds the
  * machine the launch recorded. A teardown from Settings unregisters the
@@ -49,7 +56,7 @@
  * host from `GET /api/cloud/launch`, so it is ordinary trusted React: no
  * sandbox, no template engine, no publish path.
  */
-import { useMemo, useState } from 'react'
+import { Suspense, lazy, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Check, Copy, ExternalLink } from 'lucide-react'
@@ -61,17 +68,21 @@ import { Btn } from '../../components/ui'
 import {
   Dialog, DialogContent, DialogHeader, DialogBody, DialogFooter, DialogTitle,
 } from '../../components/ui/dialog'
-import { fmtDuration } from '../../i18n/format'
 import { copyToClipboard } from '../../utils/clipboard'
 import { BUILTIN_PROVISIONER_ID, FARGATE_PROVISIONER_ID, launchIsInFlight } from '../../utils/remoteCrew'
+import { AWS_REGION_RE, Stat, UNKNOWN, deployAge, deployProgress, deployStepLabel } from './deployShared'
+
+// Its own chunk: the members page loads the Fargate view only when a Fargate
+// launch is on screen, and pays nothing for it in the App chunk otherwise.
+const FargateCrewView = lazy(() => import('./FargateCrewView'))
+
+// The step and age helpers moved to the shared leaf module when the Fargate
+// view arrived; their callers and tests import them from here.
+export { deployAge, deployProgress, deployStepLabel } from './deployShared'
 
 /** Where every action this panel offers lands: the Settings tab that owns the
  *  whole launch flow. */
 const SETTINGS_PATH = '/settings/instances'
-
-/** The unknown-value glyph, shared with the member stat cards: an en dash,
- *  never a zero, so "nothing" and "could not read" cannot render alike. */
-const UNKNOWN = '\u2013'
 
 /** How often the launch list is re-read while a launch is still moving. At
  *  rest nothing is polled: a finished or failed launch does not change. */
@@ -79,11 +90,6 @@ const IN_FLIGHT_POLL_MS = 4000
 
 /** Faces drawn before the rest collapse into a "+N" tile. */
 const MAX_FACES = 6
-
-/** Region ids as AWS spells them (us-east-1, ap-southeast-2, us-gov-west-1).
- *  Only a region that parses as one is put into a console link: the value
- *  comes off a stored record, and a hostname is built from it. */
-const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d$/
 
 /**
  * The AWS console home for a region, or undefined when the record's region is
@@ -139,13 +145,13 @@ export function deployHasShellTarget(
 }
 
 /**
- * Whether the deployment is the Fargate lane's container task. This is what
- * the finished state says in words where the target row would otherwise be.
- * Keyed on the Fargate id, not on "anything but EC2": a provisioner this panel
- * does not know is drawn verbatim in Details and gets no sentence, because
- * "runs as a container task" could be false of it. Nor is it the negation of
+ * Whether the launch is on the Fargate lane, and so belongs to FargateCrewView
+ * rather than to the registry-keyed states here. Keyed on the Fargate id, not
+ * on "anything but EC2": a provisioner this panel does not know is classified
+ * with the EC2 states (its record is drawn verbatim in Details), because the
+ * Fargate view's ECS read would be false of it. Nor is it the negation of
  * `deployHasShellTarget`: an EC2 launch that recorded no machine has no target
- * either, and gets no sentence for the same reason.
+ * either, and stays on the EC2 view for the same reason.
  */
 export function deployRunsAsTask(job: Pick<LaunchJob, 'provider_id'>): boolean {
   return job.provider_id === FARGATE_PROVISIONER_ID
@@ -199,6 +205,7 @@ export function deployLiveness(
 /** What the panel says, derived from the newest launch and the registry. */
 export type DeployView =
   | { kind: 'none' }
+  | { kind: 'task'; job: LaunchJob }
   | { kind: 'deploying'; job: LaunchJob }
   | { kind: 'signin'; job: LaunchJob }
   | { kind: 'deployed'; job: LaunchJob }
@@ -207,6 +214,11 @@ export type DeployView =
 
 /**
  * Classify the launch list into the one state the panel shows.
+ *
+ * A launch on the Fargate lane is `task`, whatever its status: that lane has
+ * its own view (FargateCrewView), which reads the task's state from ECS, the
+ * only source that can speak to it. The states below are the EC2 lane's, whose
+ * truth is the Instances registry.
  *
  * `awaiting_signin` is split out of the other in-flight statuses because it is
  * the one where waiting achieves nothing: the launch is holding for the user
@@ -222,6 +234,7 @@ export type DeployView =
 export function deployView(jobs: readonly LaunchJob[], instances: RegistryRows): DeployView {
   const job = newestLaunch(jobs)
   if (!job) return { kind: 'none' }
+  if (deployRunsAsTask(job)) return { kind: 'task', job }
   if (job.status === 'awaiting_signin') return { kind: 'signin', job }
   if (launchIsInFlight(job.status)) return { kind: 'deploying', job }
   if (job.status === 'done') {
@@ -252,50 +265,6 @@ export function earlierReachableLaunch(jobs: readonly LaunchJob[], instances: Re
     .sort((a, b) => b.created_at - a.created_at)[0]
 }
 
-/**
- * "Step N of M" for a moving launch. The step list can be empty on a job an
- * older gateway persisted, so the total falls back to the four steps every
- * launch has (preflight, provision, sign-in, connect).
- */
-export function deployProgress(job: Pick<LaunchJob, 'steps'>): { current: number; total: number } {
-  const total = job.steps.length || 4
-  const current = Math.min(total, job.steps.filter((s) => s.state === 'done').length + 1)
-  return { current, total }
-}
-
-/**
- * The name of the step under way, so "Step 2 of 4" says what step 2 is. The
- * active step if the record marks one, else the first not yet done; the empty
- * string when the record carries no steps (an older gateway), in which case the
- * counter stands alone. The label is the gateway's own wording for the step.
- */
-export function deployStepLabel(job: Pick<LaunchJob, 'steps'>): string {
-  const active = job.steps.find((s) => s.state === 'active') ?? job.steps.find((s) => s.state !== 'done')
-  return active?.label ?? ''
-}
-
-/**
- * Time since the launch was created, as a locale-aware "3d 4h" / "2h 10m" /
- * "7m". This is the age of the deploy record, which is what the gateway can
- * attest; it is labelled "since deploy" rather than "uptime" because nothing
- * here can see whether the machine ran the whole time.
- *
- * A missing or future timestamp renders as the unknown glyph rather than a
- * garbage age.
- */
-export function deployAge(createdAtSec: number, nowMs = Date.now()): string {
-  if (!Number.isFinite(createdAtSec) || createdAtSec <= 0) return UNKNOWN
-  const ms = nowMs - createdAtSec * 1000
-  if (ms < 0) return UNKNOWN
-  const totalMin = Math.floor(ms / 60_000)
-  const days = Math.floor(totalMin / 1440)
-  const hours = Math.floor((totalMin % 1440) / 60)
-  const minutes = totalMin % 60
-  if (days >= 1) return fmtDuration([[days, 'day'], [hours, 'hour']], { dropZero: true })
-  if (hours >= 1) return fmtDuration([[hours, 'hour'], [minutes, 'minute']], { dropZero: true })
-  return fmtDuration([[minutes, 'minute']])
-}
-
 /** The crew, as faces. The whole roster, because the deployment is the whole
  *  roster; past `MAX_FACES` the rest collapse into a count. */
 function CrewFaces({ members }: { members: readonly CrewFace[] }) {
@@ -321,17 +290,6 @@ function CrewFaces({ members }: { members: readonly CrewFace[] }) {
           +{extra}
         </span>
       )}
-    </div>
-  )
-}
-
-/** One stat card, copying the member stat vocabulary: a large number over an
- *  11px label, unknown drawn as the en dash. */
-function Stat({ value, label, testid }: { value: string; label: string; testid: string }) {
-  return (
-    <div className="border border-border rounded-lg px-3 py-2">
-      <div className="text-lg font-semibold leading-tight" data-testid={testid}>{value}</div>
-      <div className="text-[11px] text-muted">{label}</div>
     </div>
   )
 }
@@ -441,11 +399,17 @@ export default function DeployMyCrewDialog({
   const view = useMemo(() => deployView(jobs, registry), [jobs, registry])
   const earlier = useMemo(() => earlierReachableLaunch(jobs, registry), [jobs, registry])
   const ordered = useMemo(() => [...jobs].sort((a, b) => b.created_at - a.created_at), [jobs])
+  // The Fargate view depends on the launch read alone: its truth is ECS, read
+  // by the view itself, so a pending or failed registry read neither delays
+  // nor hides it. The registry still gates the EC2 states and the
+  // earlier-launch line, and a failed registry read is still reported beside
+  // the task view, because that line is what the failure has silenced.
+  const taskView = view.kind === 'task'
   // Still reading while either answer that decides the sentence is pending, so
   // a finished launch is not first drawn as unconfirmed and then as deployed.
-  const loading = q.isPending || (q.isSuccess && needRegistry && inst.isPending)
+  const loading = q.isPending || (q.isSuccess && needRegistry && inst.isPending && !taskView)
   const readFailed = q.isError || registryFailed
-  const ready = q.isSuccess && !loading && !registryFailed
+  const ready = q.isSuccess && !loading && (!registryFailed || taskView)
 
   // Closed first, then navigated: the destination is another page, so an open
   // dialog would otherwise be the first thing a reader sees when they come back.
@@ -487,6 +451,23 @@ export default function DeployMyCrewDialog({
                 {t('pages.membersPage.deploy_retry')}
               </Btn>
             </div>
+          )}
+
+          {/* The Fargate lane's own view: it reads the task's state from ECS,
+              the only source that can speak to it, and says nothing the
+              registry-keyed EC2 states below say. It waits on the launch read
+              alone; the registry gates only the EC2 states and the
+              earlier-launch line. */}
+          {ready && view.kind === 'task' && (
+            <Suspense
+              fallback={
+                <div className="text-[12px] text-muted text-center" data-testid="deploy-task-loading">
+                  {t('pages.membersPage.deploy_task_loading')}
+                </div>
+              }
+            >
+              <FargateCrewView job={view.job} open={open} onClose={onClose} goToSettings={goToSettings} />
+            </Suspense>
           )}
 
           {ready && view.kind === 'none' && (
@@ -595,9 +576,9 @@ export default function DeployMyCrewDialog({
                   finished, then, there" and nothing about now. Two sentences,
                   by what the registry could say: it was read and does not hold
                   the machine (gone), or it could not speak to this launch at
-                  all (unknown: the Fargate lane registers nothing by design,
-                  or the registry could not be read). Neither ever says the
-                  crew IS deployed, and neither says it is not. */}
+                  all (unknown: an EC2 record that kept no machine, or the
+                  registry could not be read). Neither ever says the crew IS
+                  deployed, and neither says it is not. */}
               <p className="m-0 text-[14px] font-medium">
                 {t(
                   view.liveness === 'gone'
@@ -606,14 +587,6 @@ export default function DeployMyCrewDialog({
                   { age: deployAge(view.job.created_at), region: view.job.region || UNKNOWN },
                 )}
               </p>
-              {/* Said in words where the target row would be, so a reader who
-                  saw the row on an EC2 launch is not left guessing why this
-                  one has none. Past tense, like the headline. */}
-              {deployRunsAsTask(view.job) && (
-                <div className="text-[11.5px] text-muted" data-testid="deploy-no-target">
-                  {t('pages.membersPage.deploy_no_target')}
-                </div>
-              )}
               {/* Where the answer this panel cannot give does live. The whole
                   sentence is the link when the record's region parses as one,
                   so the reader who is pointed at the console is not then left

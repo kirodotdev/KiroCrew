@@ -26,6 +26,7 @@ import inspect
 import logging
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING, Mapping, Optional
 
 from aiohttp import web
@@ -51,6 +52,7 @@ from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
 
 if TYPE_CHECKING:
+    from kiro_crew.cloud.fargate_engine import TaskSighting
     from kiro_crew.dashboard.state import DashboardState
 
 logger = logging.getLogger(__name__)
@@ -511,6 +513,120 @@ async def api_cloud_launch_get(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
     _audit("launch_get", "success", request_id=job.id)
     return web.json_response(job.to_dict())
+
+
+def _task_dict(sighting: "TaskSighting") -> dict:
+    """The wire shape of one task sighting, cluster and id split out of the ARN
+    so the client never parses an ARN itself."""
+    # Deferred like platform/defaults.py defers it: the Fargate module pulls the
+    # whole fargate package in, and this handler module is imported by every
+    # dashboard boot, Fargate lane configured or not.
+    from kiro_crew.cloud.fargate_engine import split_task_arn
+
+    cluster, task_id = split_task_arn(sighting.task_arn)
+    # `started_by` and `tags` stay on the sighting for the engine's ownership
+    # rule; the panel has no reader for them, so they do not cross the wire.
+    return {
+        "task_arn": sighting.task_arn,
+        "cluster": cluster,
+        "task_id": task_id,
+        "last_status": sighting.last_status,
+        "desired_status": sighting.desired_status,
+        "started_at": sighting.started_at,
+        "stopped_at": sighting.stopped_at,
+        "stopped_reason": sighting.stopped_reason,
+    }
+
+
+async def api_cloud_launch_task(request: web.Request) -> web.Response:
+    """GET /api/cloud/launch/{id}/task — the task a launch started, read from ECS now.
+
+    The cloud panel's read for a Fargate launch. The EC2 lane's "is it still
+    there" is answered by the Instances registry, which a teardown updates; the
+    Fargate lane registers nothing, so for it the only source that can answer is
+    ECS itself, and this route is the panel's one path to it. It is read-only
+    and shells to ``aws ecs describe-tasks`` for exactly the ARN the job recorded,
+    so it is POSIX-gated like every other route here that runs the AWS CLI.
+
+    Answers ``{"job_id", "task_arn", "read_at", "task"}``. ``task`` is the
+    sighting, or ``null`` when ECS does not list the ARN (ECS drops a stopped
+    task after about an hour); the client says exactly that and nothing more.
+    ``read_at`` is when THIS read happened, so the client can show a status as a
+    reading at an instant rather than as a standing fact.
+
+    Refusals name their cause so the client renders "could not read", never a
+    state: ``launch_job_not_found`` (404), ``launch_task_not_recorded`` (the
+    launch never got as far as starting a task), ``unknown_provisioner`` (the
+    lane that ran it is not configured here), ``provisioner_cannot_describe``
+    (the lane's engine has no single-task read: the EC2 lane, or an edition's),
+    ``aws_call_failed`` (502).
+    """
+    denied = _guard(request, "launch_task")
+    if denied is not None:
+        return denied
+    state: "DashboardState" = request.app["state"]
+    store = await _astore(state)
+    job = await _in_executor(store.get, request.match_info["id"])
+    if job is None:
+        return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
+    if not job.instance_id:
+        _audit("launch_task", "denied", request_id=job.id, error="no task recorded")
+        return web.json_response(
+            {"error": "this launch recorded no task to read", "code": "launch_task_not_recorded"},
+            status=400,
+        )
+    try:
+        # Off the loop, like the create path: resolving the Fargate lane reads
+        # cloud.json (and checks it for aliases), and a slow filesystem would
+        # otherwise stall every request and the heartbeat behind one panel open.
+        engine = await _in_executor(functools.partial(_engine, state, job.provider_id))
+    except KeyError:
+        _audit("launch_task", "denied", request_id=job.id, error="no engine")
+        return web.json_response(
+            {
+                "error": f"provisioner {job.provider_id!r} has no launch engine",
+                "code": "unknown_provisioner",
+            },
+            status=400,
+        )
+    except LaunchUnavailable as exc:
+        _audit("launch_task", "denied", request_id=job.id, error=f"{exc.code}: {exc}")
+        return web.json_response({"error": str(exc), "code": exc.code}, status=400)
+    describe = getattr(engine, "describe_task", None)
+    if not callable(describe):
+        # Capability, not identity: the EC2 engine has no single-task read
+        # because its liveness lives in the registry, and an edition's lane may
+        # or may not have one. Keying on the method rather than on a provider id
+        # keeps this route honest for a lane this file has never heard of.
+        _audit("launch_task", "denied", request_id=job.id, error="engine cannot describe a task")
+        return web.json_response(
+            {
+                "error": f"provisioner {job.provider_id!r} does not read a task's status",
+                "code": "provisioner_cannot_describe",
+            },
+            status=400,
+        )
+    try:
+        sighting = await _in_executor(
+            functools.partial(
+                describe, task_arn=job.instance_id, profile=job.profile, region=job.region
+            )
+        )
+    except (ValidationError, ValueError) as e:
+        _audit("launch_task", "denied", request_id=job.id, error=str(e))
+        return web.json_response({"error": str(e), "code": "invalid_cloud_parameter"}, status=400)
+    except AWSError as e:
+        _audit("launch_task", "failure", request_id=job.id, error=str(e))
+        return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+    _audit("launch_task", "success", request_id=job.id)
+    return web.json_response(
+        {
+            "job_id": job.id,
+            "task_arn": job.instance_id,
+            "read_at": time.time(),
+            "task": None if sighting is None else _task_dict(sighting),
+        }
+    )
 
 
 # ── write endpoints ──────────────────────────────────────────────────────

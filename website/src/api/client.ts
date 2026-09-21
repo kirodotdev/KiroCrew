@@ -2305,6 +2305,35 @@ export interface LaunchJob {
   updated_at: number
 }
 
+/** One ECS task as `GET /api/cloud/launch/{id}/task` reports it: the Fargate
+ *  lane's own answer to whether the crew is still up. `cluster` and `task_id`
+ *  are split out of the ARN server-side. `stopped_*` are empty until ECS
+ *  reports a stop; `started_at`/`stopped_at` are epoch seconds. */
+export interface LaunchTaskSighting {
+  task_arn: string
+  cluster: string
+  task_id: string
+  /** ECS's lifecycle word, verbatim (PROVISIONING, PENDING, RUNNING, STOPPED, …). */
+  last_status: string
+  /** Where ECS is taking the task: RUNNING, or STOPPED once a stop is accepted. */
+  desired_status: string
+  started_at: number | null
+  stopped_at: number | null
+  /** ECS's own sentence for why the task stopped; empty while it runs. */
+  stopped_reason: string
+}
+
+/** The single-task read for one launch. `task` is null when ECS no longer
+ *  lists the ARN (ECS drops a stopped task from its list after about an hour).
+ *  `read_at` is when THIS read happened, epoch seconds: a status is a reading
+ *  at an instant, and the panel shows it as one. */
+export interface LaunchTaskReport {
+  job_id: string
+  task_arn: string
+  read_at: number
+  task: LaunchTaskSighting | null
+}
+
 /** Tunnel status surfaced by GET /api/tunnel/status (backend TunnelManager).
  *  Enables mobile dashboard access via a remote tunnel. */
 export interface TunnelStatus {
@@ -3466,6 +3495,14 @@ export const api = {
     post('/api/cloud/launch', body).then(j) as Promise<LaunchJob>,
   cloudLaunchStatus: (id: string) =>
     get('/api/cloud/launch/' + encodeURIComponent(id)).then(j) as Promise<LaunchJob>,
+  // The ECS task a Fargate launch started, read from ECS now (one
+  // describe-tasks for the ARN the job recorded). 400 `provisioner_cannot_describe`
+  // for a lane with no such read (EC2, whose liveness is the registry), 400
+  // `launch_task_not_recorded` when the launch never started a task, 502
+  // `aws_call_failed` when the read did not complete. POSIX-only, like every
+  // route here that runs the AWS CLI.
+  cloudLaunchTask: (id: string) =>
+    get('/api/cloud/launch/' + encodeURIComponent(id) + '/task').then(j) as Promise<LaunchTaskReport>,
   cloudLaunchCancel: (id: string) =>
     post('/api/cloud/launch/' + encodeURIComponent(id) + '/cancel').then(j) as Promise<LaunchJob>,
   // Fetches the device-code prompt while the job is awaiting sign-in; 409 when

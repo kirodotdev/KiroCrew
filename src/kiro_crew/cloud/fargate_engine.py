@@ -49,7 +49,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from kiro_crew.cloud import aws, sizes
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
@@ -158,6 +158,16 @@ class TaskSighting:
     #: and never started still has an age.
     started_at: Optional[float] = None
 
+    #: The lifecycle fields a status READ reports and the ownership rule never
+    #: reads: where ECS wants the task to be, when it stopped, and ECS's own
+    #: sentence for why. Empty or ``None`` when the read did not carry them (a
+    #: running task has no stop yet). :func:`classify_task` and
+    #: :func:`plan_bounds_sweep` take none of these, so a sighting built without
+    #: them classifies exactly as before.
+    desired_status: str = ""
+    stopped_at: Optional[float] = None
+    stopped_reason: str = ""
+
     @property
     def is_running(self) -> bool:
         """Whether this task is still consuming money.
@@ -166,6 +176,52 @@ class TaskSighting:
         everything else counts as running for the purpose of warning a human.
         """
         return (self.last_status or "").upper() != "STOPPED"
+
+
+def sighting_from_task(task: Mapping[str, Any]) -> TaskSighting:
+    """One ``DescribeTasks`` entry as a :class:`TaskSighting`.
+
+    The ONE place an ECS task becomes the fields this module reasons about.
+    :meth:`FargateLaunchEngine._sightings` (the cluster walk teardown and the
+    bound sweep read) and :meth:`FargateLaunchEngine.describe_task` (the
+    single-task read the dashboard shows) both go through it, so the two reads
+    cannot disagree about which field carries a status or a moment: a second
+    mapping would be a second place for ``lastStatus`` to be misspelled, and a
+    misspelling there reads every task as never started.
+    """
+    tags = {str(t.get("key")): str(t.get("value")) for t in (task.get("tags") or [])}
+    return TaskSighting(
+        task_arn=str(task.get("taskArn") or ""),
+        tags=tags,
+        started_by=str(task.get("startedBy") or ""),
+        last_status=str(task.get("lastStatus") or ""),
+        started_at=_first_moment(task.get("startedAt"), task.get("createdAt")),
+        desired_status=str(task.get("desiredStatus") or ""),
+        stopped_at=_first_moment(task.get("stoppedAt")),
+        stopped_reason=str(task.get("stoppedReason") or ""),
+    )
+
+
+def split_task_arn(task_arn: str) -> tuple[str, str]:
+    """``(cluster, task id)`` from an ECS task ARN; either is ``""`` when absent.
+
+    The long ARN format ECS has issued since 2018 carries the cluster:
+    ``arn:aws:ecs:<region>:<account>:task/<cluster>/<task id>``. The short one
+    (``.../task/<task id>``) does not, and then the cluster is ``""`` and the
+    caller falls back to the spec's. Anything that is not a task ARN gives two
+    empty strings rather than a guess at which segment is the id.
+    """
+    marker = ":task/"
+    at = task_arn.find(marker)
+    if at < 0:
+        return "", ""
+    rest = task_arn[at + len(marker) :]
+    if not rest:
+        return "", ""
+    cluster, sep, task_id = rest.rpartition("/")
+    if not sep:
+        return "", rest
+    return cluster, task_id
 
 
 def classify_task(sighting: TaskSighting, *, launch_tag: str, started_by: str) -> Ownership:
@@ -1215,21 +1271,60 @@ class FargateLaunchEngine:
                     action="ecs:DescribeTasks",
                 )
                 for task in (described or {}).get("tasks") or []:
-                    tags = {
-                        str(t.get("key")): str(t.get("value")) for t in (task.get("tags") or [])
-                    }
-                    sightings.append(
-                        TaskSighting(
-                            task_arn=str(task.get("taskArn") or ""),
-                            tags=tags,
-                            started_by=str(task.get("startedBy") or ""),
-                            last_status=str(task.get("lastStatus") or ""),
-                            started_at=_first_moment(task.get("startedAt"), task.get("createdAt")),
-                        )
-                    )
+                    sightings.append(sighting_from_task(task))
             token = str(listed.get("nextToken") or "")
             if not token:
                 return sightings
+
+    def describe_task(self, *, task_arn: str, profile: str, region: str) -> Optional[TaskSighting]:
+        """Read ONE task by ARN: the lane's own answer to "is this crew still up".
+
+        This is the read the dashboard's cloud panel shows for a Fargate launch.
+        The EC2 lane's panel keys liveness on the Instances registry, which a
+        teardown updates; this lane registers nothing (see :meth:`register`), so
+        the registry cannot speak for its task and ECS is the only source that
+        can. ``DescribeTasks`` is that source, through the same
+        :func:`sighting_from_task` mapping the cluster walk uses.
+
+        The cluster is taken from the ARN when the ARN carries it (the long
+        format), and from the spec only when it does not: a launch recorded
+        under a cluster the operator has since renamed in ``cloud.json`` would
+        otherwise be looked up in the wrong cluster and read as absent.
+
+        Returns ``None`` when ECS lists the ARN under ``failures`` (its reason is
+        ``MISSING``): ECS keeps a stopped task for about an hour and then drops
+        it, and a task ECS has dropped has no status to report. The caller says
+        exactly that -- ECS does not list it -- and never rounds it to
+        "stopped" (unknowable from here) or to "running" (false). A read that
+        does not complete raises :class:`aws.AWSError` like every other read in
+        this module, and the caller reports THAT as an error, not as any state.
+        """
+        cluster, _task_id = split_task_arn(task_arn)
+        if not cluster:
+            if self._spec is None:
+                raise ValueError(
+                    f"cannot read {task_arn!r}: the ARN names no cluster and this engine has no spec"
+                )
+            cluster = self._spec.placement.cluster
+        described = aws.checked_json(
+            [
+                "ecs",
+                "describe-tasks",
+                "--cluster",
+                cluster,
+                "--tasks",
+                task_arn,
+                "--include",
+                "TAGS",
+            ],
+            profile,
+            region,
+            action="ecs:DescribeTasks",
+        )
+        for task in (described or {}).get("tasks") or []:
+            if str(task.get("taskArn") or "") == task_arn:
+                return sighting_from_task(task)
+        return None
 
     def reap(self, *, profile: str, region: str, now: Optional[float] = None) -> BoundsSweepPlan:
         """Stop this launcher's tasks that are past their lifetime, and report what
