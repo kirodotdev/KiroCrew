@@ -214,6 +214,10 @@ logger = logging.getLogger(__name__)
 class SourceProviderError(RuntimeError):
     """A provider CLI could not return the requested source data."""
 
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 class SourceCapacityError(SourceProviderError):
     """Admission room did not free up within the wait budget.
@@ -321,7 +325,8 @@ def _resolve_provider_executable(executable: str) -> str:
             return _validate_provider_executable(override)
         except ValueError as exc:
             raise SourceProviderError(
-                f"{override_name} is not a trusted executable: {exc}"
+                f"{override_name} is not a trusted executable: {exc}",
+                reason="executable_untrusted",
             ) from exc
 
     last_error = ""
@@ -335,7 +340,11 @@ def _resolve_provider_executable(executable: str) -> str:
             if message != "path does not exist":
                 last_error = message
             continue
-    raise SourceProviderError(_provider_setup_message(executable, override_name, last_error))
+    reason = "executable_untrusted" if last_error else "executable_not_found"
+    raise SourceProviderError(
+        _provider_setup_message(executable, override_name, last_error),
+        reason=reason,
+    )
 
 
 @dataclass(frozen=True)
@@ -1621,8 +1630,12 @@ async def _run_provider(
         # until the loop watchdog kills the gateway and the supervisor respawns
         # into the same condition.
         resolved_executable = await asyncio.to_thread(_resolve_provider_executable, executable)
-    except SourceProviderError:
-        _audit_provider_cli(executable, "denied", "executable_untrusted")
+    except SourceProviderError as exc:
+        _audit_provider_cli(
+            executable,
+            "denied",
+            exc.reason or "executable_untrusted",
+        )
         raise
 
     allowed_env_keys = _PROVIDER_BASE_ENV_KEYS | _PROVIDER_AUTH_ENV_KEYS[executable]

@@ -425,6 +425,54 @@ def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> No
     assert "{executable}" not in message
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "expected_reason"),
+    [
+        ("missing", "executable_not_found"),
+        ("candidate_untrusted", "executable_untrusted"),
+        ("override_untrusted", "executable_untrusted"),
+    ],
+)
+async def test_run_json_audits_provider_resolution_failure_reason(
+    monkeypatch, tmp_path, _mock_source_sel, case: str, expected_reason: str
+) -> None:
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    candidate_dir = tmp_path / "provider-bin"
+    candidate_dir.mkdir()
+    candidate = candidate_dir / "gh"
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
+    monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setattr(
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
+        {"gh": (str(candidate),), "glab": (str(candidate_dir / "glab"),)},
+    )
+    monkeypatch.setattr(github_runner, "_wellknown_windows_dirs", lambda _executable: ())
+
+    if case != "missing":
+        candidate.write_text("#!/bin/sh\nexit 0\n")
+        candidate.chmod(0o755)
+
+        def reject_found(path: str) -> str:
+            assert pathlib.Path(path).is_file()
+            raise ValueError("executable parent is world-writable")
+
+        monkeypatch.setattr(source, "_validate_provider_executable", reject_found)
+    if case == "override_untrusted":
+        monkeypatch.setenv("KIROCREW_GH_BIN", str(candidate))
+
+    with pytest.raises(source.SourceProviderError):
+        await source._run_json("gh", "api", "repos/acme/repo")
+
+    call = _mock_source_sel.log_tool_invocation.call_args
+    assert call.kwargs["outcome"] == "denied"
+    assert call.kwargs["error"] == expected_reason
+    assert call.kwargs["metadata"]["reason"] == expected_reason
+
+
 def test_provider_executable_strict_mode_asks_for_a_root_owned_copy(monkeypatch) -> None:
     monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
