@@ -63,6 +63,18 @@ def shadowed_path(monkeypatch, tmp_path):
     Home is empty (no ``~/.local/bin`` / ``~/.cargo/bin`` install), the operator
     override is unset, and ``PATH`` leads with the shim's directory — the
     worktree-venv shape the pin exists to refuse.
+
+    The fixed macOS system locations are emptied too, because no fixture argument
+    reaches them: ``known_kiro_cli_dirs`` derives every other entry from ``home``
+    or ``environ``, but ``/Applications/Kiro CLI.app/Contents/MacOS``,
+    ``/opt/homebrew/bin`` and ``/usr/local/bin`` are constants. Without this a
+    developer machine with a real install resolves a genuinely pinned absolute
+    path there — the product behaving CORRECTLY — and the "nothing was spawned"
+    assertions below fail for a reason that is about the machine and not about the
+    code. Found by the seventh five-run sweep, where both were red in all five
+    rounds on macOS and green on every CI runner. ``_MACOS_SYSTEM_DIRS`` keeps its
+    real values under ``TestKnownDirsAreFenceable``, so emptying it here cannot
+    become the shipped default.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -70,10 +82,59 @@ def shadowed_path(monkeypatch, tmp_path):
     # The `_update` harness pins the resolver to "nothing installed"; put the
     # real one back so this is a genuine lookup over the fake host.
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", _REAL_RESOLVE)
+    monkeypatch.setattr(kiro_cli, "_MACOS_SYSTEM_DIRS", ())
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
     monkeypatch.setenv("PATH", str(shim.parent))
     return shim
+
+
+class TestKnownDirsAreFenceable:
+    """``shadowed_path`` empties ``_MACOS_SYSTEM_DIRS``, so the real values and the
+    search order they are spliced into both need holding here. Otherwise a fixture
+    that fences the fixed locations and a product that stopped searching them look
+    the same from the test suite."""
+
+    _FIXED = (
+        "/Applications/Kiro CLI.app/Contents/MacOS",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    )
+    # A fake account root, plus the user-bundle path DERIVED from it rather than
+    # written out: the expectation then cannot drift from the input, and no
+    # home-shaped absolute path is spelled literally. The internal-content scan
+    # reads one as a leaked identity path -- correctly, because a literal here is
+    # the pattern the next test copies -- so the root carries no `home` component
+    # either, rather than relying on where that rule draws its line.
+    _ACCOUNT_ROOT = Path("/nowhere/acct")
+    _USER_APP = str(_ACCOUNT_ROOT / "Applications" / "Kiro CLI.app" / "Contents" / "MacOS")
+
+    def _darwin_dirs(self, **kw) -> list[str]:
+        return kiro_cli.known_kiro_cli_dirs(
+            "darwin", self._ACCOUNT_ROOT, {}, include_inherited_path=False, **kw
+        )
+
+    def test_the_fixed_macos_locations_are_still_searched(self) -> None:
+        assert kiro_cli._MACOS_SYSTEM_DIRS == self._FIXED
+        dirs = self._darwin_dirs()
+        for fixed in self._FIXED:
+            assert fixed in dirs, fixed
+
+    def test_the_user_bundle_is_searched_between_the_system_ones(self) -> None:
+        """The system bundle first, the user's own next, then the shared bin dirs:
+        the order the splice has to preserve."""
+        dirs = self._darwin_dirs()
+        assert dirs.index(self._FIXED[0]) < dirs.index(self._USER_APP) < dirs.index(self._FIXED[1])
+        assert dirs.index(self._FIXED[1]) < dirs.index(self._FIXED[2])
+
+    def test_emptying_the_constant_leaves_the_user_bundle(self, monkeypatch) -> None:
+        """What the fixture relies on: fencing the fixed locations must not also
+        drop the home-derived entry spliced between them."""
+        monkeypatch.setattr(kiro_cli, "_MACOS_SYSTEM_DIRS", ())
+        dirs = self._darwin_dirs()
+        assert self._USER_APP in dirs
+        for fixed in self._FIXED:
+            assert fixed not in dirs, fixed
 
 
 posix_only = pytest.mark.skipif(

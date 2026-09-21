@@ -196,6 +196,14 @@ class TestThePrivateWindowSurvivesTheRoutingItDependsOn:
         with (
             patch("kiro_crew.sel.sel", return_value=MagicMock()),
             patch("kiro_crew.sandbox.detect_backend", return_value="namespace"),
+            # A kiro-cli spawn on macOS is handed to kiro-cli's OWN sandbox when the
+            # internal edition's settings ask for it, and then Kiro Crew writes no
+            # launcher at all -- so on a machine carrying that setting this test
+            # read `cleanup is None` and failed, while every CI runner passed. The
+            # decision is the host's, not this test's subject, so it is pinned:
+            # ``is_kiro_cli=True`` is what reaches it, which is why the sibling
+            # seatbelt case (``is_kiro_cli=False``) never saw it.
+            patch("kiro_crew.sandbox.kiro_internal_sandbox_enabled", return_value=False),
         ):
             argv, cleanup = sandbox.wrap_argv(
                 ["/usr/bin/kiro-cli", "acp"],

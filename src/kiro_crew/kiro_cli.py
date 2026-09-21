@@ -175,6 +175,29 @@ def _windows_program_files(environ: Mapping[str, str]) -> str:
     return environ.get("ProgramFiles") or environ.get("PROGRAMFILES") or r"C:\Program Files"
 
 
+#: The macOS install locations that are FIXED system-wide, in search order, with
+#: the user's own bundle inserted after the first entry by
+#: :func:`known_kiro_cli_dirs`.
+#:
+#: Named rather than inlined because these are the ONE part of the candidate set
+#: no argument can point elsewhere: every other entry is derived from ``home`` or
+#: ``environ`` (the mise shim entry with the exception this function's own
+#: docstring records -- ``mise_data_dir`` still honours the PROCESS-level
+#: ``MISE_DATA_DIR`` / ``XDG_DATA_HOME``, so it is home-pinned only in their
+#: absence), which is what lets a caller pin the set and then report it as the
+#: directories that were searched. A test that fakes a host by pinning
+#: ``(platform_name, home, environ)`` still gets these three, so on a developer
+#: machine with a real install it is asserting about that machine's
+#: ``/Applications`` rather than about its own fixture. Emptying this tuple is how
+#: such a test fences them; the values themselves are pinned by
+#: ``test_kiro_cli_pin.py`` so an empty default can never ship.
+_MACOS_SYSTEM_DIRS: tuple[str, ...] = (
+    "/Applications/Kiro CLI.app/Contents/MacOS",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+)
+
+
 def known_kiro_cli_dirs(
     platform_name: str,
     home: Path,
@@ -205,14 +228,13 @@ def known_kiro_cli_dirs(
             str(home / ".cargo" / "bin"),
         ]
     if platform_name == "darwin":
-        dirs.extend(
-            [
-                "/Applications/Kiro CLI.app/Contents/MacOS",
-                str(home / "Applications" / "Kiro CLI.app" / "Contents" / "MacOS"),
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-            ]
-        )
+        # Slicing rather than unpacking: a test fences the fixed locations by
+        # emptying ``_MACOS_SYSTEM_DIRS``, and slices are safe at any length while
+        # ``head, *rest = ()`` raises. Order is preserved -- the system bundle, the
+        # user's own bundle, then the shared bin dirs.
+        fixed = list(_MACOS_SYSTEM_DIRS)
+        user_app = str(home / "Applications" / "Kiro CLI.app" / "Contents" / "MacOS")
+        dirs.extend(fixed[:1] + [user_app] + fixed[1:])
     if include_inherited_path and platform_name == "win32":
         dirs.extend(part for part in environ.get("PATH", "").split(";") if part)
         # A GUI-launched Windows gateway can retain an old PATH after a user
