@@ -538,12 +538,21 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
     BEFORE ingestion in a side table keyed like the others.
     """
 
-    async def test_the_original_caption_survives_ingestion(self, harness, monkeypatch):
+    async def test_the_original_caption_survives_ingestion(self, harness, monkeypatch, tmp_path):
         import kiro_crew.whatsapp.transport as mod
         from kiro_crew.messaging.attachments import IngestResult
 
+        # ``receive`` hands the ingested paths to ``attachments.cleanup`` after
+        # dispatch, which unlinks them. A literal ``/tmp/...`` here made that
+        # unlink a write on the operator's real host; the file lives under
+        # ``tmp_path`` so the cleanup is observable AND sandboxed.
+        image = tmp_path / "kc-att" / "img-1.jpg"
+        image.parent.mkdir()
+        image.write_bytes(b"jpg")
+        assert image.resolve().is_relative_to(tmp_path.resolve())
+
         async def fake_ingest(*a, **kw):
-            return IngestResult(image_paths=["/tmp/kc-att/img-1.jpg"])
+            return IngestResult(image_paths=[str(image)])
 
         monkeypatch.setattr(mod, "ingest_media", fake_ingest)
         seen: list[tuple[str, tuple[str, int] | None]] = []
@@ -558,9 +567,10 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
 
         assert len(seen) == 1
         ingested_text, original = seen[0]
-        assert "/tmp/kc-att/img-1.jpg" in ingested_text, "ingestion did not rewrite the text"
+        assert str(image) in ingested_text, "ingestion did not rewrite the text"
         assert original == ("look at this", 1), "the pre-ingestion original was not captured"
         assert harness.transport.pending_original == {}, "the side table leaked past dispatch"
+        assert not image.exists(), "receive did not hand the temp path to cleanup"
 
     async def test_a_text_only_message_records_zero_media(self, harness):
         seen: list[tuple[str, int] | None] = []

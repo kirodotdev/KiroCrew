@@ -1709,7 +1709,7 @@ for line in sys.stdin:
 
 
 def _run_driver_reaping_group(
-    argv: list[str], *, timeout: float
+    argv: list[str], *, timeout: float, cwd: "str | os.PathLike[str]"
 ) -> "subprocess.CompletedProcess[str]":
     """Run the out-of-process driver in its OWN process group and reap the group.
 
@@ -1730,6 +1730,10 @@ def _run_driver_reaping_group(
     ``taskkill /T`` on Windows, with the broadcast guard that keeps a reserved pgid
     from signalling every process this uid owns. A raw ``os.killpg`` here would be
     POSIX-only and unguarded.
+
+    ``cwd`` is required, not defaulted: a child inherits pytest's CWD (the
+    checkout) unless told otherwise, and every caller already owns a throwaway
+    directory the driver tree can run from.
     """
     from kiro_crew import platform_compat
 
@@ -1739,6 +1743,7 @@ def _run_driver_reaping_group(
         stderr=subprocess.PIPE,
         encoding="utf-8",
         errors="replace",
+        cwd=cwd,
         start_new_session=platform_compat.IS_POSIX,
         creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
@@ -1830,7 +1835,7 @@ time.sleep(300)
         script = Path(w) / "parent.py"
         script.write_text(parent, encoding="utf-8")
         started = time.monotonic()
-        result = _run_driver_reaping_group([sys.executable, str(script)], timeout=5)
+        result = _run_driver_reaping_group([sys.executable, str(script)], timeout=5, cwd=w)
         # The bound is the control here, and the reap must not add a long second wait.
         assert time.monotonic() - started < 90
         grandchild = int((result.stdout or "").strip().splitlines()[0])
@@ -1916,6 +1921,7 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
             # could reap -- which is why the runner kills the whole process group
             # rather than the driver alone.
             timeout=540,
+            cwd=root / "work",
         )
         context = (
             f"driver exit: {result.returncode}\n"
@@ -2157,6 +2163,7 @@ def test_real_codex_acp_session_close_evicts():
         result = _run_driver_reaping_group(
             [sys.executable, str(driver), str(root), str(_ENTRY), shutil.which("node") or "node"],
             timeout=300,
+            cwd=root / "work",
         )
         context = (
             f"driver exit: {result.returncode}\n"
@@ -2980,6 +2987,7 @@ def test_real_codex_acp_load_after_close_restores():
         result = _run_driver_reaping_group(
             [sys.executable, str(driver), str(root), str(_ENTRY), shutil.which("node") or "node"],
             timeout=900,
+            cwd=root / "work",
         )
         context = (
             f"driver exit: {result.returncode}\n"

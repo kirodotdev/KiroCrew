@@ -93,6 +93,23 @@ def _clean_context():
     reset_context()
 
 
+@pytest.fixture(autouse=True)
+def _repository_boundary_at_tmp_path(tmp_path: Path) -> None:
+    """Pin the nearest repository marker for everything built under ``tmp_path``.
+
+    ``_in_linked_git_worktree`` walks up from its target to the NEAREST ``.git``
+    and answers on that marker alone, so a fixture's verdict depends on what sits
+    above ``tmp_path`` unless the fixture carries a marker of its own. pytest's
+    temp root is not guaranteed to be outside a repository: a developer's
+    ``TMPDIR=./tmp`` or the hygiene sweep's pinned scratch puts it INSIDE a
+    linked worktree, where every "no repository here" target read as a worktree
+    and every shim was declined. An ordinary-clone marker (a ``.git`` DIRECTORY)
+    at ``tmp_path`` makes the walk stop at the fixture: targets below it answer on
+    the markers the test wrote, or on this one when it wrote none.
+    """
+    (tmp_path / ".git").mkdir(exist_ok=True)
+
+
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
@@ -576,7 +593,8 @@ def test_in_linked_git_worktree_distinguishes_marker_kind(tmp_path):
 
     assert agent._in_linked_git_worktree(wt) is True
     assert agent._in_linked_git_worktree(clone) is False
-    # Not a repository at all — nothing to decline.
+    # No marker of its own: the walk answers on the ordinary-clone boundary the
+    # module fixture pins at tmp_path, so there is nothing to decline.
     assert agent._in_linked_git_worktree(tmp_path / "nowhere" / "bin" / "kirocrew") is False
 
 

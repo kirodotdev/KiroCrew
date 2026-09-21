@@ -282,7 +282,11 @@ class TestKillProcessTree:
             f"open({str(pidfile)!r},'w').write(str(c.pid));"
             "time.sleep(30)"
         )
-        proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+        # cwd=tmp_path: the wrapper and its grandchild write nothing by path,
+        # but a child inherits pytest's CWD (the checkout) unless told otherwise.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script], start_new_session=True, cwd=tmp_path
+        )
         # Bound BEFORE the try: the pidfile read below raises FileNotFoundError /
         # ValueError whenever the 5s poll budget expires on a loaded host, and the
         # finally must still be able to skip the grandchild reap in that case.

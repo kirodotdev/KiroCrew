@@ -30,6 +30,63 @@ def _init_repo(path) -> None:
     )
 
 
+def _pin_probe_git(monkeypatch, tmp_path):
+    """Resolve the worktree probe's git to a fake under ``tmp_path``.
+
+    ``_git_toplevel`` finds git through ``trusted_system_bin`` (fixed system
+    directories, never PATH) and asks ``rev-parse --show-toplevel`` about the
+    install root. Left alone, that is the HOST's git running from the test
+    process -- and on a host that keeps git outside those directories the probe
+    silently degrades to the on-disk fallback, so which branch a test exercised
+    depended on the machine. The fake answers the one question the probe asks
+    the way git does: the ``-C`` root itself when it carries ``.git``, exit 128
+    otherwise. Every argv it sees is appended to ``git-calls.log`` beside it.
+
+    For the derivation tests only. ``TestIsGitWorktree`` is ABOUT the probe's
+    reading of real repositories (linked worktrees, ancestor capture) and keeps
+    the real binary.
+    """
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    log = bin_dir / "git-calls.log"
+    if os.name == "nt":
+        fake = bin_dir / "git.cmd"
+        fake.write_text(
+            "@echo off\r\n"
+            f'echo %* >> "{log}"\r\n'
+            ":loop\r\n"
+            'if "%~1"=="" goto miss\r\n'
+            'if "%~1"=="-C" (\r\n'
+            '  if exist "%~2\\.git" (echo %~2& exit /b 0)\r\n'
+            "  goto miss\r\n"
+            ")\r\n"
+            "shift\r\n"
+            "goto loop\r\n"
+            ":miss\r\n"
+            "echo fatal: not a git repository 1>&2\r\n"
+            "exit /b 128\r\n",
+            encoding="utf-8",
+        )
+    else:
+        fake = bin_dir / "git"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'printf \'%s\\n\' "$*" >> "{log}"\n'
+            "root=\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  if [ "$1" = "-C" ]; then root=$2; shift; fi\n'
+            "  shift\n"
+            "done\n"
+            'if [ -n "$root" ] && [ -e "$root/.git" ]; then printf \'%s\\n\' "$root"; exit 0; fi\n'
+            "echo 'fatal: not a git repository' >&2\n"
+            "exit 128\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+    monkeypatch.setattr(update_capability, "trusted_system_bin", lambda _name: str(fake))
+    return fake
+
+
 def _commit(path) -> None:
     """A commit, so ``git worktree add`` has something to check out."""
     (path / "seed.txt").write_text("seed\n", encoding="utf-8")
@@ -309,6 +366,12 @@ class TestRunningFromCheckout:
 
 
 class TestDeriveCapability:
+    @pytest.fixture(autouse=True)
+    def _probe_git_is_a_fake(self, monkeypatch, tmp_path):
+        # The derivation is the subject; the path probe underneath it is not. See
+        # ``_pin_probe_git`` for why the host's git must not answer here.
+        _pin_probe_git(monkeypatch, tmp_path)
+
     @pytest.mark.parametrize("dist", ["dmg", "appimage", "deb", "rpm", "nsis"])
     def test_desktop_defers_to_its_own_updater(self, dist):
         capability = derive_capability(install_root="", dist=dist)

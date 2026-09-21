@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
-from tmpdir_helpers import SHORT_TMP_PREFIX
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import transport
@@ -214,12 +214,16 @@ def sock_dir(tmp_path: Path) -> Iterator[Path]:
     total to 132 bytes and failed on every macOS checkout while passing on Linux,
     where the shorter ``/tmp`` and the 108-byte cap both help.
 
-    ``/tmp`` directly, with a short unique leaf: the path stays ~25 bytes, so it
-    fits on either platform regardless of how the test is named. Only the tests
-    that actually bind a socket need this; the ones asserting path arithmetic
+    The short base comes from ``tmpdir_helpers.short_tmp_base()`` -- the ONE seam
+    the suite has for "a temp dir short enough for ``sun_path``" -- rather than a
+    literal ``/tmp`` spelled here: a second spelling of the same platform rule is
+    what let the two drift, and whatever root that helper hands out (today the
+    system temp root; a run-owned short root once the floor grows one) applies to
+    this module's binds without a per-site edit. Only the tests that actually
+    bind a socket need this; the ones asserting path arithmetic
     (``lock_path_for``, ``resolve_address``) are unaffected and keep ``tmp_path``.
     """
-    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "gwsock-", dir="/tmp"))
+    base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "gwsock-", dir=short_tmp_base()))
     try:
         yield base
     finally:
@@ -949,10 +953,18 @@ async def test_manager_offloads_prepare_dir_from_the_event_loop(
 async def test_gatewayd_offloads_prepare_dir_from_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from unittest.mock import AsyncMock
+
     from kiro_crew.mcp_gateway import gatewayd as gw
 
     probe = _LoopProbe()
     monkeypatch.setattr(gw.transport, "prepare_dir", probe)
+    # ``run_gatewayd`` warms the code fingerprint before ``prepare_dir``, and a
+    # cold fingerprint runs the host's real ``git`` against the checkout (the
+    # value is process-cached, so whether THIS test spawns it depends on which
+    # test ran first in the worker). Pin the seam the daemon reads: this test
+    # is about where ``prepare_dir`` runs, not about what the code is.
+    monkeypatch.setattr(gw, "warm_code_fingerprint", AsyncMock(return_value="fp-test"))
     # Lose the singleton election immediately after prepare_dir so the daemon
     # returns without binding anything.
     monkeypatch.setattr(gw.transport, "acquire_singleton_lock", lambda _p: None)

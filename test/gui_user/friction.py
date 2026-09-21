@@ -914,7 +914,7 @@ def file_issues(
     *,
     repo: str,
     date: str,
-    run: Runner = _gh,
+    run: Optional[Runner] = None,
     cap: int = ISSUE_CAP,
     persist: Optional[Persist] = None,
 ) -> dict[str, Any]:
@@ -924,7 +924,14 @@ def file_issues(
     mutation, so a failure partway through a batch never loses the numbers of
     the issues already opened -- a rerun would otherwise open them twice. A
     failed create or comment is recorded under ``failed`` and the batch goes on.
+
+    ``run`` defaults to :func:`_gh` LATE, at call time: a ``def``-time default
+    would capture the original function object, so a test that pins ``friction._gh``
+    to a fake would still hand the operator's live ``gh`` (and its token) to every
+    ``main()``-driven call. The module attribute is the seam; this keeps it one.
     """
+    if run is None:
+        run = _gh
     rows = ledger["entries"]
     failed: list[dict[str, str]] = []
 

@@ -61,6 +61,7 @@ class TestCodeFingerprint:
                 ["git", "-C", str(tmp_path), *args],
                 check=True,
                 capture_output=True,
+                cwd=tmp_path,
                 env=env,
                 **UTF8_TEXT,
             )
@@ -138,13 +139,22 @@ class TestCodeFingerprint:
         (root / "m.py").write_text("v = 0\n", encoding="utf-8")
         assert cf.fingerprint_of(root).startswith("mtime:")
 
-    def test_two_checkouts_of_different_code_disagree(self, tmp_path: Path) -> None:
+    def test_two_checkouts_of_different_code_disagree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The mtime rule is the one under test, so it is selected through the
+        # seam that chooses it (no trusted git -> no git branch) rather than by
+        # assuming the fixtures are "not git trees": git discovers UPWARD, and a
+        # temp root under a checkout (a developer's `TMPDIR=./tmp`) makes both
+        # directories answer with that checkout's HEAD -- identical fingerprints
+        # for different code.
+        monkeypatch.setattr(cf, "trusted_git_bin", lambda: None)
         a = tmp_path / "a"
         b = tmp_path / "b"
         for root in (a, b):
             root.mkdir()
             (root / "m.py").write_text("v = 0\n", encoding="utf-8")
-        # Not git trees, so the mtime rule applies: give them distinct mtimes.
+        # Distinct mtimes are what the rule digests.
         os.utime(a / "m.py", ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
         os.utime(b / "m.py", ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
         assert cf.fingerprint_of(a) != cf.fingerprint_of(b)

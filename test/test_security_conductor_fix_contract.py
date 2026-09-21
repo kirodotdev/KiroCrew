@@ -60,6 +60,9 @@ def mod():
 
 
 def git(worktree: Path, *args: str) -> str:
+    # ``-C`` decides what git answers for; ``cwd`` keeps the child out of the
+    # directory the test process inherited (the checkout under test), so nothing
+    # a hook or a config default writes can land there.
     return subprocess.run(
         ["git", "-C", str(worktree), *args],
         capture_output=True,
@@ -67,6 +70,7 @@ def git(worktree: Path, *args: str) -> str:
         encoding="utf-8",
         check=True,
         timeout=60,
+        cwd=str(worktree),
     ).stdout
 
 
@@ -149,7 +153,17 @@ def repo(tmp_path: Path):
 
 def run(worktree: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     argv = [sys.executable, str(SCRIPT), "--worktree", str(worktree), *extra]
-    return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=120)
+    # The script is told its worktree explicitly. ``cwd`` is the scratch directory
+    # holding it (the worktree itself may be the absent path a case is about),
+    # never the checkout this test process sits in.
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        cwd=str(worktree.parent),
+    )
 
 
 def payload(result: subprocess.CompletedProcess[str]) -> dict:

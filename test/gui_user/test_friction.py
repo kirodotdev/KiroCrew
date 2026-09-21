@@ -1488,6 +1488,18 @@ class TestArtifactUrlStamp:
         ledger.write_text(json.dumps(led), encoding="utf-8")
         own = tmp_path / "friction.json"
         own.write_text(json.dumps({"run_keys": [e1["key"]]}), encoding="utf-8")
+        # Every ``gh`` this test drives lands on a recording fake, never the host binary:
+        # ``file_issues`` resolves ``friction._gh`` at call time, so pinning the module
+        # attribute is the whole seam. Pinned BEFORE the first ``main()``: the non-dry
+        # invocations below would otherwise hand the operator's live ``gh`` (and its
+        # token) a ``label create --repo o/r``.
+        gh_calls: list[list[str]] = []
+
+        def fake_gh(args: list[str]) -> str:
+            gh_calls.append(list(args))
+            return "[]" if args[:2] == ["issue", "list"] else ""
+
+        monkeypatch.setattr(friction, "_gh", fake_gh)
         rc = friction.main(
             [
                 "issues",
@@ -1506,11 +1518,9 @@ class TestArtifactUrlStamp:
         )
         assert rc == 0
         capsys.readouterr()
+        assert gh_calls == [], "--dry-run must not reach gh at all"
         # --dry-run returns before the ledger is rewritten, so read the in-memory
-        # effect through a second, non-dry invocation with a fake gh.
-        monkeypatch.setattr(
-            friction, "_gh", lambda args: "[]" if args[:2] == ["issue", "list"] else ""
-        )
+        # effect through a second, non-dry invocation against the fake gh.
         friction.main(
             [
                 "issues",
@@ -1526,6 +1536,8 @@ class TestArtifactUrlStamp:
                 str(own),
             ]
         )
+        assert gh_calls, "the non-dry run files through gh, and it must be the fake"
+        assert all(call[0] in {"label", "issue"} for call in gh_calls), gh_calls
         saved = json.loads(ledger.read_text(encoding="utf-8"))
         assert saved["entries"][e1["key"]]["artifact_url"] == "https://a/b"
         assert saved["entries"][e2["key"]].get("artifact_url") != "https://a/b"

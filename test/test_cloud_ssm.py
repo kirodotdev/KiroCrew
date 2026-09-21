@@ -283,6 +283,8 @@ class TestKillPortForward:
         # wrapper to own a real process group for the grandchild to be in its tree.
         proc = subprocess.Popen(
             [sys.executable, "-c", script],
+            # A child inherits pytest's CWD (the checkout) unless told otherwise.
+            cwd=tmp_path,
             start_new_session=platform_compat.IS_POSIX,
             **(
                 {}

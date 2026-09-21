@@ -3477,6 +3477,9 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
     base_env["GIT_CONFIG_SYSTEM"] = os.devnull
 
     def run(*args, env=None):
+        # ``cwd=repo`` alongside ``-C repo``: the location is pinned twice on
+        # purpose. ``-C`` is what the module under test relies on; ``cwd`` keeps
+        # this fixture's real git from ever running in the worker's checkout.
         proc = subprocess.run(
             [git, "-C", str(repo), *args],
             capture_output=True,
@@ -3484,6 +3487,7 @@ def test_the_neutralizers_answer_from_the_real_object_graph(tmp_path, monkeypatc
             encoding="utf-8",
             timeout=60,
             env={**base_env, **(env or {})},
+            cwd=repo,
         )
         assert proc.returncode == 0, proc.stderr
         return proc.stdout.strip()

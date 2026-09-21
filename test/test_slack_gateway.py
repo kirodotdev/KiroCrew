@@ -920,6 +920,32 @@ class TestShutdown:
         orch.heartbeat_svc.stop.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_shutdown_releases_the_subagent_task_store(self):
+        """Shutdown closes the manager's durable store, and only after cancel_all.
+
+        ``SubagentManager.__init__`` opens a SQLite connection plus a writer thread
+        for the durable task queue; ``cancel_all`` stops the runs but leaves that
+        store open, so a gateway that never calls ``close`` holds the descriptors
+        and the executor for the life of the process. The ORDER is the other half
+        of the contract: ``cancel_all`` is what stops the runs still writing to the
+        store, so closing first would pull the connection out from under them.
+        """
+        order: list[str] = []
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.secretary_svc = None
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda: order.append("cancel_all"))
+        orch.subagent_mgr.close = MagicMock(side_effect=lambda: order.append("close"))
+        orch.sessions = None
+        orch.dashboard_state = None
+        orch._dashboard_runner = None
+        await orch._shutdown()
+        orch.subagent_mgr.close.assert_called_once_with()
+        assert order == ["cancel_all", "close"]
+
+    @pytest.mark.asyncio
     async def test_shutdown_cancels_handler_tasks(self):
         orch = _make_orchestrator()
         task = asyncio.create_task(asyncio.sleep(100))

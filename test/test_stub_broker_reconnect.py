@@ -238,13 +238,32 @@ async def _stop_daemon(stop: asyncio.Event, task: asyncio.Task) -> None:
 
 
 async def _reap(procs: list[asyncio.subprocess.Process]) -> None:
+    """Retire the stubs the way kiro-cli does, and only then force the stragglers.
+
+    Closing stdin is the stub's ordinary shutdown -- it reads EOF as
+    ``stdin_eof`` and exits on its own (pinned below by
+    :func:`test_a_closed_stdin_is_not_a_reconnectable_ending`). A SIGKILL to a
+    process that would have left cleanly hides a stub that does NOT act on EOF,
+    so it is reserved for one that is still alive after the graceful window.
+    """
     for p in procs:
-        if p.returncode is None:
+        if p.returncode is None and p.stdin is not None:
             try:
-                await pc.kill_process_tree_async(p.pid, pc.SIGKILL)
-            except Exception:  # noqa: BLE001 - teardown must never mask a failure
+                p.stdin.close()
+            except OSError:  # a pipe the stub already closed on its side
                 pass
     for p in procs:
+        if p.returncode is not None:
+            continue
+        try:
+            await asyncio.wait_for(p.wait(), timeout=15)
+            continue
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await pc.kill_process_tree_async(p.pid, pc.SIGKILL)
+        except Exception:  # noqa: BLE001 - teardown must never mask a failure
+            pass
         try:
             await asyncio.wait_for(p.wait(), timeout=15)
         except (asyncio.TimeoutError, ProcessLookupError):

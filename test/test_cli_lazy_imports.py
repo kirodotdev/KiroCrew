@@ -64,7 +64,7 @@ _BANNED_AFTER_CLI_IMPORT = (
 )
 
 
-def test_cli_import_does_not_load_heavy_modules() -> None:
+def test_cli_import_does_not_load_heavy_modules(tmp_path: Path) -> None:
     """Ratchet: ``import kiro_crew.cli`` must stay free of the deferred modules.
 
     If this fails, a module-scope import (direct or transitive) reached one of
@@ -78,8 +78,15 @@ def test_cli_import_does_not_load_heavy_modules() -> None:
         "present = [m for m in banned if m in sys.modules]; "
         "print(repr(present))"
     )
+    # cwd=tmp_path: a child inherits pytest's CWD (the checkout) unless told
+    # otherwise; the interpreter resolves kiro_crew from the installed package,
+    # not from the directory it runs in, so nothing here needs the checkout.
     res = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=tmp_path,
     )
     assert res.returncode == 0, f"import kiro_crew.cli failed:\n{res.stderr}"
     present = ast.literal_eval(res.stdout.strip())
@@ -168,6 +175,9 @@ def _stdio_roundtrip(subcommand: str, tmp_path: Path) -> list[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # Confined to the test's directory: the server is pinned to a
+        # throwaway home already, and its cwd must not be the checkout either.
+        cwd=tmp_path,
         env={
             **os.environ,
             "KIROCREW_HOME": str(tmp_path / "home"),

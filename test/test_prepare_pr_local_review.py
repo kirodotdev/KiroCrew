@@ -731,6 +731,7 @@ def test_cli_exits_40_on_a_contract_that_escapes_the_repo(parity_repo, tmp_path)
             ],
             capture_output=True,
             text=True,
+            cwd=parity_repo,
             env={**os.environ, "PATH": os.environ.get("PATH", ""), **NO_PYC},
         )
         assert proc.returncode == local_review.EXIT_PARITY, proc.stderr
@@ -1611,6 +1612,7 @@ def test_cli_exits_40_when_the_prompt_assembly_is_gone(parity_repo, tmp_path):
         ],
         capture_output=True,
         text=True,
+        cwd=parity_repo,
         env={**os.environ, "PATH": os.environ.get("PATH", ""), **NO_PYC},
     )
     assert proc.returncode == local_review.EXIT_PARITY, proc.stderr
@@ -1707,6 +1709,7 @@ def test_cli_json_summary_is_machine_readable(parity_repo, tmp_path):
         ],
         capture_output=True,
         text=True,
+        cwd=parity_repo,
         env={**os.environ, **NO_PYC},
     )
     assert proc.returncode == local_review.EXIT_OK, proc.stderr

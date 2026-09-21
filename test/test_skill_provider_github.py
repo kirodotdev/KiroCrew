@@ -32,6 +32,29 @@ from kiro_crew.skill_providers.base import SkillProvider
 
 # ---- fixtures / fakes ------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def _no_provider_network(monkeypatch) -> None:
+    """Refuse the shared provider opener for every test in this module.
+
+    ``_http.open_guarded`` is the one place a provider fetch turns into a TCP
+    connection; the three ``gh._sync_fetch_*`` bindings above it are what tests
+    route to ``_Fake``.  A test that routes two of the three and walks a path
+    that takes the third (search -> commit -> tree -> BLOB) reached the live
+    ``raw.githubusercontent.com`` from a passing test.  With the opener refusing,
+    an unrouted seam is an ``AssertionError`` naming the URL instead of a request
+    -- the same shape as ``_no_release_feed_network`` in ``conftest``.
+    """
+
+    def _refuse(req, **_kwargs):
+        raise AssertionError(
+            f"test reached the network ({req.full_url}) -- route the fetch seam "
+            "(_sync_fetch_json / _sync_fetch_text / _sync_fetch_bytes) through _Fake"
+        )
+
+    monkeypatch.setattr(gh._http, "open_guarded", _refuse, raising=True)
+
+
 _COMMIT = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
 
 _SKILL_MD = """---
@@ -974,7 +997,17 @@ class TestNetworkGuards:
             return fake.fetch_text(url, accept)
 
         async def _run():
-            with patch.multiple(gh, _sync_fetch_json=fake.fetch_json, _sync_fetch_text=_text):
+            # All THREE seams: a search that resolves the commit and the tree goes
+            # on to fetch the blob through ``_sync_fetch_bytes``, and with only the
+            # json/text seams routed that blob fetch left the test for
+            # raw.githubusercontent.com (the ``_no_provider_network`` guard below
+            # is what makes that an error now instead of a request).
+            with patch.multiple(
+                gh,
+                _sync_fetch_json=fake.fetch_json,
+                _sync_fetch_text=_text,
+                _sync_fetch_bytes=fake.fetch_bytes,
+            ):
                 await gh.GitHubRepoProvider().search("acme/widgets:skills/reviewer")
 
         import asyncio as _asyncio

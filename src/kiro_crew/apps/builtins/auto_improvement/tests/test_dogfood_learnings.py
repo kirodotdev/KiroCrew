@@ -2004,7 +2004,10 @@ class TestEachBugPRCarriesOnlyItsOwnFix:
         self._git("add", "-A", cwd=clone)
         self._git("commit", "-qm", "base", cwd=clone)
         base = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         (clone / "a.py").write_text("FIX_A = 1\n", encoding="utf-8")
@@ -2015,7 +2018,10 @@ class TestEachBugPRCarriesOnlyItsOwnFix:
         self._git("commit", "-qm", "winner B", cwd=clone)
 
         chained = subprocess.run(
-            ["git", "-C", str(clone), "diff", f"{base}...HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "diff", f"{base}...HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout
         assert "FIX_A" in chained and "FIX_B" in chained, "the chaining premise no longer holds"
 
@@ -2025,14 +2031,17 @@ class TestEachBugPRCarriesOnlyItsOwnFix:
         self._git("add", "-A", cwd=clone)
         self._git("commit", "-qm", "winner B alone", cwd=clone)
         isolated = subprocess.run(
-            ["git", "-C", str(clone), "diff", f"{base}...HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "diff", f"{base}...HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout
         assert "FIX_B" in isolated
         assert "FIX_A" not in isolated, "the reset did not isolate the second winner"
 
     @staticmethod
     def _git(*args: str, cwd) -> None:
-        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(cwd), *args], cwd=cwd, check=True, capture_output=True)
 
 
 class TestCalibrationRefusesABadCanary:
@@ -2118,21 +2127,26 @@ class TestTheCredentialScanCannotSelfDiff:
     @staticmethod
     def _repo(tmp_path: Path) -> tuple[Path, Path]:
         remote = tmp_path / "r.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], cwd=remote.parent, check=True)
         clone = tmp_path / "c"
         subprocess.run(
-            ["git", "clone", "-q", str(remote), str(clone)], check=True, capture_output=True
+            ["git", "clone", "-q", str(remote), str(clone)],
+            cwd=clone.parent,
+            check=True,
+            capture_output=True,
         )
         for k, v in (("user.email", "a@b.c"), ("user.name", "T")):
-            subprocess.run(["git", "-C", str(clone), "config", k, v], check=True)
+            subprocess.run(["git", "-C", str(clone), "config", k, v], cwd=clone, check=True)
         (clone / "m.py").write_text("x = 1\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(clone), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(clone), "commit", "-qm", "base"], check=True)
-        subprocess.run(["git", "-C", str(clone), "branch", "-M", "work"], check=True)
-        subprocess.run(["git", "-C", str(clone), "push", "-q", "origin", "work"], check=True)
+        subprocess.run(["git", "-C", str(clone), "add", "-A"], cwd=clone, check=True)
+        subprocess.run(["git", "-C", str(clone), "commit", "-qm", "base"], cwd=clone, check=True)
+        subprocess.run(["git", "-C", str(clone), "branch", "-M", "work"], cwd=clone, check=True)
+        subprocess.run(
+            ["git", "-C", str(clone), "push", "-q", "origin", "work"], cwd=clone, check=True
+        )
         # The winner commit carries a credential.
         (clone / "m.py").write_text("x = 1\nAWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(clone), "commit", "-qam", "fix"], check=True)
+        subprocess.run(["git", "-C", str(clone), "commit", "-qam", "fix"], cwd=clone, check=True)
         return remote, clone
 
     def _recipe(self, tmp_path: Path, base_ref: str):
@@ -2973,7 +2987,9 @@ class TestProvisionalCommitFailsClosed:
             "GIT_COMMITTER_NAME": "t",
             "GIT_COMMITTER_EMAIL": "t@t",
         }
-        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(cwd), *args], cwd=cwd, check=True, capture_output=True, env=env
+        )
 
     def _clone_on_a_branch(self, tmp_path: Path) -> Path:
         clone = tmp_path / "clone"
@@ -3009,7 +3025,10 @@ class TestProvisionalCommitFailsClosed:
             diff="diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-base\n+fix\n",
         )
         head_before = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         # Force ONLY the `git commit` to fail, letting real staging/reset run. A pre-commit
@@ -3031,7 +3050,10 @@ class TestProvisionalCommitFailsClosed:
         ok = drv._commit_winner_provisional(winner)
         assert ok is False, "a rejected commit reported success"
         head_after = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert head_after == head_before, "HEAD moved despite the commit failing"
 
@@ -3093,7 +3115,10 @@ class TestProvisionalCommitFailsClosed:
         assert drv._commit_winner_provisional(winner) is False
 
         dirty = subprocess.run(
-            ["git", "-C", str(clone), "status", "--porcelain"], capture_output=True, text=True
+            ["git", "-C", str(clone), "status", "--porcelain"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert dirty == "", f"the rejected diff was left behind: {dirty!r}"
         assert not (clone / "added.txt").exists(), "a file the rejected patch created survived"
@@ -3164,12 +3189,14 @@ class TestWinnerIsInTheTreeBeforeDrafting:
 
         from kiro_crew.apps.builtins.auto_improvement.spine.driver import Driver
 
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        subprocess.run(["git", "init", "-q", str(tmp_path)], cwd=tmp_path, check=True)
         for k, v in (("user.email", "t@e"), ("user.name", "t")):
-            subprocess.run(["git", "-C", str(tmp_path), "config", k, v], check=True)
+            subprocess.run(["git", "-C", str(tmp_path), "config", k, v], cwd=tmp_path, check=True)
         (tmp_path / "a.txt").write_text("x")
-        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "init"], check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-qm", "init"], cwd=tmp_path, check=True
+        )
 
         drv = Driver.__new__(Driver)  # no full wiring needed for the staging step
         drv.clone = tmp_path
@@ -3224,15 +3251,20 @@ class TestWinnerIsInTheTreeBeforeDrafting:
         }
 
         def git(*args: str, cwd) -> None:
-            subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=env)
+            subprocess.run(
+                ["git", "-C", str(cwd), *args], cwd=cwd, check=True, capture_output=True, env=env
+            )
 
         # A clone with a LOCAL `main` tracking `origin/main` — exactly the state
         # `clone_setup.checkout_branch` leaves before the driver runs.
         bare = tmp_path / "up.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], cwd=bare.parent, check=True)
         clone = tmp_path / "clone"
         subprocess.run(
-            ["git", "clone", "-q", str(bare), str(clone)], check=True, capture_output=True
+            ["git", "clone", "-q", str(bare), str(clone)],
+            cwd=clone.parent,
+            check=True,
+            capture_output=True,
         )
         (clone / "f.txt").write_text("base\n", encoding="utf-8")
         git("add", "-A", cwd=clone)
@@ -3262,7 +3294,10 @@ class TestWinnerIsInTheTreeBeforeDrafting:
         assert drv._stage_winner(_winner(1, cycle1_diff)) is True
         git("commit", "-qm", "cycle1 winner", cwd=clone)
         c1 = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         # Cycle 2: the next stage checks out the branch again. An empty-diff winner
@@ -3272,6 +3307,7 @@ class TestWinnerIsInTheTreeBeforeDrafting:
 
         head_ref = subprocess.run(
             ["git", "-C", str(clone), "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=clone,
             capture_output=True,
             text=True,
         ).stdout.strip()
@@ -3280,7 +3316,7 @@ class TestWinnerIsInTheTreeBeforeDrafting:
         ), f"HEAD detached to {head_ref!r} — cycle-2 checkout orphaned the branch"
         # The load-bearing assertion: cycle 1's commit is still on the branch.
         ancestor = subprocess.run(
-            ["git", "-C", str(clone), "merge-base", "--is-ancestor", c1, "HEAD"]
+            ["git", "-C", str(clone), "merge-base", "--is-ancestor", c1, "HEAD"], cwd=clone
         ).returncode
         assert ancestor == 0, "cycle-1 kept commit was discarded by cycle-2's checkout"
 
@@ -4273,6 +4309,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         }
         result = subprocess.run(
             ["git", "-C", str(cwd), *args],
+            cwd=cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -4287,11 +4324,16 @@ class TestOneClickCommitWorksInAPushDisabledClone:
     def _upstream_and_clone(self, tmp_path: Path) -> tuple[Path, Path, str]:
         """A bare 'remote', a seeded branch, and a clone with BOTH urls neutralized."""
         upstream = tmp_path / "upstream.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(upstream)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "--bare", str(upstream)], cwd=upstream.parent, check=True
+        )
 
         seed = tmp_path / "seed"
         subprocess.run(
-            ["git", "clone", "-q", str(upstream), str(seed)], check=True, capture_output=True
+            ["git", "clone", "-q", str(upstream), str(seed)],
+            cwd=seed.parent,
+            check=True,
+            capture_output=True,
         )
         # The literal patches below target an LF blob, even when autocrlf is disabled.
         (seed / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8", newline="\n")
@@ -4302,7 +4344,10 @@ class TestOneClickCommitWorksInAPushDisabledClone:
 
         clone = tmp_path / "clone"
         subprocess.run(
-            ["git", "clone", "-q", str(upstream), str(clone)], check=True, capture_output=True
+            ["git", "clone", "-q", str(upstream), str(clone)],
+            cwd=clone.parent,
+            check=True,
+            capture_output=True,
         )
         # Exactly what production leaves behind.
         clone_setup._disable_push(clone)
@@ -4317,6 +4362,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         # true the test below proves nothing.
         probe = subprocess.run(
             ["git", "-C", str(clone), "fetch", "--quiet", "origin", branch],
+            cwd=clone,
             capture_output=True,
         )
         assert probe.returncode != 0, "origin is still reachable — _disable_push regressed"
@@ -4343,6 +4389,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         # The change is really on the remote, not just in the local clone.
         show = subprocess.run(
             ["git", "-C", str(upstream), "show", f"{branch}:app.py"],
+            cwd=upstream,
             capture_output=True,
             text=True,
         )
@@ -4414,6 +4461,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         )
         published = subprocess.run(
             ["git", "-C", str(upstream), "show", "auto/fix-aaaa:app.py"],
+            cwd=upstream,
             capture_output=True,
             text=True,
         ).stdout
@@ -4424,6 +4472,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
             "later.py"
             not in subprocess.run(
                 ["git", "-C", str(upstream), "ls-tree", "--name-only", "auto/fix-aaaa"],
+                cwd=upstream,
                 capture_output=True,
                 text=True,
             ).stdout
@@ -4456,14 +4505,17 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         assert staged.get("ok") is True, f"staging failed: {staged.get('error')}"
         base = str(staged["base"])
         base_sha = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", base], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", base], cwd=clone, capture_output=True, text=True
         ).stdout.strip()
 
         body = tmp_path / "fp.pr.md"
         body.write_text("# fix\n", encoding="utf-8")
         assert commit_mod.commit_staged_for_draft(clone=clone, body_path=body, fp="fp").get("ok")
         moved = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert moved != base_sha, "the commit did not move HEAD — nothing to roll back"
 
@@ -4471,7 +4523,10 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         commit_mod._git(clone, "reset", "--hard", base)
 
         back = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert back == base_sha, "the branch was not restored to its fetched base"
         assert "return 1" in (clone / "app.py").read_text(encoding="utf-8")
@@ -4479,6 +4534,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         assert (
             subprocess.run(
                 ["git", "-C", str(clone), "status", "--porcelain"],
+                cwd=clone,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -4511,6 +4567,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         seed = tmp_path / "seed2"
         subprocess.run(
             ["git", "clone", "-q", "-b", branch, str(upstream), str(seed)],
+            cwd=seed.parent,
             check=True,
             capture_output=True,
         )
@@ -4606,12 +4663,14 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         # Whatever landed, no single commit may contain BOTH findings.
         log = subprocess.run(
             ["git", "-C", str(upstream), "log", "--format=%H", branch],
+            cwd=upstream,
             capture_output=True,
             text=True,
         ).stdout.split()
         for sha in log:
             body = subprocess.run(
                 ["git", "-C", str(upstream), "show", "--format=", "--unified=0", sha],
+                cwd=upstream,
                 capture_output=True,
                 text=True,
             ).stdout
@@ -4677,6 +4736,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
 
         before = subprocess.run(
             ["git", "-C", str(clone), "rev-parse", f"origin/{branch}"],
+            cwd=clone,
             capture_output=True,
             text=True,
         ).stdout.strip()
@@ -4695,7 +4755,10 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         assert out["ok"] is False and "push failed" in str(out["error"])
 
         head = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(clone), "rev-parse", "HEAD"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert head == before, "the unpushed commit was left on the branch"
         assert "return 1" in (clone / "app.py").read_text(encoding="utf-8")
@@ -4732,6 +4795,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         other = tmp_path / "other"
         subprocess.run(
             ["git", "clone", "-q", "-b", branch, str(upstream), str(other)],
+            cwd=other.parent,
             check=True,
             capture_output=True,
         )
@@ -4759,12 +4823,14 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         # base. If we had used the frozen tracking ref, NEW.md would have been dropped.
         listing = subprocess.run(
             ["git", "-C", str(upstream), "ls-tree", "--name-only", branch],
+            cwd=upstream,
             capture_output=True,
             text=True,
         )
         assert "NEW.md" in listing.stdout, "committed on a stale base — upstream work was lost"
         show = subprocess.run(
             ["git", "-C", str(upstream), "show", f"{branch}:app.py"],
+            cwd=upstream,
             capture_output=True,
             text=True,
         )
@@ -4795,14 +4861,21 @@ class TestANonDefaultBranchIsActuallyCheckedOut:
             "GIT_COMMITTER_NAME": "t",
             "GIT_COMMITTER_EMAIL": "t@t",
         }
-        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(cwd), *args], cwd=cwd, check=True, capture_output=True, env=env
+        )
 
     def _remote_with_two_branches(self, tmp_path: Path) -> Path:
         upstream = tmp_path / "up.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(upstream)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "--bare", str(upstream)], cwd=upstream.parent, check=True
+        )
         seed = tmp_path / "seed"
         subprocess.run(
-            ["git", "clone", "-q", str(upstream), str(seed)], check=True, capture_output=True
+            ["git", "clone", "-q", str(upstream), str(seed)],
+            cwd=seed.parent,
+            check=True,
+            capture_output=True,
         )
         (seed / "f.txt").write_text("on-default\n", encoding="utf-8")
         self._git("add", "-A", cwd=seed)
@@ -4820,7 +4893,10 @@ class TestANonDefaultBranchIsActuallyCheckedOut:
     def _disabled_clone(self, tmp_path: Path, upstream: Path) -> Path:
         clone = tmp_path / "clone"
         subprocess.run(
-            ["git", "clone", "-q", str(upstream), str(clone)], check=True, capture_output=True
+            ["git", "clone", "-q", str(upstream), str(clone)],
+            cwd=clone.parent,
+            check=True,
+            capture_output=True,
         )
         clone_setup._disable_push(clone)  # exactly what production leaves behind
         return clone
@@ -4833,6 +4909,7 @@ class TestANonDefaultBranchIsActuallyCheckedOut:
         # remote-tracking ref is present, and the origin is genuinely unreachable.
         locals_ = subprocess.run(
             ["git", "-C", str(clone), "branch", "--format=%(refname:short)"],
+            cwd=clone,
             capture_output=True,
             text=True,
         ).stdout.split()
@@ -4840,6 +4917,7 @@ class TestANonDefaultBranchIsActuallyCheckedOut:
         assert (
             subprocess.run(
                 ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet", "origin/feature"],
+                cwd=clone,
                 capture_output=True,
             ).returncode
             == 0
@@ -4847,6 +4925,7 @@ class TestANonDefaultBranchIsActuallyCheckedOut:
         assert (
             subprocess.run(
                 ["git", "-C", str(clone), "fetch", "--quiet", "origin", "feature"],
+                cwd=clone,
                 capture_output=True,
             ).returncode
             != 0
@@ -4858,6 +4937,7 @@ class TestANonDefaultBranchIsActuallyCheckedOut:
         # The load-bearing assertion: the TREE is the feature branch's, not the default's.
         head = subprocess.run(
             ["git", "-C", str(clone), "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=clone,
             capture_output=True,
             text=True,
         ).stdout.strip()
@@ -5153,7 +5233,7 @@ class TestTheProfileImportStaysLazy:
             "re-measure the gateway boot import count first"
         )
 
-    def test_importing_the_backend_does_not_pull_the_profile_tree(self) -> None:
+    def test_importing_the_backend_does_not_pull_the_profile_tree(self, tmp_path) -> None:
         """The property that actually matters, asserted directly rather than via the
         import statement's position: a fresh interpreter that imports the boot path must
         not have the profile module loaded."""
@@ -5179,8 +5259,15 @@ class TestTheProfileImportStaysLazy:
         env = dict(os.environ)
         src_root = str(Path(kiro_crew.__file__).resolve().parent.parent)
         env["PYTHONPATH"] = src_root + os.pathsep + env.get("PYTHONPATH", "")
+        # ``-c`` puts the interpreter's cwd on ``sys.path``; pinned to tmp_path so
+        # the measurement cannot be flattered by whatever pytest was launched from.
         out = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, timeout=120, env=env
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+            cwd=tmp_path,
         )
         assert out.returncode == 0, out.stderr[-500:]
         assert out.stdout.strip() == "0", (
@@ -5670,7 +5757,9 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         hook.chmod(0o755)
         # The attacker step: point core.hooksPath at the planted hook (as an injected
         # `git config` / a checked-in `.git/config` would).
-        sp.run(["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)], check=True)
+        sp.run(
+            ["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)], cwd=repo, check=True
+        )
         (repo / "f.txt").write_text("x\n", encoding="utf-8")
 
         drv._git(["add", "-A"], repo)
@@ -5682,7 +5771,7 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         )
         # And the commit still landed (the override does not break normal operation).
         head = sp.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
         )
         assert head.returncode == 0 and head.stdout.strip(), "the hardened commit did not land"
 
@@ -5738,14 +5827,25 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         main.mkdir()
         sp.run(["git", "init", "-q", "-b", "main", "."], cwd=main, check=True)
         (main / "f").write_text("x\n", encoding="utf-8")
-        sp.run(["git", "-C", str(main), "add", "-A"], check=True)
+        sp.run(["git", "-C", str(main), "add", "-A"], cwd=main, check=True)
         sp.run(
-            ["git", "-C", str(main), "-c", "user.email=t@t.invalid", "-c", "user.name=t",
-             "commit", "-qm", "base"],
+            [
+                "git",
+                "-C",
+                str(main),
+                "-c",
+                "user.email=t@t.invalid",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "base",
+            ],
+            cwd=main,
             check=True,
         )
         wt = tmp_path / "linked"
-        sp.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt)], check=True)
+        sp.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt)], cwd=main, check=True)
         # A legitimate linked worktree pins without complaint.
         gs.require_pinned(wt)
 
@@ -5903,7 +6003,15 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         sentinel = tmp_path / "FILTER_RAN"
         # The attack, both halves: the driver in repo-local config, the binding in-tree.
         sp.run(
-            ["git", "-C", str(repo), "config", "filter.pwn.clean", f"sh -c 'touch {sentinel}; cat'"],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "config",
+                "filter.pwn.clean",
+                f"sh -c 'touch {sentinel}; cat'",
+            ],
+            cwd=repo,
             check=True,
         )
         (repo / ".gitattributes").write_text("* filter=pwn\n", encoding="utf-8")
@@ -5946,20 +6054,32 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         main.mkdir()
         sp.run(["git", "init", "-q", "-b", "main", "."], cwd=main, check=True)
         (main / "seed").write_text("x\n", encoding="utf-8")
-        sp.run(["git", "-C", str(main), "add", "-A"], check=True)
+        sp.run(["git", "-C", str(main), "add", "-A"], cwd=main, check=True)
         sp.run(
-            ["git", "-C", str(main), "-c", "user.email=t@t.invalid", "-c", "user.name=t",
-             "commit", "-qm", "base"],
+            [
+                "git",
+                "-C",
+                str(main),
+                "-c",
+                "user.email=t@t.invalid",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "base",
+            ],
+            cwd=main,
             check=True,
         )
         wt = tmp_path / "linked"
-        sp.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt)], check=True)
+        sp.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt)], cwd=main, check=True)
 
         sentinel = tmp_path / "WT_FILTER_RAN"
         # The driver lands in repo-local config (shared across worktrees); the binding is the
         # worktree's own in-tree `.gitattributes`.
         sp.run(
             ["git", "-C", str(wt), "config", "filter.pwn.clean", f"sh -c 'touch {sentinel}; cat'"],
+            cwd=wt,
             check=True,
         )
         (wt / ".gitattributes").write_text("* filter=pwn\n", encoding="utf-8")
@@ -5994,12 +6114,14 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         clone = tmp_path / "clone"
         clone.mkdir()
         sp.run(["git", "init", "-q", "-b", "main", "."], cwd=clone, check=True)
-        sp.run(["git", "-C", str(clone), "config", "user.email", "t@t.invalid"], check=True)
-        sp.run(["git", "-C", str(clone), "config", "user.name", "t"], check=True)
+        sp.run(
+            ["git", "-C", str(clone), "config", "user.email", "t@t.invalid"], cwd=clone, check=True
+        )
+        sp.run(["git", "-C", str(clone), "config", "user.name", "t"], cwd=clone, check=True)
         (clone / "f.txt").write_text("data\n", encoding="utf-8")
-        sp.run(["git", "-C", str(clone), "add", "-A"], check=True)
-        sp.run(["git", "-C", str(clone), "commit", "-qm", "base"], check=True)
-        sp.run(["git", "-C", str(clone), "branch", "feature", "main"], check=True)
+        sp.run(["git", "-C", str(clone), "add", "-A"], cwd=clone, check=True)
+        sp.run(["git", "-C", str(clone), "commit", "-qm", "base"], cwd=clone, check=True)
+        sp.run(["git", "-C", str(clone), "branch", "feature", "main"], cwd=clone, check=True)
 
         pin = clone / ".git" / "info" / "attributes"
         assert not pin.exists(), "precondition: no pin before the helper runs"
@@ -6129,14 +6251,14 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         wt = tmp_path / "wt"
         wt.mkdir()
         sp.run(["git", "init", "-q", "-b", "main", "."], cwd=wt, check=True)
-        sp.run(["git", "-C", str(wt), "config", "user.email", "t@t.invalid"], check=True)
-        sp.run(["git", "-C", str(wt), "config", "user.name", "t"], check=True)
+        sp.run(["git", "-C", str(wt), "config", "user.email", "t@t.invalid"], cwd=wt, check=True)
+        sp.run(["git", "-C", str(wt), "config", "user.name", "t"], cwd=wt, check=True)
         (wt / "src").mkdir()
         (wt / "src" / "m.py").write_text("def f():\n    return 0\n", encoding="utf-8")
-        sp.run(["git", "-C", str(wt), "add", "-A"], check=True)
-        sp.run(["git", "-C", str(wt), "commit", "-qm", "base"], check=True)
+        sp.run(["git", "-C", str(wt), "add", "-A"], cwd=wt, check=True)
+        sp.run(["git", "-C", str(wt), "commit", "-qm", "base"], cwd=wt, check=True)
         base_sha = sp.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"], cwd=wt, capture_output=True, text=True
         ).stdout.strip()
 
         # The candidate adds a NEW test file (so RED staging proceeds) AND plants a symlink
@@ -6145,8 +6267,8 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         (wt / "tests" / "test_repro.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
         link = wt / "tests" / "aws_creds"
         link.symlink_to(secret)
-        sp.run(["git", "-C", str(wt), "add", "-A"], check=True)
-        sp.run(["git", "-C", str(wt), "commit", "-qm", "candidate"], check=True)
+        sp.run(["git", "-C", str(wt), "add", "-A"], cwd=wt, check=True)
+        sp.run(["git", "-C", str(wt), "commit", "-qm", "candidate"], cwd=wt, check=True)
 
         gate = Gate.__new__(Gate)
         proposal = Proposal(

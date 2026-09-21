@@ -784,10 +784,21 @@ class TestNoCronsFlag:
                 test_mode=False,
             )
 
-    def test_cli_gateway_passes_no_crons(self) -> None:
+    def test_cli_gateway_passes_no_crons(self, monkeypatch, tmp_path) -> None:
         """CLI _gateway function forwards no_crons to run_gateway."""
+        from kiro_crew import cli_server
         from kiro_crew.cli_server import _gateway
 
+        # ``_gateway`` runs the gateway-boot toolchain probes before it reaches
+        # ``run_gateway``: ``activate_mise`` merges the host's mise environment
+        # INTO ``os.environ`` (a PATH leak past the test) and ``_node_ok`` resolves
+        # and spawns the host's real ``node``. Neither is what this test is about,
+        # so both seams are pinned, as are the dist-symlink and launchd reconcile
+        # steps that would otherwise touch the install tree.
+        monkeypatch.setattr(cli_server, "activate_mise", lambda: [])
+        monkeypatch.setattr("kiro_crew.cli._node_ok", lambda: True)
+        monkeypatch.setattr(cli_server, "ensure_dev_dist_symlink", lambda: tmp_path / "dist")
+        monkeypatch.setattr(cli_server, "_should_reconcile_launchd_launcher", lambda: False)
         with patch("kiro_crew.cli_server.config_path") as mock_cp, patch(
             "kiro_crew.cli_server.KiroCrewConfig"
         ) as mock_cfg_cls, patch(

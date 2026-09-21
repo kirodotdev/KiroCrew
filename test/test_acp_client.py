@@ -4684,15 +4684,21 @@ class TestResetStateExtended:
         assert not sb_file.exists()
         assert client._sandbox_cleanup is None
 
-    def test_sandbox_cleanup_missing_file_no_error(self):
+    def test_sandbox_cleanup_missing_file_no_error(self, tmp_path):
         client = AcpClient()
-        client._sandbox_cleanup = "/nonexistent/path.sb"
+        # The missing file lives under tmp_path: the remove() this exercises is a
+        # real syscall against whatever path is here, and an absolute host path
+        # (``/nonexistent/path.sb``) would aim it at the operator's filesystem.
+        missing = tmp_path / "missing.sb"
+        assert not missing.exists()
+        client._sandbox_cleanup = str(missing)
         client._process = None
         client._child_pids = {}
         client._pid = None
 
         client._reset_state()  # should not raise
         assert client._sandbox_cleanup is None
+        assert not missing.exists()
 
     def test_untracks_pids(self):
         client = AcpClient()

@@ -66,6 +66,12 @@ def _run_openssl(args: list[str]) -> bytes:
         proc = subprocess.run(
             ["openssl", *args],
             check=False,
+            # Every path handed to openssl here is absolute, so the working
+            # directory is not an input -- but an unpinned one is an OUTPUT
+            # location: whatever a given openssl build drops beside itself (an
+            # RNG seed file, a debug artifact) would otherwise land in the
+            # caller's cwd, which under pytest is the repository checkout.
+            cwd=tempfile.gettempdir(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

@@ -572,3 +572,33 @@ The consequence for how you write a test:
       between scanners; a growth/linearity ratchet measures the algorithm's own work
       (bytes produced, items visited), not wall-clock and not interpreter call counts
       (`str.join` is one C call at any length)
+- [ ] Nothing assumes `tmp_path` is OUTSIDE a git repository: a fixture whose verdict comes
+      from an upward walk (nearest `.git`, `install.sh` + `setup.cfg`, project markers from
+      the cwd, git discovery) plants the boundary it reads — a developer's `TMPDIR` may sit
+      inside the checkout, and in a linked worktree the `.git` such a walk finds is a FILE
+- [ ] A nested `python -m pytest` on files under `tmp_path` passes its own `-c <ini>`,
+      `--rootdir` and `--color=no`: otherwise it adopts the repository's ini, and the
+      repo `addopts` reshape the very output the outer test greps
+- [ ] A stub for an `os.*` function reached through a module alias
+      (`monkeypatch.setattr("<mod>.os.unlink", ...)`) forwards every non-owned call to the
+      saved real function with `*args, **kwargs` INTACT — dropping `dir_fd` re-aims pytest's
+      own `rmtree` at the cwd — and asserts a bare relative name never reaches the stub
+- [ ] A test that compiles or imports a throwaway source under `tmp_path` keeps its bytecode
+      there (`sys.pycache_prefix` under `tmp_path`, or the suite's `no_bytecode()` helper),
+      because the suite-wide mirror is keyed on the absolute source path and a per-run path
+      never gets read again
+- [ ] A fixture needing a SHORT path (`AF_UNIX` `sun_path`, a redaction-sensitive path) calls
+      `tmpdir_helpers.short_tmp_base()` — never a literal `/tmp`, and never
+      `tempfile.gettempdir()`, which is too long under a pinned `TMPDIR`
+- [ ] No raw `os.kill(pid, 0)` in test code — it TERMINATES the target on Windows; route
+      liveness through `platform_compat.pid_exists`/`pid_liveness`, and any teardown signal
+      to a pid published by a child captures the target's identity at spawn and revalidates
+      before signalling
+- [ ] Every fetch seam a code path can take is routed, not just the one the happy path uses
+      (a JSON + text stub still lets a BLOB fetch reach the network)
+- [ ] A skip condition is decidable the same way on every run of one host: no ctime tick, no
+      "did a real tool answer in time", no "did an earlier test in this worker arm a hook" —
+      build the condition, resolve it from disk, or measure in a fresh interpreter
+- [ ] A handle the object under test opens for the process lifetime (a store's SQLite
+      connection + writer thread, a lazily-opened index) is closed by the fixture that built
+      it; when production has no close path, that gap is the finding

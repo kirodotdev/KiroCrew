@@ -2533,6 +2533,22 @@ class TestAgainstRealGit:
     unlanded. One small real repo pins both.
     """
 
+    @pytest.fixture(autouse=True)
+    def _hermetic_git_for_the_script(self, monkeypatch):
+        """The SCRIPT's git inherits this process's environment, unlike the fixture's.
+
+        ``_git`` below hands its spawns ``_fixture_git_env``; ``mod.git`` does not
+        take an environment and reads ``os.environ``. Pin the same containment
+        there for the duration of each test: the operator's global and system config
+        are pointed away and the ``GIT_DIR`` family dropped, so the ancestry and grep
+        questions are answered about the clone and nothing else.
+        """
+        for name in _GIT_LOCATION_VARS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
     @pytest.fixture(scope="module")
     def _clone_template(self, tmp_path_factory):
         """Build the landed/sidetrack clone once per module; ``clone`` copies it.

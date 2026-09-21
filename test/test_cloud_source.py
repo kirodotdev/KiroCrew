@@ -16,13 +16,17 @@ class TestRepoRoot:
         assert (root / "install.sh").exists()
         assert (root / "setup.cfg").exists()
 
-    def test_repo_root_fails_closed_when_no_marker(self, monkeypatch, tmp_path):
+    def test_repo_root_fails_closed_when_no_marker(self, monkeypatch):
         # Installed as a wheel (no install.sh + setup.cfg above the module):
         # must raise, NOT fall back to an ancestor dir that could tar up
         # unrelated packages and ship them to S3.
-        fake_module = tmp_path / "site-packages" / "kiro_crew" / "cloud" / "source.py"
-        fake_module.parent.mkdir(parents=True)
-        fake_module.write_text("# stub\n")
+        #
+        # The module path is FABRICATED, never created: the walk climbs every
+        # ancestor, and a real path a test can create lives under the temp root,
+        # which itself may sit inside this checkout (a developer's
+        # `TMPDIR=./tmp`) -- where install.sh + setup.cfg ARE above it. The
+        # walk is lexical on the resolved path, so existence is not required.
+        fake_module = Path("/kc-wheel-install-no-markers/site-packages/kiro_crew/cloud/source.py")
         monkeypatch.setattr(source, "__file__", str(fake_module))
         with pytest.raises(aws.AWSError, match="source root"):
             source.repo_root()

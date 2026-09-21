@@ -43,6 +43,40 @@ resolve_profile = _load("_pp_resolve_profile", "resolve_profile.py")
 pr_status = _load("_pp_pr_status", "pr_status.py")
 
 
+#: Confines every real git in the resolver tests -- the fixture's and the
+#: script's -- to the scratch repository: the operator's global and system
+#: config are pointed away (a ``commit.gpgsign``, ``init.templateDir`` or
+#: ``core.hooksPath`` there would reach the fixture's own ``git init``/``commit``),
+#: and an inherited ``GIT_DIR`` cannot redirect ``-C <repo>`` elsewhere.
+_HERMETIC_GIT = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
+
+
+def _hermetic_git(monkeypatch) -> dict[str, str]:
+    """Pin the containment above into this process (read by the script's own git)
+    and return a copy for a child the test spawns directly."""
+    for name in _GIT_LOCATION_VARS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in _HERMETIC_GIT.items():
+        monkeypatch.setenv(name, value)
+    return dict(os.environ)
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _seed_repo(repo: Path) -> None:
+    """A repository at *repo* with an identity, ready for the test's own commit."""
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+
+
 # --------------------------------------------------------------------------
 # resolve_profile.py
 # --------------------------------------------------------------------------
@@ -56,14 +90,13 @@ def test_generic_fallback_on_empty_repo(tmp_path):
     assert prof["single_commit"] is False
 
 
-def test_profile_is_loaded_from_base_ref_not_worktree(tmp_path):
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+def test_profile_is_loaded_from_base_ref_not_worktree(tmp_path, monkeypatch):
+    _hermetic_git(monkeypatch)
+    _seed_repo(tmp_path)
     profile = tmp_path / ".prepare-pr.toml"
     profile.write_text("[project]\nsingle_commit = true\n")
-    subprocess.run(["git", "add", ".prepare-pr.toml"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    _git(tmp_path, "add", ".prepare-pr.toml")
+    _git(tmp_path, "commit", "-qm", "base")
     profile.write_text("[project]\nsingle_commit = false\n")
 
     resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
@@ -72,13 +105,12 @@ def test_profile_is_loaded_from_base_ref_not_worktree(tmp_path):
     assert resolved["single_commit"] is True
 
 
-def test_branch_only_profile_is_ignored_when_base_has_none(tmp_path):
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+def test_branch_only_profile_is_ignored_when_base_has_none(tmp_path, monkeypatch):
+    _hermetic_git(monkeypatch)
+    _seed_repo(tmp_path)
     (tmp_path / "README.md").write_text("base\n")
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    _git(tmp_path, "add", "README.md")
+    _git(tmp_path, "commit", "-qm", "base")
     (tmp_path / ".prepare-pr.toml").write_text("[project]\nsingle_commit = true\n")
 
     resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
@@ -87,17 +119,16 @@ def test_branch_only_profile_is_ignored_when_base_has_none(tmp_path):
     assert resolved["single_commit"] is False
 
 
-def test_branch_deleting_a_review_workflow_cannot_drop_the_lane(tmp_path):
+def test_branch_deleting_a_review_workflow_cannot_drop_the_lane(tmp_path, monkeypatch):
     """Auto-detection is pinned to the base ref too: deleting a review workflow
     in the checkout must not remove that reviewer from the resolved profile."""
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    _hermetic_git(monkeypatch)
+    _seed_repo(tmp_path)
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
     (wf / "codex-review.yml").write_text("name: review\n")
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
     (wf / "codex-review.yml").unlink()
 
     resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
@@ -107,37 +138,39 @@ def test_branch_deleting_a_review_workflow_cannot_drop_the_lane(tmp_path):
     assert resolved["reviewers"][0]["contract"] == ".github/workflows/codex-review.yml"
 
 
-def test_unresolvable_base_ref_is_a_hard_error(tmp_path):
+def test_unresolvable_base_ref_is_a_hard_error(tmp_path, monkeypatch):
     """A base ref that names nothing must fail loudly, never silently hand
     resolution back to the branch checkout."""
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    _hermetic_git(monkeypatch)
+    _seed_repo(tmp_path)
     (tmp_path / "README.md").write_text("base\n")
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    _git(tmp_path, "add", "README.md")
+    _git(tmp_path, "commit", "-qm", "base")
 
     with pytest.raises(RuntimeError, match="cannot resolve base ref"):
         resolve_profile.resolve(str(tmp_path), base_ref="no-such-ref")
 
 
-def test_cli_without_base_ref_pins_to_the_remote_default_branch(tmp_path):
+def test_cli_without_base_ref_pins_to_the_remote_default_branch(tmp_path, monkeypatch):
     """The documented no-argument invocation must not read reviewer authority
     from the branch checkout when a remote base exists to pin to."""
+    env = _hermetic_git(monkeypatch)
     upstream = tmp_path / "upstream"
     upstream.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=upstream, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=upstream, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=upstream, check=True)
+    _seed_repo(upstream)
     (upstream / ".prepare-pr.toml").write_text("[project]\nsingle_commit = true\n")
-    subprocess.run(["git", "add", ".prepare-pr.toml"], cwd=upstream, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=upstream, check=True)
+    _git(upstream, "add", ".prepare-pr.toml")
+    _git(upstream, "commit", "-qm", "base")
     clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", "-q", str(upstream), str(clone)], check=True)
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
     (clone / ".prepare-pr.toml").write_text("[project]\nsingle_commit = false\n")
 
+    # The script as a process, from the clone it is handed rather than from
+    # pytest's CWD: its git must find only the fixture.
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS_DIR / "resolve_profile.py"), str(clone)],
+        cwd=clone,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -327,7 +360,7 @@ def test_gate_python_floor_matches_project_metadata():
 
 
 @pytest.mark.parametrize("version", [(3, 9, 0), (3, 10, 20), (3, 11, 15), (3, 12, 0), (3, 13, 0)])
-def test_first_floor_gate_checks_and_reports_python(version):
+def test_first_floor_gate_checks_and_reports_python(version, tmp_path):
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
     argv = shlex.split(data["gates"][0])
     assert argv[:2] == ["python3", "-c"] and len(argv) == 3
@@ -338,6 +371,7 @@ def test_first_floor_gate_checks_and_reports_python(version):
     )
     result = subprocess.run(
         [sys.executable, "-c", prelude + argv[2]],
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -867,11 +901,10 @@ def test_symlinked_config_is_refused(tmp_path):
 # --------------------------------------------------------------------------
 # TreeReader interface parity
 # --------------------------------------------------------------------------
-def test_tree_reader_worktree_and_pinned_parity(tmp_path):
+def test_tree_reader_worktree_and_pinned_parity(tmp_path, monkeypatch):
     """WorktreeReader and PinnedTreeReader share the TreeReader contract."""
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    _hermetic_git(monkeypatch)
+    _seed_repo(tmp_path)
 
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'parity'\n")
     (tmp_path / "package.json").write_text('{"scripts": {"build": "npm run build"}}')
@@ -880,8 +913,8 @@ def test_tree_reader_worktree_and_pinned_parity(tmp_path):
     (wf / "test-review.yml").write_text("name: test\n")
     (wf / "other.yaml").write_text("name: other\n")
 
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "initial"], cwd=tmp_path, check=True)
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "initial")
 
     wt_reader = resolve_profile.WorktreeReader(str(tmp_path))
     pinned_reader = resolve_profile.PinnedTreeReader(str(tmp_path), "HEAD")

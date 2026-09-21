@@ -61,12 +61,19 @@ def mock_sel():
         yield m.return_value
 
 
-def _git(cwd, *args) -> None:
-    subprocess.run(
+def _git(cwd, *args, check: bool = True) -> subprocess.CompletedProcess:
+    """Every git this module runs: from *cwd*, with the host's config held away.
+
+    Returns the completed process so a caller that reads git's answer (a sha, a
+    config probe) goes through the same containment as one that only mutates.
+    """
+    return subprocess.run(
         ["git", *args],
         cwd=str(cwd),
-        check=True,
+        check=check,
         capture_output=True,
+        text=True,
+        encoding="utf-8",
         # Identity is pinned here as well as in conftest's autouse ``_git_identity``,
         # which is FUNCTION-scoped and so does not cover the session-scoped template
         # builder below. os.devnull rather than a literal /dev/null: this file is
@@ -256,10 +263,7 @@ class TestProjectGitBranchResolver:
         assert info["branch"] == "feat/x"
 
     def test_detached_head_reports_short_sha(self, repo):
-        full = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
+        full = _git(repo, "rev-parse", "HEAD").stdout.strip()
         _git(repo, "checkout", "-q", "--detach", "HEAD")
         info = _project_git_branch(os.path.realpath(str(repo)))
         assert info["detached"] is True
@@ -312,10 +316,7 @@ class TestNoGitSubprocess:
             # native Windows path would not resolve.
             fh.write(f"[include]\n\tpath = {included.as_posix()}\n")
         # Confirm the vector is real for a git invocation...
-        probe = subprocess.run(
-            ["git", "-C", str(repo), "config", "--get", "probe.marker"],
-            capture_output=True, text=True, check=False,
-        )
+        probe = _git(repo, "config", "--get", "probe.marker", check=False)
         assert probe.stdout.strip() == "INCLUDE-WAS-PARSED", "include vector not reproduced"
         # ...and that our reader is unaffected by it and reads no config at all.
         info = _project_git_branch(os.path.realpath(str(repo)))

@@ -36,6 +36,36 @@ def _installer_constant(name: str) -> str:
     return match.group(1)
 
 
+def _openssl_or_skip() -> str:
+    """Absolute path to the harness's openssl, or skip.
+
+    Absolute rather than a bare name for the same reason production resolves it
+    from fixed directories: a shim earlier on PATH would make every positive case
+    pass for the wrong reason.
+    """
+    found = shutil.which("openssl")
+    if found is None:
+        pytest.skip("openssl not available")
+    return found
+
+
+def _openssl(workdir: Path, *args: str, **kwargs: object) -> bytes:
+    """Run openssl with *workdir* as its CWD and return its stdout.
+
+    Every spawn in this module goes through here so none inherits pytest's CWD
+    (the checkout): whatever openssl writes relative to it — a ``.rnd`` seed on
+    older builds, a debug file — lands in the temp tree the test owns.
+    """
+    return subprocess.run(
+        [_openssl_or_skip(), *args],
+        check=True,
+        cwd=workdir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        **kwargs,  # type: ignore[arg-type]
+    ).stdout
+
+
 class TestOneTrustRoot:
     def test_key_id_matches_cli_sh(self) -> None:
         assert feed_trust.PINNED_KEY_ID == _installer_constant("CLI_MANIFEST_KEY_ID")
@@ -45,19 +75,11 @@ class TestOneTrustRoot:
             "CLI_MANIFEST_PUBLIC_KEY_B64"
         )
 
-    def test_key_id_is_the_digest_of_the_pinned_key(self) -> None:
+    def test_key_id_is_the_digest_of_the_pinned_key(self, tmp_path: Path) -> None:
         """The two constants describe the same key, DER-normalized the same way
         cli.sh computes it (openssl pkey -pubin -outform DER | sha256)."""
-        if shutil.which("openssl") is None:
-            pytest.skip("openssl not available")
         pem = base64.b64decode(feed_trust.PINNED_PUBLIC_KEY_B64, validate=True)
-        der = subprocess.run(
-            ["openssl", "pkey", "-pubin", "-outform", "DER"],
-            input=pem,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        ).stdout
+        der = _openssl(tmp_path, "pkey", "-pubin", "-outform", "DER", input=pem)
         assert feed_trust.PINNED_KEY_ID == f"sha256:{hashlib.sha256(der).hexdigest()}"
 
 
@@ -69,39 +91,22 @@ def signing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     whose openssl lives outside the fixed system directories (Windows CI's
     Git-bundled copy), production resolution would return None and every
     positive case would fail for a reason unrelated to what it tests."""
-    openssl = shutil.which("openssl")
-    if openssl is None:
-        pytest.skip("openssl not available")
+    openssl = _openssl_or_skip()
     monkeypatch.setattr(feed_trust, "trusted_system_bin", lambda _n: openssl)
     private = tmp_path / "private.pem"
     public = tmp_path / "public.pem"
-    subprocess.run(
-        [
-            "openssl",
-            "genpkey",
-            "-algorithm",
-            "RSA",
-            "-pkeyopt",
-            "rsa_keygen_bits:2048",
-            "-out",
-            str(private),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    _openssl(
+        tmp_path,
+        "genpkey",
+        "-algorithm",
+        "RSA",
+        "-pkeyopt",
+        "rsa_keygen_bits:2048",
+        "-out",
+        str(private),
     )
-    subprocess.run(
-        ["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    der = subprocess.run(
-        ["openssl", "pkey", "-pubin", "-in", str(public), "-outform", "DER"],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ).stdout
+    _openssl(tmp_path, "pkey", "-in", str(private), "-pubout", "-out", str(public))
+    der = _openssl(tmp_path, "pkey", "-pubin", "-in", str(public), "-outform", "DER")
     monkeypatch.setattr(
         feed_trust,
         "PINNED_PUBLIC_KEY_B64",
@@ -125,12 +130,7 @@ def _signed_manifest(private: Path, tmp_path: Path, **fields: str) -> dict:
             json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
         ).encode("ascii")
     )
-    signature = subprocess.run(
-        ["openssl", "dgst", "-sha256", "-sign", str(private), str(canonical)],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ).stdout
+    signature = _openssl(tmp_path, "dgst", "-sha256", "-sign", str(private), str(canonical))
     return {**payload, "signature": base64.b64encode(signature).decode("ascii")}
 
 

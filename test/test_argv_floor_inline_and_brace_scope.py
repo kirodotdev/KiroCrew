@@ -20,8 +20,10 @@ to a filesystem inspector, or a token that closes its own argv, is not a program
 
 from __future__ import annotations
 
+import ast
 import base64
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,167 @@ from kiro_crew.security.shell_normalizer import _glob_could_expand_to, _glob_to_
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _MINT = "credential-exfil-kirocrew-token"
 _KILL = "self-protection-kill"
+
+#: The peers the own-host seed's UDP-connect trick names: RFC 5737 TEST-NET-2 and
+#: the RFC 3849 documentation prefix, which no router forwards.  A datagram
+#: ``connect`` sends no packet either way; this is what the probe MUST keep
+#: pointing at, and the stub below records what it pointed at.
+_DOCUMENTATION_PEERS = frozenset({("198.51.100.1", 53), ("2001:db8::1", 53)})
+#: What the stubbed probe answers as this machine's outbound address, per family:
+#: documentation addresses too, distinct from the peers, so a test can tell the
+#: seed read the STUB (these turn up in the own-name set) from the seed reading
+#: a real interface.
+_STUB_OWN_ADDRESS = {
+    argv_floor.socket.AF_INET: "203.0.113.7",
+    argv_floor.socket.AF_INET6: "2001:db8::7",
+}
+
+
+class _InertDatagramSocket:
+    """A datagram socket that connects nothing.
+
+    ``connect`` records the peer instead of asking the routing table for a
+    source address; ``getsockname`` answers the documentation address for the
+    family; ``fileno`` refuses so the per-interface ioctl sweep, which needs a
+    real descriptor, contributes nothing (its own ``except`` swallows this).
+    """
+
+    def __init__(self, family: int, recorded: list[tuple[int, object]]) -> None:
+        self._family = family
+        self._recorded = recorded
+
+    def __enter__(self) -> _InertDatagramSocket:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def connect(self, peer: object) -> None:
+        self._recorded.append((self._family, peer))
+
+    def getsockname(self) -> tuple[str, int]:
+        return (_STUB_OWN_ADDRESS.get(self._family, ""), 0)
+
+    def fileno(self) -> int:
+        raise OSError("inert datagram socket has no descriptor")
+
+    def close(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _own_host_seed_connects_nothing(monkeypatch) -> Iterator[list[tuple[int, object]]]:
+    """Make the ssh-to-self floor's own-host seed touch no interface and start no worker.
+
+    ``is_denied`` on an ssh-family program (``rsync``, ``scp``, ``ssh``) asks
+    ``_host_is_self``, whose first call in a process seeds the own-name set:
+    ``_own_interface_addresses`` opens a UDP socket per family and ``connect``s it
+    to a documentation peer to learn the primary outbound address (packet-less,
+    but a real socket the routing table answers), then ``_own_host_names`` starts
+    the DNS enrichment daemon, which resolves this host's real names and outlives
+    the test.  These tests are about brace and glob scope, not this host's
+    identity, so the datagram socket is stubbed at the seam production reads --
+    the module's ``socket`` binding, datagram sockets only, every other socket
+    kind passes through -- and the enrichment backoff is pushed past the test.
+    The seed still runs, through the stub, so the peers it names are observable
+    (``_DOCUMENTATION_PEERS``) and the address it reads is the stub's.
+
+    The own-host cache is reset for the test and restored after it, so the
+    stub's addresses never become another test's idea of this machine.
+    """
+    recorded: list[tuple[int, object]] = []
+    real_socket = argv_floor.socket
+
+    class _SocketModule:
+        """``socket`` with datagram construction routed to the inert stub."""
+
+        def __getattr__(self, name: str):
+            return getattr(real_socket, name)
+
+        def socket(self, family: int = -1, type: int = -1, proto: int = -1, fileno=None):
+            if type == real_socket.SOCK_DGRAM:
+                return _InertDatagramSocket(family, recorded)
+            return real_socket.socket(family, type, proto, fileno)
+
+    monkeypatch.setattr(argv_floor, "socket", _SocketModule())
+    monkeypatch.setattr(argv_floor, "_OWN_HOST_NAMES_CACHE", None)
+    monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
+    monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+    yield recorded
+
+
+class _ProductTree:
+    """The product modules under ``src/kiro_crew``, parsed on demand.
+
+    The tree is ~60 MB of source: parsing all of it is eleven seconds and a
+    gigabyte of AST, and the two derivations below each did so on their own.
+    Neither needs every module.  Each only ever reads a module that MENTIONS
+    something -- a file-name literal, or the dotted name of the module it imports
+    from -- and a string literal or a dotted name that is in the AST is in the
+    source text verbatim, so the bytes are the filter and only the candidates are
+    parsed.  The filter is a superset (a mention in a comment is a candidate too);
+    the AST walk that follows is unchanged, so what it derives is unchanged.
+
+    Two spellings the text filter cannot see, neither of which this tree uses: an
+    implicitly concatenated literal (``"token_signing" ".key"``), which the parser
+    folds into one constant, and a dotted import name with whitespace around its
+    dots (``from a . b import c``), which black never emits.
+    """
+
+    def __init__(self, src: Path) -> None:
+        self.paths: dict[str, Path] = {}
+        for path in sorted((src / "kiro_crew").rglob("*.py")):
+            rel = path.relative_to(src).with_suffix("")
+            # Vendored code and the tree's own tests (``tests/``, ``container_tests/``,
+            # ``test_*.py``) are not producers: a fixture that writes a fake ``.secret``
+            # sidecar names the file without reading the credential.
+            if "_vendor" in rel.parts or any(p.endswith("tests") for p in rel.parts[:-1]):
+                continue
+            if rel.name.startswith("test_"):
+                continue
+            name = ".".join(rel.parts[:-1] if rel.name == "__init__" else rel.parts)
+            self.paths[name] = path
+        self._trees: dict[str, ast.Module | None] = {}
+
+    def tree(self, name: str) -> ast.Module | None:
+        """*name*'s AST, parsed once; None for a module that does not parse."""
+        if name not in self._trees:
+            try:
+                self._trees[name] = ast.parse(self.paths[name].read_text(encoding="utf-8"))
+            except SyntaxError:
+                self._trees[name] = None
+        return self._trees[name]
+
+    def trees_mentioning(self, *words: str) -> Iterator[tuple[str, ast.Module]]:
+        """Every parseable module whose source contains any of *words*, with its AST."""
+        needles = tuple(word.encode("utf-8") for word in words)
+        for name, path in self.paths.items():
+            data = path.read_bytes()
+            if any(needle in data for needle in needles):
+                tree = self.tree(name)
+                if tree is not None:
+                    yield name, tree
+
+    def import_from(self, target: str) -> list[tuple[str, str, str]]:
+        """Every ``from <target> import <name> [as <bound>]`` in the tree.
+
+        As ``(importing module, name, bound name)``.  A module that spells
+        ``from a.b.c import`` contains ``a.b.c`` in its text, so the candidates
+        are the modules mentioning the target's dotted name.
+        """
+        out: list[tuple[str, str, str]] = []
+        for mod, tree in self.trees_mentioning(target):
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == target:
+                    for alias in node.names:
+                        out.append((mod, alias.name, alias.asname or alias.name))
+        return out
+
+
+@pytest.fixture(scope="module")
+def product_tree() -> _ProductTree:
+    """One on-demand view of the product tree, shared by the derivations in this module."""
+    return _ProductTree(REPO_ROOT / "src")
 
 
 def _rule_of(cmd: str) -> str | None:
@@ -387,7 +550,7 @@ class TestInlinePayloadNamesTheMintSurface:
     def test_a_quoted_import_without_a_loader_is_prose(self):
         assert _rule_of("python -c \"print('from kiro_crew.acp import x; token docs')\"") is None
 
-    def test_the_mint_surface_covers_every_token_producer_in_the_tree(self):
+    def test_the_mint_surface_covers_every_token_producer_in_the_tree(self, product_tree):
         """Every module that can produce a dashboard token is in reach of the gate -- derived
         from the tree, not from a list.
 
@@ -405,27 +568,13 @@ class TestInlinePayloadNamesTheMintSurface:
         dashboard in through ``start_api_server`` and takes over a minute, while the producers
         are DEFINED at hop one and only re-exported after it.  A new producer fails here unless
         its module path or its NAME carries ``token``, which is the convention the gate rests on.
+
+        Modules are parsed on demand (``_ProductTree``): the seed search reads the modules
+        whose text names the key file, and each import-graph hop reads the modules whose
+        text names the module it is looking for an import from.
         """
-        import ast
         import re
         import tomllib
-
-        src = REPO_ROOT / "src"
-        modules: dict[str, ast.Module] = {}
-        for path in (src / "kiro_crew").rglob("*.py"):
-            rel = path.relative_to(src).with_suffix("")
-            # Vendored code and the tree's own tests (``tests/``, ``container_tests/``,
-            # ``test_*.py``) are not producers: a fixture that writes a fake ``.secret``
-            # sidecar names the file without reading the credential.
-            if "_vendor" in rel.parts or any(p.endswith("tests") for p in rel.parts[:-1]):
-                continue
-            if rel.name.startswith("test_"):
-                continue
-            name = ".".join(rel.parts[:-1] if rel.name == "__init__" else rel.parts)
-            try:
-                modules[name] = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:
-                continue
 
         def names_used(node: ast.AST) -> set[str]:
             out: set[str] = set()
@@ -440,7 +589,7 @@ class TestInlinePayloadNamesTheMintSurface:
 
         opens = {"open", "read_bytes", "write_bytes", "fdopen", "O_RDONLY", "O_CREAT"}
         seeds: set[str] = set()
-        for mod, tree in modules.items():
+        for mod, tree in product_tree.trees_mentioning("token_signing.key"):
             if "token_signing.key" not in names_used(tree):
                 continue
             # The key's name, as the module spells it: the literal itself, or a module-level
@@ -464,28 +613,20 @@ class TestInlinePayloadNamesTheMintSurface:
                     break
         assert seeds == {"kiro_crew.dashboard.token_secret"}, seeds
 
-        # Every ``from X import y [as z]`` in the tree, indexed by X: the re-export relation
-        # the fixed point below walks, built once.
-        import_from: dict[str, list[tuple[str, str, str]]] = {}
-        for mod, tree in modules.items():
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    for alias in node.names:
-                        import_from.setdefault(node.module, []).append(
-                            (mod, alias.name, alias.asname or alias.name)
-                        )
-
         def importers_of(targets: set[str], names: set[str] | None = None) -> list[tuple[str, str]]:
+            # Every ``from X import y [as z]`` in the tree for each target X: the re-export
+            # relation the fixed point below walks.
             return [
                 (mod, bound)
                 for target in sorted(targets)
-                for mod, name, bound in import_from.get(target, ())
+                for mod, name, bound in product_tree.import_from(target)
                 if names is None or name in names
             ]
 
         def producers_in(mod: str, seed_names: set[str]) -> set[str]:
             """Functions of *mod* that reach a seed name, closed over the module's own calls."""
-            tree = modules[mod]
+            tree = product_tree.tree(mod)
+            assert tree is not None, mod  # reached through an import it parsed
             found = set(seed_names)
             changed = True
             while changed:
@@ -567,7 +708,7 @@ class TestInlinePayloadNamesTheMintSurface:
             ), entry_module
             assert re.match(r"kiro_crew\.", entry_module), entry_module
 
-    def test_the_credential_word_covers_every_local_secret_reader_in_the_tree(self):
+    def test_the_credential_word_covers_every_local_secret_reader_in_the_tree(self, product_tree):
         """Every function that READS the internal secret is in reach of the gate -- derived
         from the tree, not from a list.
 
@@ -581,26 +722,14 @@ class TestInlinePayloadNamesTheMintSurface:
         ``verify_only`` is above.  Every other one must be a reach in both spellings an inline
         program has, which holds only while its NAME or module path carries ``secret`` or
         ``token`` -- the convention ``_MINT_VERB_RE`` rests on.
-        """
-        import ast
 
-        src = REPO_ROOT / "src"
+        Only the modules whose text names one of the two files are parsed
+        (``_ProductTree``): a function that names the file, or binds a constant to it, is in
+        a module that spells it.
+        """
         secret_files = {".local_secret", ".secret"}
         readers: list[tuple[str, str]] = []
-        for path in (src / "kiro_crew").rglob("*.py"):
-            rel = path.relative_to(src).with_suffix("")
-            # Vendored code and the tree's own tests (``tests/``, ``container_tests/``,
-            # ``test_*.py``) are not producers: a fixture that writes a fake ``.secret``
-            # sidecar names the file without reading the credential.
-            if "_vendor" in rel.parts or any(p.endswith("tests") for p in rel.parts[:-1]):
-                continue
-            if rel.name.startswith("test_"):
-                continue
-            mod = ".".join(rel.parts[:-1] if rel.name == "__init__" else rel.parts)
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:
-                continue
+        for mod, tree in product_tree.trees_mentioning(*secret_files):
             file_names = set(secret_files) | {
                 target.id
                 for node in tree.body
@@ -1006,3 +1135,23 @@ class TestAGlobArgumentIsNotAKillProgram:
     )
     def test_a_harmless_substitution_under_a_data_consumer_is_allowed(self, cmd):
         assert _rule_of(cmd) is None, cmd
+
+
+class TestTheOwnHostSeedIsInertHere:
+    """The ssh-family rows above are this module's first ``_host_is_self``; pin what that costs."""
+
+    def test_the_seed_reads_the_stub_and_probes_only_documentation_peers(
+        self, _own_host_seed_connects_nothing
+    ):
+        # The seed ran through the stubbed seam: the addresses the stub answered are this
+        # machine's own names now.  A seed that opened its datagram socket some other way
+        # would have read a real interface instead, and neither address would be here.
+        names = argv_floor._own_host_names()
+        assert set(_STUB_OWN_ADDRESS.values()) <= names, names
+        # ... and every peer it named is a documentation address: RFC 5737 TEST-NET-2 or
+        # the RFC 3849 prefix, never routed.  A probe re-pointed at a real resolver
+        # (``8.8.8.8``) would be genuine egress from a permission decision, and fails here.
+        peers = {peer for _family, peer in _own_host_seed_connects_nothing}
+        assert peers == _DOCUMENTATION_PEERS, peers
+        # The rsync row above is what first reached the seed in this module.
+        assert _rule_of("rsync -a {$(date +%F),default}.conf /w/kirocrew-scratch/etc/") is None

@@ -66,7 +66,12 @@ def _load_reporter_plugin(tmp_path: Path):
     spec = importlib.util.spec_from_file_location("_prove_reporter_undertest", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Same posture as ``_load_prove``: a path-loaded module's bytecode goes to
+    # ``sys.pycache_prefix``'s mirror of ``tmp_path`` -- a per-user cache entry
+    # keyed on a directory pytest deletes minutes later. prove.py itself runs
+    # pytest with bytecode off; loading its reporter the same way leaves nothing.
+    with no_bytecode():
+        spec.loader.exec_module(module)
     return module
 
 
@@ -392,7 +397,7 @@ def test_an_option_like_base_cannot_suppress_the_diff(tmp_path: Path) -> None:
     assert r.returncode != EXIT_NOTHING_TO_PROVE, r.stdout + r.stderr
 
 
-def test_importing_prove_leaves_no_bytecode_in_the_checkout() -> None:
+def test_importing_prove_leaves_no_bytecode_in_the_checkout(monkeypatch, tmp_path: Path) -> None:
     """``_load_prove`` must not write ``__pycache__`` into the skill tree.
 
     prove.py sits in the checked-out source tree, so an ordinary import drops a
@@ -407,31 +412,36 @@ def test_importing_prove_leaves_no_bytecode_in_the_checkout() -> None:
     caches ``prove``, a run where something imported it first makes
     ``_load_prove`` a no-op -- the assertion then passes while exercising
     nothing, which is the worse of the two failure directions. Evicting the
-    module and removing the cache file first makes the import real and the
-    verdict this loader's own.
+    module and pointing the cache at a fresh directory make the import real and
+    the verdict this loader's own.
 
-    Removing it is net-zero, and that matters: the same no-test-side-effects rule
-    this test enforces also binds the test. The file is restored byte-for-byte on
-    every exit path, so a working copy that had a stale .pyc still has it
-    afterwards, and one that did not is not given one by a failing assertion.
+    The cache location is ``sys.pycache_prefix`` -- the same seam the rootdir
+    conftest uses to send every import's bytecode to the per-user cache -- pinned
+    for this test to a directory under ``tmp_path``. That is what keeps the test
+    itself honest: without it the test would unlink and byte-for-byte restore
+    whatever ``.pyc`` sits at the ambient cache path, which is a write to the
+    operator's real cache tree on every run. With the prefix under ``tmp_path``
+    there is nothing pre-existing to remove or restore, and a regression (a
+    ``_load_prove`` that
+    stops disabling bytecode) shows up as a file under ``tmp_path``, never as one
+    on someone's disk.
     """
+    prefix = tmp_path / "pycache"
+    monkeypatch.setattr(sys, "pycache_prefix", str(prefix))
     cache = Path(importlib.util.cache_from_source(PROVE))
-    existing = cache.read_bytes() if cache.exists() else None
+    assert cache.resolve().is_relative_to(
+        prefix.resolve()
+    ), f"the bytecode cache path {cache} is not under {prefix}"
+    assert not cache.exists()
     sys.modules.pop("prove", None)
-    cache.unlink(missing_ok=True)
-    try:
-        module = _load_prove()
 
-        cached = getattr(module, "__cached__", None)
-        assert cached, "expected __cached__ to be set"
-        assert Path(cached) == cache, f"cache path moved: {cached} is not {cache}"
-        assert not cache.exists(), f"import wrote bytecode to {cached}"
-    finally:
-        if existing is None:
-            cache.unlink(missing_ok=True)
-        else:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_bytes(existing)
+    module = _load_prove()
+
+    cached = getattr(module, "__cached__", None)
+    assert cached, "expected __cached__ to be set"
+    assert Path(cached) == cache, f"cache path moved: {cached} is not {cache}"
+    assert not cache.exists(), f"import wrote bytecode to {cached}"
+    assert not prefix.exists(), f"import wrote bytecode under {prefix}"
 
 
 def test_a_call_phase_exception_is_not_proof(tmp_path: Path) -> None:

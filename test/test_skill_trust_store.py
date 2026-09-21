@@ -759,8 +759,23 @@ class TestConsentCoversOnlyTheGrantedDirectory:
 
         monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", lambda: False)
 
-        def unsafe_realpath(*_args, **_kwargs):
-            raise AssertionError("unsupported project path was resolved")
+        # ``skill_trust.os.path`` IS the process-wide ``os.path`` module, so this
+        # patch is seen by every caller in the interpreter -- pytest's own tmpdir
+        # bookkeeping and any audit hook that canonicalises the paths it records
+        # included. A fake that raised for EVERY argument therefore blew up in
+        # code that had nothing to do with the property under test (the hygiene
+        # probe counted 11 hook failures per run and marked this test
+        # under-measured). Refuse only what the test is about: the project tree.
+        real_realpath = os.path.realpath
+        project_prefix = str(project)
+
+        def unsafe_realpath(path, *args, **kwargs):
+            resolved = os.fspath(path)
+            if isinstance(resolved, bytes):
+                resolved = os.fsdecode(resolved)
+            if resolved == project_prefix or resolved.startswith(project_prefix + os.sep):
+                raise AssertionError("unsupported project path was resolved")
+            return real_realpath(path, *args, **kwargs)
 
         monkeypatch.setattr(skill_trust.os.path, "realpath", unsafe_realpath)
         loader = SkillsLoader(skills_path=tmp_path / "home-skills", install_builtins=False)

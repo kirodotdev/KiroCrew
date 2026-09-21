@@ -2227,9 +2227,10 @@ def test_a_fork_outliving_a_SUCCEEDING_proof_is_still_reaped(
     try:
         give_up_at = time.monotonic() + 10.0
         while True:
-            try:
-                os.kill(forked, 0)
-            except ProcessLookupError:
+            # Liveness through the repo's own probe (AGENTS.md "Cross-platform"),
+            # not a raw ``os.kill(pid, 0)``: that TERMINATES the target on Windows,
+            # and the sweep's caller filter recognises only the sanctioned helper.
+            if not platform_compat.pid_exists(forked):
                 reaped = True
                 return
             assert (
@@ -2315,9 +2316,8 @@ def test_a_wedged_grandchild_does_not_outlive_the_deadline(
         # immediate, so this bound exists to fail by name rather than be waited on.
         give_up_at = time.monotonic() + 10.0
         while True:
-            try:
-                os.kill(grandchild, 0)
-            except ProcessLookupError:
+            # Liveness through the repo's own probe, as in the sibling test above.
+            if not platform_compat.pid_exists(grandchild):
                 reaped = True
                 return
             assert (

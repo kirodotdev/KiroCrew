@@ -45,6 +45,17 @@ _MS_REMOUNT = 32
 _MS_BIND = 4096
 
 
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    Every test here extracts a loop from the generated launcher; none is about that
+    probe, and a real ssh spawned from the test process is a host dependency the
+    launcher text must not vary with. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+
+
 @pytest.fixture()
 def crew_home(tmp_path, monkeypatch):
     """Point ``config_dir()`` — the live data home — at a scratch tree."""

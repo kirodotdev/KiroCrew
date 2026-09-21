@@ -3044,6 +3044,15 @@ def test_runner_sigint_normalization_preserves_other_signals(tmp_path, normalize
             "-q",
             "-c",
             "/dev/null",
+            # No conftest above the probe's own directory. ``-c /dev/null`` roots
+            # the inner session at ``/dev``, so pytest would otherwise still load
+            # every conftest.py between the probe and ``/`` -- and on a host whose
+            # temp dir is inside this checkout that is the repository conftest,
+            # which registers an xdist hook the autoload-disabled child cannot
+            # validate (INTERNALERROR, exit 3). ``--confcutdir`` is pytest's own
+            # bound on that walk.
+            "--confcutdir",
+            str(tmp_path),
             "-o",
             "cache_dir=" + str(tmp_path / "cache"),
             str(probe),

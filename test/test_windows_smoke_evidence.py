@@ -7,6 +7,7 @@ import glob
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,37 @@ BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build-windows.yml"
 LOG_NAMES = {"gateway-stdout.log", "gateway-stderr.log", "cli-version.out", "cli-version.err"}
 
 
+def _native_powershell(name):
+    """The first *name* on PATH that IS that interpreter, or None.
+
+    ``shutil.which`` answers by NAME, and on a developer host the first ``pwsh`` on
+    PATH is often a version-manager shim (mise, asdf): a symlink to the manager's
+    own binary, which then refuses to run because no toolchain is pinned -- so these
+    tests ran a shim and failed on the manager's error, while a host
+    with no ``pwsh`` at all skipped. Judging the candidate by the file it RESOLVES
+    to gives the same verdict on every run of one host: a real ``pwsh`` resolves to
+    a file named ``pwsh``, a shim to ``mise``. Same rule as
+    ``test_playwright_cli_installer._native_tool_on_path``. Windows executables
+    carry PATHEXT and have no shim problem, so the ordinary lookup is right there.
+    """
+    if sys.platform == "win32":
+        return shutil.which(name)
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            resolved = (Path(entry) / name).resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.name == name and os.access(resolved, os.X_OK):
+            return str(resolved)
+    return None
+
+
 def _log_paths(tmp_path: Path, runner_temp: Path | None) -> dict[str, Path]:
-    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    powershell = _native_powershell("pwsh") or _native_powershell("powershell")
     if powershell is None:
-        pytest.skip("PowerShell is not installed")
+        pytest.skip("no native PowerShell on PATH (a version-manager shim does not count)")
 
     user_temp = tmp_path / "user temp"
     user_temp.mkdir()

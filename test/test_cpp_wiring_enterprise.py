@@ -143,8 +143,12 @@ def test_seatbelt_profile_hides_sso(enterprise_ctx) -> None:
     assert ".sso" in cc_profile
 
 
-def test_launcher_script_hides_sso(enterprise_ctx) -> None:
+def test_launcher_script_hides_sso(enterprise_ctx, monkeypatch) -> None:
     """The wired ``_build_launcher_script`` embeds ``.sso`` in SENSITIVE_DIRS."""
+    # The script builder asks the host's ``ssh -V`` for the accept-new flag (once per
+    # process, cached). The flag is not what this asserts, so the probe is pinned:
+    # no host binary, and no dependence on which test in the worker ran first.
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
     script = sandbox._build_launcher_script("strict")
     assert ".sso" in script
 

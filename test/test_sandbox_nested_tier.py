@@ -40,6 +40,10 @@ def clean_state(monkeypatch):
         "kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
+    # ``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new
+    # support; pin it so the launcher text never depends on a binary this
+    # module is not about, and no ssh is spawned from the test process.
+    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
     # The passthrough info log is once-only per process; clear it so caplog
     # assertions in this module are order-independent, and restore the prior
     # state afterwards — the attribute is a module-level global shared with

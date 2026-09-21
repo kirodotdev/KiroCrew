@@ -38,6 +38,35 @@ from kiro_crew.subagent_persistence import (
     write_result_chunk,
 )
 
+
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(monkeypatch):
+    """Close every ``SubagentManager`` built in a test.
+
+    Construction opens the durable task queue (a SQLite connection and its
+    writer thread); nothing in these unit tests closes it, so each manager
+    leaked those descriptors. Track every instance and release it at teardown.
+    """
+    import kiro_crew.subagent as _subagent_mod
+
+    created: list[SubagentManager] = []
+    orig_init = _subagent_mod.SubagentManager.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_subagent_mod.SubagentManager, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for mgr in created:
+            try:
+                mgr.close()
+            except Exception:
+                pass
+
+
 COMPLETION = f"{SUBAGENT_COMPLETION_PREFIX}\nAgent `a1` completed ✅\nResult saved at: /x"
 SECOND_COMPLETION = f"{SUBAGENT_COMPLETION_PREFIX}\nAgent `a2` completed ✅\nResult saved at: /y"
 

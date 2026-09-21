@@ -419,8 +419,12 @@ def test_fallback_signals_recheck_skips_recycled_pid(tmp_path, monkeypatch):
     scope = _make_scope(slice_dir, "run-u1.scope", [201, 202])
     rec = _Recorder(empty_on_stop=False)  # systemctl stop does NOT clear -> fallback fires
     signalled: list[tuple[int, int]] = []
-    monkeypatch.setattr(r.os, "pidfd_open", lambda pid: pid + 1000, raising=False)
-    monkeypatch.setattr(r.os, "close", lambda _fd: None)
+    # Override os on the module reference (a proxy) rather than mutating the real
+    # os module: a global ``os.close`` no-op silently leaks every descriptor that
+    # any code — tmp_path teardown included — closes during this test.
+    monkeypatch.setattr(
+        r, "os", _ModuleProxy(r.os, pidfd_open=lambda pid: pid + 1000, close=lambda _fd: None)
+    )
     monkeypatch.setattr(
         r.signal,
         "pidfd_send_signal",
@@ -560,8 +564,15 @@ def test_systemctl_uses_trusted_absolute_path(monkeypatch):
 def test_pidfd_pin_precedes_ownership_and_signal(monkeypatch, tmp_path):
     events = []
     scope = _make_scope(tmp_path / "slice", "run-u1.scope", [201])
-    monkeypatch.setattr(r.os, "pidfd_open", lambda _pid: events.append("pin") or 71, raising=False)
-    monkeypatch.setattr(r.os, "close", lambda _fd: events.append("close"))
+    monkeypatch.setattr(
+        r,
+        "os",
+        _ModuleProxy(
+            r.os,
+            pidfd_open=lambda _pid: events.append("pin") or 71,
+            close=lambda _fd: events.append("close"),
+        ),
+    )
     monkeypatch.setattr(
         r,
         "_scope_owned_pids",
@@ -590,8 +601,9 @@ def test_pidfd_skips_pid_removed_from_scope_before_pin(monkeypatch, tmp_path):
         (scope / "cgroup.procs").write_text("")
         return 71
 
-    monkeypatch.setattr(r.os, "pidfd_open", pin_after_pid_reuse, raising=False)
-    monkeypatch.setattr(r.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        r, "os", _ModuleProxy(r.os, pidfd_open=pin_after_pid_reuse, close=lambda _fd: None)
+    )
     monkeypatch.setattr(
         r.signal,
         "pidfd_send_signal",

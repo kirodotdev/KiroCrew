@@ -54,6 +54,25 @@ def mock_sel():
         yield m.return_value
 
 
+@pytest.fixture()
+def plain_project(tmp_path, monkeypatch):
+    """A project directory that is NOT inside any repository, wherever ``tmp_path`` is.
+
+    The walk branch is what these tests exercise, and "not a repository" is not a
+    property ``tmp_path`` has on every host: a harness that pins ``TMPDIR`` under
+    the checkout gives it a real ``.git`` among its ancestors, git's upward
+    discovery finds it, and the handler answers from ``ls-files`` -- ``repo: true``
+    and git's ordering -- instead of walking. ``GIT_CEILING_DIRECTORIES`` is git's
+    own seam for that walk (discovery stops below the named directory) and the
+    handler builds its git environment from ``os.environ``, so the state is
+    constructed here rather than assumed of the host. The project is a CHILD of
+    the ceiling because git checks its starting directory before consulting it.
+    The directory is not created: each test lays out its own tree under it.
+    """
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    return tmp_path / "plain"
+
+
 def _git(cwd, *args) -> None:
     subprocess.run(
         ["git", *args],
@@ -170,8 +189,8 @@ class TestProjectTree:
         assert ls_argv.index("-c") < ls_argv.index("ls-files")
 
     @pytest.mark.asyncio
-    async def test_non_repo_walk_skips_heavy_and_hidden_dirs(self, tmp_path, mock_sel):
-        plain = tmp_path / "plain"
+    async def test_non_repo_walk_skips_heavy_and_hidden_dirs(self, plain_project, mock_sel):
+        plain = plain_project
         (plain / "node_modules" / "dep").mkdir(parents=True)
         (plain / "node_modules" / "dep" / "index.js").write_text("x")
         (plain / ".hidden").mkdir()
@@ -283,11 +302,13 @@ class TestProjectTree:
         assert "a.txt" in paths
 
     @pytest.mark.asyncio
-    async def test_walk_caps_entries_and_flags_truncation(self, tmp_path, mock_sel, monkeypatch):
+    async def test_walk_caps_entries_and_flags_truncation(
+        self, plain_project, mock_sel, monkeypatch
+    ):
         from kiro_crew.dashboard.handlers import files as files_mod
 
         monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 2)
-        plain = tmp_path / "plain"
+        plain = plain_project
         plain.mkdir()
         for name in ("a.txt", "b.txt", "c.txt"):
             (plain / name).write_text("x")
@@ -301,12 +322,12 @@ class TestProjectTree:
 
     @pytest.mark.asyncio
     async def test_walk_keeps_the_full_directory_skeleton_and_samples_files_fairly(
-        self, tmp_path, mock_sel, monkeypatch
+        self, plain_project, mock_sel, monkeypatch
     ):
         from kiro_crew.dashboard.handlers import files as files_mod
 
         monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 4)
-        plain = tmp_path / "plain"
+        plain = plain_project
         for directory in ("alpha", "beta", "late/nested"):
             target = plain / directory
             target.mkdir(parents=True)
@@ -330,12 +351,12 @@ class TestProjectTree:
 
     @pytest.mark.asyncio
     async def test_walk_under_cap_keeps_all_files_and_directory_rows(
-        self, tmp_path, mock_sel, monkeypatch
+        self, plain_project, mock_sel, monkeypatch
     ):
         from kiro_crew.dashboard.handlers import files as files_mod
 
         monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 4)
-        plain = tmp_path / "plain"
+        plain = plain_project
         (plain / "docs").mkdir(parents=True)
         (plain / "docs" / "readme.md").write_text("docs")
         (plain / "empty").mkdir()

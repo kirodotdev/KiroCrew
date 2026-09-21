@@ -405,6 +405,12 @@ def _scratch_name_is_ignored(git: str, repo: str) -> bool:
     try:
         proc = subprocess.run(  # nosec B603 - argv list, no shell
             [git, "-C", repo, "check-ignore", "-q", "--no-index", f"{_SCRATCH_PREFIX}probe"],
+            # ``-C`` scopes git to the checkout; ``cwd`` makes that the child's
+            # working directory as well, so the question is asked from inside the
+            # checkout rather than from wherever the gateway happens to run. A
+            # *repo* that does not exist fails the spawn, which the except below
+            # already reads as "not ignored".
+            cwd=repo,
             capture_output=True,
             timeout=60,
             check=False,

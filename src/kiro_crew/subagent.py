@@ -2370,6 +2370,25 @@ class SubagentManager:
         if self._taskq_init_task is not None:
             await asyncio.shield(self._taskq_init_task)
 
+    def close(self) -> None:
+        """Release the process-lifetime durable task store this manager opened.
+
+        ``__init__`` opens the durable task queue (a SQLite connection plus its
+        dedicated writer thread, see :class:`~kiro_crew.taskq.store.TaskStore`);
+        ``cancel_all`` cancels in-flight runs but never touches that store, so
+        without this every manager leaks the connection's descriptors and its
+        writer executor for the life of the process. Idempotent and safe to call
+        from a synchronous teardown: it cancels a still-pending async open, then
+        closes the store if one was attached.
+        """
+        taskq_open_task = self._taskq_init_task
+        if taskq_open_task is not None and not taskq_open_task.done():
+            taskq_open_task.cancel()
+        self._taskq_init_task = None
+        store, self._taskq = self._taskq, None
+        if store is not None:
+            store.close()
+
     def _effective_turn_limit(self, info: SubagentInfo) -> int:
         return self._run_events._effective_turn_limit_impl(info)
 

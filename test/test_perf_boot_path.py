@@ -37,6 +37,35 @@ from kiro_crew.slack.gateway import GatewayOrchestrator
 _SRC = str(Path(kiro_crew.__file__).resolve().parents[1])
 
 
+@pytest.fixture(autouse=True)
+def _close_knowledge_stores(monkeypatch):
+    """Close the SQLite connection each ``KnowledgeStore`` opened on this thread.
+
+    ``KnowledgeStore`` opens a per-thread SQLite connection (three descriptors
+    in WAL) on first ``db`` access and never closes it without an explicit
+    call; the scan tests here would otherwise leave the test-thread connection
+    open until GC. Track every instance and release it at teardown.
+    """
+    from kiro_crew.knowledge import store as _store_mod
+
+    created = []
+    orig_init = _store_mod.KnowledgeStore.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_store_mod.KnowledgeStore, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for store in created:
+            try:
+                store.close()
+            except Exception:
+                pass
+
+
 def _probe(snippet: str) -> dict:
     """Run *snippet* in a clean interpreter, returning the JSON it prints.
 

@@ -159,6 +159,13 @@ def _git_toplevel(root: str) -> str | None:
             errors="surrogateescape",
             timeout=_GIT_TIMEOUT_SECS,
             env=env,
+            # The probe runs in the tree it is asking about, not in whatever
+            # directory the gateway happened to inherit. ``-C`` already decides
+            # what git answers for; this keeps the child's own working directory
+            # from being an unrelated place (the operator's shell CWD, a test
+            # runner's checkout). A *root* that cannot be entered raises OSError
+            # here, which is the same INDETERMINATE answer git's own failure gave.
+            cwd=root,
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         # ValueError belongs here: a NUL byte in the path raises it rather than

@@ -49,9 +49,27 @@ class TestProjectScopeSatisfied:
         (repo / "marker").mkdir()
         assert project_scope_satisfied("marker", repo) is True
 
-    def test_a_non_repository_project_answers_only_for_itself(self, tmp_path):
+    def test_a_non_repository_project_answers_only_for_itself(self, tmp_path, monkeypatch):
         # No .git anywhere: there is no repository boundary to confirm against, so
         # only the project dir itself is offered rather than an unbounded walk.
+        #
+        # "Anywhere" includes the ancestors of tmp_path, which a test cannot
+        # author: a temp root under a checkout (a developer's `TMPDIR=./tmp`)
+        # puts a real `.git` above the fixture and the walk would stop THERE,
+        # offering `tmp_path/src/pkg` for `deep` and turning this fail-closed
+        # case into the descendant case. The seam the walk reads is the `.git`
+        # existence probe, so it is pinned to "absent" for exactly those
+        # ancestors; probes inside the fixture, and every other path, stay real.
+        real_exists = Path.exists
+        above = set(tmp_path.resolve().parents)
+
+        def _no_repository_above(self_path: Path, *args, **kwargs) -> bool:
+            if self_path.name == ".git" and self_path.parent in above:
+                return False
+            return real_exists(self_path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", _no_repository_above)
+
         (tmp_path / "src" / "pkg").mkdir(parents=True)
         deep = tmp_path / "src" / "pkg" / "sub"
         deep.mkdir()

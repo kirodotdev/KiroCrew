@@ -37,13 +37,27 @@ from kiro_crew.apps.builtins.auto_improvement.backend import store
 
 
 def _git(*args: str, cwd: Path) -> None:
-    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
+    # ``cwd=`` as well as ``-C``: a test spawn must never inherit pytest's working
+    # directory (the checkout) as the child's cwd.
+    subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(cwd),
+    )
 
 
 def _tiny_repo(root: Path, *, push_disabled: bool = True) -> Path:
     """A minimal committed Python repo with a pytest suite, cloned-shaped."""
     root.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main", str(root)],
+        check=True,
+        capture_output=True,
+        cwd=str(root),
+    )
     _git("config", "user.email", "test@example.invalid", cwd=root)
     _git("config", "user.name", "Test", cwd=root)
     src = root / "src" / "pkg"

@@ -260,10 +260,13 @@ def test_the_symbolizer_ships_alongside_the_manifest() -> None:
     # checkout -- it fails there while the file is perfectly executable for every
     # clone that matters. The index mode is what a fresh clone and the release
     # tarball actually receive, so it is the thing worth asserting.
+    # A read-only question about the checkout itself, so its cwd IS the checkout --
+    # stated rather than inherited from wherever the test process happens to run.
     listed = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files", "-s", "--", "scripts/symbolize-crash.sh"],
         capture_output=True,
         timeout=120,
+        cwd=str(ROOT),
         **UTF8_TEXT,
     )
     if listed.returncode != 0 or not listed.stdout.strip():
@@ -462,7 +465,7 @@ def _manifest(tmp_path: Path, name: str, url: str) -> Path:
     return path
 
 
-def _emitter_asset(kind: str, platform: str, arch: str) -> dict[str, str]:
+def _emitter_asset(kind: str, platform: str, arch: str, *, cwd: Path) -> dict[str, str]:
     """Ask the emitter itself what it would name a given asset.
 
     Deliberately not a hardcoded string. The symbolizer compares the manifest's
@@ -473,7 +476,9 @@ def _emitter_asset(kind: str, platform: str, arch: str) -> dict[str, str]:
     detect for itself.
 
     Runs the RESOLVED interpreter, so the node whose version the gate cleared is the
-    node that imports the module.
+    node that imports the module. ``cwd`` is the caller's scratch tree: the module is
+    named by URL, so the child needs no particular directory, and it must not
+    inherit the checkout the test process runs in.
     """
     assert _NODE is not None, "guarded by requires_node_that_can_load_the_emitter"
     out = subprocess.run(
@@ -494,6 +499,7 @@ def _emitter_asset(kind: str, platform: str, arch: str) -> dict[str, str]:
         capture_output=True,
         timeout=120,
         check=True,
+        cwd=str(cwd),
         **UTF8_TEXT,
     )
     asset = json.loads(out.stdout)
@@ -695,7 +701,7 @@ def test_a_manifest_from_a_future_schema_is_refused_by_name(tmp_path: Path) -> N
     sends the reader to the wrong file. The version the writer declares is the
     cheapest possible way to say "this reader is the stale one".
     """
-    asset = _emitter_asset("breakpad", "darwin", "arm64")
+    asset = _emitter_asset("breakpad", "darwin", "arm64", cwd=tmp_path)
     manifest = _manifest(tmp_path, asset["name"], asset["url"])
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace('"schema": 1', '"schema": 2', 1),
@@ -722,7 +728,7 @@ def test_the_manifest_the_emitter_actually_writes_passes_the_gate(tmp_path: Path
     Pre-seeds the extracted directory so the run stops at the missing stackwalker
     rather than downloading 128 MB.
     """
-    asset = _emitter_asset("breakpad", "darwin", "arm64")
+    asset = _emitter_asset("breakpad", "darwin", "arm64", cwd=tmp_path)
     name, url = asset["name"], asset["url"]
     manifest = _manifest(tmp_path, name, url)
     (tmp_path / "cache" / name[: -len(".zip")]).mkdir(parents=True)

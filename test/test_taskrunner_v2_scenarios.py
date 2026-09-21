@@ -43,6 +43,25 @@ def _passthrough_sandbox(monkeypatch):
     )
 
 
+def _non_git_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Path:
+    """A directory ``init_workspace`` must treat as NOT a repository, on any host.
+
+    "Non-git dir" is not a property ``tmp_path`` has everywhere: a harness that
+    pins ``TMPDIR`` under the checkout gives it a real ``.git`` among its
+    ancestors, ``git rev-parse --is-inside-work-tree`` answers yes, and the run
+    then adds a REAL worktree and task branch to the enclosing repository -- the
+    very thing the non-git path exists to avoid. ``GIT_CEILING_DIRECTORIES`` is
+    git's own seam for that upward walk (discovery stops below the named
+    directory) and the spawn inherits ``os.environ``, so the state is constructed
+    here rather than assumed of the host. The directory is a CHILD of the ceiling
+    because git checks its starting directory before consulting the ceiling.
+    """
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    work = tmp_path / name
+    work.mkdir()
+    return work
+
+
 # ── Helpers ──
 
 
@@ -1142,12 +1161,11 @@ class TestScenarioTokenBudgetMidExecution:
 
 class TestScenarioNonGitInitWorkspace:
     @pytest.mark.asyncio
-    async def test_init_creates_repo_and_branch(self, tmp_path: Path) -> None:
+    async def test_init_creates_repo_and_branch(self, tmp_path: Path, monkeypatch) -> None:
         """init_workspace on a plain non-git dir sets git_enabled=False and returns immediately."""
         from kiro_crew import git_coord
 
-        work_dir = tmp_path / "plain"
-        work_dir.mkdir()
+        work_dir = _non_git_dir(tmp_path, monkeypatch, "plain")
         (work_dir / "file.txt").write_text("hello")
 
         run = TaskRun(spec_path="/t.md", spec_content="s", task_id="init_test")

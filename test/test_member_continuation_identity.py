@@ -21,6 +21,34 @@ env = _member_env
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(monkeypatch):
+    """Close every ``SubagentManager`` built in a test (via ``_manager``).
+
+    Construction opens the durable task queue (a SQLite connection and its
+    writer thread); nothing in these unit tests closes it, so each manager
+    leaked those descriptors. Track every instance and release it at teardown.
+    """
+    import kiro_crew.subagent as _subagent_mod
+
+    created = []
+    orig_init = _subagent_mod.SubagentManager.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_subagent_mod.SubagentManager, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for mgr in created:
+            try:
+                mgr.close()
+            except Exception:
+                pass
+
+
 def _continuation_sessions(resumed: bool = False) -> MagicMock:
     sessions = _mock_sessions(resumed=resumed)
     provider = sessions.get_or_create.return_value[0]

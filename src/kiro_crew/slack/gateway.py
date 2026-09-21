@@ -11547,6 +11547,14 @@ class GatewayOrchestrator:
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
+        # AFTER the gather, not beside cancel_all() above: cancel_all() is what stops
+        # the runs that still write to the durable task queue, so closing the store
+        # before it finishes would pull the connection out from under them. Off-loop,
+        # because ``close()`` is synchronous and waits for the store's writer lock --
+        # on the loop that stalls shutdown behind an in-flight executor write.
+        if self.subagent_mgr:
+            await asyncio.to_thread(self.subagent_mgr.close)
+
         await asyncio.to_thread(self._stop_memory_startup)
 
     # ------------------------------------------------------------------

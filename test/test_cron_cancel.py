@@ -195,7 +195,7 @@ class TestSubprocessRegistry:
     def test_kill_unknown_job_returns_false(self) -> None:
         assert kill_running_process("no-such-job") is False
 
-    def test_run_command_sandboxed_can_be_cancelled_mid_run(self) -> None:
+    def test_run_command_sandboxed_can_be_cancelled_mid_run(self, tmp_path, monkeypatch) -> None:
         """Real end-to-end: a sleeping command is SIGTERMed mid-run.
 
         Sandbox wrapping is patched to identity: builder-fleet hosts don't
@@ -204,6 +204,11 @@ class TestSubprocessRegistry:
         flaked the Dry Run Build on Py3.10). The registry/kill mechanics are
         what's under test here; the real sandboxed path is covered by pod e2e.
         """
+        # ``run_command_sandboxed`` has no cwd parameter -- the command runs
+        # where the gateway runs -- so the child inherits this process's CWD.
+        # Under pytest that is the checkout; pin it to the test's own directory
+        # for the spawn (restored by the fixture after the thread is joined).
+        monkeypatch.chdir(tmp_path)
         result: dict = {}
 
         def _run() -> None:
@@ -249,12 +254,15 @@ class TestSubprocessRegistry:
         assert "cancelme" not in _RUNNING_PROCS
         assert "cancelme" not in _CANCELLED_PROC_JOBS  # flag consumed
 
-    def test_run_command_without_job_id_not_registered(self, posix_test_shell) -> None:
+    def test_run_command_without_job_id_not_registered(
+        self, posix_test_shell, tmp_path, monkeypatch
+    ) -> None:
         # Patch the sandbox wrap to identity for the same reason as the mid-run
         # test above: GH Actions blocks the namespace sandbox (unshare NEWNS),
         # so the real launcher aborts with status "error". What's under test is
         # that a job_id-less run is NOT added to the registry — mechanics that
         # don't need the sandbox.
+        monkeypatch.chdir(tmp_path)  # the spawn inherits CWD; see the test above
         with patch(
             "kiro_crew.cron_script.wrap_argv", side_effect=lambda argv, mode: (argv, None)
         ), patch(

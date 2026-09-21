@@ -21,9 +21,7 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import socket
-import tempfile
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -32,7 +30,6 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
-from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew.browser_cli import launcher
 
@@ -762,18 +759,19 @@ class TestReveal:
         assert "does not expose" in messages[1]
 
     @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets only")
-    def test_sends_one_reveal_line_to_the_running_dashboard(self, request: pytest.FixtureRequest):
-        # An AF_UNIX sun_path is capped at ~104 bytes, so the socket must live
-        # under a SHORT base. short_tmp_base() pins that to /tmp on POSIX
-        # regardless of TMPDIR: the conftest's redirected tempfile base (and
-        # pytest's own tmp_path) can themselves be long enough to overflow
-        # sun_path when the run's TMPDIR is deep, which makes bind() fail.
-        root = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "pw-", dir=short_tmp_base()))
-        # Strict cleanup, registered the moment the directory exists: a socket
-        # file left behind would be a real leak, not one to ignore.
-        request.addfinalizer(lambda: shutil.rmtree(root))
-        (root / "dashboard").mkdir(parents=True)
-        sock_path = str(root / "dashboard" / "app.sock")
+    def test_sends_one_reveal_line_to_the_running_dashboard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+    ):
+        # An AF_UNIX sun_path is capped at ~104 bytes. That cap is on the STRING
+        # handed to bind()/connect(), not on where the file lands, so the socket
+        # lives under tmp_path and both ends reach it through a RELATIVE path
+        # with the CWD pinned there: ``_dashboard_socket_path`` joins the root it
+        # is given without resolving it, so a relative root is a valid input.
+        # Nothing is written outside the sandbox (the earlier mkdtemp(dir="/tmp")
+        # left ``/tmp/pw-*`` on the operator's host on any cleanup miss).
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "dashboard").mkdir(parents=True)
+        sock_path = os.path.join("dashboard", "app.sock")
         received: list[bytes] = []
         serve_error: list[BaseException] = []
         ready = threading.Event()
@@ -801,7 +799,9 @@ class TestReveal:
         # Joined unconditionally: a failed reveal must not leave the listener blocked in accept().
         request.addfinalizer(lambda: thread.join(6))
         assert ready.wait(5), f"listener never became ready: {serve_error}"
-        assert REAL_REVEAL("panel-0a1b2c-1234abcd", {launcher.SOCKETS_ENV: str(root)}) is True
+        # The listener's endpoint landed under tmp_path, not under a host root.
+        assert (tmp_path / sock_path).is_socket()
+        assert REAL_REVEAL("panel-0a1b2c-1234abcd", {launcher.SOCKETS_ENV: "."}) is True
         thread.join(5)
         assert json.loads(received[0].decode().strip()) == {"sessionName": "panel-0a1b2c-1234abcd"}
 

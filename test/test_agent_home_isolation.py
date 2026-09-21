@@ -446,6 +446,12 @@ def test_does_not_decline_from_an_appimage_runtime_mount(monkeypatch, tmp_path):
     monkeypatch.delenv("KIROCREW_HOME", raising=False)
     monkeypatch.delenv("APPDIR", raising=False)  # env-free child: `.mount_` is the signal
     with tempfile.TemporaryDirectory(prefix="kc-appimage-") as scratch_name:
+        # The worktree arm walks up from the checkout to the NEAREST `.git`
+        # marker, and the temp root can itself live inside a linked worktree (a
+        # developer's `TMPDIR=./tmp`, the hygiene sweep's pinned scratch). An
+        # ordinary-clone marker at the temp root makes that walk answer on the
+        # fixture, so only the temp arm -- the one this test is about -- decides.
+        (Path(scratch_name) / ".git").mkdir()
         mount = Path(scratch_name) / ".mount_KiroXk3Qm9"
         (mount / "usr" / "lib" / "kiro_crew").mkdir(parents=True)
         monkeypatch.setattr(

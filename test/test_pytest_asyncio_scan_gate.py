@@ -183,6 +183,15 @@ class TestAsyncFixturesStillWrap:
         gate = pa._preprocess_async_fixtures
         gate.dirty = False  # the state a clean gate is in once outer collection is over
         before = set(pa._HOLDER)
+        # The inner session's rootdir is its OWN directory, not whatever ini an
+        # ancestor holds. Without this, pytest walks up from pytester's temp dir
+        # looking for a config file; on a host whose temp dir is inside this
+        # checkout it finds setup.cfg, roots the session at the repository, and
+        # loads the repository conftest -- whose collect-report hook then fails the
+        # inner collection on the metrics recorder the OUTER session already built,
+        # and whose configure hook re-points ``PYTHONPYCACHEPREFIX`` at the real
+        # cache dir. The ini is pytest's own seam for where a session is rooted.
+        pytester.makeini("[pytest]\n")
         result = pytester.runpytest_inprocess(
             "-p", "no:cacheprovider", "-n0", "-o", "addopts=", "--collect-only", "-q"
         )

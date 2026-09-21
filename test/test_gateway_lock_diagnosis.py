@@ -90,12 +90,34 @@ def _step_aside(reason: str) -> None:
 
 @pytest.fixture
 def reap():
-    """Collects pids to SIGKILL at teardown, so no test leaks a wedged child."""
-    pids: list[int] = []
+    """Collects pids to SIGKILL at teardown, so no test leaks a wedged child.
+
+    Each pid is recorded WITH its start-time identity and signalled only while
+    that identity still matches: the wedged child is a fork orphan reparented to
+    init, so nothing of ours holds its number as a zombie once it exits (its
+    60s sleep can run out on a slow host) and the kernel may hand the pid to
+    another process before this teardown runs. A mismatch (or an unreadable
+    identity) means the process we spawned is already gone -- signal nothing.
+    """
+    from kiro_crew import platform_compat
+
+    tokens: dict[int, str | None] = {}
+
+    class _PinnedPids(list):
+        """A list whose ``append`` snapshots the pid's identity as it is recorded."""
+
+        def append(self, pid: int) -> None:
+            tokens[pid] = platform_compat.process_start_time(pid)
+            super().append(pid)
+
+    pids = _PinnedPids()
     yield pids
     for pid in pids:
+        token = tokens.get(pid)
+        if token is None or platform_compat.process_start_time(pid) != token:
+            continue
         try:
-            os.kill(pid, 9)
+            platform_compat.kill_pid_pinned(pid, token, platform_compat.SIGKILL)
         except OSError:
             pass
 

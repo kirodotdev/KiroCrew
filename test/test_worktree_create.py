@@ -322,20 +322,35 @@ class TestWorktreeCreate:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_rejects_missing_directory(self, tmp_path):
+    async def test_rejects_missing_directory(self, tmp_path, monkeypatch):
         # Reaches the git probe, so it needs a host where the sandbox can run
         # (a refusal answers 503 before any directory check is reported).
         await _off_loop(_require_sandbox_exec)
-        async with TestClient(TestServer(_make_app(str(tmp_path)))) as client:
+        # The allow-list maps the missing child onto its slot project, so what the
+        # git probe sees is the PROJECT -- which must not be inside a repository
+        # for the 400 to be the not-a-repository answer it is on CI. See
+        # test_rejects_non_git_directory for why that is constructed, not assumed.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        project = tmp_path / "project"
+        project.mkdir()
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
             resp = await client.post(
                 "/api/worktree/create",
-                json={"repo": str(tmp_path / "nope"), "branch": "feat/x"},
+                json={"repo": str(project / "nope"), "branch": "feat/x"},
             )
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_rejects_non_git_directory(self, tmp_path):
+    async def test_rejects_non_git_directory(self, tmp_path, monkeypatch):
         await _off_loop(_require_sandbox_exec)
+        # "Not a git directory" is constructed, not assumed of tmp_path: a harness
+        # that pins TMPDIR under the checkout gives it a real .git among its
+        # ancestors, git's upward discovery resolves the toplevel to THAT checkout,
+        # and the handler answers 403 (toplevel outside the slot project) instead
+        # of 400. GIT_CEILING_DIRECTORIES is git's own seam for that walk and the
+        # sandboxed spawn inherits os.environ; the project is a CHILD of the
+        # ceiling because git checks its starting directory before consulting it.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         plain = tmp_path / "plain"
         plain.mkdir()
         async with TestClient(TestServer(_make_app(str(plain)))) as client:

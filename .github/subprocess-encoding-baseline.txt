@@ -19,7 +19,6 @@
 29 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py
 9 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_recipe.py
 1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
-1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
 3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/narrate.py
 1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/record_template.py
@@ -100,10 +99,8 @@
 4 test/test_prepare_pr_local_review.py
 1 test/test_prepare_pr_profiles.py
 2 test/test_prepare_pr_prove.py
-2 test/test_project_git.py
 3 test/test_push_guard.py
 6 test/test_sandbox_argv.py
-1 test/test_sandbox_probe.py
 9 test/test_security.py
 1 test/test_ship_report_issues.py
 2 test/test_source_launcher.py

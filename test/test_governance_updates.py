@@ -850,6 +850,7 @@ class TestRepoExecConfigRefusal:
         # Precondition: git itself must resolve it, or the case proves nothing.
         resolved = subprocess.run(
             ["git", "-C", repo, "config", "--includes", "--get", "filter.evil.clean"],
+            cwd=repo,
             capture_output=True,
             env=_fixture_git_env(repo),
             **UTF8_TEXT,

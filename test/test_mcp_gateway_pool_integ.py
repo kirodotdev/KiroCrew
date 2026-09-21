@@ -123,6 +123,10 @@ async def _spawn_stub(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        # The stub's own cwd is pinned to the workspace it serves: left unset it
+        # inherits pytest's cwd (the checkout), and a real process tree rooted
+        # there is exactly the leak the hygiene sweep exists to catch.
+        cwd=work_dir,
         # KIROCREW_HOME redirects the stub's fallback audit log into the test's
         # own tree, so a degradation is observable instead of landing in the
         # developer's real home.

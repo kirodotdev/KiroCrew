@@ -93,12 +93,20 @@ def clean_backend(monkeypatch):
     passthrough from short-circuiting tests on hosts (like Cloud Desktops) where
     the gateway process itself runs sandboxed. Tests that exercise the
     passthrough set the env var explicitly.
+
+    Pins ``_ssh_supports_accept_new`` at the module seam ``_build_launcher_script``
+    reads: the real probe runs the host's ``ssh -V`` from whichever of the ~30
+    launcher-building tests happens to call it first (it is ``lru_cache``d), a
+    host program none of them is about (test-hygiene class 7). ``True`` is what a
+    modern host answers. ``TestSshSupportsAcceptNew`` still exercises the real
+    function through the name it imported, with ``subprocess.run`` patched.
     """
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.setattr(
         "kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
+    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
     # Reset one-shot warning flags
     if hasattr(sandbox_mod.wrap_argv, "_warned"):
         delattr(sandbox_mod.wrap_argv, "_warned")

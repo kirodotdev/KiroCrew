@@ -4118,6 +4118,20 @@ class TestAnExposedCacheIsStillReadOnly:
     caller cannot re-open it by passing the path.
     """
 
+    @pytest.fixture(autouse=True)
+    def _pinned_ssh_probe(self, monkeypatch):
+        """Answer the launcher's ``ssh -V`` probe in-process.
+
+        ``_build_launcher_script`` consults ``_ssh_supports_accept_new`` for the
+        ``StrictHostKeyChecking`` flag, and the real probe spawns the host's
+        ``ssh``. It is memoised, so it fires in whichever test on the worker
+        first builds a launcher — these tests read the mount lists, not the ssh
+        flag, so the seam is pinned rather than left to find the host binary.
+        """
+        from kiro_crew import sandbox
+
+        monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+
     @staticmethod
     def _cache_path():
         from pathlib import Path as _Path

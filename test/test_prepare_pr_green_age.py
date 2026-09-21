@@ -313,11 +313,27 @@ def test_a_base_that_has_not_moved_is_fresh(mod, monkeypatch, pair, capsys) -> N
     assert payload["ci_base"] == payload["base_head"]
 
 
+def _outside_any_repository(monkeypatch, tmp_path: Path) -> Path:
+    """A directory git sees no repository from, wherever pytest puts ``tmp_path``.
+
+    "Outside a git repository" is not a property ``tmp_path`` has on every host: a
+    harness that pins ``TMPDIR`` under the checkout hands the script a directory
+    whose ancestors include a real ``.git``, and git's upward discovery finds it.
+    ``GIT_CEILING_DIRECTORIES`` is git's own seam for that walk -- discovery stops
+    below the named directory -- and the script inherits the environment, so the
+    state the test asserts is constructed here rather than assumed of the host.
+    The directory returned is a CHILD of the ceiling because git checks the
+    directory it starts in before consulting the ceiling.
+    """
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    nowhere = tmp_path / "nowhere"
+    nowhere.mkdir()
+    return nowhere
+
+
 def test_outside_a_git_repository_is_an_environment_error(mod, monkeypatch, tmp_path) -> None:
     """Unknown must never read as fresh: no verdict is exit 2, not exit 0."""
-    empty = tmp_path / "nowhere"
-    empty.mkdir()
-    monkeypatch.chdir(empty)
+    monkeypatch.chdir(_outside_any_repository(monkeypatch, tmp_path))
 
     assert mod.main([]) == mod.EXIT_ENV
 
@@ -489,7 +505,7 @@ def test_the_human_line_says_unavailable_rather_than_fresh(mod) -> None:
 
 def test_summarize_never_reports_fresh_without_a_verdict(mod, monkeypatch, tmp_path) -> None:
     """The dict is always readable, and a failure carries ok=False plus a reason."""
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(_outside_any_repository(monkeypatch, tmp_path))
     summary = mod.summarize()
 
     assert summary["ok"] is False

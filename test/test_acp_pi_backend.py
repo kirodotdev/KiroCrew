@@ -1425,7 +1425,12 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
     def _artifact_dir(self) -> str:
         return os.path.normpath(str(config_dir() / "pi-gate"))
 
-    def _launcher_lists(self) -> tuple[list, list]:
+    def _launcher_lists(self, monkeypatch: pytest.MonkeyPatch) -> tuple[list, list]:
+        # ``_build_launcher_script`` asks the host's ``ssh -V`` (once per process, cached)
+        # for the accept-new flag. Which flag lands in the script is not what these lists
+        # are about, so the probe is pinned rather than run: no host binary, no
+        # cache-order dependence on which test in the worker got there first.
+        monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
         hidden = self._hidden()
         script = sandbox._build_launcher_script(
             "standard",
@@ -1545,8 +1550,10 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         not acp_client.platform_compat.IS_POSIX,
         reason="_build_launcher_script requires os.getuid",
     )
-    def test_linux_launcher_masks_run_and_voice_but_exposes_and_seals_gate_artifacts(self):
-        masked, readonly = self._launcher_lists()
+    def test_linux_launcher_masks_run_and_voice_but_exposes_and_seals_gate_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        masked, readonly = self._launcher_lists(monkeypatch)
         masked_set = {os.path.normpath(path) for path in masked}
         readonly_set = {os.path.normpath(path) for path in readonly}
         assert self._run_dir() in masked_set

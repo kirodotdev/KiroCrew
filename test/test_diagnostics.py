@@ -366,6 +366,19 @@ class TestTerminalIssueUrlSurvivesRedaction:
     wholesale by `[REDACTED: suspicious URL to github.com]`.
     """
 
+    @pytest.fixture(autouse=True)
+    def _pinned_version_probe(self, monkeypatch):  # type: ignore[no-untyped-def]
+        """Pin the kiro-cli version probe the issue body embeds.
+
+        Both URL variants render ``_kiro_cli_version()`` into the body, and the
+        real probe pins and SPAWNS the host's kiro-cli binary (``--version``).
+        These tests are about URL shape and redaction, so the seam is answered
+        in-process, the same way ``_isolate`` answers it for the bundle tests.
+        """
+        from kiro_crew import diagnostics
+
+        monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
+
     def _result(self, tmp_path):  # type: ignore[no-untyped-def]
         from kiro_crew import diagnostics
 

@@ -132,6 +132,7 @@ def _sandbox_can_spawn() -> bool:
             saved = os.environ.get("KIROCREW_HOME")
             os.environ["KIROCREW_HOME"] = empty_home
             owned = None
+            cleanup = None
             try:
                 owned = _own_probe_sel(empty_home)
                 argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
@@ -141,18 +142,22 @@ def _sandbox_can_spawn() -> bool:
                 else:
                     os.environ["KIROCREW_HOME"] = saved
                 _retire_probe_sel(owned)
+            try:
+                # cwd=empty_home: a child inherits pytest's CWD (the checkout)
+                # unless told otherwise, so the probe child runs from the same
+                # throwaway directory the rest of the probe already owns.
+                return (
+                    subprocess.run(argv, capture_output=True, timeout=15, cwd=empty_home).returncode
+                    == 0
+                )
+            finally:
+                if cleanup:
+                    try:
+                        os.unlink(cleanup)
+                    except OSError:
+                        pass
     except Exception:  # noqa: BLE001 — any probe failure => treat as "can't spawn"
         return False
-    try:
-        return subprocess.run(argv, capture_output=True, timeout=15).returncode == 0
-    except Exception:  # noqa: BLE001
-        return False
-    finally:
-        if cleanup:
-            try:
-                os.unlink(cleanup)
-            except OSError:
-                pass
 
 
 # Evaluated once per worker at collection; the two lifecycle tests below need a

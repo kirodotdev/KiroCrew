@@ -2691,6 +2691,35 @@ def _track_unlink(monkeypatch, owned, events: list[str]) -> None:
     monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", tracked)
 
 
+def _lock_unlink(monkeypatch, owned, events: list[str]) -> None:
+    """Make the unlink of *owned* fail as if the child still held it open.
+
+    Every OTHER call reaches the real ``os.unlink`` with its full signature.
+    ``kiro_crew.voice_reply.os`` IS the stdlib module, so this patch is
+    process-global, and it outlives the ``tmp_path`` teardown: the module
+    autouse fixture requests ``monkeypatch`` before ``tmp_path`` exists, so
+    ``monkeypatch`` is undone last. Under ``tmp_path_retention_policy =
+    failed`` that teardown is a ``shutil.rmtree`` whose fd-walk calls
+    ``os.unlink(leaf, dir_fd=fd)``. A wrapper that forwarded ``os.remove(path)``
+    dropped ``dir_fd``, re-resolved ``piper`` / ``voice.onnx`` / ``owned.wav``
+    against the CWD -- the checkout -- and left the tmp dir behind.
+    """
+    real_unlink = os.unlink
+
+    def locked(path, *args, **kwargs):
+        if str(path) == str(owned):
+            events.append("unlink_attempted")
+            raise PermissionError("file is locked by the child")
+        # A bare relative name here would be resolved against the CWD, i.e.
+        # the checkout; only fd-relative (rmtree) or absolute paths may pass.
+        assert (
+            os.path.isabs(os.fspath(path)) or "dir_fd" in kwargs
+        ), f"relative unlink {path!r} without dir_fd would touch the CWD"
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", locked)
+
+
 class TestSynthesizePiperCancelOwnership:
     """``_synthesize_piper`` owns the ``.wav`` until every exit removes it.
 
@@ -2762,14 +2791,8 @@ class TestSynthesizePiperCancelOwnership:
         propagates."""
         model, owned = self._piper_env(tmp_path, monkeypatch)
         events: list[str] = []
+        _lock_unlink(monkeypatch, owned, events)
 
-        def locked_unlink(path, *args, **kwargs):
-            if str(path) == str(owned):
-                events.append("unlink_attempted")
-                raise PermissionError("file is locked by the child")
-            return os.remove(path)
-
-        monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", locked_unlink)
         with patch(
             "asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)
         ):
@@ -2878,14 +2901,8 @@ class TestSynthesizePollyCancelOwnership:
     ):
         owned = self._owned_mp3(tmp_path, monkeypatch)
         events: list[str] = []
+        _lock_unlink(monkeypatch, owned, events)
 
-        def locked_unlink(path, *args, **kwargs):
-            if str(path) == str(owned):
-                events.append("unlink_attempted")
-                raise PermissionError("file is locked by the child")
-            return os.remove(path)
-
-        monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", locked_unlink)
         with patch(
             "asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)
         ):

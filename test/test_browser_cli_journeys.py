@@ -124,11 +124,15 @@ class TestOperatorConfigIsNotOurs:
 
         assert config.read_text(encoding="utf-8") == before
 
-    def test_an_update_leaves_the_config_alone(self, home: Path):
+    def test_an_update_leaves_the_config_alone(self, home: Path, monkeypatch: pytest.MonkeyPatch):
         config = _operator_cli_config(home)
         before = config.read_text(encoding="utf-8")
 
-        # An update re-runs detection. Detection is a PATH and version read.
+        # An update re-runs detection. Detection is a PATH and version read -- pinned
+        # here, the same way the sibling cases pin it, so it never runs the host's
+        # ``node``/``playwright-cli``; the property under test is that it WRITES nothing.
+        monkeypatch.setattr(install, "cli_path", lambda: None)
+        monkeypatch.setattr(install, "_node_version", lambda: "22.1.0")
         install.detect()
 
         assert config.read_text(encoding="utf-8") == before

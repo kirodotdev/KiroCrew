@@ -7,27 +7,73 @@ branch itself, which is verifiable from any host, rather than the shard outcome.
 """
 
 import ast
+import os
 import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
+from tmpdir_helpers import _SHORT_TMP_ROOT_ENV as SHORT_TMP_ROOT_ENV
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import platform_compat
 
 
 class TestShortTmpBase:
-    def test_posix_keeps_the_low_entropy_tmp(self, monkeypatch):
+    def test_the_runs_own_short_root_wins_when_one_exists(self, monkeypatch, tmp_path):
+        """The run-owned root is what makes a stray directory attributable to a RUN.
+
+        ``SHORT_TMP_PREFIX`` already names a short-rooted directory as the suite's. What it
+        cannot say is which run made it or who removes it: the residue guard and the hygiene
+        probe sanction the ``kc-pytest-<user>-<pid>-`` stem and nothing else, so a correctly
+        prefixed directory dropped straight into the shared ``/tmp`` is still owned by no
+        session. Returning the run's own root is what closes that half.
+        """
+        root = tmp_path / "kc-pytest-u-1-short-abcd"
+        root.mkdir()
+        monkeypatch.setenv(SHORT_TMP_ROOT_ENV, str(root))
+        assert short_tmp_base() == str(root)
+
+    def test_a_root_that_vanished_falls_back_instead_of_breaking_the_fixture(
+        self, monkeypatch, tmp_path
+    ):
+        """A stale variable must not hand ``mkdtemp`` a path that does not exist.
+
+        The value is inherited by every xdist worker and by spawned children, so it can
+        outlive the directory (a reaped ``/tmp``, a killed controller). Falling back keeps
+        the socket fixtures working; trusting the variable would turn that into a
+        ``FileNotFoundError`` in unrelated tests.
+        """
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setenv(SHORT_TMP_ROOT_ENV, str(tmp_path / "gone"))
+        assert short_tmp_base() == "/tmp"
+
+    def test_posix_keeps_the_low_entropy_tmp_without_a_run_root(self, monkeypatch):
         """`/tmp` is what satisfies the redaction and sun_path constraints."""
+        monkeypatch.delenv(SHORT_TMP_ROOT_ENV, raising=False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         assert short_tmp_base() == "/tmp"
 
     def test_windows_defers_to_the_platform_base(self, monkeypatch):
         """`None` makes mkdtemp use gettempdir(), which exists by construction --
         unlike `<drive>\\tmp`, which mkdtemp will not create."""
+        monkeypatch.delenv(SHORT_TMP_ROOT_ENV, raising=False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
         assert short_tmp_base() is None
+
+    def test_this_run_published_a_root_that_carries_the_run_stem(self):
+        """The floor's end of the contract, observed live rather than reasoned about.
+
+        A root without the run stem is invisible to the residue guard, which is the
+        failure this half exists to remove -- so assert the shape, not just that some
+        directory was published.
+        """
+        root = os.environ.get(SHORT_TMP_ROOT_ENV)
+        if root is None:  # a checkout whose rootdir conftest predates the root
+            return
+        assert Path(root).is_dir(), root
+        assert Path(root).name.startswith("kc-pytest-"), root
+        assert "-short-" in Path(root).name, root
 
     def test_the_resolved_base_is_usable_on_this_host(self):
         """The regression itself: whatever branch THIS platform takes must yield a
@@ -41,6 +87,7 @@ class TestShortTmpBase:
         base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "helpers-", dir=short_tmp_base()))
         try:
             assert base.is_dir()
+            assert os.access(base, os.W_OK | os.X_OK), f"{base} is not writable"
             probe = base / "probe.txt"
             probe.write_text("ok", encoding="utf-8")
             assert probe.read_text(encoding="utf-8") == "ok"
@@ -49,14 +96,19 @@ class TestShortTmpBase:
 
 
 class TestEveryShortRootedFixtureIsNamed:
-    """A short-rooted dir sits in the shared `/tmp`, outside the per-test root the floor
-    pins, so a hygiene probe can only tell it from a host leak by its name.
+    """A short-rooted dir sits outside the per-test root the floor pins, so a hygiene probe
+    can only tell it from a host leak by its name.
 
     Two names fail that. The stdlib default `/tmp/tmp<random>` is what an accidental bare
     `mkdtemp()` produces too, so a probe cannot sanction it without going blind to real
     leaks; a per-fixture name instead forces the probe to carry a list of invented
     prefixes, which is wrong the moment a fixture is added. One shared prefix is one
     anchored stem with nothing to keep in sync, and these pin every caller to it.
+
+    The prefix is still the answer now that `short_tmp_base()` returns a RUN-OWNED root: the
+    root says which run, the prefix says which fixture, and a caller that skips the prefix is
+    unattributable the moment the root is absent -- outside a pytest run, or in a checkout
+    whose conftest predates it, both of which fall back to the shared `/tmp`.
     """
 
     def test_the_prefix_is_a_distinct_anchored_stem(self):

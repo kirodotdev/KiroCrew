@@ -303,6 +303,90 @@ def _isolated_tool_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     return env
 
 
+#: Magic bytes of a native executable on the platforms the POSIX installer runs on:
+#: ELF, and the four Mach-O encodings (thin, both endiannesses, and a fat binary).
+_NATIVE_EXECUTABLE_MAGIC = (
+    b"\x7fELF",
+    b"\xcf\xfa\xed\xfe",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xfe\xed\xfa\xce",
+    b"\xca\xfe\xba\xbe",
+)
+
+
+def _is_native_executable(path: Path) -> bool:
+    """True when *path* is a real machine-code binary, not a script or a symlink to one.
+
+    A version-manager shim (mise, asdf, nvm's lazy shims) is either a shell script
+    or a symlink whose target is the manager's own binary; both are told apart from
+    the tool they impersonate by what the resolved file IS, which does not change
+    between runs.
+    """
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(4)
+    except OSError:
+        return False
+    return head.startswith(_NATIVE_EXECUTABLE_MAGIC) and os.access(path, os.X_OK)
+
+
+def _native_tool_on_path(name: str) -> Path | None:
+    """The first *name* on PATH that resolves to a native binary of that name.
+
+    Why not ``shutil.which``: on a developer machine the first hit is usually a
+    version-manager shim, and a shim resolves its toolchain THROUGH HOME. Under the
+    isolated HOME this suite runs tools in, it either fails or blocks trying to
+    provision a toolchain that is not there, and whether it does so within any
+    given bound depends on the manager's cache state at that moment -- so a skip
+    decided by running it was a race, and a run that reached the timeout had to
+    SIGKILL the shim's process tree. Judging the candidate by its resolved file
+    instead gives the same verdict on every run of one host: a real binary runs
+    with no HOME at all, and a host with only shims skips every time, with a reason
+    that says so.
+
+    Windows has no shim problem here and its executables carry PATHEXT, so the
+    ordinary lookup is the right one there.
+    """
+    if os.name == "nt":
+        found = shutil.which(name)
+        return Path(found) if found else None
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            resolved = (Path(entry) / name).resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.name == name and _is_native_executable(resolved):
+            return resolved
+    return None
+
+
+def _real_npm() -> tuple[Path, Path] | None:
+    """``(node, npm-cli.js)`` for the first npm on PATH that is npm itself, else None.
+
+    npm is a node script: its ``npm`` entry is a symlink to ``npm-cli.js`` whose
+    shebang is ``#!/usr/bin/env node``, so running it by name would resolve
+    ``node`` through PATH -- and hit the shim again. The pair is therefore
+    resolved statically (the ``npm`` entry must resolve to ``npm-cli.js`` and the
+    ``node`` beside it must be a native binary) and invoked as
+    ``node npm-cli.js ...``, which bypasses every shim and needs nothing from HOME.
+    Same verdict on every run of one host, by construction.
+    """
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            npm_cli = (Path(entry) / "npm").resolve(strict=True)
+            node = (Path(entry) / "node").resolve(strict=True)
+        except OSError:
+            continue
+        if npm_cli.name == "npm-cli.js" and node.name == "node" and _is_native_executable(node):
+            return node, npm_cli
+    return None
+
+
 def _run(
     tmp_path: Path,
     stubs: Path,
@@ -311,10 +395,15 @@ def _run(
     extra_env: dict[str, str] | None = None,
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    """Run the installer. Its working directory is *cwd*, or tmp_path when unstated.
+
+    Never the caller's: pytest's cwd is the checkout, and anything the installer
+    resolves or drops relative to where it was started would land there.
+    """
     env = _env(tmp_path, stubs, isolated=isolated)
     if extra_env:
         env.update(extra_env)
-    return run_bounded(["sh", str(INSTALLER_SH), *args], env=env, cwd=str(cwd) if cwd else None)
+    return run_bounded(["sh", str(INSTALLER_SH), *args], env=env, cwd=str(cwd or tmp_path))
 
 
 @pytest.fixture()
@@ -328,20 +417,20 @@ def stubs(tmp_path: Path) -> Path:
 
 
 @posix_only
-def test_installer_parses_as_posix_shell() -> None:
+def test_installer_parses_as_posix_shell(tmp_path: Path) -> None:
     """The documented entry point is `curl … | sh`, so the script must parse
     under a plain POSIX shell and not only under bash."""
-    subprocess.run(["sh", "-n", str(INSTALLER_SH)], check=True)
+    subprocess.run(["sh", "-n", str(INSTALLER_SH)], check=True, cwd=str(tmp_path))
 
 
 @posix_only
 @pytest.mark.skipif(shutil.which("ksh") is None, reason="no non-bash POSIX shell available here")
-def test_installer_parses_under_a_non_bash_shell() -> None:
+def test_installer_parses_under_a_non_bash_shell(tmp_path: Path) -> None:
     """On most Linux distributions /bin/sh IS bash, so `sh -n` above happily
     accepts bashisms that dash and BusyBox ash reject. ksh is a genuinely
     different POSIX implementation, so parsing there catches what `sh -n` cannot
     on a bash-provided /bin/sh."""
-    subprocess.run(["ksh", "-n", str(INSTALLER_SH)], check=True)
+    subprocess.run(["ksh", "-n", str(INSTALLER_SH)], check=True, cwd=str(tmp_path))
 
 
 def test_installer_avoids_bash_only_syntax() -> None:
@@ -369,34 +458,41 @@ def test_installer_avoids_bash_only_syntax() -> None:
 
 
 def _usable_powershell(tmp_path: Path) -> str:
-    """A PowerShell that actually answers under an isolated HOME, or a skip.
+    """A PowerShell binary this suite can drive under an isolated HOME, or a skip.
 
-    Same hazard as the real-npm probe, and it bit for the same reason: a version
-    manager installs `pwsh` as a SHIM that resolves its toolchain through config
-    under HOME, so with HOME isolated the shim blocks trying to provision one.
-    Without this preflight each PowerShell test burned its full 120s timeout on a
-    developer machine with mise-managed PowerShell -- four minutes to say nothing.
-    A real interpreter answers `exit 0` instantly, which is the whole probe.
+    Decided by what is on disk, never by running a candidate against a clock. A
+    version manager installs `pwsh` as a SHIM that resolves its toolchain through
+    config under HOME, so with HOME isolated the shim blocks trying to provision
+    one -- and the earlier preflight, which ran it for ten seconds and skipped on
+    the timeout, could answer either way depending on the manager's cache state,
+    and every timeout ended in a SIGKILL of the shim's process tree. A native
+    interpreter is recognised as such (``_native_tool_on_path``) and then run;
+    a host that offers only shims skips with the same reason on every run.
     """
-    shell = shutil.which("pwsh") or shutil.which("powershell")
+    shell = _native_tool_on_path("pwsh") or _native_tool_on_path("powershell")
     if shell is None:
-        pytest.skip("no PowerShell on this host")
-    try:
-        probe = run_bounded(
-            [shell, "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
-            env=_isolated_tool_env(tmp_path),
-            timeout=10,
+        pytest.skip(
+            "no native PowerShell binary on PATH (a version-manager shim does not "
+            "count: it cannot start under the isolated HOME this suite requires)"
         )
-    except (subprocess.TimeoutExpired, OSError):
-        pytest.skip(f"{shell} cannot run under an isolated HOME (version-manager shim)")
+    probe = run_bounded(
+        [str(shell), "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+        env=_isolated_tool_env(tmp_path),
+        timeout=60,
+        cwd=str(tmp_path),
+    )
     if probe.returncode != 0:
+        # A native interpreter that exits non-zero on `exit 0` is a host whose
+        # PowerShell install is broken (missing ICU, unreadable modules): the same
+        # answer on every run, so a skip that names it is stable. A hang is NOT
+        # skipped: run_bounded's TimeoutExpired propagates as the error it is.
         pytest.skip(f"{shell} did not start cleanly: {probe.stdout + probe.stderr}")
-    return shell
+    return str(shell)
 
 
 @pytest.mark.skipif(
-    shutil.which("pwsh") is None and shutil.which("powershell") is None,
-    reason="no PowerShell available to parse playwright-cli.ps1",
+    _native_tool_on_path("pwsh") is None and _native_tool_on_path("powershell") is None,
+    reason="no native PowerShell binary on PATH to parse playwright-cli.ps1",
 )
 def test_powershell_installer_parses(tmp_path: Path) -> None:
     """A syntax error in the Windows installer reaches every Windows user, and
@@ -418,6 +514,7 @@ def test_powershell_installer_parses(tmp_path: Path) -> None:
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         env=env,
         timeout=120,
+        cwd=str(tmp_path),
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1190,7 +1287,7 @@ def test_a_credential_containing_an_at_sign_is_fully_redacted(tmp_path: Path, st
 
 
 @posix_only
-def test_redaction_does_not_touch_an_at_sign_in_a_path() -> None:
+def test_redaction_does_not_touch_an_at_sign_in_a_path(tmp_path: Path) -> None:
     """The greedy match must stay inside the authority: npm prints scoped package
     paths, and rewriting one would corrupt the log it exists to make readable.
     """
@@ -1203,6 +1300,7 @@ def test_redaction_does_not_touch_an_at_sign_in_a_path() -> None:
         capture_output=True,
         text=True,
         check=True,
+        cwd=str(tmp_path),
     )
     assert probe.stdout.splitlines()[0] == "https://npm.example/@scope/pkg"
     assert probe.stdout.splitlines()[1] == "https://***@npm.example/@scope/pkg"
@@ -1241,8 +1339,8 @@ def test_a_relative_prefix_is_absolute_in_the_generated_wrapper(
 
 
 @pytest.mark.skipif(
-    shutil.which("pwsh") is None and shutil.which("powershell") is None,
-    reason="no PowerShell available to execute the installer's own helpers",
+    _native_tool_on_path("pwsh") is None and _native_tool_on_path("powershell") is None,
+    reason="no native PowerShell binary on PATH to execute the installer's own helpers",
 )
 def test_the_powershell_helpers_behave_when_actually_executed(tmp_path: Path) -> None:
     """Everything else about the .ps1 in this suite is asserted from its TEXT,
@@ -1274,6 +1372,7 @@ def test_the_powershell_helpers_behave_when_actually_executed(tmp_path: Path) ->
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         env=_isolated_tool_env(tmp_path),
         timeout=120,
+        cwd=str(tmp_path),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     credential, path_at, query, resolved = result.stdout.split()[:4]
@@ -1785,6 +1884,7 @@ def test_a_node_that_does_not_run_here_leaves_the_previous_one_in_place(
             capture_output=True,
             text=True,
             check=False,
+            cwd=str(tmp_path),
         ).stdout.strip()
     )
 
@@ -1860,6 +1960,7 @@ def test_an_interrupted_rebootstrap_restores_the_previous_node(
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
+        cwd=str(tmp_path),
     )
     try:
         # Long enough to be inside the bootstrap, short enough to be mid-unpack.
@@ -2417,7 +2518,12 @@ def test_an_embedded_newline_in_a_path_still_installs(tmp_path: Path, stubs: Pat
     wrapper = bindir / "playwright-cli"
     # Bounded and given an isolated environment: this spawns the wrapper, which
     # spawns node, so an unbounded call leaves a process tree behind on hang.
-    ran = run_bounded([str(wrapper), "--version"], env=_isolated_tool_env(tmp_path), timeout=120)
+    ran = run_bounded(
+        [str(wrapper), "--version"],
+        env=_isolated_tool_env(tmp_path),
+        timeout=120,
+        cwd=str(tmp_path),
+    )
     assert ran.returncode == 0, ran.stderr
     assert "0.1.18" in ran.stdout
 
@@ -2802,13 +2908,24 @@ def test_an_empty_node_marker_is_ignored_on_posix(tmp_path: Path, stubs: Path) -
 
 @posix_only
 @pytest.mark.skipif(
-    shutil.which("npm") is None, reason="no real npm to validate the config files with"
+    _real_npm() is None,
+    reason="no real npm on PATH to validate the config files with (a version-manager "
+    "shim does not count: it cannot start under the isolated HOME this suite requires)",
 )
 def test_real_npm_accepts_the_isolated_config_files(tmp_path: Path, stubs: Path) -> None:
     """--isolated-npmrc is THE documented remedy for the enterprise auth failure,
     so it has to work against real npm, not just against a stub. npm rejects one
     path used as two scopes, so the two empty files must be distinct — and only
     real npm can confirm that. `config get` needs no network.
+
+    The npm is resolved by ``_real_npm`` -- npm-cli.js plus the native node beside
+    it -- and invoked as ``node npm-cli.js``, so no version-manager shim is ever in
+    the process tree. That is what lets this test hold the same verdict on every
+    run: the earlier version ran whatever ``npm`` PATH resolved to, and on a
+    developer machine that is a shim which, under the isolated HOME, blocks trying
+    to provision a toolchain -- so the test skipped or passed by the clock, and each
+    skip cost a SIGKILL of the shim's tree. A real npm either answers or is a
+    failure; nothing here is decided by a timeout.
     """
     _fake_node(stubs)
     _fake_npm_succeeding(stubs)
@@ -2820,48 +2937,26 @@ def test_real_npm_accepts_the_isolated_config_files(tmp_path: Path, stubs: Path)
     assert user.is_file() and global_.is_file()
     assert user != global_
 
-    # HOME stays isolated. A version-manager shim (mise/asdf/nvm) resolves its
-    # toolchain through HOME, so under an isolated one it either fails or blocks
-    # trying to provision a toolchain that is not there -- on this host it hangs
-    # rather than exiting. Both outcomes SKIP: letting the shim see the real HOME
-    # would let it provision files outside tmp_path, which is the side effect this
-    # suite exists to prevent. Where npm is a standalone binary (CI), the probe
-    # runs and the contract below is genuinely enforced.
+    # HOME stays isolated: npm's own write targets must resolve inside tmp_path,
+    # which is the side effect this suite exists to prevent leaking.
     env = _isolated_tool_env(
         tmp_path,
         npm_config_userconfig=str(user),
         npm_config_globalconfig=str(global_),
     )
-
-    def _npm(*args: str, timeout: float) -> subprocess.CompletedProcess[str] | None:
-        """None means npm never got far enough to answer: a shim that blocks or
-        cannot start is indistinguishable from one that is merely slow.
-
-        Bounded through `run_bounded`, not `subprocess.run(timeout=...)`: the
-        latter kills only the direct child, so a version-manager shim that is
-        mid-provision leaves its downloader running -- writing outside tmp_path,
-        which is the whole hazard this probe is trying not to create.
-        """
-        try:
-            return run_bounded(["npm", *args], env=env, timeout=timeout)
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-
-    # Preflight, so a shimmed npm costs five seconds rather than the full probe
-    # timeout on every developer machine: `npm --version` answers instantly when
-    # npm can run at all, and blocks exactly when the shim would have to provision.
-    if _npm("--version", timeout=5) is None:
-        pytest.skip("npm cannot run under an isolated HOME on this host (version-manager shim)")
-    probe = _npm("config", "get", "registry", "cache", "logs-dir", timeout=60)
-    if probe is None:
-        pytest.skip("npm did not answer `config get` under an isolated HOME")
+    node, npm_cli = _real_npm()  # type: ignore[misc]  # the skipif above proved it
+    # Bounded through `run_bounded` so a wedged npm cannot leave a tree behind; a
+    # timeout propagates as the error it is rather than becoming a skip.
+    probe = run_bounded(
+        [str(node), str(npm_cli), "config", "get", "registry", "cache", "logs-dir"],
+        env=env,
+        timeout=60,
+        cwd=str(tmp_path),
+    )
     combined = probe.stdout + probe.stderr
-    # The one outcome that is a real failure rather than an unusable npm: npm
-    # refusing the two config files. Anything else means npm never got far enough
-    # to judge them, which this host cannot distinguish from a broken shim.
+    # The failure this test exists to catch: npm refusing the two config files.
     assert "double-loading config" not in combined, combined
-    if probe.returncode != 0:
-        pytest.skip(f"npm could not resolve a toolchain under an isolated HOME: {combined}")
+    assert probe.returncode == 0, combined
     # The point of the isolation: npm's write targets resolve inside tmp_path, so
     # the run cannot deposit a cache or a debug log in the developer's real HOME.
     assert str(tmp_path) in probe.stdout, probe.stdout

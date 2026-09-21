@@ -23,9 +23,9 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
-# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
-# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
-# per full run for this file alone. Grouping keeps the cache single-copy per run.
+# index of test/, scripts/ and src/ (rglob + read + two regexes per file, ~3s). Under
+# `--dist loadgroup` an unmarked module is spread across workers and each worker
+# re-pays that scan. Grouping keeps the index single-copy per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_leaf_test_scope")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT.joinpath("scripts", "leaf_test_scope.py")
@@ -196,17 +196,20 @@ def test_the_mention_scan_leaves_a_clean_leaf_alone(clean_leaf: str) -> None:
 
 @pytest.fixture(autouse=True, scope="module")
 def _release_the_scripts_corpus_after_module():
-    """Drop ``leaf_test_scope``'s file caches once this module is done with them.
+    """Drop ``leaf_test_scope``'s tree index once this module is done with it.
 
-    ``_iter_python_cached`` / ``_read_cached`` are unbounded ``lru_cache``s over
-    every ``.py`` under ``src/``, ``test/`` and ``scripts/`` -- exact within one
-    process, which is why the script has them, but in an xdist worker they would
-    hold the whole tree's source text for the rest of the session, paid by every
-    later test on that worker. The tests here still share the caches with each other.
+    ``_index_tree_cached`` is an unbounded ``lru_cache`` keyed on the scan root.
+    It holds only the names the script asks about (which module each file imports,
+    which quoted tokens it carries) -- under 20 MiB -- never the files' text: the
+    earlier design cached every ``.py`` under ``src/``, ``test/`` and ``scripts/``
+    verbatim, which measured at +280 MiB RSS on the first test to touch it and
+    stayed resident for the rest of the worker. Exact within one process, which is
+    why the script has it, but in an xdist worker even the small index would be
+    paid by every later test on that worker, so it goes at module end. The tests
+    here still share it with each other.
     """
     yield
-    mod._iter_python_cached.cache_clear()
-    mod._read_cached.cache_clear()
+    mod._index_tree_cached.cache_clear()
 
 
 @pytest.fixture(scope="module")

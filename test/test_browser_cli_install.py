@@ -1357,7 +1357,9 @@ class TestRequiredRevisionMatch:
     ) -> None:
         root = tmp_path / "cli-root"
         launcher = _install_root(root, _MANIFEST)
-        monkeypatch.setattr(mod, "cli_path", lambda: launcher)
+        # ``_wire`` pins ``cli_path`` to the launcher AND fakes the version probes, so
+        # ``detect()`` below never runs the host's ``node``/``playwright-cli``.
+        _wire(monkeypatch, {mod.CLI_BIN: launcher})
         monkeypatch.setattr(
             mod, "_required_revisions", _REAL_REQUIRED_REVISIONS
         )  # use the real one
@@ -1373,7 +1375,7 @@ class TestRequiredRevisionMatch:
         """THE regression. chromium-1208 is present, 1232 is required."""
         root = tmp_path / "cli-root"
         launcher = _install_root(root, _MANIFEST)
-        monkeypatch.setattr(mod, "cli_path", lambda: launcher)
+        _wire(monkeypatch, {mod.CLI_BIN: launcher})
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
         (isolated_browser_cache / "chromium-1208").mkdir()
 

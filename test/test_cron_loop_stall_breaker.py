@@ -184,7 +184,7 @@ class TestBreaker:
             await svc.stop()
 
     async def test_an_unpersisted_pause_is_retried_on_the_next_boot(
-        self, tmp_path: Path, dead_pids: set[int], monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, dead_pids: set[int]
     ) -> None:
         """A store the breaker could not write leaves the job enabled and still
         due, so neither the claim nor the marker may be consumed -- otherwise the
@@ -198,10 +198,15 @@ class TestBreaker:
         def refuse(self: CronService) -> None:
             raise CronStoreUnreadable("store held by another writer")
 
-        monkeypatch.setattr(CronService, "_save", refuse)
-        svc = await _started_service(tmp_path, tmp_path / "dumps")
-        await svc.stop()
-        monkeypatch.undo()
+        # A scoped patch, not ``monkeypatch.setattr`` + ``monkeypatch.undo()``:
+        # ``undo()`` reverts EVERY patch on the fixture, including ``dead_pids``'
+        # fake of ``pid_exists`` -- after which the second boot below probed the
+        # marker's synthetic pid against the real host (``os.kill(4_100_010, 0)``)
+        # and the verdict depended on that number being free on this machine.
+        with pytest.MonkeyPatch.context() as store_patch:
+            store_patch.setattr(CronService, "_save", refuse)
+            svc = await _started_service(tmp_path, tmp_path / "dumps")
+            await svc.stop()
         assert cron_inflight.read_claim(tmp_path) == ""
         assert [m.job_id for m in cron_inflight.read_markers(tmp_path)] == [job.id]
         # A repaired boot reaches the same verdict and pauses.
@@ -266,7 +271,7 @@ class TestBreaker:
         assert outcomes == ["auto_paused_loop_stall"]
 
     async def test_a_lost_claim_cannot_re_pause_a_resumed_job(
-        self, tmp_path: Path, dead_pids: set[int], monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, dead_pids: set[int]
     ) -> None:
         """The pause persisted but the claim file did not: the markers must stay
         (nothing else says the dump was handled), and once the operator resumes
@@ -277,9 +282,13 @@ class TestBreaker:
         now = time.time()
         dump = write_dump(tmp_path / "dumps", 4_100_007, CRON_STACK, mtime=now - 30)
         _abandoned_marker(tmp_path, job.id, job.name, 4_100_007, now - 60)
-        monkeypatch.setattr(cron_inflight, "write_claim", lambda base, name: False)
-        svc = await _started_service(tmp_path, tmp_path / "dumps")
-        await svc.stop()
+        # Scoped for the same reason as the unwritable-store test: an ``undo()``
+        # here would also drop ``dead_pids``' fake of ``pid_exists`` for the
+        # second boot below.
+        with pytest.MonkeyPatch.context() as claim_patch:
+            claim_patch.setattr(cron_inflight, "write_claim", lambda base, name: False)
+            svc = await _started_service(tmp_path, tmp_path / "dumps")
+            await svc.stop()
         j = svc.get_job(job.id)
         assert j is not None and j.auto_paused is True and dump.name in (j.last_error or "")
         # No claim, so the evidence is retained for the next boot.
@@ -287,7 +296,6 @@ class TestBreaker:
         assert cron_inflight.read_claim(tmp_path) == ""
 
         assert CronService(base_dir=tmp_path).enable_job(job.id, True) is True
-        monkeypatch.undo()
         again = await _started_service(tmp_path, tmp_path / "dumps")
         try:
             j2 = again.get_job(job.id)

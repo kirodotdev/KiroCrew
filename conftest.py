@@ -1515,6 +1515,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _refuse_a_real_data_home()
     _pin_telemetry_off_for_the_process()
     _prefer_short_tmp_base()
+    _install_short_tmp_root()
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
     _gate_pytest_asyncio_fixture_scan()
@@ -2603,6 +2604,69 @@ def _create_tmp_root(parent: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(tempfile.mkdtemp(prefix=_tmp_root_prefix_for_run(), dir=parent))
 
 
+#: Env var carrying this run's SHORT temp root, so xdist workers reuse the controller's.
+_SHORT_TMP_ROOT_ENV = "KIROCREW_TEST_SHORT_TMP_ROOT"
+
+#: The temp roots THIS process created, captured at creation. The bytecode-mirror prune
+#: reads this instead of ``tempfile.gettempdir()``, which by session teardown has been
+#: restored to the platform temp root -- a mirror shared with every concurrent run.
+_RUN_TEMP_ROOTS: list[str] = []
+
+#: Set only in the process that CREATED the short root, so a worker never removes it.
+_SHORT_TMP_ROOT_OWNED: str | None = None
+
+
+def _install_short_tmp_root() -> None:
+    """Mint one run-owned SHORT temp root and publish it for the whole run.
+
+    A handful of fixtures cannot use ``tmp_path``: an ``AF_UNIX`` ``sun_path`` caps the
+    bind/connect STRING at 108 bytes on Linux and 104 on macOS, and a path asserted in
+    message metadata must not trip ``redact_credentials()`` (a macOS ``tmp_path`` carries
+    high-entropy directory ids that do). Those fixtures reached for a literal ``/tmp``,
+    which put ~40 anonymous ``/tmp/tmpXXXX`` and ``/tmp/kcsock-XXXX`` directories on the
+    host, owned by nobody: the residue guard's allow-list and the hygiene probe both
+    recognise the ``kc-pytest-<user>-<pid>-`` stem and nothing else, so a stray directory
+    spelled any other way names no run and no test.
+
+    ``tempfile.gettempdir()`` cannot serve here, which is the whole reason this root
+    exists separately: under a long ``TMPDIR`` -- the run's own isolated base, a harness
+    that pins ``TMPDIR`` under the checkout -- ``<base>/kcsock-xxxxxxxx/gw-prewarm.sock``
+    is already past ``sun_path`` before a filename is appended (measured at 122 bytes
+    against the 108-byte cap), and ``test_mcp_gateway_transport``'s ``_SUN_PATH_BUDGET``
+    test goes red. So the root is created under the PLATFORM temp root, where the path is
+    short by construction, and carries the run's own stem so it is attributable.
+
+    Created in ``pytest_configure`` and published through the environment: an xdist worker
+    is a child of the controller, inherits the variable, and therefore shares the one root
+    instead of minting its own. Only the creating process removes it (``_SHORT_TMP_ROOT_OWNED``).
+    """
+    global _SHORT_TMP_ROOT_OWNED
+    if os.environ.get(_SHORT_TMP_ROOT_ENV):
+        return  # an xdist worker (or a nested session): the controller already made it
+    parent = None if os.name == "nt" else "/tmp"
+    if parent is not None and not os.path.isdir(parent):
+        parent = None  # unusual POSIX host; the platform default still satisfies both rules
+    try:
+        root = tempfile.mkdtemp(prefix=f"{_tmp_root_prefix_for_run()}short-", dir=parent)
+    except OSError:
+        return  # no short root available; short_tmp_base() falls back to its old behaviour
+    # No chmod: ``mkdtemp`` already creates the directory 0o700, which is what this root
+    # needs in a world-writable temp dir. Setting it again only invites a permissions
+    # linter to argue about a mode the stdlib picked.
+    os.environ[_SHORT_TMP_ROOT_ENV] = root
+    _SHORT_TMP_ROOT_OWNED = root
+
+
+def _remove_short_tmp_root() -> None:
+    """Remove the short root, but only in the process that created it."""
+    global _SHORT_TMP_ROOT_OWNED
+    root, _SHORT_TMP_ROOT_OWNED = _SHORT_TMP_ROOT_OWNED, None
+    if root:
+        shutil.rmtree(root, ignore_errors=True)
+        if os.environ.get(_SHORT_TMP_ROOT_ENV) == root:
+            del os.environ[_SHORT_TMP_ROOT_ENV]
+
+
 #: Env vars ``tempfile`` consults, so a CHILD process inherits the redirect too.
 #: A test that spawns a helper which writes to its temp dir would otherwise put
 #: that file in the real ``/tmp``, where nothing prunes it.
@@ -2709,6 +2773,43 @@ def _remove_tree(path: pathlib.Path) -> bool:
     return _pc.rmtree_force(path)
 
 
+def _stop_git_discovery_above_the_temp_roots(base, tmp_path_factory) -> None:
+    """Fence git's repository discovery at this run's temp roots.
+
+    A test that builds "a directory that is not a repository" under ``tmp_path`` is
+    asserting a property of the HOST unless something bounds git's upward walk: when the
+    temp root sits inside a checkout -- an operator with ``TMPDIR=./tmp``, a harness that
+    pins its scratch under the worktree -- ``git rev-parse`` climbs out of ``tmp_path`` and
+    answers about the enclosing repository instead. The 2026-09-20 sweep measured 66 tests
+    failing exactly that way across two clusters, and the shape is worse in a LINKED
+    worktree, where the ``.git`` the walk finds is a FILE and a marker-based probe declines
+    before the arm under test ever runs.
+
+    ``GIT_CEILING_DIRECTORIES`` is git's own seam for this and is read by every ``git``
+    child the suite spawns, so one write here covers the production helpers a test cannot
+    reach. Per-site fixtures still exist and are still correct -- they document intent, and
+    they cover the walks this cannot fence (an ``install.sh`` marker search, a nested pytest
+    session's ``rootdir``) -- but this is what keeps the NEXT test from inheriting the
+    checkout by default. Absolute, symlink-resolved paths: git ignores a ceiling entry that
+    is not both.
+    """
+    entries: list[str] = []
+    for candidate in (base, tmp_path_factory.getbasetemp(), os.environ.get(_SHORT_TMP_ROOT_ENV)):
+        if not candidate:
+            continue
+        try:
+            resolved = os.path.realpath(str(candidate))
+        except OSError:  # pragma: no cover - unreadable temp root
+            continue
+        if resolved not in entries:
+            entries.append(resolved)
+    existing = os.environ.get("GIT_CEILING_DIRECTORIES")
+    if existing:
+        entries.append(existing)
+    if entries:
+        os.environ["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(entries)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_tempfile_base(tmp_path_factory):
     """Give the run its own ``tempfile`` base, then report and remove what leaked.
@@ -2782,10 +2883,21 @@ def _isolate_tempfile_base(tmp_path_factory):
     previous_env = {name: os.environ.get(name) for name in _TMP_ENV_VARS}
     parent = pathlib.Path(tempfile.gettempdir())
     base = _create_tmp_root(parent)
+    # Record the root at CREATION. The bytecode-mirror prune runs from
+    # ``pytest_sessionfinish``, which is AFTER this fixture's finalizer has restored
+    # ``tempfile.tempdir``: reading ``tempfile.gettempdir()` there resolves to the platform
+    # temp root, and pruning that mirror would delete every concurrent run's bytecode.
+    _RUN_TEMP_ROOTS.append(str(base))
     _redirect_tempfile_base(base)
+    previous_ceiling = os.environ.get("GIT_CEILING_DIRECTORIES")
+    _stop_git_discovery_above_the_temp_roots(base, tmp_path_factory)
     try:
         yield base
     finally:
+        if previous_ceiling is None:
+            os.environ.pop("GIT_CEILING_DIRECTORIES", None)
+        else:
+            os.environ["GIT_CEILING_DIRECTORIES"] = previous_ceiling
         tempfile.tempdir = previous_tempdir
         for name, value in previous_env.items():
             if value is None:
@@ -4067,6 +4179,47 @@ def _drain_windows_proactor_finalizers() -> None:
     atexit.register(_final_gc_pass)
 
 
+def _prune_bytecode_mirror_of_this_runs_temp_roots(session: pytest.Session) -> None:
+    """Drop the ``sys.pycache_prefix`` mirror trees keyed on THIS run's temp roots.
+
+    :func:`_redirect_bytecode_cache` sends every ``.pyc`` to a per-user cache mirror, and
+    its "the cache persists so warm imports stay warm" argument holds for sources in the
+    CHECKOUT, whose absolute paths are stable. It does not hold for a source under
+    ``tmp_path`` or the run's isolated temp base: those paths are new on every run, so the
+    mirror gains one dead tree per run that nothing ever reads and nothing owns. Measured
+    on one developer host before this guard: 14,816 orphaned ``.pyc`` files, 5.3 GB, across
+    161 dead run roots.
+
+    The suite compiles throwaway sources deliberately (``load_app_module``, a skill script
+    imported by path, a packaging step's precompile), so the answer is not to stop writing
+    bytecode -- it is that the writer must own the retirement of what it wrote. Scoped to
+    the roots this run created, so a concurrent run's mirror is never touched.
+    """
+    prefix = getattr(sys, "pycache_prefix", None)
+    if not prefix:
+        return
+    roots: list[str] = []
+    try:
+        roots.append(str(session.config._tmp_path_factory.getbasetemp()))  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - no basetemp was ever materialised
+        pass
+    for candidate in (*_RUN_TEMP_ROOTS, os.environ.get(_SHORT_TMP_ROOT_ENV) or ""):
+        if candidate:
+            roots.append(candidate)
+    for root in roots:
+        try:
+            absolute = os.path.abspath(root)
+        except OSError:  # pragma: no cover - unreadable cwd
+            continue
+        # The mirror path is the prefix plus the source's absolute path with its leading
+        # separator dropped; on Windows the drive colon is replaced the same way CPython
+        # does, so the join is done from the parts rather than by string surgery.
+        drive, tail = os.path.splitdrive(absolute)
+        mirrored = os.path.join(prefix, drive.replace(":", "") + tail.lstrip(os.sep))
+        if os.path.isdir(mirrored):
+            shutil.rmtree(mirrored, ignore_errors=True)
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Fail the run when the suite left new, non-ignored entries at the root.
 
@@ -4091,6 +4244,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         xdist_budget.release_worker_slots()
     except ImportError:  # pragma: no cover - partial checkout
         pass
+
+    _remove_short_tmp_root()
+    _prune_bytecode_mirror_of_this_runs_temp_roots(session)
 
     # ── Windows ProactorEventLoop teardown cleanup (#4764) ─────────────────
     # On Windows + Python 3.12, asyncio.run() creates and closes a

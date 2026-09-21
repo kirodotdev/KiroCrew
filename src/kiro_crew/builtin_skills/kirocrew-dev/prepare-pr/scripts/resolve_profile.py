@@ -61,17 +61,33 @@ def err(msg):
     sys.stderr.write(msg + "\n")
 
 
-def run(args):
+def run(args, cwd=None):
     try:
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = subprocess.run(
+            args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError:
         return 127, "", ""
 
 
+def _git(root, *args):
+    """``git -C root ...`` with ``root`` as the child's working directory too.
+
+    ``-C`` already scopes git to the repository; ``cwd`` keeps the child from
+    inheriting whatever directory the caller launched this script from. ABSOLUTE for
+    both, because git resolves ``-C`` against the child's cwd: a relative ``root``
+    handed to both is applied twice (``root/root``), so a valid nested repository
+    reads as missing. A ``root`` that does not exist fails the spawn, which ``run``
+    reports as 127 -- the same "no answer" every caller already handles.
+    """
+    where = os.path.abspath(root)
+    return run(["git", "-C", where, *args], cwd=where)
+
+
 def find_repo_root(start):
     """Return the git toplevel for ``start``, else ``start`` itself."""
-    rc, out, _ = run(["git", "-C", start, "rev-parse", "--show-toplevel"])
+    rc, out, _ = _git(start, "rev-parse", "--show-toplevel")
     if rc == 0 and out:
         return out
     return start
@@ -202,21 +218,19 @@ def normalize(raw, source):
 
 def _ref_has(root, base_ref, rel):
     """True iff ``rel`` exists as a blob at ``base_ref`` (repo-relative, '/')."""
-    rc, _, _ = run(["git", "-C", root, "cat-file", "-e", "{}:{}".format(base_ref, rel)])
+    rc, _, _ = _git(root, "cat-file", "-e", "{}:{}".format(base_ref, rel))
     return rc == 0
 
 
 def _ref_read(root, base_ref, rel):
     """Blob content at ``base_ref:rel``, or None when absent."""
-    rc, out, _ = run(["git", "-C", root, "show", "{}:{}".format(base_ref, rel)])
+    rc, out, _ = _git(root, "show", "{}:{}".format(base_ref, rel))
     return out if rc == 0 else None
 
 
 def _ref_ls(root, base_ref, reldir):
     """Repo-relative blob paths under ``reldir`` at ``base_ref`` ([] when absent)."""
-    rc, out, _ = run(
-        ["git", "-C", root, "ls-tree", "--name-only", base_ref, reldir.rstrip("/") + "/"]
-    )
+    rc, out, _ = _git(root, "ls-tree", "--name-only", base_ref, reldir.rstrip("/") + "/")
     if rc != 0 or not out:
         return []
     return [line.strip() for line in out.splitlines() if line.strip()]
@@ -351,7 +365,7 @@ def resolve(root, base_ref=None):
     if base_ref:
         # An unresolvable ref is a hard error, never a silent fallback that
         # would quietly hand resolution back to the branch checkout.
-        rc, _, _ = run(["git", "-C", root, "rev-parse", "--verify", base_ref + "^{commit}"])
+        rc, _, _ = _git(root, "rev-parse", "--verify", base_ref + "^{commit}")
         if rc != 0:
             raise RuntimeError("cannot resolve base ref {!r}".format(base_ref))
         reader: TreeReader = PinnedTreeReader(root, base_ref)
@@ -391,10 +405,10 @@ def default_base_ref(root):
     """Trusted default base for CLI use: git's own record of the remote default
     branch, else origin/main when it resolves, else None (no remote to pin to,
     so the working tree is the only source there is)."""
-    rc, out, _ = run(["git", "-C", root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    rc, out, _ = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     if rc == 0 and out:
         return out
-    rc, _, _ = run(["git", "-C", root, "rev-parse", "--verify", "origin/main^{commit}"])
+    rc, _, _ = _git(root, "rev-parse", "--verify", "origin/main^{commit}")
     if rc == 0:
         return "origin/main"
     return None

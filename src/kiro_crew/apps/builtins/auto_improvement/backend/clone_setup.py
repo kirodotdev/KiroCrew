@@ -46,6 +46,18 @@ _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 logger = logging.getLogger(__name__)
 
+
+def _git_cwd(repo: Path | str) -> str:
+    """The ONE path a host-side git spawn names as both ``-C`` and ``cwd=``.
+
+    ``-C`` fixes the tree git reads; ``cwd=`` fixes the child's working directory, which
+    would otherwise be inherited from the gateway -- the one thing about a host-side spawn
+    that must never be ambient. Absolute, because git resolves ``-C`` against the child's
+    cwd: a relative path handed to both would be applied twice.
+    """
+    return str(Path(repo).absolute())
+
+
 #: Allowlist, never a denylist (defense in depth for SSRF). GitHub only.
 _ALLOWED_HOSTS = frozenset({"github.com", "www.github.com"})
 
@@ -198,12 +210,13 @@ def _origin_urls(repo: Path, *, push: bool) -> list[str] | None:
     disabled" for a clone whose remotes were never read — a misleading 409.
     """
     key = "remote.origin.pushurl" if push else "remote.origin.url"
+    where = _git_cwd(repo)
     try:
         proc = subprocess.run(
             [
                 "git",
                 "-C",
-                str(repo),
+                where,
                 *_GIT_SAFE_CONFIG,
                 "config",
                 "--local",
@@ -215,6 +228,7 @@ def _origin_urls(repo: Path, *, push: bool) -> list[str] | None:
             timeout=30,
             shell=False,
             env=_git_env(),
+            cwd=where,
             **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError):
@@ -298,12 +312,13 @@ def _repository_is_safe(repo: Path) -> bool:
         r"remote\..*\.(proxy|receivepack|uploadpack)|"
         r"extensions\.worktreeconfig)$"
     )
+    where = _git_cwd(repo)
     try:
         proc = subprocess.run(
             [
                 "git",
                 "-C",
-                str(repo),
+                where,
                 *_GIT_SAFE_CONFIG,
                 "config",
                 "--local",
@@ -316,6 +331,7 @@ def _repository_is_safe(repo: Path) -> bool:
             timeout=30,
             shell=False,
             env=_git_env(),
+            cwd=where,
             **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError):
@@ -776,6 +792,10 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
     protocol = "ssh" if spec.clone_url.startswith("git@") else urlparse(spec.clone_url).scheme
     if protocol not in {"file", "https", "ssh"}:
         return {}, "validated clone URL has no supported transport"
+    # ``clone`` has no ``-C`` to pin the child's working directory, so the destination's
+    # parent (the scratch root, created above) is named as ``cwd``; the operand is made
+    # absolute so it is not re-resolved against that cwd.
+    dest_where = _git_cwd(dest)
     try:
         proc = subprocess.run(
             [
@@ -787,12 +807,13 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
                 "--origin",
                 "origin",
                 spec.clone_url,
-                str(dest),
+                dest_where,
             ],
             capture_output=True,
             timeout=timeout_s,
             shell=False,
             env=_git_env(network_protocol=protocol),
+            cwd=os.path.dirname(dest_where),
             **UTF8_TEXT,
         )
     except subprocess.TimeoutExpired:
@@ -863,11 +884,12 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
         return [], str(exc)
     if not disabled:
         return [], "clone is not push-disabled"
+    where = _git_cwd(clone)
     proc = subprocess.run(
         [
             "git",
             "-C",
-            str(clone),
+            where,
             "for-each-ref",
             "--format=%(refname:short)",
             "refs/remotes/origin",
@@ -877,6 +899,7 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
         timeout=timeout_s,
         shell=False,
         env=_git_env(),
+        cwd=where,
         **UTF8_TEXT,
     )
     if proc.returncode != 0:
@@ -898,11 +921,12 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
     if not names:
         return [], "no branches found in the clone"
     head = subprocess.run(
-        ["git", "-C", str(clone), "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
+        ["git", "-C", where, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
         capture_output=True,
         timeout=timeout_s,
         shell=False,
         env=_git_env(),
+        cwd=where,
         **UTF8_TEXT,
     )
     default = (head.stdout or "").strip()
@@ -1065,12 +1089,13 @@ def _disable_push(repo: Path) -> None:
     :func:`_ok` / ``assert_push_disabled`` and fails closed if either url survives.
     """
     env = _git_env()
+    where = _git_cwd(repo)
     for key in ("remote.origin.pushurl", "remote.origin.url"):
         subprocess.run(
             [
                 "git",
                 "-C",
-                str(repo),
+                where,
                 *_GIT_SAFE_CONFIG,
                 "config",
                 "--local",
@@ -1082,13 +1107,14 @@ def _disable_push(repo: Path) -> None:
             timeout=30,
             shell=False,
             env=env,
+            cwd=where,
             **UTF8_TEXT,
         )
         subprocess.run(
             [
                 "git",
                 "-C",
-                str(repo),
+                where,
                 *_GIT_SAFE_CONFIG,
                 "config",
                 "--local",
@@ -1101,6 +1127,7 @@ def _disable_push(repo: Path) -> None:
             timeout=30,
             shell=False,
             env=env,
+            cwd=where,
             **UTF8_TEXT,
         )
 
@@ -1148,12 +1175,13 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         # attribute vector and re-introduced the per-call-site drift the shared module removed.
         # Raised by the Opus 5 review.
         require_pinned(clone)
+        where = _git_cwd(clone)
         return subprocess.run(
             [
                 "git",
                 "-C",
-                str(clone),
-                f"--work-tree={clone}",
+                where,
+                f"--work-tree={where}",
                 *_GIT_SAFE_CONFIG,
                 *args,
             ],
@@ -1161,6 +1189,7 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
             timeout=tmo,
             shell=False,
             env=_git_env(),
+            cwd=where,
             **UTF8_TEXT,
         )
 

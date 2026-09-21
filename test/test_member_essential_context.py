@@ -96,14 +96,20 @@ def env(tmp_path, monkeypatch):
         skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
         lessons=LessonStore(base_dir=tmp_path / "lessons"),
     )
-    return SimpleNamespace(
-        builder=builder,
-        store=store,
-        member=cfg.agents["writer"].member_id,
-        project=project,
-        memory=memory,
-        forbidden=forbidden,
-    )
+    try:
+        yield SimpleNamespace(
+            builder=builder,
+            store=store,
+            member=cfg.agents["writer"].member_id,
+            project=project,
+            memory=memory,
+            forbidden=forbidden,
+        )
+    finally:
+        # ``open_member_database`` opens a process-lifetime SQLite connection
+        # plus a store-use lock descriptor that nothing else closes; release
+        # them so each parametrisation does not leak two descriptors.
+        tier.close()
 
 
 @pytest.mark.parametrize(

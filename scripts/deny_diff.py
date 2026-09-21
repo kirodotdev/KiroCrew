@@ -340,6 +340,10 @@ def resolve_checkout(repo_root: Path, ref: str, dest: Path) -> Path:
             ref,
             "src",
         ],
+        # ``-C`` already scopes git to the repository; ``cwd`` makes that the
+        # child's working directory too, so nothing it drops relative to it can
+        # land in whatever directory the caller happened to run the gate from.
+        cwd=repo_root,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -369,6 +373,7 @@ def _rev_parse(repo_root: Path, ref: str) -> str:
     """
     proc = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "--short", ref],
+        cwd=repo_root,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -434,6 +439,10 @@ def classify(
     proc = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), _WORKER_FLAG],
         input=json.dumps(request),
+        # The classifier runs from the tree it classifies, not from wherever the
+        # gate was launched: anything it drops relative to its CWD (a .pyc the
+        # env below already forbids, an audit file) lands in the throwaway tree.
+        cwd=checkout,
         capture_output=True,
         text=True,
         encoding="utf-8",

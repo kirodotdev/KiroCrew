@@ -563,7 +563,13 @@ async def clone_vault(
         validate_remote_url(url),
         dir_,
     ]
-    await run_git(args, pat=pat, timeout=GIT_NETWORK_TIMEOUT_SEC)
+    # The one git call in this module with no repository to run inside yet, so it
+    # is pinned to the clone's parent instead of inheriting the gateway's cwd:
+    # ``dir_`` is absolute and git creates the leaf itself, so the parent is the
+    # only directory the command needs to exist.
+    parent = os.path.dirname(os.path.abspath(dir_))
+    await asyncio.to_thread(os.makedirs, parent, exist_ok=True)
+    await run_git(args, cwd=parent, pat=pat, timeout=GIT_NETWORK_TIMEOUT_SEC)
     vault: dict[str, Any] = {
         "id": vault_id,
         "name": name or repo_name(url),

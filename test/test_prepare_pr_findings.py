@@ -189,7 +189,7 @@ def test_entrypoint_runs_from_an_arbitrary_cwd_without_pythonpath(
 
 @pytest.mark.parametrize("entry_script", (SCRIPT, STATUS_SCRIPT), ids=("pr_findings", "pr_status"))
 def test_entrypoint_ignores_stale_review_contract_bytecode(
-    entry_script: Path, tmp_path: Path
+    entry_script: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Existing bytecode beside the installed skill must not override source."""
     scripts_dir = tmp_path / "installed-skill" / "scripts"
@@ -201,11 +201,22 @@ def test_entrypoint_ignores_stale_review_contract_bytecode(
         'raise RuntimeError("stale review-contract bytecode was imported")\n',
         encoding="utf-8",
     )
-    py_compile.compile(
-        str(contract_path),
-        doraise=True,
-        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    # The stale pyc has to sit where the CHILD will look: ``__pycache__`` beside
+    # the script, since the child runs with ``PYTHONPYCACHEPREFIX`` removed. The
+    # suite's rootdir conftest sets ``sys.pycache_prefix`` in THIS process, and
+    # a bare ``py_compile.compile`` honours it -- so without clearing it the plant
+    # landed in a per-user cache tree the child never reads (a host write, and a
+    # test that could not fail on the defect it guards).
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    stale_pyc = Path(
+        py_compile.compile(
+            str(contract_path),
+            doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+        )
     )
+    assert stale_pyc.parent == scripts_dir / "__pycache__", stale_pyc
+    assert stale_pyc.is_file()
     shutil.copy2(REVIEW_CONTRACT_SCRIPT, contract_path)
 
     target_repo = tmp_path / "target-repo"

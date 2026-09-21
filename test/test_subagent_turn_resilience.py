@@ -1035,6 +1035,11 @@ def test_no_raw_cancel_outside_chokepoint():
         # trigger a respawn (it only ever DISPATCHES via continue_conversation,
         # which cancel_all pre-empts by cancelling watchers first).
         "followup_watcher.cancel()",
+        # The pending async OPEN of the durable task store, cancelled by ``close()``.
+        # It is a store-open task, not a managed run: no terminal marker applies and
+        # cancelling it cannot trigger a respawn. Left pending it would complete after
+        # the close and re-attach the connection this method exists to release.
+        "taskq_open_task.cancel()",
     )
     chokepoint_src = inspect.getsource(subagent_mod.SubagentManager._cancel_task_intentionally)
     assert "task.cancel()" in chokepoint_src
@@ -1051,6 +1056,7 @@ def test_no_raw_cancel_outside_chokepoint():
         and "_reaper_task" not in line
         and "recovery_task" not in line
         and "report_task" not in line
+        and "taskq_open_task" not in line
     ]
     assert len(generic) == 1, (
         f"expected exactly one raw task.cancel() (the chokepoint body), " f"found: {generic}"

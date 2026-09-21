@@ -633,6 +633,24 @@ def _patch_shard_layout(monkeypatch, tmp_path):
     return shard_dir
 
 
+def _unwritable_shard_dir(monkeypatch, tmp_path):
+    """Point the module at a shard directory that can never be created.
+
+    ``tmp_path / "blocker"`` is a regular file, so ``mkdir(parents=True)`` on
+    anything beneath it fails (NotADirectoryError on POSIX, FileExistsError /
+    PermissionError on Windows) -- the same failure shape a read-only data home
+    produces, without borrowing a path such as ``/proc`` on the operator's host.
+    The write attempt therefore stays inside the test's own sandbox.
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    shard_dir = blocker / "usage" / "tokens"
+    assert shard_dir.resolve().is_relative_to(tmp_path.resolve())
+    monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+    _reset_token_cache()
+    return shard_dir
+
+
 def _write_shard(shard_dir: Path, day: str, records):
     (shard_dir / f"{day}.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
@@ -788,10 +806,15 @@ class TestPersistTokenRecord:
         event.input_tokens = 100
         event.output_tokens = 50
 
-        # Point the shard dir at an unwritable location; persist must swallow.
-        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", Path("/proc/nonexistent/usage/tokens"))
+        # Point the shard dir at an uncreatable location; persist must swallow.
+        # A regular FILE where the parent directory should be makes every
+        # ``mkdir(parents=True)`` fail on every platform, and keeps the failing
+        # write under ``tmp_path`` rather than probing a path on the real host.
+        shard_dir = _unwritable_shard_dir(monkeypatch, tmp_path)
         # Should not raise
         persist_token_record(slot_key, model, event)
+        assert not shard_dir.exists()
+        assert (tmp_path / "blocker").is_file(), "the blocker file was replaced"
 
     def test_appends_multiple_records(self, tmp_path, monkeypatch):
         shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
@@ -945,14 +968,14 @@ class TestPersistTokenRecordAsync:
         assert record["input"] == 7
 
     @pytest.mark.asyncio
-    async def test_async_no_crash_on_error(self, monkeypatch):
+    async def test_async_no_crash_on_error(self, tmp_path, monkeypatch):
         event = MagicMock()
         event.input_tokens = 1
         event.output_tokens = 1
-        monkeypatch.setattr(
-            usage_mod, "_TOKEN_USAGE_DIR", Path("/proc/nonexistent/usage/tokens")
-        )
+        shard_dir = _unwritable_shard_dir(monkeypatch, tmp_path)
         await persist_token_record_async("s", "m", event)  # must not raise
+        assert not shard_dir.exists()
+        assert (tmp_path / "blocker").is_file(), "the blocker file was replaced"
 
 
 class TestCachedParseSessions:

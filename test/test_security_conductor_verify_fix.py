@@ -291,7 +291,14 @@ def run_fix(
     timeout: int = 30,
     env: dict[str, str] | None = None,
     extra: list[str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    """Drive the staged ``verify_fix.py`` as the conductor does: a child process.
+
+    ``cwd`` defaults to the worktree -- the directory the conductor launches the
+    gate from -- and is never the checkout this test process inherited. A test
+    that is ABOUT where a relative argument resolves passes its own.
+    """
     argv = [
         sys.executable,
         str(staged / "verify_fix.py"),
@@ -311,7 +318,13 @@ def run_fix(
     if env:
         child.update(env)
     return subprocess.run(
-        argv, capture_output=True, text=True, encoding="utf-8", timeout=300, env=child
+        argv,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+        env=child,
+        cwd=str(cwd or worktree),
     )
 
 
@@ -1134,6 +1147,7 @@ class TestInvalidInputIsTwoNotAVerdict:
             text=True,
             encoding="utf-8",
             timeout=120,
+            cwd=str(tmp_path),
         )
         assert result.returncode == EXIT_INVALID, result.stdout
 
@@ -1156,6 +1170,7 @@ class TestInvalidInputIsTwoNotAVerdict:
             text=True,
             encoding="utf-8",
             timeout=120,
+            cwd=str(tmp_path),
         )
         assert result.returncode == EXIT_INVALID
         assert "not a git checkout" in result.stderr
@@ -1175,6 +1190,7 @@ class TestInvalidInputIsTwoNotAVerdict:
             text=True,
             encoding="utf-8",
             timeout=120,
+            cwd=str(tmp_path),
         )
         assert result.returncode == EXIT_INVALID
         assert "not a directory" in result.stderr
@@ -1795,7 +1811,7 @@ class TestTheContractCannotSteerTheGateThatReadsIt:
         assert "src/kiro_crew/sandbox.py" in payload(result)["contract"]["why"]
 
     def test_a_relative_contract_path_is_resolved_before_it_is_used(
-        self, staged: Path, tmp_path: Path, monkeypatch
+        self, staged: Path, tmp_path: Path
     ) -> None:
         """The child runs with ``cwd`` inside the worktree, so a relative path is a trap.
 
@@ -1814,9 +1830,15 @@ class TestTheContractCannotSteerTheGateThatReadsIt:
         )
         a_golden_path(staged, kind="flow", command="monitor_start")
         install_verifier(staged, VERIFIER_REJECTED)
-        monkeypatch.chdir(outside)
+        # The child's own cwd is what the relative name resolves against, so it is
+        # passed to the child rather than set on the test worker -- a chdir there
+        # is process-wide and outlives a failing assertion.
         result = run_fix(
-            staged, tmp_path / "findings.db", worktree, extra=["--contract", "held.json"]
+            staged,
+            tmp_path / "findings.db",
+            worktree,
+            extra=["--contract", "held.json"],
+            cwd=outside,
         )
         assert result.returncode == EXIT_BROKEN, result.stdout
         body = payload(result)

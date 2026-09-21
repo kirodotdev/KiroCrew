@@ -32,6 +32,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "feature-videos"
@@ -80,6 +81,13 @@ def key_id_of(public_key: Path) -> str:
     der = subprocess.run(
         [openssl_or_skip(), "pkey", "-pubin", "-in", str(public_key), "-outform", "DER"],
         check=True,
+        # Every path this command names is absolute, so ``cwd`` only decides where a
+        # stray file would land -- and inheriting pytest's cwd means that is the
+        # CHECKOUT. ``gettempdir()`` is the run's own isolated base (the rootdir
+        # conftest redirects it), so it is attributable to this run and reclaimed with
+        # it. NOT ``public_key.parent``: for the committed fixture key that is
+        # ``test/fixtures/``, i.e. the checkout again.
+        cwd=tempfile.gettempdir(),
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     ).stdout
@@ -161,6 +169,10 @@ def sign_document(private_key: Path, document: dict, scratch: Path) -> dict:
     signature = subprocess.run(
         [openssl_or_skip(), "dgst", "-sha256", "-sign", str(private_key), str(payload)],
         check=True,
+        # The caller's own scratch dir: a signing run writes nothing beside itself today,
+        # but the working directory of a child this suite spawns must never be the
+        # checkout by default.
+        cwd=scratch,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     ).stdout

@@ -67,6 +67,33 @@ def _native_bash():
     return shutil.which("bash")
 
 
+def _native_powershell(name):
+    """The first *name* on PATH that IS that interpreter, or None.
+
+    ``shutil.which`` answers by NAME, and on a developer host the first ``pwsh`` on
+    PATH is often a version-manager shim (mise, asdf): a symlink to the manager's
+    own binary, which then refuses to run because no toolchain is pinned -- so the
+    shell boundary test ran a shim and failed on the manager's error, while a host
+    with no ``pwsh`` at all skipped. Judging the candidate by the file it RESOLVES
+    to gives the same verdict on every run of one host: a real ``pwsh`` resolves to
+    a file named ``pwsh``, a shim to ``mise``. Same rule as
+    ``test_playwright_cli_installer._native_tool_on_path``. Windows executables
+    carry PATHEXT and have no shim problem, so the ordinary lookup is right there.
+    """
+    if sys.platform == "win32":
+        return shutil.which(name)
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            resolved = (Path(entry) / name).resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.name == name and os.access(resolved, os.X_OK):
+            return str(resolved)
+    return None
+
+
 def test_setup_node_uses_repo_pin_and_version_without_changing_hosted():
     steps = _steps()
     assert len(steps) == 2
@@ -144,7 +171,7 @@ def _checked_probe(probe, accepted):
 
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 def test_powershell_executes_actual_native_bash_probe(tmp_path, shell):
-    powershell = shutil.which(shell)
+    powershell = _native_powershell(shell)
     bash = _native_bash()
     if sys.platform == "win32":
         assert powershell and bash, "Windows must exercise PowerShell and native Git Bash"

@@ -39,6 +39,9 @@ class TestDispatch:
         captured = {}
 
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-west-2"))
+        # Launch inherits the machine's sign-in via ``kiro-cli whoami``; pin the probe so
+        # the flag assertion never runs the host's kiro-cli (Builder ID: no identity).
+        monkeypatch.setattr(cli_cloud, "discover_local_identity", lambda: {})
         monkeypatch.setattr(
             cli_cloud.wizard, "launch", lambda **kwargs: captured.update(kwargs) or 0
         )
@@ -53,6 +56,7 @@ class TestDispatch:
         captured = {}
 
         monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "ap-southeast-1"))
+        monkeypatch.setattr(cli_cloud, "discover_local_identity", lambda: {})
         monkeypatch.setattr(
             cli_cloud.wizard, "launch", lambda **kwargs: captured.update(kwargs) or 0
         )

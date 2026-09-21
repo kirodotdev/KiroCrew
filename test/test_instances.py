@@ -1508,11 +1508,15 @@ def _ssh_effective_config(tmp_path, config_text: str, ssh_args: list[str], host:
     """
     cfg = tmp_path / "ssh_config"
     cfg.write_text(config_text.format(host=host, sock=str(tmp_path / "cm-%r@%h:%p")), "utf-8")
+    # ``cwd=tmp_path``: the real binary is the point of this probe (only ssh can
+    # answer its own precedence rules), so it stays real -- but it runs pinned to
+    # the test's own directory rather than inheriting the worker's checkout cwd.
     out = subprocess.run(
         ["ssh", "-G", "-F", str(cfg), *ssh_args, host],
         capture_output=True,
         text=True,
         timeout=_SSH_CONFIG_PROBE_TIMEOUT_SECS,
+        cwd=tmp_path,
     )
     assert out.returncode == 0, f"ssh -G failed: {out.stderr}"
     # Repeated keys are accumulated, not overwritten: ssh prints one
@@ -1618,6 +1622,7 @@ Host {host}
             capture_output=True,
             text=True,
             timeout=_SSH_CONFIG_PROBE_TIMEOUT_SECS,
+            cwd=tmp_path,
         )
         assert out.returncode == 0, f"production argv broke a working config: {out.stderr}"
         assert "bad configuration option" not in out.stderr.lower()

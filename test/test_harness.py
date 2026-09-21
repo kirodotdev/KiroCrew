@@ -58,6 +58,24 @@ _POSIX_ONLY = pytest.mark.skipif(
 )
 
 
+def _end_descendant_pinned(pid: int, token: str) -> None:
+    """Teardown for a raw descendant pid: SIGKILL it only while it is still ours.
+
+    The tests below publish a grandchild's pid through a pipe and hold nothing
+    else on it -- no ``Popen``, so nothing keeps the number as a zombie once it
+    exits. After the body has proven that pid dead the kernel is free to hand the
+    number to any other process, so a bare ``os.kill(pid, SIGKILL)`` in a
+    ``finally`` would go out on every PASSING run at whatever now holds it. The
+    start-time token captured at spawn is the identity: it reads ``None`` once the
+    process is gone and never matches a different process, so a mismatch means
+    there is nothing of ours left to signal.
+    """
+    if platform_compat.process_start_time(pid) != token:
+        return
+    with contextlib.suppress(OSError):
+        platform_compat.kill_pid_pinned(pid, token, platform_compat.SIGKILL)
+
+
 class FakePopen:
     """Minimal ``subprocess.Popen`` stand-in for ``_wait_for_ready_line``.
 
@@ -316,14 +334,15 @@ def test_terminate_ends_a_descendant_that_left_the_process_group() -> None:
     )
     assert proc.stdout is not None
     escaped_pid = int(proc.stdout.readline().strip())
+    escaped_token = platform_compat.process_start_time(escaped_pid)
+    assert escaped_token is not None
     assert os.getpgid(escaped_pid) != proc.pid, "the child must be outside the group"
     try:
         assert _terminate_process_group(proc) is True
         assert proc.poll() is not None
         assert not platform_compat.pid_exists(escaped_pid), "the escaped child outlived teardown"
     finally:
-        with contextlib.suppress(OSError):
-            os.kill(escaped_pid, signal.SIGKILL)
+        _end_descendant_pinned(escaped_pid, escaped_token)
         with contextlib.suppress(OSError):
             proc.kill()
         proc.wait(timeout=10)
@@ -1338,8 +1357,7 @@ def test_dead_root_ends_saved_in_group_child() -> None:
         assert _terminate_process_group(proc, {child_pid: token}) is False
         assert not platform_compat.pid_exists(child_pid), "the saved child outlived teardown"
     finally:
-        with contextlib.suppress(OSError):
-            os.kill(child_pid, signal.SIGKILL)
+        _end_descendant_pinned(child_pid, token)
         with contextlib.suppress(OSError):
             proc.kill()
         proc.wait(timeout=10)
@@ -1383,8 +1401,7 @@ def test_terminate_preserves_home_after_root_exits() -> None:
         assert _terminate_process_group(proc, {escaped_pid: token}) is False
         assert not platform_compat.pid_exists(escaped_pid), "the saved child outlived teardown"
     finally:
-        with contextlib.suppress(OSError):
-            os.kill(escaped_pid, signal.SIGKILL)
+        _end_descendant_pinned(escaped_pid, token)
         with contextlib.suppress(OSError):
             proc.kill()
         proc.wait(timeout=10)

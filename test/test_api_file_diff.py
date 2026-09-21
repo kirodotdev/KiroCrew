@@ -64,10 +64,16 @@ async def test_sensitive_path_returns_403():
 
 
 @pytest.mark.asyncio
-async def test_file_not_in_git_repo(tmp_path):
+async def test_file_not_in_git_repo(tmp_path, monkeypatch):
     """File outside a git repo returns not_git status."""
     f = tmp_path / "standalone.txt"
     f.write_text("hello")
+    # "Outside a git repo" is a property of the fixture, not of where pytest
+    # keeps its temp root: a `TMPDIR` under a checkout lets git's upward
+    # discovery find THAT repository and answer "untracked". The handler
+    # inherits the environment, so git's own ceiling stops the walk above
+    # `tmp_path` (the ceiling entry itself is never descended into).
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
         req = _req(str(f))
         resp = await api_file_diff(req)

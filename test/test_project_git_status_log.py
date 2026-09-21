@@ -93,6 +93,33 @@ def mock_sel():
         yield m.return_value
 
 
+@pytest.fixture()
+def discovery_stops_at_tmp_path(tmp_path, monkeypatch) -> None:
+    """Bound git's upward repository discovery to the test's own tree.
+
+    "Not a repository" is not a property ``tmp_path`` has on every host: a harness
+    that pins ``TMPDIR`` under the checkout gives it a real ``.git`` among its
+    ancestors. Git's upward discovery then finds THAT repository from a plain
+    directory, from a dangling ``.git`` symlink and from a corrupt ``HEAD`` alike,
+    and the handler runs ``git status`` over the whole checkout -- past its 5 s
+    bound, so the answer was a SIGKILL and a 503 rather than ``repo: false``.
+    ``GIT_CEILING_DIRECTORIES`` is git's own seam for that walk (discovery stops
+    below the named directory) and the handler builds its git environment from
+    ``os.environ``, so the state a test asserts is constructed here rather than
+    assumed of the host. A test's directories are CHILDREN of ``tmp_path`` because
+    git checks its starting directory before consulting the ceiling.
+    """
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+
+
+@pytest.fixture()
+def outside_any_repo(tmp_path, discovery_stops_at_tmp_path) -> Path:
+    """A project directory git sees no repository from, wherever ``tmp_path`` is."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    return plain
+
+
 def _git(cwd, *args) -> None:
     subprocess.run(
         ["git", *args],
@@ -155,9 +182,8 @@ class _ProbeProcess:
 
 class TestGitStatus:
     @pytest.mark.asyncio
-    async def test_non_repo_returns_repo_false(self, tmp_path, mock_sel):
-        plain = tmp_path / "plain"
-        plain.mkdir()
+    async def test_non_repo_returns_repo_false(self, outside_any_repo, mock_sel):
+        plain = outside_any_repo
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
             resp = await client.get(f"/api/project/git/status?path={plain}")
             data = await resp.json()
@@ -201,10 +227,11 @@ class TestGitStatus:
 
     @pytest.mark.asyncio
     async def test_symlink_git_marker_to_missing_target_returns_repo_false(
-        self, tmp_path, mock_sel
+        self, outside_any_repo, tmp_path, mock_sel
     ):
-        project = tmp_path / "missing-target"
-        project.mkdir()
+        # A dangling ``.git`` is no repository here, so discovery walks UP: the
+        # ceiling the fixture set is what keeps it from finding one above.
+        project = outside_any_repo
         absent_target = tmp_path / "absent-target"
         absent_target.mkdir()
         make_dir_link(project / ".git", absent_target)
@@ -257,7 +284,11 @@ class TestGitStatus:
         assert data["code"] == "git_status_unavailable"
 
     @pytest.mark.asyncio
-    async def test_corrupt_head_matches_git_probe(self, repo, mock_sel):
+    async def test_corrupt_head_matches_git_probe(
+        self, repo, mock_sel, discovery_stops_at_tmp_path
+    ):
+        # A corrupt HEAD makes git discard ``proj/.git`` and keep walking up, so
+        # what it finds is decided by the ceiling, not by where tmp_path lives.
         (repo / ".git" / "HEAD").write_text("not a valid HEAD\n")
         probe = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
@@ -774,9 +805,8 @@ class TestGitStatus:
 
 class TestGitLog:
     @pytest.mark.asyncio
-    async def test_non_repo_returns_repo_false(self, tmp_path, mock_sel):
-        plain = tmp_path / "plain"
-        plain.mkdir()
+    async def test_non_repo_returns_repo_false(self, outside_any_repo, mock_sel):
+        plain = outside_any_repo
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
             resp = await client.get(f"/api/project/git/log?path={plain}")
             data = await resp.json()

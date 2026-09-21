@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -76,9 +77,37 @@ def test_path_history_accounts_for_truncated_git_subject(
     assert history["latest"]["subject_truncated"] is True
 
 
-def _run_scan(*args: str) -> subprocess.CompletedProcess[str]:
+def _hermetic_git_env() -> dict[str, str]:
+    """This process's environment with git confined to the repository it is told.
+
+    Handed to the fixture's own ``git`` AND to the scanner child, whose ``run_git``
+    copies ``os.environ`` for the real ``git`` it spawns: the operator's global and
+    system config are pointed away (an ``init.templateDir`` or ``core.hooksPath``
+    there would reach every ``git init`` below), and an inherited ``GIT_DIR`` /
+    ``GIT_WORK_TREE`` is dropped so ``-C <repo>`` cannot be redirected elsewhere.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
+    }
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _run_scan(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run the scanner as its own process, from *cwd* -- a directory the test owns.
+
+    The child inherits nothing from pytest's CWD (the checkout): a scan that
+    resolved a relative root, or a git it ran from the wrong directory, would
+    otherwise answer about this repository instead of the fixture's.
+    """
     return subprocess.run(
         [sys.executable, str(SCAN_PATH), *args],
+        cwd=cwd,
+        env=_hermetic_git_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -91,13 +120,15 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run(
         ["git", "-C", str(root), *args],
         check=True,
+        cwd=root,
+        env=_hermetic_git_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
 
 
 def test_missing_root_fails_closed_without_a_traceback(tmp_path: Path) -> None:
-    result = _run_scan("--root", str(tmp_path / "missing"), "--format", "json")
+    result = _run_scan("--root", str(tmp_path / "missing"), "--format", "json", cwd=tmp_path)
 
     assert result.returncode == 2
     assert "source root is not a directory" in result.stderr
@@ -111,6 +142,10 @@ def test_inventory_failure_is_a_controlled_error(
         raise RuntimeError("git ls-files failed (128)")
 
     monkeypatch.setattr(SCAN, "tracked_files", fail_inventory)
+    # The root discovery runs the host's git against tmp_path before the inventory;
+    # this test is about how main() reports the inventory failing, so the seam is
+    # answered in-process.
+    monkeypatch.setattr(SCAN, "discover_root", lambda start: (start.resolve(), True))
     monkeypatch.setattr(sys, "argv", [str(SCAN_PATH), "--root", str(tmp_path)])
 
     assert SCAN.main() == 2
@@ -119,8 +154,8 @@ def test_inventory_failure_is_a_controlled_error(
     assert "traceback" not in captured.err.lower()
 
 
-def test_invalid_thresholds_are_an_argparse_error() -> None:
-    result = _run_scan("--thresholds", "3000,not-a-number")
+def test_invalid_thresholds_are_an_argparse_error(tmp_path: Path) -> None:
+    result = _run_scan("--thresholds", "3000,not-a-number", cwd=tmp_path)
 
     assert result.returncode == 2
     assert "thresholds must be comma-separated integers" in result.stderr
@@ -281,6 +316,7 @@ def test_nested_root_intersects_explicit_prefix(tmp_path: Path) -> None:
         "src/kiro_crew/acp",
         "--format",
         "json",
+        cwd=tmp_path,
     )
 
     assert result.returncode == 0, result.stderr
@@ -296,7 +332,7 @@ def test_root_dot_matches_every_tracked_source(tmp_path: Path) -> None:
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
 
-    result = _run_scan("--root", str(repo), "--path-prefix", ".", "--format", "json")
+    result = _run_scan("--root", str(repo), "--path-prefix", ".", "--format", "json", cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["totals"]["files"] == 1

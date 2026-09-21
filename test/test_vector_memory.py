@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+import source_corpus
 
 import kiro_crew.embeddings as embeddings_mod
 from kiro_crew.vector_memory import (
@@ -33,10 +34,11 @@ from kiro_crew.vector_memory import (
     _tokenize,
 )
 
-# One xdist worker for the whole module: every test here derives from ONE module-cached
-# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
-# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
-# per full run for this file alone. Grouping keeps the cache single-copy per run.
+# One xdist worker for the whole module: the three package-wide AST guards below
+# (``TestAsyncInitOffloadGuard``, ``TestHandlerOffload1947``) read src/ through
+# ``test/source_corpus.py``'s shared, module-lifetime text cache. Under `--dist loadgroup`
+# an unmarked module is spread across workers and each worker re-pays that read and holds
+# its own copy of the corpus. Grouping keeps the cache single-copy per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_vector_memory")
 
 
@@ -3908,16 +3910,14 @@ class TestAsyncInitOffloadGuard:
         return cls._find_inline_async_lifecycle_calls(tree, {"init"}, where)
 
     def test_no_async_function_calls_init_inline(self) -> None:
-        import ast
-        import inspect
-        from pathlib import Path as _Path
-
-        import kiro_crew
-
-        pkg_root = _Path(inspect.getfile(kiro_crew)).parent
+        # A violation needs a constructor binding (``VectorMemoryStore``) AND an
+        # ``async`` def in the SAME module, so a file whose text lacks either can
+        # never match: parse only the ones that hold both, off the shared corpus.
+        pkg_root = source_corpus.src_root()
         violations: list = []
-        for py in sorted(pkg_root.rglob("*.py")):
-            tree = ast.parse(py.read_text(encoding="utf-8"))
+        for py, _text, tree in source_corpus.parsed_candidates(
+            require_all=("VectorMemoryStore", "async")
+        ):
             rel = py.relative_to(pkg_root.parent)
             violations.extend(self._find_inline_async_inits(tree, where=f"{rel}:"))
         assert not violations, "inline async VectorMemoryStore.init() call(s):\n" + "\n".join(
@@ -3961,12 +3961,13 @@ class TestAsyncInitOffloadGuard:
         assert "S.outer" not in flagged
 
     def test_no_async_function_calls_close_inline_on_a_vector_store(self) -> None:
-        import ast
-
+        # Same narrowing as the init guard: the receiver must be bound from
+        # ``VectorMemoryStore(...)`` in the same module as the ``async`` def.
         root = TestHandlerOffload1947._package_root()
         violations: list[str] = []
-        for path in sorted(root.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+        for path, _text, tree in source_corpus.parsed_candidates(
+            require_all=("VectorMemoryStore", "async")
+        ):
             violations.extend(
                 self._find_inline_async_lifecycle_calls(
                     tree, {"close"}, where=f"{path.relative_to(root)}:"

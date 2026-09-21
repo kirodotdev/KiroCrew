@@ -167,6 +167,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -487,7 +488,13 @@ def gh_json(args: list[str]) -> tuple[Any, str | None]:
 
 
 def git(repo_dir: str, args: list[str]) -> tuple[int, str, str]:
-    return run(["git", "-C", repo_dir, *args])
+    # ``-C`` scopes git to the clone; ``cwd`` makes the clone the child's working
+    # directory as well, so the read runs from inside it rather than from wherever
+    # the conductor happened to launch this script. ABSOLUTE for both: git resolves
+    # ``-C`` against the child's cwd, so a relative path handed to both would be
+    # applied twice (``repo/repo``) and a valid nested clone would read as missing.
+    where = os.path.abspath(repo_dir)
+    return run(["git", "-C", where, *args], cwd=where)
 
 
 # --------------------------------------------------------------------------- #

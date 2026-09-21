@@ -85,26 +85,54 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(scope="session")
-def _throwaway_pair(tmp_path_factory: pytest.TempPathFactory) -> "tuple[Path, Path]":
-    """One throwaway RSA pair for the whole session.
+def _throwaway_pair(tmp_path_factory: pytest.TempPathFactory) -> "tuple[Path, Path, str]":
+    """One throwaway RSA pair for the whole session, with its key id.
 
     Session-scoped because a 3072-bit keygen is ~0.5s and a dozen tests want a
     signing key: minting per test spent most of this file's runtime on openssl.
-    The PINNING stays per-test (below), so no test inherits another's patch.
+    The key id is computed here too, once: ``pin_fixture_key`` recomputes it with
+    an ``openssl pkey`` spawn on every call, and the pair does not change between
+    tests. The PINNING stays per-test (below), so no test inherits another's patch.
     """
-    return fixture.mint_throwaway_key(tmp_path_factory.mktemp("fv-signing-key"))
+    private, public = fixture.mint_throwaway_key(tmp_path_factory.mktemp("fv-signing-key"))
+    return private, public, fixture.key_id_of(public)
+
+
+@pytest.fixture(scope="module")
+def _fixture_key_id() -> str:
+    """The committed fixture key's id, computed once per module (one openssl spawn)."""
+    return fixture.key_id_of(fixture.PUBLIC_KEY_PATH)
+
+
+def _pin(monkeypatch: pytest.MonkeyPatch, public: Path, key_id: str) -> str:
+    """``fixture.pin_fixture_key`` with the key id already known.
+
+    The same three pins, in the same order, minus the per-call ``openssl pkey``
+    spawn that derives the id — the callers above hold a cached one. The openssl
+    pin stays: production resolves it from fixed system directories, and a host
+    whose openssl lives elsewhere would otherwise fail every positive case for a
+    reason unrelated to what it tests.
+    """
+    monkeypatch.setattr(feed_trust, "trusted_system_bin", lambda _n: fixture.openssl_or_skip())
+    monkeypatch.setattr(
+        feed_trust,
+        "PINNED_PUBLIC_KEY_B64",
+        base64.b64encode(public.read_bytes()).decode("ascii"),
+    )
+    monkeypatch.setattr(feed_trust, "PINNED_KEY_ID", key_id)
+    return key_id
 
 
 @pytest.fixture()
-def signing_key(_throwaway_pair: "tuple[Path, Path]", monkeypatch: pytest.MonkeyPatch) -> Path:
+def signing_key(_throwaway_pair: "tuple[Path, Path, str]", monkeypatch: pytest.MonkeyPatch) -> Path:
     """The session key, with ``feed_trust``'s pins repointed at it for this test.
 
     Both halves come from ``feature_video_fixture``, which is also what the
     publishing tool's tests use — one helper, so a key minted here and a key minted
     there cannot differ in a way that hides an encoding disagreement.
     """
-    private, public = _throwaway_pair
-    fixture.pin_fixture_key(monkeypatch, public)
+    private, public, key_id = _throwaway_pair
+    _pin(monkeypatch, public, key_id)
     return private
 
 
@@ -195,8 +223,8 @@ class TestSharedFixture:
     """
 
     @pytest.fixture()
-    def pinned(self, monkeypatch: pytest.MonkeyPatch) -> str:
-        return fixture.pin_fixture_key(monkeypatch)
+    def pinned(self, monkeypatch: pytest.MonkeyPatch, _fixture_key_id: str) -> str:
+        return _pin(monkeypatch, fixture.PUBLIC_KEY_PATH, _fixture_key_id)
 
     def test_the_committed_fixture_verifies_and_parses(self, pinned: str) -> None:
         manifest = manifest_mod.verified_manifest(fixture.load_fixture_manifest())
@@ -257,20 +285,21 @@ class TestSharedFixture:
         signature = subprocess.run(
             [fixture.openssl_or_skip(), "dgst", "-sha256", "-sign", str(signing_key), str(wrong)],
             check=True,
+            cwd=tmp_path,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         ).stdout
         mis_signed = {**document, "signature": base64.b64encode(signature).decode("ascii")}
         assert manifest_mod.verify_manifest(mis_signed) is False
 
-    def test_the_fixture_key_is_not_the_production_trust_root(self) -> None:
+    def test_the_fixture_key_is_not_the_production_trust_root(self, _fixture_key_id: str) -> None:
         """A test key must never be able to become the thing that grants trust.
 
         Asserted WITHOUT the pinning fixture, against the real committed pins: if
         someone ever pasted this key into ``feed_trust``, every fixture-signed
         document would verify on a shipped build.
         """
-        assert fixture.key_id_of(fixture.PUBLIC_KEY_PATH) != feed_trust.PINNED_KEY_ID
+        assert _fixture_key_id != feed_trust.PINNED_KEY_ID
         pem = fixture.PUBLIC_KEY_PATH.read_bytes()
         assert base64.b64encode(pem).decode("ascii") != feed_trust.PINNED_PUBLIC_KEY_B64
 

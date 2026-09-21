@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -75,6 +76,47 @@ def _load(name: str, path: Path):
 
 
 deny_diff = _load("deny_diff", SCRIPT)
+
+
+#: The ``GIT_*`` location variables a hook, wrapper or parent runner may have
+#: exported; inherited by a child they redirect ``git -C <repo>`` away from <repo>.
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
+
+
+def _hermetic_git(monkeypatch) -> None:
+    """Confine every real ``git`` the script spawns to the repository it names.
+
+    The script's git spawns inherit this process's environment. Two things in it
+    must not reach them: the operator's global and system config (a ``core.hooksPath``
+    or ``core.fsmonitor`` there would execute a program from inside ``git archive``),
+    and any ``GIT_*`` location override, which would make ``-C <repo>`` answer about
+    some other repository. Set through ``monkeypatch`` so it unwinds with the test.
+    """
+    for name in _GIT_LOCATION_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+
+def _scratch_repo(tmp_path: Path) -> Path:
+    """A one-commit repository under *tmp_path* for a test that needs a real ref.
+
+    Built with the hermetic environment above already in place (callers apply
+    ``_hermetic_git`` first) and with ``cwd`` inside the temp tree, so the only
+    repository git can see or write is this one.
+    """
+    repo = tmp_path / "scratch-repo"
+    (repo / "src" / "kiro_crew").mkdir(parents=True)
+    (repo / "src" / "kiro_crew" / "__init__.py").write_text("", encoding="utf-8")
+    identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    for args in (
+        ["init", "-q", "-b", "main", "."],
+        ["add", "src"],
+        [*identity, "commit", "-q", "-m", "seed"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, **UTF8_TEXT)
+    return repo
 
 
 #: A whole deny composite, in the shape the worker imports it: a package under
@@ -163,9 +205,13 @@ def staged(tmp_path, monkeypatch):
     Returns a callable taking the corpus rows and returning the report. The
     resolver is monkeypatched on the MODULE, which is the same seam production
     reads, so nothing about the child spawn, the environment scrub or the verdict
-    parsing is bypassed.
+    parsing is bypassed. The provenance lookup is pinned beside it: with the trees
+    hand-built, ``BASE``/``HEAD`` are labels rather than refs, and resolving them
+    would spawn the host's git against the real checkout to decorate a report whose
+    shas these tests never read.
     """
     runs = 0
+    monkeypatch.setattr(deny_diff, "_rev_parse", lambda repo_root, ref: ref)
 
     def run(
         rows: list[dict],
@@ -432,8 +478,16 @@ def test_missing_corpus_file_exits_two(tmp_path):
     assert deny_diff.main(["--base", "HEAD", "--head", "HEAD", "--corpus", str(missing)]) == 2
 
 
-def test_unresolvable_ref_exits_two(tmp_path):
-    """A ref that cannot be archived is an environment error, never 'no regressions'."""
+def test_unresolvable_ref_exits_two(tmp_path, monkeypatch):
+    """A ref that cannot be archived is an environment error, never 'no regressions'.
+
+    Against a scratch repository rather than this checkout: the property is git's
+    refusal of an unknown ref, which any repository exhibits, and the script's
+    ``_repo_root`` is the seam that decides which one it asks.
+    """
+    _hermetic_git(monkeypatch)
+    repo = _scratch_repo(tmp_path)
+    monkeypatch.setattr(deny_diff, "_repo_root", lambda: repo)
     corpus = _corpus(tmp_path / "corpus.json", [_shell("git status --porcelain")])
     code = deny_diff.main(
         ["--base", "refs/heads/no-such-ref-deny-diff", "--head", "HEAD", "--corpus", str(corpus)]
@@ -483,6 +537,7 @@ def test_worker_refuses_a_tree_it_was_not_pointed_at(tmp_path):
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), deny_diff._WORKER_FLAG],
         input=json.dumps(request),
+        cwd=tmp_path,
         capture_output=True,
         env=deny_diff._child_env(tmp_path / "real", tmp_path / "home"),
         **UTF8_TEXT,
@@ -521,21 +576,25 @@ def test_json_rendering_carries_the_rows_and_their_tiers(staged):
     assert "fake rule" in payload["regressions"][0]["head_refusal"]
 
 
-def test_real_composite_finds_no_regressions_between_head_and_itself():
+def test_real_composite_finds_no_regressions_between_head_and_itself(tmp_path, monkeypatch):
     """The corpus names operations the SHIPPED rules allow.
 
     base == head means every verdict is identical by construction, so this cannot
     fail on a comparison bug -- it fails when a row of the corpus is not actually a
     golden path under the current rules, or when the harness cannot materialize a
     ref and classify it at all. Both are things the fake trees never touch.
+
+    This one deliberately archives THIS checkout's HEAD -- that is the property --
+    so the real git it spawns runs under the hermetic environment.
     """
+    _hermetic_git(monkeypatch)
     code = deny_diff.main(
         ["--base", "HEAD", "--head", "HEAD", "--corpus", str(GOLDEN_PATHS), "--json"]
     )
     assert code == 0
 
 
-def test_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path):
+def test_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path, monkeypatch):
     """Stronger than the differential above: no row is refused at HEAD at all.
 
     A row refused at BOTH refs is 'unchanged' to the differential, so it would ride
@@ -548,6 +607,7 @@ def test_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path):
     shell_rows = [r for r in rows if r.kind == "shell" and r.applies_to(platform)]
     assert shell_rows, f"the corpus has no {platform}-applicable shell rows"
 
+    _hermetic_git(monkeypatch)
     checkout = deny_diff.resolve_checkout(ROOT, "HEAD", tmp_path / "head")
     verdicts, absent = deny_diff.classify(
         checkout, [r.command for r in shell_rows], home=tmp_path / "home"

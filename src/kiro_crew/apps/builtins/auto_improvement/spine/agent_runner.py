@@ -1815,9 +1815,11 @@ def author_bug_fix(
     # --porcelain`` reports every change kind (modified, added, staged, untracked), so it
     # is the correct presence check.
     require_pinned(worktree)
+    where = str(Path(worktree).absolute())
     st = subprocess.run(
-        ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, "status", "--porcelain"],
+        ["git", "-C", where, *_GIT_SAFE_CONFIG, "status", "--porcelain"],
         capture_output=True,
+        cwd=where,
         **UTF8_TEXT,
     )
     if not st.stdout.strip():
@@ -1969,9 +1971,13 @@ def author_perf_fix(
     if not res.ok and not is_bounded_exit:
         return False
     require_pinned(worktree)
+    # ``cwd=`` beside ``-C``, the same absolute path for both: the child's working
+    # directory must be the worktree, not whatever the gateway inherited.
+    where = str(Path(worktree).absolute())
     st = subprocess.run(
-        ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, "status", "--porcelain"],
+        ["git", "-C", where, *_GIT_SAFE_CONFIG, "status", "--porcelain"],
         capture_output=True,
+        cwd=where,
         **UTF8_TEXT,
     )
     return bool(st.stdout.strip())

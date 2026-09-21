@@ -5196,7 +5196,17 @@ class TestConfigDirOverride:
         (config_home / "project_dir").write_text(str(proj) + "\n")
 
         monkeypatch.setattr("kiro_crew.cli.config_dir", lambda: config_home)
-        monkeypatch.chdir(tmp_path)  # CWD has no project markers
+        # "CWD has no project markers" has to be pinned, not assumed of tmp_path:
+        # the walk climbs every ancestor, and a temp root under a checkout (a
+        # developer's `TMPDIR=./tmp`) puts the real `skills/` + `src/kiro_crew`
+        # above it. The seam the walk reads is `Path.cwd()`, so it answers a
+        # fabricated, marker-free location; the path is never created because
+        # `resolve()` is lexical for a missing path and nothing here opens it.
+        monkeypatch.setattr(
+            Path,
+            "cwd",
+            classmethod(lambda cls: cls("/kc-detect-project-dir-has-no-markers/cwd")),
+        )
 
         from kiro_crew.cli import _detect_project_dir
 

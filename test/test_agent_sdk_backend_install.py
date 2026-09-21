@@ -631,13 +631,15 @@ class TestProbeCache:
         calls: list[str] = []
         from kiro_crew.acp import client
 
+        # ``probe_backends`` probes EVERY backend, and the pi/codex/self-served resolvers
+        # reach ``_mise_which`` -- the host's ``mise``. Stub the whole table through the
+        # file's one helper, then layer the counting kiro resolver on top.
+        _stub_resolvers(monkeypatch, adapter=(None, "/usr/bin"), claude_cli=None)
         monkeypatch.setattr(
             client,
             "_resolve_kiro_bin",
             lambda **_kw: (calls.append("kiro"), "/usr/local/bin/kiro-cli")[1],
         )
-        monkeypatch.setattr(client, "_resolve_claude_acp_bin", lambda: (None, "/usr/bin"))
-        monkeypatch.setattr(client, "_resolve_claude_code_executable", lambda: None)
         probe.probe_backends()
         assert calls == ["kiro"]
 
@@ -968,9 +970,10 @@ class TestEndpointPayloadShape:
 
         from kiro_crew.acp import client
 
+        # The handler probes EVERY backend; the pi/codex/self-served resolvers would reach
+        # the host's ``mise``. Stub the whole table, then make only kiro's resolver raise.
+        _stub_resolvers(monkeypatch, adapter=(None, "/usr/bin"), claude_cli=None)
         monkeypatch.setattr(client, "_resolve_kiro_bin", _boom)
-        monkeypatch.setattr(client, "_resolve_claude_acp_bin", lambda: (None, "/usr/bin"))
-        monkeypatch.setattr(client, "_resolve_claude_code_executable", lambda: None)
         import kiro_crew.dashboard.handlers.core as core
 
         monkeypatch.setattr(core, "_selectable_acp_backends", lambda: ["", "kas"])

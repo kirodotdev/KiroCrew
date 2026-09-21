@@ -28,6 +28,30 @@ from kiro_crew.apps.builtins.dev_fleet import npm_preflight as np
 _EDQUOT = getattr(errno, "EDQUOT", None)
 
 
+def _real_git(monkeypatch) -> str:
+    """The host's git, ABSOLUTE, with its environment made hermetic -- or skip.
+
+    The tests below ask a real ``git check-ignore`` because ignore resolution is
+    the one thing this module refuses to reimplement, so the binary is genuine.
+    Two things about how it runs are pinned. The path is what ``shutil.which``
+    resolves rather than the bare name production is handed in the field: a shim
+    earlier on PATH would answer for the wrong tool. And the operator's global and
+    system config are pointed away, with any inherited ``GIT_*`` location override
+    dropped: a ``core.hooksPath`` or ``init.templateDir`` there would put the
+    operator's hooks into every ``git init`` these tests perform, and a stray
+    ``GIT_DIR`` would make ``-C <repo>`` answer about some other repository.
+    """
+    found = shutil.which("git")
+    if found is None:
+        pytest.skip("git is unavailable")
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    return found
+
+
 class TestClassify:
     """npm's own error CODES are the signal, so the verdict is the same
     whichever registry is configured."""
@@ -617,7 +641,7 @@ class TestScratchLivesOnTheRepoFilesystem:
         )
         assert not list(elsewhere.iterdir()), "the probe still used TMPDIR"
 
-    def test_the_scratch_name_is_covered_by_gitignore(self):
+    def test_the_scratch_name_is_covered_by_gitignore(self, monkeypatch):
         """A killed process leaves the directory behind, and an untracked
         leftover in the checkout root fail-closes Dev Fleet's "Prune merged"
         -- the same hazard the static/dist staging entries were added for.
@@ -626,13 +650,18 @@ class TestScratchLivesOnTheRepoFilesystem:
         rather than by comparing the rule's text to the prefix: a rule that lost
         its trailing ``*`` still starts with the prefix but matches no generated
         directory, so a textual check can stay green over a broken ignore.
+
+        A read-only question about THIS checkout, which is why it is asked of the
+        checkout rather than a scratch repository.
         """
         root = Path(np.__file__).resolve().parents[5]
-        if not (root / ".git").exists() or shutil.which("git") is None:
-            pytest.skip("not a git checkout, or git is unavailable")
+        if not (root / ".git").exists():
+            pytest.skip("not a git checkout")
+        git = _real_git(monkeypatch)
         generated = f"{np._SCRATCH_PREFIX}ab12cd34"
         proc = subprocess.run(
-            ["git", "-C", str(root), "check-ignore", "--no-index", "-q", "--", generated],
+            [git, "-C", str(root), "check-ignore", "--no-index", "-q", "--", generated],
+            cwd=root,
             capture_output=True,
             timeout=60,
             check=False,
@@ -696,11 +725,10 @@ class TestScratchLivesOnTheRepoFilesystem:
         makes it apply. That condition has its own tests in
         `TestTheRepoRootIsUsedOnlyWhenGitHidesIt`.
         """
-        if shutil.which("git") is None:
-            pytest.skip("git is unavailable")
+        git = _real_git(monkeypatch)
         repo = tmp_path / "checkout"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=60, cwd=str(repo))
+        subprocess.run([git, "init", "-q", str(repo)], check=True, timeout=60, cwd=str(repo))
         (repo / ".gitignore").write_text(f"/{np._SCRATCH_PREFIX}*\n", encoding="utf-8")
         calls: list[object] = []
 
@@ -709,7 +737,7 @@ class TestScratchLivesOnTheRepoFilesystem:
             raise OSError(code, name)
 
         monkeypatch.setattr(np.tempfile, "mkdtemp", boom)
-        rc, detail = np.probe(git="git", npm="/usr/bin/npm", repo=str(repo), ref="origin/main")
+        rc, detail = np.probe(git=git, npm="/usr/bin/npm", repo=str(repo), ref="origin/main")
         assert rc == np.EXIT_NO_SPACE
         assert "scratch" in detail
         assert calls == [str(repo)], f"{name} must not retry in TMPDIR"
@@ -954,20 +982,20 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
     def _repo(self, tmp_path, *, ignored: bool):
         repo = tmp_path / "checkout"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=60, cwd=str(repo))
+        subprocess.run([self.git, "init", "-q", str(repo)], check=True, timeout=60, cwd=str(repo))
         if ignored:
             (repo / ".gitignore").write_text(f"/{np._SCRATCH_PREFIX}*\n", encoding="utf-8")
         return repo
 
     @pytest.fixture(autouse=True)
-    def _needs_git(self):
-        if shutil.which("git") is None:
-            pytest.skip("git is unavailable")
+    def _needs_git(self, monkeypatch):
+        """The real oracle, absolute and hermetic -- see ``_real_git``."""
+        self.git = _real_git(monkeypatch)
 
     def test_a_checkout_carrying_the_rule_hosts_the_scratch(self, tmp_path):
         repo = self._repo(tmp_path, ignored=True)
-        assert np._scratch_name_is_ignored("git", str(repo)) is True
-        path, failure = np._make_scratch("git", str(repo))
+        assert np._scratch_name_is_ignored(self.git, str(repo)) is True
+        path, failure = np._make_scratch(self.git, str(repo))
         assert failure is None and path is not None
         assert path.parent == repo, "a checkout that hides the name should host the scratch"
 
@@ -979,8 +1007,8 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
         elsewhere.mkdir()
         monkeypatch.setenv("TMPDIR", str(elsewhere))
         monkeypatch.setattr(np.tempfile, "tempdir", None)
-        assert np._scratch_name_is_ignored("git", str(repo)) is False
-        path, failure = np._make_scratch("git", str(repo))
+        assert np._scratch_name_is_ignored(self.git, str(repo)) is False
+        path, failure = np._make_scratch(self.git, str(repo))
         assert failure is None and path is not None
         assert path.parent == elsewhere, f"scratch landed in {path.parent}, not TMPDIR"
 
@@ -990,7 +1018,7 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
         that silently reads dirty."""
         plain = tmp_path / "not-a-repo"
         plain.mkdir()
-        assert np._scratch_name_is_ignored("git", str(plain)) is False
+        assert np._scratch_name_is_ignored(self.git, str(plain)) is False
         assert np._scratch_name_is_ignored(str(tmp_path / "no-such-git"), str(plain)) is False
 
     def test_the_sweep_still_runs_when_the_gate_sends_the_probe_to_tmpdir(
@@ -1010,7 +1038,7 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
         elsewhere.mkdir()
         monkeypatch.setenv("TMPDIR", str(elsewhere))
         monkeypatch.setattr(np.tempfile, "tempdir", None)
-        path, failure = np._make_scratch("git", str(repo))
+        path, failure = np._make_scratch(self.git, str(repo))
         assert failure is None and path is not None and path.parent == elsewhere
         assert not gone.exists(), "litter from the un-ignored window was left behind"
 
@@ -1019,7 +1047,7 @@ class TestTheRepoRootIsUsedOnlyWhenGitHidesIt:
         no generated directory, so the question has to carry a suffix."""
         repo = self._repo(tmp_path, ignored=False)
         (repo / ".gitignore").write_text(f"/{np._SCRATCH_PREFIX}\n", encoding="utf-8")
-        assert np._scratch_name_is_ignored("git", str(repo)) is False
+        assert np._scratch_name_is_ignored(self.git, str(repo)) is False
 
 
 class TestTheOutOfRoomMessageNamesBothBudgets:

@@ -267,27 +267,37 @@ class TestDrainOversizeLine:
 
 @_POSIX_ONLY
 class TestResolveSshAuthSock:
-    def test_live_socket_is_kept(self, short_sock_dir):
-        sock_path = short_sock_dir / "live.sock"
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
-            srv.bind(str(sock_path))
+    # ``_resolve_ssh_auth_sock`` only ``stat``s the paths it is handed, so the
+    # sockets can live under ``tmp_path`` at any length. Only ``bind()`` is
+    # capped by ``sun_path`` (~104 bytes on macOS, 108 on Linux), and that cap
+    # applies to the string passed to bind, not to where the file lands -- so
+    # bind through a RELATIVE name with the CWD pinned to ``tmp_path`` and hand
+    # production the absolute path. Nothing is written outside the sandbox.
+
+    @staticmethod
+    def _bind_under(tmp_path, monkeypatch, name: str) -> socket.socket:
+        monkeypatch.chdir(tmp_path)
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.bind(name)
+        except OSError:
+            s.close()
+            raise
+        # The bound endpoint landed under tmp_path, not under a host root.
+        assert stat.S_ISSOCK(os.stat(tmp_path / name).st_mode)
+        return s
+
+    def test_live_socket_is_kept(self, tmp_path, monkeypatch):
+        sock_path = tmp_path / "live.sock"
+        with self._bind_under(tmp_path, monkeypatch, "live.sock"):
             env = {"SSH_AUTH_SOCK": str(sock_path)}
             _resolve_ssh_auth_sock(env)
         assert env["SSH_AUTH_SOCK"] == str(sock_path)
 
-    def test_stale_pointer_is_repaired_to_newest_socket(
-        self, tmp_path, short_sock_dir, monkeypatch
-    ):
-        # Bound endpoints must live under a short root (sun_path cap); the
-        # "gone.sock" pointer below never binds, so it can stay on tmp_path.
-        old, new = short_sock_dir / "agent.1", short_sock_dir / "agent.2"
-        socks = []
-        for path in (old, new):
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.bind(str(path))
-            socks.append(s)
+    def test_stale_pointer_is_repaired_to_newest_socket(self, tmp_path, monkeypatch):
+        old, new = tmp_path / "agent.1", tmp_path / "agent.2"
+        socks = [self._bind_under(tmp_path, monkeypatch, path.name) for path in (old, new)]
         try:
-            assert stat.S_ISSOCK(os.stat(old).st_mode)
             os.utime(old, (1_000_000, 1_000_000))
             os.utime(new, (2_000_000, 2_000_000))
             monkeypatch.setattr(

@@ -37,6 +37,11 @@ def _neutralize_sandbox_env(monkeypatch):
         "_KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
+    # ``_build_launcher_script`` asks the HOST's ``ssh -V`` whether it knows
+    # ``StrictHostKeyChecking=accept-new``. Nothing here is about that probe, and
+    # a real ssh spawned from the test process is a host dependency the launcher
+    # text must not vary with -- pin the answer so no binary runs.
+    monkeypatch.setattr(_sb_mod, "_ssh_supports_accept_new", lambda: True)
 
 
 class TestCcDirsList:

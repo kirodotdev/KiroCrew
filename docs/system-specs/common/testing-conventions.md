@@ -1138,9 +1138,11 @@ found these further classes. Each one passed on the host that wrote it.
   `spec_from_file_location` + `exec_module` writes `__pycache__` beside it —
   `packaging/signing/`, `.github/scripts/`. Wrap the `exec_module` in a scoped
   `sys.dont_write_bytecode = True`.
-- **Unbounded `lru_cache`s in a script under test.** `scripts/leaf_test_scope.py` caches the
-  text of every `.py` it scans, exactly right for one CLI run and wrong for a long-lived
-  worker; the test module clears them at module teardown.
+- **Unbounded `lru_cache`s in a script under test.** `scripts/leaf_test_scope.py` used to
+  cache the TEXT of every `.py` it scans, exactly right for one CLI run and wrong for a
+  long-lived worker (143 MB retained, +291 MiB on one test); it now streams each file and
+  caches only the derived name index, and the test module still clears the caches at module
+  teardown.
 - **Electron: an unref'd backstop timer, and a lazy binary download.** `stopGatewayGracefully`
   bounded a never-settling tree kill with a `setTimeout(...).unref()`; an unref'd timer
   cannot keep the loop alive, so when nothing else was pending the loop drained before the
@@ -1922,6 +1924,117 @@ runs KILLED mid-session on the same host (zero of fifty-five floors leaked from 
 finished), and the computer-use host catalog probing `Program Files` at import is the
 product's own capability probe, transient and by design.
 
+### What a seventh five-run pass found (Linux, 16 workers, 122,426 tests per run)
+
+Five backend runs plus five frontend runs (36,093 vitest, 1,959 Electron) on a 32-core
+Linux host, under a per-test audit-hook probe, with the run root pinned under the worktree.
+Counts were identical across all five runs — 121,905 ± 2 passed, **74 failed in every
+run**, zero pass/fail flakes in ~612k backend test executions — so every class below is a
+property of the code or the host, never a race. Two properties of the measurement shaped
+what it could see, and both are worth reusing:
+
+- **`TMPDIR` pinned under the checkout is a probe, not an accident.** It is what exposed
+  the largest class here (66 of the 74 always-red tests), and the fixes are real hardening
+  rather than accommodation: a developer whose `TMPDIR` is `./tmp` hits the same wall.
+  Every fix was verified BOTH ways — under the pinned root and under the default one.
+- **A relative path in an audit event is not a cwd write.** The probe attributed
+  `os.remove("b.txt")` from `shutil.rmtree`'s fd-walk, and every leaf name this repo's
+  pinned-`dir_fd` writers open, to the process cwd — which for a pytest worker is the
+  checkout. That single mistake produced the report's biggest "class" (43,527 tests) with
+  **zero real members**, and it spent the per-test event budget so 1,324 tests came back
+  under-measured, hiding real findings behind the noise. A probe must treat a path it
+  cannot attribute as unattributable and say so.
+
+- **A test must not assume `tmp_path` is outside a repository.** Any fixture whose verdict
+  comes from an UPWARD walk — nearest `.git`, `install.sh` + `setup.cfg`, project markers
+  from the cwd, git's own repository discovery, repo-relative keying — silently inherits
+  the enclosing checkout when the temp root sits under one, and answers about the host
+  instead of about the code. It is worse in a LINKED worktree, where the `.git` the walk
+  finds is a FILE, so a marker probe declines before the arm under test ever runs. Fix:
+  pin the boundary the walk reads inside the fixture — plant the nearest marker, give the
+  directory a git-accepted `.git`, or use the walk's own seam. The floor now sets
+  `GIT_CEILING_DIRECTORIES` to this run's temp roots so git discovery cannot climb out of
+  `tmp_path` by default, and `--confcutdir` + an explicit `-c <ini>` do the same for a
+  nested pytest session, whose rootdir would otherwise become the repository and whose
+  `addopts` (`--color=yes`) would reshape the very output the outer test greps.
+  NOT the fix: moving the temp root.
+- **A stub for an `os.*` function reached through a module alias replaces the
+  PROCESS-GLOBAL original.** `monkeypatch.setattr("<module>.os.unlink", ...)` patches the
+  stdlib, and a stub whose fallthrough narrows the signature (`os.remove(path)`, dropping
+  `dir_fd`) re-aims pytest's own fd-relative `rmtree` at the cwd — the only absolute write
+  into the checkout the whole pass found, deleting real files there and leaving the tmp dir
+  behind. Fix: intercept only the owned path and forward every other call to the saved real
+  function with `*args, **kwargs` intact, and assert a bare relative name never reaches the
+  stub. The same shape disables cleanup wholesale when the patched function is `os.close`.
+- **Bytecode for a source under `tmp_path` accumulates forever in the per-user mirror.**
+  `sys.pycache_prefix` is keyed on the source's absolute path, and a `tmp_path` module's
+  path is new every run, so each run left one more dead tree: 14,816 orphaned `.pyc` files,
+  5.3 GB, across 161 dead run roots on the host that found it. The suite compiles throwaway
+  sources on purpose, so the answer is not to stop: the writer owns the retirement, and
+  `pytest_sessionfinish` now prunes the mirror subtrees keyed on this run's temp roots. A
+  test that asserts the SHIPPED `__pycache__`-beside-source layout clears
+  `sys.pycache_prefix` for its own duration instead.
+- **A fixture that needs a SHORT temp path must not reach for a literal `/tmp`.** An
+  `AF_UNIX` `sun_path` caps the bind string at 108 bytes (104 on macOS) and a path asserted
+  in message metadata must not trip `redact_credentials()`, so ~40 sites used
+  `mkdtemp(dir="/tmp")` — anonymous directories that no run owns, on a host whose `/tmp` is
+  reaped mid-session. `tempfile.gettempdir()` cannot serve: under a long `TMPDIR` the socket
+  path is already 122 bytes. The floor now mints ONE run-owned short root under the platform
+  temp root carrying the `kc-pytest-<user>-<pid>-` stem the residue guard recognises, and
+  `tmpdir_helpers.short_tmp_base()` is the single seam that returns it.
+- **`kill` is classified by CALLER and by who spawned the target, never by the signal.**
+  A signal 0 from the repo's own `pid_exists`/`pid_liveness` helper is a liveness probe
+  (1,149 of 1,185 recorded events came from ONE background sweep thread, attributed to
+  whichever test was running), and a signal aimed at a process the test's own `Popen`/`fork`
+  created is correct teardown. Two real defects hid in that volume: a raw
+  `os.kill(pid, 0)` in TEST code — forbidden outright, since it TERMINATES the target on
+  Windows — and a `finally` that SIGKILLed a raw grandchild pid the body had already proven
+  dead, firing a stray signal at whatever now holds that number on every passing run. Fix
+  the first by routing through `platform_compat`; the second by capturing the target's
+  identity at spawn and revalidating before signalling.
+- **A test that reaches a real host binary is two findings, and the missing `cwd=` is the
+  smaller one.** Pin the production seam that RESOLVES the tool (`trusted_system_bin`,
+  `_mise_which`, `_ssh_supports_accept_new`, `_gh_prefers_ssh`) to an argv-recording fake
+  under `tmp_path` so the binary is never reached; keep only the spawns whose real behaviour
+  IS the assertion (git's ignore and ancestry semantics, openssl's DER output), and give
+  those — production helper included — a `cwd=` the test owns. `cwd=` alone leaves a live
+  `gh` token in play.
+- **A skip whose condition is a clock or a scheduler flips without any test failing.** Three
+  tests skipped in some runs and passed in others: a ctime tick, whether a real `npm`
+  answered in time, whether an earlier test had armed a fork hook in that worker. No
+  assertion ever failed, so nothing was red. Fix: make the test BUILD the condition it needs
+  — construct the observation through the production seam, resolve the capability from what
+  is on disk, or run the measurement in a fresh interpreter — so the gate reaches the same
+  verdict on every run of one host, and a timeout becomes a failure rather than a skip.
+- **A whole-tree scan that memoizes file TEXT retains ~2 bytes per character for the
+  process lifetime.** `scripts/leaf_test_scope.py`'s unbounded `lru_cache` held every `.py`
+  under `src/`, `test/` and `scripts/` — 143 MB — to answer one question per file. Fix:
+  stream the read and cache only the derived answer (a name index), which took the per-test
+  delta from +291 MiB to +22 MiB and the module's wall clock from 32.6 s to 14.1 s. A
+  ratchet changed this way must be re-proven by planting the violation it exists to catch.
+- **A test whose network stub covers only some fetch seams still reaches the network.**
+  A passing test fetched from `raw.githubusercontent.com` because it routed the JSON and
+  text seams while the search → commit → tree → BLOB walk used the third. Rank before
+  fixing: a routable address is genuine egress, while a UDP connect to RFC 5737 TEST-NET is
+  the packet-less local-IP-discovery trick and a hardening item. Refuse the opener in an
+  autouse fixture, route EVERY seam the walk can take, and assert the address the code would
+  have used.
+- **A process-lifetime handle the object under test opened is the harness's to close.**
+  185 tests leaked descriptors in at least four of the five runs: a member vector DB, a
+  lazily-opened search index, and `SubagentManager`'s durable task queue (a SQLite
+  connection plus a writer thread) which had NO close path at all — a real production gap,
+  now `SubagentManager.close()`. Fix at the seam the object exposes, attached to the fixture
+  that built it; never `gc.collect()` to make the number drop.
+
+Three classes the pass proved were NOT defects, so the next one does not re-litigate them.
+`thread_delta` whose new threads are all NAMED pool workers plateauing at the pool's
+`max_workers` is lazy bounded-pool warming. An `env` delta naming only `XDG_RUNTIME_DIR`
+and `DBUS_SESSION_BUS_ADDRESS` is the session floor's own pop-and-restore, attributed to
+whichever test ran first and last on the worker — moving a different file to the front moves
+the finding with it, and converting that floor to function scope would reopen the hazard it
+documents. And the hypothesis example database under the per-user cache root is deliberate
+persistence so a shrunk counterexample replays; a harness that wants it inside its sandbox
+pins `XDG_CACHE_HOME`, rather than each test opting out.
 ### What an eighth five-run pass found (macOS, eight workers, ~121k tests per run)
 
 A Linux pass ran on another machine at the same time and claims the seventh slot
@@ -2042,12 +2155,15 @@ negative control before it was believed, and that is what caught them.
   attempt and a bare `tmp-` on the second. The rule that follows is the SUITE's, not the
   filter's: a tool that must recognise the suite's own directories needs the suite to SAY
   whose they are, because a rule built from a sample of them is wrong by construction the
-  next time a fixture is added. Which name the suite says it with is still open across two
-  PRs — [#12399](https://github.com/kirodotdev/KiroCrew/pull/12399) gives the short-rooted
-  fixtures one new stem of their own,
-  [#12425](https://github.com/kirodotdev/KiroCrew/pull/12425) mints a run-owned short root
-  under the per-run stem the residue guard already recognises. Either satisfies the rule; the
-  second adds no vocabulary, so prefer it unless a fixture needs a name of its own.
+  next time a fixture is added. Both halves of the answer are now in the tree:
+  [#12399](https://github.com/kirodotdev/KiroCrew/pull/12399) gives the short-rooted
+  fixtures one shared stem (`SHORT_TMP_PREFIX`) with two ratchets pinning every caller to
+  it, and [#12425](https://github.com/kirodotdev/KiroCrew/pull/12425) mints a run-owned
+  short root under the per-run stem the residue guard already recognises. They compose, and
+  each answers a question the other cannot: the root says WHICH RUN made the directory and
+  who removes it, the prefix says WHICH FIXTURE inside it — which still matters wherever the
+  root is absent (outside a pytest run, or in a checkout whose conftest predates it), since
+  both fall back to the shared system temp dir.
 
 #### What the always-red set actually was
 

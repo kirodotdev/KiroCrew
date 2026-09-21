@@ -24,6 +24,7 @@ import pytest
 from real_adapter_gate import MEASURED_OPENCODE_VERSION, require_real_adapter
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import platform_compat
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
@@ -1069,7 +1070,7 @@ def test_real_opencode_acp_accepts_the_crew_stdio_element():
     )
 
 
-def test_the_real_adapter_guard_is_reachable_at_all():
+def test_the_real_adapter_guard_is_reachable_at_all(monkeypatch):
     """A skip-only guard is a guard nobody notices has stopped running.
 
     This does not assert the harness is installed -- most runners have none, and
@@ -1077,9 +1078,16 @@ def test_the_real_adapter_guard_is_reachable_at_all():
     instead. It asserts the RESOLVER the guard
     reads is the spawn's own, so a rename there cannot turn the guard permanently
     green without anyone seeing it.
+
+    The resolver's mise rung is pinned to "not registered": what is under test is
+    the ladder's shape and reachability, and the real rung runs the host's ``mise``
+    binary from this test's process -- a host program this test has no business
+    starting (test-hygiene class 7).
     """
+    from kiro_crew.acp import client as client_mod
     from kiro_crew.acp.client import _resolve_self_served_bin
 
+    monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
     resolved, search = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
     assert resolved is None or isinstance(resolved, str)
     assert isinstance(search, str)
@@ -1114,11 +1122,14 @@ time.sleep(300)
         assert time.monotonic() - started < 90
         grandchild = int((result.stdout or "").strip().splitlines()[0])
 
+    # Liveness through the repo's own probe (AGENTS.md "Cross-platform"): a raw
+    # ``os.kill(pid, 0)`` is a POSIX idiom that TERMINATES the target on Windows,
+    # and the sweep's caller filter recognises only the sanctioned helper.
+    # ``PID_UNSIGNALABLE`` counts as gone, like a bare ``OSError``: the grandchild
+    # was ours, so a number this process cannot signal is not it.
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(grandchild, 0)
-        except OSError:
+        if platform_compat.pid_liveness(grandchild) != platform_compat.PID_ALIVE:
             break
         time.sleep(0.2)
     else:  # pragma: no cover - the failure this test exists to catch

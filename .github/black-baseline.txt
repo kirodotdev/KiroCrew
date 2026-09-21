@@ -833,7 +833,6 @@ test/test_sandbox_launcher_sweep.py
 test/test_sandbox_probe.py
 test/test_sandbox_remedy.py
 test/test_sandbox_unsandboxed_exec_consent.py
-test/test_scenarios_v2.py
 test/test_scenarios_v2_logic.py
 test/test_search_sessions_cost.py
 test/test_sel.py

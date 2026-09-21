@@ -1180,9 +1180,13 @@ def test_credential_transport_env_prevents_askpass_from_seeing_secret(tmp_path):
     public_url = "https://example.invalid/o/demo.git"
     marker = tmp_path / "askpass-marker"
     askpass = tmp_path / "askpass"
+    # The marker is named ABSOLUTELY, like the hook markers above: git runs an
+    # askpass helper from the repository top level when it discovers one, and a
+    # `tmp_path` under a checkout (a developer's `TMPDIR=./tmp`) would land a
+    # cwd-relative marker -- carrying the secret -- at that checkout's root.
     askpass.write_text(
         "#!/bin/sh\n"
-        'printf "%s" "$GIT_CONFIG_KEY_1" > askpass-marker\n'
+        f'printf "%s" "$GIT_CONFIG_KEY_1" > "{marker}"\n'
         'printf "supplied\\n"\n',
         encoding="utf-8",
     )

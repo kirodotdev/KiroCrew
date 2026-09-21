@@ -442,6 +442,21 @@ class TestRepoScope:
         (repo / ".git").mkdir()
         return repo
 
+    def _other_repo(self, tmp_path: Path, name: str) -> Path:
+        """A project that is some OTHER repository, wherever ``tmp_path`` lives.
+
+        The gate walks a project's ancestors up to the first ``.git``. A bare
+        directory under ``tmp_path`` has no boundary of its own, so whether the
+        walk finds ``src/kiro_crew`` above it is decided by the host: a harness that
+        pins ``TMPDIR`` under this checkout puts the real one in every ancestor
+        chain. Giving the project its own ``.git`` models what "outside the repo"
+        means to the gate -- a different repository -- and stops the walk there.
+        """
+        other = tmp_path / name
+        other.mkdir()
+        (other / ".git").mkdir()
+        return other
+
     def test_scoped_skill_suppressed_without_a_project(self, tmp_path: Path) -> None:
         # No project named at all -> fail closed. An un-scoped surface (eval
         # harness, a session with no project set) never inherits repo rules.
@@ -454,8 +469,7 @@ class TestRepoScope:
         skills = tmp_path / "skills"
         self._write_skill(skills, "repo-only", "src/kiro_crew")
         loader = SkillsLoader(skills_path=skills, install_builtins=False)
-        outside = tmp_path / "elsewhere"
-        outside.mkdir()
+        outside = self._other_repo(tmp_path, "elsewhere")
         assert loader.get_triggered_skills("zebra quokka", project_dir=str(outside)) == []
 
     def test_scoped_skill_eligible_inside_repo(self, tmp_path: Path) -> None:
@@ -479,8 +493,7 @@ class TestRepoScope:
         cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
         loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
         monkeypatch.chdir(self._repo(tmp_path))
-        other = tmp_path / "some-rust-project"
-        other.mkdir()
+        other = self._other_repo(tmp_path, "some-rust-project")
         assert loader.get_triggered_skills("zebra quokka") == []
         assert loader.get_triggered_skills("zebra quokka", project_dir=str(other)) == []
 
@@ -490,8 +503,7 @@ class TestRepoScope:
         skills = tmp_path / "skills"
         self._write_skill(skills, "repo-only", "src/kiro_crew", always=True)
         loader = SkillsLoader(skills_path=skills, install_builtins=False)
-        other = tmp_path / "some-rust-project"
-        other.mkdir()
+        other = self._other_repo(tmp_path, "some-rust-project")
         assert loader.get_always_skills() == []
         assert loader.get_always_skills(str(other)) == []
         assert loader.get_always_skills(str(self._repo(tmp_path))) == ["repo-only"]
@@ -519,8 +531,7 @@ class TestRepoScope:
         self._write_skill(skills, "anywhere", None)
         cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
         loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
-        other = tmp_path / "some-rust-project"
-        other.mkdir()
+        other = self._other_repo(tmp_path, "some-rust-project")
         for block in (
             loader.get_context(project_dir=str(other)),
             loader.get_context(budget=100_000, project_dir=str(other)),

@@ -4868,25 +4868,67 @@ def test_trusted_system_bin_resolves_outside_fhs(tmp_path, monkeypatch):
     assert platform_compat.trusted_system_bin("definitely-not-a-system-tool") == str(tool)
 
 
-def test_root_owned_path_accepts_a_system_dir_and_rejects_a_user_one(tmp_path):
+def _root_owned_everywhere_except(*user_owned: Path):
+    """An ``os.stat`` that presents the filesystem as root's, bar *user_owned*.
+
+    Every directory on the way to a fixture -- ``/``, the temp root, ``tmp_path``
+    -- answers as root-owned with no group or world write bit, so a fixture BELOW
+    ``tmp_path`` can stand in for a system directory; the named paths keep their
+    real ``st_uid`` so a user-owned directory is still a user-owned directory.
+    Faked rather than read from ``/usr/bin``, because that directory's ownership
+    is a property of the RUNNER: a sandboxed or user-namespaced host presents it
+    as another uid's, and the world-writable temp root under which fixtures live
+    (``/tmp``, mode 1777) puts ``S_IWOTH`` on an ancestor. Either fails the gate
+    for a property of the machine rather than of the code.
+    """
+    real_stat = os.stat
+    keep = {os.path.realpath(str(p)) for p in user_owned}
+
+    def fake_stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if os.path.realpath(str(path)) in keep:
+            return st
+        return os.stat_result(
+            (st.st_mode & ~(stat.S_IWGRP | stat.S_IWOTH), st.st_ino, st.st_dev, st.st_nlink, 0, 0)
+            + tuple(st)[6:]
+        )
+
+    return fake_stat
+
+
+def test_root_owned_path_accepts_a_system_dir_and_rejects_a_user_one(tmp_path, monkeypatch):
     """The gate that makes the ``/usr/local/bin`` fallback safe.
 
-    Asserted against real paths rather than a fake ``os.stat``: the whole value of
-    this predicate is that it reads the filesystem the exec would.
+    The system directory is a fixture presented as root's through ``os.stat`` --
+    see ``_root_owned_everywhere_except`` for why it is not ``/usr/bin`` -- while
+    the user directory keeps its REAL ownership, so the two verdicts turn on the
+    one property that separates them.
     """
     from kiro_crew import platform_compat
 
     if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
         pytest.skip("POSIX ownership semantics")
 
-    assert platform_compat._is_root_owned_path("/usr/bin") is True
-    # tmp_path is the test user's, so it fails on ownership alone.
-    assert platform_compat._is_root_owned_path(str(tmp_path)) is False
-    # ... and a root-owned leaf under it would still fail, because the directory
-    # is what governs replacing the file.
-    leaf = tmp_path / "aws"
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    leaf = user_dir / "aws"
     leaf.write_text("#!/bin/sh\nexit 0\n")
     leaf.chmod(0o755)
+
+    # The access probe reads the REAL filesystem, where these fixtures belong to
+    # the test user, so it would answer False for its own reason. Stubbed to the
+    # answer the fake ownership implies, leaving this test's own mechanism as the
+    # only thing that can decide the verdict.
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", _root_owned_everywhere_except(user_dir))
+
+    assert platform_compat._is_root_owned_path(str(system_bin)) is True
+    # The user directory is the test user's, so it fails on ownership alone.
+    assert platform_compat._is_root_owned_path(str(user_dir)) is False
+    # ... and a root-owned leaf under it still fails, because the directory is
+    # what governs replacing the file.
     assert platform_compat._is_root_owned_path(str(leaf)) is False
 
 
@@ -5157,21 +5199,32 @@ def test_root_owned_path_declines_a_writable_ancestor_of_a_symlinked_component(
     assert platform_compat._is_root_owned_path(str(entry)) is False
 
 
-def test_root_owned_path_accepts_a_real_system_binary(tmp_path):
+def test_root_owned_path_accepts_a_real_system_binary(tmp_path, monkeypatch):
     """The gate must still say yes to an ordinary root-owned install.
 
     A predicate that refuses everything satisfies every rejection test above while
-    making the whole fallback dead. ``/usr/bin/env`` is POSIX-mandated and reached
-    through real directories, so it is the honest positive case.
+    making the whole fallback dead. The positive case is a REGULAR-FILE binary
+    reached through plain directories (no symlink on the chain, which the
+    absolute-symlink test covers): every component root-owned, verdict True.
+    Presented through ``os.stat`` rather than read from ``/usr/bin/env`` -- see
+    ``_root_owned_everywhere_except`` for why the real directory cannot serve.
     """
     from kiro_crew import platform_compat
 
     if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX layout
         pytest.skip("POSIX filesystem layout")
 
-    assert platform_compat._is_root_owned_path("/usr/bin") is True
-    if os.path.exists("/usr/bin/env"):
-        assert platform_compat._is_root_owned_path("/usr/bin/env") is True
+    system_bin = tmp_path / "usr" / "bin"
+    system_bin.mkdir(parents=True)
+    env_bin = system_bin / "env"
+    env_bin.write_bytes(b"\x7fELF-not-a-script\n")
+    env_bin.chmod(0o755)
+
+    monkeypatch.setattr(os, "access", lambda path, mode, **kw: False)
+    monkeypatch.setattr(os, "stat", _root_owned_everywhere_except())
+
+    assert platform_compat._is_root_owned_path(str(system_bin)) is True
+    assert platform_compat._is_root_owned_path(str(env_bin)) is True
 
 
 def test_root_owned_path_declines_a_group_writable_directory_on_the_chain(tmp_path, monkeypatch):
