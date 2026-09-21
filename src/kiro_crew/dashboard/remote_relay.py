@@ -522,6 +522,7 @@ async def create_peer_slot(
     instance_id: str,
     *,
     agent: str = "",
+    agent_kind: str = "",
     model: str = "",
     memory_mode: str = "persistent",
 ) -> str:
@@ -546,6 +547,8 @@ async def create_peer_slot(
     create_body: dict[str, str] = {"memory_mode": memory_mode}
     if agent:
         create_body["agent"] = agent
+    if agent_kind:
+        create_body["agent_kind"] = agent_kind
     if model:
         create_body["model"] = model
     try:

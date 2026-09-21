@@ -289,6 +289,9 @@ def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     agent = row.get("agent")
     if isinstance(agent, str) and agent:
         out["agent"] = redact_peer_text(sanitize_string(agent))[:128]
+    agent_kind = row.get("agent_kind")
+    if agent_kind in ("member", "template"):
+        out["agent_kind"] = agent_kind
     title = row.get("title")
     if isinstance(title, str) and title:
         out["title"] = redact_peer_text(sanitize_string(title))[:200]

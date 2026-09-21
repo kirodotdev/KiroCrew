@@ -936,6 +936,7 @@ class TestBindingAuthorization:
             state,
             "nobita",
             agent="",
+            agent_kind="",
             model="",
             memory_mode="temporary",
         )
@@ -1172,6 +1173,7 @@ class TestBoundCreateDefaults:
         # peer is told to apply its own default.
         assert peer.await_args.kwargs == {
             "agent": "",
+            "agent_kind": "",
             "model": "",
             "memory_mode": "persistent",
         }
@@ -1196,12 +1198,19 @@ class TestBoundCreateDefaults:
             body = await (
                 await client.post(
                     "/api/chat/slots",
-                    json={"name": "chat-1", "instance_id": "nobita", "agent": "peer-crew"},
+                    json={
+                        "name": "chat-1",
+                        "instance_id": "nobita",
+                        "agent": "peer-crew",
+                        "agent_kind": "template",
+                    },
                 )
             ).json()
 
         assert body["agent"] == "peer-crew"
         assert peer.await_args.kwargs["agent"] == "peer-crew"
+        assert body["agent_kind"] == "template"
+        assert peer.await_args.kwargs["agent_kind"] == "template"
 
 
 class TestRemotePickApplication:
@@ -1323,7 +1332,11 @@ class TestRemotePickApplication:
         await _apply_remote_pick(_owner_request(state), state, slot, "agent", {"agent": "reviewer"})
 
         written = state.conversation_log.update_metadata.call_args.args[1]
-        assert written == {"agent": "reviewer", "workspace": "peer-ws"}
+        assert written == {
+            "agent": "reviewer",
+            "agent_kind": "",
+            "workspace": "peer-ws",
+        }
 
     @pytest.mark.asyncio
     async def test_an_accepted_pick_is_mirrored_on_the_slot(self, tmp_path, forward):
@@ -1340,6 +1353,7 @@ class TestRemotePickApplication:
         assert json.loads(resp.body.decode()) == {
             "ok": True,
             "agent": "reviewer",
+            "agent_kind": "",
             "remote": True,
         }
         assert slot.agent == "reviewer"
@@ -1521,6 +1535,7 @@ class TestCreatePeerSlot:
             state,
             "nobita",
             agent="reviewer",
+            agent_kind="template",
             model="opus",
             memory_mode="temporary",
         )
@@ -1528,6 +1543,7 @@ class TestCreatePeerSlot:
         _, kwargs = mgr.proxy_request.call_args
         assert json.loads(kwargs["data"]) == {
             "agent": "reviewer",
+            "agent_kind": "template",
             "model": "opus",
             "memory_mode": "temporary",
         }
@@ -1536,6 +1552,14 @@ class TestCreatePeerSlot:
         "kwargs,expected",
         [
             ({"agent": "reviewer"}, {"agent": "reviewer", "memory_mode": "persistent"}),
+            (
+                {"agent": "reviewer", "agent_kind": "template"},
+                {
+                    "agent": "reviewer",
+                    "agent_kind": "template",
+                    "memory_mode": "persistent",
+                },
+            ),
             ({"model": "opus"}, {"model": "opus", "memory_mode": "persistent"}),
             ({"agent": "", "model": ""}, {"memory_mode": "persistent"}),
         ],
