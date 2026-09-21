@@ -70,6 +70,7 @@ organized for someone browsing the repository.
 
 | Doc | Covers |
 |---|---|
+| [apps.md](apps.md) | The apps that ship in the package, the App Store that enables and updates them, and what enabling one grants. |
 | [mcp-apps.md](mcp-apps.md) | Rendering interactive MCP tool output in chat: the two gates, what a server declares, and the plain-text fallback. |
 | [settings-deeplink.md](settings-deeplink.md) | Answering "where is that setting?" with a link that opens and flashes the control, and the generated registry it comes from. |
 

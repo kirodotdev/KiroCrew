@@ -35,6 +35,7 @@ index, first-time setup, and connecting messaging channels.
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
+| [Apps](apps.md) | Twenty-four apps ship in the package — enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
 | Chat Channels | DM-based chat with tool approval — [Slack](slack-integration.md), [Discord](discord-integration.md), [Telegram](telegram-integration.md), [Teams](teams-integration.md), [Webex](webex-integration.md), [WeCom](wecom-integration.md), [WeChat](weixin-integration.md), [iMessage](imessage-integration.md), [WhatsApp](whatsapp-integration.md), [Feishu](feishu-integration.md); per-channel capabilities in each guide |
@@ -113,6 +114,9 @@ gracefully rather than failing the turn.
 - [Blocked commands and credential access](blocked-commands.md): why a command was
   refused, what the agent is told to do instead, and how to check your AWS or SSO
   credential setup
+- [Apps and the App Store](apps.md): what an app is, what ships, enabling and
+  updating one, the agents and skills it brings, and why enabling one is a trust
+  decision
 - [MCP Apps](mcp-apps.md): render interactive MCP tool output (diagrams, viewers,
   forms) in chat, the two gates that enable it, what a server must declare, and why
   output stays plain text otherwise

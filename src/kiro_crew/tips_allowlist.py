@@ -30,6 +30,7 @@ from __future__ import annotations
 TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
     {
         "agents.md",
+        "apps.md",
         "artifacts.md",
         "browser-control.md",
         "computer-use.md",

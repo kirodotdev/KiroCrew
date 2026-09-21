@@ -537,7 +537,11 @@ _COUPLING_SCAN_ROOT = "website/src"
 _COUPLING_SUFFIXES: frozenset[str] = frozenset({".ts", ".tsx"})
 _STRING_LITERAL_RE = re.compile(r"""(['"`])((?:(?!\1).)*)\1""")
 _TS_COMMENT_LINE_RE = re.compile(r"^\s*(?://|/\*|\*)")
-_MD_NAME_RE = re.compile(r"(?<![A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]*\.md)")
+# The trailing guard is load-bearing: without it the pattern matches `apps.md`
+# inside an i18n key such as `apps.mdNotebook.sort.nameAZ`, which named every
+# md-notebook module as a consumer of the packaged `apps.md`. A real filename is
+# never followed by another identifier character.
+_MD_NAME_RE = re.compile(r"(?<![A-Za-z0-9._-])([A-Za-z0-9][A-Za-z0-9._-]*\.md)(?![A-Za-z0-9])")
 # A filename every directory has, so a match cannot be attributed to the packaged
 # copy: the hits are a user's project README in the file explorer, not this doc.
 _COUPLING_AMBIGUOUS_NAMES: frozenset[str] = frozenset({"README.md"})
@@ -2304,6 +2308,19 @@ def _self_test() -> int:
             encoding="utf-8",
         )
 
+    def allow_coupling_named_only_inside_a_longer_token(root: Path) -> None:
+        # ``apps.mdNotebook.sort.nameAZ`` is an i18n key, not a reference to the
+        # packaged ``apps.md``. Without the regex's trailing guard every module
+        # using that key namespace read as a consumer of the doc.
+        packaged = root / "src" / "kiro_crew" / "docs"
+        packaged.mkdir(parents=True)
+        (packaged / "apps.md").write_text("# Apps\n", encoding="utf-8")
+        page = root / "website" / "src" / "apps"
+        page.mkdir(parents=True)
+        (page / "labels.ts").write_text(
+            "export const s = i18nT('apps.mdNotebook.sort.nameAZ')\n", encoding="utf-8"
+        )
+
     def allow_coupling_named_only_in_a_test(root: Path) -> None:
         packaged = root / "src" / "kiro_crew" / "docs"
         packaged.mkdir(parents=True)
@@ -2449,6 +2466,11 @@ def _self_test() -> int:
         "packaged doc named only in a test",
         CHECK_COUPLING_COMPLETENESS,
         allow_coupling_named_only_in_a_test,
+    )
+    fact_immunity_probe(
+        "packaged doc name inside a longer token",
+        CHECK_COUPLING_COMPLETENESS,
+        allow_coupling_named_only_inside_a_longer_token,
     )
     fact_probe("dead identifier", CHECK_DEAD_IDENTIFIER, plant_dead_identifier)
     fact_immunity_probe("live identifier", CHECK_DEAD_IDENTIFIER, allow_live_identifier)
