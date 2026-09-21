@@ -99,6 +99,30 @@ before cancelling, not infer entry from a short sleep. Keep the worker's wait
 bounded, release it in `finally`, and await the cancelled task's write drain;
 assertions must still prove the lock stays held and the real write completes.
 
+A mock subprocess handed to a real kill path must not carry a pid a live process
+can own. The kill helpers' only handle on their target is the integer `pid`:
+they resolve it against the runner's real process table and signal whatever owns
+that number. `kill_process_tree`'s self-group refusal is not a defence -- it
+declines only the GROUP signal and then sends a pid-scoped SIGKILL, which reaches
+a same-group process just as hard. Under `pytest-xdist` the runner's own group is
+full of sibling workers, so the casualty is a worker: its channel closes
+mid-batch and the shard reports whichever test it had been sent, with no
+assertion and no traceback. Running the file alone hides it -- with a sparse
+process table the lookup raises and the suppressed exception swallows the whole
+path, so the crash needs the full shard. The surface is every kill helper on
+`platform_compat`, not only the tree kill: `kill_pid`, `kill_pid_pinned`,
+`kill_pid_async`, `kill_process_tree`, `kill_process_tree_pinned`,
+`kill_process_tree_async` and `kill_and_reap`. Pick one of the two spellings
+already in the tree rather than inventing a third: give the mock a pid above
+every supported platform's `pid_max`
+(`test/test_update_provider.py::_UNALLOCATABLE_PID`), or neutralise the killer
+and assert the ordering instead
+(`test/test_platform_compat.py::TestKillAndReap`). This is a convention rather
+than a gate because one file does not carry the answer: the neutralising patch
+may sit in a class fixture or a conftest, and the killer is as often replaced one
+level down (`os.kill`, `os.killpg`) or behind a module's own private helper, so
+no per-file rule can tell a covered mock from an exposed one.
+
 ### Config overrides
 
 Use `monkeypatch` to override config paths:
