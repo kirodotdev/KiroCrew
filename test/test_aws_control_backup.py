@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import logging
+import sqlite3
 import tarfile
 import threading
 import time
@@ -304,6 +305,10 @@ class TestRunSessionsBackup:
         # run refuses instead.
         monkeypatch.setattr(backup, "data_home", lambda: tmp_path / "missing_home")
         monkeypatch.setattr(backup, "kiro_sessions_dir", lambda: tmp_path / "missing_cli")
+        # The kiro-cli conversation export is a third source; this
+        # test is about the two transcript halves being empty, so isolate it to
+        # None rather than reading whatever store the test host happens to have.
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: None)
         with (
             mock.patch.object(backup, "_authorize_upload") as authz,
             mock.patch.object(backup.storage, "put_file") as put_file,
@@ -336,6 +341,10 @@ class TestRunSessionsBackup:
         # permission, so this both-halves path is asserted WITH that permission
         # granted. `TestSessionsArchiveLayerBGate` owns the withheld direction.
         monkeypatch.setattr(backup, "sessions_layer_b_enabled", lambda account: True)
+        # Isolate the kiro-cli conversation export so this test's exact
+        # archive-name assertion reflects the two transcript halves only. The
+        # export itself is covered in test_aws_control_backup_conversations.py.
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: None)
 
         pushed: dict[str, str] = {}
 
@@ -393,7 +402,45 @@ class TestSessionsArchiveLayerBGate:
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        # The terminal conversation export rides the same permission, and these
+        # tests assert EXACT archive member lists. Left unstubbed, a host that
+        # happens to have a kiro-cli store would add a `conversations/` root on the
+        # permitted path and redden an assertion about the transcript halves. The
+        # two tests that are about the export point this at a synthetic store of
+        # their own.
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: None)
         yield
+
+    @staticmethod
+    def _synthetic_store(tmp_path, monkeypatch, *, rows: int = 3):
+        """Point the export at a synthetic conversation store. Returns its path.
+
+        Shaped like the real one only as far as the export reads it: the
+        allowlisted table plus a token-bearing table that must never ride. The
+        export's own properties are pinned in
+        test_aws_control_backup_conversations.py; what these tests add is whether
+        the call site consults the permission at all.
+        """
+        db = tmp_path / "data.sqlite3"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "CREATE TABLE conversations_v2 (conversation_id TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO conversations_v2 (conversation_id, value) VALUES (?, ?)",
+                [(f"conv-{i}", json.dumps({"turn": i})) for i in range(rows)],
+            )
+            conn.execute("CREATE TABLE auth_kv (k TEXT, bearer_token TEXT)")
+            conn.execute(
+                "INSERT INTO auth_kv (k, bearer_token) VALUES (?, ?)",
+                ("idc:default", "SECRET-BEARER-TOKEN-must-not-leak"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: db)
+        return db
 
     @staticmethod
     def _both_halves(tmp_path, monkeypatch):
@@ -507,6 +554,81 @@ class TestSessionsArchiveLayerBGate:
         record, names = self._run_capturing_names(monkeypatch)
 
         assert names == ["cli/abc.json", "cli/abc.jsonl", "crew/t.jsonl"]
+        assert record["layer_b"] is True
+
+    # -- the terminal conversation export rides the SAME permission ---------
+
+    def test_withholding_also_withholds_the_conversation_export(self, tmp_path, monkeypatch):
+        """A withheld run carries no `conversations/` root, store present or not.
+
+        The export reads the terminal's own conversation store, which is the same
+        data class as Layer B -- what a model actually held, unredacted, not what
+        was displayed with display-time redaction applied. An export that rode on
+        the crew half's terms would put that content in the bucket of an install
+        whose operator withheld exactly it, and an object already uploaded cannot
+        be un-sent.
+
+        Mutation-verified: drop the `if layer_b` guard at the export call site and
+        this test reddens on the `conversations/` members; the permitted direction
+        below still passes.
+        """
+        self._skip_without_pinning()
+        self._both_halves(tmp_path, monkeypatch)
+        self._synthetic_store(tmp_path, monkeypatch)
+        # No permission recorded at all -- the default an operator who never chose
+        # has, read through the real function rather than stubbed.
+
+        record, names = self._run_capturing_names(monkeypatch)
+
+        assert names == ["crew/t.jsonl"]
+        assert record["layer_b"] is False
+
+    def test_the_permission_lets_the_conversation_export_ride(self, tmp_path, monkeypatch):
+        """With the permission the `conversations/` root rides and is recorded."""
+        self._skip_without_pinning()
+        self._both_halves(tmp_path, monkeypatch)
+        self._synthetic_store(tmp_path, monkeypatch)
+        self._store(tmp_path, True)
+
+        record, names = self._run_capturing_names(monkeypatch)
+
+        assert names == sorted(
+            [
+                "crew/t.jsonl",
+                "cli/abc.json",
+                "cli/abc.jsonl",
+                backup._CONVERSATIONS_DB_ARCNAME,
+                backup._CONVERSATIONS_MANIFEST_ARCNAME,
+            ]
+        )
+        assert record["layer_b"] is True
+
+    def test_conversation_rows_alone_are_recorded_as_layer_b(self, tmp_path, monkeypatch):
+        """An empty kiro-cli directory still records Layer B when rows rode.
+
+        The record must describe the ARCHIVE. A permitted run on a host whose
+        kiro-cli session directory is empty adds no `cli/` member but still carries
+        unredacted terminal context under `conversations/`, so a record reading
+        `layer_b=False` beside those rows would send a restore looking for a
+        fidelity the object holds and describe one it does not.
+
+        Mutation-verified: record `layer_b_files > 0` alone and this test reddens.
+        """
+        self._skip_without_pinning()
+        crew = tmp_path / "crew_home" / backup.SESSIONS_DIR_NAME
+        crew.mkdir(parents=True)
+        (crew / "t.jsonl").write_bytes(b"transcript\n")
+        empty_cli = tmp_path / "cli_sessions"
+        empty_cli.mkdir(parents=True)
+        monkeypatch.setattr(backup, "data_home", lambda: tmp_path / "crew_home")
+        monkeypatch.setattr(backup, "kiro_sessions_dir", lambda: empty_cli)
+        self._synthetic_store(tmp_path, monkeypatch)
+        self._store(tmp_path, True)
+
+        record, names = self._run_capturing_names(monkeypatch)
+
+        assert not [n for n in names if n.startswith("cli/")]
+        assert backup._CONVERSATIONS_DB_ARCNAME in names
         assert record["layer_b"] is True
 
     # -- the permission is NOT reachable from agent-writable config ---------

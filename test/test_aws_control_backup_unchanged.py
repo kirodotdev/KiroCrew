@@ -1086,6 +1086,10 @@ class TestRunSessionsBackupSkip:
         (cli / "replay.log").write_text("x\n", encoding="utf-8")
         monkeypatch.setattr(backup, "data_home", lambda: tmp_path / "crew_home")
         monkeypatch.setattr(backup, "kiro_sessions_dir", lambda: cli)
+        # Isolate the kiro-cli conversation export: this suite compares
+        # the archive's fingerprint across runs, so it must not depend on whatever
+        # live terminal store the test host happens to have.
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: None)
         self.crew = crew
         yield
 

@@ -4077,6 +4077,17 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # Audited on the observation a caller acts on rather than per poll -- the
     # reader holds a short cache -- for the same reason as the mint entry below.
     "kiro_prerequisite.identity_fingerprint": ".local/share/kiro-cli/data.sqlite3",
+    # Same store, read read-only by
+    # ``kiro_crew.apps.builtins.aws_control.backend.backup._export_cli_conversations``
+    # to copy ONLY the terminal conversation allowlist (``conversations_v2``) into
+    # the off-host sessions archive. No token row is read and no credential value
+    # leaves the function -- the export writes a fresh database of the allowlisted
+    # tables alone -- but the file holds live bearer tokens whatever this reader
+    # touches, so opening it owes the same trail as every other reader here.
+    # Audited on every outcome (the store was opened) and fail-closed on success:
+    # a conversation export whose access cannot be recorded is dropped from the
+    # archive rather than shipped unaudited.
+    "aws_control.conversation_export": ".local/share/{kiro-cli,amazon-q}/data.sqlite3",
     # Class 2. kiro-cli's MCP OAuth artifact cache under ``~/.aws/sso/cache``.
     # ``kiro_crew.mcp_grant.grant_present`` STATS the paired
     # ``<sha256(mcp_url)>.token.json`` / ``.registration.json`` artifacts to learn

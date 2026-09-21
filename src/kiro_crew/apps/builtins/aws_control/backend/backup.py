@@ -9,14 +9,44 @@ Two backup kinds, one push path:
   ``backup/snapshots/<install>/<name>.tar.gz``.
 * **Sessions archive** (the "Sessions archive" row): one tarball of BOTH
   session halves — ``<data home>/sessions/`` (transcripts + rotated
-  archives) and ``<kiro home>/sessions/cli/`` (the CLI replay logs) — pushed
-  to ``backup/sessions/<install>/<stamp>.tar.gz``. Whole-set, not per-session:
+  archives) and ``<kiro home>/sessions/cli/`` (the CLI replay logs) -- plus a
+  table-scoped export of the kiro-cli TERMINAL conversation store (see
+  "Terminal conversations" below), pushed to
+  ``backup/sessions/<install>/<stamp>.tar.gz``. Whole-set, not per-session:
   the "both halves move together" invariant is honoured by construction, and a
   run whose trees have not moved since the archive already in the drive uploads
   nothing at all -- see "Unchanged runs upload nothing" below. Splitting the set
   into per-session objects and sending only the changed ones is a different
   feature and deliberately not this one: the RFC lists incremental and
   deduplicating transfer among its non-goals.
+
+**Terminal conversations (``conversations/`` root).** The two transcript halves
+above are the GATEWAY's session state; the terminal (kiro-cli itself) keeps its
+own conversations in ``conversations_v2`` inside
+``~/.local/share/kiro-cli/data.sqlite3``, a store disjoint from both halves.
+That file is ALSO the identity auth store -- ``hooks.py`` classifies it as a
+token path and it holds live bearer tokens -- so the archive
+must never carry the file. It carries a table-scoped export instead: a fresh
+database holding ONLY the tables in ``_CONVERSATION_TABLES`` (an allowlist, so no
+identity or token table can leak even if kiro-cli adds one), read from the live
+store under a single read-only snapshot as ``_export_cli_conversations``
+documents, under
+the ``conversations/`` archive root beside ``crew`` and ``cli``. The DECLARED
+BOUNDARY of "conversation state" for this app is exactly ``conversations_v2``;
+if a future table is genuinely conversation state and not auth, it is added to
+``_CONVERSATION_TABLES`` and this sentence is updated in the same change --
+there is no other place the boundary is expressed. The export rides the SAME
+standing permission as the ``cli`` half, :func:`sessions_layer_b_enabled`, and
+invents no new grant: both carry what a model actually held, unredacted, where
+the crew transcript carries what was displayed with display-time redaction
+applied, so an install whose operator withholds Layer B gets an archive with no
+``conversations/`` root either. Opening the store goes through the sanctioned
+credential-read audit
+(``hooks.emit_internal_read_audit`` under ``aws_control.conversation_export``,
+registered in ``hooks._AUDIT_ONLY_READ_IDS``) and FAILS CLOSED: an export whose
+access cannot be recorded is dropped from the archive rather than shipped
+unaudited, because the file holds live bearer tokens whatever this reader
+touches.
 
 **One drive can be reached by several installs.** Discovery is by tag, so a
 second install finds the first one's bucket and writes to it by design — the
@@ -72,21 +102,25 @@ import contextlib
 import datetime as dt
 import errno
 import hashlib
+import io
 import json
 import logging
 import os
 import re
 import secrets
+import sqlite3
 import stat
+import sys
 import tarfile
 import tempfile
 import threading
+import urllib.parse
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
-from kiro_crew import snapshot, snapshot_redact
+from kiro_crew import hooks, snapshot, snapshot_redact
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.manager import app_data_dir
@@ -94,6 +128,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.deploy.engine import AWSError, _checked
 from kiro_crew.history import SESSIONS_DIR_NAME
+from kiro_crew.identity_stores import state_db_candidates
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import file_lock, is_link_or_junction, open_lock_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1752,7 +1787,7 @@ def _record_run_locked(
     # arise (the snapshot), so its records keep their shape.
     #
     # The caller passes what it ARCHIVED, never what it was permitted to archive.
-    # A permitted run can still add no Layer B file -- see
+    # A permitted run can still add no Layer B file and no conversation row -- see
     # :func:`run_sessions_backup` -- and this record is written once, so a value
     # taken from the permission would state a fidelity the object does not hold
     # and nothing afterwards would correct it.
@@ -3714,7 +3749,11 @@ def _add_tree(tar: tarfile.TarFile, root: Path, arc_prefix: str) -> int:
 
 #: The operator's standing permission for the sessions archive to carry Layer B --
 #: the byte-exact, unredacted kiro-cli context window (``<sid>.json`` +
-#: ``<sid>.jsonl`` under :func:`kiro_sessions_dir`). Default OFF, so an archive
+#: ``<sid>.jsonl`` under :func:`kiro_sessions_dir`), and the table-scoped export
+#: of the terminal's own conversation store (the ``conversations/`` root, see
+#: :func:`_export_cli_conversations`). Both are what a model actually held,
+#: unredacted, which is the property this permission prices, so one permission
+#: covers both and neither has a second path around it. Default OFF, so an archive
 #: carries the crew transcript half only unless the operator has chosen otherwise.
 #:
 #: Why a gate here at all. Layer B is strictly more sensitive than the transcript
@@ -3820,6 +3859,230 @@ def _audit_layer_b_decision(account: str, layer_b: bool, *, caller: str) -> None
         logger.debug("aws-control Layer B decision audit failed", exc_info=True)
 
 
+#: The exact tables the conversation export carries out of the kiro-cli store,
+#: and the ONLY ones. Everything else in ``data.sqlite3`` -- every identity /
+#: token / usage table ``hooks.py`` classifies as an auth store, whatever its
+#: name -- is left behind by construction: the export writes THIS allowlist and
+#: nothing else, so the archive can never carry a byte of the auth half even if
+#: kiro-cli adds a new credential table tomorrow. A denylist would fail OPEN the
+#: day such a table appeared; an allowlist fails closed.
+#:
+#: ``conversations_v2`` is the terminal's own chat store. The
+#: boundary of what counts as "conversation state" is declared in this module's
+#: header; widening this tuple is the one change that widens that boundary, so it
+#: is the single place a reviewer looks.
+_CONVERSATION_TABLES: tuple[str, ...] = ("conversations_v2",)
+
+#: The archive member names for the conversation export. The database rides under
+#: its own ``conversations/`` root (a third root beside ``crew`` and ``cli``), and
+#: the manifest beside it records the table set and per-table row count so an
+#: archive that carried the conversations is distinguishable from one that did
+#: not, and a silently-empty export is caught by comparing these counts to source.
+_CONVERSATIONS_ARC_PREFIX = "conversations"
+_CONVERSATIONS_DB_ARCNAME = f"{_CONVERSATIONS_ARC_PREFIX}/conversations.sqlite3"
+_CONVERSATIONS_MANIFEST_ARCNAME = f"{_CONVERSATIONS_ARC_PREFIX}/CONVERSATIONS_MANIFEST.json"
+
+#: The sanctioned credential-read audit id for opening the kiro-cli store. The
+#: store holds live bearer tokens, so every reader owes an SEL trail; this id is
+#: registered in ``hooks._AUDIT_ONLY_READ_IDS`` and the export fails closed if the
+#: audit cannot be recorded. One name so the reader and the registry cannot drift.
+_CONVERSATION_READ_ID = "aws_control.conversation_export"
+
+
+def _kiro_cli_conversation_db() -> Path | None:
+    """The kiro-cli conversation/state store this host actually has, or ``None``.
+
+    Resolved through :func:`identity_stores.state_db_candidates`, which honours
+    ``XDG_DATA_HOME`` (POSIX) and ``LOCALAPPDATA`` (Windows) on the source side
+    just as the rest of kiro-cli state discovery does -- a store relocated by one
+    of those variables is a normal, supported layout, so it must be found rather
+    than silently skipped. The candidates come back current-platform, most likely
+    first, deduped; the first that is a regular file (not a symlink to somewhere
+    else) is this host's. ``None`` means the terminal has no store here, a normal
+    signed-out / never-used state, not an error.
+    """
+    candidates = state_db_candidates(sys.platform, Path.home(), os.environ)
+    for db in candidates:
+        try:
+            if db.is_file() and not db.is_symlink():
+                return db
+        except OSError:
+            continue
+    return None
+
+
+def _add_bytes(tar: tarfile.TarFile, payload: bytes, arcname: str) -> None:
+    """Add ``payload`` to ``tar`` as ``arcname`` (mode 0600, deterministic)."""
+    info = tarfile.TarInfo(name=arcname)
+    info.size = len(payload)
+    info.mode = 0o600
+    info.mtime = 0
+    info.type = tarfile.REGTYPE
+    tar.addfile(info, io.BytesIO(payload))
+
+
+def _add_regular_file(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
+    """Add a file THIS module just wrote (a temp export) to ``tar``.
+
+    Unlike :func:`_add_pinned`, no descriptor pinning is needed: the source is a
+    file this process created under its own private ``TemporaryDirectory``, not an
+    agent-writable tree, so there is no swap race to defend against.
+    """
+    st = path.stat()
+    info = tarfile.TarInfo(name=arcname)
+    info.size = st.st_size
+    info.mode = 0o600
+    info.mtime = 0
+    info.type = tarfile.REGTYPE
+    with path.open("rb") as fh:
+        tar.addfile(info, fh)
+
+
+def _copy_table(source: sqlite3.Connection, target: sqlite3.Connection, table: str) -> int:
+    """Copy every row of ONE allowlisted table into ``target``. Returns row count.
+
+    The destination schema is taken from the source's own ``CREATE TABLE`` text
+    (``sqlite_schema.sql``), and rows are moved with an EXPLICIT column list read
+    from ``PRAGMA table_info`` -- never ``SELECT *`` -- so the copy carries exactly
+    the columns the source declares for this one table and nothing that a wider
+    query could sweep in. The table name is validated against the caller's
+    allowlist before it reaches here, so it is never attacker-controlled; column
+    identifiers are quoted defensively all the same.
+    """
+    create_sql = source.execute(
+        "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    if not create_sql or not create_sql[0]:
+        return 0
+    target.execute(create_sql[0])
+    cols = [row[1] for row in source.execute(f'PRAGMA table_info("{table}")').fetchall()]
+    if not cols:
+        return 0
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    placeholders = ", ".join("?" for _ in cols)
+    count = 0
+    cursor = source.execute(f'SELECT {col_list} FROM "{table}"')
+    insert = f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders})'
+    while True:
+        rows = cursor.fetchmany(500)
+        if not rows:
+            break
+        target.executemany(insert, rows)
+        count += len(rows)
+    return count
+
+
+def _export_cli_conversations(tar: tarfile.TarFile) -> int:
+    """Export ONLY the terminal conversation tables into ``tar``. Returns row count.
+
+    ``data.sqlite3`` is BOTH the terminal's conversation store and its identity
+    auth store: ``hooks.py`` classifies the file as a token path and it
+    holds live bearer tokens. Tar-ing the file would upload live
+    credentials off-host, strictly worse than the gap this closes. So this reads
+    the source and writes a FRESH database holding only :data:`_CONVERSATION_TABLES`
+    -- an allowlist, so no other byte of the file (no identity row, no token
+    column) can reach the archive even if kiro-cli adds a credential table later.
+
+    **The source is a LIVE WAL-mode database, so a consistent read needs care.**
+    A commit lands in the ``-wal`` sidecar and folds into the main file only on a
+    checkpoint, so the main file and its ``-wal`` only agree at an instant. The
+    safe read does NOT copy those files, and does NOT checkpoint: a checkpoint is
+    a WRITE, and this opens the operator's store ``mode=ro``, on which a
+    ``wal_checkpoint`` cannot run. What a read-only connection DOES give is a
+    consistent WAL-aware view -- SQLite applies the committed ``-wal`` frames
+    transparently on read -- so the whole export runs inside ONE explicit read
+    transaction (``BEGIN``), which pins a single snapshot for the life of the
+    copy. Every allowlisted table is then read against that one snapshot, so a
+    writer committing mid-copy cannot make two tables disagree. This is why
+    copying the ``-wal`` and then the main file separately would be wrong: it
+    takes them at two different times, and a WAL copied before its commit was
+    checkpointed replays over newer pages so the archive restores BACKWARDS.
+
+    Steps:
+
+    1. Open the source READ-ONLY (``mode=ro``) so this can never write the
+       operator's live store, and open one deferred read transaction so all reads
+       share a single consistent snapshot including committed WAL frames.
+    2. Copy the allowlisted tables with an explicit per-table column list, so the
+       destination carries only the columns the source declares -- never a
+       ``SELECT *`` that could sweep a column added upstream.
+
+    Best-effort at the STORE level (a missing store, an unreadable one) -- those
+    return 0 and the sessions backup proceeds with the transcript halves. NOT
+    best-effort at the ROW level: once a readable store is found, every row of
+    every allowlisted table is copied and counted, and the manifest's count is
+    asserted against the source in the tests, so a partial copy fails loudly
+    rather than shipping a short archive.
+    """
+    db = _kiro_cli_conversation_db()
+    if db is None:
+        return 0
+    per_table: dict[str, int] = {}
+    with tempfile.TemporaryDirectory(prefix="kc-conv-") as tmp:
+        dst = Path(tmp) / "conversations.sqlite3"
+        src_uri = f"file:{urllib.parse.quote(str(db))}?mode=ro"
+        try:
+            with contextlib.closing(sqlite3.connect(src_uri, uri=True)) as source:
+                # One consistent snapshot for the whole copy: a deferred read
+                # transaction opened by the first SELECT holds a single point in
+                # time, so a writer committing mid-copy cannot make two tables
+                # disagree. No checkpoint (a write, impossible on mode=ro) and no
+                # WAL refusal -- the read already sees committed WAL frames.
+                source.execute("BEGIN")
+                present = {
+                    row[0]
+                    for row in source.execute(
+                        "SELECT name FROM sqlite_schema WHERE type='table'"
+                    ).fetchall()
+                }
+                with contextlib.closing(sqlite3.connect(str(dst))) as target:
+                    for table in _CONVERSATION_TABLES:
+                        if table not in present:
+                            # A store without this table is a valid state (an old
+                            # or empty terminal). Skip it; do not fail the export.
+                            continue
+                        per_table[table] = _copy_table(source, target, table)
+                    target.commit()
+        except (OSError, sqlite3.Error) as exc:
+            # The store was opened (or the open failed) -- either way the contact
+            # with a credential-bearing file owes a trail. Record it as unreadable
+            # and carry nothing.
+            hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "unreadable")
+            logger.warning(
+                "aws-control: kiro-cli conversation export could not read the store, so it "
+                "was left out of this archive: %s",
+                redact_credentials(str(exc)),
+            )
+            return 0
+        total = sum(per_table.values())
+        if not per_table:
+            # No allowlisted table existed at all: nothing to carry, and no empty
+            # member to add. (A present-but-empty table DOES get carried, so a
+            # restore sees the real schema.) The store WAS opened, so the access
+            # is still audited.
+            hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "no_table")
+            return 0
+        # The store holds live bearer tokens, so opening it -- even to copy only
+        # the conversation allowlist -- goes through the sanctioned credential-read
+        # audit, and FAILS CLOSED: an export whose access cannot be recorded is
+        # dropped from the archive rather than shipped unaudited. A logger line is
+        # not an SEL audit.
+        if not hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "success"):
+            logger.warning(
+                "aws-control: kiro-cli conversation export dropped -- its credential-read "
+                "audit could not be recorded, so the conversations are left out of this "
+                "archive rather than shipped unaudited"
+            )
+            return 0
+        _add_regular_file(tar, dst, _CONVERSATIONS_DB_ARCNAME)
+        manifest = json.dumps(
+            {"tables": dict(sorted(per_table.items())), "total_rows": total},
+            sort_keys=True,
+        ).encode("utf-8")
+        _add_bytes(tar, manifest, _CONVERSATIONS_MANIFEST_ARCNAME)
+    return total
+
+
 def run_sessions_backup(
     account: str, profile: str, region: str, bucket: str, *, caller: str
 ) -> dict[str, Any]:
@@ -3832,7 +4095,8 @@ def run_sessions_backup(
     convenience. See :func:`_add_tree`.
 
     The crew half (the display transcript) always rides. The kiro-cli half --
-    Layer B, the unredacted model context -- rides only on the operator's
+    Layer B, the unredacted model context -- and the terminal's own conversation
+    export ride only on the operator's
     standing permission (:func:`sessions_layer_b_enabled`), and the run record
     says which way it went, so which layers an archive holds is readable from the
     record instead of being a guess.
@@ -3870,6 +4134,28 @@ def run_sessions_backup(
             # looking for a fidelity the object does not hold.
             layer_b_files = _add_tree(tar, cli_sessions, "cli") if layer_b else 0
             count += layer_b_files
+            # The kiro-cli terminal conversation store (`conversations_v2` in
+            # `data.sqlite3`) is disjoint from both transcript halves above. It is
+            # exported table-scoped, never file-copied, because the same file holds
+            # live bearer tokens.
+            #
+            # It rides on the SAME permission as the `cli` tree, not on the crew
+            # half's terms, because it is the same data class: both carry what a
+            # model actually held, unredacted, while the crew transcript carries
+            # what was DISPLAYED with display-time redaction applied. An export
+            # that rode ungated would carry unredacted terminal context out of an
+            # install whose operator withheld exactly that, through a second path
+            # the permission does not watch -- and an object already in a bucket
+            # cannot be un-sent. It is also what puts the export behind the
+            # withdrawal recheck below, which keys off `layer_b`.
+            #
+            # Counted separately for the same reason as `layer_b_files`, and folded
+            # into the recorded answer: an archive carrying conversation rows holds
+            # Layer-B-class content whether or not the `cli` tree had any files, so
+            # a record reading `layer_b=False` beside those rows would describe an
+            # archive that does not exist.
+            conversation_rows = _export_cli_conversations(tar) if layer_b else 0
+            count += conversation_rows
         if count == 0:
             raise RuntimeError("no session files to archive")
         # `volatile_root=False`: this archive's roots are `crew` and `cli`, which are
@@ -4027,7 +4313,7 @@ def run_sessions_backup(
             _body_fingerprint(archive),
             version,
             tree=tree,
-            layer_b=layer_b_files > 0,
+            layer_b=(layer_b_files + conversation_rows) > 0,
         )
         # After the archive and after the ledger write, and with its own
         # authorization: a caption must never delay or endanger the payload.
