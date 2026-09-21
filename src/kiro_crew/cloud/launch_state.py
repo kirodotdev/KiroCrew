@@ -34,6 +34,7 @@ read-only: nothing migrates the value by writing, because writing is the thing b
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -46,7 +47,11 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig, tag_is_wellformed
 from kiro_crew.config.loader import config_dir
-from kiro_crew.sandbox import require_unaliased_cloud_config, require_unaliased_launch_state
+from kiro_crew.sandbox import (
+    SandboxCeilingUnsealable,
+    require_unaliased_cloud_config,
+    require_unaliased_launch_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +286,49 @@ def _write_record(p: Path, *, profile: str, region: str, last_tag: str) -> None:
     )
 
 
+def _refuse_or_absent(p: Path, exc: OSError, *, pin: bool) -> None:
+    """``None`` for the exempt caller, a refusal for the pinned one.
+
+    The ONE place that rule is spelled, and it is a function rather than two matching ``except``
+    bodies for a measured reason: the first version of this module applied it to the ``open``
+    and not to the ``read``, because they were separate handlers and only one of them had been
+    written. A review caught the read side still answering "no record" on the pinned path --
+    reachable by swapping a directory in, since ``open`` on a directory succeeds and the ``read``
+    then fails with ``EISDIR``. With the rule in one callable there is no second copy to forget.
+    """
+    if not pin:
+        return None
+    raise SandboxCeilingUnsealable(_unreadable_record_detail(p, exc)) from exc
+
+
+def _unreadable_record_detail(p: Path, exc: OSError) -> str:
+    """The refusal for a pinned read that could not open the record at all.
+
+    Names the errno, because the two shapes an operator can act on are very different and the
+    message is the only thing they get: ``ELOOP`` is a symlink at the leaf, which their own
+    dotfile manager or backup tool probably left and which they can undo; anything else is a
+    permission or device fault on a file the product owns.
+
+    Says why it refuses rather than reporting no record, because "no record" is the answer an
+    attacker wants here: it is what makes a pre-provision clear read as "nothing saved".
+    """
+    code = errno.errorcode.get(exc.errno or 0, str(exc.errno))
+    if exc.errno == errno.ELOOP:
+        shape = (
+            f"the launch record {p} is a SYMLINK, so the name stays replaceable in a writable "
+            "directory while the seal binds whatever it resolves to"
+        )
+        remedy = "Replace the link with a regular file, then re-run."
+    else:
+        shape = f"the launch record {p} could not be opened ({code}: {exc.strerror})"
+        remedy = "Fix the file's permissions or the device error, then re-run."
+    return (
+        f"{shape}. This read chooses which stack `kirocrew cloud destroy --yes` deletes and "
+        "whether a launch may provision, so a read that cannot be judged is refused instead of "
+        f"being reported as no previous launch. {remedy}"
+    )
+
+
 @contextmanager
 def _writer_lock(p: Path) -> "Iterator[None]":
     """Serialise this file's two PRODUCT writers for one read-modify-write.
@@ -369,19 +417,43 @@ def _read_document(p: Path, *, pin: bool = False) -> "Optional[dict]":
     refusal to protect there, and declining to clear would leave the stale pointer the clear
     exists to remove. On the pinned path the flag refuses that shape in the kernel instead, so
     the descriptor handed to the alias check can never be a link's target.
+
+    **Only ENOENT means "no record" on the pinned path.** Every other failure REFUSES there, and
+    that covers the READ as well as the ``open`` -- both go through
+    :func:`_refuse_or_absent`, which is the only place the rule is written. The distinction is
+    the whole point rather than tidiness. ``O_NOFOLLOW`` reports a symlinked leaf as ``ELOOP``,
+    and a directory swapped in at the name OPENS fine and then fails the read with ``EISDIR``;
+    a blanket ``except OSError: return None`` turns either into the absent answer. Absent is not
+    neutral here: on the ``try_clear_tag`` path it reads as "nothing saved", which is exactly the
+    forged-empty result that lets ``wizard._clear_prior_pointer`` provision where it was supposed
+    to abort. So one alias shape would be closed by the ``fstat`` below while others leaked
+    through an error branch, in the same check-to-consume window this whole function is about. A
+    read this path could not perform is a read it cannot judge, and on a path that chooses a
+    ``destroy`` target that must refuse rather than resolve to a tag from somewhere else. The
+    unpinned caller keeps degrading quietly, because its irreversible work is already done and it
+    has nothing left to protect.
+
+    Content stays TOLERANT, and that is not the same question: a document that is not a record
+    means "there is no record here", which is a truthful answer about a file that was read
+    successfully, and the legacy fallback it enables carries its own alias refusal.
     """
     try:
         fd = os.open(p, os.O_RDONLY | (_O_NOFOLLOW if pin else 0) | _O_BINARY)
-    except OSError:
+    except FileNotFoundError:
+        # The one failure that is a truthful answer rather than an unjudgeable read.
+        return None
+    except OSError as exc:
+        _refuse_or_absent(p, exc, pin=pin)
         return None
     try:
         raw = _read_from(fd)
         if pin:
-            # Raises SandboxCeilingUnsealable, which is a RuntimeError and so is NOT caught by
-            # this module's OSError handling anywhere: an aliased record must refuse the
-            # command, never degrade to "no record" and fall through to the legacy fields.
+            # Raises SandboxCeilingUnsealable, a RuntimeError, so it is NOT caught by the
+            # OSError handler below: an aliased record must refuse the command, never degrade
+            # to "no record" and fall through to the legacy fields.
             require_unaliased_launch_state(str(p), fd=fd)
-    except OSError:
+    except OSError as exc:
+        _refuse_or_absent(p, exc, pin=pin)
         return None
     finally:
         os.close(fd)
