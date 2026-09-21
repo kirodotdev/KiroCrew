@@ -755,6 +755,11 @@ class WorkflowService:
             # logs land inside the stream contract (terminal events are last).
             await self._drain_nudge_tasks(run_id)
 
+        # The app identity binds the calling app's OWN spawn profile (precedence
+        # #1 in resolve_active_scope), which is the argument the subagent
+        # admission gate threads. It rides the run's execution context; a run
+        # with no app carries "", which is what a non-app spawn passes.
+        app = getattr(getattr(memory_scope, "execution_context", None), "app", "") or ""
         agent_fn: Optional[Callable[[str, dict], Any]] = None
         pool: Any = None
         if self._pool_agents:
@@ -769,6 +774,8 @@ class WorkflowService:
                     max_starting=min(workers, 2),
                     memory_scope=memory_scope,
                     context_builder=self._context_builder,
+                    session_key=session_key,
+                    app=app,
                 )
             except Exception:  # noqa: BLE001 - never let pooling break run start
                 agent_fn, pool = None, None
@@ -785,6 +792,8 @@ class WorkflowService:
                 run_id=run_id,
                 memory_scope=memory_scope,
                 context_builder=self._context_builder,
+                session_key=session_key,
+                app=app,
             )
         # Both paths meter through the task queue when one is attached: the
         # lane (not the pool's semaphore alone) is what the adaptive controller

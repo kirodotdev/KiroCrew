@@ -52,7 +52,11 @@ from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 # Per-step tool-call ceiling — shared with the per-call path (agent_exec) so a
 # single edit retunes both; a hand-duplicated copy here would silently diverge the
 # pooled vs fallback ceilings. ``test_workflows_agent_pool.py`` pins them equal.
-from kiro_crew.workflows.agent_exec import _MAX_TURNS_PER_STEP
+from kiro_crew.workflows.agent_exec import (
+    _MAX_TURNS_PER_STEP,
+    WorkflowSpawnRefused,
+    vet_step_spawn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +279,8 @@ def build_pooled_agent_fn(
     max_identities: int = 8,
     memory_scope: Any = None,
     context_builder: Any = None,
+    session_key: str = "",
+    app: str = "",
 ) -> "tuple[Callable[[str, dict], Any], _AggregatePool]":
     """Return ``(agent_fn, pool)`` where ``agent_fn`` reuses WARM sessions.
 
@@ -413,6 +419,18 @@ def build_pooled_agent_fn(
     async def agent_fn(prompt: str, opts: dict) -> Any:
         if memory_scope is not None:
             await memory_scope.validate()
+        # The same two gates the cold path runs, at the single entry: the pooled
+        # leg and the unpooled leg both allocate a child session.
+        step_cwd = await vet_step_spawn(
+            session_key=session_key,
+            agent=opts.get("agent") or default_agent,
+            cwd=opts.get("cwd"),
+            app=app,
+        )
+        if step_cwd != opts.get("cwd"):
+            # Launch in the RESOLVED directory and key the warm sub-pool on it, so
+            # a worker is never built for an unresolved spelling of a path.
+            opts = {**opts, "cwd": step_cwd}
         if opts.get("session") is not None:
             return await _run_unpooled(prompt, opts)
         target = _pool_for(opts.get("agent"), opts.get("model"), opts.get("cwd"))
@@ -517,6 +535,16 @@ def admitted_agent_fn(
                 # dropped one leaves the row active for the next boot's
                 # reconciler to re-dispatch.
                 handle.cancel("workflow run cancelled")
+                raise
+            except WorkflowSpawnRefused as exc:
+                # A policy refusal is TERMINAL and is settled before the dependency
+                # adapters see it. The step did not run and cannot run under this
+                # policy, so a wait buys nothing -- and the refusal text carries
+                # operator-supplied config (an allowed root, a profile reason),
+                # which the generic text adapters read for status tokens: a root
+                # spelled ``/srv/status 503`` would classify a refusal as a
+                # retryable outage and park rejected work in ``waiting_dependency``.
+                await handle.fail_async(f"{type(exc).__name__}: {exc}"[:500])
                 raise
             except Exception as exc:
                 signal = classify_exception(exc)
