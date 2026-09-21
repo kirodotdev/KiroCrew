@@ -66,6 +66,10 @@ RECOVERY_BREADCRUMB_NAME = ".kirocrew.breadcrumb"
 
 OUTBOX_DIR_NAME = "outbox"
 
+# Durable, owner-only adapter cleanup receipts. Kept here so the writer and the
+# security-path fence share one spelling without importing either subsystem.
+ACP_CLEANUP_RECEIPTS_DIR_NAME = "acp-cleanup-receipts"
+
 # Cross-platform workspace root for LLM working directories.
 # Override: KIROCREW_WORKSPACE env var or <config_dir>/workspace_dir
 # macOS: /Volumes/workplace/kirocrew-workspace (fallback ~/workplace)

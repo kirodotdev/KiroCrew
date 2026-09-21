@@ -1192,6 +1192,7 @@ class TestOwnerSourceStatusTransport:
                 # Mirror the auth middleware: it sets this POSITIVE flag so the
                 # WS layer never infers trust from a falsy app claim.
                 self.setdefault("is_dashboard_user", not self.get("app"))
+                self.headers = {"X-ACP-Title-Subscription": "1"}
                 self.app = {"state": state}
 
         class FakeWebSocket:
@@ -1241,6 +1242,7 @@ class TestOwnerSourceStatusTransport:
 
         assert result is fake_ws
         state.register_ws.assert_called_once_with(fake_ws, owner=owner_request)
+        assert fake_ws._flags["_acp_title_subscription"] is owner_request
         initial_frame = fake_ws.sent[0]
         initial_slots = initial_frame["data"]
         if owner_request:

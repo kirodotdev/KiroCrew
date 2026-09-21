@@ -571,11 +571,8 @@ class TestTurnMetric:
 
     def test_session_source_attribute_is_attached(self):
         recorder = MagicMock()
-        # The emit and its source derivation live in ``metrics/turns.py`` so
-        # every dispatch surface can reach them; chat_runner is only the
-        # dashboard turn loop. The source comes from ``telemetry_channel_of``,
-        # which — unlike infer_use_case — knows the background surfaces this
-        # metric covers.
+        # Metrics owns the emit and source derivation so every dispatch surface
+        # reaches them. telemetry_channel_of covers background surfaces.
         with (
             patch.object(turns_mod, "telemetry_channel_of", return_value="cron"),
             patch.object(turns_mod, "get_recorder", return_value=recorder),
@@ -3826,8 +3823,15 @@ class TestRunChatAutoApproveRungs:
         perm.tool_call_id = "call-cov-1"
         perm.tool_purpose = purpose
         _set_stream(client, [perm, _complete()])
+        loop_thread = threading.get_ident()
+        original_tool_meta = chat_runner._tool_meta
 
-        await _drive(state, slot)
+        def tool_meta_off_loop(event):
+            assert threading.get_ident() != loop_thread
+            return original_tool_meta(event)
+
+        with patch.object(chat_runner, "_tool_meta", side_effect=tool_meta_off_loop):
+            await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         (tool_msg,) = [m for m in slot.messages if m.get("role") == "tool"]
@@ -4621,3 +4625,59 @@ class TestSessionClosingQuietAbort:
             "error card in the chat slot"
         )
         state.sessions.record_failure.assert_not_awaited()
+
+
+class TestToolMetaLocations:
+    """``_tool_meta`` must fold in ACP ``ToolCallLocation`` entries for Zed follow-along."""
+
+    def test_file_tool_carries_locations(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-1",
+            title="edit main.py",
+            tool_kind="edit",
+            tool_name="str_replace",
+            raw_tool_params={"path": "/abs/main.py", "oldStr": "a", "newStr": "b"},
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert meta["locations"] == [{"path": "/abs/main.py"}]
+
+    def test_shell_tool_omits_locations(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-2",
+            title="bash",
+            tool_kind="execute",
+            tool_name="execute_bash",
+            raw_tool_params={"command": "cat /tmp/x"},
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert "locations" not in meta
+
+    def test_missing_raw_params_omits_locations(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-3",
+            title="unknown",
+            tool_kind="other",
+            tool_name="",
+            raw_tool_params=None,
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert "locations" not in meta
+
+    def test_fs_read_carries_start_line(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-4",
+            title="read",
+            tool_kind="read",
+            tool_name="fs_read",
+            raw_tool_params={"path": "/abs/x.py", "start_line": 42},
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert meta["locations"] == [{"path": "/abs/x.py", "line": 42}]

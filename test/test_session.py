@@ -401,6 +401,53 @@ class TestSessionManager:
             t.cancel()
 
     @pytest.mark.asyncio
+    async def test_cold_start_race_retries_when_mcp_fingerprint_differs(self, cfg):
+        start_gate = asyncio.Event()
+        both_started = asyncio.Event()
+        started = 0
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            provider = AsyncMock()
+            provider.requested_mcp = list(kwargs.get("session_mcp_servers") or [])
+
+            async def _start():
+                nonlocal started
+                started += 1
+                if started == 2:
+                    both_started.set()
+                await start_gate.wait()
+
+            provider.start = _start
+            provider.shutdown = AsyncMock()
+            provider.is_process_alive = lambda: True
+            provider.is_alive = lambda: True
+            provider.context_usage_pct = lambda: 0.0
+            return provider
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        requested = [{"name": "editor", "command": "editor-mcp"}]
+        empty_task = asyncio.create_task(mgr.get_or_create("A", session_mcp_servers=[]))
+        mcp_task = asyncio.create_task(mgr.get_or_create("A", session_mcp_servers=requested))
+        await asyncio.wait_for(both_started.wait(), timeout=3.0)
+        start_gate.set()
+
+        done, pending = await asyncio.wait(
+            {empty_task, mcp_task},
+            timeout=3.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        assert len(done) == 1
+        assert len(pending) == 1
+        mgr.release("A")
+
+        empty_result, mcp_result = await asyncio.wait_for(
+            asyncio.gather(empty_task, mcp_task), timeout=3.0
+        )
+        assert empty_result[0].requested_mcp == []
+        assert mcp_result[0].requested_mcp == requested
+        mgr.release("A")
+
+    @pytest.mark.asyncio
     async def test_same_session_still_serializes(self, cfg):
         """Sanity: the per-session semaphore still serializes the SAME key —
         a second get_or_create on a held session blocks until release."""

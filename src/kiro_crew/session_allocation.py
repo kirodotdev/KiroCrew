@@ -88,6 +88,7 @@ class AllocationDeps:
     is_claude_backend: Callable[[LLMProvider], bool]
     provider_label: Callable[[LLMProvider], str]
     detect_provider_switch: Callable[[Any, str, str], bool]
+    mcp_fingerprint: Callable[[list[dict[str, Any]] | None], str]
     session_factory: Callable[..., Any]
     first_turn_nothing_armed: object
     first_turn_fresh: object
@@ -205,7 +206,9 @@ class _AllocationOwner(Protocol):
         wait_if_busy: bool = True,
     ) -> bool: ...
 
-    async def _evict_stale_session(self, key: str, session: Any) -> None: ...
+    async def _evict_stale_session(
+        self, key: str, session: Any, *, lease_held: bool = False
+    ) -> None: ...
 
     async def open_task_session(
         self, parent_session_key: str, session_key: str, **kwargs: Any
@@ -622,17 +625,23 @@ class SessionAllocationService:
             session.turn_owner = asyncio.current_task()
         return still_valid
 
-    async def _evict_stale_session(self, key: str, session: Any) -> None:
+    async def _evict_stale_session(
+        self, key: str, session: Any, *, lease_held: bool = False
+    ) -> None:
         """Pop only the observed stale object and close it outside the lock."""
         dead: LLMProvider | None = None
-        async with self._lock:
-            if self._sessions.get(key) is session:
-                del self._sessions[key]
-                self.advance_ownership_generation(key)
-                dead = session.provider
-                # Same tick as the removal. Left unrecorded, the start crumb
-                # survives and the next boot calls this a crash.
-                await record_session_ended(key, end_reason=END_REASON_EVICTED)
+        try:
+            async with self._lock:
+                if self._sessions.get(key) is session:
+                    del self._sessions[key]
+                    self.advance_ownership_generation(key)
+                    dead = session.provider
+                    # Same tick as the removal. Left unrecorded, the start crumb
+                    # survives and the next boot calls this a crash.
+                    await record_session_ended(key, end_reason=END_REASON_EVICTED)
+        finally:
+            if lease_held:
+                session.semaphore.release()
         if dead is not None:
             await asyncio.to_thread(self._deps.unlink_session_queue, session)
             try:
@@ -1271,6 +1280,7 @@ class SessionAllocationService:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
@@ -1302,6 +1312,7 @@ class SessionAllocationService:
                 model=model,
                 cwd=cwd,
                 extra_env=extra_env,
+                session_mcp_servers=session_mcp_servers,
                 speculative=speculative,
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
@@ -1341,6 +1352,7 @@ class SessionAllocationService:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
@@ -1362,6 +1374,9 @@ class SessionAllocationService:
         execution = await asyncio.to_thread(read_session_execution, key)
         member_context = execution is not None and execution.member_id is not None
         memory_mode = execution.memory_mode if execution is not None else "persistent"
+        requested_mcp_fp = self._deps.mcp_fingerprint(session_mcp_servers)
+        if session_mcp_servers:
+            extra_factory_kwargs["session_mcp_servers"] = session_mcp_servers
         stale_provider: LLMProvider | None = None
         stale_session: Any | None = None
         claimed: Any | None = None
@@ -1447,11 +1462,19 @@ class SessionAllocationService:
                 session,
                 wait_if_busy=wait_if_busy,
             ):
-                first_turn = session.first_turn
-                if not speculative:
-                    session.first_turn = self._deps.first_turn_nothing_armed
-                return session.provider, first_turn.is_new, first_turn.resumed
-            await owner._evict_stale_session(key, session)
+                mcp_matches = getattr(session, "mcp_fingerprint", "") == requested_mcp_fp
+                if mcp_matches:
+                    first_turn = session.first_turn
+                    if not speculative:
+                        session.first_turn = self._deps.first_turn_nothing_armed
+                    return session.provider, first_turn.is_new, first_turn.resumed
+                self._deps.logger.info(
+                    "Session %s editor MCP set changed — recreating provider",
+                    key,
+                )
+                await owner._evict_stale_session(key, session, lease_held=True)
+            else:
+                await owner._evict_stale_session(key, session)
             # Re-enter the claim rather than cold-start in place. The session
             # this claimant waited on was replaced or retired under it -- a reset
             # wakes its waiters exactly so they get here -- and the key may now
@@ -1465,6 +1488,8 @@ class SessionAllocationService:
                     f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
                     "session kept going stale between acquire and re-validate"
                 )
+            retry_factory_kwargs = dict(extra_factory_kwargs)
+            retry_factory_kwargs.pop("session_mcp_servers", None)
             return await owner.get_or_create(
                 key,
                 agent=agent,
@@ -1473,11 +1498,12 @@ class SessionAllocationService:
                 model=model,
                 cwd=cwd,
                 extra_env=extra_env,
+                session_mcp_servers=session_mcp_servers,
                 speculative=speculative,
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
                 _won_race_retries=_won_race_retries + 1,
-                **extra_factory_kwargs,
+                **retry_factory_kwargs,
             )
 
         resume_sid: str | None = None
@@ -1558,6 +1584,8 @@ class SessionAllocationService:
             pool_decision = "bypass_cwd"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif session_mcp_servers:
+            pool_decision = "bypass_mcp"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run
@@ -1840,6 +1868,7 @@ class SessionAllocationService:
                         first_turn=first_turn,
                         approval_policy=approval_policy,
                         agent=session_agent or "",
+                        mcp_fingerprint=requested_mcp_fp,
                     )
                     session.capability_member = preparation.member
                     session.loaded_capabilities = stamp
@@ -1936,20 +1965,31 @@ class SessionAllocationService:
                 won_race_session,
                 wait_if_busy=wait_if_busy,
             ):
-                first_turn = won_race_session.first_turn
-                if not speculative:
-                    won_race_session.first_turn = self._deps.first_turn_nothing_armed
-                return (
-                    won_race_session.provider,
-                    first_turn.is_new,
-                    first_turn.resumed,
+                winner_mcp_matches = (
+                    getattr(won_race_session, "mcp_fingerprint", "") == requested_mcp_fp
                 )
+                if winner_mcp_matches:
+                    first_turn = won_race_session.first_turn
+                    if not speculative:
+                        won_race_session.first_turn = self._deps.first_turn_nothing_armed
+                    return (
+                        won_race_session.provider,
+                        first_turn.is_new,
+                        first_turn.resumed,
+                    )
+                self._deps.logger.info(
+                    "Session %s won startup with a different editor MCP set — retrying",
+                    key,
+                )
+                await owner._evict_stale_session(key, won_race_session, lease_held=True)
             maximum = constants.won_race_max_retries
             if _won_race_retries >= maximum:
                 raise RuntimeError(
                     f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
                     "session kept going stale between acquire and re-validate"
                 )
+            retry_factory_kwargs = dict(extra_factory_kwargs)
+            retry_factory_kwargs.pop("session_mcp_servers", None)
             return await owner.get_or_create(
                 key,
                 agent=session_agent,
@@ -1958,11 +1998,12 @@ class SessionAllocationService:
                 model=model,
                 cwd=cwd,
                 extra_env=extra_env,
+                session_mcp_servers=session_mcp_servers,
                 speculative=speculative,
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
                 _won_race_retries=_won_race_retries + 1,
-                **extra_factory_kwargs,
+                **retry_factory_kwargs,
             )
 
         return result

@@ -383,6 +383,7 @@ class AcpProvider(LLMProvider):
         crew_agent: str | None = None,
         member_context: bool = False,
         memory_mode: str = "persistent",
+        session_mcp_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -412,6 +413,9 @@ class AcpProvider(LLMProvider):
         self.member_context = member_context
         self.memory_mode = memory_mode
         self._client = AcpClient(**kwargs)
+        # The adapter owns the editor-supplied MCP process lifecycle; the provider
+        # retains only its canonical session-scoped configuration.
+        self._session_mcp_servers: list[dict[str, Any]] = list(session_mcp_servers or [])
         # Consumer opt-in for the low-fidelity child permission downgrade
         # (see child_fidelity_aware property). Set by fidelity-aware
         # consumers (dashboard chat) BEFORE startup; re-applied when
@@ -948,6 +952,7 @@ class AcpProvider(LLMProvider):
                     member_session_key=member_session_key,
                     session_key=session_key,
                     channel_id=channel_id,
+                    mcp_servers=self._session_mcp_servers or None,
                 )
                 if attempt:
                     logger.info(
@@ -998,7 +1003,7 @@ class AcpProvider(LLMProvider):
         return None
 
     async def _start_kiro_runtime_impl(
-        self, phases: dict[str, float], meta: dict[str, object]
+        self, phases: dict[str, float], meta: dict[str, object] | None = None
     ) -> None:
         """Spawn an AcpRuntime and replace self._client with AcpSessionProvider.
 
@@ -1008,6 +1013,9 @@ class AcpProvider(LLMProvider):
         ``phases`` is populated in-place with per-step wall-clock (ms) — spawn_init,
         session_new, set_model — for the startup histogram in the wrapper.
         """
+        if meta is None:
+            meta = {}
+
         # Extract params from the AcpClient that was created in __init__
         # (it was never spawned — just used for config storage)
         work_dir = self._client._work_dir
@@ -1231,6 +1239,7 @@ class AcpProvider(LLMProvider):
                         memory_mode=self.memory_mode,
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
+                        mcp_servers=self._session_mcp_servers or None,
                     )
                 except AcpRuntimeError as exc:
                     sandbox_failure = await sandbox_init_failure_for_runtime(runtime)

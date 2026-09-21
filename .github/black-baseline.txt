@@ -165,7 +165,6 @@ src/kiro_crew/dashboard/chat_title.py
 src/kiro_crew/dashboard/crash_dump_store.py
 src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/artifacts.py
-src/kiro_crew/dashboard/handlers/ask_question.py
 src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py
 src/kiro_crew/dashboard/handlers/knowledge.py
@@ -364,7 +363,6 @@ test/test_artifact_source.py
 test/test_artifacts.py
 test/test_artifacts_handlers.py
 test/test_artifacts_handlers_coverage.py
-test/test_ask_question_roundtrip.py
 test/test_ask_user_question_validation.py
 test/test_auto_approve.py
 test/test_auto_research.py

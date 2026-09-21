@@ -4974,6 +4974,7 @@ class ScriptHookStore:
         event: str,
         context: str = "",
         tool_name: str = "",
+        additional_tool_names: tuple[str, ...] = (),
         tool_input: dict | None = None,
         tool_response: dict | None = None,
         subagent_id: str | None = None,
@@ -4986,6 +4987,8 @@ class ScriptHookStore:
         For PreToolUse/PostToolUse, matcher filters by tool name.
         For AgentSpawn/UserPromptSubmit/Stop, all hooks for that event fire.
 
+        Optional ``additional_tool_names`` lets one tool event match trusted canonical
+        identity and display aliases without executing a hook more than once.
         Optional ``subagent_id``, ``parent_session_key``, and ``agent_role`` are
         emitted into the hook_event payload so hook scripts can attribute tool
         calls to the specific agent/session that fired them. Parent contexts
@@ -5037,7 +5040,8 @@ class ScriptHookStore:
             # Matcher filtering: for tool hooks, match tool name; for others, match context
             if hook.matcher:
                 if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
-                    if not _tool_matches(hook.matcher, tool_name):
+                    names = (tool_name, *additional_tool_names)
+                    if not any(_tool_matches(hook.matcher, name) for name in names):
                         continue
                 elif context:
                     # Offload to a thread: regex mode spawns a bounded subprocess

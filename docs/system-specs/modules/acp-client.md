@@ -153,6 +153,17 @@ otherwise uncertain alias files remain on disk.
 Windows runtime teardown records the reaped return code after the owned-handle
 drain, before dropping the process reference, just as POSIX teardown does. The
 existing death summary is amended without changing its reason or stderr tail.
+## Gateway-backed ACP session listing
+
+The agent-role server in `acp_server/http_backend.py` exposes dashboard chat
+slots through `session/list`. A request with `cwd` scopes results to that project
+and preserves most-recent-first ordering by `updatedAt`.
+
+Project filtering compares canonical filesystem paths (`realpath` plus platform
+case normalization), not raw strings. Logical and symlinked workspace paths
+therefore match their physical path without rewriting the original `cwd` stored
+on the slot. If canonicalization fails, only an exact raw-string match is
+accepted, so unrelated projects are never included.
 
 ## Backend Selection
 
