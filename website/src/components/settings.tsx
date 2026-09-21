@@ -381,6 +381,9 @@ interface SettingsStepperProps {
   configKey?: string
 }
 
+/** Shared box of the centre readout, whether it is a reset button or plain text. */
+const STEPPER_READOUT_CLASS = 'min-w-[56px] h-8 rounded-md border border-border bg-bg-elevated text-text-strong text-sm font-bold flex items-center justify-center px-2 transition-all'
+
 export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, suffix = '', disabled, configKey }: SettingsStepperProps) {
   return (
     <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
@@ -392,15 +395,21 @@ export function SettingsStepper({ label, description, hint, value, onIncrement, 
           onClick={onDecrement}
           aria-label={i18nT('components.settings.decrease')}
         >−</button>
-        <button
-          type="button"
-          disabled={!onReset || disabled}
-          className={`min-w-[56px] h-8 rounded-md border border-border bg-bg-elevated text-text-strong text-sm font-bold flex items-center justify-center px-2 transition-all ${
-            onReset ? 'cursor-pointer hover:border-accent hover:text-accent' : 'cursor-default'
-          } disabled:opacity-40 disabled:cursor-not-allowed`}
-          onClick={onReset}
-          title={onReset ? i18nT('components.settings.click_to_reset') : undefined}
-        >{value}{suffix}</button>
+        {onReset ? (
+          <button
+            type="button"
+            disabled={disabled}
+            className={`${STEPPER_READOUT_CLASS} cursor-pointer hover:border-accent hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed`}
+            onClick={onReset}
+            title={i18nT('components.settings.click_to_reset')}
+          >{value}{suffix}</button>
+        ) : (
+          // A readout with nothing to click is text, not a disabled button: a
+          // `<button disabled>` draws dimmed with a not-allowed cursor and reads
+          // to assistive tech as an action that is refused, when nothing was
+          // ever on offer. It only dims with the rest of the control.
+          <span className={`${STEPPER_READOUT_CLASS} cursor-default${disabled ? ' opacity-40' : ''}`}>{value}{suffix}</span>
+        )}
         <button
           type="button"
           disabled={disabled}
