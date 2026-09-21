@@ -200,11 +200,39 @@ def _directory_is_writable(directory: str) -> bool:
     access on macOS means group membership plus ACLs plus SIP, and a subtly wrong model
     fails OPEN. Fails CLOSED — answers ``True`` so the caller refuses — on any error
     other than the denial that means "no".
+
+    **The name is removed while the handle is still open, where the platform allows it.**
+    The directories this probes are the operator's real ``/Applications`` tree, and POSIX
+    offers no delete-on-close, so unlinking inside the open block is the smallest window
+    the platform allows: the name leaves the directory in the call right after the one
+    that created it, the inode is released when the handle closes, and no later step —
+    including one that never runs because the process died — can leave a file behind. The
+    Windows twin gets a true guarantee from ``FILE_FLAG_DELETE_ON_CLOSE``; this is the
+    POSIX expression of the same intent, and the residual window is the two adjacent calls
+    themselves.
+
+    A platform that refuses to unlink an open file answers that refusal instead, and the
+    removal is retried after the close — the ordinary best-effort shape. That is not a
+    macOS path: it is what the Windows test shards exercise, since this module imports and
+    runs anywhere and its probe is covered on every platform.
     """
     probe = os.path.join(directory, _WRITE_PROBE_NAME)
+
+    def remove() -> bool:
+        """Remove the probe, reporting whether the name is gone. Never raises."""
+        try:
+            os.unlink(probe)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return True
+
     try:
         with open(probe, "xb"):
-            pass
+            # Inside the block on purpose. Swallows its own errors, so a refusal here
+            # cannot be mistaken for the create's answer in the clauses below.
+            removed = remove()
     except (PermissionError, FileNotFoundError, NotADirectoryError):
         return False
     except FileExistsError:
@@ -212,9 +240,7 @@ def _directory_is_writable(directory: str) -> bool:
         return True
     except OSError:
         return True
-    try:
-        os.unlink(probe)
-    except OSError:
+    if not removed and not remove():
         logger.debug("computer-use launch: could not remove the write probe in %s", directory)
     return True
 

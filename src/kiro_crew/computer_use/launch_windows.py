@@ -583,8 +583,11 @@ def _directory_is_writable(directory: str) -> bool:
     measured: with the removal step withheld, the probe stays on disk, and an explicit
     unlink is best-effort besides (a failure only logs). ``FILE_FLAG_DELETE_ON_CLOSE``
     puts the removal in the kernel, which performs it when the handle closes and therefore
-    also when the process is torn down, so no interruption can leave litter. Measured on
-    Windows: killed with the handle open, a plain probe survives and this one does not.
+    also when the process is torn down, so on that path no interruption can leave litter.
+    Measured on Windows: killed with the handle open, a plain probe survives and this one
+    does not. The fallback path below keeps the ordinary best-effort unlink and therefore
+    keeps that window — it is reached only where delete-on-close is refused, and the
+    correct ANSWER matters more there than the cleanup guarantee.
 
     The delete-on-close create is attempted FIRST and falls back to a plain one, because
     ``DELETE`` is a separate permission from create: a directory that grants creates could

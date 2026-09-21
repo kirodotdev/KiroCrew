@@ -1107,6 +1107,40 @@ class TestMacOSCatalogAndResolution:
         assert launch_macos._directory_is_writable(str(tmp_path)) is True
         assert list(tmp_path.iterdir()) == []
 
+    @pytest.mark.skipif(IS_WINDOWS, reason="Windows refuses to unlink a file that is open")
+    def test_the_probe_NAME_is_gone_BEFORE_the_handle_CLOSES(self, monkeypatch, tmp_path):
+        """POSIX has no delete-on-close, so the unlink has to happen while open.
+
+        Asserting the directory is empty afterwards cannot tell "removed on the next
+        line" from "removed before anything else could fail", and it is the second one
+        that survives an interrupted run. So the moment observed is the handle's close:
+        by then the name must already be gone from the operator's directory.
+        """
+        from kiro_crew.computer_use import launch_macos
+
+        probe = tmp_path / launch_macos._WRITE_PROBE_NAME
+        seen: dict = {}
+        real_open = open
+
+        class Watched:
+            """Reports whether the probe still exists at the moment of the close."""
+
+            def __init__(self, handle):
+                self._handle = handle
+
+            def __enter__(self):
+                self._handle.__enter__()
+                return self
+
+            def __exit__(self, *exc_info):
+                seen["existed_at_close"] = probe.exists()
+                return self._handle.__exit__(*exc_info)
+
+        monkeypatch.setattr("builtins.open", lambda *a, **k: Watched(real_open(*a, **k)))
+        assert launch_macos._directory_is_writable(str(tmp_path)) is True
+        assert seen["existed_at_close"] is False
+        assert list(tmp_path.iterdir()) == []
+
     @pytest.mark.parametrize(
         ("error", "expected"),
         [
