@@ -2596,6 +2596,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             )
             else {}
         ),
+        apps_ui_stream_timeout_secs=_safe_int(
+            agent_data.get("apps_ui_stream_timeout_secs", 30), 30, 5, 600
+        ),
         jail=_normalize_jail(agent_data.get("jail", "auto")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
         yolo_duration=_normalize_yolo_duration(agent_data.get("yolo_duration")),

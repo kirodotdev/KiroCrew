@@ -4506,6 +4506,45 @@ class TestTrustedLocalApps:
         assert cfg.to_dict()["agent"]["apps_trusted_local"] == ["local-app"]
 
 
+class TestAppsUiStreamTimeout:
+    """``agent.apps_ui_stream_timeout_secs`` is the body-transfer deadline on the
+    unauthenticated ``/apps/{name}/ui/`` route, so an unusable value must resolve
+    to a usable deadline rather than to none."""
+
+    def test_defaults_to_thirty_seconds(self) -> None:
+        assert AgentConfig().apps_ui_stream_timeout_secs == 30
+        assert _load_from_dict({}).agent.apps_ui_stream_timeout_secs == 30
+
+    def test_an_in_range_value_round_trips(self) -> None:
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": 45}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == 45
+        assert cfg.to_dict()["agent"]["apps_ui_stream_timeout_secs"] == 45
+
+    @pytest.mark.parametrize(
+        "written,loaded",
+        [(4, 5), (0, 5), (-30, 5), (601, 600), (86400, 600)],
+    )
+    def test_a_value_outside_the_range_is_clamped_to_the_bound(
+        self, written: int, loaded: int
+    ) -> None:
+        """The declared range is [5, 600]: below 5 a client cannot finish a real
+        transfer, and above 600 the permit is held long enough that eight such
+        clients are the head-of-line wedge the deadline exists to stop."""
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": written}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == loaded
+
+    def test_a_numeric_string_from_an_older_writer_still_loads(self) -> None:
+        """``_safe_int`` accepts the numeric-string form every other bounded
+        agent key accepts, so a hand-edited ``"60"`` is 60 seconds, not 30."""
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": "60"}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == 60
+
+    @pytest.mark.parametrize("value", ["soon", "", None, True, False, 4.5, [], {}])
+    def test_a_value_that_is_not_a_whole_number_loads_the_default(self, value) -> None:
+        cfg = _load_from_dict({"agent": {"apps_ui_stream_timeout_secs": value}})
+        assert cfg.agent.apps_ui_stream_timeout_secs == 30
+
+
 def test_heartbeat_default_deliver_default_is_slack():
     """Absent config -> backward-compatible 'slack' default."""
     cfg = _load_from_dict({})

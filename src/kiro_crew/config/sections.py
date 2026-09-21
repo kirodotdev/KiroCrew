@@ -1095,6 +1095,21 @@ class AgentConfig:
             "re-consent before code execution.",
         ),
     )
+    apps_ui_stream_timeout_secs: int = field(
+        default=30,
+        metadata=_meta(
+            "App UI Stream Timeout",
+            "Total transfer deadline, in seconds, for ONE response body on the "
+            "unauthenticated /apps/{name}/ui/ route. Clamped to 5..600; a value "
+            "that is not a whole number loads as 30. Read per request, so an "
+            "edit applies without a restart. There is no off switch: the route "
+            "holds eight descriptor permits, and this deadline is what stops a "
+            "client that quits draining its socket from holding one for as long "
+            "as it stays connected — eight such clients would otherwise stop "
+            "every app UI on the host. Raise it only when a real transfer on "
+            "this host needs longer than the default allows.",
+        ),
+    )
     jail: str = field(
         default=JAIL_MODE_AUTO,
         metadata=_meta(

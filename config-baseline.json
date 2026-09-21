@@ -36,6 +36,7 @@
         "apps_trusted": [],
         "apps_trusted_local": [],
         "apps_trusted_repositories": {},
+        "apps_ui_stream_timeout_secs": 30,
         "jail": "auto",
         "dangerously_skip_permissions": false,
         "yolo_duration": "6h",
@@ -494,6 +495,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "agent.apps_ui_stream_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "App UI Stream Timeout",
+      "help": "Total transfer deadline, in seconds, for ONE response body on the unauthenticated /apps/{name}/ui/ route. Clamped to 5..600; a value that is not a whole number loads as 30. Read per request, so an edit applies without a restart. There is no off switch: the route holds eight descriptor permits, and this deadline is what stops a client that quits draining its socket from holding one for as long as it stays connected — eight such clients would otherwise stop every app UI on the host. Raise it only when a real transfer on this host needs longer than the default allows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 30
     },
     {
       "path": "agent.jail",

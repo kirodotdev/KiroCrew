@@ -2705,14 +2705,56 @@ _UI_STREAM_SEMAPHORE = asyncio.Semaphore(8)
 #: the writes itself. Without a deadline the 8 permits are a head-of-line queue
 #: an UNAUTHENTICATED caller controls: 8 sockets that connect, take one chunk
 #: and then stop reading pin every permit (and descriptor) for as long as they
-#: stay connected, and every app UI on the host stops loading. The value
-#: matches `_BLOB_FETCH_TIMEOUT` in this file — 30s is the ceiling this module
-#: treats as a dead peer — and it is ~100x the budget a real transfer needs:
-#: `_UI_MAX_BYTES` is 8 MiB, so even the largest servable file finishes inside
-#: it at ~280 KB/s, over a loopback connection to the dashboard. Expiry stops
-#: the write loop; the enclosing `finally` still closes the descriptor, so the
-#: permit is released.
-_UI_STREAM_TIMEOUT = 30  # seconds
+#: stay connected, and every app UI on the host stops loading. The default
+#: matches `_BLOB_FETCH_TIMEOUT` in this file — 30s is the ceiling this
+#: module treats as a dead peer — and it is ~100x the budget a real transfer
+#: needs: `_UI_MAX_BYTES` is 8 MiB, so even the largest servable file finishes
+#: inside it at ~280 KB/s, over a loopback connection to the dashboard. Expiry
+#: stops the write loop; the enclosing `finally` still closes the descriptor, so
+#: the permit is released. An operator whose link is slower than that raises the
+#: deadline with `agent.apps_ui_stream_timeout_secs` (clamped to [5, 600] at
+#: load time); this constant is what a config that cannot be read falls back to.
+#: The knob has no off switch on purpose — an unbounded permit IS the wedge
+#: described above.
+_UI_STREAM_TIMEOUT_DEFAULT = 30  # seconds
+
+
+def _ui_stream_timeout_secs() -> int:
+    """The operator's body-transfer deadline for this route, in seconds.
+
+    Reads `agent.apps_ui_stream_timeout_secs`, which the config loader clamps to
+    [5, 600]. The bounds are NOT re-checked here — one owner for them — but a
+    value that is not a positive whole number is refused, because the only
+    alternative to a usable deadline on this route is no deadline at all, and
+    that is the unauthenticated head-of-line wedge `_UI_STREAM_TIMEOUT_DEFAULT`
+    documents.
+
+    Blocking: a config-cache MISS reads and validates `config.json`, so callers
+    resolve this through `asyncio.to_thread` and never on the event loop.
+    """
+    try:
+        value = getattr(
+            KiroCrewConfig.load().agent,
+            "apps_ui_stream_timeout_secs",
+            _UI_STREAM_TIMEOUT_DEFAULT,
+        )
+    except Exception as exc:  # noqa: BLE001 - an unreadable config keeps the default
+        logger.warning(
+            "agent.apps_ui_stream_timeout_secs: config load failed (%s); "
+            "serving this UI file with the %ds default deadline",
+            exc,
+            _UI_STREAM_TIMEOUT_DEFAULT,
+        )
+        return _UI_STREAM_TIMEOUT_DEFAULT
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        logger.warning(
+            "agent.apps_ui_stream_timeout_secs=%r is not a positive whole number "
+            "of seconds; serving this UI file with the %ds default deadline",
+            value,
+            _UI_STREAM_TIMEOUT_DEFAULT,
+        )
+        return _UI_STREAM_TIMEOUT_DEFAULT
+    return value
 
 
 def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str:
@@ -2964,6 +3006,14 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 since = request.if_modified_since
                 if since is not None and int(st.st_mtime) <= since.timestamp():
                     return web.Response(status=304, headers=headers)
+            # Resolved HERE rather than at import: the operator's deadline is read
+            # per request so an edit applies without a gateway restart. Off the
+            # event loop because a config-cache miss reads and validates
+            # `config.json` (no-blocking-call-on-event-loop), and after the
+            # validator checks above so a refusal or a body-less 304 never pays
+            # the hop. The hop is inside the `_UI_STREAM_SEMAPHORE` scope, so it
+            # is bounded on the shared default executor like the read hops below.
+            stream_timeout = await asyncio.to_thread(_ui_stream_timeout_secs)
             resp = web.StreamResponse(status=200, headers={**headers, "Content-Type": content_type})
             # Length pinned to the fstat that was validated: a file the app GROWS
             # after the open must not stream past the length the client was told,
@@ -2985,7 +3035,7 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 # cancelling a `to_thread` call cannot recall a descriptor the
                 # worker thread already opened, so a deadline around the open
                 # would leak the fd it is meant to protect.
-                async with asyncio.timeout(_UI_STREAM_TIMEOUT):
+                async with asyncio.timeout(stream_timeout):
                     while remaining > 0:
                         chunk = await asyncio.to_thread(
                             os.read, fd, min(_UI_STREAM_CHUNK, remaining)
