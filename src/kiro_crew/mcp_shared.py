@@ -1163,6 +1163,7 @@ def run_mcp_stdio_loop(
     call_tool_fn: Callable[[str, dict[str, Any]], str],
     *,
     advertise_caller_identity: bool = False,
+    error_prefix_is_error: bool = False,
 ) -> None:
     """Generic MCP stdio server loop — reads JSON-RPC from stdin, writes to stdout.
 
@@ -1202,6 +1203,7 @@ def run_mcp_stdio_loop(
             list_tools_fn,
             call_tool_fn,
             advertise_caller_identity=advertise_caller_identity,
+            error_prefix_is_error=error_prefix_is_error,
         )
     finally:
         set_internal_caller(_prior_caller)
@@ -1215,6 +1217,7 @@ def _run_stdio_dispatch_loop(
     call_tool_fn: Callable[[str, dict[str, Any]], str],
     *,
     advertise_caller_identity: bool = False,
+    error_prefix_is_error: bool = False,
 ) -> None:
     """Read/dispatch body of :func:`run_mcp_stdio_loop`.
 
@@ -1344,6 +1347,11 @@ def _run_stdio_dispatch_loop(
             tools = [t for t in tools if t.get("name") not in policy.excluded]
         return tools
 
+    def _tool_response(text: str) -> dict[str, Any]:
+        """Frame a tool result, flagging ``Error:`` prose when opted in."""
+        flagged = error_prefix_is_error and text.startswith("Error:")
+        return build_tool_response(text, is_error=flagged)
+
     def _run_tool(
         req_id: Any,
         tool_name: str,
@@ -1396,7 +1404,7 @@ def _run_stdio_dispatch_loop(
         # per request (a failed+late-cancel race must not emit two).
         with _result_lock:
             if not cancel_evt.is_set():
-                _result_box.append(build_tool_response(result_text))
+                _result_box.append(_tool_response(result_text))
                 if _tool_errored:
                     # Exception escaped call_tool_fn (may bypass its internal
                     # logging) -- audit the failure.
@@ -1680,7 +1688,7 @@ def _run_stdio_dispatch_loop(
                         f"operator's exclusion list; fix or remove the unreadable "
                         f"spec in the agents directory."
                     )
-                respond(req_id, build_tool_response(_refusal))
+                respond(req_id, _tool_response(_refusal))
             elif tool_name in _policy.excluded:
                 sel().log_tool_invocation(
                     session_key=_policy_session,
@@ -1692,9 +1700,7 @@ def _run_stdio_dispatch_loop(
                 )
                 respond(
                     req_id,
-                    build_tool_response(
-                        f"Error: tool '{tool_name}' is not available for this agent"
-                    ),
+                    _tool_response(f"Error: tool '{tool_name}' is not available for this agent"),
                 )
             elif not platform_compat.IS_POSIX:
                 # Windows: select.select() cannot poll sys.stdin (WinError
@@ -1718,7 +1724,7 @@ def _run_stdio_dispatch_loop(
                 finally:
                     set_current_caller(None)
                     set_current_tenant_nonce("")
-                respond(req_id, build_tool_response(result_text))
+                respond(req_id, _tool_response(result_text))
             else:
                 # Dispatch tool in worker thread so we can receive cancel notifications
                 _cancel_event = threading.Event()

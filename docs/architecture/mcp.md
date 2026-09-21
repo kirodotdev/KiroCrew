@@ -2060,6 +2060,49 @@ refusal, skipped both the publish and the vouch, and had its genuine marker defa
 downstream: the stop was lost. A gate against imitable content cannot itself be
 built on imitable content.
 
+### An `Error:` prose result can also be framed as an MCP error
+
+`build_tool_response` is the single exit point for every tool result, and for a
+long time it emitted only `{"content": [...]}`. That left the `"Error: …"` prefix
+carrying the entire failure signal: `mcp_shared` derives the SEL audit `outcome`
+from it (`failed` when the text starts with the prefix, `completed` otherwise),
+but nothing in the wire frame said so, and a client had to pattern-match prose to
+tell a refusal from an answer. `cron_script.McpToolClient.call_tool` raised
+`RuntimeError` on `result["isError"]` for exactly that reason — against a flag
+nobody set, so a refused cron write read back as a completed one.
+
+`build_tool_response` now takes a keyword-only `is_error`, which adds MCP's
+`"isError": True` to the frame. The prose is untouched: the flag is computed from
+the RAW result text before sanitization, so a refusal is byte-identical whether it
+is flagged or not, and the audit `outcome` derivation does not move.
+
+**The flag is per-server opt-in, not a global.** `run_mcp_stdio_loop` takes
+`error_prefix_is_error`, default off, and every `tools/call` result on that loop —
+the POSIX worker path, the Windows synchronous path, and the two tool-policy
+refusals (unresolved policy, excluded tool) — goes through one nested
+`_tool_response` helper so a server cannot be half-converted. `kirocrew-cron` is
+the only server that sets it. The other servers keep their frames unflagged
+deliberately: each has in-tree callers and model-facing prompts that read
+`"Error: …"` prose on purpose, so flipping them together would change what those
+callers see.
+
+A server that opts in owes its failure answers the prefix, and the audit half
+already held it to that: an answer without the prefix is filed `completed`. The
+sharp edge is a REFUSED durable write, because its answer sits one line below the
+committed one: a cron mutation whose store call comes back falsey — the row the
+ownership gate just saw is gone, a concurrent delete between check and write —
+frames beside `"Removed job: <id>"`, so an unprefixed answer there reads as a
+completed delete. All four such returns (`cron_update`, `cron_remove`,
+`cron_pause`, `cron_resume`) are `"Error: job not found: <id>"`, which is what
+`AUTOSDE.yaml`'s `a-refusal-is-not-a-commit` requires. Naming the row there leaks nothing: the gate
+has already proved this caller owns it, which is why `_not_found`'s
+anti-enumeration wording is deliberately NOT reused post-gate.
+
+Cron's `"Unknown tool: …"` fall-through is the apparent second exception and is not
+one — `_call_tool` rejects an unknown name at its argument validation, ahead of
+that return, with prose that does carry the prefix, so the unreachable string needs
+no marker.
+
 **A directive tool's result either carries the marker, or it is a tagged
 refusal — nothing in between.** The consumer cannot otherwise tell a decline from
 a marker destroyed in transport: both decode to "no directive", but only the

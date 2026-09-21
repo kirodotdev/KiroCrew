@@ -3772,7 +3772,9 @@ class McpTextContent:
         return {"type": self.type, "text": self.text}
 
 
-def build_tool_response(text: str, max_len: int = MAX_RESPONSE_LEN) -> dict[str, Any]:
+def build_tool_response(
+    text: str, max_len: int = MAX_RESPONSE_LEN, *, is_error: bool = False
+) -> dict[str, Any]:
     """Build a validated, sanitized MCP tools/call response.
 
     Returns the ``result`` payload for a JSON-RPC response:
@@ -3780,10 +3782,15 @@ def build_tool_response(text: str, max_len: int = MAX_RESPONSE_LEN) -> dict[str,
 
     This is the single exit point for all tool responses — ensures every
     response conforms to the MCP TextContent schema and is sanitized.
+    ``is_error`` adds the MCP ``isError`` flag so a client can tell a refusal
+    from an answer without pattern-matching the prose.
     """
     text = sanitize_response(text, max_len)
     content = McpTextContent(type="text", text=text)
-    return {"content": [content.to_dict()]}
+    frame: dict[str, Any] = {"content": [content.to_dict()]}
+    if is_error:
+        frame["isError"] = True
+    return frame
 
 
 def validate_jsonrpc_response(resp: dict[str, Any]) -> dict[str, Any]:

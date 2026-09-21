@@ -2707,7 +2707,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         except ValueError as e:
             return f"Error: {e}"
         if not updated:
-            return f"Job not found: {jid}"
+            return f"Error: job not found: {jid}"
         sel().log_api_access(
             caller="mcp",
             operation="cron.update",
@@ -2743,7 +2743,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         if removed:
             return f"Removed job: {jid}"
-        return f"Job not found: {jid}"
+        return f"Error: job not found: {jid}"
 
     if name == "cron_remove_all":
         jobs = svc.list_jobs(include_disabled=True)
@@ -2792,7 +2792,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         if paused:
             return f"Paused job: {jid}"
-        return f"Job not found: {jid}"
+        return f"Error: job not found: {jid}"
 
     if name == "cron_resume":
         jid = args["job_id"]
@@ -2808,7 +2808,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         if resumed:
             return f"Resumed job: {jid}"
-        return f"Job not found: {jid}"
+        return f"Error: job not found: {jid}"
 
     if name == "cron_trigger":
         jid = args["job_id"]
@@ -2818,7 +2818,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # ``trigger_cron_job`` is the enforcing one; this only makes its reason
         # reachable, since an unknown id never survives the ownership lookup.
         if not _JOB_ID_RE.fullmatch(jid):
-            return f"Invalid job ID format: {jid}"
+            return f"Error: Invalid job ID format: {jid}"
         # Ownership check
         own_err = _check_cron_job_ownership(svc, jid)
         if own_err:
@@ -2840,7 +2840,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
         if ok:
             return f"{msg} - executing now."
-        return msg
+        # The audit row above already calls this an error; say so on the wire.
+        return msg if msg.startswith("Error:") else f"Error: {msg}"
 
     if name == "cron_secret_request":
         jid = args["job_id"]
@@ -2960,4 +2961,5 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        error_prefix_is_error=True,
     )
