@@ -2324,6 +2324,13 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
             backup_mod.scheduled_sessions_blocked_code,
             scheduled_account=account == await accounts_mod.default_account_id(),
         ),
+        # Per kind, the last sweep's count of archives this install wrote that no sweep
+        # can ever retire, and their bytes. The count above says what retention WILL
+        # collect; this says what it never will, which is why a bill can fail to fall
+        # after an operator enables it. Empty until a sweep has measured one, and
+        # stamped rather than live -- refreshing it would need the bucket listing this
+        # payload deliberately keeps opt-in.
+        "retentionUnclaimed": await asyncio.to_thread(backup_mod.retention_unclaimed, account),
         "runs": await asyncio.to_thread(backup_mod.last_runs, account),
         "jobs": await asyncio.to_thread(_account_jobs, account),
         # This install's own identity, so every row can be told from every other

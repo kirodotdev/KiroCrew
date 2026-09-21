@@ -3913,3 +3913,61 @@ class TestBackupRetentionRoute:
         # The sweep's own resolution, so the panel cannot show a number the sweep would
         # clamp or ignore.
         reader.assert_called_once_with(ACCOUNT)
+
+    def test_the_status_read_reports_the_unclaimed_floor(self):
+        # The count above says what retention WILL collect. Without this an operator
+        # cannot see the part it never will, which is why a bill can fail to fall after
+        # they enable it -- and until now the number reached only a SEL event.
+        floor = {"snapshot": {"archives": 2, "bytes": 4096, "at": "2026-01-01T00:00:00+00:00"}}
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=False),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod.backup_mod, "retention_keep", return_value=3),
+            mock.patch.object(
+                routes_mod.backup_mod, "retention_unclaimed", return_value=floor
+            ) as reader,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
+                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                )
+            )
+        assert _payload(resp)["retentionUnclaimed"] == floor
+        # Per account, like every other field here: two connected accounts are two
+        # buckets and two bills.
+        reader.assert_called_once_with(ACCOUNT)
+
+    def test_the_unclaimed_floor_rides_the_unpolled_half(self):
+        # It is read from local state and costs no AWS call, so it must NOT be gated
+        # behind `remote=1` the way the bucket listing is. Gating it there would hide
+        # the permanent cost behind the opt-in an operator opens last.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=False),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod.backup_mod, "retention_keep", return_value=None),
+            mock.patch.object(routes_mod.backup_mod, "retention_unclaimed", return_value={}),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
+                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                )
+            )
+        body = _payload(resp)
+        # The remote half stayed unrequested, which is what makes the presence of the
+        # field below evidence about the unpolled payload rather than about a listing.
+        assert body["remote"] is None
+        assert body["retentionUnclaimed"] == {}

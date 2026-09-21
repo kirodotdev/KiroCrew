@@ -16,6 +16,7 @@ pin the version-pinned form specifically.
 
 from __future__ import annotations
 
+import datetime as dt
 import inspect
 import json
 import logging
@@ -1602,6 +1603,177 @@ class TestUnclaimedArchivesAreReported:
         assert out["unclaimed"] == 0
         assert out["unclaimedBytes"] == 0
         assert "unclaimed=0" in audit[0]["resources"]
+
+    def test_a_key_the_install_no_longer_remembers_is_not_counted(self, drive, state, audit):
+        """The disclosed limit: this is a floor ON the remembered set, not over the prefix.
+
+        ``upload_versions`` is trimmed to the keys ``uploads`` still holds, so a key that
+        falls off ``uploads`` loses its version record with it and leaves
+        :func:`uploaded_keys` entirely. It is then equally unretirable AND invisible here,
+        because the sweep filters to owned keys before measuring. Counting past the
+        remembered set means attributing objects this install holds no record of, which is
+        a decision the reclaim design owns -- so the gap is documented rather than closed,
+        and this pins it so the documentation cannot quietly go false.
+        """
+        state(3)
+        rows = _archives(backup.KIND_SNAPSHOT, ["01", "02", "03"])
+        drive.rows = rows
+        forgotten = rows[0]
+        remembered = rows[1:]
+        # The control: this key carries bytes, so a count that included it would differ
+        # from the count below. Without it a zero could mean an empty fixture.
+        assert int(forgotten["size"]) > 0
+        recorded = {_key_of(row): str(row["versionId"]) for row in remembered}
+        out = self._sweep(drive, remembered, recorded, _key_of(rows[-1]))
+        assert out["unclaimed"] == 0
+        assert out["unclaimedBytes"] == 0
+        assert "unclaimed=0" in audit[0]["resources"]
+        # Nor is it deleted: it holds no `keep` slot and deletion draws only from `live`.
+        assert drive.deleted == []
+
+
+class TestTheUnclaimedFloorReachesTheStatusRead:
+    """The audit event is not where an operator decides whether retention is working.
+
+    The sweep already measured the archives it can never retire, but the counts landed
+    only in a SEL event and a log line. An operator who enables a count to bound their
+    bill reads the status endpoint, sees the count, and has no way to see the part of
+    the bill the count will never touch -- which is the whole reason the bill does not
+    fall. So the last sweep's pair is persisted and served beside it.
+
+    Built on ``TestUnclaimedArchivesAreReported._sweep`` for the same reason that class
+    is: ``_prune`` records a version for every owned key by design, so an unclaimed key
+    cannot be produced through it.
+    """
+
+    _sweep = TestUnclaimedArchivesAreReported._sweep
+
+    def _one_unrecorded(self, drive):
+        """A drive whose oldest archive has no recorded version. Returns its rows."""
+        rows = _archives(backup.KIND_SNAPSHOT, ["01", "02", "03"])
+        drive.rows = rows
+        return rows
+
+    def test_the_counts_are_served_by_the_status_reader(self, drive, state):
+        state(1)
+        rows = self._one_unrecorded(drive)
+        recorded = {_key_of(row): str(row["versionId"]) for row in rows[1:]}
+        out = self._sweep(drive, rows, recorded, _key_of(rows[-1]))
+        # Guards the assertions below against a fixture that measured nothing: a
+        # reader agreeing with an all-zero outcome would prove nothing at all.
+        assert out["unclaimed"] == 1
+        assert out["unclaimedBytes"] > 0
+        served = backup.retention_unclaimed(ACCOUNT)
+        assert served[backup.KIND_SNAPSHOT]["archives"] == out["unclaimed"]
+        assert served[backup.KIND_SNAPSHOT]["bytes"] == out["unclaimedBytes"]
+
+    def test_the_measurement_is_stamped_so_its_staleness_is_readable(self, drive, state):
+        state(1)
+        rows = self._one_unrecorded(drive)
+        recorded = {_key_of(row): str(row["versionId"]) for row in rows[1:]}
+        self._sweep(drive, rows, recorded, _key_of(rows[-1]))
+        at = backup.retention_unclaimed(ACCOUNT)[backup.KIND_SNAPSHOT]["at"]
+        # Parsed rather than merely truthy: the value exists to tell a reader WHEN the
+        # listing was measured, and a string no clock can be read out of does not.
+        assert dt.datetime.fromisoformat(at).tzinfo is not None
+
+    def test_a_listing_the_sweep_refused_to_act_on_is_not_published(self, drive, state):
+        # The one direction that must not be published. Past the gate the sweep has
+        # declined to trust this listing about age, so it cannot be trusted about how
+        # many keys it omitted either -- and an UNDERCOUNT served as the floor reads as
+        # "nothing unreclaimable here", which is worse than serving nothing. The audit
+        # event still carries the number, where `failed` says how much to trust it.
+        state(1)
+        rows = _archives(backup.KIND_SNAPSHOT, ["01", "02"])
+        drive.rows = rows
+        out = self._sweep(drive, rows, {}, _key_of(rows[1]))
+        assert out["skipped"]
+        assert out["unclaimed"] == 2
+        assert backup.retention_unclaimed(ACCOUNT) == {}
+
+    def test_a_measured_zero_is_published_so_absence_means_never_measured(self, drive, state):
+        # Storing only a non-zero floor would make an absent kind mean either "no
+        # floor" and "never swept", and those two want opposite things from a reader.
+        state(3)
+        rows = _archives(backup.KIND_SNAPSHOT, ["01", "02"])
+        drive.rows = rows
+        recorded = {_key_of(row): str(row["versionId"]) for row in rows}
+        self._sweep(drive, rows, recorded, _key_of(rows[-1]))
+        served = backup.retention_unclaimed(ACCOUNT)
+        assert served[backup.KIND_SNAPSHOT] == {
+            "archives": 0,
+            "bytes": 0,
+            "at": served[backup.KIND_SNAPSHOT]["at"],
+        }
+
+    def test_nothing_is_served_before_any_sweep_has_measured(self, state):
+        state(3)
+        assert backup.retention_unclaimed(ACCOUNT) == {}
+
+    def test_each_kind_keeps_its_own_measurement(self, drive, state):
+        # Per kind because the sweep is per kind: one number for both would report a
+        # snapshot floor on the sessions row, and the two prefixes are swept
+        # separately with their own listings.
+        state(1)
+        snap = _archives(backup.KIND_SNAPSHOT, ["01", "02", "03"])
+        drive.rows = snap
+        self._sweep(
+            drive,
+            snap,
+            {_key_of(row): str(row["versionId"]) for row in snap[1:]},
+            _key_of(snap[-1]),
+        )
+        sessions = _archives(backup.KIND_SESSIONS, ["01", "02"])
+        drive.rows = sessions
+        _write_account({"uploads": {_key_of(row): "fp" for row in sessions}})
+        backup._prune_remote_archives(
+            ACCOUNT,
+            PROFILE,
+            REGION,
+            BUCKET,
+            backup.KIND_SESSIONS,
+            INSTALL,
+            _key_of(sessions[-1]),
+            caller=backup.CALLER_SCHEDULED,
+        )
+        served = backup.retention_unclaimed(ACCOUNT)
+        assert served[backup.KIND_SNAPSHOT]["archives"] == 1
+        # `upload_versions` was left carrying only the snapshot keys, so every
+        # sessions key is unrecorded -- but the newest one then has no recorded
+        # version either, so that sweep aborts and publishes nothing.
+        assert backup.KIND_SESSIONS not in served
+
+    def test_a_state_write_failure_does_not_fail_the_sweep(self, drive, state, monkeypatch):
+        # The sweep's contract: the archive is already off-host and the run already
+        # recorded, so nothing this write can fail at may turn a successful backup
+        # into a failed one. The SEL event carries the same pair regardless.
+        state(1)
+        rows = self._one_unrecorded(drive)
+        recorded = {_key_of(row): str(row["versionId"]) for row in rows[1:]}
+
+        def _boom(*a, **k):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(backup, "write_state", _boom)
+        out = self._sweep(drive, rows, recorded, _key_of(rows[-1]))
+        # The sweep still ran and still deleted: the recorder is a satellite of it.
+        assert out["unclaimed"] == 1
+        assert drive.deleted == [(_key_of(rows[1]), str(rows[1]["versionId"]))]
+
+    def test_a_corrupted_measurement_reads_as_nothing_measured(self, state):
+        # A polled endpoint must not raise on a state file somebody hand-edited, and
+        # every other reader in this module answers a corrupted level as empty.
+        state(3)
+        _write_account({backup.RETENTION_UNCLAIMED_STATE_KEY: "not a map"})
+        assert backup.retention_unclaimed(ACCOUNT) == {}
+        _write_account({backup.RETENTION_UNCLAIMED_STATE_KEY: {backup.KIND_SNAPSHOT: "nope"}})
+        assert backup.retention_unclaimed(ACCOUNT) == {}
+
+    def test_the_reader_does_not_claim_a_console_renderer(self):
+        # The same disclosure `retention_keep` carries, for the same reason: a
+        # docstring implying a panel sends the next reader looking for one.
+        doc = backup.retention_unclaimed.__doc__ or ""
+        assert "NO console renderer" in doc
 
 
 class TestSetRetentionKeep:

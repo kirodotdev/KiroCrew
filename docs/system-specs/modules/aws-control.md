@@ -582,7 +582,9 @@ no upper bound for either to police. A state
 write that fails returns `state_persist_failed` and does not echo the value, because
 reporting a setting the next read contradicts is worse than an error. The status read
 reports `retentionKeep` as the EFFECTIVE count the sweep would use, or `null` when
-retention is off. No console control ships for it: the count is set and read over HTTP
+retention is off, and `retentionUnclaimed` as the last sweep's per-kind count and bytes
+of archives no sweep can ever retire. No console control ships for either: the count is
+set and read over HTTP
 only, and the status field exists so an operator who wrote one can confirm what was
 stored instead of trusting the write. A renderer is a separate surface and is not part
 of this module.
@@ -724,18 +726,42 @@ version, the overwritten-upload abort, the live gate at the delete, the
 fail-closed keep count, the version-pinned deletes, the client-side paging that
 bounds one listing response, the refusal to answer a folder whose history is too
 large to hold rather than returning the part that fits, the unclaimed-archive count
-and bytes reaching the audit event, the audit events including the partial-purge
-count, and the best-effort contract.
+and bytes reaching the audit event AND the status read, the refusal to persist that
+pair from a listing the sweep would not act on, the audit events including the
+partial-purge count, and the best-effort contract.
 
-The unclaimed class is NOT only archives written before the version record existed.
-`upload_versions` is trimmed with `uploads` under one bound, so an install that pushes
-without a count configured drops its oldest recorded version once it passes that bound,
-and those archives stop being retirable even after a count is set. Retention ships off,
-so this is the ordinary path rather than an edge case. The sweep reports the count and
-bytes so the floor is at least visible. Raising the bound only moves the cliff, and
-letting the sweep adopt an archive it has no record for would weaken the one property
-the ownership test exists for, so the choice between them is tracked separately in
-issue 12274 rather than settled here.
+What the sweep measures is the keys this install still REMEMBERS whose recorded version
+id is missing: an archive pushed before the version record existed, an unversioned
+bucket, or a put response that named no version. `_current_version_is_ours` is false for
+all of them, so they hold no `keep` slot and no sweep will ever delete them, and the
+status read serves the last sweep's pair per kind as `retentionUnclaimed` so that floor
+appears beside the count that will not collect it rather than only in audit events.
+Letting the sweep adopt an archive it has no record for would weaken the one property
+the ownership test exists for, so that choice is tracked separately in issue 12274
+rather than settled here; the disclosure does not reclaim anything.
+
+The number does NOT cover every unretirable archive, and the gap is structural rather
+than an oversight. The sweep counts only keys in `uploaded_keys`, and `upload_versions`
+is trimmed to the keys `uploads` still holds under one bound, so a key that falls off
+`uploads` loses its version record with it and leaves that set entirely. Such a key is
+equally unretirable -- it can never hold a `keep` slot again, and enabling a count later
+cannot reach it -- but it is filtered out before the measurement, so it is absent from
+both the audit event and `retentionUnclaimed`. Raising the bound only moves that cliff.
+Counting past the remembered set would mean listing and attributing objects this install
+has no record of, which is the same ownership question issue 12274 holds open, so the
+served pair is a floor ON the remembered set and is documented as one.
+
+`retentionUnclaimed` is written only from a listing the sweep accepted as showing the
+archive it just uploaded. Before that gate the sweep has already declined to trust the
+listing about age, so it cannot be trusted about how many keys it omitted either, and
+an undercount published as the floor would read as no floor at all. The audit event
+still carries the number on that path, where its `failed` result says how much to trust
+it. One write covers every later path because deletion draws only from `live` and an
+unclaimed key is absent from `live` by construction. The value is stamped rather than
+live: refreshing it would need the bucket listing this payload keeps opt-in, and
+without the stamp a reader cannot tell a measurement taken before a manual delete from
+one taken after. A measured zero is stored like any other count, so an absent kind
+means only that no sweep has measured it.
 
 ### Run identity and failed state writes
 

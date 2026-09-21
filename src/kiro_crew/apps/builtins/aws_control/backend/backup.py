@@ -457,6 +457,32 @@ RETENTION_KEEP_MIN = 1
 #: one to the other.
 RETENTION_KEEP_STATE_KEY = "retention_keep"
 
+#: Where the last sweep's unclaimed measurement lives in ``backup.json``: per account,
+#: then per kind, ``{"archives": int, "bytes": int, "at": iso8601}``.
+#:
+#: An archive holds a ``keep`` slot only while its version id is recorded, so a key this
+#: install remembers with no recorded version -- pushed before the record existed, an
+#: unversioned bucket, a put response naming none -- can never be retired, and its bytes
+#: are billed permanently. The sweep already measures that floor, but the two numbers
+#: reached only :data:`SEL_OP_RETENTION` and a log line -- neither of which an operator
+#: reads while deciding whether retention is bounding their bill. So the floor belongs
+#: where the count itself is read.
+#:
+#: It is a floor ON THE REMEMBERED SET, not over the whole prefix. The sweep counts only
+#: keys in :func:`uploaded_keys`, and ``upload_versions`` is trimmed to the keys
+#: ``uploads`` still holds under :data:`MAX_REMEMBERED_UPLOADS`, so a key that falls off
+#: ``uploads`` loses its version record with it and is filtered out before this
+#: measurement. Such a key is equally unretirable, and it is absent from this pair and
+#: from the audit event alike. Counting past the remembered set would mean attributing
+#: objects this install holds no record of, which is a decision the reclaim design owns,
+#: so this pair discloses the gap rather than widening past it.
+#:
+#: Stamped because it is the LAST SWEEP's measurement and not a live read: a manual
+#: :func:`storage.delete_key` between sweeps leaves the number high until the next one,
+#: and a reader cannot tell a stale number from a current one without knowing when it
+#: was taken.
+RETENTION_UNCLAIMED_STATE_KEY = "retention_unclaimed"
+
 #: SEL operation names for the two decisions this module asks
 #: :func:`_authorize_upload` to make.
 #:
@@ -1924,6 +1950,44 @@ def _audit_unfiled_authorization(
     )
 
 
+def _record_unclaimed(account: str, kind: str, outcome: dict[str, Any]) -> None:
+    """Persist the sweep's unclaimed counts so the status read can serve them.
+
+    Best-effort and never raising, for the reason the sweep itself is best-effort:
+    the archive is already off-host and the run is already recorded, so nothing
+    this write can fail at is worth converting a successful backup into a failed
+    one. :data:`SEL_OP_RETENTION` carries the same two numbers either way, so a
+    lost write costs the status copy and not the record -- which is why it logs at
+    debug, matching :func:`_audit_retention`.
+
+    The stamp is taken here rather than read back from the record, so the value
+    names when the LISTING was measured rather than when some later reader looked.
+    """
+    stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+
+    def mutate(state: dict[str, Any]) -> None:
+        entry = _account_state(state, account)
+        measured = entry.setdefault(RETENTION_UNCLAIMED_STATE_KEY, {})
+        if not isinstance(measured, dict):
+            # Repaired rather than crashed, exactly as `_record_run_locked` repairs a
+            # corrupted `runs`: this runs after an upload that already succeeded.
+            measured = entry[RETENTION_UNCLAIMED_STATE_KEY] = {}
+        measured[kind] = {
+            "archives": int(outcome["unclaimed"]),
+            "bytes": int(outcome["unclaimedBytes"]),
+            "at": stamp,
+        }
+
+    try:
+        _locked_state_update(mutate)
+    except Exception:
+        logger.debug(
+            "aws-control: recording the unclaimed archive count for %s failed",
+            account,
+            exc_info=True,
+        )
+
+
 def _prune_remote_archives(
     account: str,
     profile: str,
@@ -2186,6 +2250,22 @@ def _prune_remote_archives(
                 account, outcome, caller=caller, result="failed", error=outcome["skipped"]
             )
             return outcome
+        # Past the gate above, so the listing showed the archive this run uploaded as
+        # the current version of its key -- which is the only point in this function
+        # where the unclaimed measurement is worth persisting. Before it, a listing
+        # the sweep itself refused to trust about age cannot be trusted about how many
+        # keys it omitted either, and an UNDERCOUNT published as the floor is the one
+        # shape an operator must not be handed: it reads as "nothing unreclaimable
+        # here". The audit event still carries the number on that path, where its
+        # `failed` result says how much to trust it.
+        #
+        # One call covers every path from here down. Deletion only ever touches
+        # versions drawn from `candidates`, which come from `live`, and an unclaimed
+        # key is absent from `live` by construction -- `_current_version_is_ours` is
+        # false without a recorded id. So the set measured above survives a kept-all
+        # return, a completed purge, a withdrawn consent and a half-finished delete
+        # alike, and re-recording it after any of them would write the same numbers.
+        _record_unclaimed(account, kind, outcome)
         by_age = _newest_first(live)
         candidates = [key for key in by_age[keep:] if key != newest_key]
         # `ours` proved the KEY. This proves the VERSION, which is what the delete
@@ -3620,6 +3700,45 @@ _NIGHTLY_CONSENT_READERS: dict[str, Callable[[str], bool]] = {
     KIND_SNAPSHOT: nightly_enabled,
     KIND_SESSIONS: nightly_sessions_enabled,
 }
+
+
+def retention_unclaimed(account: str) -> dict[str, Any]:
+    """Per kind, the last sweep's count of REMEMBERED archives it can never retire.
+
+    ``{kind: {"archives": int, "bytes": int, "at": iso8601}}``, and absent for a kind
+    no sweep has measured yet. The two numbers are the sweep's own ``unclaimed`` and
+    ``unclaimedBytes`` under plainer names, the same pair :data:`SEL_OP_RETENTION`
+    carries, so a status read and the audit trail can be read against each other.
+
+    A floor on :func:`uploaded_keys`, not over the whole prefix: a key trimmed out of
+    ``uploads`` is equally unretirable and is filtered out before the measurement, so
+    it is absent from this pair and the audit event alike. See
+    :data:`RETENTION_UNCLAIMED_STATE_KEY`.
+
+    AS OF ``at``, never live. Reporting it needs no cloud call and this endpoint is
+    polled, so re-listing the bucket to refresh it would bill the owner for every
+    poll -- which is the same reason the remote listing beside it is opt-in. The stamp
+    is what makes the staleness readable instead of silent.
+
+    A measured zero is stored and served like any other count. Writing only a non-zero
+    floor would make an absent kind mean either "no floor" or "never measured", and
+    those two want opposite things from an operator.
+
+    Reported by the backup status read for the reason :func:`retention_keep` is: the
+    count says what retention WILL collect, and without this an operator cannot see
+    the part it never will -- which is why a bill can fail to fall after they enable
+    it. NO console renderer ships with this either; the surface is HTTP only, and the
+    absence is stated here so someone deciding whether to build the panel finds it.
+    """
+    measured = _account_view(account).get(RETENTION_UNCLAIMED_STATE_KEY, {})
+    if not isinstance(measured, dict):
+        return {}
+    # Shape-safe per kind for the reason `_account_view` is shape-safe per level: a
+    # corrupted document must read as nothing measured rather than raise on a polled
+    # endpoint. Leaf values are served as stored, as `last_runs` serves a run record,
+    # so this stays one projection of the state file rather than a second validator of
+    # it -- the writer is the only producer and it writes ints.
+    return {str(kind): dict(row) for kind, row in measured.items() if isinstance(row, dict)}
 
 
 def last_runs(account: str) -> dict[str, Any]:
