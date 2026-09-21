@@ -25,6 +25,7 @@ organized for someone browsing the repository.
 | [crew-members.md](crew-members.md) | Named crewmates, their standing DM threads, and routing work to one with `select_crew` / `route_crew`. |
 | [agent-spec-fields.md](agent-spec-fields.md) | Every agent-spec field, what it does, and how that differs per ACP backend. |
 | [skills.md](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows. |
+| [steering-and-hooks.md](steering-and-hooks.md) | Steering files and their inclusion modes, the prompt library, and chat lifecycle hooks. |
 | [monitoring.md](monitoring.md) | Token-efficient pull-request monitoring and finite legacy fallbacks. |
 | [cron-and-scheduling.md](cron-and-scheduling.md) | Scheduling recurring tasks. |
 | [subagents.md](subagents.md) | Spawning parallel background workers for fan-out work. |
