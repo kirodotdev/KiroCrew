@@ -578,7 +578,7 @@ export const shouldResolveAskOnSend = (
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-type SlotQueueItem = { content: string; queueId: string; ts: string }
+type SlotQueueItem = { content: string; queueId: string; ts: string; durable?: boolean }
 
 /** Field-for-field equality over every `ChatMessage` field a consumer can render. */
 function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
@@ -616,8 +616,8 @@ function hydrateQueuedBubbles(
   queue: SlotQueueItem[] | undefined,
 ): ChatMessage[] {
   const base = list.filter((m) => m.role !== 'queued')
-  for (const { content, queueId, ts } of queue ?? []) {
-    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
+  for (const { content, queueId, ts, durable } of queue ?? []) {
+    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(durable === false ? { durable: false } : {}) } })
   }
   return base
 }
@@ -6148,16 +6148,16 @@ const chatSlice = createSlice({
     },
     /** Add a queued message (from backend queue_push WS event). */
     appendQueuedMessage: {
-      reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string }>) {
-        const { slot, content, ts, queueId } = action.payload
+      reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string; durable?: boolean }>) {
+        const { slot, content, ts, queueId, durable } = action.payload
         const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
         // A row with this queueId may ALREADY exist: slot-detail hydration
         // can land before a delayed `queue_push` for the same entry. Appending
         // blindly would duplicate the row; keep the existing one.
         if (msgs.some(m => m.role === 'queued' && (m.meta?.queueId as string) === queueId)) return
-        msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
+        msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(durable === false ? { durable: false } : {}) } })
       },
-      prepare(payload: { slot: string; content: string; ts: string; queue_id?: string }) {
+      prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; durable?: boolean }) {
         return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }
       },
     },

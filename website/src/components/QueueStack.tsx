@@ -376,6 +376,15 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                   ) : (
                     <>
                       <span className="truncate flex-1">{m.content}</span>
+                      {m.meta?.durable === false && (
+                        <span
+                          className="shrink-0 text-[11px] opacity-60 italic"
+                          data-testid="queue-non-durable"
+                          title={i18nT('components.queueStack.wont_survive_a_restart')}
+                        >
+                          {i18nT('components.queueStack.wont_survive_a_restart')}
+                        </span>
+                      )}
                       {/* Reorder arrows only make sense with 2+ cards, and only
                           in the expanded stack where the run order is visible.
                           Index 0 runs first and renders at the BOTTOM of the
