@@ -78,6 +78,7 @@ describe('readMemoryRecallRecord', () => {
       agree: false,
       p: 0.81,
       charsSaved: 2100,
+      boundedOmitted: 0,
       candidates: 6,
       messageChars: 96,
       latencyMs: 210,
@@ -220,13 +221,15 @@ describe('the collapsed line', () => {
 
   it('says which characters the saving counts, on the line and not only in the title', () => {
     // The visible text carries the meaning, because a hover legend is unreachable on
-    // touch and silent to a screen reader. The title stays, with the fuller sentence.
+    // touch and silent to a screen reader. The title stays, with the fuller sentence --
+    // and the fuller sentence now says WHOSE saving it is and what it excludes, since
+    // the figure is the decision's own removal rather than the response's net loss.
     render(<MemoryRecallStrip record={record} />)
     expect(screen.getByTestId('memory-recall-strip-saved').textContent).toContain('prompt chars')
-    expect(screen.getByTestId('memory-recall-strip-saved')).toHaveAttribute(
-      'title',
-      'Prompt characters the narrower memory block saved.',
-    )
+    const title =
+      screen.getByTestId('memory-recall-strip-saved').getAttribute('title') ?? ''
+    expect(title).toContain("Jev's narrowing removed")
+    expect(title).toContain('before redaction and before the response budget')
   })
 
   it('names the confidence on the line and not only in the title', () => {
@@ -304,15 +307,101 @@ describe('the expanded body', () => {
     expect(screen.getByLabelText('Similarity recalled the right memories')).toBeInTheDocument()
   })
 
-  it('names both visible rate labels as ratings, not as actors', () => {
+  it('names each rate label for the ACT it rates, not for its actor', () => {
     // The two pairs sit on one strip. Labelled with the actor alone -- "Jev" beside
     // "Similarity" -- neither said it was a thumbs pair for a MEMORY pick, and the
-    // jev one reused the skills strip's shared key.
+    // jev one reused the skills strip's shared key. Then "Rate Jev's pick" beside
+    // "Rate the similarity pick" still read as one vote on one pick: both said
+    // "pick", so the only difference was a name. Each now names what it judges --
+    // the narrowing, and the search it narrowed.
     render(<MemoryRecallStrip record={record} />)
     fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
     const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
-    expect(text).toContain("Rate Jev's pick")
-    expect(text).toContain('Rate the similarity pick')
+    expect(text).toContain("Rate Jev's narrowing")
+    expect(text).toContain('Rate the search (before Jev)')
+    // The teeth: one shared noun across both is what made them one vote, and the
+    // search pair has to say WHERE in the sequence it sits or "the search" and
+    // "Jev's narrowing" still read as two names for one step.
+    expect(text).not.toContain('Rate the similarity pick')
+    expect(text).not.toContain("Rate Jev's pick")
+  })
+
+  it('says which recall of the turn it describes', () => {
+    // One turn can call `memory_recall` more than once, and the hand-off registry
+    // keeps one entry per point, so the later publish replaces the earlier and only
+    // the latest is drawn. Unqualified, this strip reads as a receipt covering every
+    // recall the turn made.
+    render(<MemoryRecallStrip record={record} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    const scope = screen.getByTestId('memory-recall-strip-scope').textContent ?? ''
+    expect(scope).toContain("most recent memory_recall call")
+    expect(scope).toContain('only the latest')
+  })
+
+  it('names what the response budget dropped, separately from what Jev dropped', () => {
+    // The kept list is what ARRIVED. Bounding runs after the decision and can remove
+    // one of the kept rows, so without this row the smaller count and the larger
+    // saving both read as Jev's work.
+    const bounded = readMemoryRecallRecord({ ...WIRE, bounded_omitted: 2 })!
+    expect(bounded.boundedOmitted).toBe(2)
+    render(<MemoryRecallStrip record={bounded} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
+    expect(text).toContain('Dropped to fit')
+    // BOTH numbers in one wording, so the subtraction closes where a reader sees it:
+    // the header says Jev kept 3, this says 2 of those 3 did not fit, so 1 arrived.
+    expect(text).toContain('2 of the 3 Jev kept did not fit the response')
+    expect(text).toContain('Jev kept: 3')
+  })
+
+  it('keeps the header count as the DECISION\'s, not the delivered set', () => {
+    // Narrowing `jevKeys` to what shipped made the header read "Jev kept: 1" beside a
+    // row saying two of Jev's did not fit -- arithmetic nobody can reconcile.
+    const bounded = readMemoryRecallRecord({ ...WIRE, bounded_omitted: 2 })!
+    expect(bounded.jevKeys).toEqual(['mem-a', 'mem-c', 'mem-f'])
+    expect(bounded.jevKeys.length - bounded.boundedOmitted).toBe(1)
+  })
+
+  it('draws no dropped-to-fit row when the response carried everything Jev kept', () => {
+    // Absent at 0, or every ordinary receipt carries a row about a thing that did
+    // not happen.
+    render(<MemoryRecallStrip record={record} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    expect(screen.getByTestId('memory-recall-strip').textContent ?? '').not.toContain(
+      'Dropped to fit',
+    )
+  })
+
+  it('invites no rating of a pick that did not happen', () => {
+    // "Rate Jev's pick" sat beside "Decision failed": the judge chose nothing, the
+    // shipped recall was injected, and a thumb sent there would be filed as a verdict
+    // on a decision nobody made. The similarity pair stays -- that arm ran regardless.
+    render(<MemoryRecallStrip record={readMemoryRecallRecord({ ...WIRE, error: 'timeout' })!} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    const text = screen.getByTestId('memory-recall-strip').textContent ?? ''
+    expect(text).not.toContain("Rate Jev's narrowing")
+    expect(screen.queryByLabelText('Jev kept the right memories')).toBeNull()
+    expect(screen.queryByLabelText('Jev kept the wrong memories')).toBeNull()
+    expect(text).toContain('Rate the search')
+    expect(screen.getByLabelText('Similarity recalled the right memories')).toBeInTheDocument()
+  })
+
+  it('says the search ran, so the one remaining pair is not a vote on nothing', () => {
+    // On a failure the search pair is all that is left, and it sits under "Decision
+    // failed" -- which reads as an invitation to rate something that did not happen.
+    const failed = readMemoryRecallRecord({ ...WIRE, error: 'timeout' })!
+    render(<MemoryRecallStrip record={failed} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    const note = screen.getByTestId('memory-recall-strip-search-ran').textContent ?? ''
+    expect(note).toContain('The search itself ran')
+    expect(note).toContain("only Jev's narrowing failed")
+  })
+
+  it('draws no search-ran note when the decision landed', () => {
+    // Nothing failed, so nothing needs explaining away.
+    render(<MemoryRecallStrip record={record} />)
+    fireEvent.click(screen.getByTestId('memory-recall-strip-toggle'))
+    expect(screen.queryByTestId('memory-recall-strip-search-ran')).toBeNull()
   })
 
   it('surfaces a failed decision through the shared error surface', () => {

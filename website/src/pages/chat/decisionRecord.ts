@@ -506,7 +506,12 @@ export interface MemoryRecallRecord {
   point: typeof DECISIONS_MEMORY_POINT
   /** The memories vector similarity recalled — every one Jev was offered. */
   baselineKeys: string[]
-  /** The memories Jev kept, which is what the prompt carried. */
+  /**
+   * The memories Jev's answer KEPT — the decision's own output, not the set that
+   * shipped. `boundedOmitted` says how many of these the response budget then
+   * dropped, so the two together state what arrived and each stays attributable to
+   * whoever removed it.
+   */
   jevKeys: string[]
   /** Jev kept every recalled memory. */
   agree: boolean
@@ -518,7 +523,14 @@ export interface MemoryRecallRecord {
    * there is no single confidence to print. The producer says so too.
    */
   p: number | null
-  /** Prompt characters the narrower block saved, `0` when it saved none. */
+  /**
+   * Characters of memory text JEV'S NARROWING removed, `0` when it removed none.
+   *
+   * Its two arms are measured on the same rows before redaction and before
+   * bounding, so the scrubber's substitutions and the budget's clipping are no part
+   * of it. It is the decision's own saving, not the reduction the response happened
+   * to end up with.
+   */
   charsSaved: number
   /** Memories the gate offered Jev to judge. */
   candidates: number
@@ -530,6 +542,16 @@ export interface MemoryRecallRecord {
   messageChars: number | null
   /** Milliseconds between asking Jev and its answer. */
   latencyMs: number
+  /**
+   * Memories Jev KEPT that the response budget then dropped, `0` when it dropped
+   * none.
+   *
+   * The decision is not the last thing that shortens a recall: the payload is
+   * bounded after it. Counted BESIDE `jevKeys` rather than subtracted from it, so
+   * `jevKeys.length - boundedOmitted` is what arrived and neither number has to
+   * absorb the other's removals.
+   */
+  boundedOmitted: number
   /** Why the decision failed, or `null` when it did not. */
   error: string | null
 }
@@ -565,6 +587,7 @@ export function readMemoryRecallRecord(raw: unknown): MemoryRecallRecord | null 
     agree: sameSet(baselineKeys, jevKeys),
     p,
     charsSaved: asCount(root.chars_saved),
+    boundedOmitted: asCount(root.bounded_omitted),
     candidates: asCount(root.candidates),
     messageChars: asCountOrNull(root.message_chars),
     latencyMs: asCount(root.latency_ms),

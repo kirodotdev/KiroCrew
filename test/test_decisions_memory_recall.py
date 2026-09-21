@@ -106,8 +106,18 @@ def _kept(candidates, *, loop, monkeypatch, answers, session_key="s", owner_turn
         owner_turn=owner_turn,
         pending=pending,
     )
-    mr.commit_outcome(session_key, pending)
+    _commit(session_key, pending, kept if kept is not None else candidates)
     return kept
+
+
+def _payload(rows) -> dict:
+    """The response shape :func:`mr.commit_receipt` is handed: bounded and final."""
+    return {"store": "", "retrieval": {"episodes": [dict(row) for row in rows]}}
+
+
+def _commit(session_key, pending, delivered) -> bool:
+    """Drive the ONE writer the way the route drives it."""
+    return mr.commit_receipt(session_key, pending, payload=_payload(delivered))
 
 
 # ── the decision, applied ─────────────────────────────────────────────────────
@@ -513,7 +523,12 @@ class TestTheRecord:
         assert outcome["jev_keys"] == ["a"]
         assert outcome["agree"] is False
         assert outcome["candidates"] == 2
+        # JEV'S removal, measured on the same rows before redaction and before
+        # bounding -- see the accounting section in the point's module docstring.
         assert outcome["chars_saved"] == len("bbbbb")
+        assert outcome["baseline_chars"] == len("aaa") + len("bbbbb")
+        assert outcome["jev_chars"] == len("aaa")
+        assert outcome["baseline_chars"] - outcome["jev_chars"] == outcome["chars_saved"]
         assert outcome["p"] == pytest.approx((0.9 + 0.2) / 2)
 
     def test_agree_is_set_equality(self):
@@ -566,14 +581,14 @@ class TestTheRecord:
         seen: list[Any] = []
         monkeypatch.setattr(_outcomes, "publish", lambda key, row: seen.append(row))
         monkeypatch.setattr(mr._log, "append", lambda _row: False)
-        assert mr.commit_outcome("s", [({"turn_id": "t"}, 1)]) is False
+        assert _commit("s", [({"turn_id": "t"}, 1)], []) is False
         assert seen == []
 
     def test_an_empty_pending_list_commits_nothing(self, home, monkeypatch):
         """The shape every refusal leaves behind: nothing held, so nothing written."""
         seen: list[Any] = []
         monkeypatch.setattr(_outcomes, "publish", lambda key, row: seen.append(row))
-        assert mr.commit_outcome("s", []) is False
+        assert _commit("s", [], []) is False
         assert seen == []
         assert _rows(home) == []
 
@@ -587,19 +602,177 @@ class TestTheRecord:
         """
         first = {"turn_id": "discarded", "baseline_keys": ["a"], "jev_keys": ["a"]}
         second = {"turn_id": "returned", "baseline_keys": ["a"], "jev_keys": []}
-        assert mr.commit_outcome("s", [(first, 1), (second, 2)]) is True
+        assert _commit("s", [(first, 1), (second, 2)], []) is True
         written = [row for row in _rows(home) if "baseline_keys" in row]
         assert [row["turn_id"] for row in written] == ["returned"]
 
     def test_a_missing_outcomes_module_is_a_no_op(self, monkeypatch):
         monkeypatch.setattr(mr, "OUTCOMES_MODULE", "kiro_crew.this_module_does_not_exist")
-        assert mr.publish_outcome("s", {"turn_id": "t"}) is False
+        assert mr._publish("s", {"turn_id": "t"}) is False
 
     def test_a_raising_publisher_cannot_cost_the_turn(self, monkeypatch):
         monkeypatch.setattr(
             _outcomes, "publish", lambda *_a: (_ for _ in ()).throw(RuntimeError("x"))
         )
-        assert mr.publish_outcome("s", {"turn_id": "t"}) is False
+        assert mr._publish("s", {"turn_id": "t"}) is False
+
+    @pytest.mark.asyncio
+    async def test_a_surface_gone_by_the_call_sends_nothing(self):
+        """The guard sits AT the egress, so the last word belongs to the last moment.
+
+        `core.decide` is where snippets of the owner's own remembered notes leave the
+        machine. Every earlier read of the surface question -- the route's, before the
+        search is dispatched, and `kept_memories`', before the menu is built -- happens
+        while the answer can still change: the owner closes the tab, the slot leaves the
+        published set, and a request already assembled would still go out.
+
+        So this drives `keep_decision` directly with a predicate that is false by the
+        time it is read, and asserts the call never happens. Nothing is stubbed about
+        the decision itself -- `core.decide` is left real and would raise if reached,
+        which is the point: a guard that let it through could not pass this quietly.
+        """
+        sent: list[Any] = []
+
+        async def _decide(*args: Any, **kwargs: Any):
+            sent.append((args, kwargs))
+            raise AssertionError("the surface was gone; nothing may be sent")
+
+        trace: dict[str, Any] = {}
+        with patch.object(mr.core, "decide", _decide):
+            keys = await mr.keep_decision(
+                "where do we deploy the signer",
+                [{"key": "a", "snippet": "the signer deploys to us-west-2"}],
+                session_key="s",
+                turn_id="t",
+                still_watched=lambda: False,
+                trace=trace,
+            )
+
+        assert keys is None, "a refusal returns the baseline"
+        assert sent == [], "recalled memory left the machine for a surface that was gone"
+
+    @pytest.mark.asyncio
+    async def test_a_live_surface_still_reaches_the_call(self):
+        """The other direction, or the guard above proves only that nothing works."""
+        asked: list[Any] = []
+
+        async def _decide(_point, _state, questions, **_kwargs):
+            asked.append(questions)
+            return {mr.question_id(0): Answer(id=mr.question_id(0), value="keep", p=0.9)}
+
+        with patch.object(mr.core, "decide", _decide):
+            keys = await mr.keep_decision(
+                "where do we deploy the signer",
+                [{"key": "a", "snippet": "the signer deploys to us-west-2"}],
+                session_key="s",
+                turn_id="t",
+                still_watched=lambda: True,
+                trace={},
+            )
+
+        assert asked, "the call never happened, so the guard above proves nothing"
+        assert keys == ["a"]
+
+    def test_the_funnel_is_the_only_writer(self):
+        """The accounting holds because there is one way in, not because callers agree.
+
+        Three call sites leaked a receipt for a recall nobody received, each time
+        because the guard sat beside the call rather than inside it. A second reachable
+        writer would put that mistake back within reach, so the old public names are
+        gone and the one that remains cannot be called without the finished response.
+        """
+        import inspect
+
+        for gone in ("commit_outcome", "delivered_outcome", "publish_outcome"):
+            assert not hasattr(mr, gone), f"{gone} is a second way to write a receipt"
+        payload = inspect.signature(mr.commit_receipt).parameters["payload"]
+        assert payload.default is inspect.Parameter.empty, "the payload must be required"
+        assert payload.kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_an_unfinished_payload_writes_nothing(self, home):
+        """No `retrieval` means the bounding walk refused it: nothing was delivered."""
+        held = [({"turn_id": "t", "baseline_keys": ["a"], "jev_keys": ["a"]}, 1)]
+        refused = {"error": "Recall metadata exceeds the response budget; narrow the query."}
+        assert mr.commit_receipt("s", held, payload=refused) is False
+        assert [row for row in _rows(home) if "baseline_keys" in row] == []
+
+    def test_an_abandoned_request_writes_nothing(self, home):
+        """The funnel reads the deadline itself, so no call site can forget to."""
+        import time as _time
+
+        from kiro_crew.embeddings import EmbeddingWork, embedding_work
+
+        held = [({"turn_id": "t", "baseline_keys": ["a"], "jev_keys": ["a"]}, 1)]
+        previous = embedding_work.get()
+        embedding_work.set(EmbeddingWork(_time.monotonic() - 1.0))
+        try:
+            assert _commit("s", held, [_episode("a")]) is False
+        finally:
+            embedding_work.set(previous)
+        assert [row for row in _rows(home) if "baseline_keys" in row] == []
+
+    def test_the_budget_drop_is_counted_beside_the_kept_list_not_folded_into_it(self, home):
+        """ "Jev kept 2" and "1 did not fit" have to add up to what shipped.
+
+        `jev_keys` is the DECISION's output. Narrowing it to the delivered set made the
+        header read "Jev kept 1" beside a row saying "2 that Jev kept did not fit",
+        which is arithmetic a reader cannot close.
+        """
+        held = [
+            (
+                mr.build_outcome(
+                    baseline=[_episode("a", "aaa"), _episode("b", "bbb")],
+                    injected=[_episode("a", "aaa"), _episode("b", "bbb")],
+                    trace={"turn_id": "t"},
+                ),
+                1,
+            )
+        ]
+        # Only one of the two Jev kept survives the response budget.
+        assert _commit("s", held, [_episode("a", "aaa")]) is True
+        row = [r for r in _rows(home) if "baseline_keys" in r][-1]
+        assert row["jev_keys"] == ["a", "b"], "the kept list is the decision's own"
+        assert row["bounded_omitted"] == 1
+        assert len(row["jev_keys"]) - row["bounded_omitted"] == 1, "the arithmetic closes"
+
+    def test_nothing_bounded_carries_no_bounded_field(self, home):
+        """A row about a thing that did not happen is noise on every ordinary receipt."""
+        held = [
+            (
+                mr.build_outcome(
+                    baseline=[_episode("a", "aaa")],
+                    injected=[_episode("a", "aaa")],
+                    trace={"turn_id": "t"},
+                ),
+                1,
+            )
+        ]
+        assert _commit("s", held, [_episode("a", "aaa")]) is True
+        row = [r for r in _rows(home) if "baseline_keys" in r][-1]
+        assert "bounded_omitted" not in row
+
+    def test_redaction_is_not_credited_to_jev(self, home):
+        """The scrubber's removals are absent from the saving by construction.
+
+        Both arms are measured on the same rows at the same moment, before redaction,
+        so a delivered row whose text the scrubber shortened cannot move the figure.
+        """
+        held = [
+            (
+                mr.build_outcome(
+                    baseline=[_episode("a", "aaa"), _episode("b", "bbb")],
+                    injected=[_episode("a", "aaa")],
+                    trace={"turn_id": "t"},
+                ),
+                1,
+            )
+        ]
+        saving = held[0][0]["chars_saved"]
+        assert saving == len("bbb")
+        # The delivered row is the same memory with most of its text scrubbed away.
+        assert _commit("s", held, [_episode("a", "[REDACTED]")]) is True
+        row = [r for r in _rows(home) if "baseline_keys" in r][-1]
+        assert row["chars_saved"] == saving, "redaction moved a figure that is Jev's"
 
 
 # ── the store's own hook, and its fallbacks ───────────────────────────────────
@@ -648,7 +821,9 @@ class TestTheKeepHook:
     def test_keep_hook_passes_the_turns_own_arguments_through(self, monkeypatch):
         seen: list[dict] = []
 
-        def _kept_memories(candidates, text, *, session_key, loop, owner_turn, pending):
+        def _kept_memories(
+            candidates, text, *, session_key, loop, owner_turn, still_watched, pending
+        ):
             seen.append(
                 {
                     "candidates": candidates,
@@ -656,6 +831,7 @@ class TestTheKeepHook:
                     "session_key": session_key,
                     "loop": loop,
                     "owner_turn": owner_turn,
+                    "still_watched": still_watched,
                     "pending": pending,
                 }
             )
@@ -663,11 +839,20 @@ class TestTheKeepHook:
 
         monkeypatch.setattr(mr, "kept_memories", _kept_memories)
         held: list = []
+        watching = object()
         hook = mr.keep_hook(
-            "the message", session_key="s", loop=None, owner_turn=True, pending=held
+            "the message",
+            session_key="s",
+            loop=None,
+            owner_turn=True,
+            still_watched=watching,
+            pending=held,
         )
         assert hook([_episode("a")]) is None
         assert seen[0]["text"] == "the message"
+        # Carried through rather than resolved here: the point re-reads it on the
+        # worker thread, which is where the egress actually happens.
+        assert seen[0]["still_watched"] is watching
         assert seen[0]["session_key"] == "s"
         assert seen[0]["owner_turn"] is True
         # The caller's list travels through, so the hook records nothing itself.

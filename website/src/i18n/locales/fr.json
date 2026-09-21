@@ -10563,13 +10563,18 @@
         "memory_confidence_latency_title": "Confiance moyenne de Jev quant à l'utilité d'une mémoire pour ce prompt, de 0 à 1, et temps mis pour répondre",
         "memory_rate_right_jev": "Jev a gardé les bonnes mémoires",
         "memory_rate_wrong_jev": "Jev a gardé les mauvaises mémoires",
-        "memory_rate_baseline": "Évaluer la sélection par similarité",
-        "memory_rate_jev": "Évaluer la sélection de Jev",
+        "memory_rate_baseline": "Évaluer la recherche (avant Jev)",
+        "memory_rate_jev": "Évaluer le tri de Jev",
         "memory_rate_right_baseline": "La similarité a rappelé les bonnes mémoires",
         "memory_rate_wrong_baseline": "La similarité a rappelé les mauvaises mémoires",
         "memory_kept_fallback": "gardées après repli : {{count}}",
         "memory_jev_label_fallback": "Gardées (repli)",
-        "memory_saved_title": "Caractères de prompt économisés par le bloc de mémoire réduit."
+        "memory_saved_title": "Caractères de mémoire retirés par le tri de Jev. Mesurés avant le nettoyage et avant le budget de la réponse, donc c'est l'économie de la décision elle-même et de rien d'autre.",
+        "memory_latest_title": "Cette ligne porte sur le dernier appel à memory_recall de ce tour.",
+        "memory_latest_note": "Décrit le dernier appel à memory_recall de ce tour. Si le tour en a fait plusieurs, seul le dernier apparaît ici ; le journal des décisions les garde tous.",
+        "memory_search_ran_note": "La recherche a bien eu lieu ; seul le tri de Jev a échoué, donc tu évalues ici les mémoires que tu as reçues.",
+        "memory_bounded_label": "Retirées par manque de place",
+        "memory_bounded_value": "{{count}} des {{total}} gardées par Jev ne tenaient pas dans la réponse"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev a examiné cet appel et l'a signalé. Cela n'a rien changé à son autorisation : c'est le réglage d'autorisations de cette session qui en a décidé, et l'appel a pu être refusé malgré tout.",
@@ -11435,7 +11440,7 @@
         "crew_members_desc": "La page Crew Members : tous vos agents, chacun avec son propre fil. Encore en construction, donc non proposée tant que ceci n’est pas activé.",
         "decisions": "Décisions (Jev)",
         "decisions_desc": "Jev est un petit modèle de décision rapide. Lorsque c'est activé, {{productName}} lui demande laquelle de vos compétences correspond au message que vous venez d'envoyer — ou si aucune ne convient — et utilise le choix de Jev pour la part de vos sessions indiquée sous le commutateur ; les autres conservent la règle de correspondance de mots livrée avec cette version. Si Jev est lent, injoignable ou ne renvoie rien d'exploitable, ce message revient à la même règle : une décision ne retarde donc jamais votre réponse. Chaque appel est également consigné dans un journal sur la machine qui exécute {{productName}}, à des fins de diagnostic. Ce commutateur n'est pas enregistré dans le navigateur mais sur la machine qui exécute {{productName}} : il vaut donc sur chaque appareil depuis lequel vous l'ouvrez.",
-        "decisions_egress": "Quand ceci est activé, le texte de tes messages et les noms et descriptions de tes compétences quittent cette machine. Ils sont envoyés par internet à Jev, le service de décision configuré pour ce {{productName}}. Deux autres catégories ont chacune leur propre interrupteur ci-dessous et restent désactivées jusqu'à ce que tu en actives une : le nom et les arguments de tes appels d'outils, et de courts extraits des mémoires rappelées pour ton message. Rien n'est envoyé quand ceci est désactivé.",
+        "decisions_egress": "Quand ceci est activé, le texte de tes messages et les noms et descriptions de tes compétences quittent cette machine. Ils sont envoyés par internet à Jev, le service de décision configuré pour ce {{productName}}. Trois autres catégories ont chacune leur propre interrupteur ci-dessous et restent désactivées jusqu'à ce que tu en actives une : le nom et les arguments de tes appels d'outils, la conversation et les entrées des appels d'outil d'une session que {{productName}} compacte de lui-même, et de courts extraits des mémoires rappelées pour ton message. Rien n'est envoyé quand ceci est désactivé.",
         "decisions_backend_required": "Le {{productName}} qui exécute ce tableau de bord est plus ancien que cette fonction, il n'y a donc encore rien à activer. Mettez d'abord {{productName}} à jour, depuis Réglages › Releases.",
         "decisions_sent_to": "Envoyé à",
         "decisions_endpoint_moved": "Tu as accepté l'envoi vers une adresse différente de celle indiquée maintenant dans les réglages ; rien n'est donc envoyé. Désactive puis réactive ceci pour accepter la nouvelle adresse.",
@@ -11451,9 +11456,10 @@
         "decisions_compaction": "Envoyer aussi la conversation et les entrées des appels d’outil pour que Jev évalue le compactage",
         "decisions_compaction_desc": "Chaque fois que le contexte se remplit et que {{productName}} compacte une session tout seul, ceci envoie à Jev cette conversation et les entrées des appels d’outil qu’elle contient, et lui demande lesquels auraient valu la peine d’être gardés. La SORTIE des outils n’est jamais envoyée : seulement son nombre de caractères. Les mots de passe et les clés sont remplacés avant tout envoi. C’est une mesure : le compactage se passe exactement comme aujourd’hui, quoi que Jev réponde, et la réponse s’affiche sur une ligne de l’avis de compactage. C’est le plus large des trois, donc c’est éteint jusqu’à ce que tu l’allumes, même si les interrupteurs au-dessus sont déjà allumés.",
         "decisions_point_compaction_keep": "Quels appels d’outil un compactage garderait (mesure seulement)",
+        "decisions_point_memory_recall": "Quelles mémoires rappelées arrivent dans le prompt",
         "decisions_memory_text": "Envoyer aussi des extraits des mémoires rappelées pour que Jev écarte celles qui n'aident pas",
         "decisions_memory_text_desc": "Quand l'assistant pose une question à sa propre mémoire, les entrées les plus proches par les mots reviennent. Ceci envoie aussi à Jev l'identifiant de chacune et les 200 premiers caractères de son texte, et Jev dit lesquelles garder. Il peut seulement en retirer — jamais en ajouter, jamais les réordonner — et s'il est lent ou injoignable, toutes reviennent comme avant. Les mots de passe et les clés sont remplacés avant tout envoi. Désactivé jusqu'à ce que tu l'actives, même si l'interrupteur ci-dessus est déjà activé.",
-        "decisions_scope_save_failed": "Impossible d'enregistrer cet interrupteur. Il affiche de nouveau la valeur enregistrée."
+        "decisions_scope_save_failed": "Impossible d'enregistrer « {{switch}} ». L'interrupteur affiche de nouveau la valeur enregistrée."
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",

@@ -10563,13 +10563,18 @@
         "memory_confidence_latency_title": "Quanta fiducia media ha avuto Jev che una memoria valesse il prompt, da 0 a 1, e quanto tempo ha richiesto la risposta",
         "memory_rate_right_jev": "Jev ha tenuto le memorie giuste",
         "memory_rate_wrong_jev": "Jev ha tenuto le memorie sbagliate",
-        "memory_rate_baseline": "Valuta la scelta per somiglianza",
-        "memory_rate_jev": "Valuta la scelta di Jev",
+        "memory_rate_baseline": "Valuta la ricerca (prima di Jev)",
+        "memory_rate_jev": "Valuta la selezione di Jev",
         "memory_rate_right_baseline": "La somiglianza ha richiamato le memorie giuste",
         "memory_rate_wrong_baseline": "La somiglianza ha richiamato le memorie sbagliate",
         "memory_kept_fallback": "tenute dopo il ripiego: {{count}}",
         "memory_jev_label_fallback": "Tenute (ripiego)",
-        "memory_saved_title": "Caratteri di prompt risparmiati dal blocco di memoria più piccolo."
+        "memory_saved_title": "Caratteri di memoria rimossi dalla selezione di Jev. Misurati prima della pulizia e prima del budget della risposta, quindi è il risparmio della decisione stessa e di nient'altro.",
+        "memory_latest_title": "Questa riga riguarda l'ultima chiamata a memory_recall di questo turno.",
+        "memory_latest_note": "Descrive l'ultima chiamata a memory_recall di questo turno. Se il turno l'ha fatta più volte, qui compare solo l'ultima; il log delle decisioni le conserva tutte.",
+        "memory_search_ran_note": "La ricerca è stata fatta; solo la selezione di Jev è fallita, quindi qui valuti le memorie che hai ricevuto.",
+        "memory_bounded_label": "Rimosse per spazio",
+        "memory_bounded_value": "{{count}} delle {{total}} tenute da Jev non stavano nella risposta"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev ha guardato questa chiamata e l'ha segnalata. Questo non ha cambiato nulla sul fatto che la chiamata fosse permessa: lo ha deciso l'impostazione dei permessi di questa sessione, e la chiamata potrebbe essere stata rifiutata comunque.",
@@ -11435,7 +11440,7 @@
         "crew_members_desc": "La pagina Crew Members: tutti i tuoi agenti, ognuno con il proprio thread. Ancora in costruzione, quindi non viene offerta finché non attivi questo.",
         "decisions": "Decisioni (Jev)",
         "decisions_desc": "Jev è un modello di decisione piccolo e veloce. Con questo attivo, {{productName}} gli chiede quale delle tue skill corrisponde al messaggio che hai appena inviato — o se non ne corrisponde nessuna — e usa la scelta di Jev per la quota delle tue sessioni mostrata sotto l'interruttore; le altre mantengono la regola di corrispondenza delle parole inclusa in questa versione. Se Jev è lento, non raggiungibile o non restituisce nulla di utilizzabile, quel messaggio torna alla stessa regola, quindi nessuna decisione rallenta la tua risposta. Ogni chiamata viene anche annotata in un log sulla macchina che esegue {{productName}}, per diagnostica. Questo interruttore non viene salvato nel browser ma sulla macchina che esegue {{productName}}, quindi vale su ogni dispositivo da cui lo apri.",
-        "decisions_egress": "Mentre questo è attivo, il testo dei tuoi messaggi e i nomi e le descrizioni delle tue skill lasciano questa macchina. Vengono inviati via internet a Jev, il servizio di decisione per cui questo {{productName}} è configurato. Altre due categorie hanno ciascuna il proprio interruttore qui sotto e restano spente finché non ne accendi una: il nome e gli argomenti delle tue chiamate agli strumenti, e brevi estratti delle memorie richiamate per il tuo messaggio. Niente viene inviato mentre questo è spento.",
+        "decisions_egress": "Mentre questo è attivo, il testo dei tuoi messaggi e i nomi e le descrizioni delle tue skill lasciano questa macchina. Vengono inviati via internet a Jev, il servizio di decisione per cui questo {{productName}} è configurato. Altre tre categorie hanno ciascuna il proprio interruttore qui sotto e restano spente finché non ne accendi una: il nome e gli argomenti delle tue chiamate agli strumenti, la conversazione e gli input delle chiamate di strumento di una sessione che {{productName}} compatta da sé, e brevi estratti delle memorie richiamate per il tuo messaggio. Niente viene inviato mentre questo è spento.",
         "decisions_backend_required": "Il {{productName}} che esegue questa dashboard è più vecchio di questa funzione, quindi non c'è ancora nulla da attivare. Aggiorna prima {{productName}}, da Impostazioni › Releases.",
         "decisions_sent_to": "Inviato a",
         "decisions_endpoint_moved": "Hai accettato l'invio a un indirizzo diverso da quello ora presente nelle impostazioni, quindi non viene inviato nulla. Spegni e riaccendi questo per accettare il nuovo indirizzo.",
@@ -11451,9 +11456,10 @@
         "decisions_compaction": "Invia anche la conversazione e gli input delle chiamate di strumento così Jev valuta la compattazione",
         "decisions_compaction_desc": "Ogni volta che il contesto si riempie e {{productName}} compatta una sessione da sé, questo invia a Jev quella conversazione e gli input delle chiamate di strumento che contiene, e gli chiede quali valeva la pena tenere. L’OUTPUT degli strumenti non viene mai inviato: solo quanti caratteri era. Password e chiavi vengono sostituite prima di inviare qualsiasi cosa. È una misura: la compattazione avviene esattamente come adesso, qualunque cosa risponda Jev, e la risposta compare come una riga sull’avviso di compattazione. È la più ampia delle tre, quindi è spenta finché non la accendi, anche se gli interruttori sopra sono già accesi.",
         "decisions_point_compaction_keep": "Quali chiamate di strumento una compattazione terrebbe (solo misura)",
+        "decisions_point_memory_recall": "Quali memorie richiamate arrivano al prompt",
         "decisions_memory_text": "Invia anche estratti delle memorie richiamate così Jev può scartare quelle che non servono",
         "decisions_memory_text_desc": "Quando l'assistente fa una domanda alla propria memoria, tornano le voci con la formulazione più vicina. Questo invia anche a Jev l'id di ciascuna e i primi 200 caratteri del suo testo, e Jev dice quali tenere. Può solo toglierne — mai aggiungerne una, mai riordinarle — e se è lento o irraggiungibile tornano tutte come prima. Le password e le chiavi vengono sostituite prima di inviare qualsiasi cosa. Spento finché non lo accendi, anche se l'interruttore sopra è già acceso.",
-        "decisions_scope_save_failed": "Non è stato possibile salvare questo interruttore. Mostra di nuovo il valore salvato."
+        "decisions_scope_save_failed": "Non è stato possibile salvare «{{switch}}». L'interruttore mostra di nuovo il valore salvato."
       },
       "kiroSignInCard": {
         "title": "Accesso a Kiro",

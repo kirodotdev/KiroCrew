@@ -4330,13 +4330,18 @@
         "memory_confidence_latency_title": "Jev's average confidence that one memory was worth the prompt, from 0 to 1, and how long the answer took",
         "memory_rate_right_jev": "Jev kept the right memories",
         "memory_rate_wrong_jev": "Jev kept the wrong memories",
-        "memory_rate_baseline": "Rate the similarity pick",
-        "memory_rate_jev": "Rate Jev's pick",
+        "memory_rate_baseline": "Rate the search (before Jev)",
+        "memory_rate_jev": "Rate Jev's narrowing",
         "memory_rate_right_baseline": "Similarity recalled the right memories",
         "memory_rate_wrong_baseline": "Similarity recalled the wrong memories",
         "memory_kept_fallback": "kept after fallback: {{count}}",
         "memory_jev_label_fallback": "Kept (fallback)",
-        "memory_saved_title": "Prompt characters the narrower memory block saved."
+        "memory_saved_title": "Memory characters Jev's narrowing removed. Measured before redaction and before the response budget, so it is the decision's own saving and nothing else's.",
+        "memory_latest_title": "This line is about the most recent memory_recall call of this turn.",
+        "memory_latest_note": "Describes the turn's most recent memory_recall call. A turn that called it more than once shows only the latest; the decision log keeps them all.",
+        "memory_search_ran_note": "The search itself ran; only Jev's narrowing failed, so this rates the memories you received.",
+        "memory_bounded_label": "Dropped to fit",
+        "memory_bounded_value": "{{count}} of the {{total}} Jev kept did not fit the response"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev looked at this call and flagged it. That changed nothing about whether the call was allowed: this session's own permission setting decided that, and the call may still have been refused.",
@@ -6678,7 +6683,7 @@
         "crew_members_desc": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
         "decisions": "Decisions (Jev)",
         "decisions_desc": "Jev is a small, fast decision model. With this on, {{productName}} asks Jev which one of your skills fits the message you just sent — or that none does — and uses Jev's pick for the share of your sessions shown under the switch; the rest keep the word-matching rule this build ships with. If Jev is slow, unreachable or answers with nothing usable, that message falls back to the same rule, so a decision never holds up your reply. Each call is also recorded in a log on the machine that runs {{productName}}, for diagnostics. This switch is saved on the machine that runs {{productName}}, not in this browser, so it applies on every device you open it from.",
-        "decisions_egress": "While this is on, the text of your messages and the names and descriptions of your skills leave this machine. They are sent over the internet to Jev, the decision service this {{productName}} is set up to use. Two further categories each need their own switch below and stay off until you turn one on: the name and arguments of your tool calls, and short snippets of the memories recalled for your message. Nothing is sent while this is off.",
+        "decisions_egress": "While this is on, the text of your messages and the names and descriptions of your skills leave this machine. They are sent over the internet to Jev, the decision service this {{productName}} is set up to use. Three further categories each need their own switch below and stay off until you turn one on: the name and arguments of your tool calls, the conversation and tool-call inputs of a session {{productName}} compacts on its own, and short snippets of the memories recalled for your message. Nothing is sent while this is off.",
         "decisions_backend_required": "The {{productName}} running this dashboard is older than this feature, so there is nothing to turn on yet. Update {{productName}} first, from Settings › Releases.",
         "decisions_sent_to": "Sent to",
         "decisions_endpoint_moved": "You agreed to send to a different address than the one in the settings now, so nothing is being sent. Turn this off and on again to agree to the new address.",
@@ -6694,9 +6699,10 @@
         "decisions_compaction": "Also send the conversation and tool-call inputs so Jev can score compaction",
         "decisions_compaction_desc": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. This is the widest of the three, so it is off until you turn it on, even if the switches above are already on.",
         "decisions_point_compaction_keep": "Which tool calls a compaction would keep (measured only)",
+        "decisions_point_memory_recall": "Which recalled memories reach the prompt",
         "decisions_memory_text": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
         "decisions_memory_text_desc": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on.",
-        "decisions_scope_save_failed": "Could not save this switch. It is showing the saved value again."
+        "decisions_scope_save_failed": "Could not save “{{switch}}”. It is showing the saved value again."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

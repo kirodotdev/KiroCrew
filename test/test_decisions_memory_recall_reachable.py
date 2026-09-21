@@ -423,6 +423,288 @@ class TestOnlyACommittedRecallLeavesAReceipt:
         assert self._outcomes(wired) == [], "a refused response must leave no receipt"
 
     @pytest.mark.asyncio
+    async def test_a_timed_out_request_records_nothing(self, wired):
+        """The caller received 504, so a receipt would describe memories nobody got.
+
+        `memory_recall_deadline` bounds the route with `asyncio.wait_for`, and a
+        cancellation is delivered only where the coroutine yields -- which is the
+        `to_thread` that commits. The work reaches the executor before that cancellation
+        arrives and a running thread does not cancel, so the row lands while the response
+        goes out as `504 memory_recall_timeout`.
+
+        Held in two halves, because the route and the handler answer different questions.
+        The bounded route is asked what the CALLER gets on a spent budget: 504. The handler
+        body is then run on that same spent budget, which is the state it is in whenever
+        that cancellation is due -- it answers the recall in full, and the receipt is the
+        one thing that must not survive it.
+        """
+        import time
+
+        from kiro_crew.dashboard.handlers import memory_member as mm
+        from kiro_crew.embeddings import EmbeddingWork, embedding_work
+
+        def _spent():
+            work = EmbeddingWork(time.monotonic() - 1.0)
+            assert work.expired(), "the budget must be spent, or this proves nothing"
+            return work
+
+        # Value-based restore, not a token. A `Token` is bound to the Context it was
+        # taken in, and both blocks below cross an `await`; a worker sharing one
+        # main-thread Context across tests would then raise ValueError out of `reset`.
+        # The var defaults to `None` and the predicate reads absence as live, so
+        # restoring the previous VALUE is exact here rather than merely close.
+        previous = embedding_work.get()
+        embedding_work.set(_spent())
+        try:
+            timed_out = await mm.api_memory_recall(_request())
+        finally:
+            embedding_work.set(previous)
+        assert timed_out.status == 504, f"the caller must get a timeout, got {timed_out.text}"
+
+        # The budget is HEALTHY when the judge is asked and spent by the time the
+        # commit runs, which is the state the race actually produces: the store burns
+        # the rest of it after answering, so the decision is real and the deadline has
+        # passed before the receipt would be written. An already-spent budget cannot
+        # show this any more -- the point refuses to ask on one at all.
+        real_recall = wired.store.recall
+
+        def _answer_then_outlast_the_deadline(*args, **kwargs):
+            result = real_recall(*args, **kwargs)
+            time.sleep(1.4)
+            return result
+
+        # Wide enough that the judge is funded when it is asked -- the whole point of
+        # this half -- and then outlived by the sleep above, so the deadline has passed
+        # by the time the commit would run.
+        embedding_work.set(EmbeddingWork(time.monotonic() + 1.2))
+        try:
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(wired.store, "recall", _answer_then_outlast_the_deadline)
+                patch.setattr(mm, "_recognize_session", AsyncMock(return_value=None))
+                patch.setattr(mm, "_blocks_reads_session", lambda *_a, **_kw: False)
+                patch.setattr(mm, "resolve_lesson_memory_store", AsyncMock(return_value=("", None)))
+                patch.setattr(mm, "vector_memory_for_store", AsyncMock(return_value=wired.store))
+                patch.setattr(mm, "markdown_memory_for_store", AsyncMock(return_value=None))
+                patch.setattr(mm, "requesting_slot_project", lambda *_a, **_kw: None)
+                # The handler itself, so the body actually reaches the commit rather than
+                # being refused by the bound above it.
+                response = await mm.api_memory_recall.__wrapped__(_request())
+        finally:
+            embedding_work.set(previous)
+
+        assert response.status == 200, response.text
+        assert _Oracle.asked, "the decision was made, which is what makes this a test"
+        payload = json.loads(response.text)
+        ids = {row["id"] for row in payload["retrieval"]["episodes"]}
+        assert "mem-one" in ids, f"the recall must still answer in full, got {payload}"
+        assert self._outcomes(wired) == [], (
+            "a request whose deadline had passed left a receipt: the row claims a subset "
+            "reached a caller who received a timeout instead"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_bounded_payload_keeps_the_arithmetic_closed(self, wired, monkeypatch):
+        """The decision is not the last thing that shortens the recall.
+
+        `bound_recall_payload` runs after it and holds the response to a transport
+        budget, dropping whole rows off the tail once there is no text left to clip --
+        and multibyte content reaches that budget on an ordinary query, so this is the
+        common case rather than an exotic one.
+
+        The receipt names the two removals SEPARATELY: what Jev kept, and how many of
+        those the budget then dropped. Folding the second into the first made the
+        header read "Jev kept 1" beside a row saying "2 that Jev kept did not fit",
+        which is arithmetic a reader cannot close.
+
+        The cap is lowered to reach the same state a large payload reaches on its own.
+        Jev keeps two of three here and the budget drops one of those two.
+        """
+        from kiro_crew.dashboard.handlers import memory_member as mm
+
+        monkeypatch.setattr(mm, "_RECALL_CONTEXT_CAP", 160)
+
+        payload = await _recall(wired)
+        retrieval = payload["retrieval"]
+        delivered = [row["id"] for row in retrieval["episodes"]]
+
+        # Non-vacuous: bounding must actually have removed something, or this test
+        # passes on a payload the decision alone shaped.
+        assert retrieval.get("omitted_for_payload_budget") == 1, retrieval
+        assert delivered == ["mem-one"], delivered
+
+        outcome = self._outcomes(wired)[0]
+        # `jev_keys` is the DECISION's output and stays so. The budget's removal is a
+        # second number beside it, so the two ADD UP to what shipped and each part
+        # stays attributable to whoever removed it.
+        assert outcome["jev_keys"] == ["mem-one", "mem-three"], outcome
+        assert outcome["bounded_omitted"] == 1, outcome
+        assert len(outcome["jev_keys"]) - outcome["bounded_omitted"] == len(delivered), (
+            "the arithmetic does not close: "
+            f"kept={outcome['jev_keys']} omitted={outcome['bounded_omitted']} "
+            f"delivered={delivered}"
+        )
+
+        # And the saving is JEV's own removal, untouched by the budget: both arms were
+        # measured on the same rows before either redaction or bounding ran.
+        assert outcome["chars_saved"] == outcome["baseline_chars"] - outcome["jev_chars"]
+        assert outcome["chars_saved"] > 0
+
+    @pytest.mark.asyncio
+    async def test_a_slow_search_shortens_the_judge_wait(self, wired, monkeypatch):
+        """The judge's wait is the time LEFT, not a constant.
+
+        The search runs BEFORE the judge does, inside the same bounded request, so a
+        cold store, a rebuilt index or a slow embedding spends budget the judge would
+        then assume it still had. Capped by its own constant the judge could overrun
+        the route's deadline and the tool would answer `504` instead of the memories
+        the search had already found -- the one direction this seam must not fail in.
+
+        The search is made to burn a third of the budget, and the wait the judge is
+        actually given has to reflect that.
+        """
+        import time
+
+        from kiro_crew.decisions.points import memory_recall as mr
+        from kiro_crew.embeddings import EmbeddingWork, embedding_work
+
+        budget, burn = 3.0, 1.0
+
+        waits: list[float] = []
+        real_budget = mr._wait_budget
+
+        def _record_wait() -> float:
+            value = real_budget()
+            waits.append(value)
+            return value
+
+        monkeypatch.setattr(mr, "_wait_budget", _record_wait)
+
+        # Burned ONCE: `search_episodic` re-enters itself to hold the identity check
+        # and the index read under one lock, so a bare sleep would be paid twice.
+        burned: list[int] = []
+        real_search = wired.store.search_episodic
+
+        def _slow_search(*args, **kwargs):
+            if not burned:
+                burned.append(1)
+                time.sleep(burn)
+            return real_search(*args, **kwargs)
+
+        monkeypatch.setattr(wired.store, "search_episodic", _slow_search)
+
+        previous = embedding_work.get()
+        embedding_work.set(EmbeddingWork(time.monotonic() + budget))
+        started = time.monotonic()
+        try:
+            payload = await _recall(wired)
+        finally:
+            embedding_work.set(previous)
+        elapsed = time.monotonic() - started
+
+        assert burned, "the search did not burn any budget, so this proves nothing"
+        assert waits, "the wait was never computed"
+        # Shortened: the provider's own budget here is 5.5 s and the no-deadline
+        # ceiling is 7 s, so anything near either would mean the deadline was ignored.
+        assert 0 < waits[0] < 2.0, (
+            f"the judge was given {waits[0]}s of a {budget}s request that had already "
+            f"spent {burn}s, rather than the time remaining"
+        )
+        assert waits[0] < mr.MAX_WAIT_SECS
+        # And the recall still answered inside the deadline, narrowed.
+        assert elapsed < budget, f"the recall took {elapsed}s of a {budget}s budget"
+        ids = {row["id"] for row in payload["retrieval"]["episodes"]}
+        assert ids == {"mem-one", "mem-three"}, payload
+
+    def test_no_time_left_keeps_the_unnarrowed_result_and_asks_nothing(self, wired):
+        """Out of budget is a Jev failure, and every one of those keeps the search.
+
+        Asking would spend a wait the request cannot fund, and the answer would reach
+        a caller the route had already given up on. So the point declines: the rows go
+        back exactly as the search ranked them, nothing is sent, and no receipt is
+        held -- which is what every other refusal on this path does.
+        """
+        import asyncio as _asyncio
+        import threading
+        import time
+
+        from kiro_crew.decisions.points import memory_recall as mr
+        from kiro_crew.embeddings import EmbeddingWork, embedding_work
+
+        rows = [{"id": mem_id, "text": text} for mem_id, text in EPISODES]
+        pending: list = []
+
+        loop = _asyncio.new_event_loop()
+        ready = threading.Event()
+        loop.call_soon(ready.set)
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        previous = embedding_work.get()
+        # Live enough that `expired()` is False, but with less left than the slack the
+        # rest of the request needs -- which is the state a slow search produces.
+        embedding_work.set(EmbeddingWork(time.monotonic() + mr.WAIT_MARGIN_SECS / 2))
+        try:
+            assert ready.wait(10)
+            assert mr._remaining_budget() < 0, "the budget must be out, or this proves nothing"
+            kept = mr.kept_memories(
+                rows,
+                QUERY,
+                session_key=SESSION,
+                loop=loop,
+                owner_turn=True,
+                pending=pending,
+            )
+        finally:
+            embedding_work.set(previous)
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=10)
+            loop.close()
+
+        assert kept is None, "the unnarrowed result is what a refusal returns"
+        assert _Oracle.asked == [], "nothing may be sent on a request with no time left"
+        assert pending == [], "a decision never made leaves no receipt to commit"
+
+    @pytest.mark.asyncio
+    async def test_a_tab_closed_during_the_search_sends_nothing(self, wired, monkeypatch):
+        """The egress gate is read where the egress happens, not before the search.
+
+        `_memory_recall_keep` runs on the event loop before `recall` is dispatched, so
+        its membership test is a cheap early refusal. The question it answers can stop
+        being true while the search runs: the owner closes the tab and the slot leaves
+        the published set, and a decision built on the earlier answer would still send
+        snippets of their remembered notes. This closes the tab mid-search.
+        """
+        from kiro_crew.dashboard.handlers import memory_member as mm
+
+        closed: list[int] = []
+        real_search = wired.store.search_episodic
+
+        def _close_the_tab(*args, **kwargs):
+            if not closed:
+                closed.append(1)
+                session_surface.set_dashboard_surfaced(set())
+            return real_search(*args, **kwargs)
+
+        monkeypatch.setattr(wired.store, "search_episodic", _close_the_tab)
+
+        request = _request()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(mm, "_recognize_session", AsyncMock(return_value=None))
+            patch.setattr(mm, "_blocks_reads_session", lambda *_a, **_kw: False)
+            patch.setattr(mm, "resolve_lesson_memory_store", AsyncMock(return_value=("", None)))
+            patch.setattr(mm, "vector_memory_for_store", AsyncMock(return_value=wired.store))
+            patch.setattr(mm, "markdown_memory_for_store", AsyncMock(return_value=None))
+            patch.setattr(mm, "requesting_slot_project", lambda *_a, **_kw: None)
+            response = await mm.api_memory_recall(request)
+
+        assert closed, "the tab never closed, so this proves nothing"
+        assert response.status == 200, response.text
+        assert _Oracle.asked == [], "recalled memory left the machine for a closed tab"
+        payload = json.loads(response.text)
+        ids = {row["id"] for row in payload["retrieval"]["episodes"]}
+        assert ids == {mem_id for mem_id, _text in EPISODES}, "the recall must answer in full"
+        assert self._outcomes(wired) == [], "a decision never made leaves no receipt"
+
+    @pytest.mark.asyncio
     async def test_the_committed_row_matches_what_came_back(self, wired):
         """The positive half: one row, and it describes the response."""
         payload = await _recall(wired)

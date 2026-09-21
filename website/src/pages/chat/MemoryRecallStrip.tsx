@@ -103,6 +103,10 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
       data-testid="memory-recall-strip"
       data-agree={record.agree}
       data-expanded={expanded}
+      // Beside `data-agree` and for the same reason: the screenshot harness selects a
+      // row by the state it is photographing, and "the payload budget dropped some of
+      // what Jev kept" is not inferable from the two id lists.
+      data-bounded={record.boundedOmitted}
     >
       <div className="flex items-center gap-1.5 px-2 py-1 min-w-0 text-[12px] leading-5">
         <button
@@ -120,7 +124,17 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
             aria-hidden="true"
           />
           <Brain className="lucide-inline shrink-0" aria-hidden="true" />
-          <span className="shrink-0 font-medium text-text">
+          {/* Titled with its SCOPE, because one turn can hold more than one receipt
+              and only one is drawn. An agent may call `memory_recall` twice in a
+              turn; each call is its own request with its own decision, and the
+              hand-off registry keeps one entry per point, so the newer publish
+              replaces the older. The line is about the LATEST recall of the turn,
+              and the panel below says so in words -- a bare "memory" would read as
+              a receipt covering every recall the turn made. */}
+          <span
+            className="shrink-0 font-medium text-text"
+            title={i18nT('pages.chat.decisionStrip.memory_latest_title')}
+          >
             {i18nT('pages.chat.decisionStrip.point_memory_recall')}{' \u00B7'}
           </span>
           <span className="truncate min-w-0 tabular-nums">
@@ -164,14 +178,23 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
             a MEMORY pick, so each label has to say it IS a rating -- an actor's name
             alone leaves a reader guessing what the thumbs do. Editing the shared key
             would change the skills strip and the tool-risk badge, which rate something
-            else. */}
-        <VerdictThumbs
-          turnId={record.turnId}
-          side="jev"
-          label={i18nT('pages.chat.decisionStrip.memory_rate_jev')}
-          rightLabel={i18nT('pages.chat.decisionStrip.memory_rate_right_jev')}
-          wrongLabel={i18nT('pages.chat.decisionStrip.memory_rate_wrong_jev')}
-        />
+            else.
+
+            Drawn only for a record that HAS a Jev pick. On a failure the line already
+            says the decision did not land and the shipped recall was injected, so
+            "Rate Jev's pick" beside "Decision failed" asks a reader to judge a choice
+            nobody made -- and a thumb sent on it would be filed as a verdict on the
+            judge. The similarity pair in the panel below is unaffected: that arm ran
+            whatever the judge did. */}
+        {!record.error && (
+          <VerdictThumbs
+            turnId={record.turnId}
+            side="jev"
+            label={i18nT('pages.chat.decisionStrip.memory_rate_jev')}
+            rightLabel={i18nT('pages.chat.decisionStrip.memory_rate_right_jev')}
+            wrongLabel={i18nT('pages.chat.decisionStrip.memory_rate_wrong_jev')}
+          />
+        )}
       </div>
       {expanded && (
         <div id={panelId} className="px-2 pb-2 pt-0 text-[12px] leading-5 flex flex-col gap-1 min-w-0">
@@ -213,6 +236,21 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
           {latency !== null && (
             <Detail label={i18nT('pages.chat.decisionStrip.latency_label')} value={latency} />
           )}
+          {/* Drawn only when the response budget removed some of what Jev kept. The
+              header's count is the DECISION's, so this row carries both numbers and
+              the subtraction closes in one sentence: a reader who saw "Jev kept: 1"
+              over "2 that Jev kept did not fit" could not reconcile them. Absent at
+              0, because a row about a thing that did not happen is noise on every
+              ordinary receipt. */}
+          {record.boundedOmitted > 0 && (
+            <Detail
+              label={i18nT('pages.chat.decisionStrip.memory_bounded_label')}
+              value={i18nT('pages.chat.decisionStrip.memory_bounded_value', {
+                count: fmtNumber(record.boundedOmitted),
+                total: fmtNumber(record.jevKeys.length),
+              })}
+            />
+          )}
           {/* Hand-off ON: this strip holds no draft input, the host composer's
               draft is persisted per slot, and the failure category here is one an
               agent can actually act on — a timeout or a provider error names the
@@ -225,6 +263,22 @@ const MemoryRecallStrip = memo(function MemoryRecallStrip({
             askAgent
             testId="memory-recall-strip-error"
           />
+          {/* The scope, in words rather than only in the header's tooltip: a reader
+              deciding whether this receipt covers their whole turn cannot hover. */}
+          <p className="m-0 text-muted" data-testid="memory-recall-strip-scope">
+            {i18nT('pages.chat.decisionStrip.memory_latest_note')}
+          </p>
+          {/* On a FAILED record this pair is the only one left, sitting under "Decision
+              failed" -- which reads as an invitation to rate something that did not
+              happen. It did: the search ran and returned, and what failed was the
+              narrowing on top of it. Said in words, because the thumbs are beside the
+              failure notice and a reader has to know which of the two they are
+              judging. */}
+          {record.error !== null && (
+            <p className="m-0 text-muted" data-testid="memory-recall-strip-search-ran">
+              {i18nT('pages.chat.decisionStrip.memory_search_ran_note')}
+            </p>
+          )}
           <div className="flex items-center gap-1.5 min-w-0 pt-0.5">
             <VerdictThumbs
               turnId={record.turnId}

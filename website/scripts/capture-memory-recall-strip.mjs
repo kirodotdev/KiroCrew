@@ -6,14 +6,16 @@
  * network is stubbed, so `readMemoryRecallRecord`, the transcript virtualizer and the
  * strip itself render exactly as in production.
  *
- * Four fixtures, because the strip has four states a reader acts on differently:
+ * Five fixtures, because the strip has five states a reader acts on differently:
  * a turn where Jev DROPPED some of the shortlist (the common case, and the one the
  * counts exist for), one where it kept everything (so "similarity 6 · Jev kept 6"
  * can be compared against the narrowed line rather than described), one where it kept
  * NOTHING (the floor of the range: an empty kept list, which the expanded panel names
  * rather than leaving blank), and one where the decision FAILED (the error surface and
  * its agent hand-off). The record rides `meta.decisions_strip`, which is where a
- * transcript reloaded from history carries it.
+ * transcript reloaded from history carries it. The fifth is a recall the response
+ * BUDGET shortened after the decision (`bounded_omitted`), where the panel has to
+ * name the budget's removals so they do not read as Jev's.
  *
  * `/api/decisions/consent` is answered ON even though the strip does not read it, for
  * the reason the sibling `capture-decision-strip.mjs` gives: the Settings card shares
@@ -42,6 +44,7 @@ const CONSENT = {
   configured_endpoint: 'https://api.typesafe.ai/v1/systemone',
   permits: true,
   tool_args: false,
+  compaction: false,
   memory_text: true,
 }
 
@@ -83,6 +86,24 @@ const KEPT_NONE = {
   p: 0.12,
   chars_saved: 4300,
   latency_ms: 188,
+}
+
+/**
+ * The response BUDGET dropped two of the memories Jev kept, which is a different
+ * state from any above: the kept list is what ARRIVED, so the counts and the saving
+ * are smaller and larger than the decision alone would make them. Worth its own
+ * frame because the panel has to say so -- otherwise the budget's work reads as
+ * Jev's.
+ */
+const BOUNDED = {
+  ...NARROWED,
+  turn_id: 'turn-6b4d19',
+  // Jev's OWN three, with two of them lost to the budget afterwards, so the panel's
+  // sentence closes against the header: kept 3, two did not fit, one arrived. The
+  // kept list is never the delivered set -- see the point's accounting.
+  jev_keys: [...NARROWED.jev_keys],
+  bounded_omitted: 2,
+  latency_ms: 233,
 }
 
 /** The decision failed, so the shortlist went in unchanged and the strip says why. */
@@ -142,14 +163,23 @@ const detail = {
       content: 'Same account, separate stack. The CDN reads it through an origin-access identity rather than a public policy.',
       meta: { decisions_strip: FAILED },
     },
-    // LAST, and the only other `data-agree=false` row, so the two selectors below stay
-    // unambiguous: `.first()` is the narrowed row and `.last()` is this one.
+    // LAST of the `agree=false, bounded=0` pair the subset selector reads, so
+    // `.first()` is the narrowed row and `.last()` is this one. The bounded row that
+    // follows is excluded from that selector by its own `data-bounded`, which is what
+    // lets it sit after this without making either end of the pair ambiguous.
     { role: 'user', ts: t0 + 420, content: 'What did we say about the staging alarm thresholds?' },
     {
       role: 'assistant',
       ts: t0 + 447,
       content: 'Nothing on record for staging — the thresholds you are thinking of are the production ones.',
       meta: { decisions_strip: KEPT_NONE },
+    },
+    { role: 'user', ts: t0 + 520, content: 'Remind me everything we recorded about the CDN origin.' },
+    {
+      role: 'assistant',
+      ts: t0 + 549,
+      content: 'The bucket is read through an origin-access identity, and the invalidation runbook is in the ops repo.',
+      meta: { decisions_strip: BOUNDED },
     },
   ],
 }
@@ -201,28 +231,38 @@ async function main() {
     console.log('wrote', `${OUT}/${name}.png`)
   }
 
-  // The three rows are told apart by `data-agree`, which is set equality of the two
-  // lists, plus the error one's own turn. `data-agree=false` is the narrowed row;
-  // the two `true` rows are distinguished by DOM order, which is transcript order.
-  // Two rows carry `data-agree=false`: the narrowed one is FIRST in transcript order
-  // and the kept-none one is LAST, which is what the fixture order above is for.
-  const NARROWED_SEL = '[data-testid="memory-recall-strip"][data-agree="false"]'
+  // Rows are told apart by the state each frame is OF, never by DOM order alone.
+  // `data-agree` is set equality of the two lists and `data-bounded` is how many of
+  // Jev's kept memories the response budget dropped, so:
+  //
+  //   * the narrowed and kept-none rows are both `agree=false, bounded=0`, and only
+  //     those two are -- first and last in transcript order;
+  //   * the bounded row is the only `bounded=2`, so it needs no ordering at all;
+  //   * the two agreed rows are `agree=true`, and the failure is the last of them.
+  //
+  // The `bounded` half of the subset selector is load-bearing: without it the bounded
+  // row is a THIRD `agree=false` row, `.last()` picks it instead of the kept-none one,
+  // and the bounded frame becomes a second click on an already-open panel -- which
+  // photographs a COLLAPSED strip under a caption about its panel.
+  const SUBSET_SEL =
+    '[data-testid="memory-recall-strip"][data-agree="false"][data-bounded="0"]'
+  const BOUNDED_SEL = '[data-testid="memory-recall-strip"][data-bounded="2"]'
   const AGREED_SEL = '[data-testid="memory-recall-strip"][data-agree="true"]'
 
   for (const theme of ['light', 'dark']) {
     await loadInEnglish(theme)
 
-    await shoot(NARROWED_SEL, `collapsed-narrowed-${theme}`)
+    await shoot(SUBSET_SEL, `collapsed-narrowed-${theme}`)
     await shoot(AGREED_SEL, `collapsed-kept-all-${theme}`)
 
     // Open: both id lists, the candidate count, the egress and the latency, plus the
     // similarity ranker's own thumbs pair.
-    await open(NARROWED_SEL)
-    await shoot(NARROWED_SEL, `expanded-${theme}`)
+    await open(SUBSET_SEL)
+    await shoot(SUBSET_SEL, `expanded-${theme}`)
 
     // Kept none, expanded: the panel has to NAME the empty kept list. Driven through
     // the locator rather than `open`/`shoot`, which both take `.first()`.
-    const keptNoneRow = page.locator(NARROWED_SEL).last()
+    const keptNoneRow = page.locator(SUBSET_SEL).last()
     await keptNoneRow.locator('[data-testid="memory-recall-strip-toggle"]').evaluate(el => {
       el.scrollIntoView({ block: 'center' })
       el.click()
@@ -246,6 +286,23 @@ async function main() {
     await page.waitForTimeout(300)
     await failedRow.screenshot({ path: `${OUT}/expanded-error-${theme}.png` })
     console.log('wrote', `${OUT}/expanded-error-${theme}.png`)
+
+    // The payload-bounded row, expanded, LIGHT only: it is a copy state rather than a
+    // theme one, the same rule the kept-none and failure frames follow. Selected by
+    // `data-bounded`, which is the only thing that tells this row from the narrowed
+    // one -- both are `data-agree=false` subsets.
+    if (theme === 'light') {
+      const boundedRow = page.locator(BOUNDED_SEL).first()
+      await boundedRow.locator('[data-testid="memory-recall-strip-toggle"]').evaluate(el => {
+        el.scrollIntoView({ block: 'center' })
+        el.click()
+      })
+      await page.waitForTimeout(500)
+      await boundedRow.evaluate(el => el.scrollIntoView({ block: 'center' }))
+      await page.waitForTimeout(300)
+      await boundedRow.screenshot({ path: `${OUT}/expanded-bounded-light.png` })
+      console.log('wrote', `${OUT}/expanded-bounded-light.png`)
+    }
   }
 
   await close()

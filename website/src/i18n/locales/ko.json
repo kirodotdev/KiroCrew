@@ -10277,13 +10277,18 @@
         "memory_confidence_latency_title": "기억이 프롬프트에 값한다고 Jev가 본 평균 확신도, 0에서 1까지, 그리고 답이 오기까지 걸린 시간",
         "memory_rate_right_jev": "Jev가 기억을 옳게 남겼다",
         "memory_rate_wrong_jev": "Jev가 기억을 잘못 남겼다",
-        "memory_rate_baseline": "유사도 선택 평가",
-        "memory_rate_jev": "Jev 선택 평가",
+        "memory_rate_baseline": "검색 평가 (Jev 이전)",
+        "memory_rate_jev": "Jev의 추리기 평가",
         "memory_rate_right_baseline": "유사도가 기억을 옳게 불러왔다",
         "memory_rate_wrong_baseline": "유사도가 기억을 잘못 불러왔다",
         "memory_kept_fallback": "폴백 후 남음: {{count}}건",
         "memory_jev_label_fallback": "남은 기억(폴백)",
-        "memory_saved_title": "기억 블록이 작아져 절약한 프롬프트 글자 수."
+        "memory_saved_title": "Jev의 추리기가 덜어낸 기억 글자 수입니다. 가리기 전, 응답 용량 제한 전에 재므로 판단 자체의 절감만을 뜻합니다.",
+        "memory_latest_title": "이 줄은 이번 턴의 마지막 memory_recall 호출에 대한 것입니다.",
+        "memory_latest_note": "이번 턴의 마지막 memory_recall 호출을 설명합니다. 여러 번 호출한 턴에서는 마지막 것만 보입니다. 판단 로그에는 모두 남습니다.",
+        "memory_search_ran_note": "검색 자체는 실행됐습니다. 실패한 것은 Jev의 추리기뿐이라, 여기서는 받은 기억을 평가합니다.",
+        "memory_bounded_label": "용량 때문에 제외",
+        "memory_bounded_value": "Jev가 남긴 {{total}}개 중 {{count}}개는 응답에 담기지 못했습니다"
       },
       "toolRiskBadge": {
         "annotation_title": "Jev가 이 호출을 보고 표시했습니다. 표시는 호출이 허용되었는지와 무관합니다. 그것은 이 세션의 권한 설정이 결정하며, 호출은 거부되었을 수도 있습니다.",
@@ -11121,7 +11126,7 @@
         "crew_members_desc": "Crew Members 페이지: 보유한 모든 에이전트가 각자 스레드를 가지고 나열됩니다. 아직 만드는 중이라 켜기 전까지는 제공되지 않습니다.",
         "decisions": "판단 (Jev)",
         "decisions_desc": "Jev는 작고 빠른 판단 모델입니다. 이 스위치를 켜면 {{productName}}이(가) 방금 보낸 메시지에 어떤 스킬이 맞는지, 또는 맞는 것이 없는지 Jev에게 묻고, 스위치 아래에 표시된 비율의 세션에서는 Jev의 선택을 그대로 씁니다. 나머지 세션은 이 빌드에 포함된 단어 일치 규칙을 그대로 씁니다. Jev가 느리거나 연결되지 않거나 쓸 수 있는 답을 주지 않으면 그 메시지는 같은 규칙으로 돌아가므로, 판단이 답변을 지연시키지 않습니다. 모든 호출은 진단용으로 {{productName}}을(를) 실행하는 컴퓨터의 로그에도 기록됩니다. 이 스위치는 브라우저가 아니라 {{productName}}을(를) 실행하는 컴퓨터에 저장되므로, 어느 기기에서 열어도 적용됩니다.",
-        "decisions_egress": "이것이 켜져 있는 동안 메시지 본문과 스킬의 이름·설명이 이 머신을 떠납니다. 이 {{productName}}에 설정된 판단 서비스 Jev로 인터넷을 통해 보냅니다. 두 가지 범주는 아래에 각자의 스위치가 있고, 하나를 켤 때까지 꺼져 있습니다. 도구 호출의 이름과 인자, 그리고 메시지에 맞춰 불러온 기억의 짧은 발췌입니다. 이것이 꺼져 있는 동안에는 아무것도 보내지 않습니다.",
+        "decisions_egress": "이것이 켜져 있는 동안 메시지 본문과 스킬의 이름·설명이 이 머신을 떠납니다. 이 {{productName}}에 설정된 판단 서비스 Jev로 인터넷을 통해 보냅니다. 세 가지 범주는 아래에 각자의 스위치가 있고, 하나를 켤 때까지 꺼져 있습니다. 도구 호출의 이름과 인자, {{productName}}이(가) 스스로 압축하는 세션의 대화와 도구 호출 입력, 그리고 메시지에 맞춰 불러온 기억의 짧은 발췌입니다. 이것이 꺼져 있는 동안에는 아무것도 보내지 않습니다.",
         "decisions_backend_required": "이 대시보드를 실행하는 {{productName}}이(가) 이 기능보다 오래되어 아직 켤 수 있는 것이 없습니다. 먼저 설정 › Releases에서 {{productName}}을(를) 업데이트하세요.",
         "decisions_sent_to": "보내는 곳",
         "decisions_endpoint_moved": "동의한 주소가 지금 설정에 있는 주소와 달라서 아무것도 보내지 않습니다. 새 주소에 동의하려면 이 스위치를 끄고 다시 켜세요.",
@@ -11137,9 +11142,10 @@
         "decisions_compaction": "Jev가 압축을 채점할 수 있도록 대화와 도구 호출 입력도 보냅니다",
         "decisions_compaction_desc": "컨텍스트가 차서 {{productName}}이(가) 세션을 스스로 압축할 때마다, 그 대화와 안에 있는 도구 호출 입력을 Jev에 보내 어떤 것을 남길 만했는지 묻습니다. 도구 출력은 절대 보내지 않습니다. 몇 글자였는지만 보냅니다. 비밀번호와 키는 보내기 전에 바뀝니다. 이것은 측정입니다. Jev가 무엇이라고 답해도 압축은 지금과 똑같이 일어나고, 답은 압축 알림에 한 줄로 나옵니다. 셋 중에서 가장 넓으므로, 위의 스위치가 이미 켜져 있어도 켤 때까지는 꺼져 있습니다.",
         "decisions_point_compaction_keep": "압축이 남길 도구 호출 (측정만)",
+        "decisions_point_memory_recall": "불러온 기억 중 어떤 것이 프롬프트에 들어가는지",
         "decisions_memory_text": "불러온 기억의 발췌도 보내서 Jev가 도움이 안 되는 것을 덜어내게 하기",
         "decisions_memory_text_desc": "어시스턴트가 자기 기억에 질문하면 표현이 가장 가까운 항목이 돌아옵니다. 이것을 켜면 각 항목의 id와 본문 앞 200자도 Jev로 보내고, Jev가 무엇을 남길지 말합니다. 덜어내는 것만 할 수 있고 새로 넣거나 순서를 바꾸지는 않습니다. 느리거나 닿지 않으면 전부 예전처럼 돌아옵니다. 비밀번호와 키는 보내기 전에 바뀝니다. 위 스위치가 이미 켜져 있어도, 이것은 켤 때까지 꺼져 있습니다.",
-        "decisions_scope_save_failed": "이 스위치를 저장할 수 없습니다. 저장된 값을 다시 보여 줍니다."
+        "decisions_scope_save_failed": "‘{{switch}}’ 스위치를 저장할 수 없습니다. 저장된 값을 다시 보여 줍니다."
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",

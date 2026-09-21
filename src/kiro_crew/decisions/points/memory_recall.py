@@ -60,8 +60,53 @@ Both arms, every sampled call
 The baseline arm is the candidate list itself, so knowing what the recall would
 have returned costs nothing. Jev's kept set is what the tool returns; the baseline
 is recorded beside it with ``agree``, the mean keep probability and the characters
-the narrower response saves. There is no shadow mode: the arm that is returned is
+Jev's narrowing removed. There is no shadow mode: the arm that is returned is
 always Jev's.
+
+The accounting, once
+--------------------
+Four different things shorten a recall, and the receipt names one of them. Each
+number below means exactly this, everywhere -- in the row, in the publish, in the
+strip's copy -- and nothing else:
+
+``candidates`` -- OFFERED. The rows this point put in front of the oracle: the ones
+the store's ``fit`` walk had already selected, capped at :data:`MAX_CANDIDATES` and
+screened for a usable id. A row the screen dropped is still in ``baseline_keys``,
+because the baseline is what the recall would have returned rather than what was
+asked about.
+
+``baseline_keys`` -- what the recall returns WITHOUT this point. The candidate list
+itself.
+
+``jev_keys`` -- KEPT BY JEV. The memories Jev's answer kept, in the search's order.
+The DECISION's own output, before anything downstream touches it. It is not the set
+that shipped, and it must not be quietly narrowed into one: a receipt whose kept
+count silently absorbed a later removal is what makes the numbers stop adding up.
+
+``bounded_omitted`` -- DROPPED BY BOUNDING. How many of ``jev_keys`` the response
+budget then removed (``memory_recall.bound_recall_payload`` clips the largest text
+and drops whole rows off the tail). The set the caller received is ``jev_keys``
+minus these, so the two numbers together state what shipped and each stays
+attributable to whoever did it. Absent rather than ``0`` when the budget removed
+nothing.
+
+``chars_saved`` -- characters of memory text JEV'S NARROWING removed, and nothing
+else's. Both arms are measured by :func:`injected_chars` on the SAME rows at the
+SAME moment -- before redaction, before bounding -- so the scrubber's substitutions
+and the budget's clipping are absent from the difference by construction rather
+than subtracted by hand. REMOVED BY REDACTION is therefore a quantity this receipt
+deliberately does not carry: it is the same scrubbing applied to whatever ships, it
+is no part of what Jev decided, and a figure that folded it in would credit the
+scrubber's work to the judge.
+
+One writer
+----------
+:func:`commit_receipt` is the ONLY thing that writes or publishes a receipt, and it
+takes the completed payload as an argument. That is the structural half of the rule
+above: a caller cannot reach the writer without the finished response in hand, and
+the writer -- not the caller -- checks that the request is still live. Three
+separate call sites have leaked a receipt for a recall the caller never got, each
+time because the check sat beside the call instead of inside it.
 """
 
 from __future__ import annotations
@@ -123,21 +168,33 @@ KEEP_OPTIONS = [KEEP_OPTION, DROP_OPTION]
 #: into a no-op (1.0 drops everything) without turning the seam off.
 KEEP_THRESHOLD = 0.5
 
-#: Scheduling slack added to the provider budget, and the floor and ceiling on the
-#: wait whatever the config says. The ceiling is the real protection: this budget
-#: is spent on the turn's critical path.
+#: Scheduling slack, used for both ends of the same thing. Added to the provider
+#: budget, because the coroutine is submitted to a loop that may be mid-task; and
+#: withheld from the enclosing deadline in :func:`_remaining_budget`, because the
+#: recall still has to come back, be bounded and be serialized after the judge
+#: answers. One quantity, so there is no second number to keep in step.
 WAIT_MARGIN_SECS = 0.5
 MIN_WAIT_SECS = 0.25
-#: BELOW the recall route's own deadline (``executors.RECALL_TIMEOUT_SECS``, which
-#: bounds the whole request and answers ``504 memory_recall_timeout`` when it
-#: expires), with room left for the search this decision is attached to. That
-#: ordering is the point of the number rather than a tuning choice: this seam's
-#: promise is that every refusal keeps the similarity result, and a wait that could
-#: outlast the request would break it in the one direction that costs the caller
-#: something -- the tool would answer with an ERROR instead of the memories it had
-#: already found, so a slow judge would take the recall down with it. ``skills_select``
-#: sits on the prompt path, which has no such enclosing deadline, so its ceiling is
-#: its own. Pinned against the route's constant by
+#: The ceiling on the wait where NO enclosing deadline is in force, and a belt on a
+#: hand-edited provider timeout. It is not what holds the judge inside the recall
+#: route: that is :func:`_remaining_budget`, which reads the time actually left on
+#: the request this decision runs inside.
+#:
+#: A constant cannot do that job, and this one could not. ``GET /api/memory/recall``
+#: is bounded at ``executors.RECALL_TIMEOUT_SECS`` (9 s) and answers
+#: ``504 memory_recall_timeout`` when it expires, so 7 s left 2 s for everything
+#: else -- and the SEARCH the decision is attached to runs BEFORE the judge does. A
+#: cold store, a rebuilt index or an embedding that took its own time spends that
+#: 2 s, and then a full 7 s wait ends past the deadline: the tool answers with an
+#: ERROR instead of the memories it had already found, which is exactly the one
+#: direction this seam's promise must not fail in. Subtracting the elapsed time is
+#: the only cap that holds, so the wait is derived rather than declared.
+#:
+#: Kept as the no-deadline ceiling because ``kept_memories`` is reachable without
+#: one -- a caller outside the bounded route -- and the budget there is the turn's
+#: critical path rather than a request deadline. ``skills_select`` is that shape
+#: throughout, which is why its own ceiling is its own. The relationship to the
+#: route's constant is still pinned by
 #: ``test_decisions_memory_recall.py::TestTheWaitFitsInsideTheRoute``.
 MAX_WAIT_SECS = 7.0
 
@@ -156,6 +213,7 @@ def kept_memories(
     session_key: str | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     owner_turn: bool = False,
+    still_watched: Callable[[], bool] | None = None,
     pending: list[tuple[dict[str, Any], int]] | None = None,
 ) -> list[RowT] | None:
     """The memories the oracle would keep, or ``None`` to return all of *candidates*.
@@ -197,7 +255,7 @@ def kept_memories(
     because nothing is appended to *pending* on that path.
 
     *pending* receives ``(outcome, latency_ms)`` for a decision that was made. It is
-    the caller's list and the caller commits it (:func:`commit_outcome`); passing
+    the caller's list and the caller commits it (:func:`commit_receipt`); passing
     ``None`` makes this function decide and record NOTHING, which is what a caller
     that only wants the subset should pass.
 
@@ -217,6 +275,16 @@ def kept_memories(
             pending.clear()
         if not owner_turn:
             return None
+        # Re-read HERE, not where the hook was built. *owner_turn* was decided on the
+        # event loop before the search began; this runs later, on the worker thread the
+        # search is on, and the thing it asserts can stop being true in between -- the
+        # owner closes the tab and the slot leaves the published set. That gap is the
+        # difference between sending recalled memory and not sending it, which is the
+        # one direction an egress gate must not get wrong. An absent predicate means the
+        # caller has nothing further to assert, not that the answer is yes.
+        if still_watched is not None and not still_watched():
+            logger.debug("memory.recall: the surface went away before the question")
+            return None
         # Closed, or not running: such a loop will never run the coroutine, so
         # waiting on that future would spend the whole budget on a certain
         # refusal.
@@ -233,6 +301,14 @@ def kept_memories(
         if not screened:
             return None
         wait = _wait_budget()
+        # The enclosing request has no time left to lend, so there is nothing to ask
+        # for: any answer would arrive after the route had already given up. Refused
+        # on exactly the terms every other failure here takes -- return None, and the
+        # caller injects the similarity result unnarrowed. It also appends nothing to
+        # `pending`, so the turn leaves no receipt for a decision never made.
+        if wait <= 0:
+            logger.debug("memory.recall: no budget left on the enclosing request")
+            return None
         turn_id = uuid.uuid4().hex[:16]
         trace: dict[str, Any] = {}
         started = time.monotonic()
@@ -242,6 +318,7 @@ def kept_memories(
             session_key=session_key,
             turn_id=turn_id,
             deadline=started + wait,
+            still_watched=still_watched,
             trace=trace,
         )
         try:
@@ -261,7 +338,7 @@ def kept_memories(
             return None
         injected = surviving_rows(rows, screened, keys)
         # HELD, not written. The caller commits it once the recall this decision shaped
-        # has actually come back -- see :func:`commit_outcome`. Writing here would record
+        # has actually come back -- see :func:`commit_receipt`. Writing here would record
         # a subset that was never returned whenever the store discards its own result:
         # ``_recall_once`` validates the embedding generation AFTER applying this hook,
         # and answers a moved generation by running the whole recall again.
@@ -288,6 +365,7 @@ async def keep_decision(
     session_key: str | None = None,
     turn_id: str | None = None,
     deadline: float | None = None,
+    still_watched: Callable[[], bool] | None = None,
     trace: dict[str, Any] | None = None,
 ) -> list[str] | None:
     """The keys the oracle keeps, or ``None`` to keep the baseline. Runs on the loop.
@@ -300,6 +378,17 @@ async def keep_decision(
     *deadline* is a ``time.monotonic()`` reading the call must start inside. It is
     checked BEFORE the call rather than raced against: a call started past the
     deadline is one whose answer the caller has already stopped waiting for.
+
+    *still_watched* is the dashboard-surface test, read on the line before
+    ``core.decide`` because that call IS the egress: it is the point at which
+    snippets of the owner's own remembered notes leave the machine. Every earlier
+    read of the same question -- in the route before the search is dispatched, and in
+    :func:`kept_memories` before the menu is built -- is a cheap refusal that saves
+    work. None of them is the gate, because the answer can change after any of them:
+    the owner closes the tab while the search runs, the slot leaves the published
+    set, and a request already assembled would still go out. A guard for an egress
+    belongs at the egress. ``None`` means the caller asserts nothing further, not
+    that the answer is yes.
 
     *candidates* are WIRE rows -- ``{key, snippet}`` as :func:`screen_candidates`
     produces them -- not store rows, and they arrive already capped, key-screened
@@ -329,6 +418,12 @@ async def keep_decision(
         return None
     state = build_state(text, rows)
     questions = build_questions(rows)
+    # The LAST line before the network call, deliberately: the state above is built
+    # and redacted locally and costs nothing if this refuses, while everything after
+    # this line has already left.
+    if still_watched is not None and not still_watched():
+        logger.debug("memory.recall: the surface went away before the call")
+        return None
     answers = await core.decide(POINT, state, questions, session_key=session_key, extra=extra)
     keys = read_answer(answers, rows)
     if keys is None:
@@ -602,6 +697,11 @@ def build_outcome(
     """
     baseline_keys = [key for key in (key_of(row) for row in baseline) if key]
     jev_keys = [key for key in (key_of(row) for row in injected) if key]
+    # Both arms, from the same rows at the same moment: before redaction and before
+    # bounding. That is what makes the difference attributable to the DECISION -- see
+    # the accounting section in this module's docstring.
+    baseline_chars = injected_chars(baseline)
+    jev_chars = injected_chars(injected)
     return {
         "turn_id": trace.get("turn_id"),
         "baseline_keys": baseline_keys,
@@ -610,68 +710,64 @@ def build_outcome(
         "p": trace.get("p"),
         # Non-negative by construction: the point only ever removes, so a negative
         # saving would be a bug made visible rather than a measurement.
-        "chars_saved": max(0, injected_chars(baseline) - injected_chars(injected)),
+        "chars_saved": max(0, baseline_chars - jev_chars),
+        # Both sides kept, so a reader of the row can check the subtraction and a
+        # later pass cannot re-derive the saving against a different basis.
+        "baseline_chars": baseline_chars,
+        "jev_chars": jev_chars,
         "candidates": trace.get("candidates"),
         "message_chars": trace.get("message_chars"),
     }
 
 
-def commit_outcome(session_key: str | None, pending: Sequence[tuple[dict[str, Any], int]]) -> bool:
-    """Record and publish the decision the returned recall actually used. Never raises.
+def _bounded_omitted(outcome: Mapping[str, Any], delivered: Sequence[Mapping[str, Any]]) -> int:
+    """How many of ``jev_keys`` the response budget removed after the decision.
 
-    Called by the caller AFTER the recall came back, which is the whole point of the
-    two-step: ``_recall_once`` validates the embedding generation after applying the
-    hook, and ``recall`` answers a moved generation by running the recall again. An
-    outcome written when the answer arrived would therefore describe a subset the store
-    then discarded, and a retried recall would leave two rows for one tool call.
+    ``bound_recall_payload`` runs after the point and holds the response to a
+    transport budget: it clips the largest text and, once there is no text left to
+    clip, drops whole rows off the tail. Multibyte content reaches that budget on an
+    ordinary query, because the same text is counted in the evidence, again in the
+    model-facing context and again through JSON escaping.
 
-    Only the LAST entry is committed, because that is the attempt whose result was
-    returned. It is also the only one present: :func:`kept_memories` empties the list on
-    entry, so a retried recall cannot leave the discarded attempt's outcome behind for
-    this to write -- a row for an attempt nobody saw is a receipt for nothing, which is
-    worse than no row. Reading the last entry rather than the only one keeps the two
-    statements independent, so neither has to be true for this to be right.
-
-    A caller that never reaches this -- the request failed, the route refused, the
-    provider answered late -- commits nothing, so a failure leaves NO receipt at all.
-    Returns whether a row was written, for a test to assert on.
-
-    Guarded as a whole and separately from the decision: the kept set is already in the
-    response by the time this runs, so neither a log failure nor a missing outcomes
-    module may cost the recall its answer. The publish is CONDITIONAL on the write, for
-    the reason ``skills_select`` states: a strip whose durable row was refused describes
-    a decision no verdict could be filed against.
+    Counted rather than folded in. ``jev_keys`` stays the decision's own output and
+    this is a second number beside it, so "Jev kept 3" and "1 did not fit" together
+    say what shipped and each part stays attributable to whoever removed it. A kept
+    count quietly narrowed to the delivered set is what stops the arithmetic closing.
     """
-    if not pending:
-        return False
-    outcome, latency_ms = pending[-1]
-    try:
-        row = _log.build_row(
-            point=POINT,
-            session_key=session_key,
-            latency_ms=latency_ms,
-            extra=outcome,
-        )
-        written = _log.append(row)
-    except Exception:
-        logger.debug("memory.recall: could not record the outcome row", exc_info=True)
-        return False
-    if not written:
-        logger.debug("memory.recall: outcome row was not written; not publishing it")
-        return False
-    publish_outcome(session_key, row)
-    return True
+    shipped = {key for key in (key_of(row) for row in delivered) if key}
+    return sum(1 for key in (outcome.get("jev_keys") or []) if key not in shipped)
 
 
-def publish_outcome(session_key: str | None, outcome: dict[str, Any]) -> bool:
+def _request_abandoned() -> bool:
+    """Has the request this decision ran inside already given up?
+
+    Read HERE rather than at the call site, which is the whole point of the funnel.
+    ``memory_recall_deadline`` bounds the recall route with ``asyncio.wait_for``, and
+    a cancellation is delivered only where the coroutine yields -- the ``to_thread``
+    hand-off that reaches this module. The work is on an executor thread by then and a
+    running thread does not cancel, so an unguarded write lands a receipt for a recall
+    the caller received as ``504 memory_recall_timeout``.
+
+    ``None`` means no deadline is in force -- a caller outside the bounded route --
+    which is live rather than abandoned.
+    """
+    from kiro_crew.embeddings import embedding_work
+
+    work = embedding_work.get()
+    return work is not None and work.expired()
+
+
+def _publish(session_key: str | None, outcome: Mapping[str, Any]) -> bool:
     """Hand *outcome* to :data:`OUTCOMES_MODULE` if this build has one. Never raises.
 
-    Returns whether a publisher ran, for a test to assert on. Resolved by name at
-    CALL time rather than imported at module scope: the module is optional, and a
-    top-level import would make this point unimportable on a build without it.
+    Private, and called from exactly one place. A publish reachable on its own is a
+    second writer, and the receipt has one: see this module's docstring.
 
-    The row is passed exactly as it was written, so what the dashboard shows and
-    what the log holds cannot drift into two descriptions of one turn.
+    Resolved by name at CALL time rather than imported at module scope, because the
+    module is optional and a top-level import would make this point unimportable on a
+    build without it. The row is passed exactly as it was written, so what the
+    dashboard shows and what the log holds cannot drift into two descriptions of one
+    turn.
     """
     try:
         try:
@@ -688,12 +784,92 @@ def publish_outcome(session_key: str | None, outcome: dict[str, Any]) -> bool:
         return False
 
 
+def commit_receipt(
+    session_key: str | None,
+    pending: Sequence[tuple[dict[str, Any], int]],
+    *,
+    payload: Mapping[str, Any],
+) -> bool:
+    """The ONE writer: record and publish the receipt for a COMPLETED recall.
+
+    Never raises. Returns whether a row was written, for a test to assert on.
+
+    *payload* is the response that is about to go out -- redacted, bounded, final.
+    Taking it as an argument is the structural half of "no receipt for a recall
+    nobody received": there is no way to reach this function without the finished
+    response in hand. Every guard a receipt depends on lives HERE, in the one funnel,
+    rather than at a call site -- a guard beside a call is a guard each new caller has
+    to remember, and this one has three conditions to get right:
+
+    * an empty *pending* is every refusal's shape -- the point holds nothing, so
+      there is nothing to write;
+    * a *payload* carrying no ``retrieval`` is one the bounding walk refused outright,
+      so nothing was delivered for a receipt to describe;
+    * :func:`_request_abandoned` is the deadline the route's own ``504`` is derived
+      from, so the receipt exists exactly when the response carrying it does.
+
+    Only the LAST held entry is committed, because that is the attempt whose result
+    was returned. It is also the only one present -- :func:`kept_memories` empties the
+    list on entry -- so reading the last rather than the only one keeps the two
+    statements independent and neither has to be true for this to be right.
+
+    The write and the publish are guarded together and separately from the decision:
+    the kept set is already in the response by the time this runs, so neither a log
+    failure nor a missing outcomes module may cost the recall its answer. The publish
+    is CONDITIONAL on the write, for the reason ``skills_select`` states -- a strip
+    whose durable row was refused describes a decision no verdict could be filed
+    against.
+
+    One STRIP per turn, and it describes the turn's MOST RECENT recall. An agent may
+    call the tool more than once in a turn, and each call is a separate request with
+    its own decision; :mod:`kiro_crew.decisions.outcomes` holds one entry per
+    (session, point), so the second publish replaces the first. That is kept rather
+    than changed -- accumulating would need a per-point LIST in a registry four points
+    share, and a transcript component that draws N strips under one reply -- and the
+    strip's own copy names the scope instead. The LOG keeps every call: each one
+    appends its own row, so the measurement the strip samples is complete in the
+    durable record.
+    """
+    if not pending:
+        return False
+    retrieval = payload.get("retrieval") if isinstance(payload, Mapping) else None
+    if not isinstance(retrieval, Mapping):
+        logger.debug("memory.recall: no delivered recall to describe; writing nothing")
+        return False
+    if _request_abandoned():
+        logger.debug("memory.recall: the request was abandoned; writing nothing")
+        return False
+    outcome, latency_ms = pending[-1]
+    delivered = list(retrieval.get("episodes") or [])
+    row_fields = dict(outcome)
+    omitted = _bounded_omitted(outcome, delivered)
+    if omitted:
+        row_fields["bounded_omitted"] = omitted
+    try:
+        row = _log.build_row(
+            point=POINT,
+            session_key=session_key,
+            latency_ms=latency_ms,
+            extra=row_fields,
+        )
+        written = _log.append(row)
+    except Exception:
+        logger.debug("memory.recall: could not record the outcome row", exc_info=True)
+        return False
+    if not written:
+        logger.debug("memory.recall: outcome row was not written; not publishing it")
+        return False
+    _publish(session_key, row)
+    return True
+
+
 def keep_hook(
     text: str,
     *,
     session_key: str | None,
     loop: asyncio.AbstractEventLoop | None,
     owner_turn: bool,
+    still_watched: Callable[[], bool] | None = None,
     pending: list[tuple[dict[str, Any], int]] | None = None,
 ) -> Callable[[list[dict]], list[dict] | None]:
     """A ``keep=`` callable for ``VectorMemoryStore.recall``.
@@ -703,7 +879,7 @@ def keep_hook(
     bounded, applies whatever comes back, and imports nothing from this package.
 
     *pending* is the caller's outcome list. The hook appends to it rather than recording,
-    and the caller commits it with :func:`commit_outcome` once the recall has come back
+    and the caller commits it with :func:`commit_receipt` once the recall has come back
     -- so a recall the store discards, or one the route never returns, leaves no row and
     no receipt.
     """
@@ -715,22 +891,60 @@ def keep_hook(
             session_key=session_key,
             loop=loop,
             owner_turn=owner_turn,
+            still_watched=still_watched,
             pending=pending,
         )
 
     return keep
 
 
+def _remaining_budget() -> float:
+    """Seconds left for the judge on the request this decision runs inside.
+
+    ``math.inf`` when no deadline is in force, which is a caller outside the bounded
+    recall route rather than a missing bound.
+
+    The deadline lives on the ``EmbeddingWork`` that ``run_with_recall_deadline``
+    installs for the request, and it is READABLE here because ``run_in_embed_pool``
+    submits the search with ``copy_context().run`` -- so the worker thread this hook
+    runs on carries the loop's context, deadline included.
+
+    ``WAIT_MARGIN_SECS`` is withheld rather than spent: the judge answering is not
+    the end of the request. The store still has to finish the recall, the route still
+    has to bound the payload and serialize it, and a wait that ran to the deadline
+    itself would hand all of that a budget of zero -- turning a judge that answered
+    IN TIME into a ``504`` anyway.
+
+    A cancelled work reads as no time left, not as unbounded: it is the same signal
+    the route's own bound reads, and the answer would reach nobody.
+    """
+    from kiro_crew.embeddings import embedding_work
+
+    work = embedding_work.get()
+    if work is None:
+        return math.inf
+    if work.cancelled.is_set():
+        return 0.0
+    return work.deadline - time.monotonic() - WAIT_MARGIN_SECS
+
+
 def _wait_budget() -> float:
-    """How long the caller's thread may wait, clamped into a sane window."""
+    """How long the caller's thread may wait. ``<= 0`` means "do not ask at all".
+
+    The provider's own budget, clamped into a sane window, then held under the time
+    REMAINING on the enclosing request. The remaining budget wins over every other
+    bound here, including ``MIN_WAIT_SECS``: a floor that outlasted the deadline
+    would be the same overrun in a smaller size.
+    """
     try:
         budget = float(core.timeout_secs()) + WAIT_MARGIN_SECS
     except Exception:
         logger.debug("memory.recall: provider budget unreadable")
-        return MIN_WAIT_SECS
+        budget = MIN_WAIT_SECS
     if not math.isfinite(budget):
-        return MIN_WAIT_SECS
-    return min(max(budget, MIN_WAIT_SECS), MAX_WAIT_SECS)
+        budget = MIN_WAIT_SECS
+    budget = min(max(budget, MIN_WAIT_SECS), MAX_WAIT_SECS)
+    return min(budget, _remaining_budget())
 
 
 def _this_thread_runs_a_loop() -> bool:

@@ -9,7 +9,12 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
-import { DECISIONS_COMPACTION_POINT, DECISIONS_LIVE_POINT, readDecisions } from './decisionsPreview'
+import {
+  DECISIONS_COMPACTION_POINT,
+  DECISIONS_LIVE_POINT,
+  DECISIONS_MEMORY_POINT,
+  readDecisions,
+} from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -339,12 +344,13 @@ function DecisionsPreviewCard() {
           value on the refetch, which on its own looks like the click never landing.
           Hand-off ON -- this card holds no draft input, and the failure is one an agent
           can act on (an owner-only route refusing, a gateway that cannot write the
-          keystone). A notice PER scope rather than one shared node, because two switches
-          whose failures render in one place leave a reader unable to tell which write
-          was refused. */}
+          keystone). A notice PER scope rather than one shared node, because three
+          switches whose failures render in one place leave a reader unable to tell which
+          write was refused -- and the message NAMES the switch for the same reason, since
+          the notice for the widest scope does not sit beside the switch it belongs to. */}
       {view.enabled && (
         <ErrorNotice
-          message={scopeMut.isError ? i18nT('pages.developer.featurePreviewsTab.decisions_scope_save_failed') : null}
+          message={scopeMut.isError ? i18nT('pages.developer.featurePreviewsTab.decisions_scope_save_failed', { switch: i18nT('pages.developer.featurePreviewsTab.decisions_tool_args') }) : null}
           variant="inline"
           askAgent
           testId="decisions-tool-args-error"
@@ -381,11 +387,11 @@ function DecisionsPreviewCard() {
           disabled={loading || readFailed || !view.supported || mut.isPending || scopePending}
         />
       )}
-      {/* The same notice for the recalled-memory scope, with its own test id for the
-          reason the one above has one. */}
+      {/* The same notice for the recalled-memory scope, with its own test id and its own
+          switch name for the reason the one above has them. */}
       {view.enabled && (
         <ErrorNotice
-          message={memoryScopeMut.isError ? i18nT('pages.developer.featurePreviewsTab.decisions_scope_save_failed') : null}
+          message={memoryScopeMut.isError ? i18nT('pages.developer.featurePreviewsTab.decisions_scope_save_failed', { switch: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text') }) : null}
           variant="inline"
           askAgent
           testId="decisions-memory-text-error"
@@ -439,13 +445,14 @@ function DecisionsPreviewCard() {
           silent: the switch snaps back to the stored value on the refetch and nothing
           says why, which reads as the click not having registered. The hand-off is on
           for the reason the two above have it -- nothing on this card is an unsaved
-          draft, so navigating to the agent destroys nothing. The message is shared
-          rather than a second string: the failure is the same one (this route refused a
-          write), and a scope-specific sentence would claim to know something the error
-          does not carry. */}
+          draft, so navigating to the agent destroys nothing. The SENTENCE is shared
+          rather than a second string, because the failure is the same one (this route
+          refused a write); what differs is the switch it names, which the shared string
+          takes as a value. That name is what makes this notice readable at all: it is
+          the one of the three that does not sit beside its own switch. */}
       {view.enabled && (
         <ErrorNotice
-          message={compactionMut.isError ? i18nT('pages.developer.featurePreviewsTab.decisions_scope_save_failed') : null}
+          message={compactionMut.isError ? i18nT('pages.developer.featurePreviewsTab.decisions_scope_save_failed', { switch: i18nT('pages.developer.featurePreviewsTab.decisions_compaction') }) : null}
           variant="inline"
           askAgent
           testId="decisions-compaction-error"
@@ -487,6 +494,26 @@ function DecisionsPreviewCard() {
                 {i18nT('pages.developer.featurePreviewsTab.decisions_point_logged_as')}{' '}
                 <span className="font-mono" title={DECISIONS_COMPACTION_POINT}>
                   {DECISIONS_COMPACTION_POINT}
+                </span>
+              </span>
+            </div>
+          )}
+          {/* The recalled-memory point, gated on its own scope for the reason the
+              compaction row is: without `memory_text` the point is inert, so a row
+              for it would name a decision that cannot happen. Listed because it is
+              the one point here that changes what a TOOL RETURNS -- the others
+              annotate or measure -- and a list answering "what does Jev decide"
+              that omits it understates the feature at exactly the moment the reader
+              is deciding whether to grant it. */}
+          {view.memoryText && (
+            <div className="flex items-center justify-between gap-3 text-[12px] mt-1">
+              <span className="text-text">
+                {i18nT('pages.developer.featurePreviewsTab.decisions_point_memory_recall')}
+              </span>
+              <span className="text-muted">
+                {i18nT('pages.developer.featurePreviewsTab.decisions_point_logged_as')}{' '}
+                <span className="font-mono" title={DECISIONS_MEMORY_POINT}>
+                  {DECISIONS_MEMORY_POINT}
                 </span>
               </span>
             </div>

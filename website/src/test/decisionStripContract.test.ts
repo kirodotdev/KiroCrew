@@ -252,6 +252,7 @@ describe('the recalled-memory fixture in the decisions spec', () => {
       agree: false,
       p: 0.81,
       charsSaved: 2100,
+      boundedOmitted: 0,
       candidates: 3,
       messageChars: 96,
       latencyMs: 210,

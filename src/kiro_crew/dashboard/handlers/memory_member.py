@@ -11,7 +11,7 @@ from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.memory_recall import recall_json, recall_terms
+from kiro_crew.memory_recall import bound_recall_payload, recall_json, recall_terms
 from kiro_crew.session_surface import dashboard_surfaced_keys
 
 from ._shared import (
@@ -118,6 +118,13 @@ def _memory_recall_keep(session_key: str, query: str, pending: list) -> "Callabl
     """
     if not session_key or not query.strip():
         return None
+    # Checked twice, for two different jobs. HERE it is a cheap refusal that keeps a
+    # request the seam will not serve from paying for the gate's import graph at all.
+    # The check that GATES the egress is the predicate handed to the hook below, which
+    # the point re-reads on the worker thread just before it would send anything: this
+    # coroutine runs before the search, and a tab closed during the search takes the
+    # slot out of the published set while a decision built on this answer is still in
+    # flight. An egress gate has to be read at the moment of egress.
     if session_key not in dashboard_surfaced_keys():
         return None
     # Function-local by design, not by habit: `decisions/__init__.py` asks callers to
@@ -130,7 +137,20 @@ def _memory_recall_keep(session_key: str, query: str, pending: list) -> "Callabl
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
-    return keep_hook(query, session_key=session_key, loop=loop, owner_turn=True, pending=pending)
+    return keep_hook(
+        query,
+        session_key=session_key,
+        loop=loop,
+        owner_turn=True,
+        still_watched=lambda: session_key in dashboard_surfaced_keys(),
+        pending=pending,
+    )
+
+
+#: Context budget for the recall response. Named because the bounding runs TWICE on this
+#: path -- once before the receipt is committed and once inside the serializer -- and two
+#: literals could drift into a receipt bounded to a different budget than the response.
+_RECALL_CONTEXT_CAP = 3000
 
 
 @memory_recall_deadline
@@ -286,18 +306,31 @@ async def api_memory_recall(request: web.Request) -> web.Response:
             result["retrieval"] = retrieval
     except (ValueError, OSError, sqlite3.Error):
         return _store_unavailable(name)
-    # Only here: the recall came back and this route is answering with it, so the
-    # decision it shaped is the one the caller receives. A store that discarded its own
-    # result, a retried generation, or a request that failed above commits nothing, and a
-    # failure therefore leaves no receipt at all rather than a row for something nobody
-    # saw. Off the loop, because it appends to the decision day-file.
-    if decision_pending:
-        from kiro_crew.decisions.points.memory_recall import commit_outcome
-
-        await asyncio.to_thread(commit_outcome, session, decision_pending)
-    return web.json_response(
+    # Bounded BEFORE the commit, not inside the serializer, because bounding is the last
+    # thing that changes what the caller receives. `bound_recall_payload` clips the
+    # largest text and then drops whole rows off the tail to hold the transport budget,
+    # which multibyte content reaches on an ordinary query -- so a receipt committed
+    # ahead of it names memories and a saving that never left the process. Running it
+    # here and handing the RESULT to the response keeps one payload: `recall_json` bounds
+    # an already-bounded payload to itself, which is the same second pass the bounding
+    # walk's own comment describes for the post-redaction call.
+    payload = bound_recall_payload(
         _redact_memory_field({"store": name, **result}),
-        dumps=lambda payload: recall_json(payload, ensure_ascii=False, context_cap=3000),
+        context_cap=_RECALL_CONTEXT_CAP,
+        ensure_ascii=False,
+    )
+    if decision_pending:
+        from kiro_crew.decisions.points.memory_recall import commit_receipt
+
+        # ONE writer, handed the finished response. Every condition a receipt depends on
+        # -- something held, something delivered, a request still live -- is checked
+        # inside it rather than here, because three separate call sites have leaked a
+        # receipt for a recall nobody received and each time the guard sat beside the
+        # call instead of in it. There is nothing left to get right at this line.
+        await asyncio.to_thread(commit_receipt, session, decision_pending, payload=payload)
+    return web.json_response(
+        payload,
+        dumps=lambda body: recall_json(body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP),
     )
 
 

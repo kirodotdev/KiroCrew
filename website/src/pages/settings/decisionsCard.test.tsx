@@ -983,6 +983,93 @@ describe('a refused scope write says so', () => {
     expect(screen.queryByTestId('decisions-memory-text-error')).toBeNull()
   })
 
+  it('lists memory.recall among what Jev decides, once its scope is granted', async () => {
+    // The list answers "what does Jev decide". It named the skill choice and the
+    // compaction measurement and omitted the one point that changes what a TOOL
+    // RETURNS, which understates the feature exactly where the reader is deciding
+    // whether to grant it.
+    stubGateway(consentOf(true, { memory_text: true }))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Which recalled memories reach the prompt')
+    expect(text).toContain('memory.recall')
+  })
+
+  it('omits the memory.recall row while its scope is not granted', async () => {
+    // Gated exactly as the compaction row is: without the scope the point is inert,
+    // so a row for it would name a decision that cannot happen.
+    stubGateway(consentOf(true, { memory_text: false }))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    const text = document.body.textContent ?? ''
+    expect(text).not.toContain('Which recalled memories reach the prompt')
+    // The skill row is still there, so this is a gate rather than an empty list.
+    expect(text).toContain('skills.select')
+  })
+
+  it('counts the scope switches the note promises against the ones drawn', async () => {
+    // The note said "Two further categories" while three switches rendered below it,
+    // because the widest scope landed between the two this file's author knew about.
+    // Asserted as a RELATIONSHIP rather than as a phrase: the number in the sentence
+    // and the number of switches have to move together or the note misleads again.
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    const note = screen.getByText(/leave this machine/i).textContent ?? ''
+    expect(note).toContain('Three further categories')
+    expect(note).toContain('the name and arguments of your tool calls')
+    expect(note).toContain('the conversation and tool-call inputs')
+    expect(note).toContain('short snippets of the memories recalled')
+    expect(toolArgsSwitch()).toBeInTheDocument()
+    expect(compactionSwitch()).toBeInTheDocument()
+    expect(memoryTextSwitch()).toBeInTheDocument()
+  })
+
+  it('says WHICH switch could not be saved', async () => {
+    // "Could not save this switch" over three switches names none of them, and the
+    // widest scope's notice does not even sit beside its own switch. Each notice
+    // interpolates the label of the switch it belongs to.
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
+    renderSection()
+    await waitFor(() => {
+      expect(memoryTextSwitch()).toBeInTheDocument()
+    })
+    memoryTextSwitch().click()
+    await waitFor(() => {
+      expect(screen.getByTestId('decisions-memory-text-error')).toBeInTheDocument()
+    })
+    const notice = screen.getByTestId('decisions-memory-text-error').textContent ?? ''
+    expect(notice).toContain('Also send snippets of recalled memories')
+    expect(notice).not.toContain('this switch')
+  })
+
+  it('names the compaction switch on its own displaced notice', async () => {
+    // This is the notice the naming exists for: it renders at the foot of the card,
+    // away from the switch it reports on, so without the label a reader cannot tell
+    // which of the three writes was refused.
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
+    renderSection()
+    await waitFor(() => {
+      expect(compactionSwitch()).toBeInTheDocument()
+    })
+    compactionSwitch().click()
+    await waitFor(() => {
+      expect(screen.getByTestId('decisions-compaction-error')).toBeInTheDocument()
+    })
+    const notice = screen.getByTestId('decisions-compaction-error').textContent ?? ''
+    expect(notice).toContain('Also send the conversation and tool-call inputs')
+    expect(notice).not.toContain('this switch')
+  })
+
   it('names only the scope that failed', async () => {
     // One rejected write must not light the other scope's notice.
     stubGateway({ enabled: true })

@@ -15,7 +15,16 @@ import sysconfig
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Mapping, NamedTuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    NamedTuple,
+    overload,
+)
 
 import aiohttp
 from aiohttp import web
@@ -52,12 +61,39 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@overload
+def _redact_memory_field(val: dict) -> dict: ...
+
+
+@overload
+def _redact_memory_field(val: list) -> list: ...
+
+
+@overload
+def _redact_memory_field(val: str) -> str: ...
+
+
+@overload
+def _redact_memory_field(val: object) -> object: ...
+
+
 def _redact_memory_field(val: object) -> object:
     """Redact credentials and exfiltration URLs from a memory field.
 
     Lives here (not in ``memory.py``) so handlers that ``memory.py`` itself
     imports from -- e.g. ``cron.py`` -- can share the chain without an import
     cycle.
+
+    SHAPE-PRESERVING for a container, and the overloads above say so rather than
+    flattening every result to ``object``: a caller that hands this a dict and then
+    bounds or indexes the result would otherwise need a cast, which asserts the shape
+    instead of reading it off the function. A dict comes back a dict, a list a list
+    and a string a string.
+
+    NOT shape-preserving for bytes, which is why one type variable would be the wrong
+    tool here: binary is dropped to ``None`` rather than redacted, since it is not
+    text this chain can scan and returning it unread would put an unscanned blob on an
+    egress path. That case falls to the ``object`` overload.
     """
     if isinstance(val, (bytes, memoryview)):
         return None
