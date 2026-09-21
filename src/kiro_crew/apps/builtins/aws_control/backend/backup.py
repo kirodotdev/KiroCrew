@@ -292,6 +292,10 @@ def _locked_state_update(mutate) -> Any:
                         _unpersisted_uploads.pop(key, None)
                     if not held_versions:
                         _unpersisted_versions.pop(key, None)
+                # Versions are ALSO released on their own contract, because the two
+                # maps are bounded differently and the loop above can only reach a
+                # version whose fingerprint counterpart is still held.
+                _release_persisted_versions(state)
     return result
 
 
@@ -416,7 +420,39 @@ ORIGIN_UNVERIFIED = "unverified"
 #: upload arrives. Falling off the end is not a correctness problem -- an archive
 #: whose record has aged out reads as :data:`ORIGIN_UNVERIFIED` and asks, which is
 #: the safe direction to fail in.
+#:
+#: It bounds ``uploads`` ONLY. ``upload_versions`` is bounded separately, because
+#: the two maps answer questions with different lifetimes; see
+#: :data:`MAX_RECORDED_VERSIONS`.
 MAX_REMEMBERED_UPLOADS = 200
+
+#: The BACKSTOP on ``upload_versions``, and deliberately not a horizon.
+#:
+#: A version record is the only thing that lets a sweep retire an archive, so while
+#: this map was trimmed to the keys ``uploads`` still held, a count chosen for a
+#: PANEL decided what retention could ever collect. An install pushing nightly with
+#: retention off -- the shipped default -- dropped its oldest version record at push
+#: 201, and a ``keep`` count enabled later could not reach anything older: those
+#: archives held no recorded version, the ownership test refused them, and their
+#: bytes were billed permanently. The bound kept MINTING that floor.
+#:
+#: So the record's lifetime is now the ARCHIVE's, not the panel's:
+#: :func:`_prune_recorded_versions` drops a record when a listing the sweep trusted
+#: proves the object is gone, and this number is only the ceiling that stops a
+#: pathological document growing without limit. A healthy install never reaches it,
+#: because retention itself bounds the pile once enabled and the prune tracks it.
+#:
+#: 5000 keys, which at two nightly kinds is about six and a half years, and which
+#: sits under what the sweep could act on anyway: ``storage.list_object_versions``
+#: refuses a prefix holding more than ten full delete batches of version rows, so a
+#: larger record cap would name archives retention can never enumerate. At roughly
+#: 130 bytes per entry the ceiling is a state document under a megabyte.
+#:
+#: Overflow drops the OLDEST records, which is the only safe direction: the newest
+#: archives are the ones a ``keep`` count protects, and a dropped record never
+#: deletes anything -- it only returns that archive to the unreclaimable floor
+#: :func:`retention_unrecorded` reports.
+MAX_RECORDED_VERSIONS = 5000
 
 #: Longest staged filename, in bytes. ``NAME_MAX`` is 255 on ext4 and on the other
 #: filesystems this app is deployed to, and a key segment is capped at 255 characters
@@ -469,19 +505,52 @@ RETENTION_KEEP_STATE_KEY = "retention_keep"
 #: where the count itself is read.
 #:
 #: It is a floor ON THE REMEMBERED SET, not over the whole prefix. The sweep counts only
-#: keys in :func:`uploaded_keys`, and ``upload_versions`` is trimmed to the keys
-#: ``uploads`` still holds under :data:`MAX_REMEMBERED_UPLOADS`, so a key that falls off
-#: ``uploads`` loses its version record with it and is filtered out before this
-#: measurement. Such a key is equally unretirable, and it is absent from this pair and
-#: from the audit event alike. Counting past the remembered set would mean attributing
-#: objects this install holds no record of, which is a decision the reclaim design owns,
-#: so this pair discloses the gap rather than widening past it.
+#: keys in :func:`retention_owned_keys`, so a key with neither an ``uploads`` entry nor a
+#: version record is filtered out before this measurement and reads 0 here however many
+#: bytes it holds. That is the contract rather than an omission: counting such a key
+#: here would mean attributing an object this install has no record of, and this pair is
+#: read against the ``keep`` count to see what retention will collect out of the set it
+#: can see. Those keys are counted separately and claim nothing -- see
+#: :data:`RETENTION_UNRECORDED_STATE_KEY`, which reaches the same status read and the
+#: same audit event.
 #:
 #: Stamped because it is the LAST SWEEP's measurement and not a live read: a manual
 #: :func:`storage.delete_key` between sweeps leaves the number high until the next one,
 #: and a reader cannot tell a stale number from a current one without knowing when it
 #: was taken.
 RETENTION_UNCLAIMED_STATE_KEY = "retention_unclaimed"
+
+#: Where the last sweep's count of LISTED-BUT-UNRECORDED objects lives in
+#: ``backup.json``: per account, then per kind,
+#: ``{"objects": int, "bytes": int, "at": iso8601}``.
+#:
+#: This pair makes NO ownership claim and NO reclaim claim, and the wording is the
+#: contract rather than caution. It counts objects the listing showed under this
+#: kind's ``<subpath>/<install id>/`` folder that this install holds no record of --
+#: neither an ``uploads`` entry nor a version record. Two different things land in
+#: it and nothing here can tell them apart: this install's own archives whose
+#: records aged out before :data:`MAX_RECORDED_VERSIONS` gave them the archive's
+#: lifetime, and objects some other writer put under a prefix that is co-writable by
+#: design. So it is ``objects``, never ``archives``: calling them archives would
+#: assert they are ours, and the install id in the key is a string any co-writer can
+#: type.
+#:
+#: Nothing acts on this number. The sweep counts these keys and then skips them
+#: exactly as before -- they never enter ``by_key``, never hold a ``keep`` slot, and
+#: are never deleted. It is reported because an operator who enables a keep count to
+#: bound their bill needs to see the bytes that count will not touch, and because
+#: :data:`RETENTION_UNCLAIMED_STATE_KEY` deliberately reads 0 for them: that pair is
+#: a floor on the REMEMBERED set and these keys are filtered out before it is taken.
+#: Two numbers with two meanings, rather than one number that means neither.
+#:
+#: Whether any of these could be adopted and reclaimed is a separate design that
+#: owes its own argument about proof, and this field is deliberately not a step
+#: toward it: a count needs no proof of ownership because it erases nothing.
+#:
+#: Stamped, and written under the same trusted-listing gate as the pair above, for
+#: the same reason: a listing the sweep refused to trust about age cannot be trusted
+#: about what it omitted either.
+RETENTION_UNRECORDED_STATE_KEY = "retention_unrecorded"
 
 #: SEL operation names for the two decisions this module asks
 #: :func:`_authorize_upload` to make.
@@ -939,6 +1008,34 @@ def uploaded_keys(account: str) -> set[str]:
     return set(uploaded_objects(account))
 
 
+def retention_owned_keys(account: str) -> set[str]:
+    """The keys a RETENTION sweep may consider: remembered, or version-recorded.
+
+    The union, because a version record is strictly stronger evidence than an
+    ``uploads`` entry. Both are written only by this install's own successful push
+    into the local state document, so neither can be added by anything that can write
+    to the bucket -- but an ``uploads`` entry proves only that this install wrote
+    SOMETHING at a key, while a version record names which version it wrote. Reading
+    only ``uploads`` therefore discarded the better record: a key trimmed out of the
+    panel history still carried a version this install is certain of, and the sweep
+    filtered it out of the listing before the ownership test ever ran, so keeping the
+    record under :data:`MAX_RECORDED_VERSIONS` would have changed nothing.
+
+    This widens what the sweep may LOOK at, and nothing else. Every key admitted here
+    still has to pass :func:`_current_version_is_ours` before it can hold a ``keep``
+    slot, and the delete draws only from that set, so no object is erased on weaker
+    proof than before -- the recorded id has to be the version a restore would fetch.
+    A key with neither record is still skipped, counted by
+    :data:`RETENTION_UNRECORDED_STATE_KEY`, and never touched.
+
+    Deliberately NOT used by :func:`classify_key` or the restore path. Their question
+    is whether this install vouches for these BYTES, which the fingerprint in
+    ``uploads`` answers and a version id does not; widening their answer is a separate
+    decision about a separate record.
+    """
+    return uploaded_keys(account) | set(uploaded_versions(account))
+
+
 def uploaded_versions(account: str) -> dict[str, str]:
     """Key -> the ``VersionId`` this install recorded writing under it.
 
@@ -1089,16 +1186,45 @@ def _merge_uploads(
     # key whose value became a dict -- taking `classify_key` and the restore
     # ownership check down with it.
     #
-    # It is trimmed to the keys `uploads` still holds rather than to its own count,
-    # so exactly ONE bound exists and the two maps cannot drift apart: a key that
-    # fell off `uploads` can never be retired, so its version would be dead weight,
-    # and a version whose key is gone answers a question nobody asks.
+    # The two maps are bounded SEPARATELY, and the drift between them is the point
+    # rather than a hazard to design out. `uploads` is panel history, so a count
+    # chosen for a 20-per-kind listing is the right bound for it. A version record is
+    # the only thing that lets a sweep retire an archive, so trimming this map to
+    # that count let a panel number decide what retention could ever collect: an
+    # install pushing nightly with retention off dropped its oldest version record at
+    # push 201, and a keep count enabled later could not reach anything behind it.
+    # The record now lives as long as the ARCHIVE does -- dropped by
+    # `_prune_recorded_versions` when a listing the sweep trusted proves the object is
+    # gone -- and `MAX_RECORDED_VERSIONS` is only the ceiling under which that stays
+    # bounded. A record whose key has left `uploads` is therefore KEPT: it is exactly
+    # the record that makes an older archive retireable, and `retention_owned_keys` is
+    # what stops it being dead weight.
     recorded = entry.setdefault("upload_versions", {})
     if not isinstance(recorded, dict):
         recorded = entry["upload_versions"] = {}
     recorded.update(versions or {})
-    for orphan in [key for key in recorded if key not in uploads]:
-        recorded.pop(orphan, None)
+    # The overflow is COUNTED before anything is dropped, and said out loud with its
+    # count. A silently truncated tail reads exactly like a population that never held
+    # those records, and what is lost here is not display history: it is the proof that
+    # makes an archive retireable, so the archives behind the dropped records stop being
+    # collectable and nothing else in the app reports it. With retention off the sweep
+    # returns before any listing, so no later measurement covers them either.
+    #
+    # The retained VALUE needs no length bound of its own: it is a version id S3 issues
+    # under S3's own limit, and the key is minted by this app rather than accepted from a
+    # caller. Truncating either would be worse than unbounded -- a shortened version id is
+    # not the version, so it would silently fail the ownership test it exists to pass.
+    overflow = max(0, len(recorded) - MAX_RECORDED_VERSIONS)
+    if overflow:
+        logger.warning(
+            "aws-control retention: dropping %d oldest version record(s) past "
+            "MAX_RECORDED_VERSIONS=%d; the archives behind them can no longer be "
+            "proven this install's and retention will not retire them",
+            overflow,
+            MAX_RECORDED_VERSIONS,
+        )
+    for stale in list(recorded)[:overflow]:
+        recorded.pop(stale, None)
 
 
 def _merge_pending(state: dict[str, Any]) -> tuple[list, dict]:
@@ -1133,6 +1259,46 @@ def _merge_pending(state: dict[str, Any]) -> tuple[list, dict]:
             versions.get((path, account), {}),
         )
     return pending, uploads
+
+
+def _release_persisted_versions(state: dict[str, Any]) -> None:
+    """Drop held version records the written state already carries, byte-equal.
+
+    Call with :data:`_unpersisted_lock` held, after ``write_state``. ``state`` must
+    be the document that was just written, because equality against it is the only
+    proof that the record is durable.
+
+    The fingerprint-paired release in :func:`_locked_state_update` is not enough on
+    its own. ``_unpersisted_uploads`` is bounded to the panel history while this map
+    is bounded far above it, so a held version whose fingerprint counterpart was
+    already evicted can never match that condition again -- and :func:`_merge_pending`
+    copies this map WHOLE into every later state update, so such an entry would be
+    written back on every update for the life of the process. That resurrects exactly
+    the records :func:`_prune_recorded_versions` deleted on a trusted listing's proof,
+    which would make the sweep's deletion decision silently temporary.
+
+    Release is keyed on byte equality with the persisted id, never on the key's
+    presence: a DIFFERENT id under the same key means this held record is the one
+    the state does not have, which is what the overlay is for. The read is
+    deliberately defensive rather than :func:`_account_state`, which would mutate the
+    document after it was written.
+    """
+    path = _state_key()
+    accounts = state.get("accounts")
+    if not isinstance(accounts, dict):
+        return
+    for map_key in list(_unpersisted_versions):
+        if map_key[0] != path:
+            continue
+        entry = accounts.get(map_key[1])
+        persisted = entry.get("upload_versions") if isinstance(entry, dict) else None
+        if not isinstance(persisted, dict):
+            continue
+        held = _unpersisted_versions.get(map_key, {})
+        for name in [n for n, version in held.items() if persisted.get(n) == version]:
+            held.pop(name, None)
+        if not held:
+            _unpersisted_versions.pop(map_key, None)
 
 
 def _state_key() -> str:
@@ -1179,10 +1345,24 @@ def _remember_unpersisted(account: str, kind: str, record: dict[str, Any]) -> No
             versions[record["key"]] = version
         for stale in list(uploads)[: max(0, len(uploads) - MAX_REMEMBERED_UPLOADS)]:
             uploads.pop(stale, None)
-        # One bound, applied to `uploads`, then mirrored: a version whose key has
-        # fallen off can never be retired, so it would be dead weight.
-        for orphan in [key for key in versions if key not in uploads]:
-            versions.pop(orphan, None)
+        # Bounded separately from `uploads`, mirroring `_merge_uploads`: a version
+        # record outlives the panel history because it is what makes an archive
+        # retireable, so trimming it to `uploads` here would re-impose on the
+        # recovery path the cliff `_merge_uploads` keeps off the normal one.
+        #
+        # Counted and said out loud for the same reason as there, and named as the
+        # RECOVERY map so a reader of the log can tell the two evictions apart.
+        held_overflow = max(0, len(versions) - MAX_RECORDED_VERSIONS)
+        if held_overflow:
+            logger.warning(
+                "aws-control retention: dropping %d oldest held version record(s) past "
+                "MAX_RECORDED_VERSIONS=%d from the recovery map; an upload whose state "
+                "write never landed loses the proof that makes it retireable",
+                held_overflow,
+                MAX_RECORDED_VERSIONS,
+            )
+        for stale in list(versions)[:held_overflow]:
+            versions.pop(stale, None)
 
 
 def _forget_unpersisted(account: str, kind: str, persisted: dict[str, Any]) -> None:
@@ -1904,7 +2084,13 @@ def _audit_retention(
                 f"account={account} kind={outcome['kind']} keep={outcome['keep']} "
                 f"live={outcome['live']} retired={outcome['retired']} "
                 f"versions={outcome['versions']} unclaimed={outcome['unclaimed']} "
-                f"unclaimedBytes={outcome['unclaimedBytes']}"
+                f"unclaimedBytes={outcome['unclaimedBytes']} "
+                # LAST on purpose. The field is capped, and every value before this
+                # one is load-bearing for an auditor reading what the sweep did; a new
+                # pair appended here can only ever cost itself to the cap, never
+                # displace the count that says whether archives were erased.
+                f"unrecorded={outcome['unrecorded']} "
+                f"unrecordedBytes={outcome['unrecordedBytes']}"
             )[:200],
             error=error[:200],
         )
@@ -1983,6 +2169,124 @@ def _record_unclaimed(account: str, kind: str, outcome: dict[str, Any]) -> None:
     except Exception:
         logger.debug(
             "aws-control: recording the unclaimed archive count for %s failed",
+            account,
+            exc_info=True,
+        )
+
+
+def _record_unrecorded(account: str, kind: str, outcome: dict[str, Any]) -> None:
+    """Persist the sweep's count of listed-but-unrecorded objects for the status read.
+
+    A sibling of :func:`_record_unclaimed` in every respect except what it counts, and
+    separate from it for exactly that reason: one number is a floor on the archives
+    this install REMEMBERS and the other is what the listing held that it has no
+    record of. Merging them would produce a single figure that is neither, and the
+    first is load-bearing -- an operator reads it against the ``keep`` count to see
+    what retention will collect.
+
+    Best-effort and never raising, like its sibling: the archive is already off-host
+    and the run already recorded, so nothing this write can fail at is worth turning a
+    successful backup into a failed one. :func:`_audit_retention` carries the same pair
+    regardless, which is why this logs at debug.
+
+    See :data:`RETENTION_UNRECORDED_STATE_KEY` for why the field claims no ownership.
+    """
+    stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+
+    def mutate(state: dict[str, Any]) -> None:
+        entry = _account_state(state, account)
+        measured = entry.setdefault(RETENTION_UNRECORDED_STATE_KEY, {})
+        if not isinstance(measured, dict):
+            # Repaired rather than crashed, for the reason `_record_unclaimed` repairs
+            # its own level: this runs after an upload that already succeeded.
+            measured = entry[RETENTION_UNRECORDED_STATE_KEY] = {}
+        measured[kind] = {
+            "objects": int(outcome["unrecorded"]),
+            "bytes": int(outcome["unrecordedBytes"]),
+            "at": stamp,
+        }
+
+    try:
+        _locked_state_update(mutate)
+    except Exception:
+        logger.debug(
+            "aws-control: recording the unrecorded object count for %s failed",
+            account,
+            exc_info=True,
+        )
+
+
+def _prune_recorded_versions(
+    account: str,
+    kind: str,
+    install_id: str,
+    listed_keys: set[str],
+    *,
+    eligible: set[str],
+) -> None:
+    """Drop version records the listing proves name objects that are gone.
+
+    This is what makes :data:`MAX_RECORDED_VERSIONS` a backstop rather than a horizon.
+    A record lives as long as its archive does and this is the only thing that ends it,
+    so no count chosen to bound a panel decides what retention is able to retire.
+
+    It deletes STATE, never an object, so the failure directions are not symmetric. A
+    record wrongly kept costs a little document space and nothing else -- the archive
+    still has to pass :func:`_current_version_is_ours` before anything touches it. A
+    record wrongly dropped returns its archive to the unreclaimable floor, which costs
+    bytes but destroys nothing. Neither direction can erase data, and the prune is
+    written to prefer keeping.
+
+    Three bounds make the absence a PROOF rather than a guess:
+
+    * The caller runs this only past the gate that accepted the listing as showing the
+      archive this run just uploaded. ``storage.list_object_versions`` walks the whole
+      token chain and RAISES rather than returning a partial answer, so a listing that
+      got here is complete for its prefix. A listing that raised, or that the gate
+      refused, never reaches this function and prunes nothing.
+    * Only records under ``<kind subpath>/<install id>/`` are eligible. The listing saw
+      exactly that folder, so it is evidence about nothing else: a snapshot sweep must
+      not prune a sessions record, and no sweep may prune another install's.
+    * Only records in ``eligible`` -- the ownership set read BEFORE the listing began --
+      are eligible. A push that lands while the listing is in flight legitimately names
+      an object the listing does not show, and a manual run racing the nightly loop is
+      a documented case rather than a hypothetical one.
+
+    The in-process records of pushes whose state write failed are untouched: this
+    writes through :func:`_locked_state_update`, which mutates only the persisted
+    document, and :func:`_merge_pending` carries those records back in afterwards.
+    Their archives are in the bucket, so the listing shows them anyway.
+
+    That holds only because a held record is RELEASED once the document carries it.
+    :func:`_release_persisted_versions` is what makes it true: without it a held version
+    outliving its fingerprint would be carried back after this prune deleted it, on
+    every later update, and this function's deletion would be temporary rather than a
+    decision.
+
+    Best-effort and never raising, like the two recorders beside it.
+    """
+    prefix = f"{KIND_SUBPATHS[kind]}{KEY_SEP}{install_id}{KEY_SEP}"
+
+    def _gone(key: str) -> bool:
+        return key.startswith(prefix) and key in eligible and key not in listed_keys
+
+    def mutate(state: dict[str, Any]) -> None:
+        entry = _account_state(state, account)
+        recorded = entry.get("upload_versions")
+        if not isinstance(recorded, dict):
+            # Nothing to prune, and nothing to repair either: a corrupted level is
+            # rebuilt by `_merge_uploads` on the next push, which is where that
+            # decision already lives. Publishing an empty map from here would throw
+            # away every version record on the strength of one bad read.
+            return
+        for key in [key for key in recorded if isinstance(key, str) and _gone(key)]:
+            recorded.pop(key, None)
+
+    try:
+        _locked_state_update(mutate)
+    except Exception:
+        logger.debug(
+            "aws-control: pruning stale version records for %s failed",
             account,
             exc_info=True,
         )
@@ -2075,6 +2379,14 @@ def _prune_remote_archives(
         # whole problem is that no sweep ever collects them.
         "unclaimed": 0,
         "unclaimedBytes": 0,
+        # Objects the listing showed under this kind's install folder that this
+        # install holds NO record of. A different question from `unclaimed`, which is
+        # a floor on the remembered set: these keys are filtered out before that
+        # measurement, so they would otherwise be counted nowhere at all. No
+        # ownership is asserted and nothing is ever done with them -- see
+        # :data:`RETENTION_UNRECORDED_STATE_KEY`.
+        "unrecorded": 0,
+        "unrecordedBytes": 0,
         "skipped": "",
     }
     # First, and before any cloud call, because neither branch needs one to decline.
@@ -2154,6 +2466,13 @@ def _prune_remote_archives(
         return outcome
     try:
         sub = f"{KIND_SUBPATHS[kind]}/{install_id}"
+        # Read BEFORE the listing, and used for ONE thing: bounding the version-record
+        # prune below. A push that lands while the listing is in flight -- a manual run
+        # racing the nightly loop, which this module already treats as a real case --
+        # legitimately names an object the listing cannot show, so its record must not
+        # be eligible for a prune that reads absence as proof. Anything recorded from
+        # here on is invisible to this set and therefore safe by construction.
+        owned_before = retention_owned_keys(account)
         rows = storage.list_object_versions(profile, region, bucket, "backup", sub, account=account)
         # What this install can PROVE it wrote, not whatever sits under a prefix.
         # The prefix is shared by design, so a co-writer -- another tool pointed at
@@ -2166,24 +2485,62 @@ def _prune_remote_archives(
         # `_record_run` writes this run's own key before the sweep is called, and
         # `uploaded_objects` also merges runs whose state write failed, so
         # `newest_key` is in here on both paths.
-        ours = uploaded_keys(account)
+        ours = retention_owned_keys(account)
         our_versions = uploaded_versions(account)
+        listed_keys: set[str] = set()
+        unrecorded: set[str] = set()
+        unrecorded_bytes = 0
         by_key: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             key = str(row.get("key", ""))
             # The label sidecar shares the prefix with the archives it labels. It
             # is not an archive: it must not consume a `keep` slot, and it must
             # not be deleted -- another install reads it to render a name instead
-            # of hex.
+            # of hex. It is also not an unaccounted object, so it is excluded from
+            # the count below as well: it is there on purpose and this app put it
+            # there, so reporting it as something nothing has a record of would be
+            # a permanent phantom in every operator's floor.
             if not key or _key_basename(key) == LABEL_OBJECT_NAME:
                 continue
+            # `_prune_recorded_versions` compares against this set, so it is built
+            # from the raw listing rather than from `by_key`: a record whose key was
+            # filtered out below is a record whose object EXISTS, and pruning it
+            # would throw away the only proof that makes that archive retireable.
+            #
+            # A delete-marker row adds its key here even though the count below
+            # skips it, and the asymmetry is the point: this set decides whether a
+            # RECORD survives, where the two directions are not equally costly. A
+            # record wrongly kept costs a little document space; a record wrongly
+            # dropped is unrecoverable proof. A marker means the key was written
+            # under, so treating it as absent is the expensive direction.
+            listed_keys.add(key)
             # Not ours to retire, and it must not consume a `keep` slot either:
             # `keep` counts what this install keeps of its OWN archives, so letting
             # a foreign object fill a slot would let a co-writer's upload push one
             # of ours over the edge and delete it.
+            #
+            # Counted on the way past, and only counted. Which of the two things it
+            # is -- one of our own archives whose record aged out, or another
+            # writer's object under a co-writable prefix -- is not knowable from
+            # here, which is exactly why the number asserts neither and nothing acts
+            # on it. Bytes are summed over every version under the key, like
+            # `unclaimedBytes`, because every version is billed.
+            #
+            # A delete marker is not an object and carries no bytes, so it cannot be
+            # what makes a key count -- the same reading `_current_version_is_ours`
+            # already applies. A key whose rows under this folder are ALL markers
+            # holds nothing and is billed nothing, and counting it would put a
+            # phantom in the floor that no later listing can ever remove. A key that
+            # also has a real version still counts, on that version's row, because
+            # those bytes exist and are billed whatever sits on top of them.
             if key not in ours:
+                if not row.get("deleteMarker"):
+                    unrecorded.add(key)
+                    unrecorded_bytes += int(row.get("size", 0) or 0)
                 continue
             by_key.setdefault(key, []).append(row)
+        outcome["unrecorded"] = len(unrecorded)
+        outcome["unrecordedBytes"] = unrecorded_bytes
         # A key counts as a live archive of OURS only when the version a restore
         # would actually fetch is the version this install wrote. `storage.get_file`
         # takes no version id, so a restore reads whatever is CURRENT under the key:
@@ -2227,6 +2584,17 @@ def _prune_remote_archives(
                 outcome["unclaimed"],
                 outcome["unclaimedBytes"],
             )
+        if unrecorded:
+            logger.info(
+                "aws-control: %s retention for %s found %d object(s) holding %d byte(s) under "
+                "install %s that this install has no record of; they are counted and left "
+                "alone -- nothing here says they are ours and no sweep will touch them",
+                kind,
+                account,
+                outcome["unrecorded"],
+                outcome["unrecordedBytes"],
+                install_id,
+            )
         if newest_key not in live:
             # Two different faults, and an auditor needs to tell them apart: a
             # listing that omits the upload cannot be trusted about age at all,
@@ -2266,6 +2634,17 @@ def _prune_remote_archives(
         # return, a completed purge, a withdrawn consent and a half-finished delete
         # alike, and re-recording it after any of them would write the same numbers.
         _record_unclaimed(account, kind, outcome)
+        # Same gate, same reason: a listing the sweep declined to trust about age
+        # cannot be trusted about what it omitted, and an UNDERCOUNT served as a floor
+        # reads as "nothing unaccounted here".
+        _record_unrecorded(account, kind, outcome)
+        # And the same gate is what makes the prune safe at all. It needs PROOF that
+        # an object is gone, and only a complete listing this sweep was willing to act
+        # on is that: `storage.list_object_versions` walks the whole token chain and
+        # raises rather than returning a first page, so past the gate an absent key is
+        # an absent object rather than an unread one. A listing that raised never
+        # reaches here, and neither does one the gate refused.
+        _prune_recorded_versions(account, kind, install_id, listed_keys, eligible=owned_before)
         by_age = _newest_first(live)
         candidates = [key for key in by_age[keep:] if key != newest_key]
         # `ours` proved the KEY. This proves the VERSION, which is what the delete
@@ -3710,9 +4089,11 @@ def retention_unclaimed(account: str) -> dict[str, Any]:
     ``unclaimedBytes`` under plainer names, the same pair :data:`SEL_OP_RETENTION`
     carries, so a status read and the audit trail can be read against each other.
 
-    A floor on :func:`uploaded_keys`, not over the whole prefix: a key trimmed out of
-    ``uploads`` is equally unretirable and is filtered out before the measurement, so
-    it is absent from this pair and the audit event alike. See
+    A floor on :func:`retention_owned_keys`, not over the whole prefix: a key with
+    neither an ``uploads`` entry nor a version record is filtered out before the
+    measurement, so it reads 0 here however many bytes it holds. It is not counted
+    nowhere -- :func:`retention_unrecorded` counts it, beside this pair on the same
+    status read, and says nothing about whose it is. See
     :data:`RETENTION_UNCLAIMED_STATE_KEY`.
 
     AS OF ``at``, never live. Reporting it needs no cloud call and this endpoint is
@@ -3738,6 +4119,52 @@ def retention_unclaimed(account: str) -> dict[str, Any]:
     # endpoint. Leaf values are served as stored, as `last_runs` serves a run record,
     # so this stays one projection of the state file rather than a second validator of
     # it -- the writer is the only producer and it writes ints.
+    return {str(kind): dict(row) for kind, row in measured.items() if isinstance(row, dict)}
+
+
+def retention_unrecorded(account: str) -> dict[str, Any]:
+    """Per kind, the last sweep's count of objects it holds no record of.
+
+    ``{kind: {"objects": int, "bytes": int, "at": iso8601}}``, and absent for a kind no
+    sweep has measured yet.
+
+    NOT a claim of ownership, and NOT a reclaim estimate. These are objects the
+    listing showed under this kind's ``<subpath>/<install id>/`` folder for which this
+    install holds neither an ``uploads`` entry nor a version record. Two unlike things
+    land here and this count cannot separate them: archives of this install's own for
+    which its state holds no record, and objects another writer put under a prefix that
+    is co-writable by design. ``objects`` rather than
+    ``archives`` for exactly that reason -- the install id in a key is a string anyone
+    with write access can type, so calling them archives would assert something no
+    reader here has checked.
+
+    A key the listing shows only as a delete marker holds nothing and is billed
+    nothing, so it is not one of these objects and is not counted.
+
+    Nothing acts on it. These keys are skipped by the sweep before ownership is tested,
+    hold no ``keep`` slot, and are never deleted. Whether any could be proven ours and
+    reclaimed is a separate design owing its own argument; this number erases nothing,
+    so it needs no such proof.
+
+    Read it BESIDE :func:`retention_unclaimed`, never instead of it. That one is a
+    floor on the archives this install remembers -- what retention will never collect
+    out of the set it can see -- and it deliberately reads 0 for the keys counted here,
+    because they are filtered out before it is taken. Two numbers because there are two
+    questions; one number would answer neither.
+
+    AS OF ``at``, never live, for the reason :func:`retention_unclaimed` is: this
+    endpoint is polled and re-listing the bucket would bill the owner per poll. A
+    measured zero is stored and served like any other count, so an absent kind means
+    "never swept" rather than "nothing found".
+
+    NO console renderer ships with this; the surface is HTTP only, and the absence is
+    stated here so someone deciding whether to build the panel finds it.
+    """
+    measured = _account_view(account).get(RETENTION_UNRECORDED_STATE_KEY, {})
+    if not isinstance(measured, dict):
+        return {}
+    # Shape-safe per kind for the reason :func:`retention_unclaimed` is: a polled
+    # endpoint must read a hand-edited document as nothing measured rather than raise.
     return {str(kind): dict(row) for kind, row in measured.items() if isinstance(row, dict)}
 
 

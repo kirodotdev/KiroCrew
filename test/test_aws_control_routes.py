@@ -3971,3 +3971,64 @@ class TestBackupRetentionRoute:
         # field below evidence about the unpolled payload rather than about a listing.
         assert body["remote"] is None
         assert body["retentionUnclaimed"] == {}
+
+    def test_the_status_read_reports_the_unrecorded_objects_beside_the_floor(self):
+        # Beside it, never instead of it. The floor above is what retention will never
+        # collect out of the set it REMEMBERS; this counts what the listing held that it
+        # has no record of, which that floor reads as 0 by design. One number would
+        # answer neither question, so both are served and the second claims nothing.
+        floor = {"snapshot": {"archives": 2, "bytes": 4096, "at": "2026-01-01T00:00:00+00:00"}}
+        other = {"snapshot": {"objects": 7, "bytes": 8192, "at": "2026-01-01T00:00:00+00:00"}}
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=False),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod.backup_mod, "retention_keep", return_value=3),
+            mock.patch.object(routes_mod.backup_mod, "retention_unclaimed", return_value=floor),
+            mock.patch.object(
+                routes_mod.backup_mod, "retention_unrecorded", return_value=other
+            ) as reader,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
+                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                )
+            )
+        body = _payload(resp)
+        assert body["retentionUnrecorded"] == other
+        # Both, and distinct: a payload serving one value under both names would hide
+        # exactly the gap the second field exists to disclose.
+        assert body["retentionUnclaimed"] == floor
+        reader.assert_called_once_with(ACCOUNT)
+
+    def test_the_unrecorded_count_rides_the_unpolled_half(self):
+        # Local state, no AWS call, so it must not sit behind `remote=1` -- the opt-in an
+        # operator opens last is the wrong place for a permanent cost.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=False),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod.backup_mod, "retention_keep", return_value=None),
+            mock.patch.object(routes_mod.backup_mod, "retention_unclaimed", return_value={}),
+            mock.patch.object(routes_mod.backup_mod, "retention_unrecorded", return_value={}),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
+                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                )
+            )
+        body = _payload(resp)
+        assert body["remote"] is None
+        assert body["retentionUnrecorded"] == {}

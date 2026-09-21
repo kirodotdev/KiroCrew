@@ -2331,6 +2331,11 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
         # stamped rather than live -- refreshing it would need the bucket listing this
         # payload deliberately keeps opt-in.
         "retentionUnclaimed": await asyncio.to_thread(backup_mod.retention_unclaimed, account),
+        # Beside it, never instead of it: one is a floor on the archives this install
+        # remembers, the other counts what the listing held that it has no record of,
+        # and the first deliberately reads 0 for the second's keys. Neither asserts
+        # anything is reclaimable. See `backup.retention_unrecorded`.
+        "retentionUnrecorded": await asyncio.to_thread(backup_mod.retention_unrecorded, account),
         "runs": await asyncio.to_thread(backup_mod.last_runs, account),
         "jobs": await asyncio.to_thread(_account_jobs, account),
         # This install's own identity, so every row can be told from every other

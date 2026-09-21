@@ -582,9 +582,11 @@ no upper bound for either to police. A state
 write that fails returns `state_persist_failed` and does not echo the value, because
 reporting a setting the next read contradicts is worse than an error. The status read
 reports `retentionKeep` as the EFFECTIVE count the sweep would use, or `null` when
-retention is off, and `retentionUnclaimed` as the last sweep's per-kind count and bytes
-of archives no sweep can ever retire. No console control ships for either: the count is
-set and read over HTTP
+retention is off, `retentionUnclaimed` as the last sweep's per-kind count and bytes
+of archives no sweep can ever retire, and `retentionUnrecorded` as its per-kind count and
+bytes of objects under this install's folder that it holds no record of -- a number that
+claims neither ownership nor reclaimability. No console control ships for any of them: the
+count is set and read over HTTP
 only, and the status field exists so an operator who wrote one can confirm what was
 stored instead of trusting the write. A renderer is a separate surface and is not part
 of this module.
@@ -726,8 +728,10 @@ version, the overwritten-upload abort, the live gate at the delete, the
 fail-closed keep count, the version-pinned deletes, the client-side paging that
 bounds one listing response, the refusal to answer a folder whose history is too
 large to hold rather than returning the part that fits, the unclaimed-archive count
-and bytes reaching the audit event AND the status read, the refusal to persist that
-pair from a listing the sweep would not act on, the audit events including the
+and bytes reaching the audit event AND the status read, the unrecorded-object count
+beside it, the refusal to persist either pair -- or to prune a version record -- from a
+listing the sweep would not act on, the survival of a version record past its key
+leaving the panel history, the audit events including the
 partial-purge count, and the best-effort contract.
 
 What the sweep measures is the keys this install still REMEMBERS whose recorded version
@@ -740,19 +744,86 @@ Letting the sweep adopt an archive it has no record for would weaken the one pro
 the ownership test exists for, so that choice is tracked separately in issue 12274
 rather than settled here; the disclosure does not reclaim anything.
 
-The number does NOT cover every unretirable archive, and the gap is structural rather
-than an oversight. The sweep counts only keys in `uploaded_keys`, and `upload_versions`
-is trimmed to the keys `uploads` still holds under one bound, so a key that falls off
-`uploads` loses its version record with it and leaves that set entirely. Such a key is
-equally unretirable -- it can never hold a `keep` slot again, and enabling a count later
-cannot reach it -- but it is filtered out before the measurement, so it is absent from
-both the audit event and `retentionUnclaimed`. Raising the bound only moves that cliff.
-Counting past the remembered set would mean listing and attributing objects this install
-has no record of, which is the same ownership question issue 12274 holds open, so the
-served pair is a floor ON the remembered set and is documented as one.
+A version record's lifetime is the ARCHIVE's, not the panel listing's. Trimming it to
+the keys `uploads` still holds under `MAX_REMEMBERED_UPLOADS` would let a number chosen
+for a 20-per-kind panel decide what retention is able to retire: with retention shipping
+off, an install pushing nightly passes that bound on its 201st push, and a `keep` count
+enabled afterwards would reach nothing behind that point -- no recorded version, so the
+ownership test refuses the archive and its bytes are billed for as long as the bucket
+keeps it. That bound would MINT the floor rather than only inherit legacy data. So
+`upload_versions` is bounded separately: a record is dropped when a listing the
+sweep TRUSTED proves its object is gone (`_prune_recorded_versions`), and
+`MAX_RECORDED_VERSIONS` (5000) is a backstop under which a pathological document stays
+bounded rather than a horizon. It is the one path left that can still drop a version
+record without a listing having proved anything, so its overflow is COUNTED before
+anything is dropped and reported with that count at both trim sites -- the persisted map
+and the recovery map, named apart in the message. Silently it would read exactly like a
+population that never held those records, and with retention off the sweep returns before
+any listing, so nothing else would ever measure them. The retained value needs no length
+bound of its own: it is a version id S3 issues under S3's own limit and a key this app
+mints, and truncating either would be worse than unbounded, since a shortened version id
+is not the version and would fail the ownership test it exists to pass. The sweep's ownership set is `retention_owned_keys` --
+`uploads` union the recorded versions -- because a recorded version id is strictly
+stronger evidence than an `uploads` entry, and reading only the weaker one would discard
+the record that makes an older archive retireable. Nothing is retired on weaker proof: every
+admitted key still has to pass `_current_version_is_ours`, so the version erased is the
+one a restore would fetch. `classify_key` and the restore path deliberately keep reading
+`uploads` alone, because their question is whether this install vouches for these BYTES,
+which the fingerprint answers and a version id does not.
+
+Three bounds make the prune's absence a proof rather than a guess: it runs only past the
+gate that accepted the listing, and `list_object_versions` walks the whole token chain
+and RAISES rather than returning a partial answer, so partial data arrives as an
+exception and never as a short list; only records under `<kind subpath>/<install id>/`
+are eligible, since the listing is evidence about that folder alone; and only records
+that existed BEFORE the listing began are eligible, so a push landing while the listing
+is in flight -- a manual run racing the nightly loop -- cannot have its record pruned.
+The prune deletes STATE and never an object, and its two failure directions are not
+symmetric: a record wrongly kept costs document space, while a record wrongly dropped
+returns its archive to the unreclaimable floor. Neither can erase data.
+
+The prune's deletion is also FINAL, which takes one more release than the bound above.
+`_unpersisted_versions` holds a version whose state write failed, and `_merge_pending`
+copies that map whole into the next successful update -- so a held entry the state
+already carries would be written back on every later update, re-adding precisely the
+records the prune deleted. It is therefore released on its own contract as well as with
+the fingerprint it arrived with: `_release_persisted_versions` drops a held record once
+the document just written carries the same id for the same key. Equality with the
+persisted id is the release condition, never the key's presence, because a different id
+under one key is exactly the record the state does not have. The two maps are bounded
+differently, which is why one release cannot cover both: a held version outlives its
+`uploads` counterpart, and after that eviction the paired release can never reach it.
+
+`retentionUnclaimed` still does NOT cover every unretirable archive, and that is the
+contract rather than an oversight: it counts keys in `retention_owned_keys` whose
+recorded version is missing, so an object with neither an `uploads` entry nor a version
+record is filtered out before the measurement and reads 0 there however many bytes it
+holds. It is read against the `keep` count to say what retention will collect out of the
+set it can SEE, and absorbing an object nothing has a record of would make it a figure
+that answers neither question. Those objects are counted separately and claim nothing:
+`retentionUnrecorded` (`{kind: {objects, bytes, at}}`) reaches the same status read and
+the same audit event, holding what the listing showed under this kind's install folder
+that the install has no record of. Two unlike things land in it and this code cannot
+separate them -- archives of this install's own for which its state holds no record,
+and another writer's objects under a prefix that is co-writable by design
+-- so the leaf is `objects` rather than `archives`, because the install id in a key is a
+string any co-writer can type. A key the listing shows only as a delete marker is not
+one of them: it holds nothing and is billed nothing, so counting it would put a phantom
+in the floor that no later listing can remove, and the same reading
+`_current_version_is_ours` already applies to a marker is applied here. A key that also
+carries a real version still counts, on that version's row, because those bytes are
+billed whatever sits on top of them. The prune's own set is deliberately WIDER: a marker
+adds its key there, because that set decides whether a RECORD survives and a record
+wrongly dropped is unrecoverable proof where one wrongly kept costs document space.
+Nothing acts on the count: those keys are skipped before
+ownership is tested, hold no `keep` slot, and are never deleted. Whether any of them
+could be PROVEN this install's and reclaimed is a separate design owing its own argument
+about proof, tracked in issue 12274 rather than settled here; a count erases nothing, so
+it needs no such proof.
 
 `retentionUnclaimed` is written only from a listing the sweep accepted as showing the
-archive it just uploaded. Before that gate the sweep has already declined to trust the
+archive it just uploaded, and `retentionUnrecorded` and the version-record prune share
+that gate for the same reason. Before it the sweep has already declined to trust the
 listing about age, so it cannot be trusted about how many keys it omitted either, and
 an undercount published as the floor would read as no floor at all. The audit event
 still carries the number on that path, where its `failed` result says how much to trust
