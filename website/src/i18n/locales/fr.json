@@ -15232,7 +15232,7 @@
         "transport_locked_note": "{{productName}} relie cette instance à ses ressources AWS via son identité de connexion : la méthode et la cible ne sont donc pas modifiables ici.",
         "ttl_must_be_hours_or_minutes": "Saisissez une durée comme 20h ou 30m.",
         "turn_api": "API de chat",
-        "turn_url_note": "Envoyez les requêtes de chat à cette URL tant que la connexion est active. Il n'y a aucun tableau de bord à ouvrir.",
+        "turn_url_note": "Pointez votre client de chat ou votre script vers cette URL tant que la connexion est active. Il n'y a aucun tableau de bord à ouvrir.",
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",

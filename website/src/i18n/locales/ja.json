@@ -14859,7 +14859,7 @@
         "transport_locked_note": "{{productName}} は接続情報でこのインスタンスと AWS リソースを対応付けているため、接続方法とターゲットはここでは変更できません。",
         "ttl_must_be_hours_or_minutes": "20h や 30m のような有効期間を入力してください。",
         "turn_api": "チャット API",
-        "turn_url_note": "接続中は、この URL にチャットのリクエストを送信してください。開くダッシュボードはありません。",
+        "turn_url_note": "接続中は、チャットクライアントやスクリプトの送信先をこの URL に設定してください。開くダッシュボードはありません。",
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",

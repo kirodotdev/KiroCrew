@@ -1584,9 +1584,20 @@ class SshTunnelManager:
                 aws_region=validate_aws_region(inst.aws_region),
             )
         if method == "ssm":
+            target = validate_ssm_target(inst.ssm_target)
+            # Connect-time mirror of the registry's ssm arm, for records stored
+            # before the registry refused them: an ECS task has no SSM agent to
+            # run ``kirocrew token`` on, so forwarding it would only fail later
+            # at the mint with a generic error. Refuse here and name the method
+            # that owns the target.
+            if split_ecs_target(target) is not None:
+                raise SsmValidationError(
+                    f"ssm_target {target!r} is an ECS task target; it belongs to the "
+                    f"fargate connection method, not ssm"
+                )
             return _TransportParams(
                 method="ssm",
-                ssm_target=validate_ssm_target(inst.ssm_target),
+                ssm_target=target,
                 aws_profile=validate_aws_profile(inst.aws_profile),
                 aws_region=validate_aws_region(inst.aws_region),
                 ssm_run_as=validate_ssm_run_as(inst.ssm_run_as),

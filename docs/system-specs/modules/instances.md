@@ -2094,11 +2094,13 @@ image: `ssm_target_matches()` is the shared SSM-transport charset and admits the
 ECS shape, so before that check the `ssm` arm asks `split_ecs_target()` and
 raises `InvalidInstanceError` (naming the `fargate` method) when the target is
 an ECS task. Without that refusal an ECS target could be stored under `ssm`, and
-its connect would forward and then fail at the mint.
+its connect would forward and then fail at the mint; a record that was stored
+before the refusal existed is caught by the connect-time mirror in 16.2.
 
 `validate()` runs from `add()` and `update()` (and from the edit handler's
 pre-check on the proposed record), never from the loader, so a record already on
-disk is not dropped on load; it is refused the next time it is written. A record
+disk is not dropped on load; it is refused the next time it is written, and an
+`ssm` record carrying an ECS target is also refused at connect (16.2). A record
 migrates from `ssm` to `fargate` in one `update()` call that changes both
 `connection_method` and `ssm_target`, because `update()` applies every change and
 then validates the whole record.
@@ -2107,7 +2109,13 @@ then validates the whole record.
 
 `_resolve_transport` validates the target with `validate_ssm_target` and then
 requires `split_ecs_target` to succeed, so an EC2 id on a `fargate` record is
-refused before any command line is built. `_TransportParams.forwards_over_ssm`
+refused before any command line is built. The `ssm` arm asks the same splitter
+and refuses when it succeeds, raising `SsmValidationError` naming the `fargate`
+method: this is the connect-time mirror of the registry's write-side refusal
+(16.1), for records written before that refusal existed, which would otherwise
+forward to a task with no SSM agent and fail at the mint with a generic error.
+`connect()` reports it as an error status, spawns no forwarder and mints
+nothing. `_TransportParams.forwards_over_ssm`
 is true for both `ssm` and `fargate`, and `tunnel_kwargs()` hands the child the
 `ssm` transport: the forwarder argv is identical to the `ssm` method's, and what
 differs lives on the manager, not in the child.

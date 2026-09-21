@@ -14859,7 +14859,7 @@
         "transport_locked_note": "{{productName}}은(는) 연결 정보로 이 인스턴스와 AWS 리소스를 연결하므로 연결 방법과 대상은 여기서 변경할 수 없습니다.",
         "ttl_must_be_hours_or_minutes": "20h 또는 30m 형식의 유효 기간을 입력하세요.",
         "turn_api": "채팅 API",
-        "turn_url_note": "연결되어 있는 동안 이 URL로 채팅 요청을 보내세요. 열 수 있는 대시보드는 없습니다.",
+        "turn_url_note": "연결되어 있는 동안 채팅 클라이언트나 스크립트가 이 URL을 가리키도록 설정하세요. 열 수 있는 대시보드는 없습니다.",
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",

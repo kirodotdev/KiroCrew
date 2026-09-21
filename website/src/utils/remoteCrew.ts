@@ -39,10 +39,11 @@ export const hasDashboardPane = (inst: { connection_method?: string }): boolean 
 const ELLIPSIS = '\u2026'
 
 export function shortenEcsTarget(target: string): string {
-  // The `ecs:` prefix rides inside the first capture and the ellipsis is a
-  // named constant so the template below holds no letters in its raw text:
-  // the i18n lint reads a lettered quasi as user copy.
-  const m = /^(ecs:[^_]+)_([0-9a-f]+)_(.+)$/.exec(target)
+  // The `ecs:` prefix rides inside the first capture. The cluster is captured
+  // greedily, while the fixed-width task/runtime suffixes anchor the split.
+  // The ellipsis is a named constant so the template below holds no letters in
+  // its raw text: the i18n lint reads a lettered quasi as user copy.
+  const m = /^(ecs:[A-Za-z0-9][A-Za-z0-9_-]{0,254})_([0-9a-f]{32})_([0-9a-f]{32}-[0-9]{1,20})$/.exec(target)
   if (!m) return target
   const [, clusterWithPrefix, taskId, runtimeId] = m
   return `${clusterWithPrefix}_${taskId.slice(0, 8)}${ELLIPSIS}${runtimeId.slice(-11)}`

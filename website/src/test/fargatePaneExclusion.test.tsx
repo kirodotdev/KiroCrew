@@ -50,6 +50,10 @@ describe('shortenEcsTarget', () => {
       'ecs:crew_0123456789abcdef0123456789abcdef_fedcba9876543210fedcba9876543210-2653819172',
       'ecs:crew_01234567\u2026-2653819172',
     ],
+    [
+      'ecs:my_cluster_with_underscores_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-1234567890',
+      'ecs:my_cluster_with_underscores_aaaaaaaa\u2026-1234567890',
+    ],
     // Anything that is not an ECS target passes through unchanged.
     ['i-0abc12345678', 'i-0abc12345678'],
     ['', ''],

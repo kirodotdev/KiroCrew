@@ -14859,7 +14859,7 @@
         "transport_locked_note": "{{productName}} 通过连接标识将此实例与其 AWS 资源关联，因此此处无法更改连接方式和目标。",
         "ttl_must_be_hours_or_minutes": "请输入类似 20h 或 30m 的有效期。",
         "turn_api": "聊天 API",
-        "turn_url_note": "连接期间，将聊天请求发送到此 URL。没有可以打开的仪表板。",
+        "turn_url_note": "连接期间，将聊天客户端或脚本指向此 URL。没有可以打开的仪表板。",
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",

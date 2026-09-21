@@ -15045,7 +15045,7 @@
         "transport_locked_note": "{{productName}} ordnet diese Instanz ihren AWS-Ressourcen über ihre Verbindungsidentität zu; Verbindungsmethode und Ziel sind hier daher nicht änderbar.",
         "ttl_must_be_hours_or_minutes": "Gib eine Laufzeit wie 20h oder 30m an.",
         "turn_api": "Chat-API",
-        "turn_url_note": "Senden Sie Chat-Anfragen an diese URL, solange die Verbindung steht. Es gibt kein Dashboard zum Öffnen.",
+        "turn_url_note": "Richte deinen Chat-Client oder dein Skript auf diese URL, solange die Verbindung steht. Es gibt kein Dashboard zum Öffnen.",
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",

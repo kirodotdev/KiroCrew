@@ -8971,7 +8971,7 @@
         "transport_locked_note": "{{productName}} matches this instance to its AWS resources through its connection identity, so the connection method and target cannot be changed here.",
         "ttl_must_be_hours_or_minutes": "Enter a lifetime like 20h or 30m.",
         "turn_api": "Chat API",
-        "turn_url_note": "Send chat requests to this URL while connected. There is no dashboard to open.",
+        "turn_url_note": "Point your chat client or script at this URL while connected. There is no dashboard to open.",
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",

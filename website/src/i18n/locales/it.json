@@ -15231,7 +15231,7 @@
         "transport_locked_note": "{{productName}} associa questa istanza alle sue risorse AWS tramite l’identità di connessione, quindi metodo e destinazione non sono modificabili qui.",
         "ttl_must_be_hours_or_minutes": "Inserisci una durata come 20h o 30m.",
         "turn_api": "API di chat",
-        "turn_url_note": "Invia le richieste di chat a questa URL finché la connessione è attiva. Non c'è nessuna dashboard da aprire.",
+        "turn_url_note": "Punta il tuo client di chat o il tuo script a questa URL finché la connessione è attiva. Non c'è nessuna dashboard da aprire.",
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
