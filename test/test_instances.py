@@ -6004,12 +6004,12 @@ class TestSsmTargetShapeHasOneDefinition:
             with pytest.raises(SsmValidationError):
                 validate_ssm_target(value)
 
-    def test_registry_accepts_an_ecs_target_for_an_ssm_record(self, tmp_path):
+    def test_registry_accepts_an_ecs_target_for_a_fargate_record(self, tmp_path):
         """End of the seam: a record carrying an ECS target must persist."""
         from kiro_crew.instances.registry import InstancesRegistry
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
-        inst = reg.add(name="Fargate crew", connection_method="ssm", ssm_target=_ECS_OK)
+        inst = reg.add(name="Fargate crew", connection_method="fargate", ssm_target=_ECS_OK)
         assert inst.ssm_target == _ECS_OK
         # Round-trips through disk rather than only passing the in-memory check.
         reloaded = InstancesRegistry(path=tmp_path / "instances.json").get(inst.id)

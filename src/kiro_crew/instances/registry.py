@@ -42,7 +42,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
 from kiro_crew.instances.constants import TTL_PATTERN
 from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
-from kiro_crew.instances.validation import ssm_target_matches
+from kiro_crew.instances.validation import split_ecs_target, ssm_target_matches
 from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
@@ -108,8 +108,15 @@ _DEFAULT_TTL = "20h"
 # (ssh -N -L); "ssm" tunnels over AWS Systems Manager Session Manager
 # (aws ssm start-session --document-name AWS-StartPortForwardingSession),
 # needing no inbound SSH port and no SSH key — only IAM + the SSM agent.
-CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm")
+# "fargate" is the same SSM port-forward aimed at an ECS task
+# (``ssm_target`` = ``ecs:<cluster>_<task-id>_<runtime-id>``) whose only listener
+# is the crew container's turn API: no dashboard, no token to mint, and nothing
+# to run ``kirocrew`` on, so the tunnel manager forwards and does nothing else.
+CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm", "fargate")
 _DEFAULT_CONNECTION_METHOD = "ssh"
+# The methods whose forwarder is ``aws ssm start-session``; they share the
+# ``ssm_target`` / ``aws_profile`` / ``aws_region`` coordinates.
+SSM_TRANSPORT_METHODS: frozenset[str] = frozenset({"ssm", "fargate"})
 
 # ``local_port == 0`` is the sentinel for "not yet allocated" — the port
 # allocator (Stage 3) assigns a real port at connect time.
@@ -172,7 +179,9 @@ class Instance:
     ``connection_method`` selects the transport: ``"ssh"`` (default, uses
     ``ssh_host``/``remote_bin``) or ``"ssm"`` (uses ``ssm_target`` — an EC2/SSM
     managed-instance id — plus optional ``aws_profile``/``aws_region``; no SSH
-    key or inbound port needed). Both methods share ``remote_port``/``ttl``.
+    key or inbound port needed). ``"fargate"`` is the SSM forward aimed at an ECS
+    task target; it has no dashboard, so no token is ever minted for it. All
+    methods share ``remote_port``/``ttl``.
     """
 
     id: str
@@ -182,11 +191,12 @@ class Instance:
     local_port: int = _UNALLOCATED_PORT
     ttl: str = _DEFAULT_TTL
     remote_bin: str = ""
-    # "ssh" (default) or "ssm" — see CONNECTION_METHODS.
+    # "ssh" (default), "ssm" or "fargate" -- see CONNECTION_METHODS.
     connection_method: str = _DEFAULT_CONNECTION_METHOD
-    # SSM-only fields. ssm_target is an EC2 instance id (i-...) or SSM managed
-    # instance id (mi-...); aws_profile/aws_region are optional (empty = use the
-    # default credential chain / region).
+    # SSM-transport fields. ssm_target is an EC2 instance id (i-...) or SSM
+    # managed instance id (mi-...) for "ssm", an ECS task target (ecs:...) for
+    # "fargate"; aws_profile/aws_region are optional (empty = use the default
+    # credential chain / region).
     ssm_target: str = ""
     aws_profile: str = ""
     aws_region: str = ""
@@ -240,34 +250,48 @@ class Instance:
                 raise InvalidInstanceError(
                     f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
                 )
-        else:  # ssm
-            # Checked UNSTRIPPED, and the caller this reaches is user input, not a
-            # stored record: handlers_instances passes
-            # ``str(body.get("ssm_target", ""))`` from the request body straight
-            # into this constructor. ``validate_ssm_target`` is the layer that
-            # strips, and it is not on this path -- it runs later, at connect time.
+        elif self.connection_method == "fargate":
+            # The same splitter connect_fargate reads the target with, so a
+            # target this arm stores is one that lane can open.
             #
-            # So the realistic case is a paste. An ECS target is 90-plus characters
-            # copied out of the AWS console, where a trailing space or newline rides
-            # along far more often than it does with ``i-0abc``, and this refuses it
-            # rather than storing it. That fails closed, which is why the behaviour
-            # is left alone here, but a reader should know it is the paste that
-            # lands on it.
+            # Checked UNSTRIPPED, and what reaches here is user input, not a
+            # stored record: handlers_instances passes
+            # ``str(body.get("ssm_target", ""))`` straight into this constructor,
+            # and ``validate_ssm_target`` (the layer that strips) runs later, at
+            # connect time. An ECS target is 90-plus characters copied out of the
+            # AWS console, where a trailing space or newline rides along far more
+            # often than it does with ``i-0abc``; the splitter refuses such a
+            # paste rather than storing it. That fails closed, which is why the
+            # behaviour is left alone, but a reader should know it is the paste
+            # that lands on it.
+            if not self.ssm_target or split_ecs_target(self.ssm_target) is None:
+                raise InvalidInstanceError(
+                    f"invalid ssm_target {self.ssm_target!r}: a fargate instance needs "
+                    f"an ECS task target (ecs:<cluster>_<task-id>_<runtime-id>)"
+                )
+            self._validate_aws_coordinates()
+        else:  # ssm
+            # ``ssm_target_matches`` admits the ECS task shape too (it is the
+            # shared SSM-transport charset), but an ECS task has no SSM agent to
+            # run ``kirocrew token`` on, so a record filed here would forward and
+            # then fail at the mint. Refuse it and name the arm that stores it.
+            if split_ecs_target(self.ssm_target) is not None:
+                raise InvalidInstanceError(
+                    f"invalid ssm_target {self.ssm_target!r}: an ECS task target belongs "
+                    f"to the fargate connection method, not ssm"
+                )
+            # Checked UNSTRIPPED: what reaches here is the request body's
+            # ``ssm_target`` as typed, and ``validate_ssm_target`` (the layer that
+            # strips) runs later, at connect time. A pasted ``i-``/``mi-`` id with
+            # a trailing space or newline is refused here rather than stored.
             if not self.ssm_target or not ssm_target_matches(self.ssm_target):
                 # No regex in the message — it reaches the Settings form verbatim.
                 raise InvalidInstanceError(
                     f"invalid ssm_target {self.ssm_target!r}: must be an EC2/SSM "
                     f"managed-instance id (i-... or mi-...) followed by 8 to 17 "
-                    f"hex digits, or an ECS task target "
-                    f"(ecs:<cluster>_<task-id>_<runtime-id>)"
+                    f"hex digits"
                 )
-            if self.aws_profile and not _AWS_PROFILE_RE.match(self.aws_profile):
-                raise InvalidInstanceError(
-                    f"invalid aws_profile {self.aws_profile!r} "
-                    f"(allowed: letters, digits, '.', '_', '+', '-')"
-                )
-            if self.aws_region and not _AWS_REGION_RE.match(self.aws_region):
-                raise InvalidInstanceError(f"invalid aws_region {self.aws_region!r}")
+            self._validate_aws_coordinates()
             if not _SSM_RUN_AS_RE.match(self.ssm_run_as):
                 raise InvalidInstanceError(
                     f"invalid ssm_run_as {self.ssm_run_as!r}: must be a Unix "
@@ -304,6 +328,16 @@ class Instance:
                 f"invalid forwarder_sig {self.forwarder_sig!r}: must be a "
                 f"string ('' = unsigned)"
             )
+
+    def _validate_aws_coordinates(self) -> None:
+        """Reject a malformed ``aws_profile`` / ``aws_region`` (empty = default)."""
+        if self.aws_profile and not _AWS_PROFILE_RE.match(self.aws_profile):
+            raise InvalidInstanceError(
+                f"invalid aws_profile {self.aws_profile!r} "
+                f"(allowed: letters, digits, '.', '_', '+', '-')"
+            )
+        if self.aws_region and not _AWS_REGION_RE.match(self.aws_region):
+            raise InvalidInstanceError(f"invalid aws_region {self.aws_region!r}")
 
     def to_dict(self) -> dict:
         """Serialize to the JSON shape stored in ``instances.json``."""
@@ -489,8 +523,8 @@ class InstancesRegistry:
         to disambiguate collisions. Raises :class:`DuplicateInstanceError` if an
         explicit id already exists, or :class:`InvalidInstanceError` on bad input.
 
-        *connection_method* selects the transport ("ssh" or "ssm"); the fields
-        required depend on it — see :meth:`Instance.validate`.
+        *connection_method* selects the transport ("ssh", "ssm" or "fargate"); the
+        fields required depend on it -- see :meth:`Instance.validate`.
         """
         with self._lock:
             doc = self._read()

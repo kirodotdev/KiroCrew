@@ -49,6 +49,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
+- [16. The Fargate connection method (`connection_method = "fargate"`)](#16-the-fargate-connection-method-connection_method--fargate)
 
 ---
 
@@ -56,7 +57,8 @@ mint, diagnostics, injection validation, run-marker) plus
 
 A Kiro Crew gateway normally binds the dashboard to loopback only. The Instances
 feature lets the hub reach *other* gateways running on remote hosts by opening an
-SSH `-L` forward to each remote's loopback dashboard port, minting a short-lived
+SSH `-L` forward to each remote's loopback dashboard port, minting (for the `ssh`
+and `ssm` methods; the `fargate` method mints nothing, §16) a short-lived
 dashboard token on the remote, and embedding the remote dashboard in an
 `<iframe>`. You switch panes from a dropdown (`InstanceTabBar`, plus
 Cmd/Ctrl+digit in the Electron shell); the hub keeps the most-recently-used set
@@ -144,14 +146,14 @@ Module responsibilities:
 
 | Module | Responsibility |
 |--------|----------------|
-| `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` (SSH) or `ssm_target`/`aws_profile`/`aws_region`/`ssm_run_as` (SSM) at add/update, per `connection_method`; every mutation re-reads the file and writes atomically, so a live gateway and a CLI edit cannot clobber each other. |
+| `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` (SSH) or `ssm_target`/`aws_profile`/`aws_region`/`ssm_run_as` (SSM) at add/update, per `connection_method`; the `fargate` arm requires an ECS task target and the `ssm` arm refuses one (§16); every mutation re-reads the file and writes atomically, so a live gateway and a CLI edit cannot clobber each other. |
 | `port_allocator.py` | Probes for a free loopback port at or above `tunnel_base_port` (7778). A port counts as free only when it is free on **every** loopback address (`127.0.0.1` and `::1`), since the forward binds one family and a foreign listener on the other leaves `localhost:<port>` ambiguous; an address the host cannot assign at all (`EADDRNOTAVAIL`/`EAFNOSUPPORT`/`EPROTONOSUPPORT`, e.g. IPv6 disabled) reads as free rather than occupied, while a probe that could not be *run* (`EMFILE` and friends) propagates rather than being coerced to either answer. A single-address primitive (`_is_addr_free(port, host)`) answers the narrower "did *this* forward's own address come free" question that orphan reclaim asks. The probe sets `SO_REUSEADDR` so a `TIME_WAIT` remnant from a just-closed forward is not a false "in use". |
 | `token_mint.py` | Runs `kirocrew token --ttl --port --embed-parent-port` on the remote over SSH (run-marker first, then a bin-candidate ladder) and parses the JWT out of the printed URL. Token is returned in memory only, **never logged**. |
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
-| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two transports. |
-| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder) and `diagnose_instance_ssm` (SSM ladder). |
+| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder and mints nothing (§16). |
+| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
 
 **The local forward port is allocated, not mirrored.** `connect()` takes a free
@@ -193,7 +195,8 @@ non-POSIX (§12). Treat a Windows hub as unverified.
 1. **Connect.** `POST /api/instances/{id}/connect` validates the ssh inputs,
    allocates a free local forward port, starts
    `ssh -N -L`, waits until the local forward accepts a TCP connection, mints a
-   dashboard token on the remote over SSH, and returns the live status plus the
+   dashboard token on the remote over SSH (for the `ssh` and `ssm` methods; a
+   `fargate` connect mints nothing, §16), and returns the live status plus the
    token. Connect is **idempotent**: an already-connected instance returns its
    current status, and the handler then *probes* the stored token before handing
    it over (see below). Two opt-in query flags bend that in opposite directions,
@@ -1246,7 +1249,8 @@ round a loop that never terminates.
 
 ## 13. The SSM connection method (`connection_method`)
 
-Each instance record carries a `connection_method`: `"ssh"` (default) or `"ssm"`.
+Each instance record carries a `connection_method`: `"ssh"` (default), `"ssm"` or
+`"fargate"` (§16).
 SSM tunnels over AWS Systems Manager Session Manager, so it needs no inbound
 port, no sshd and no distributed key — reachability is an IAM decision
 (`ssm:StartSession` on the instance ARN) rather than a network one.
@@ -1833,3 +1837,122 @@ neither resume nor delete it:
 - Any federated-endpoint failure in the UI — including the `403` when the
   instances feature is off — falls back to the plain local search, which is
   always the floor.
+
+---
+
+## 16. The Fargate connection method (`connection_method = "fargate"`)
+
+A `fargate` instance is reached over the same `aws ssm start-session` port-forward
+the `ssm` method uses (§13), aimed at an ECS task target instead of an EC2
+or managed-instance id. The task is a crew container whose only listener is its
+chat API on port 8080; there is no dashboard behind the forward and no `kirocrew`
+process on the task, so everything the `ssm` method does after the forward is up
+(mint a token, refresh it, probe it, restart the remote gateway) has nothing to
+act on and is refused rather than attempted. The connection IS the forward, and
+the status reports the local URL of the chat API in place of a token.
+
+| Method | Tunnel command | Client prerequisites | Mint path |
+|--------|----------------|----------------------|-----------|
+| `fargate` | `aws ssm start-session --document-name AWS-StartPortForwardingSession --target <ssm_target> --parameters portNumber=RP,localPortNumber=LP` (same child as `ssm`) | AWS CLI + `session-manager-plugin`; `ssm:StartSession`; `ecs:DescribeTasks` for the diagnosis ladder | none |
+
+Registry fields are the SSM-transport set: `ssm_target` (an ECS task target,
+`ecs:<cluster>_<task-id>_<runtime-id>`), plus optional `aws_profile` and
+`aws_region`. `ssm_run_as` is neither validated by the `fargate` arm nor read by
+its transport, since nothing is executed on the task. `remote_port` is the port
+the forward reaches on the task, the container's chat API port (`FRONT_PORT`,
+8080, in `src/kiro_crew/cloud/fargate/taskdef.py`); the registry's default is the
+stock dashboard port, so a `fargate` record sets it.
+
+`registry.CONNECTION_METHODS` is `("ssh", "ssm", "fargate")` and
+`registry.SSM_TRANSPORT_METHODS` is `{"ssm", "fargate"}`: the two methods whose
+forwarder is `aws ssm start-session` and which share the `ssm_target` /
+`aws_profile` / `aws_region` coordinates.
+
+### 16.1 Registry (`src/kiro_crew/instances/registry.py`)
+
+`Instance.validate()` has one arm per method. The `fargate` arm requires
+`split_ecs_target(ssm_target)` to return parts, the same splitter the connect
+path reads the target with, so a stored `fargate` record is one that lane can
+open; an EC2 id under `fargate` is refused. The `ssm` arm refuses the mirror
+image: `ssm_target_matches()` is the shared SSM-transport charset and admits the
+ECS shape, so before that check the `ssm` arm asks `split_ecs_target()` and
+raises `InvalidInstanceError` (naming the `fargate` method) when the target is
+an ECS task. Without that refusal an ECS target could be stored under `ssm`, and
+its connect would forward and then fail at the mint.
+
+`validate()` runs from `add()` and `update()` (and from the edit handler's
+pre-check on the proposed record), never from the loader, so a record already on
+disk is not dropped on load; it is refused the next time it is written. A record
+migrates from `ssm` to `fargate` in one `update()` call that changes both
+`connection_method` and `ssm_target`, because `update()` applies every change and
+then validates the whole record.
+
+### 16.2 Tunnel manager (`src/kiro_crew/instances/ssh_tunnel_manager.py`)
+
+`_resolve_transport` validates the target with `validate_ssm_target` and then
+requires `split_ecs_target` to succeed, so an EC2 id on a `fargate` record is
+refused before any command line is built. `_TransportParams.forwards_over_ssm`
+is true for both `ssm` and `fargate`, and `tunnel_kwargs()` hands the child the
+`ssm` transport: the forwarder argv is identical to the `ssm` method's, and what
+differs lives on the manager, not in the child.
+
+- **No mint, anywhere.** `_mint_for` is the chokepoint every mint path funnels
+  through (connect, self-heal, proactive and on-demand refresh) and it raises
+  `TokenMintError` for `fargate` before dispatching anything. `connect()` skips
+  the mint step for `fargate`, so no token is stored and no refresh is scheduled;
+  `get_token()` answers `""` and `token_ttl_remaining()` answers `None`.
+- **`TunnelStatus.turn_url`.** Set at connect to
+  `http://127.0.0.1:<local_port>` + `FARGATE_TURN_PATH`
+  (`/v1/chat/completions`, from `src/kiro_crew/cloud/connect.py`) and included in
+  `to_dict()` only when non-empty; it is empty for the dashboard-bearing methods.
+- **`restart_remote` refuses.** Nothing runs `kirocrew` on the task, so the call
+  returns `{"ok": False, ...}` before any command is built and tells the user to
+  stop and relaunch the task instead.
+- **`diagnose` routes to `diagnose_instance_fargate`.**
+
+### 16.3 Diagnosis ladder (`src/kiro_crew/instances/diagnostics.py`)
+
+`diagnose_instance_fargate(ssm_target, local_port, aws_profile, aws_region)`
+validates the coordinates and splits the target (an invalid value answers
+`unknown`), then runs read-only probes in this order and stops at the first
+broken link:
+
+1. `task_exec_ready`: the `describe-tasks` exec-readiness preflight on the task.
+   Not ready answers `ssm_unreachable` with the preflight's own reason.
+2. If no local port is recorded, `not_connected`.
+3. `local_forward`: a TCP connect to `127.0.0.1:<local_port>`. Refused answers
+   `tunnel_down`.
+4. Otherwise `ok`.
+
+There is no remote-dashboard rung: the task serves a chat API and runs no
+`kirocrew`, so nothing could be sent over SSM to ask it.
+
+### 16.4 Control plane (`src/kiro_crew/dashboard/handlers_instances.py`)
+
+`POST /api/instances/{id}/connect` on a connected `fargate` instance answers
+`200` with the status body carrying `turn_url` and **no `token`**. The handler
+branches on `turn_url` being present: the token probe and the re-mint that the
+other methods run on an idempotent connect are skipped, because there is no token
+to validate and a re-mint would be refused by the manager.
+
+### 16.5 Frontend
+
+`website/src/utils/remoteCrew.ts` exports two predicates that mirror the
+registry's sets: `usesSsmTransport()` (true for `ssm` and `fargate`; the card
+addresses the crew by `ssm_target` + AWS profile/region) and `hasDashboardPane()`
+(false only for `fargate`). `hasDashboardPane()` gates the switcher
+(`InstanceTabBar`), startup auto-connect (`useAutoConnectInstances`) and
+federated session polling (`useInstanceSessions`), so a `fargate` crew gets no
+tab, no pane, no auto-connect and no rows in the session palette.
+
+In `website/src/pages/settings/RemoteCrewPanel.tsx` a connected `fargate` row
+renders the status's `turn_url` in a copyable field (`TurnUrlField`) and shows no
+Open control: the URL answers JSON, so a control that promised a dashboard would
+be the defect the field replaces.
+
+### 16.6 Seam
+
+`FargateEngine.register()` (`src/kiro_crew/cloud/fargate_engine.py`) is a
+deliberate no-op: a launched task is not added to this registry, so a `fargate`
+record is created by hand (Settings, the API or the CLI) with the task's ECS
+target. Tracked in #12511.

@@ -60,6 +60,7 @@ import aiohttp
 
 from kiro_crew import platform_compat
 from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.cloud.connect import FARGATE_TURN_PATH
 
 # The local (embedding) gateway's configured port — carried into the minted
 # remote token as the CSP frame-ancestor parent origin so the embedded pane can
@@ -108,11 +109,16 @@ from kiro_crew.instances.constants import (
     DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS as _DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS,
 )
 from kiro_crew.instances.constants import SEARCH_REPLY_MAX_BYTES as _SEARCH_REPLY_MAX_BYTES
-from kiro_crew.instances.diagnostics import diagnose_instance, diagnose_instance_ssm
+from kiro_crew.instances.diagnostics import (
+    diagnose_instance,
+    diagnose_instance_fargate,
+    diagnose_instance_ssm,
+)
 from kiro_crew.instances.port_allocator import PortAllocator, _is_addr_free, _is_port_free
 from kiro_crew.instances.registry import (
     _NO_FORWARDER_PID,
     _UNALLOCATED_PORT,
+    SSM_TRANSPORT_METHODS,
     Instance,
     InstancesRegistry,
 )
@@ -129,6 +135,7 @@ from kiro_crew.instances.token_mint import (
 from kiro_crew.instances.validation import (
     SshValidationError,
     SsmValidationError,
+    split_ecs_target,
     validate_aws_profile,
     validate_aws_region,
     validate_remote_bin,
@@ -407,6 +414,9 @@ class TunnelStatus:
     error: str = ""
     connected_at: float = 0.0
     diagnosis: dict | None = None  # last failure-diagnosis ladder result
+    # Fargate only: the local URL of the crew's turn API, what the card shows in
+    # place of a dashboard. Empty for the dashboard-bearing methods.
+    turn_url: str = ""
 
     def to_dict(self) -> dict:
         d: dict[str, object] = {
@@ -419,6 +429,8 @@ class TunnelStatus:
         }
         if self.diagnosis is not None:
             d["diagnosis"] = self.diagnosis
+        if self.turn_url:
+            d["turn_url"] = self.turn_url
         return d
 
 
@@ -1081,7 +1093,7 @@ class _TransportParams:
     re-branching on ``connection_method``.
     """
 
-    method: str  # "ssh" | "ssm"
+    method: str  # "ssh" | "ssm" | "fargate"
     ssh_host: str = ""
     remote_bin: str = ""
     ssm_target: str = ""
@@ -1091,17 +1103,34 @@ class _TransportParams:
 
     @property
     def target(self) -> str:
-        """The human-facing target (ssh host or SSM instance id) for messages."""
-        return self.ssm_target if self.method == "ssm" else self.ssh_host
+        """The human-facing target (ssh host, SSM instance id or ECS task) for messages."""
+        return self.ssm_target if self.method in SSM_TRANSPORT_METHODS else self.ssh_host
+
+    @property
+    def forwards_over_ssm(self) -> bool:
+        """Whether the forwarder child is ``aws ssm start-session``."""
+        return self.method in SSM_TRANSPORT_METHODS
 
     def tunnel_kwargs(self) -> dict:
-        """Transport kwargs for the ``_SshTunnel`` constructor."""
+        """Transport kwargs for the ``_SshTunnel`` constructor.
+
+        The tunnel child knows two argv shapes, ssh and the SSM port-forward. A
+        fargate instance's child IS the SSM port-forward (aimed at an ECS task), so
+        it is handed the ``ssm`` transport; what differs for fargate lives on the
+        manager (no mint, no remote ``kirocrew``), not in the child.
+        """
         return {
-            "transport": self.method,
+            "transport": "ssm" if self.forwards_over_ssm else "ssh",
             "ssm_target": self.ssm_target,
             "aws_profile": self.aws_profile,
             "aws_region": self.aws_region,
         }
+
+    def turn_url(self, local_port: int) -> str:
+        """The local turn-API URL for a fargate forward, ``""`` otherwise."""
+        if self.method != "fargate":
+            return ""
+        return f"http://{_LOOPBACK}:{local_port}{FARGATE_TURN_PATH}"
 
 
 class SshTunnelManager:
@@ -1437,7 +1466,7 @@ class SshTunnelManager:
             return
         if await asyncio.to_thread(_is_port_free, port):
             return  # nothing holds the recorded port — nothing leaked to reclaim
-        if params.method == "ssm":
+        if params.forwards_over_ssm:
             expected = _build_ssm_tunnel_argv(
                 params.ssm_target,
                 port,
@@ -1455,7 +1484,7 @@ class SshTunnelManager:
             start,
             expected,
             port,
-            params.method == "ssm",
+            params.forwards_over_ssm,
             f"instance={inst.id} pid={pid} port={port} transport={params.method}",
         )
         if outcome == "reclaimed":
@@ -1509,7 +1538,7 @@ class SshTunnelManager:
         """
         if self._connect_timeout is not None:
             return self._connect_timeout  # explicit override
-        if method == "ssm":
+        if method in SSM_TRANSPORT_METHODS:
             return _DEFAULT_SSM_CONNECT_TIMEOUT_SECS
         return _DEFAULT_CONNECT_TIMEOUT_SECS
 
@@ -1538,6 +1567,22 @@ class SshTunnelManager:
         registry's lighter early-reject charset checks.
         """
         method = (inst.connection_method or "ssh").strip().lower()
+        if method == "fargate":
+            target = validate_ssm_target(inst.ssm_target)
+            # validate_ssm_target admits every SSM target shape; this method only
+            # forwards to an ECS task, so an EC2 id is refused here rather than
+            # handed to a forward that would reach a box with no turn API.
+            if split_ecs_target(target) is None:
+                raise SsmValidationError(
+                    f"ssm_target {target!r} must be an ECS task target "
+                    f"(ecs:<cluster>_<task-id>_<runtime-id>) for a fargate instance"
+                )
+            return _TransportParams(
+                method="fargate",
+                ssm_target=target,
+                aws_profile=validate_aws_profile(inst.aws_profile),
+                aws_region=validate_aws_region(inst.aws_region),
+            )
         if method == "ssm":
             return _TransportParams(
                 method="ssm",
@@ -1559,7 +1604,17 @@ class SshTunnelManager:
         The SSH path goes through the injectable ``self._mint_token`` seam (kept
         so the existing tests can substitute a fake mint); the SSM path calls
         :func:`mint_remote_token_ssm`. Never logs the token.
+
+        A fargate instance has nothing to mint: the task runs no ``kirocrew`` and
+        serves no dashboard. Every mint path (connect, self-heal, proactive and
+        on-demand refresh) funnels through here, so refusing here is what keeps a
+        later caller from dispatching ``kirocrew token`` at an ECS task.
         """
+        if params.method == "fargate":
+            raise TokenMintError(
+                "a fargate instance has no dashboard token: the task serves only its "
+                "turn API, reached at the tunnel's turn_url"
+            )
         if params.method == "ssm":
             return await mint_remote_token_ssm(
                 params.ssm_target,
@@ -1710,7 +1765,7 @@ class SshTunnelManager:
             # every request and heartbeat. Same reason _build_argv is offloaded
             # below, and the same thing the dashboard's own cloud handler does with
             # this exact call.
-            if params.method == "ssm":
+            if params.forwards_over_ssm:
                 if not await asyncio.to_thread(cloud_ssm.session_manager_plugin_installed):
                     return self._error_status(inst, cloud_ssm.session_manager_plugin_install_hint())
 
@@ -1815,6 +1870,7 @@ class SshTunnelManager:
             )
             self._tunnels[instance_id] = tunnel
             self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
+            tunnel.status.turn_url = params.turn_url(local_port)
             ok = await tunnel.start()
             if not ok:
                 self._last_error[instance_id] = tunnel.status.error or "tunnel failed to start"
@@ -1827,14 +1883,18 @@ class SshTunnelManager:
                 return tunnel.status
 
             # Mint a per-instance token over the same transport (never logged).
-            try:
-                token = await self._mint_for(inst, params)
-            except TokenMintError as e:
-                await tunnel.stop()
-                self._tunnels.pop(instance_id, None)
-                return self._error_status(inst, f"token mint failed: {e}")
-            self._store_token(instance_id, token, inst.ttl)
-            self._schedule_token_refresh(instance_id)
+            # A fargate forward reaches a turn API, not a dashboard: there is no
+            # token to mint and none to refresh, so the forward alone is the
+            # connection and the status carries the turn URL instead.
+            if params.method != "fargate":
+                try:
+                    token = await self._mint_for(inst, params)
+                except TokenMintError as e:
+                    await tunnel.stop()
+                    self._tunnels.pop(instance_id, None)
+                    return self._error_status(inst, f"token mint failed: {e}")
+                self._store_token(instance_id, token, inst.ttl)
+                self._schedule_token_refresh(instance_id)
 
             # Persist hints: the forwarder identity record built by
             # _forwarder_identity_hints (port, pid, start time, signature,
@@ -2165,6 +2225,7 @@ class SshTunnelManager:
             on_exit=self._on_tunnel_exit,
             **params.tunnel_kwargs(),
         )
+        tunnel.status.turn_url = params.turn_url(local_port)
         async with self._lock:
             if self._tunnel_epoch.get(inst.id, 0) != expected_epoch:
                 raise _RecoverySuperseded(inst.id)
@@ -2259,7 +2320,8 @@ class SshTunnelManager:
 
         Tier 1: rebuild the tunnel (reusing the existing token).
         Tier 2: if rebuild fails, re-mint the token over the instance's
-        transport, then rebuild.
+        transport, then rebuild. A fargate instance has no token, so its tier 2
+        is a second rebuild.
         Capped at ``_MAX_RECOVERY`` consecutive attempts (reset on success) so a
         persistently-broken host can't churn forever. No-ops if the instance was
         disconnected/removed or has already recovered while we waited for the lock.
@@ -2320,35 +2382,41 @@ class SshTunnelManager:
             logger.info("Self-heal tier 1 finished for %s", instance_id)
             return
 
-        # Tier 2 — re-mint the dashboard token, then rebuild.
-        logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
-        try:
-            token = await self._mint_for(inst, params)
-        except TokenMintError as e:
-            logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
-            return
-        async with self._lock:
-            if instance_id not in self._tunnels:
-                return  # disconnected while minting — discard
-            if self._tunnel_epoch.get(instance_id, 0) != epoch + 1:
-                # This mint ran for the generation tier 1 installed, which is
-                # exactly ONE bump past the Phase 1 stamp: a failed tier-1
-                # rebuild always installs (and bumps for) its replacement
-                # before start() reports failure, and every path that raises
-                # instead never reaches this store. Any other value means a
-                # tunnel this recovery never saw was installed meanwhile (the
-                # operator disconnected and reconnected while the slow remote
-                # I/O was in flight) — membership alone cannot see that, the
-                # NEW generation satisfies it. Storing the result would hand
-                # the embedded dashboard a credential the current remote never
-                # issued, and the rebuild below would replace the current
-                # tunnel using this recovery's stale record. Same stamp check
-                # as _refresh_token_once's store; the +1 is tier 2's own
-                # install sitting between the capture and the compare.
-                logger.info("Discarding a superseded self-heal mint for %s", instance_id)
+        # Tier 2 -- re-mint the dashboard token, then rebuild. A fargate instance
+        # has no token, so its tier 2 is the rebuild alone: the tier-1 failure
+        # already bumped the generation once, which is the stamp the second
+        # rebuild binds to below.
+        if params.method == "fargate":
+            logger.info("Self-heal tier 2 (re-forward) for %s", instance_id)
+        else:
+            logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
+            try:
+                token = await self._mint_for(inst, params)
+            except TokenMintError as e:
+                logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
                 return
-            self._store_token(instance_id, token, inst.ttl)
-            self._schedule_token_refresh(instance_id)
+            async with self._lock:
+                if instance_id not in self._tunnels:
+                    return  # disconnected while minting -- discard
+                if self._tunnel_epoch.get(instance_id, 0) != epoch + 1:
+                    # This mint ran for the generation tier 1 installed, which is
+                    # exactly ONE bump past the Phase 1 stamp: a failed tier-1
+                    # rebuild always installs (and bumps for) its replacement
+                    # before start() reports failure, and every path that raises
+                    # instead never reaches this store. Any other value means a
+                    # tunnel this recovery never saw was installed meanwhile (the
+                    # operator disconnected and reconnected while the slow remote
+                    # I/O was in flight) -- membership alone cannot see that, the
+                    # NEW generation satisfies it. Storing the result would hand
+                    # the embedded dashboard a credential the current remote never
+                    # issued, and the rebuild below would replace the current
+                    # tunnel using this recovery's stale record. Same stamp check
+                    # as _refresh_token_once's store; the +1 is tier 2's own
+                    # install sitting between the capture and the compare.
+                    logger.info("Discarding a superseded self-heal mint for %s", instance_id)
+                    return
+                self._store_token(instance_id, token, inst.ttl)
+                self._schedule_token_refresh(instance_id)
         try:
             rebuilt = await self._rebuild(inst, params, local_port, expected_epoch=epoch + 1)
         except _RecoverySuperseded:
@@ -2396,7 +2464,15 @@ class SshTunnelManager:
             return None
         tunnel = self._tunnels.get(instance_id)
         local_port = (tunnel.status.local_port if tunnel else 0) or inst.local_port
-        if (inst.connection_method or "ssh").strip().lower() == "ssm":
+        method = (inst.connection_method or "ssh").strip().lower()
+        if method == "fargate":
+            result = await diagnose_instance_fargate(
+                inst.ssm_target,
+                local_port,
+                aws_profile=inst.aws_profile,
+                aws_region=inst.aws_region,
+            )
+        elif method == "ssm":
             result = await diagnose_instance_ssm(
                 inst.ssm_target,
                 inst.remote_port,
@@ -2441,6 +2517,16 @@ class SshTunnelManager:
             params = self._resolve_transport(inst)
         except (SshValidationError, SsmValidationError) as e:
             return {"ok": False, "message": f"invalid {inst.connection_method} settings: {e}"}
+        if params.method == "fargate":
+            # Refused before any command is built: the task runs no kirocrew
+            # gateway, so a restart dispatched at it would only fail remotely.
+            return {
+                "ok": False,
+                "message": (
+                    "a fargate instance runs no Kiro Crew gateway to restart; "
+                    "stop and relaunch the task instead"
+                ),
+            }
         if params.method == "ssm":
             rc, err = await run_remote_kirocrew_ssm(
                 params.ssm_target,

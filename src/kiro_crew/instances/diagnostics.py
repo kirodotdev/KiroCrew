@@ -31,6 +31,7 @@ from kiro_crew.instances.token_mint import _build_ssh_argv
 from kiro_crew.instances.validation import (
     SshValidationError,
     SsmValidationError,
+    split_ecs_target,
     validate_aws_profile,
     validate_aws_region,
     validate_ssh_host,
@@ -89,6 +90,16 @@ _SSM_REASONS = {
     "reachable (tunnel down — reconnect).",
     NOT_CONNECTED: "SSM and the remote dashboard are up. This instance isn't connected yet "
     "(no local tunnel) — click Connect.",
+}
+
+# Fargate variants: the ladder has no dashboard rung, and the first rung's reason
+# comes from the exec-readiness preflight itself, which already names the cause.
+_FARGATE_REASONS = {
+    OK: "All checks passed -- the task's exec channel and the local forward are healthy.",
+    TUNNEL_DOWN: "The task is ready for a forward, but the local forward isn't reachable "
+    "(tunnel down -- reconnect).",
+    NOT_CONNECTED: "The task is ready for a forward. This instance isn't connected yet "
+    "(no local tunnel) -- click Connect.",
 }
 
 
@@ -379,3 +390,70 @@ async def diagnose_instance_ssm(
         return DiagnosisResult(TUNNEL_DOWN, _SSM_REASONS[TUNNEL_DOWN], probes)
 
     return DiagnosisResult(OK, _SSM_REASONS[OK], probes)
+
+
+async def _probe_task_exec_ready(
+    cluster: str, task_id: str, profile: str, region: str
+) -> tuple[bool, str]:
+    """``(ready, reason)`` from the shared exec-readiness preflight, off the loop.
+
+    The preflight is a synchronous ``aws ecs describe-tasks``; it is the same
+    call ``connect_fargate`` makes before opening anything, so the ladder cannot
+    disagree with the connect path about what "ready" means.
+    """
+    readiness = await asyncio.to_thread(
+        cloud_ssm.task_exec_readiness, cluster, task_id, profile, region
+    )
+    return readiness.ready, readiness.reason
+
+
+async def diagnose_instance_fargate(
+    ssm_target: str,
+    local_port: int,
+    *,
+    aws_profile: str = "",
+    aws_region: str = "",
+) -> DiagnosisResult:
+    """Fargate diagnosis ladder -- the ECS-task sibling of :func:`diagnose_instance_ssm`.
+
+        1. Task ready for a forward? ``describe-tasks`` exec readiness -> no => ssm_unreachable
+        2. Local forward reachable?  TCP connect 127.0.0.1:LP              -> no => tunnel_down
+        else                                                                   => ok
+
+    There is no remote-dashboard rung: the task serves a turn API and runs no
+    ``kirocrew``, so nothing could be sent over SSM to ask it. The first rung's
+    reason is the preflight's own, which already distinguishes a channel that was
+    never enabled (relaunch) from an agent still starting (retry). All probes are
+    read-only.
+    """
+    try:
+        target = validate_ssm_target(ssm_target)
+        profile = validate_aws_profile(aws_profile)
+        region = validate_aws_region(aws_region)
+    except SsmValidationError as e:
+        return DiagnosisResult(code=UNKNOWN, reason=f"invalid fargate settings: {e}", probes=[])
+    parts = split_ecs_target(target)
+    if parts is None:
+        return DiagnosisResult(
+            code=UNKNOWN,
+            reason=f"invalid fargate settings: {target!r} is not an ECS task target",
+            probes=[],
+        )
+    cluster, task_id, _runtime_id = parts
+
+    probes: list[dict] = []
+
+    ready, reason = await _probe_task_exec_ready(cluster, task_id, profile, region)
+    probes.append({"name": "task_exec_ready", "ok": ready})
+    if not ready:
+        return DiagnosisResult(SSM_UNREACHABLE, reason, probes)
+
+    if not local_port:
+        return DiagnosisResult(NOT_CONNECTED, _FARGATE_REASONS[NOT_CONNECTED], probes)
+
+    forward_ok = await _probe_local_forward(local_port)
+    probes.append({"name": "local_forward", "ok": forward_ok})
+    if not forward_ok:
+        return DiagnosisResult(TUNNEL_DOWN, _FARGATE_REASONS[TUNNEL_DOWN], probes)
+
+    return DiagnosisResult(OK, _FARGATE_REASONS[OK], probes)

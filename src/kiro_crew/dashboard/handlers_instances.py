@@ -671,6 +671,13 @@ async def api_instances_connect(request: web.Request) -> web.Response:
         body["code"] = "instance_not_connected"
         return web.json_response(body)
     if status.state.value == "connected":
+        if body.get("turn_url"):
+            # A fargate forward. The status carries a turn_url only for that
+            # method, and that method has no dashboard token: the connection IS
+            # the forward, so the token probe below has nothing to validate and
+            # a re-mint would be refused by the manager. Hand back the URL.
+            _audit("connect", "success", request_id=instance_id)
+            return web.json_response(body)
         token = mgr.get_token(instance_id)
         # Validate the stored token before handing it to the browser. connect()
         # is idempotent and may return a CONNECTED tunnel whose token went stale
