@@ -409,6 +409,29 @@ COMPONENTS: dict[str, ComponentSpec] = {
         help="telemetry_salt (sel_hmac.key excluded — regenerated on restore)",
         files=("telemetry_salt",),
     ),
+    # The artifact library: every report, log, diff and generated file an agent or the
+    # operator saved. `artifact_folders.json`, the index naming which folder each one sits
+    # in, is NOT here: it is a record format whose consumers read fields off each entry,
+    # so carrying it means answering what a restore does with a record those consumers
+    # cannot use -- a question with its own answer and its own tests. The tree is the data
+    # and is what a restored host is missing; an artifact whose folder the destination does
+    # not have is shown at the root, which the folder store already does for any id it does
+    # not know. The index is tracked as follow-up work rather than carried half-answered.
+    "artifacts": ComponentSpec(
+        # UNRESOLVED like every other component, and for the plainest reason in the
+        # table: an artifact is whatever someone saved. A pasted log, a captured
+        # response, a generated script -- staging cannot tell which of them holds a
+        # token, so nobody has established that this is safe to hand to another person.
+        policy=SecretPolicy.UNRESOLVED,
+        help="artifacts/ directory (the artifact library; folder assignments not carried)",
+        trees=("artifacts",),
+    ),
+    "uploads": ComponentSpec(
+        # Files the operator handed to the product from their own disk. Same reasoning.
+        policy=SecretPolicy.UNRESOLVED,
+        help="uploads/ directory (files uploaded through the dashboard and apps)",
+        trees=("uploads",),
+    ),
 }
 
 
@@ -505,6 +528,33 @@ _JSON_OBJECT_LISTS: dict[str, tuple[str, ...]] = {
 COMPONENT_TREES: dict[str, tuple[str, ...]] = {
     name: spec.trees for name, spec in COMPONENTS.items() if spec.trees
 }
+
+# How a component is RESTORED, which is not derivable from what it declares. Both restore
+# modes read these instead of naming components inline, so a component added to one of them
+# needs no new branch on either path -- and a component in neither is visibly unrestorable
+# rather than silently skipped.
+#
+#: Components whose declared FILES are moved aside and replaced one by one. `memory` is here
+#: for its two databases; its TREES are handled separately because they are nested, overlap
+#: `workspace` and carry their own clear-then-refill ordering.
+_CORE_FILE_COMPONENTS: tuple[str, ...] = (
+    "memory",
+    "crons",
+    "config",
+    "notifications",
+    "security",
+)
+#: Components restored as whole trees: replace removes the live tree and writes the
+#: archive's, merge copies in without overwriting. Every member declares trees ONLY -- a
+#: component with a flat file belongs above, where a file is moved aside and replaced.
+_WHOLE_TREE_COMPONENTS: tuple[str, ...] = ("workspace", "skills", "artifacts", "uploads")
+
+#: Components a MERGE does not restore, so it says so rather than importing them by halves.
+#: The reason is the DATA's shape, not unfinished work, and :func:`_do_merge` states it at
+#: the refusal. Replace restores both completely, which is why this is a mode restriction
+#: and not a gap in the component.
+_REPLACE_ONLY_COMPONENTS: tuple[str, ...] = ("artifacts", "uploads")
+
 
 # Databases this product owns that live INSIDE a component tree rather than at the top
 # level. Paths are relative to a bundle root, POSIX-separated.
@@ -4386,27 +4436,29 @@ def _do_replace(
                 # their parent IS the backup dir.
                 (backup / tree).parent.mkdir(parents=True, exist_ok=True)
                 _backup_tree_or_refuse(d, backup / tree, allow_unpinned=allow_unpinned)
-        if _want(components, "workspace"):
-            for dirname in ("workspace", "plan_memory"):
+        for comp in _WHOLE_TREE_COMPONENTS:
+            if not _want(components, comp):
+                continue
+            for dirname in COMPONENTS[comp].trees:
                 d = mc / dirname
-                if d.is_dir():
+                # Saved only when phase two will REPLACE it, which is exactly when the
+                # archive carries the tree -- `_do_replace_mutations` leaves a wanted
+                # component whose bundle half is absent standing untouched. Saving it anyway
+                # let a rollback put that copy back over a tree this restore never opened,
+                # deleting an artifact the dashboard wrote while it ran.
+                if d.is_dir() and (snap / dirname).is_dir():
                     _backup_tree_or_refuse(d, backup / dirname, allow_unpinned=allow_unpinned)
-        if _want(components, "skills"):
-            sk = mc / "skills"
-            if sk.is_dir():
-                _backup_tree_or_refuse(sk, backup / "skills", allow_unpinned=allow_unpinned)
 
         # Every relative path phase two can write. Recovery needs it because a target that did
         # not exist before the restore has nothing saved for it, so putting saved entries back
         # would leave that creation standing.
         targets: list[str] = []
-        for comp in ("memory", "crons", "config", "notifications", "security"):
+        for comp in _CORE_FILE_COMPONENTS:
             if _want(components, comp):
                 targets.extend(COMPONENTS[comp].files)
-        if _want(components, "workspace"):
-            targets.extend(("workspace", "plan_memory"))
-        if _want(components, "skills"):
-            targets.append("skills")
+        for comp in _WHOLE_TREE_COMPONENTS:
+            if _want(components, comp):
+                targets.extend(COMPONENTS[comp].trees)
         targets.extend(tree for tree, _ in mem_roots)
 
         # Grows as phase two touches each target; recovery reads it to tell a creation from a
@@ -4581,7 +4633,7 @@ def _do_replace_mutations(
     `_trees_absent_from_bundle` as covering that: it refuses only bundles with no component
     map, and a v3 bundle may legitimately declare `memory` without carrying every tree of it.
     """
-    for comp in ("memory", "crons", "config", "notifications", "security"):
+    for comp in _CORE_FILE_COMPONENTS:
         if _want(components, comp):
             _backup_and_copy(
                 mc, backup, snap, comp, allow_unpinned=allow_unpinned, installed=installed
@@ -4593,9 +4645,18 @@ def _do_replace_mutations(
         # archive HAS it, and this only has to answer for the case where it does not.
         _drop_derived_indexes_absent_from_bundle(snap, mc, backup, installed)
 
-    if _want(components, "workspace"):
-        for dirname in ("workspace", "plan_memory"):
+    for comp in _WHOLE_TREE_COMPONENTS:
+        if not _want(components, comp):
+            continue
+        for dirname in COMPONENTS[comp].trees:
             d = mc / dirname
+            # Required by `test_each_trees_loop_is_guarded`: a `.trees` loop either calls
+            # the chokepoint or sits in a function that already refused every unsafe root,
+            # and this one does neither -- the pre-flight runs in the CALLER, a whole backup
+            # phase earlier. The literal-tuple branches this loop replaced were invisible to
+            # that invariant; a loop over the declared trees is not.
+            if safe_tree_root(d, what="destination root", home=mc) is None:
+                raise UnsafeComponentRoot(f"{comp}:{dirname} no longer resolves inside {mc}")
             sd = snap / dirname
             if sd.is_dir():
                 installed.add(dirname)
@@ -4614,25 +4675,7 @@ def _do_replace_mutations(
                     must_create=True,
                     on_skip=pinned_fs.fatal_skip_reporter(f"restore of {dirname!r}"),
                 )
-        print("  ✅ workspace")
-
-    if _want(components, "skills"):
-        sk = mc / "skills"
-        snap_sk = snap / "skills"
-        if snap_sk.is_dir():
-            installed.add("skills")
-            if sk.is_dir():
-                shutil.rmtree(str(sk))
-            _copytree_safe(
-                snap_sk,
-                sk,
-                allow_unpinned=allow_unpinned,
-                # Same as the workspace branch above: the tree was just removed, so a root
-                # that exists again was recreated by something else.
-                must_create=True,
-                on_skip=pinned_fs.fatal_skip_reporter("restore of 'skills'"),
-            )
-        print("  ✅ skills")
+        print(f"  ✅ {comp}")
 
     # Scoped to memory's own trees as `_do_replace` selected them: the two workspace/
     # subtrees only when `workspace` is not also selected (that pass has already replaced
@@ -4909,7 +4952,27 @@ def _do_merge(
     # merge that claims to have imported it. Skipping the tree and returning 0 is the worst
     # available outcome -- the operator is told the import succeeded while the notes they
     # were importing are not there.
-    _refuse_unsafe_destination_roots(mc, components)
+    # REPLACE ONLY, from the shape of the data: an artifact is a DIRECTORY whose files
+    # describe each other, and a slug comes from the artifact's NAME, so a per-file
+    # no-overwrite merge either tops one artifact up out of another's generation or needs a
+    # rule for when two artifacts are the same artifact. Replace needs neither.
+    #
+    # Refused when that is all the operator asked for, skipped with a notice otherwise: a
+    # run that imports nothing and reports success is the failure this component removes.
+    replace_only = [c for c in _REPLACE_ONLY_COMPONENTS if _want(components, c)]
+    if replace_only and components is not None and not set(components) - set(replace_only):
+        raise ComponentRefused(
+            f"component(s) {', '.join(replace_only)} are restored with --mode replace "
+            "only; re-run with that mode."
+        )
+    # Scoped to the components this MODE writes. Refusing over a replace-only root aborts
+    # an import that never reaches it -- a home keeping `uploads/` on another disk behind a
+    # link could not merge its memory at all. Never narrows to nothing: a selection of only
+    # those was refused above.
+    merged_components = [
+        c for c in COMPONENTS if _want(components, c) and c not in _REPLACE_ONLY_COMPONENTS
+    ]
+    _refuse_unsafe_destination_roots(mc, merged_components)
     # Asked once, at entry, BEFORE any mutation. The core-file copies below run before
     # any tree call, so gating inside the tree helpers meant a merge on a platform that
     # cannot pin wrote memory.db, crons.json and the security files first and only then
@@ -5021,20 +5084,24 @@ def _do_merge(
                     print(f"  {f}: restored (was missing)")
         print("  ✅ security")
 
-    if _want(components, "workspace"):
-        for dirname in ("workspace", "plan_memory"):
+    for comp in _WHOLE_TREE_COMPONENTS:
+        if not _want(components, comp):
+            continue
+        if comp in _REPLACE_ONLY_COMPONENTS:
+            # Named, not passed over in silence, and BEFORE the tick below so a component
+            # this run did not import never reports one.
+            print(
+                f"  ⚠️  {comp}: SKIPPED -- restored with --mode replace only, which swaps "
+                "the tree whole and keeps the previous one in the pre-restore backup."
+            )
+            continue
+        for dirname in COMPONENTS[comp].trees:
             sd = snap / dirname
             if sd.is_dir():
                 dd = mc / dirname
                 dd.mkdir(parents=True, exist_ok=True)
                 _copy_tree_no_overwrite(sd, dd, allow_unpinned=allow_unpinned)
-        print("  ✅ workspace")
-
-    if _want(components, "skills"):
-        if (snap / "skills").is_dir():
-            (mc / "skills").mkdir(parents=True, exist_ok=True)
-            _copy_tree_no_overwrite(snap / "skills", mc / "skills", allow_unpinned=allow_unpinned)
-        print("  ✅ skills")
+        print(f"  ✅ {comp}")
 
     print("✅ Merge complete.")
 
@@ -5312,7 +5379,25 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 # A DERIVED index does not count as payload: a bundle carrying only
                 # `memory_index.db` still has no memory to restore, and treating it as payload
                 # would let exactly the reproduced case through.
-                hollow = [c for c in declared if _component_payload_absent(snap, c)]
+                #
+                # Scoped to the component whose replace clears UNCONDITIONALLY, which is
+                # the premise this message states. `artifacts` and `uploads` are legitimately
+                # empty on a home that never made one, so an ordinary bundle declares them
+                # with no payload; refusing on the declaration alone refused the entire
+                # restore over two components that would have touched nothing. The
+                # explicit-selection branch below still reports any hollow component, because
+                # there the operator NAMED it and a silent no-op would answer a request with
+                # nothing.
+                hollow = [
+                    c
+                    for c in declared
+                    # `memory` is the one component whose replace clears live state even
+                    # when the bundle carries nothing for it: its tree loop clears
+                    # unconditionally and a derived index the archive lacks is moved aside.
+                    # Every other component mutates only what the bundle actually carries,
+                    # so a hollow declaration there is a restore that does nothing.
+                    if c == "memory" and _component_payload_absent(snap, c)
+                ]
                 if hollow:
                     print(
                         "❌ This bundle declares "
@@ -5447,6 +5532,13 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             # Raised before anything was written, so this is a clean refusal. Report it
             # as one rather than letting a traceback out -- the same contract every other
             # refusal on this path already follows.
+            print(f"❌ {e}")
+            return 1
+        except ComponentRefused as e:
+            # A mode that cannot restore what was asked for, raised at the top of the merge
+            # before any mutation. Same clean-refusal contract as the branch above; the
+            # message names the mode that can.
+            _audit("state_restore_rejected", f"reason=mode_unsupported detail={e}")
             print(f"❌ {e}")
             return 1
         except NamedStoresInUse as e:
