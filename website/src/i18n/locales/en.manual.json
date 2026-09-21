@@ -4716,7 +4716,7 @@
       "no_checkout_found": "No {{productName}} checkout found",
       "no_checkout_found_help": "Dev Fleet manages the git worktrees of a {{productName}} source checkout. None was found in your project directory, in the checkout serving this dashboard, or in the usual clone locations.",
       "no_checkout_found_env_example": "KIROCREW_DEVFLEET_REPO=/path/to/your/checkout",
-      "no_checkout_found_action": "Set the environment variable below, or add dev_fleet.repo_path to config.json in your {{productName}} data directory (~/.kiro/crew by default) to make it stick, then restart the gateway.",
+      "no_checkout_found_action": "Add dev_fleet.repo_path to config.json in your {{productName}} data directory (~/.kiro/crew by default), and this page picks it up on its next refresh. The environment variable below works too, but a running gateway cannot see a variable set after it started, so that route needs a restart.",
       "disk_usage_unavailable": "Disk usage unavailable"
     },
     "developerPage": {

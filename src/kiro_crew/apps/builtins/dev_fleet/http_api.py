@@ -77,6 +77,9 @@ async def _with_live_run_pointers(data: dict) -> dict:
 
 async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
     fresh = request.query.get("fresh") == "1"
+    # The one route whose answer a late resolution changes, and the one the page
+    # polls while it is showing the setup card. Costs nothing once resolved.
+    await worktree_ops._ensure_repo_resolved()
     try:
         data = (
             (await fleet_state._fleet_refresh()) if fresh else (await fleet_state._fleet_cached())

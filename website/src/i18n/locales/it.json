@@ -11263,7 +11263,7 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "Passaggio preparato: questo worktree diventerà attivo al prossimo avvio del gateway. Esegui `{{cmd}}` per completarlo, oppure usa il menu di questa riga → Annulla il passaggio preparato per annullarlo. Fino ad allora il gateway continua a eseguire il checkout precedente.",
       "keeps_the_live_checkout_the_live_target_and_disc": "Mantiene il checkout attivo come destinazione attiva e scarta il passaggio preparato verso {{staged}} (non viene riavviato nulla)",
       "restarting_completes_the_pending_cutover_boots": "Il riavvio completa il passaggio in sospeso: il gateway ripartirà su \"{{staged}}\", non sul checkout attuale. La dashboard si disconnetterà brevemente e si riconnetterà automaticamente. Per annullare, usa invece Annulla il passaggio preparato.",
-      "no_checkout_found_action": "Imposta la variabile d'ambiente qui sotto, oppure aggiungi dev_fleet.repo_path al config.json nella directory dati di {{productName}} (~/.kiro/crew per impostazione predefinita) per renderla permanente, poi riavvia il gateway.",
+      "no_checkout_found_action": "Aggiungi dev_fleet.repo_path al config.json nella directory dati di {{productName}} (~/.kiro/crew per impostazione predefinita) e questa pagina lo rileva al prossimo aggiornamento. Anche la variabile d'ambiente qui sotto funziona, ma un gateway già avviato non vede una variabile impostata dopo l'avvio, quindi quella strada richiede un riavvio.",
       "pr_closed_not_on_main": "PR chiusa — non è su main",
       "pr_closed_uncommitted_changes": "PR chiusa — modifiche non salvate",
       "remove_closed_pr": "Rimuovi — PR chiusa (non è su main)",
