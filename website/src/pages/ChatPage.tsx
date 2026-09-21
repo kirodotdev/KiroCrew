@@ -5262,8 +5262,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     [renderedDisplayItems],
   )
 
-  const navigateToTurn = useCallback((displayIndex: number) => {
-    navToDisplayIndex(displayIndex, { behavior: 'smooth', align: 'start', offset: -24 })
+  const navigateToTurn = useCallback((displayIndex: number, opts?: { instant?: boolean }) => {
+    // instant: used by the minimap's drag-scrub — a smooth glide would lag the
+    // pointer and queue easings on every marker crossing.
+    navToDisplayIndex(displayIndex, { behavior: opts?.instant ? 'auto' : 'smooth', align: 'start', offset: -24 })
   }, [navToDisplayIndex])
 
   // The transcript renders the deferred `renderedTranscript` snapshot; while a
@@ -7139,10 +7141,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               scrollerRef={scrollerRef}
               onNavigate={navigateToTurn}
               // The rail maps loaded turns only; while the server holds older
-              // rows it wears an end-cap that says so and loads them (#8221).
-              earlier={slotHasMore && cursorIsForActiveSlot
-                ? { loading: loadingOlder, onLoad: handleLoadEarlier }
-                : undefined}
+              // rows its labels say "of N loaded" (#8221's disclosure).
+              windowed={slotHasMore && cursorIsForActiveSlot}
             />
             <TranscriptScrollShell
               scrollerRef={scrollerRef}
