@@ -35,6 +35,7 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "browser-control.md",
         "computer-use.md",
         "configuration.md",
+        "connections.md",
         "cron-and-scheduling.md",
         "dashboard.md",
         "deploy-web.md",
