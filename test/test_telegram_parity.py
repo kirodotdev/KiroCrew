@@ -21,7 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from test_telegram import FakeClient, FakeProvider, _dispatcher, _dm, _Ev, _prime_live
+from test_telegram import FakeClient, FakeProvider, _dispatcher, _dm, _Ev, _origin, _prime_live
 
 from conftest import host_abs
 from kiro_crew.acp.types import EVENT_COMPLETE
@@ -3169,9 +3169,11 @@ class TestAMidTurnModifierSurvivesTheQueue:
             set_title=lambda *a, **k: None,
             atomic_appends=lambda _key: nullcontext(),
         )
-        sessions.enqueue(key, "1", "summarise this", force=True, privacy_request="temporary")
+        sessions.enqueue(
+            key, "1", "summarise this", force=True, privacy_request="temporary", **_origin()
+        )
 
-        await d._drain_queue(key, 7, 7)
+        await d._drain_queue(key)
 
         # The whole point: the drained turn ran AND its session is restricted, so
         # `_persist_turn` writes nothing for it.
@@ -3188,11 +3190,11 @@ class TestAMidTurnModifierSurvivesTheQueue:
         d, _, sessions = _dispatcher({7})
         key = d._session_key(("direct", "7"))
         # Incognito FIRST, so honouring the first request would leave the stricter
-        # `/temporary` behind it silently downgraded.
-        sessions.enqueue(key, "1", "one", force=True, privacy_request="incognito")
-        sessions.enqueue(key, "2", "two", force=True, privacy_request="temporary")
+        # `/temporary` behind it silently downgraded. ONE sender, so they collapse.
+        sessions.enqueue(key, "1", "one", force=True, privacy_request="incognito", **_origin())
+        sessions.enqueue(key, "2", "two", force=True, privacy_request="temporary", **_origin())
 
-        await d._drain_queue(key, 7, 7)
+        await d._drain_queue(key)
 
         assert privacy_mode.is_temporary(key), "the collapsed turn takes the strictest mode"
 
@@ -3206,8 +3208,10 @@ class TestAMidTurnModifierSurvivesTheQueue:
         # message BEHIND the cap. The drain re-enqueues the surplus for a later
         # iteration, and that copy is the only carrier its request has left.
         for i in range(MAX_COLLAPSE):
-            sessions.enqueue(key, str(i), f"msg{i}", force=True)
-        sessions.enqueue(key, "last", "the private one", force=True, privacy_request="temporary")
+            sessions.enqueue(key, str(i), f"msg{i}", force=True, **_origin())
+        sessions.enqueue(
+            key, "last", "the private one", force=True, privacy_request="temporary", **_origin()
+        )
         d.handle_message = AsyncMock()  # type: ignore[method-assign]
         # Observed as the re-enqueue CALL: the pump loops, so the copy left in the
         # queue after the first iteration is consumed by the second one.
@@ -3220,7 +3224,7 @@ class TestAMidTurnModifierSurvivesTheQueue:
 
         sessions.enqueue = _spy  # type: ignore[method-assign]
 
-        await d._drain_queue(key, 7, 7)
+        await d._drain_queue(key)
 
         deferred = [kw for text, kw in requeued if text == "the private one"]
         assert deferred, "the surplus message must be re-enqueued, not dropped"

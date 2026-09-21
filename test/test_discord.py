@@ -68,8 +68,12 @@ from kiro_crew.discord.transport import (
     DiscordTransport,
 )
 from kiro_crew.discord.transport_dispatch import (
+    _NOT_A_SENDER,
     _STEER_ACK_EMOJI,
     DiscordDispatcher,
+    _origin_kwargs,
+    _queued_origin,
+    _QueuedOrigin,
 )
 from kiro_crew.messaging import driver as messaging_driver
 from kiro_crew.messaging.attachments import cleanup
@@ -164,6 +168,13 @@ class FakeClient(MultipartFake):
     def __init__(self) -> None:
         self.sent: list[tuple[str, Any]] = []
         self.edits: list[tuple[str, str, Any]] = []
+        #: channel_id per send_message / edit_message call (parallel to `sent` / `edits`).
+        #: Which CHANNEL an outbound call addressed is otherwise invisible here, and it
+        #: is the whole question for a queue shared by two people: a receipt edited
+        #: under the wrong channel's address reaches a channel that message id does not
+        #: exist in.
+        self.send_channels: list[str] = []
+        self.edit_channels: list[str] = []
         self.component_edits: list[tuple[str, Any]] = []
         self.acked: list[str] = []
         #: (interaction_id, text, ephemeral) per interaction callback response.
@@ -206,6 +217,7 @@ class FakeClient(MultipartFake):
         await asyncio.sleep(0)  # yield like a real network await (exposes races)
         self._mid += 1
         self.sent.append((text, components))
+        self.send_channels.append(channel_id)
         if self.fail_sends:
             return None
         return str(self._mid)
@@ -219,6 +231,7 @@ class FakeClient(MultipartFake):
         components: Any = None,
     ) -> bool:
         self.edits.append((message_id, text, components))
+        self.edit_channels.append(channel_id)
         return self.edit_ok
 
     async def edit_message_components(
@@ -704,6 +717,26 @@ def _dispatcher(
 
 
 # ── commands.py ──────────────────────────────────────────────────────────
+
+
+def _dc_origin(user: str = "u1", channel: str = "c1", *, thread: str = "") -> _QueuedOrigin:
+    """One queued message's origin: who sent it, and where its reply goes.
+
+    Defaults are user ``u1`` in channel ``c1``, the DM these tests use throughout.
+    """
+    return _QueuedOrigin(user_id=user, channel_id=channel, thread_id=thread)
+
+
+def _origin(*a: Any, **kw: Any) -> dict[str, str]:
+    """:func:`_dc_origin` as queue-entry kwargs, spelled by the PRODUCTION writer.
+
+    A queue entry carries who sent it and where its reply goes, because the drain
+    replays it under that envelope rather than under the turn that opened the queue.
+    Built through ``_origin_kwargs`` rather than by spelling the storage keys, so
+    renaming one moves this fixture with it instead of leaving it green against a
+    shape production does not write.
+    """
+    return _origin_kwargs(_dc_origin(*a, **kw))
 
 
 class TestParseCommand:
@@ -3179,7 +3212,7 @@ class TestDispatcher:
         sess.set_mirror_link(
             "dashboard:chat-1", ChannelLink("discord", channel_id="c1"), accepts_inbound=True
         )
-        await d._drain_queue(native_key, "u1", "c1")
+        await d._drain_queue(native_key)
         await asyncio.sleep(0)
 
         assert sess.get_origin_link(native_key) == ChannelLink("discord", channel_id="c1")
@@ -3210,12 +3243,12 @@ class TestDispatcher:
         first = _batch("first")
         second = _batch("second")
         sess.queued = [
-            ("t1", "first batch", {"attachments": first}),
-            ("t2", "second batch", {"attachments": second}),
-            ("t3", "after second", {"attachments": []}),
+            ("t1", "first batch", {"attachments": first, **_origin()}),
+            ("t2", "second batch", {"attachments": second, **_origin()}),
+            ("t3", "after second", {"attachments": [], **_origin()}),
         ]
 
-        await d._drain_queue(d._session_key("u1"), "u1", "c1")
+        await d._drain_queue(d._session_key("u1"))
 
         assert cli.attachment_downloads == [item["url"] for item in [*first, *second]]
         assert sess.queued == []
@@ -4583,3 +4616,323 @@ class TestPerTurnConfigReadIsOffLoop:
         with mock.patch.object(td_mod.asyncio, "to_thread", _spy):
             await d.handle_message(_inbound("hi"))
         assert "_render_config" in offloaded
+
+
+class TestDrainSenderIdentity:
+    """A queue shared by two people must not be answered as one person.
+
+    Under ``messaging.dm_scope = "unified"`` every allow-listed person's direct chat
+    collapses into one session key -- ``build_dm_session_key`` reduces the bucket to
+    ``unified:{agent}``, dropping both channel and user -- so ONE queue holds messages
+    from several senders. A combined turn carries ONE envelope, so it may only combine
+    messages that share one.
+    """
+
+    _UNIFIED = "unified:kirocrew"
+
+    async def _queue(self, d: Any, sess: Any, *msgs: InboundMessage) -> None:
+        """Queue each message through the REAL enqueue, mid-turn.
+
+        End to end through the production writer, so the recorder and the reader are
+        covered together: an origin nothing reads back is not a fix, and an origin a
+        fixture spells by hand is not evidence production records one.
+        """
+        sess._busy = True
+        for msg in msgs:
+            assert await d._enqueue_with_receipt(
+                self._UNIFIED,
+                msg.conversation_id,
+                msg.text,
+                origin=_dc_origin(msg.user_id, msg.conversation_id, thread=msg.thread_id or ""),
+            ), "the fake session must accept a mid-turn enqueue"
+        sess._busy = False  # the turn they queued behind has finished
+
+    @staticmethod
+    async def _drain(d: Any, key: str) -> list[InboundMessage]:
+        """Drain, returning the envelope every replayed turn ran under."""
+        seen: list[InboundMessage] = []
+        original = d.handle_message
+
+        async def _spy(msg: Any, **kw: Any) -> None:
+            seen.append(msg)
+
+        d.handle_message = _spy
+        try:
+            await d._drain_queue(key)
+        finally:
+            d.handle_message = original
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_the_receipt_counts_only_the_answered_senders_own_deferrals(self) -> None:
+        """ "+N deferred" is a promise TO ONE PERSON, so it may only count their messages.
+
+        ``len(remainder)`` also counts the other sender's entries and any entry another
+        TRANSPORT recorded. Each of those drains in its own turn, in its own channel, so
+        showing them here tells this person to expect a follow-up for text they never
+        wrote -- and when their own burst fit in one turn, their true count is zero.
+        """
+        d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        deferred: list[int] = []
+
+        async def _flip(session_key: str, channel_id: str, answered: list[str], n: int = 0) -> None:
+            deferred.append(n)
+
+        d._receipt_flip_locked = _flip
+        await self._queue(
+            d,
+            sess,
+            _inbound("mine", user_id="u1", conversation_id="c1"),
+            _inbound("theirs", user_id="u2", conversation_id="c2"),
+        )
+
+        await self._drain(d, self._UNIFIED)
+
+        assert deferred == [0, 0], "neither sender has a deferral of their OWN"
+
+    @pytest.mark.asyncio
+    async def test_a_senders_own_surplus_is_still_counted(self) -> None:
+        """The guard against fixing the count by always reporting zero."""
+        from kiro_crew.discord.transport_dispatch import _MAX_COLLAPSE
+
+        d, _cli, sess = _dispatcher({"u1"}, dm_scope="unified")
+        deferred: list[int] = []
+
+        async def _flip(session_key: str, channel_id: str, answered: list[str], n: int = 0) -> None:
+            deferred.append(n)
+
+        d._receipt_flip_locked = _flip
+        await self._queue(
+            d,
+            sess,
+            *(
+                _inbound(f"m{i}", user_id="u1", conversation_id="c1")
+                for i in range(_MAX_COLLAPSE + 2)
+            ),
+        )
+
+        await self._drain(d, self._UNIFIED)
+
+        assert deferred[0] == 2, "both of this sender's own surplus messages are theirs"
+
+    @pytest.mark.asyncio
+    async def test_two_senders_on_one_queue_drain_as_two_turns(self) -> None:
+        """Each drained turn names the sender who wrote its text, in its own channel.
+
+        Under ``messaging.dm_scope = "unified"`` every allow-listed person's direct chat
+        collapses into one session key -- ``build_dm_session_key`` reduces the bucket to
+        ``unified:{agent}``, dropping both channel and user -- so ONE queue holds
+        messages from several senders. A combined turn carries ONE envelope, so it may
+        only combine messages that share one.
+        """
+        d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        await self._queue(
+            d,
+            sess,
+            _inbound("mine", user_id="u1", conversation_id="c1"),
+            _inbound("and mine", user_id="u2", conversation_id="c2"),
+        )
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        assert [m.text for m in seen] == ["mine", "and mine"], "one turn each, FIFO order"
+        assert [m.user_id for m in seen] == ["u1", "u2"], "the turn must name its own author"
+        assert [m.conversation_id for m in seen] == ["c1", "c2"], "and answer in their own channel"
+        assert sess.queued == [], "the pump must drain the deferred entry too, not strand it"
+
+    @pytest.mark.asyncio
+    async def test_one_senders_burst_with_distinct_message_ids_still_collapses(self) -> None:
+        """The ordinary case is unchanged: one person's burst is ONE turn.
+
+        The two messages carry DISTINCT per-message ids, because Discord mints a
+        snowflake per message and two real messages never share one. Grouping on a
+        per-message identifier is the trap: it makes one person's own burst compare
+        unequal, so the collapse stops firing and every burst drains as N turns. The
+        origin records no such id, which is why the trap is avoided structurally here.
+        """
+        d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
+        first = _inbound_with_id("first", message_id="m-1")
+        second = _inbound_with_id("second", message_id="m-2")
+        assert first.message_id != second.message_id, "the point of this test"
+        await self._queue(d, sess, first, second)
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        assert [m.text for m in seen] == ["first\n\nsecond"], "the burst must still collapse"
+        assert [m.user_id for m in seen] == ["u1"]
+        assert [m.conversation_id for m in seen] == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_a_third_sender_behind_two_does_not_jump_the_queue(self) -> None:
+        """A differing sender defers itself AND everything behind it, so FIFO is exact."""
+        d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        await self._queue(
+            d,
+            sess,
+            _inbound("a", user_id="u1", conversation_id="c1"),
+            _inbound("b", user_id="u2", conversation_id="c2"),
+            _inbound("c", user_id="u1", conversation_id="c1"),
+        )
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        # "c" is the same sender as "a", but it arrived AFTER "b": collapsing it into
+        # the first turn would answer it ahead of a message that was queued earlier.
+        assert [(m.user_id, m.text) for m in seen] == [("u1", "a"), ("u2", "b"), ("u1", "c")]
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_entry_keeps_its_own_origin_when_requeued(self) -> None:
+        """The re-enqueue must carry the origin, or the bug returns one iteration later."""
+        d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        await self._queue(
+            d,
+            sess,
+            _inbound("mine", user_id="u1", conversation_id="c1"),
+            _inbound("theirs", user_id="u2", conversation_id="c2"),
+        )
+        requeued: list[dict] = []
+        real_enqueue = sess.enqueue
+
+        def _spy(k: str, ts: str, text: str, **kw: Any) -> bool:
+            requeued.append(dict(kw))
+            return real_enqueue(k, ts, text, **kw)
+
+        sess.enqueue = _spy  # type: ignore[method-assign]
+
+        await self._drain(d, self._UNIFIED)
+
+        assert requeued, "the differing sender's entry must be re-enqueued, not dropped"
+        # Read back through the production reader rather than by spelling the storage
+        # keys, so renaming one cannot leave this test passing.
+        assert _queued_origin(requeued[0]) == _dc_origin("u2", "c2")
+
+    @pytest.mark.asyncio
+    async def test_the_receipt_is_flipped_in_the_channel_that_holds_its_bubble(self) -> None:
+        """The bubble belongs to whoever queued first, not to whoever opened the turn."""
+        d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
+        await self._queue(d, sess, _inbound("held", user_id="u2", conversation_id="c2"))
+        assert cli.send_channels and cli.send_channels[-1] == "c2", "the bubble lives in c2"
+
+        await self._drain(d, self._UNIFIED)
+
+        flips = [
+            channel
+            for channel, (_mid, text, _components) in zip(cli.edit_channels, cli.edits)
+            if "Now answering" in text
+        ]
+        assert flips, "the drain must flip the receipt"
+        assert flips[0] == "c2", "editing under another channel's address cannot land"
+
+    @pytest.mark.asyncio
+    async def test_a_queued_thread_message_replays_under_its_own_thread(self) -> None:
+        """The thread rides on the entry, so a thread queue keeps its route."""
+        d, cli, sess = _dispatcher({"u1"}, allowed_threads={"t9"}, dm_scope="unified")
+        await self._queue(d, sess, _inbound("in the thread", conversation_id="c1", thread_id="t9"))
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        assert [m.text for m in seen] == ["in the thread"]
+        assert seen[0].thread_id == "t9"
+        assert seen[0].conversation_id == "c1"
+
+    def test_the_collapse_key_is_every_origin_field(self) -> None:
+        """Every field on this origin names WHO or WHERE, so all of them group.
+
+        Derived from ``_fields`` minus :data:`_NOT_A_SENDER` rather than restated, so
+        adding a field joins the key by DEFAULT: a WHO field left out would let two
+        people's messages collapse under one identity, while a surplus field only costs
+        a collapse. The empty exclusion set is pinned because widening it is how the
+        identity bug would return, and how the collapse would stop firing.
+        """
+        assert _NOT_A_SENDER == frozenset()
+        assert _QueuedOrigin._fields == ("user_id", "channel_id", "thread_id")
+        origin = _dc_origin("u1", "c1")
+        assert origin.sender_key == (origin.user_id, origin.channel_id, origin.thread_id)
+        # Different person, and the same person in a different place: unequal keys.
+        assert origin._replace(user_id="u2").sender_key != origin.sender_key
+        assert origin._replace(channel_id="c2").sender_key != origin.sender_key
+        assert origin._replace(thread_id="t9").sender_key != origin.sender_key
+
+    @pytest.mark.asyncio
+    async def test_an_entry_another_transport_recorded_is_deferred_not_lost(self) -> None:
+        """One queue can hold two transports, and neither may answer the other's.
+
+        Every DM dispatcher is built with the orchestrator's single ``SessionManager``,
+        and ``build_dm_session_key(..., dm_scope="unified", chat_type="direct")``
+        returns ``unified:{agent}`` for EVERY channel -- it drops the channel as well
+        as the user -- so a Discord DM and a Telegram DM to the same agent share one
+        queue. A Telegram-recorded entry carries no field Discord can address, so
+        answering it here would post one transport's reply into another's conversation,
+        and raising on it would discard every message already dequeued this iteration.
+        """
+        d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
+        foreign = {
+            "telegram_user_id": "7",
+            "telegram_chat_id": "70",
+            "telegram_thread_id": "",
+            "telegram_chat_type": "private",
+            "telegram_username": "",
+        }
+        assert _queued_origin(foreign) is None, "not this channel's entry to read"
+        sess.queued = [("t0", "theirs", dict(foreign))]
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        assert seen == [], "Discord must not answer a Telegram-recorded message"
+        assert [text for _ts, text, _kw in sess.queued] == ["theirs"], "and must not lose it"
+        assert sess.queued[0][2] == foreign, "re-enqueued verbatim, for its own drain"
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_entry_does_not_block_this_channels_own_messages(self) -> None:
+        """It steps aside rather than holding the queue: order is per sender, not global.
+
+        Blocking this channel's queue behind a foreign entry would strand it whenever
+        the other transport sends nothing further, and FIFO between two transports is
+        not something either sender can observe -- they are in different apps.
+        """
+        d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
+        await self._queue(d, sess, _inbound("mine", user_id="u1", conversation_id="c1"))
+        foreign = {
+            "telegram_user_id": "7",
+            "telegram_chat_id": "70",
+            "telegram_thread_id": "",
+            "telegram_chat_type": "private",
+            "telegram_username": "",
+        }
+        sess.queued.insert(0, ("t-first", "theirs", dict(foreign)))
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        assert [m.text for m in seen] == ["mine"], "the foreign entry ahead of it must not block"
+        assert [text for _ts, text, _kw in sess.queued] == ["theirs"], "and stays for its own drain"
+
+    def test_a_partly_recorded_own_entry_is_a_producer_bug_not_a_fallback(self) -> None:
+        """An incomplete origin from THIS channel raises instead of guessing an address.
+
+        Both producers are in this module -- ``_enqueue_with_receipt`` and the drain's
+        own re-enqueue, which passes the entry's payload straight back -- so a partial
+        record can only mean a change here dropped a field. Defaulting to empty strings
+        would address the reply to an empty channel id, a silent misdelivery.
+
+        Ownership is read off the NEUTRAL channel field, which is why an entry can be
+        "mine, and broken" at all: without it, a missing field would be indistinguishable
+        from another transport's entry and would be silently set aside forever.
+        """
+        with pytest.raises(KeyError) as caught:
+            _queued_origin({"queued_channel": "discord", "discord_user_id": "u1"})
+        assert "discord_channel_id" in str(caught.value), "the error must name what is missing"
+
+        # An entry naming no channel, or another one, is the OTHER case: not this
+        # dispatcher's, deferred rather than raised on.
+        assert _queued_origin({}) is None
+        assert _queued_origin({"queued_channel": "telegram"}) is None
+
+    @pytest.mark.asyncio
+    async def test_the_enqueued_entry_records_the_senders_own_origin(self) -> None:
+        """Nothing downstream can recover an origin the entry never carried."""
+        d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
+        await self._queue(d, sess, _inbound("hello", user_id="u1", conversation_id="c1"))
+
+        assert _queued_origin(sess.queued[0][2]) == _dc_origin("u1", "c1")

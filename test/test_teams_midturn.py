@@ -466,24 +466,35 @@ class TestDrainIdentity:
         # Different person: unequal keys.
         assert origin._replace(user_email="other@example.com").sender_key != origin.sender_key
 
-    def test_an_entry_with_no_recorded_origin_is_a_producer_bug_not_a_fallback(self) -> None:
-        """A missing origin raises instead of quietly addressing the reply somewhere.
+    def test_an_untagged_entry_is_foreign_not_a_producer_bug(self) -> None:
+        """No channel tag means NOT MINE, so the drain sets it aside rather than raising.
 
-        Every producer records it: `_enqueue_with_receipt` writes it, and the only other
-        enqueue on this path is the drain re-queueing a deferred entry, which passes that
-        entry's own kwargs back. The queue is an in-process list on a live session, so no
-        persisted pre-fix entry exists either. So absence can only mean a NEW producer
-        forgot, and the two silent alternatives are both worse than raising: empty strings
-        would address an empty conversation id, and inheriting the opener's envelope is
-        the exact defect this module exists to prevent.
+        Raising here would lose messages: ``_queued_origin`` runs AFTER ``dequeue``, so an
+        exception discards every message that iteration has already taken off the queue,
+        and the remainder is re-enqueued only after the loop.
+        An entry another transport recorded is reachable on the live path, because one
+        session key under a unified scope is shared by every dispatcher on the host.
+        """
+        assert _queued_origin({}) is None
+        assert _queued_origin({"queued_channel": "telegram", "telegram_user_id": "7"}) is None
+
+    def test_an_entry_tagged_MINE_but_missing_a_field_is_a_producer_bug(self) -> None:
+        """Ownership is decided on the tag, so a field missing from an OWN entry still raises.
+
+        Both producers are in this module: ``_enqueue_with_receipt`` writes the origin, and
+        the only other enqueue is the drain re-queueing an entry it set aside, which passes
+        that entry's own kwargs back. So absence on an entry claiming this channel can only
+        mean a NEW producer forgot, and the two silent alternatives are both worse than
+        raising: empty strings would address an empty conversation id, and inheriting the
+        opener's envelope is the exact defect this module exists to prevent.
         """
         with pytest.raises(KeyError) as caught:
-            _queued_origin({})
+            _queued_origin({"queued_channel": "teams"})
         assert "teams_conversation_id" in str(caught.value), "the error must name what is missing"
 
         # A partially recorded entry is a producer bug too, not a half-usable envelope.
         with pytest.raises(KeyError):
-            _queued_origin({"teams_conversation_id": "CONV"})
+            _queued_origin({"queued_channel": "teams", "teams_conversation_id": "CONV"})
 
     @pytest.mark.asyncio
     async def test_the_receipt_is_flipped_in_the_chat_that_holds_its_bubble(
@@ -524,6 +535,186 @@ class TestDrainIdentity:
         assert origin.resolved_identity == "who@example.com"
         assert origin.activity_id == "act-w"
         assert origin.service_url == _SVC
+
+
+class TestTeamsSharesTheQueueWithOtherTransports:
+    """This channel is not alone on its queue, and a foreign entry must not cost messages.
+
+    Every DM dispatcher is handed the orchestrator's single ``SessionManager``, and under
+    ``dm_scope = "unified"`` ``build_dm_session_key`` drops the CHANNEL from the bucket,
+    so a Teams chat and a Telegram DM to one agent resolve to one session key and one
+    queue. ``_queued_origin`` therefore decides ownership before it reads any prefixed
+    key, and it runs after ``dequeue``: requiring its own keys on a Telegram entry would
+    raise ``KeyError`` with this iteration's already-dequeued messages nowhere, since the
+    remainder is re-enqueued only after the loop.
+    """
+
+    _from = staticmethod(TestDrainIdentity._from)
+    _patch = staticmethod(TestDrainIdentity._patch)
+
+    @staticmethod
+    def _foreign(text: str = "from telegram") -> tuple[str, str, dict]:
+        """A queue entry as the TELEGRAM producer records one, built by that producer."""
+        from kiro_crew.telegram.transport_dispatch import _origin_kwargs as tg_kwargs
+        from kiro_crew.telegram.transport_dispatch import _QueuedOrigin as TgOrigin
+
+        origin = TgOrigin(user_id="7", chat_id="70", thread_id="", chat_type="private", username="")
+        return ("t0", text, tg_kwargs(origin))
+
+    def test_the_producer_tags_every_entry_with_this_channel(self) -> None:
+        """Without the tag no peer can name this channel as the owner to wake."""
+        from kiro_crew.messaging.queue_drain import entry_channel
+
+        recorded = _origin_kwargs(self._from(_EMAIL, "CONV", "act-1"))
+
+        assert entry_channel(recorded) == "teams"
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_entry_is_set_aside_and_this_turn_still_answers(
+        self, monkeypatch
+    ) -> None:
+        """The message-loss fix, measured on the loss rather than on the exception.
+
+        The foreign entry is dequeued FIRST, so under the old required-key read the raise
+        happened with this channel's own entry already off the queue. Both must survive:
+        ours answered, theirs still queued for its owner.
+        """
+        envelopes, _turns = self._patch(monkeypatch)
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+        mine = self._from(_EMAIL, "CONV", "act-1")
+
+        assert await d._enqueue_with_receipt(key, mine, "mine")
+        # Theirs arrives FIRST in the queue, which is the ordering the old read died on.
+        sessions.queues[key].insert(0, self._foreign())
+        sessions._busy = False
+
+        await d._drain_queue(key, mine)
+
+        assert [e.text for e in envelopes] == ["mine"], "our own entry is still answered"
+        assert [t for _ts, t, _kw in sessions.queues[key]] == [
+            "from telegram"
+        ], "and theirs is kept, not consumed and not lost"
+
+    @pytest.mark.asyncio
+    async def test_the_drain_is_registered_and_answers_with_no_opening_envelope(
+        self, monkeypatch
+    ) -> None:
+        """A peer wakes this drain with the session key alone.
+
+        There is no inbound then -- the finished turn belonged to another transport -- so
+        the replay is built on a bare template and every addressing field comes from the
+        entry's own origin.
+        """
+        from kiro_crew.messaging import queue_drain
+
+        envelopes, _turns = self._patch(monkeypatch)
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+        mine = self._from("solo@example.com", "CONV-SOLO", "act-solo")
+
+        assert await d._enqueue_with_receipt(key, mine, "answer me")
+        sessions._busy = False
+
+        assert queue_drain._DRAINS.get("teams") is not None, "a peer must be able to wake it"
+        await queue_drain._DRAINS["teams"](key)
+
+        assert [e.text for e in envelopes] == ["answer me"]
+        assert envelopes[0].conversation_id == "CONV-SOLO"
+        assert envelopes[0].user_email == "solo@example.com"
+        assert envelopes[0].conversation_type == "personal", "the only scope this queue sees"
+
+    @pytest.mark.asyncio
+    async def test_the_drain_wakes_the_owner_of_an_entry_it_set_aside(self, monkeypatch) -> None:
+        """Setting it aside is only half the fix: something must come back for it.
+
+        The entry was already accepted and receipted, and a drain runs only from the tail
+        of its OWN channel's turn -- so without the wake that message waits for its owner
+        to finish some unrelated turn, and forever if that user goes quiet there.
+        """
+        from kiro_crew.messaging import queue_drain
+
+        self._patch(monkeypatch)
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+        woken: list[str] = []
+
+        async def _peer(session_key: str) -> None:
+            woken.append(session_key)
+
+        queue_drain.register_drain("telegram", _peer)
+
+        assert await d._enqueue_with_receipt(key, self._from(_EMAIL, "CONV", "act-1"), "mine")
+        sessions.queues[key].append(self._foreign())
+        sessions._busy = False
+
+        await d._drain_queue(key, self._from(_EMAIL, "CONV", "act-1"))
+
+        assert woken == [key], "the channel that owns the set-aside entry must be woken"
+
+    @pytest.mark.asyncio
+    async def test_the_receipt_counts_only_the_answered_senders_own_deferrals(
+        self, monkeypatch
+    ) -> None:
+        """A foreign entry is not this sender's deferred message.
+
+        It drains in its own channel, in its own chat. Counting it here would tell this
+        person to expect a follow-up for text they never wrote.
+        """
+        self._patch(monkeypatch)
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+        mine = self._from(_EMAIL, "CONV", "act-1")
+        deferred: list[int] = []
+
+        async def _flip(session_key, surface, answered, n=0):
+            deferred.append(n)
+
+        monkeypatch.setattr(d._queue, "flip_answering_locked", _flip)
+
+        assert await d._enqueue_with_receipt(key, mine, "mine")
+        sessions.queues[key].append(self._foreign())
+        sessions._busy = False
+
+        await d._drain_queue(key, mine)
+
+        assert deferred == [0], "their entry is set aside, but it is not MY deferral"
+
+    @pytest.mark.asyncio
+    async def test_the_count_also_excludes_another_teams_senders_entry(self, monkeypatch) -> None:
+        """A foreign entry is excluded because it has no origin here at all.
+
+        Someone else on THIS channel is the harder case: their entry is owned, readable,
+        and still not this sender's deferral. It drains in their own chat, so counting it
+        promises this person a follow-up for text they never wrote.
+        """
+        self._patch(monkeypatch)
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+        mine = self._from(_EMAIL, "CONV", "act-1")
+        theirs = self._from("other@example.com", "CONV2", "act-2", "theirs")
+        deferred: list[int] = []
+
+        async def _flip(session_key, surface, answered, n=0):
+            deferred.append(n)
+
+        monkeypatch.setattr(d._queue, "flip_answering_locked", _flip)
+
+        assert await d._enqueue_with_receipt(key, mine, "mine")
+        sessions.queues[key].append(("t1", "theirs", _origin_kwargs(theirs)))
+        sessions._busy = False
+
+        await d._drain_queue(key, mine)
+
+        # The pump loops, so the other sender's entry drains as its OWN turn in its own
+        # chat. Two receipts are flipped and each reports zero, because neither sender
+        # has a message of their own left waiting.
+        assert deferred == [0, 0], "owned, readable, and still not the other's deferral"
 
 
 class _AddressedClient(_Client):

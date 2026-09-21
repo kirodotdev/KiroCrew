@@ -1457,12 +1457,17 @@ the message as a fresh turn instead of stranding it.
 burst, joins the texts with blank lines in arrival order, and runs a single
 combined turn, rather than replaying N separate turns. Three bounds gate the
 collapse: `_MAX_COLLAPSE` (50) messages, on Discord the ingest attachment
-limit across the combined set, and -- on the channels that record a per-entry
-origin (Teams, Webex) -- the requirement that the entries SHARE a sender and a
-place. Once one item no longer fits, it **and everything behind it** are
-re-enqueued so FIFO order stays exact, the receipt notes `+N deferred`, and the
-drain loops to pump the remainder. Messages arriving during the combined turn open
-a fresh receipt and drain after it.
+limit across the combined set, and -- on every channel carrying a queue -- the
+requirement that the entries SHARE a sender and a place. Once one item no longer
+fits, it **and everything behind it** are re-enqueued so FIFO order stays exact,
+the receipt notes `+N deferred`, and the drain loops to pump the remainder.
+Messages arriving during the combined turn open a fresh receipt and drain after it.
+
+`N` counts only the deferrals belonging to the sender this receipt answers. The
+remainder can also hold another sender's messages and another transport's, and each
+of those has -- or will have -- its own receipt; counting them here would tell one
+person their own message is behind a queue that is not theirs, and would leak how
+much other people are saying from a number rendered in their chat.
 
 **One combined turn carries ONE envelope, taken from the messages and not from
 the opener.** Under `dm_scope = "unified"` a single session key, and therefore a
@@ -1473,14 +1478,91 @@ author in the transcript and audit rows. So each channel that can fold several
 principals onto one queue records each queued message's own origin on its queue
 entry, replays from the origin of the FIRST entry it collapses, and defers any
 entry whose sender or place differs -- that entry drains next as its own turn under
-its own envelope. Teams (`teams/transport_dispatch.py`, `_QueuedOrigin`) keys the
-grouping on sender and place only, excluding the per-message activity id;
-including a per-message field would make one person's own burst compare unequal and
-stop the collapse entirely. Webex keys the equivalent grouping on room and thread.
-Telegram and Discord still replay under the opener's envelope and owe the same
-treatment, tracked in #12574. The receipt registry itself is still keyed on the
-session key alone, so a second sender's mid-turn receipt edit targets the first
-sender's bubble; that is shared cross-channel state and is tracked in #12575.
+its own envelope. Every channel carrying a queue now does this, and each keys the
+grouping on sender and place ALONE:
+
+- Teams (`teams/transport_dispatch.py`, `_QueuedOrigin`) excludes the per-message
+  activity id.
+- Telegram (`telegram/transport_dispatch.py`, `_QueuedOrigin`) records user, chat,
+  Topic, chat type and the sender's `@handle`, and excludes the handle: it is a
+  mutable label for a sender `user_id` already pins, so a rename between two
+  messages would split one person's burst.
+- Discord (`discord/transport_dispatch.py`, `_QueuedOrigin`) records user, channel
+  and thread, and excludes nothing -- none of those names an individual message.
+- Webex (`webex/transport_dispatch.py`, `_QueuedPlace`) records room, thread, the
+  sender's email and the room type, and groups on room and thread: a Webex direct
+  room is one per person, so the room already names the sender. The email and room
+  type ride along because the replayed envelope needs them -- the room type is what
+  the session key itself is derived from.
+
+Including a per-message field is the trap: it would make one person's own burst
+compare unequal and stop the collapse entirely, so every burst would drain as N
+separate turns. Telegram and Discord avoid it structurally rather than by exclusion,
+because their drains BUILD a fresh inbound message instead of copying the opener's,
+so neither origin carries a message id at all.
+
+Every drain takes the session key FIRST, and the finished turn's inbound message is
+optional on all four -- a drain woken by a peer channel has no opening envelope to
+be handed. Telegram and Discord take no envelope at all. Teams and Webex still
+`replace` onto one because their inbound types carry fields a replay does not read,
+and they fall back to a bare template built from the entry's own origin; every field
+that addresses or attributes the replay is overridden from that origin either way.
+So the opener's identity is not an input any drain could fall back to.
+
+**One queue can hold more than one TRANSPORT, and neither may answer the other's.**
+Every DM dispatcher is constructed with the orchestrator's single `SessionManager`,
+and under `unified` the bucket is `unified:{agent}` — the channel is dropped along
+with the user — so a Telegram DM and a Discord DM to the same agent resolve to the
+SAME session key, and therefore the same queue. Every entry therefore records a
+NEUTRAL `queued_channel` beside its channel-specific origin fields, and ownership is
+read off that field alone: it is the one thing every drain can read on every entry,
+and it names which peer to hand a foreign entry back to.
+
+An entry another transport recorded carries no field this channel can address, so it
+is set aside for its owner rather than replayed or dropped. It is re-enqueued
+VERBATIM, and it does NOT set the defer-the-rest flag — order matters within one
+sender's messages, which the sender key already keeps exact, while blocking a
+channel's own queue behind a foreign entry would strand it whenever that transport
+sends nothing further. Raising on a foreign entry would be worse than the defect this
+contract prevents: the entry is already dequeued by then, so an exception discards
+every message dequeued in that iteration. An entry naming THIS channel but missing
+one of its own origin fields is a different case — a producer bug inside that
+channel's own module — and raises a `KeyError` naming the field, because defaulting
+would address a reply to an empty conversation id.
+
+An entry carrying NO `queued_channel` is owned by nobody: every drain sets it aside,
+and no drain is woken for it, because the tag is also what names the wake target.
+Every enqueue path on all four channels writes the tag, so this shape is reachable
+only from a queue persisted before this contract existed, and its entry is held
+rather than answered or discarded. The alternative would be to let whichever channel
+drained next claim it, which is the original defect.
+
+**Setting a foreign entry aside is not enough, because it was already accepted and
+receipted.** A drain runs only from the tail of its own channel's turn, so a
+cross-transport entry left in the queue waited for that transport to finish some
+unrelated turn, and waited forever if it went quiet. `messaging/queue_drain.py` is
+the wake: each dispatcher publishes "drain this session key" under its channel type,
+and a drain that set entries aside calls the owner's. The registry holds channels,
+not addresses — every conversation id, chat id and thread stays inside the channel
+that owns it, the same boundary the receipt module keeps.
+
+Three properties make that safe. The wake runs after the pump, so the waker's own
+messages are already answered and its queue lock is released — a woken peer takes its
+own lock and runs a whole turn, which must not happen under the waker's. It runs
+INSIDE the waker's active marker, and that is what bounds the cascade: a woken peer
+sets aside whatever the waker queued during its turn and would wake it straight back,
+so a target already draining that session key is refused, and the depth is at most one
+hop per peer. Those entries are not lost — they drain at their own channel's next turn
+tail, the ordinary contract for any mid-turn message. And a peer whose drain raises
+(its client is not connected) is logged and skipped rather than aborting the loop: the
+waker has finished its own work by then, and one dead channel must not strand the
+others' accepted messages.
+
+The receipt registry itself is still keyed on the session key alone, so a second
+sender's mid-turn receipt edit targets the first sender's bubble; that is shared
+cross-channel state and is tracked in #12575. The drain's own receipt FLIP is not
+affected: it edits the bubble at the address of whoever queued first, taken from
+that entry's origin.
 
 The combined turn itself runs outside `ReceiptQueue.lock`, and the drain replays via
 `handle_message(..., interpret_commands=False)`. Drained payloads therefore
@@ -2014,7 +2096,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **Unknown formats remain passive and complete**: `messaging/attachments.py` preserves video and unrecognized formats as byte-identical, randomized temporary files, supplies their local paths and original metadata to the agent, and transfers cleanup ownership through the current or queued turn. Opaque bytes are never automatically parsed, extracted, or executed; an inlineable image suffix is stripped from the temporary path so the suffix-typed ACP image sink cannot claim them, and any later tool access still crosses the normal permission and hook boundaries.
 - **Weixin inbound media is CDN-indirect**: iLink envelopes never carry bytes, only a `CDNMedia` reference (`encrypt_query_param` + `aes_key`) whose object is AES-128-ECB encrypted on the WeChat CDN. `weixin/media.py` owns that protocol work (URL construction with percent-encoded params, key decoding, decrypt, a streaming size cap enforced on bytes read rather than `Content-Length`); `weixin/attachments.py` maps the four CDN-backed item types onto the shared `Attachment` and hands them to `messaging/attachments.py`, which keeps classification, limits, signature validation and temp-file ownership channel-neutral. The `aes_key` field carries **two** encodings for the same value — `base64(raw 16 bytes)` for images, `base64(ascii hex)` for file/voice/video — discriminated by decoded length plus a strict hex check, because guessing wrong yields plausible garbage rather than an error. A voice item that already carries server-side `text` short-circuits the download: iLink voice is SILK, which no shipped transcription backend decodes, so the local path is strictly worse than the transcript the server gave us. `files_inbound=True` reflects this; `files_outbound` stays `False` until the `getuploadurl` + encrypted CDN PUT half lands.
 - **A mid-turn queue receipt is edited, never deleted**: it flips in place to `▶️ Now answering` on drain and to `🛑 Cancelled` on `/stop`. It is the durable record that a held message was accepted, so no path may delete it.
-- **A queued burst drains as ONE turn, under ONE envelope taken from the messages**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact. Because `dm_scope = "unified"` can fold several people onto one queue, a channel that records a per-entry origin collapses only entries sharing a sender and a place and replays from the first entry's origin -- grouping on sender and place, never on a per-message id, which would stop the collapse altogether.
+- **A queued burst drains as ONE turn, under ONE envelope taken from the messages**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact. Because `dm_scope = "unified"` can fold several people onto one queue, every queue-carrying channel records a per-entry origin, collapses only entries sharing a sender and a place, and replays from the first entry's origin -- grouping on sender and place, never on a per-message id, which would stop the collapse altogether. A deferred entry is re-enqueued WITH its origin, or it would inherit the next first entry's identity one iteration later. An entry recorded by ANOTHER transport sharing that queue is set aside and its owner's drain is woken (`messaging/queue_drain.py`), because setting aside an already-receipted message without waking anyone leaves it unanswered until that transport next speaks.
 - **A mid-turn steer requires a genuinely live turn**: gate on `provider.has_active_turn()`, never on `sessions.is_busy()` alone, which stays true through post-turn bookkeeping. Steering an ended prompt is silently swallowed, producing an acknowledgement with no answer.
 - **Cancel is cooperative before it is fatal**: `/stop` sends the ACP `session/cancel` notification and lets the turn stop at its next safe point; escalation to a hard kill happens only after the soft-stop budget elapses without an ack. On a shared runtime the cooperative path is the only one that cannot take a co-tenant down with it.
 - **Transport shutdown is quiescent**: a client that fast-acks inbound work in background tasks cancels and awaits those tasks before closing their shared network session or returning from shutdown. Teams owns this ordering in `TeamsClient.close()`, so a gateway teardown cannot leave a turn unwinding against an already-closed Connector session; `WeComClient.close()` owns the same one for its turn tasks, which borrow the client's `aiohttp` session for the `response_url` fallback.

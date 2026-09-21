@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from chat_test_helpers import _make_state
-from test_telegram import FakeClient, FakeCtx, FakeProvider
+from test_telegram import FakeClient, FakeCtx, FakeProvider, _origin
 
 from kiro_crew.history import ConversationLog, transcript_stem
 from kiro_crew.messaging import auto_title
@@ -1135,12 +1135,12 @@ class TestTelegramInboundResumeRouting:
     ) -> None:
         dispatcher, _, sessions, _ = _dispatcher(tmp_path)
         native_key = dispatcher._session_key(("direct", "7"))
-        sessions.queued.append(("1", "queued text", {}))
+        sessions.queued.append(("1", "queued text", _origin()))
         dispatcher._session_resume.route = AsyncMock(
             return_value=RoutingDecision(resumed_key="dashboard:chat-1")
         )
 
-        await dispatcher._drain_queue(native_key, 7, 7)
+        await dispatcher._drain_queue(native_key)
 
         dispatcher._session_resume.route.assert_not_awaited()
         assert sessions.last_key == native_key
