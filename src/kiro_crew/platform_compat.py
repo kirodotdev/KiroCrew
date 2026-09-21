@@ -6426,6 +6426,54 @@ def _shares_own_process_group(pid: int) -> bool:
         return False
 
 
+def _is_still_our_child(pid: int) -> bool:
+    """True when *pid* is still a child of THIS process (recycled-pid guard).
+
+    :func:`kill_and_reap` sends a group-wide SIGKILL addressed by the child's
+    pid. If the child has already exited and been reaped by asyncio's child
+    watcher, the OS may have recycled the pid onto an unrelated process whose
+    entire tree would then be killed. This probe detects the recycling by
+    checking the target's parent pid: every caller of :func:`kill_and_reap`
+    passes an ``asyncio.subprocess.Process`` it spawned itself, so the parent
+    of a non-recycled child is always ``os.getpid()``.
+
+    Zombies still qualify: the kernel preserves ``ppid`` until ``wait()``, and
+    the group signal that reaches pipeline members led by a zombie child is
+    exactly the case that must not be skipped.
+
+    Fail-open (``True``) on probe failure: a restricted ``/proc``, a missing
+    libproc, or a platform without :func:`get_ppid` support would otherwise
+    silently degrade EVERY cleanup to the pid-scoped kill, leaving pipeline
+    descendants running. The fail-open path logs a warning so the degradation
+    is observable without drowning in routine-skip noise.
+
+    This is a named seam on purpose, like :func:`_shares_own_process_group`.
+    The rootdir ``conftest`` pins it to ``True`` for tests with synthetic pids,
+    and individual tests can override the pin.
+    """
+    ppid = get_ppid(pid)
+    if ppid == -1:
+        # Probe failed — cannot confirm or refute ownership. Fail open so the
+        # tree kill still fires; log so a host that can NEVER answer is visible.
+        logger.warning(
+            "kill_and_reap: cannot read ppid of %d; proceeding with tree kill "
+            "(restricted /proc or unavailable probe)",
+            pid,
+        )
+        return True
+    if ppid == os.getpid():
+        return True
+    # The pid belongs to a different parent — it was recycled.
+    logger.debug(
+        "kill_and_reap: pid %d is no longer our child (ppid=%d, ours=%d); "
+        "skipping tree kill to avoid reaching a stranger's process group",
+        pid,
+        ppid,
+        os.getpid(),
+    )
+    return False
+
+
 async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | None = None) -> None:
     """Kill *proc* AND its descendants, then wait for it under a bound.
 
@@ -6443,7 +6491,9 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
     ``start_new_session``) has no tree of its own to signal — the group kill
     is skipped for it and the pid-scoped ``kill()`` below covers it, instead
     of tripping :func:`kill_process_tree`'s broadcast guard on every routine
-    timeout.
+    timeout. Likewise, a child whose pid was recycled onto a different process
+    is skipped (see :func:`_is_still_our_child`) to avoid signalling a
+    stranger's process group.
 
     The reap goes through ``communicate()`` rather than ``wait()`` so the
     pipes are drained: ``wait_for`` already cancelled the original
@@ -6460,9 +6510,10 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
     """
 
     async def _cleanup() -> None:
-        # Bare-name lookup so a test can pin the probe (see
-        # ``_shares_own_process_group``) without reaching into ``os``.
-        if not _shares_own_process_group(proc.pid):
+        # Bare-name lookups so a test can pin the probes (see
+        # ``_shares_own_process_group`` and ``_is_still_our_child``) without
+        # reaching into ``os``.
+        if not _shares_own_process_group(proc.pid) and _is_still_our_child(proc.pid):
             # Bare-name lookup resolves through this module's namespace at
             # call time, so tests patching ``kiro_crew.platform_compat.
             # kill_process_tree_async`` still intercept the tree kill.
