@@ -1899,6 +1899,34 @@ class TestSshTunnelManager:
         assert reg.get("cd-1").was_connected is True
 
     @pytest.mark.asyncio
+    async def test_disconnect_removes_exchanged_session_in_place(self, tmp_path):
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        link_token = mgr.get_token("cd-1")
+        mgr._peer_session_tokens[link_token] = "SESSION_TOK"
+        retained_cache = mgr._peer_session_tokens
+
+        assert await mgr.disconnect("cd-1") is True
+
+        assert retained_cache == {}
+        assert mgr._peer_session_tokens is retained_cache
+
+    @pytest.mark.asyncio
+    async def test_shutdown_removes_exchanged_session_in_place(self, tmp_path):
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        link_token = mgr.get_token("cd-1")
+        mgr._peer_session_tokens[link_token] = "SESSION_TOK"
+        retained_cache = mgr._peer_session_tokens
+
+        await mgr.shutdown()
+
+        assert retained_cache == {}
+        assert mgr._peer_session_tokens is retained_cache
+
+    @pytest.mark.asyncio
     async def test_disconnect_clears_local_port(self, tmp_path):
         # Regression: connect() records the allocated local_port, but
         # disconnect() must reset it to the unallocated sentinel. Otherwise the
@@ -1933,6 +1961,156 @@ class TestSshTunnelManager:
         inst = reg.get("cd-1")
         assert inst.local_port == _UNALLOCATED_PORT and inst.was_connected is False
 
+    @staticmethod
+    def _peer_json_session(requests, statuses, body):
+        """ClientSession fake for retrying streamed-JSON GET carriers."""
+
+        class _Content:
+            async def iter_chunked(self, _size):
+                yield body
+
+        class _Resp:
+            def __init__(self, status):
+                self.status = status
+                self.content = _Content()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Session:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def get(self, url, **kwargs):
+                requests.append({"url": url, **kwargs})
+                return _Resp(statuses.pop(0))
+
+        return _Session
+
+    async def _assert_401_retry_uses_exchanged_session(self, tmp_path, monkeypatch, *, carrier):
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        st = await mgr.connect("cd-1")
+        events: list[tuple[str, object]] = []
+        requests: list[dict] = []
+
+        async def refresh_token(instance_id):
+            events.append(("mint", instance_id))
+            mgr._store_token(instance_id, "FRESH_LINK", "20h")
+            return "FRESH_LINK"
+
+        async def token_validates(local_port, token):
+            events.append(("exchange", (local_port, token)))
+            mgr._peer_session_tokens[token] = "FRESH_SESSION"
+            return True
+
+        monkeypatch.setattr(mgr, "refresh_token", refresh_token)
+        monkeypatch.setattr(mgr, "token_validates", token_validates)
+        monkeypatch.setattr(
+            m.aiohttp,
+            "ClientSession",
+            self._peer_json_session(
+                requests,
+                [401, 200],
+                (b'{"version": "1.2.3"}' if carrier == "capability" else b'{"sessions": []}'),
+            ),
+        )
+
+        if carrier == "capability":
+            ok, payload = await mgr.peer_capability("cd-1", "/api/version")
+            assert payload == {"version": "1.2.3"}
+        else:
+            ok, payload = await mgr.search_sessions_remote("cd-1", "query", 10)
+            assert payload == {"sessions": []}
+
+        assert ok is True
+        assert events == [
+            ("mint", "cd-1"),
+            ("exchange", (st.local_port, "FRESH_LINK")),
+        ]
+        assert len(requests) == 2
+        cookie_name = f"mc_token_{st.local_port}"
+        assert requests[1]["headers"]["Cookie"] == f"{cookie_name}=FRESH_SESSION"
+        assert "FRESH_LINK" not in requests[1]["headers"]["Cookie"]
+
+    @pytest.mark.asyncio
+    async def test_peer_capability_401_mints_exchanges_and_retries_with_session(
+        self, tmp_path, monkeypatch
+    ):
+        await self._assert_401_retry_uses_exchanged_session(
+            tmp_path, monkeypatch, carrier="capability"
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_401_mints_exchanges_and_retries_with_session(self, tmp_path, monkeypatch):
+        await self._assert_401_retry_uses_exchanged_session(tmp_path, monkeypatch, carrier="search")
+
+    @pytest.mark.asyncio
+    async def test_token_validates_refuses_redirect_without_retaining_cookie(
+        self, tmp_path, monkeypatch
+    ):
+        """The exchange probe cannot follow a peer-controlled redirect."""
+        from http.cookies import SimpleCookie
+
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        st = await mgr.connect("cd-1")
+        link_token = mgr.get_token("cd-1")
+        cookie_name = f"mc_token_{st.local_port}"
+        calls: list[dict] = []
+
+        class _Resp:
+            def __init__(self, followed):
+                self.status = 200 if followed else 302
+                self.cookies = SimpleCookie()
+                if followed:
+                    self.cookies[cookie_name] = "REDIRECT_SESSION"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Sess:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def get(self, url, params=None, allow_redirects=True):
+                calls.append(
+                    {
+                        "url": url,
+                        "params": params,
+                        "allow_redirects": allow_redirects,
+                    }
+                )
+                return _Resp(allow_redirects)
+
+        monkeypatch.setattr(m.aiohttp, "ClientSession", _Sess)
+
+        assert await mgr.token_validates(st.local_port, link_token) is False
+        assert calls[0]["allow_redirects"] is False
+        assert link_token not in mgr._peer_session_tokens
+
     @pytest.mark.asyncio
     async def test_token_validates_status_mapping(self, tmp_path, monkeypatch):
         from kiro_crew.instances import ssh_tunnel_manager as m
@@ -1959,7 +2137,7 @@ class TestSshTunnelManager:
             async def __aexit__(self, *a):
                 return False
 
-            def get(self, url, params=None):
+            def get(self, url, params=None, **kwargs):
                 return _Resp(_Sess.status)
 
         _reg, mgr = self._mgr(tmp_path)
@@ -7875,6 +8053,63 @@ class TestProxyRequest:
         assert call["allow_redirects"] is False
 
     @pytest.mark.asyncio
+    async def test_probe_retains_exchanged_session_cookie_for_peer_requests(
+        self, tmp_path, monkeypatch
+    ):
+        """A browser link is revoked when the peer exchanges it for a session.
+
+        The manager's positive preflight probe performs that exchange itself.
+        Discarding its Set-Cookie and later replaying the link as a cookie makes
+        every peer API call fail with ``session revoked``.
+        """
+        from http.cookies import SimpleCookie
+
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        st = await mgr.connect("cd-1")
+        link_token = mgr.get_token("cd-1")
+        cookie_name = f"mc_token_{st.local_port}"
+
+        class _Resp:
+            status = 200
+            cookies = SimpleCookie()
+            cookies[cookie_name] = "SESSION_TOK"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Sess:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def get(self, *a, **k):
+                return _Resp()
+
+        monkeypatch.setattr(m.aiohttp, "ClientSession", _Sess)
+
+        assert await mgr.token_validates(st.local_port, link_token) is True
+        assert mgr._peer_cookie_header("cd-1", cookie_name) == {
+            "Cookie": f"{cookie_name}=SESSION_TOK"
+        }
+
+        # A probe can finish after a concurrent refresh replaced its link. The
+        # old response must not reintroduce an orphaned session credential.
+        mgr._store_token("cd-1", "REPLACEMENT_LINK", "20h")
+        assert await mgr.token_validates(st.local_port, link_token) is True
+        assert link_token not in mgr._peer_session_tokens
+
+    @pytest.mark.asyncio
     async def test_401_gets_exactly_one_remint_retry(self, tmp_path, monkeypatch):
         from kiro_crew.instances import ssh_tunnel_manager as m
 
@@ -7887,18 +8122,19 @@ class TestProxyRequest:
         )
         remints = []
 
-        async def fake_refresh(instance_id):
+        async def fake_refresh_peer(instance_id):
             remints.append(instance_id)
-            mgr._tokens[instance_id] = "FRESH_TOK"
-            return "FRESH_TOK"
+            mgr._tokens[instance_id] = "FRESH_LINK"
+            mgr._peer_session_tokens["FRESH_LINK"] = "FRESH_SESSION"
+            return True
 
-        monkeypatch.setattr(mgr, "refresh_token", fake_refresh)
+        monkeypatch.setattr(mgr, "_refresh_peer_credential", fake_refresh_peer)
 
         async with mgr.proxy_request("cd-1", "GET", "api/chat/slots") as resp:
             assert resp.status == 200
         assert remints == ["cd-1"]
         assert len(calls) == 2
-        assert "FRESH_TOK" in calls[1]["headers"]["Cookie"]
+        assert "FRESH_SESSION" in calls[1]["headers"]["Cookie"]
 
     @pytest.mark.asyncio
     async def test_persistent_401_raises_unauthorized_not_a_loop(self, tmp_path, monkeypatch):
@@ -7911,10 +8147,10 @@ class TestProxyRequest:
         calls: list = []
         monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[401]))
 
-        async def no_refresh(instance_id):
-            return None
+        async def no_refresh_peer(instance_id):
+            return False
 
-        monkeypatch.setattr(mgr, "refresh_token", no_refresh)
+        monkeypatch.setattr(mgr, "_refresh_peer_credential", no_refresh_peer)
         with pytest.raises(ProxyRequestError) as ei:
             async with mgr.proxy_request("cd-1", "GET", "api/chat/slots"):
                 pass
@@ -7941,10 +8177,10 @@ class TestProxyRequest:
             m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[401, 401])
         )
 
-        async def fake_refresh(instance_id):
-            return "FRESH"
+        async def fake_refresh_peer(instance_id):
+            return True
 
-        monkeypatch.setattr(mgr, "refresh_token", fake_refresh)
+        monkeypatch.setattr(mgr, "_refresh_peer_credential", fake_refresh_peer)
         with pytest.raises(ProxyRequestError) as ei:
             async with mgr.proxy_request("cd-1", "GET", "api/chat/slots"):
                 pass
@@ -8027,6 +8263,45 @@ class TestPeerRequestSharedDance:
         with pytest.raises(_PeerUnavailable) as ei:
             mgr._peer_cookie_header("cd-1", "mc_token_1")
         assert ei.value.kind == "no_credential"
+
+    @pytest.mark.asyncio
+    async def test_peer_refresh_exchanges_the_new_link_before_retry(self, tmp_path, monkeypatch):
+        """A peer retry needs a cookie credential, not only a fresh URL link."""
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        st = await mgr.connect("cd-1")
+        calls: list[tuple[str, object]] = []
+
+        async def refresh(instance_id):
+            calls.append(("refresh", instance_id))
+            mgr._store_token(instance_id, "FRESH_LINK", "20h")
+            return "FRESH_LINK"
+
+        async def validate(local_port, token):
+            calls.append(("exchange", (local_port, token)))
+            mgr._peer_session_tokens[token] = "FRESH_SESSION"
+            return True
+
+        monkeypatch.setattr(mgr, "refresh_token", refresh)
+        monkeypatch.setattr(mgr, "token_validates", validate)
+
+        assert await mgr._refresh_peer_credential("cd-1") is True
+        assert calls == [
+            ("refresh", "cd-1"),
+            ("exchange", (st.local_port, "FRESH_LINK")),
+        ]
+        assert mgr._peer_cookie_header("cd-1", f"mc_token_{st.local_port}") == {
+            "Cookie": f"mc_token_{st.local_port}=FRESH_SESSION"
+        }
+
+    def test_replacing_a_link_drops_its_exchanged_session(self, tmp_path):
+        _reg, mgr = self._mgr(tmp_path)
+        mgr._store_token("cd-1", "OLD_LINK", "20h")
+        mgr._peer_session_tokens["OLD_LINK"] = "OLD_SESSION"
+
+        mgr._store_token("cd-1", "NEW_LINK", "20h")
+
+        assert "OLD_LINK" not in mgr._peer_session_tokens
 
     @pytest.mark.asyncio
     async def test_each_caller_keeps_its_own_not_connected_code(self, tmp_path):

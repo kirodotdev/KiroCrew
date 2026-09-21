@@ -1161,6 +1161,13 @@ class SshTunnelManager:
         self._tunnel_factory = tunnel_factory or _SshTunnel
         self._tunnels: dict[str, _SshTunnel] = {}
         self._tokens: dict[str, str] = {}
+        # A token minted by ``kirocrew token`` is a short-lived browser LINK.
+        # Presenting it as ``?token=`` exchanges it for a distinct session
+        # cookie and revokes the link string on the cookie path. Peer API calls
+        # therefore retain the exchanged cookie here, keyed by its link token,
+        # instead of replaying the revoked link as a cookie. Both values remain
+        # memory-only and are removed together when the tunnel or mint changes.
+        self._peer_session_tokens: dict[str, str] = {}
         # Last connect/reconnect failure reason per instance, retained after the
         # failed tunnel is popped so a sticky tab whose tunnel is down can still
         # report *why* (e.g. a startup auto-revive that couldn't reach the host).
@@ -1904,7 +1911,9 @@ class SshTunnelManager:
         if tunnel is not None:
             await tunnel.stop()
         self._tunnels.pop(instance_id, None)
-        self._tokens.pop(instance_id, None)
+        link_token = self._tokens.pop(instance_id, None)
+        if link_token:
+            self._peer_session_tokens.pop(link_token, None)
         self._recover_attempts.pop(instance_id, None)
         self._last_error.pop(instance_id, None)
         # A teardown ends the generation: a slow unlocked mint or rebuild in
@@ -2076,7 +2085,9 @@ class SshTunnelManager:
             ids = list(self._tunnels)
             for instance_id in ids:
                 tunnel = self._tunnels.pop(instance_id, None)
-                self._tokens.pop(instance_id, None)
+                link_token = self._tokens.pop(instance_id, None)
+                if link_token:
+                    self._peer_session_tokens.pop(link_token, None)
                 if tunnel is not None:
                     with contextlib.suppress(Exception):
                         await tunnel.stop()
@@ -2489,14 +2500,19 @@ class SshTunnelManager:
         """Probe whether *token* still authenticates against the live tunnel.
 
         A cheap loopback ``GET http://127.0.0.1:<local_port>/api/status?token=…``
-        through the already-open SSH forward — **no SSH spawn**. Lets the API
-        layer validate a *stored* token before handing it to the browser on
-        (re)connect: a token can go stale while the tunnel stays CONNECTED (a
-        failed self-heal re-mint, or a remote ``kirocrew restart`` that
-        invalidates tokens), and an iframe loaded with a stale token gets a
-        server-rendered 403 page — the SPA never boots, so the reactive
-        ``mc-auth-expired`` recovery can't fire. This closes that initial-load
-        gap by catching the bad token *before* the iframe loads.
+        through the already-open SSH forward — **no SSH spawn**. The request
+        has two jobs: validate a stored browser link before handing it to the
+        iframe, and retain the distinct ``mc_token_<port>`` session cookie the
+        peer returns when it exchanges that link. Peer API calls must use the
+        latter: the exchange deliberately revokes the link token on the cookie
+        path, so replaying the link itself as a cookie is always rejected.
+
+        A token can go stale while the tunnel stays CONNECTED (a failed
+        self-heal re-mint, or a remote ``kirocrew restart`` that invalidates
+        tokens), and an iframe loaded with a stale token gets a server-rendered
+        403 page — the SPA never boots to fire ``mc-auth-expired``. This closes
+        that initial-load gap before the iframe loads while preparing the
+        manager's separate peer credential in the same request.
 
         Returns ``True`` only on a positive ``2xx`` that confirms the token is
         accepted. Returns ``False`` on 401/403, a missing token, an unknown
@@ -2514,9 +2530,32 @@ class SshTunnelManager:
         timeout = aiohttp.ClientTimeout(total=_TOKEN_PROBE_TIMEOUT)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, params={"token": token}) as resp:
-                    # Positive confirmation only: 2xx == token accepted.
-                    return 200 <= resp.status < 300
+                async with session.get(
+                    url,
+                    params={"token": token},
+                    # The fixed loopback peer is the only legitimate target.
+                    # Following a 30x would let it steer the hub (SSRF) and
+                    # could make the final response's cookie look peer-issued.
+                    allow_redirects=False,
+                ) as resp:
+                    accepted = 200 <= resp.status < 300
+                    if accepted:
+                        # Current peers exchange the URL token for a distinct
+                        # session cookie. ``ClientResponse.cookies`` contains
+                        # only Set-Cookie values from this fixed loopback peer,
+                        # so selecting the exact port-scoped name cannot adopt
+                        # an unrelated browser cookie. An older peer that sets
+                        # none keeps the legacy link-token fallback below.
+                        cookies = getattr(resp, "cookies", None)
+                        session_cookie = (
+                            cookies.get(f"mc_token_{int(local_port)}")
+                            if cookies is not None
+                            else None
+                        )
+                        session_token = getattr(session_cookie, "value", "")
+                        if session_token and token in self._tokens.values():
+                            self._peer_session_tokens[token] = session_token
+                    return accepted
         except Exception as e:  # timeout, connection refused, etc.
             # Deny-by-default: we could not positively confirm the token.
             logger.info(
@@ -2525,6 +2564,26 @@ class SshTunnelManager:
                 type(e).__name__,  # never the token
             )
             return False
+
+    async def _refresh_peer_credential(self, instance_id: str) -> bool:
+        """Re-mint a browser link and exchange it before a peer retry.
+
+        ``refresh_token`` alone leaves a freshly minted LINK in ``_tokens``.
+        Sending that value directly as a cookie works only until anything uses
+        the link as intended; that exchange revokes it on the cookie path. The
+        positive query probe obtains and retains the peer's distinct session
+        cookie before the caller retries its server-to-server request.
+        """
+        token = await self.refresh_token(instance_id)
+        status = self.status(instance_id)
+        if (
+            not token
+            or status is None
+            or status.state is not TunnelState.CONNECTED
+            or status.local_port <= 0
+        ):
+            return False
+        return await self.token_validates(status.local_port, token)
 
     def _peer_target(self, instance_id: str, path: str) -> tuple[str, str]:
         """Resolve ``(url, cookie_name)`` for one request to a CONNECTED peer.
@@ -2560,19 +2619,23 @@ class SshTunnelManager:
         """Build the ``Cookie`` header carrying this peer's credential.
 
         Must be re-read per attempt, not hoisted out of a retry loop: a re-mint
-        replaces the credential mid-call and the retry exists to use the fresh
-        one.
+        replaces the browser link and its exchanged session credential mid-call,
+        and the retry exists to use the fresh pair.
 
-        **The token never leaves this object.** It travels as a cookie rather
-        than a query parameter so it cannot land in the peer's HTTP access log,
-        it is never logged here, and issuing the request from the manager is what
-        keeps ``connect``/``refresh-token`` the only two routes where a minted
-        token crosses the API boundary (instances.md §14.4).
+        **The peer session token never leaves this object.** ``token_validates``
+        captures it from the peer's fixed loopback response after exchanging the
+        browser link. It travels as a cookie rather than a query parameter so it
+        cannot land in the peer's HTTP access log, and it is never logged here.
+        Whenever no exchanged session is cached, the minted link is the fallback.
+        That includes current-peer startup and proactive-refresh windows before
+        the positive exchange probe has cached its session, as well as peers that
+        predate link→session exchange and never set a distinct cookie.
         """
-        token = self._tokens.get(instance_id, "")
-        if not token:
+        link_token = self._tokens.get(instance_id, "")
+        if not link_token:
             raise _PeerUnavailable("no_credential")
-        return {"Cookie": f"{cookie_name}={token}"}
+        session_token = getattr(self, "_peer_session_tokens", {}).get(link_token, link_token)
+        return {"Cookie": f"{cookie_name}={session_token}"}
 
     @contextlib.asynccontextmanager
     async def proxy_request(
@@ -2662,7 +2725,7 @@ class SshTunnelManager:
                 # to the caller as a bare peer 401, which would read as "the
                 # chat endpoint said no" instead of "the tunnel credential is
                 # not working" and lose the coded error the UI keys off.
-                if not reminted and await self.refresh_token(instance_id):
+                if not reminted and await self._refresh_peer_credential(instance_id):
                     reminted = True
                     continue  # retry once with the fresh credential
                 raise ProxyRequestError(
@@ -2728,7 +2791,7 @@ class SshTunnelManager:
                         if 200 <= resp.status < 300:
                             return True, payload if isinstance(payload, dict) else {}
                         if resp.status in (401, 403):
-                            if not reminted and await self.refresh_token(instance_id):
+                            if not reminted and await self._refresh_peer_credential(instance_id):
                                 reminted = True
                                 continue  # retry once with the fresh credential
                             return False, {
@@ -2866,7 +2929,7 @@ class SshTunnelManager:
                         allow_redirects=False,
                     ) as resp:
                         if resp.status in (401, 403):
-                            if not reminted and await self.refresh_token(instance_id):
+                            if not reminted and await self._refresh_peer_credential(instance_id):
                                 reminted = True
                                 continue  # retry once with the fresh credential
                             return False, {
@@ -2996,7 +3059,7 @@ class SshTunnelManager:
                         allow_redirects=False,
                     ) as resp:
                         if resp.status in (401, 403):
-                            if not reminted and await self.refresh_token(instance_id):
+                            if not reminted and await self._refresh_peer_credential(instance_id):
                                 reminted = True
                                 continue  # retry once with the fresh credential
                             return False, {
@@ -3071,6 +3134,12 @@ class SshTunnelManager:
 
     def _store_token(self, instance_id: str, token: str, ttl: str) -> None:
         """Record a freshly-minted token + its mint time/ttl (never logs token)."""
+        previous = self._tokens.get(instance_id)
+        if previous and previous != token:
+            # The session credential is scoped to the link mint it came from.
+            # Keeping it after replacement is both a secret-retention leak and
+            # an invitation to authenticate a retry with the wrong generation.
+            self._peer_session_tokens.pop(previous, None)
         self._tokens[instance_id] = token
         self._token_minted_at[instance_id] = time.time()
         with contextlib.suppress(Exception):

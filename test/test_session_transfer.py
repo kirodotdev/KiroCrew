@@ -365,12 +365,13 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
 
     reminted: list[str] = []
 
-    async def _refresh(instance_id):
+    async def _refresh_peer(instance_id):
         reminted.append(instance_id)
-        mgr._tokens[instance_id] = "fresh"
-        return "fresh"
+        mgr._tokens[instance_id] = "fresh-link"
+        mgr._peer_session_tokens = {"fresh-link": "fresh"}
+        return True
 
-    mgr.refresh_token = _refresh  # type: ignore[method-assign]
+    mgr._refresh_peer_credential = _refresh_peer  # type: ignore[method-assign]
 
     sent: list[str] = []
 
@@ -1179,10 +1180,10 @@ async def test_send_bundle_names_an_older_peer_when_the_importer_is_missing(stat
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )
 
-    async def _no_remint(_id):
+    async def _no_remint_peer(_id):
         raise AssertionError("a missing route is not a credential problem")
 
-    mgr.refresh_token = _no_remint  # type: ignore[method-assign]
+    mgr._refresh_peer_credential = _no_remint_peer  # type: ignore[method-assign]
     session_cls, posts = _peer_answering(status)
 
     import kiro_crew.instances.ssh_tunnel_manager as mod
