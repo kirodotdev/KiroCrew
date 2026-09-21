@@ -196,7 +196,7 @@ def test_private_namespace_lane_is_the_only_e2e_step_left_hosted(jobs):
     )
     assert private["run"].splitlines() == [
         'echo "::remove-matcher owner=python::"',
-        "python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py",
+        "python -m pytest -q -n0 --no-cov --timeout=600 test/e2e/test_private_workflow_memory.py",
     ]
     assert private["env"] == {
         "KIROCREW_E2E": "1",

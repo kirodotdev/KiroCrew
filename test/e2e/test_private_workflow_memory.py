@@ -26,6 +26,34 @@ pytestmark = pytest.mark.skipif(
     not os.environ.get("KIROCREW_E2E"), reason="Set KIROCREW_E2E=1 for real private workflow E2E"
 )
 
+# One wait in this module may take _PER_WAIT_SECONDS, and a test makes nine of
+# them, so per-wait budgets alone allow far more time than CI grants the whole
+# test (`--timeout=600` on the e2e-private-namespace job). _TEST_BUDGET_SECONDS
+# is the ceiling on all of a test's waiting together, anchored at test start and
+# set below that cap, so the last wait a stalled run can reach still fails HERE
+# -- naming the run and its progress -- instead of dying at the outer cap, which
+# reports only `Timeout >600.0s` and never says which workflow hung.
+_PER_WAIT_SECONDS = 120
+_TEST_BUDGET_SECONDS = 570
+_test_deadline = None
+
+
+@pytest.fixture(autouse=True)
+def _wait_budget():
+    """Anchor this test's whole waiting budget at its start."""
+    global _test_deadline
+    _test_deadline = time.monotonic() + _TEST_BUDGET_SECONDS
+    try:
+        yield
+    finally:
+        _test_deadline = None
+
+
+def _wait_deadline():
+    """The earlier of this wait's own cap and what is left of the test's budget."""
+    own = time.monotonic() + _PER_WAIT_SECONDS
+    return own if _test_deadline is None else min(own, _test_deadline)
+
 
 def _post_as(client, path, body, session):
     request = urllib.request.Request(
@@ -38,7 +66,8 @@ def _post_as(client, path, body, session):
 
 
 def _finished(client, run_id):
-    deadline = time.monotonic() + 120
+    deadline = _wait_deadline()
+    run = None
     while time.monotonic() < deadline:
         run = client.get(f"/api/workflows/runs/{run_id}")
         if run["status"] != "running":
@@ -46,7 +75,8 @@ def _finished(client, run_id):
             assert not run.get("agent_errors"), run
             return run
         time.sleep(0.1)
-    pytest.fail(f"Workflow did not terminate: {run_id}; {json.dumps(progress_summary(run))}")
+    progress = json.dumps(progress_summary(run)) if run is not None else "never polled"
+    pytest.fail(f"Workflow did not terminate: {run_id}; {progress}")
 
 
 def _assert_result(run, marker):

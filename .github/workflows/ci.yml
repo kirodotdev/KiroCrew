@@ -3160,6 +3160,16 @@ jobs:
   # (`unshare --mount --map-root-user`); the CodeBuild container answers EPERM.
   # Keeping it separate limits hosted runner use to its ~3.5-minute run. No SPA,
   # no Node, no browser: the test drives the gateway over HTTP, like the boot matrix.
+  #
+  # `--timeout=600` is a BACKSTOP, not the test's budget. The module caps all of a
+  # test's waiting at `_TEST_BUDGET_SECONDS` (570) anchored at test start, so a
+  # stalled workflow fails inside `_finished` -- which names the run and its
+  # progress -- while this cap only catches a hang outside those waits. Two
+  # gateway boots and nine workflow waits need more room than the ~3.5-minute
+  # typical run, and a cap at that scale fires on runner slowness while saying
+  # nothing about which workflow hung. Keep this above
+  # `_TEST_BUDGET_SECONDS` and below `timeout-minutes`;
+  # `test_e2e_private_namespace_budget.py` enforces both.
   e2e-private-namespace:
     name: E2E (private member namespace, hosted)
     needs: [await-fast-gate]
@@ -3191,7 +3201,7 @@ jobs:
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
         run: |
           echo "::remove-matcher owner=python::"
-          python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py
+          python -m pytest -q -n0 --no-cov --timeout=600 test/e2e/test_private_workflow_memory.py
 
   # The only job that BOOTS A GATEWAY on macOS and Windows.
   #

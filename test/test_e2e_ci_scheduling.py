@@ -419,7 +419,7 @@ raise SystemExit(m['main']())
         )
         self.assertEqual(
             private["run"].splitlines()[-1],
-            "python -m pytest -q -n0 --no-cov --timeout=300 "
+            "python -m pytest -q -n0 --no-cov --timeout=600 "
             "test/e2e/test_private_workflow_memory.py",
         )
         self.assertNotIn("if", parallel)
