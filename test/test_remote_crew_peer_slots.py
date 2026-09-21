@@ -181,9 +181,107 @@ async def _body(resp):
     return json.loads(resp.body.decode())
 
 
+class TestPeerTitleProjection:
+    def test_untitled_slot_projects_no_adoptable_title(self):
+        slot = _ChatSlot("chat-1-1")
+
+        row = slot.to_dict()
+        assert row["raw_title"] == ""
+
+    @pytest.mark.parametrize("origin", ["auto", "user"])
+    def test_final_title_projects_as_adoptable(self, origin):
+        slot = _ChatSlot("chat-1-1")
+        slot.title = f"{origin} title"
+        slot._titled = True
+        slot._title_origin = origin
+
+        row = slot.to_dict()
+        assert row["raw_title"] == f"{origin} title"
+
+    def test_pinned_empty_title_projects_no_adoptable_title(self):
+        slot = _ChatSlot("chat-1-1")
+        slot.title = ""
+        slot._titled = True
+        slot._title_origin = "user"
+
+        row = slot.to_dict()
+        assert row["raw_title"] == ""
+
+    def test_provisional_real_title_projects_as_adoptable(self):
+        """A cron, plan or workflow slot is named before any titler runs.
+
+        The adopt contract carries that name: finality governs the local
+        refresher, not whether a peer may inherit the title.
+        """
+        slot = _ChatSlot("chat-1-1")
+        slot.title = "Cron: nightly digest"
+        assert slot._titled is False
+
+        row = slot.to_dict()
+        assert row["raw_title"] == "Cron: nightly digest"
+
+    @pytest.mark.parametrize(
+        ("key", "title"),
+        [
+            ("chat-1-1", "chat-99-1234567890"),
+            ("chat-1-1", "chat-1-1"),
+        ],
+        ids=["key-shaped-title", "own-key-title"],
+    )
+    def test_final_key_shaped_title_projects_as_adoptable(self, key, title):
+        slot = _ChatSlot(key)
+        slot.title = title
+        slot._titled = True
+        slot._title_origin = "user"
+
+        row = slot.to_dict()
+
+        assert row["raw_title"] == title
+
+    @pytest.mark.parametrize(
+        ("key", "title"),
+        [
+            ("chat-1-1", "chat-99-1234567890"),
+            ("chat-1-1", "chat-1-1"),
+        ],
+        ids=["key-shaped-title", "own-key-title"],
+    )
+    def test_provisional_key_shaped_title_projects_as_untitled(self, key, title):
+        slot = _ChatSlot(key)
+        slot.title = title
+        assert slot._titled is False
+
+        row = slot.to_dict()
+
+        assert row["raw_title"] == ""
+
+    def test_untitled_channel_projects_label_for_display_only(self):
+        slot = _ChatSlot("teams_a_direct_b")
+        slot.title = ""
+        slot.channel_origin = True
+        slot.linked_session_key = "teams:a:direct:b"
+
+        row = slot.to_dict()
+
+        assert row["title"] == "Teams"
+        assert row["raw_title"] == ""
+
+
 @pytest.mark.asyncio
 class TestHubDrivenRowsAreDropped:
     """The defect this route exists for: one conversation rendered twice."""
+
+    async def test_raw_reader_preserves_the_adopt_contract_fields(self):
+        row = {
+            "key": "peer-chat-9",
+            "title": "Teams",
+            "raw_title": "",
+        }
+        mgr = _manager(body=json.dumps([row]).encode())
+
+        peer = await hi.read_peer_slots(_state(mgr), "nobita")
+
+        assert peer.rows == [row]
 
     async def test_the_slot_this_hub_drives_is_filtered_and_the_peers_own_survive(
         self, monkeypatch
@@ -351,6 +449,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
         row = {
             "key": "p1",
             "title": "Refactor",
+            "raw_title": "Refactor",
             "agent": "claude",
             "running": True,
             "pending_approval": False,

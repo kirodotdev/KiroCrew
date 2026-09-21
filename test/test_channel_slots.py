@@ -23,7 +23,8 @@ from typing import Any
 import pytest
 from chat_test_helpers import _make_state
 
-from kiro_crew.dashboard import channel_slots
+from kiro_crew.dashboard import channel_slots, chat_persistence
+from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.history import _safe_key
 from kiro_crew.messaging.link import (
     channel_namespace_of,
@@ -131,6 +132,7 @@ class TestChannelKeyPredicates:
     def test_labels(self) -> None:
         assert channel_slots.channel_label("slack:1.2") == "Slack"
         assert channel_slots.channel_label("wecom:a:direct:b") == "WeCom"
+        assert channel_slots.channel_label("teams_a_direct_b") == "Teams"
         assert channel_slots.channel_label("dashboard:chat-1") == "Channel"
 
 
@@ -305,10 +307,12 @@ class TestCloseReactivation:
 
 class TestSurfaceChannelSession:
     def test_creates_slot_seeded_with_the_conversation(self, dashboard_state: Any) -> None:
+        # The name lives in the persisted header; the list row carries a display
+        # copy of it that the surface does not read.
         slot = channel_slots.surface_channel_session(
             dashboard_state,
             _session("slack:1785370133.085469", title="Ship the thing"),
-            {},
+            {"title": "Ship the thing"},
             [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
         )
         assert slot is not None
@@ -360,12 +364,120 @@ class TestSurfaceChannelSession:
         assert slot.linked_session_key == ""
 
     def test_untitled_session_falls_back_to_the_channel_label(self, dashboard_state: Any) -> None:
+        meta = {"title": ""}
+        dashboard_state.conversation_log.update_metadata("teams:a:direct:b", meta)
         slot = channel_slots.surface_channel_session(
-            dashboard_state, _session("teams:a:direct:b"), {}, []
+            dashboard_state, _session("teams:a:direct:b"), meta, []
         )
         assert slot is not None
-        assert slot.title == "Teams"
+        assert slot.title == ""
         assert slot._titled is False
+        assert slot.display_title == "Teams"
+
+        assert chat_persistence._save_slot_to_history(dashboard_state, slot, force=True) is True
+        meta = dashboard_state.conversation_log.get_metadata(
+            chat_persistence.slot_history_key(slot)
+        )
+        assert meta.get("title") == ""
+        assert meta.get("title_origin") == ""
+
+    def test_a_fabricated_list_row_title_does_not_pin_an_untitled_session(
+        self, dashboard_state: Any
+    ) -> None:
+        """``list_sessions()`` fabricates a display title from the first user
+        message for every session it lists. That excerpt is not a name anyone
+        gave, so an untitled persisted header surfaces untitled — the channel
+        label shows and the auto-titler still owns the row."""
+        meta = {"title": "", "created_at": "2026-09-11T00:00:00Z"}
+        dashboard_state.conversation_log.update_metadata("teams:a:direct:b", meta)
+        slot = channel_slots.surface_channel_session(
+            dashboard_state,
+            _session("teams:a:direct:b", title="hello there, first message excerpt"),
+            meta,
+            [],
+        )
+        assert slot is not None
+        assert slot._titled is False
+        assert slot.title == ""
+        assert slot.display_title == "Teams"
+
+        assert chat_persistence._save_slot_to_history(dashboard_state, slot, force=True) is True
+        meta = dashboard_state.conversation_log.get_metadata(
+            chat_persistence.slot_history_key(slot)
+        )
+        assert meta.get("title") == ""
+        assert meta.get("title_origin") == ""
+
+    def test_a_persisted_real_title_is_applied_and_final(self, dashboard_state: Any) -> None:
+        slot = channel_slots.surface_channel_session(
+            dashboard_state,
+            _session("teams:a:direct:b", title="fabricated excerpt"),
+            {"title": "Standup notes", "title_refresh_mark": 8},
+            [],
+        )
+        assert slot is not None
+        assert slot._titled is True
+        assert slot.title == "Standup notes"
+        assert slot._title_refresh_mark == 8
+
+    def test_a_pinned_empty_title_is_final_and_shows_the_channel_label(
+        self, dashboard_state: Any
+    ) -> None:
+        """A user-origin empty title pins the complete title state, not half of it."""
+        meta = {"title": "", "title_origin": "user"}
+        dashboard_state.conversation_log.update_metadata("teams:a:direct:b", meta)
+        slot = channel_slots.surface_channel_session(
+            dashboard_state,
+            _session("teams:a:direct:b", title="fabricated excerpt"),
+            meta,
+            [],
+        )
+        assert slot is not None
+        assert slot.title == ""
+        assert slot._titled is True
+        assert slot._title_origin == "user"
+        assert slot.display_title == "Teams"
+
+    def test_a_pinned_empty_title_survives_a_save_round_trip(self, dashboard_state: Any) -> None:
+        meta = {"title": "", "title_origin": "user"}
+        dashboard_state.conversation_log.update_metadata("teams:a:direct:b", meta)
+        slot = channel_slots.surface_channel_session(
+            dashboard_state,
+            _session("teams:a:direct:b", title="fabricated excerpt"),
+            meta,
+            [],
+        )
+        assert slot is not None
+
+        assert chat_persistence._save_slot_to_history(dashboard_state, slot, force=True) is True
+        saved = dashboard_state.conversation_log.get_metadata(
+            chat_persistence.slot_history_key(slot)
+        )
+        assert saved.get("title") == ""
+        assert saved.get("title_origin") == "user"
+
+    @pytest.mark.parametrize("titled", [False, True])
+    def test_an_empty_channel_title_displays_its_channel_label(
+        self, dashboard_state: Any, titled: bool
+    ) -> None:
+        slot = dashboard_state.get_or_create_slot(name="teams_a_direct_b", channel_origin=True)
+        slot.title = ""
+        slot._titled = titled
+
+        assert slot.display_title == "Teams"
+
+    def test_a_real_channel_title_displays_the_title(self, dashboard_state: Any) -> None:
+        slot = dashboard_state.get_or_create_slot(name="teams_a_direct_b", channel_origin=True)
+        slot.title = "Standup notes"
+        slot._titled = True
+
+        assert slot.display_title == "Standup notes"
+
+    def test_an_empty_non_channel_title_keeps_the_placeholder(self, dashboard_state: Any) -> None:
+        slot = dashboard_state.get_or_create_slot(name="chat-1-1")
+        slot.title = ""
+
+        assert slot.display_title == NEW_SESSION_TITLE
 
     def test_is_idempotent(self, dashboard_state: Any) -> None:
         info = _session("slack:1.1", title="T")
@@ -429,8 +541,8 @@ class TestSurfaceChannelSession:
     def test_redacts_titles_and_messages(self, dashboard_state: Any) -> None:
         slot = channel_slots.surface_channel_session(
             dashboard_state,
-            _session("slack:1.1", title="key AKIAIOSFODNN7EXAMPLE"),
-            {},
+            _session("slack:1.1", title="fabricated excerpt"),
+            {"title": "key AKIAIOSFODNN7EXAMPLE"},
             [{"role": "assistant", "content": "token AKIAIOSFODNN7EXAMPLE"}],
         )
         assert slot is not None
@@ -439,10 +551,17 @@ class TestSurfaceChannelSession:
 
 
 class _FakeLog:
-    def __init__(self, sessions: list[dict[str, Any]], meta: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        sessions: list[dict[str, Any]],
+        meta: dict[str, dict[str, Any]],
+        *,
+        unreadable: set[str] | None = None,
+    ) -> None:
         self._sessions = sessions
         self._meta = meta
-        #: keys get_metadata was invoked for, in order.
+        self.unreadable = set(unreadable or ())
+        #: keys get_metadata or get_metadata_status was invoked for, in order.
         self.meta_reads: list[str] = []
         self.message_reads: list[str] = []
         #: key -> file mtime, consulted as the fallback close instant. Unset
@@ -462,7 +581,13 @@ class _FakeLog:
 
     def get_metadata(self, key: str) -> dict[str, Any]:
         self.meta_reads.append(key)
+        if key in self.unreadable:
+            return {}
         return dict(self._meta.get(key, {}))
+
+    def get_metadata_status(self, key: str) -> tuple[dict[str, Any], bool]:
+        self.meta_reads.append(key)
+        return dict(self._meta.get(key, {})), key not in self.unreadable
 
     def mtime_of(self, key: str) -> float | None:
         return self.mtimes.get(key)
@@ -511,6 +636,90 @@ class TestReconcilePass:
         # get_or_create_slot broadcasts on create; the pass adds a final push so
         # a rebind-only pass (no create) still reaches connected clients.
         assert pushes, "the pass must broadcast the new slots"
+
+    def test_unreadable_metadata_defers_without_blanking_title_then_retries(
+        self, dashboard_state: Any
+    ) -> None:
+        key = "slack:1.1"
+        log = _FakeLog(
+            [_session(key)],
+            {key: {"title": "Standup notes"}},
+            unreadable={key},
+        )
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert "slack_1.1" not in dashboard_state._slots
+        assert log._meta[key]["title"] == "Standup notes"
+
+        log.unreadable.clear()
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        slot = dashboard_state._slots["slack_1.1"]
+        assert slot.title == "Standup notes"
+        assert slot._titled is True
+
+    def test_legacy_metadata_exception_defers_only_the_failed_key(
+        self, dashboard_state: Any
+    ) -> None:
+        failed = "slack:1.1"
+        healthy = "slack:2.2"
+        log = _FakeLog(
+            [_session(failed), _session(healthy)],
+            {healthy: {"title": "Healthy"}},
+        )
+        log.get_metadata_status = None  # type: ignore[method-assign]
+        real_get_metadata = log.get_metadata
+
+        def _legacy_get_metadata(key: str) -> dict[str, Any]:
+            if key == failed:
+                raise OSError("transient metadata read failure")
+            return real_get_metadata(key)
+
+        log.get_metadata = _legacy_get_metadata  # type: ignore[method-assign]
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert "slack_1.1" not in dashboard_state._slots
+        assert dashboard_state._slots["slack_2.2"].title == "Healthy"
+
+    def test_genuinely_empty_readable_metadata_still_surfaces_untitled(
+        self, dashboard_state: Any
+    ) -> None:
+        key = "slack:1.1"
+        log = _FakeLog([_session(key)], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        slot = dashboard_state._slots["slack_1.1"]
+        assert slot.title == ""
+        assert slot.display_title == "Slack"
+
+    def test_unreadable_metadata_logs_one_count_per_pass(
+        self, dashboard_state: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        keys = {"slack:1.1", "slack:2.2"}
+        log = _FakeLog([_session(key) for key in sorted(keys)], {}, unreadable=keys)
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        caplog.set_level(20, logger=channel_slots.__name__)
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "with unreadable metadata" in record.getMessage()
+        ]
+        assert messages == ["channel reconcile: deferring 2 session(s) with unreadable metadata"]
+
+        caplog.clear()
+        log.unreadable.clear()
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 2
+        assert not any(
+            "with unreadable metadata" in record.getMessage() for record in caplog.records
+        )
 
     def test_a_closed_tab_is_not_reopened_by_the_next_pass(self, dashboard_state: Any) -> None:
         """Closing the tab is a statement about the conversation, and the next
@@ -664,15 +873,15 @@ class TestReconcilePass:
         it. The close path's synchronous tombstone must be honored after the
         pass's last await."""
         log = _FakeLog([_session("slack:1.1", modified=NOW)], {})
-        orig_meta = log.get_metadata
+        orig_meta_status = log.get_metadata_status
 
-        def _close_during_pass(key: str) -> dict[str, Any]:
+        def _close_during_pass(key: str) -> tuple[dict[str, Any], bool]:
             # Runs in the metadata executor — after the snapshot instant, before
             # the surface loop. Simulates the user closing the tab right here.
             channel_slots.note_slot_closed(dashboard_state, "slack_1.1")
-            return orig_meta(key)
+            return orig_meta_status(key)
 
-        log.get_metadata = _close_during_pass  # type: ignore[method-assign]
+        log.get_metadata_status = _close_during_pass  # type: ignore[method-assign]
         dashboard_state.conversation_log = log
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
 

@@ -40,8 +40,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
 import kiro_crew
+from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard import handlers_instances as hi
 from kiro_crew.dashboard import remote_adopt as ra
+from kiro_crew.dashboard.state import NEW_SESSION_TITLE, _ChatSlot
 
 _SECRET = "AKIAIOSFODNN7EXAMPLE"
 
@@ -169,6 +171,52 @@ def _bound_state(tmp_path, mgr):
     state = _make_state(tmp_path)
     state.instances_manager = mgr
     return state
+
+
+def _restore_recent_title(state, meta):
+    chat_persistence._apply_recent_session(
+        state,
+        "dashboard:chat-local",
+        "chat-local",
+        {"title": "fabricated excerpt"},
+        meta,
+        [],
+        conv_log=state.conversation_log,
+        kiro_model_map={},
+        restore_cfg=None,
+        agent="",
+    )
+    return state._slots["chat-local"]
+
+
+class TestPeerRowTitleMetadata:
+    @pytest.mark.parametrize("display_title", ["Teams", NEW_SESSION_TITLE, "chat-99-1234567890"])
+    def test_an_empty_raw_title_ignores_every_display_title(self, display_title):
+        assert ra.peer_row_metadata({"raw_title": "", "title": display_title}) == {}
+
+    def test_a_raw_name_equal_to_the_display_placeholder_is_copied(self):
+        assert ra.peer_row_metadata(
+            {"raw_title": NEW_SESSION_TITLE, "title": NEW_SESSION_TITLE}
+        ) == {"title": NEW_SESSION_TITLE}
+
+    def test_the_raw_name_is_copied_and_sanitized(self):
+        metadata = ra.peer_row_metadata({"raw_title": "Stand\u200bup", "title": "ignored"})
+
+        assert metadata == {"title": "Standup"}
+
+    @pytest.mark.parametrize("raw_title", [None, 1, ["Smuggled"], {"title": "Smuggled"}])
+    def test_a_non_string_raw_title_fails_closed(self, raw_title):
+        """A row that speaks the contract but sends a non-string name is untitled.
+
+        The display ``title`` is not consulted as a fallback: on a contract row it
+        has no semantic role, so a malformed field cannot reopen the display path.
+        """
+        assert ra.peer_row_metadata({"raw_title": raw_title, "title": "Smuggled"}) == {}
+
+    def test_a_row_without_the_field_reads_the_display_placeholder(self):
+        """Compatibility fallback for a peer that ships no ``raw_title``."""
+        assert ra.peer_row_metadata({"title": NEW_SESSION_TITLE}) == {}
+        assert ra.peer_row_metadata({"title": "Refactor"}) == {"title": "Refactor"}
 
 
 # ── A. the adopt-create path ──────────────────────────────────────────────────
@@ -798,6 +846,10 @@ class TestInheritedMetadata:
         an adopt open under a name the peer never had -- the same divergence the
         override rule above exists to prevent -- and leaving the slot unpinned would
         let the local auto-titler invent one instead.
+
+        This is the DEFENSIVE case: a same-version peer serialises display titles
+        and never sends ``""`` for an unnamed slot. The real wire shape is the
+        placeholder, covered by the next test.
         """
         mgr = _manager(slots=[_peer_row(title="")], transcript=_msgs())
         state = _bound_state(tmp_path, mgr)
@@ -812,8 +864,240 @@ class TestInheritedMetadata:
         )
 
         slot = state._slots[body["key"]]
-        assert slot.title != "My name for it"
+        assert slot.title == ""
+        assert slot.title != body["key"]
         assert slot._titled is True
+        assert body["title"] == slot.display_title == "New Session…"
+
+    async def test_the_peers_placeholder_title_is_the_wire_form_of_untitled(
+        self, tmp_path, no_mint
+    ):
+        """The peer sends ``display_title``, so an unnamed slot arrives as the placeholder.
+
+        ``slot_projection`` serialises ``redact(slot.display_title)``, which reads
+        ``NEW_SESSION_TITLE`` for any empty title -- so the row a real peer sends
+        for a session nobody named is the literal placeholder, not ``""``. Copying
+        it as a title would pin the placeholder TEXT as a user rename and persist
+        it verbatim; the adopt boundary reads it as "no name yet" instead.
+        """
+        mgr = _manager(slots=[_peer_row(title=NEW_SESSION_TITLE)], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(
+            state,
+            {
+                "instance_id": "nobita",
+                "adopt_remote_slot": "peer-chat-9",
+                "title": "My name for it",
+            },
+        )
+
+        slot = state._slots[body["key"]]
+        assert slot.title == ""
+        assert slot._titled is True
+        assert slot._title_origin == "user"
+        assert body["title"] == slot.display_title == NEW_SESSION_TITLE
+
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+        meta = state.conversation_log.get_metadata(chat_persistence.slot_history_key(slot))
+        assert meta.get("title") == ""
+        assert meta.get("title_origin") == "user"
+
+    async def test_a_real_title_containing_the_placeholder_text_is_still_copied(
+        self, tmp_path, no_mint
+    ):
+        """Untitled is EQUALITY with the placeholder, not a substring match."""
+        named = f"{NEW_SESSION_TITLE} notes"
+        mgr = _manager(slots=[_peer_row(title=named)], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        slot = state._slots[body["key"]]
+        assert slot._titled is True
+        assert slot.title == named
+        assert body["title"] == named
+
+    async def test_an_adopted_untitled_slot_survives_a_second_adopt_round_trip(
+        self, tmp_path, no_mint
+    ):
+        """A slot adopted as untitled, re-served through the projection, adopts as untitled again.
+
+        This runs the real serializer (``slot.to_dict()``) over the slot the first
+        adopt produced, then feeds that row to a second hub as the peer row. The
+        placeholder must not accrete into a persisted name on any hop.
+        """
+        first_mgr = _manager(slots=[_peer_row(title=NEW_SESSION_TITLE)], transcript=_msgs())
+        first = _bound_state(tmp_path / "first", first_mgr)
+        _, body = await _post(first, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        served = first._slots[body["key"]].to_dict()
+        assert served["title"] == NEW_SESSION_TITLE
+
+        second_mgr = _manager(slots=[{**served, "key": "peer-chat-9"}], transcript=_msgs())
+        second = _bound_state(tmp_path / "second", second_mgr)
+        _, body2 = await _post(
+            second, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"}
+        )
+
+        readopted = second._slots[body2["key"]]
+        assert readopted.title == ""
+        assert readopted._titled is True
+        assert readopted._title_origin == "user"
+        assert readopted.display_title == NEW_SESSION_TITLE
+
+    async def test_an_empty_peer_title_pin_survives_history_rehydration(self, tmp_path, no_mint):
+        """The peer's empty name stays final across the real persistence path."""
+        from kiro_crew.dashboard.chat import _rehydrate_slot_from_history
+
+        mgr = _manager(slots=[_peer_row(title="")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        slot = state._slots[body["key"]]
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+
+        restored_state = _bound_state(tmp_path, mgr)
+        restored = _rehydrate_slot_from_history(restored_state, slot.key)
+
+        assert restored is not None
+        assert restored._titled is True
+        assert restored._title_origin == "user"
+        assert restored.title == ""
+        assert restored.display_title == NEW_SESSION_TITLE
+
+    async def test_an_empty_peer_title_pin_survives_history_resume(self, tmp_path, no_mint):
+        """The resume endpoint ignores the client's key placeholder for a pinned empty name."""
+        from aiohttp.test_utils import TestClient, TestServer
+        from chat_test_helpers import _make_app
+
+        mgr = _manager(slots=[_peer_row(title="")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        slot = state._slots[body["key"]]
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+        del state._slots[slot.key]
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                f"/api/chat/slots/{slot.key}/resume",
+                json={"key": f"dashboard:{slot.key}", "title": slot.key},
+            )
+
+        assert resp.status == 200
+        resumed = state._slots[slot.key]
+        assert resumed._titled is True
+        assert resumed._title_origin == "user"
+        assert resumed.title == ""
+        assert resumed.display_title == NEW_SESSION_TITLE
+
+    async def test_an_ordinary_untitled_local_slot_stays_auto_titlable_after_rehydration(
+        self, tmp_path
+    ):
+        """A restored untitled local slot reads as untitled, not as a user rename.
+
+        ``list_sessions()`` fabricates a display title from the first user
+        message for every session it lists, so ``_apply_recent_session`` reads
+        finality from the persisted header, where an untitled slot carries no
+        ``user`` origin. Treating the fabricated excerpt as the title pins it as
+        a manual rename and the auto-titler never touches the row again.
+        """
+        state = _bound_state(tmp_path, _manager())
+        slot = state.get_or_create_slot("chat-local")
+        slot.append("user", "hello", "msg msg-u")
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+
+        restored_state = _bound_state(tmp_path, _manager())
+        assert chat_persistence.restore_recent_sessions(restored_state, window_minutes=0) == 1
+        restored = restored_state._slots[slot.key]
+
+        assert restored.title == ""
+        assert restored._titled is False
+        assert restored._title_origin == ""
+        assert restored.display_title == NEW_SESSION_TITLE
+
+    async def test_a_missing_recent_title_ignores_the_fabricated_excerpt(self, tmp_path):
+        restored = _restore_recent_title(_bound_state(tmp_path, _manager()), {})
+
+        assert restored.title == ""
+        assert restored._titled is False
+        assert restored.display_title == NEW_SESSION_TITLE
+
+    async def test_a_non_string_recent_title_ignores_the_fabricated_excerpt(self, tmp_path):
+        restored = _restore_recent_title(_bound_state(tmp_path, _manager()), {"title": 1})
+
+        assert restored.title == ""
+        assert restored._titled is False
+        assert restored.display_title == NEW_SESSION_TITLE
+
+    async def test_a_real_recent_title_wins_over_the_fabricated_excerpt(self, tmp_path):
+        restored = _restore_recent_title(
+            _bound_state(tmp_path, _manager()),
+            {"title": "User chosen name", "title_origin": "user"},
+        )
+
+        assert restored.title == "User chosen name"
+        assert restored._titled is True
+        assert restored._title_origin == "user"
+
+    async def test_a_final_key_shaped_title_survives_projection_and_adoption(
+        self, tmp_path, no_mint
+    ):
+        source = _ChatSlot("chat-source")
+        source.title = "chat-99-1234567890"
+        source._titled = True
+        source._title_origin = "user"
+        projected = source.to_dict()
+
+        assert projected["raw_title"] == source.title
+        assert ra.peer_row_metadata(projected)["title"] == source.title
+
+        mgr = _manager(slots=[projected], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+        _, body = await _post(
+            state,
+            {"instance_id": "nobita", "adopt_remote_slot": source.key},
+        )
+
+        adopted = state._slots[body["key"]]
+        assert adopted.title == source.title
+        assert adopted._titled is True
+        assert adopted._title_origin == "user"
+
+    async def test_an_untitled_channel_projection_adopts_as_pinned_empty(self, tmp_path, no_mint):
+        source = _ChatSlot("teams_a_direct_b")
+        source.title = ""
+        source.channel_origin = True
+        source.linked_session_key = "teams:a:direct:b"
+        projected = source.to_dict()
+        assert projected["title"] == "Teams"
+
+        mgr = _manager(slots=[projected], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(
+            state,
+            {"instance_id": "nobita", "adopt_remote_slot": source.key},
+        )
+
+        slot = state._slots[body["key"]]
+        assert slot.title == ""
+        assert slot._titled is True
+        assert slot._title_origin == "user"
+        assert slot.display_title == NEW_SESSION_TITLE
+
+    async def test_new_session_title_is_frozen_fallback_vocabulary(self):
+        """The placeholder literal is compatibility protocol vocabulary.
+
+        A peer row with an explicit ``titled`` flag uses ``raw_title`` for
+        adoption semantics. A same-series peer that lacks the flag sends its
+        display title instead, and ``peer_row_metadata`` reads equality with
+        ``NEW_SESSION_TITLE`` as "no name". Other fallback tests import the
+        constant, so this literal assertion prevents both ends from moving
+        together while peers still exchange the established spelling.
+        """
+        assert NEW_SESSION_TITLE == "New Session\u2026"
+        assert ra.peer_row_metadata({"title": "New Session\u2026"}) == {}
 
     async def test_the_peers_agent_wins_over_a_caller_supplied_one(self, tmp_path, no_mint):
         """Same rule for the agent, and for the same reason.

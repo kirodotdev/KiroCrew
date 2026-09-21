@@ -54,6 +54,7 @@ from kiro_crew.dashboard.remote_relay import (
     ensure_version_parity,
     redact_peer_text,
 )
+from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.validation import sanitize_string
 
 if TYPE_CHECKING:
@@ -284,14 +285,35 @@ def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     unrecognised ``memory_mode`` is dropped rather than coerced — the create
     handler validates the mode it is given, and inventing one here would smuggle
     a value past that validation.
+
+    ``raw_title`` is the adoption contract. A row carrying it names the peer
+    slot's inheritable title, or ``""`` when it has none: the empty value omits
+    ``title`` so the adopt handler pins the authoritative empty name, and a
+    non-empty value is copied. The display ``title`` field has no semantic role
+    on that path.
+
+    A peer row without ``raw_title`` predates the contract and uses
+    :data:`NEW_SESSION_TITLE` as compatibility vocabulary: equality with that raw
+    display value means "no name yet". The comparison precedes the sink because
+    the sink may rewrite the ellipsis. Sunset: the fallback exists for peers on
+    the 0.x series that ship no ``raw_title``; it is removable once the 1.0
+    series is the oldest peer this instance supports, at which point a row
+    without the field is refused rather than read through the literal.
     """
     out: dict[str, str] = {}
     agent = row.get("agent")
     if isinstance(agent, str) and agent:
         out["agent"] = redact_peer_text(sanitize_string(agent))[:128]
-    title = row.get("title")
-    if isinstance(title, str) and title:
-        out["title"] = redact_peer_text(sanitize_string(title))[:200]
+    if "raw_title" in row:
+        raw_title = row.get("raw_title")
+        if isinstance(raw_title, str) and raw_title:
+            out["title"] = redact_peer_text(sanitize_string(raw_title))[:200]
+    else:
+        title = row.get("title")
+        # Compatibility vocabulary: the literal is frozen within a release
+        # series -- see the contract comment in ``state.py``.
+        if isinstance(title, str) and title and title != NEW_SESSION_TITLE:
+            out["title"] = redact_peer_text(sanitize_string(title))[:200]
     mode = row.get("memory_mode")
     if isinstance(mode, str) and mode in ("persistent", "incognito", "temporary"):
         out["memory_mode"] = mode

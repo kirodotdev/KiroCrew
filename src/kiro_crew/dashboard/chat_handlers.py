@@ -61,6 +61,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _persisted_title_is_titled,
     _rehydrate_slot_title,
     _restored_agent_name,
     _restored_mode,
@@ -3211,14 +3212,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         if title:
             title, _ = redact_exfiltration_urls(title)
             title, _ = redact_credentials(title)
-            slot.title = title
-        # On an adopt the name is pinned EVEN WHEN the peer's title is empty: the
-        # peer owns it, so an unnamed peer session is one whose name is "none yet",
-        # and leaving it unpinned would let the local auto-titler invent one -- the
-        # same divergence a caller-supplied title would have caused. An ordinary
-        # mint keeps the old rule, pinning only a title the caller actually gave,
-        # so an untitled new session is still free to be auto-titled.
+        # Assignment and pinning deliberately share one predicate. An adopt makes
+        # this branch true even when the peer title is empty, so the authoritative
+        # empty value clears the slot-key default before that value is pinned.
+        # Ordinary untitled mints still skip the branch and remain auto-titlable.
         if title or adopt_remote_slot:
+            slot.title = title
             # A pinned title is caller-explicit: record origin "user" so the
             # background title refresh never rewrites it (this endpoint can
             # address an ALREADY-auto-titled slot whose origin would otherwise
@@ -10670,10 +10669,11 @@ def _hydrate_slot_from_history(
     # chrome — often a STALE echo of an older name (a notification deep link,
     # a sidebar row rendered before a background refresh landed). Classifying
     # request titles (echo vs override) is unwinnable against staleness: a
-    # stale echo is indistinguishable from a deliberate override. So the
-    # request title is used ONLY when no persisted title exists; otherwise the
-    # persisted title and its provenance are restored exactly like the
-    # chat_persistence loaders (resume is the THIRD hydration path).
+    # stale echo is indistinguishable from a deliberate override. The request
+    # title applies only when metadata does not mark a persisted title as final;
+    # a final persisted title, including an empty user-origin title, restores
+    # exactly like the chat_persistence loaders (resume is the THIRD hydration
+    # path).
     # Reuse the SNAPSHOT the guard above validated. A second get_metadata here
     # would re-read the file, and a write between the two reads would hydrate
     # values the guard never saw (validate-A / hydrate-B).
@@ -10683,7 +10683,7 @@ def _hydrate_slot_from_history(
     # would raise TypeError and 500 the resume. Non-string == absent.
     persisted_title = raw_persisted_title if isinstance(raw_persisted_title, str) else ""
     title = request_title
-    if persisted_title:
+    if isinstance(raw_persisted_title, str) and _persisted_title_is_titled(meta):
         _rehydrate_slot_title(
             slot,
             persisted_title,
@@ -10700,7 +10700,7 @@ def _hydrate_slot_from_history(
         slot._title_origin = "user"
         slot._title_epoch += 1
     # else: untitled on disk and no caller name — leave the slot untitled
-    # (mirrors _rehydrate_slot_from_history: ``_titled = bool(meta title)``),
+    # (mirrors _rehydrate_slot_from_history: ``_persisted_title_is_titled(meta)``),
     # so the auto-titler can still name it on the next turn.
     if meta.get("created_at"):
         slot.created_at = meta["created_at"]

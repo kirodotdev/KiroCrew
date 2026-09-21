@@ -1502,6 +1502,7 @@ async def create_session(
         if title.strip():
             slot.title = sanitize_outbound(title.strip())[:200]
             slot._titled = True
+            slot._title_origin = "user"
         # Persist at birth. `save_slot_off_loop` cannot do this: the save it wraps
         # returns early on an empty message window -- a full save has nothing to
         # write -- so a freshly created session, which has no messages by

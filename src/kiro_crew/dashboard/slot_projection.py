@@ -2,8 +2,40 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
+
+_SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
+
+
+def slot_title_is_default(slot: Any) -> bool:
+    """Return whether the raw title is the slot's internal key spelling."""
+    title = getattr(slot, "title", "")
+    if not isinstance(title, str):
+        return False
+    key = str(getattr(slot, "key", "") or "")
+    return title == key or _SLOT_KEY_TITLE_RE.fullmatch(title) is not None
+
+
+def inheritable_peer_title(slot: Any) -> str:
+    """Return the raw name an adopting peer may inherit.
+
+    Any non-empty final title passes regardless of its spelling, mirroring
+    ``display_title``'s final-title guard. For provisional titles, the key
+    heuristic filters internal key spellings while preserving names assigned
+    to cron, plan, and workflow slots before a titler runs. The empty string
+    covers an untitled slot, a pinned-empty title, and an untitled channel tab,
+    whose label is display provenance rather than a name.
+    """
+    title = getattr(slot, "title", "")
+    if not isinstance(title, str) or not title:
+        return ""
+    if getattr(slot, "_titled", False):
+        return title
+    if slot_title_is_default(slot):
+        return ""
+    return title
 
 
 def resolved_row_identity(slot: Any) -> str:
@@ -228,9 +260,16 @@ class SlotProjection:
                 }
                 break
 
+        raw_title = inheritable_peer_title(slot)
         return {
             "key": slot.key,
+            # ``title`` is display-only. ``raw_title`` is the adopt contract: the
+            # name an adopting peer may inherit, "" when there is none, derived
+            # from raw slot state and pushed through the same redaction sink as
+            # every rendered title. Its presence on the row is what marks a peer
+            # that speaks this contract.
             "title": redact(slot.display_title),
+            "raw_title": redact(raw_title) if raw_title else "",
             "agent": slot.agent,
             "agent_kind": getattr(slot, "agent_kind", ""),
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),

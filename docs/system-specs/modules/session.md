@@ -1505,6 +1505,25 @@ state a close compensates is not all scoped the same way.
   runs and the open-shaped write erases it. The failure arms take the same route in place of the
   restore they skip: a store that rejected the `closed=True` write can still
   accept the next one, and a lock lost to the recreate is exactly that case.
+- **Title provenance is a value, not a truthiness.** A slot's title state is the
+  triple `title` / `_titled` / `_title_origin`, and the persisted header carries
+  `title` and `title_origin` for it. Both full-save branches write `title_origin`
+  UNCONDITIONALLY, including `""`: the save merges, and a key it omits survives from
+  the previous line, so writing the origin only when set would let a stale `user`
+  outlive the rehydrate that cleared it (a malformed `title: 1` header reads as
+  untitled and its origin is cleared; the next save must commit that clearing). The
+  full save likewise writes `title: ""` explicitly. Finality on every read path —
+  the three hydration paths and channel surfacing — comes from one predicate,
+  `_persisted_title_is_titled(meta)`: a non-empty string title, or exactly `""` with
+  `title_origin == "user"`, is final; anything else is untitled and rehydrates with
+  `title == ""` (never a `list_sessions()` excerpt). The `""` + `user` case is the
+  **empty-title pin**: an adopted peer session with no name, or a manual rename to
+  empty, stays untitled and out of the auto-titler's reach across restarts. Creation
+  paths that assign a final title (`session_create` with an explicit name, fork)
+  record origin `user` alongside `_titled = True`, matching what a reload of a
+  no-origin final title already infers. The peer-adopt wire contract (`raw_title` on
+  the projected row, the `NEW_SESSION_TITLE` compatibility fallback and its sunset)
+  is specified in `learn-cron-dashboard.md` § Slot titles.
 - **A drain that fails is reported, not swallowed.** `_persist_handover_tail`
   returns a named result: `rows_committed` says whether rows were owed and
   reached disk, `prompts_lost` counts the durable-eligible queued prompts whose

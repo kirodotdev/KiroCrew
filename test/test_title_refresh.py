@@ -488,6 +488,17 @@ class TestRehydration:
         assert slot._title_refresh_mark == 8
 
     @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"title": 1},
+            {"title": 1, "title_origin": "user"},
+            {"title_origin": "user"},
+        ],
+    )
+    def test_invalid_or_missing_persisted_title_is_not_final(self, metadata):
+        assert chat_persistence._persisted_title_is_titled(metadata) is False
+
+    @pytest.mark.parametrize(
         "titled,stored,expected",
         [
             (True, "auto", "auto"),
@@ -508,6 +519,45 @@ class TestRehydration:
     )
     def test_refresh_mark_mapping(self, stored, expected):
         assert chat_persistence._rehydrate_title_refresh_mark(stored) == expected
+
+
+class TestMalformedTitleProvenancePersistence:
+    @pytest.mark.parametrize(
+        "with_message",
+        [False, True],
+        ids=["empty-window-merge", "full-rewrite"],
+    )
+    def test_cleared_origin_overwrites_stale_user_provenance(
+        self, tmp_path, with_message
+    ):
+        from chat_test_helpers import _make_state
+
+        from kiro_crew.dashboard.chat import _rehydrate_slot_from_history
+
+        key = "dashboard:chat-1-1"
+        state = _make_state(tmp_path)
+        state.conversation_log.update_metadata(
+            key, {"title": 1, "title_origin": "user"}
+        )
+        if with_message:
+            state.conversation_log.append(key, "user", "hello")
+
+        slot = _rehydrate_slot_from_history(state, "chat-1-1")
+        assert slot is not None
+        assert bool(slot.messages) is with_message
+        assert slot._titled is False
+        assert slot._title_origin == ""
+
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+        persisted = state.conversation_log.get_metadata(key)
+        assert "title_origin" in persisted
+        assert persisted["title_origin"] == ""
+
+        restored_state = _make_state(tmp_path)
+        restored = _rehydrate_slot_from_history(restored_state, "chat-1-1")
+        assert restored is not None
+        assert restored._titled is False
+        assert restored._title_origin == ""
 
 
 # ── rename handler finality ──────────────────────────────────────────────────

@@ -17,6 +17,7 @@ from kiro_crew.dashboard.state import _ChatSlot
 _TO_DICT_KEYS = (
     "key",
     "title",
+    "raw_title",
     "agent",
     "agent_kind",
     "effective_agent",

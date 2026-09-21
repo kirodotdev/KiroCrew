@@ -993,6 +993,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     fork_word = "Tail of" if direction == _FORK_DIRECTION_TAIL else "Fork of"
     new_slot.title = f"{_FORK_TITLE_MARKER}{fork_word} {parent_title}"
     new_slot._titled = True
+    new_slot._title_origin = "user"
 
     try:
         for m in visible:

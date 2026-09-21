@@ -48,7 +48,7 @@ from kiro_crew.dashboard.remote_mirror import mirror_frame as _mirror_relay_fram
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
-from kiro_crew.dashboard.slot_projection import SlotProjection
+from kiro_crew.dashboard.slot_projection import SlotProjection, slot_title_is_default
 from kiro_crew.dashboard.slot_queue_repository import (
     EMPTY_QUEUE_SIGNATURE,
     SlotQueueRepository,
@@ -77,6 +77,7 @@ from kiro_crew.messaging.link import (
     UNBIND_REASON_UNSPECIFIED,
     UNBIND_REASON_USER_UNLINK,
     ChannelLink,
+    channel_label,
     channel_namespace_of,
     is_channel_session_key,
 )
@@ -1280,13 +1281,17 @@ _CHAT_N_RE = re.compile(r"chat-\d+")
 # name). Applied at the serialization boundary (``_ChatSlot.display_title``),
 # so a brand-new empty session, the pre-send window, and the pre-LLM window all
 # read the same. The LLM auto-title / fallback replace it with a real title.
+#
+# Cross-process compatibility vocabulary, frozen within a release series.
+# ``peer_row_metadata`` compares this literal only when a peer row lacks the
+# ``raw_title`` field. Rows carrying that field derive adoption semantics from
+# it and are unaffected by this display string. Changing the fallback --
+# including localising it -- makes an older same-series peer's placeholder look
+# like a user rename. ``test_remote_crew_adopt.py::
+# test_new_session_title_is_frozen_fallback_vocabulary`` pins the literal so a
+# change cannot move both ends of the compatibility path together unnoticed.
+# The fallback's sunset is stated on ``peer_row_metadata``.
 NEW_SESSION_TITLE = "New Session…"
-
-# Matches a slot-key *identifier* used as a title (both the stripped
-# ``chat-N-<ts>`` and the resumed ``dashboard_chat-N-<ts>`` forms). An untitled
-# slot whose title is still such an identifier should display as
-# NEW_SESSION_TITLE, not the raw key. Real titles never match this.
-_SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 
 # Cron notification wrapper format — used by handlers.py (create), chat.py (detect), ChatPage.tsx (render)
 CRON_NOTIFY_PREFIX = "[Cron notification from "
@@ -4127,15 +4132,15 @@ class _ChatSlot:
 
     @property
     def display_title(self) -> str:
-        """Title for UI display. Shows ``NEW_SESSION_TITLE`` while the slot is
-        still on its untouched default key (untitled) — covering brand-new
-        empty sessions and the window before the LLM title lands — otherwise
-        the real title. Slots with a meaningful non-key title (plan, cron,
-        fork, slack) are unaffected since their title != key.
+        """Title for UI display.
+
+        A channel tab's label is provenance, not a name, so an empty channel
+        title shows its transport instead of the new-session placeholder. Other
+        empty or untouched slots keep the placeholder; real titles pass through.
         """
-        if not self._titled and (
-            not self.title or self.title == self.key or _SLOT_KEY_TITLE_RE.match(self.title)
-        ):
+        if self.channel_origin and not self.title:
+            return channel_label(self.linked_session_key or self.key)
+        if not self.title or (not self._titled and slot_title_is_default(self)):
             return NEW_SESSION_TITLE
         return self.title
 
