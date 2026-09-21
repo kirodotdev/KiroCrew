@@ -10188,7 +10188,6 @@
         "thought_process": "Processo de raciocínio"
       },
       "toolCallLine": {
-        "aria_hide_diff": "Ocultar diff",
         "diff_truncated": "diff truncado",
         "aria_awaiting_approval": "Aguardando aprovação da ferramenta: {{label}}",
         "aria_hide_details": "Ocultar detalhes da ferramenta: {{label}}",

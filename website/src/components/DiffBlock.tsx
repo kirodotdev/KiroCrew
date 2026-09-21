@@ -1,11 +1,11 @@
 import { memo, useState, useMemo, useEffect, useRef } from 'react'
-import { Copy, Check, ChevronUp, Columns2, Rows2 } from 'lucide-react'
+import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
 import { basenamePatchHeaders } from '../utils/diffUtils'
 import { PierrePatch } from '../pierre'
-import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS, PIERRE_FOLD_HANDLE_GUTTER_CSS } from '../pierre/config'
+import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 import { usePlainDiff } from '../hooks/usePlainDiff'
@@ -92,7 +92,7 @@ export function extractFilePath(code: string): { path: string; prefixStripped: b
  * path, making "relative spelling absent" meaningless as evidence. */
 const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
-export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, onFold }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; onFold?: () => void }) {
+export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   // Shares the app-wide `mc-diff-split` preference with the side panel and
@@ -186,12 +186,9 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, o
       // count and arrows earn their room on a full file. It also keeps the
       // library's untranslated "N unmodified lines" out of chat entirely.
       hunkSeparators: 'simple' as const,
-      unsafeCSS: PIERRE_COMPACT_HEADER_CSS + PIERRE_WRAP_NO_HSCROLL_CSS + PIERRE_SEPARATOR_BG_CSS
-        // The fold chevron overlays the header's left edge (see the handle
-        // below); make room so the filename is not under it.
-        + (onFold ? PIERRE_FOLD_HANDLE_GUTTER_CSS : ''),
+      unsafeCSS: PIERRE_COMPACT_HEADER_CSS + PIERRE_WRAP_NO_HSCROLL_CSS + PIERRE_SEPARATOR_BG_CSS,
     }),
-    [sideBySide, onFold],
+    [sideBySide],
   )
 
   const copy = async () => { if (await copyToClipboard(code)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
@@ -244,40 +241,10 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, o
        `title` resolves up the flat tree, so hovering the filename picks it up. */
     <div className="diff-block group/diff rounded-xl border border-border overflow-hidden" title={headerPath ?? undefined}>
       <div className="relative pierre-surface">
-        {/* Fold handle: a narrow chevron zone at the header's left edge — NOT
-            the whole strip (the filename must stay inert for select/copy and
-            its full-path tooltip) and NOT a member of the actions row
-            (max-two-buttons-per-row counts siblings in the horizontal group).
-            The chevron is visible at rest (muted) so the only density control
-            is discoverable without mousing over; it brightens on hover/focus.
-            NO `title` — it would shadow the wrapper's full-path tooltip;
-            aria-label carries the action for this icon-only control.
-            `z-10`, not `z-0`: Pierre's `default` file header is
-            `position: relative; z-index: 2` in the SAME stacking context (a
-            shadow root does not open one), so at z-0 the header painted over
-            the chevron and took every click meant for it — a card, once opened
-            from its chip, could not be closed. The actions row slotted into
-            that header is `relative z-10` for the same reason. */}
-        {onFold && (
-          <button
-            type="button"
-            className="group/fold absolute left-0 top-0 w-8 h-8 z-10 flex items-center justify-center bg-transparent border-none cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent/50 rounded-tl-xl"
-            data-diff-toggle
-            onClick={onFold}
-            aria-label={i18nT('pages.chat.toolCallLine.aria_hide_diff')}
-          >
-            <ChevronUp
-              size={13}
-              aria-hidden
-              className="text-muted/60 group-hover/diff:text-muted hover:!text-text group-focus-visible/fold:text-text transition-colors"
-            />
-          </button>
-        )}
         {/* Plain mode: Pierre's file header is what normally carries the
             filename and hosts `headerControls`, so a header of our own stands
             in for it — otherwise turning colour off would silently remove
-            Open/Copy and the filename too. Padded left when the fold chevron
-            is present, since that button overlays this row's left edge.
+            Open/Copy and the filename too.
             `min-h-8`, not `h-8`: `headerControls` grows its buttons to 40px on a
             touch device (`HOVER_NONE_ACTIONS_ROW_CLS` pads them for thumbs), and
             a fixed 32px band would clip the top of them against `.diff-block`'s
@@ -285,7 +252,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, o
             header band — the thing this stands in for — is `min-height` for the
             same reason. */}
         {plain && (
-          <div className={`flex items-center justify-between gap-2 min-h-8 pr-2 border-b border-border text-[12px] text-muted ${onFold ? 'pl-8' : 'pl-3'}`}>
+          <div className={`flex items-center justify-between gap-2 min-h-8 pr-2 border-b border-border text-[12px] text-muted pl-3`}>
             <span className="truncate font-mono">{headerPath ? headerPath.split('/').pop() : ''}</span>
             {headerControls()}
           </div>

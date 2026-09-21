@@ -10188,7 +10188,6 @@
         "thought_process": "Processus de réflexion"
       },
       "toolCallLine": {
-        "aria_hide_diff": "Masquer le diff",
         "diff_truncated": "diff tronqué",
         "aria_awaiting_approval": "En attente d’approbation pour l’outil : {{label}}",
         "aria_hide_details": "Masquer les détails de l’outil : {{label}}",

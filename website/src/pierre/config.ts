@@ -50,17 +50,6 @@ export const PIERRE_COMPACT_HEADER_CSS = `
 [data-change-icon]{width:13px;height:13px}
 `
 
-/** Clears the file header's left edge for DiffBlock's fold chevron.
- *
- *  The chevron is a 32px square overlaid at the block's top-left corner, OUTSIDE
- *  the shadow root. Pierre's `default` header starts its filename at
- *  `padding-inline: 16px`, so without this the name sits under the chevron. Only
- *  applied when a block carries `onFold`; a block without the handle keeps the
- *  library's inset. Matches the `pl-8` the plain-mode stand-in header uses. */
-export const PIERRE_FOLD_HANDLE_GUTTER_CSS = `
-[data-diffs-header="default"]{padding-inline-start:32px}
-`
-
 /** Gives every collapsed-region separator the separator tint.
  *
  *  Pierre applies `--diffs-bg-separator` only to its `metadata`, `line-info-basic`

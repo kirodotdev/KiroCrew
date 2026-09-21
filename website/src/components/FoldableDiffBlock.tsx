@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { FileDiff } from 'lucide-react'
+import { memo, useCallback, useId, useMemo, useState } from 'react'
+import { ChevronDown, FileDiff } from 'lucide-react'
 
 import DiffBlock, { extractFilePath } from './DiffBlock'
 import { countDiffStats } from '../utils/diffLineCounts'
@@ -15,10 +15,14 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  * decide whether to look (which file, how much added, how much removed) in one
  * row, and the patch is one click away.
  *
- * A separate control from `ToolCallLine`'s card fold, which governs a diff the
- * dashboard itself rendered from a tool call. Both default CLOSED, but each
- * remembers its expansions in its own module-scope set, because the two are
- * keyed differently (a fence's `foldKey` vs a `tool_call_id`).
+ * The chip is the fence's ONE toggle and stays mounted while the patch is open:
+ * the same control that opened it closes it, reads `aria-expanded`, and shows
+ * its state (filled background, trailing chevron turned up). This is the same
+ * grammar as `ToolCallLine`'s tool-card chip, so the two pills — which look
+ * alike and sit in the same transcript — close the same way. Both default
+ * CLOSED, but each remembers its expansions in its own module-scope set,
+ * because the two are keyed differently (a fence's `foldKey` vs a
+ * `tool_call_id`).
  *
  * Applied ONLY where the fence is a retelling: `MarkdownRenderer` opts in with
  * `collapseDiffs`, which the chat transcript sets and no other surface does. On
@@ -51,15 +55,12 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useState(() => !!foldKey && expandedDiffFences.has(foldKey))
-  const containerRef = useRef<HTMLDivElement>(null)
   // The region the chip controls. It is rendered whether or not it holds the
   // patch, so `aria-controls` always resolves to a real element — a disclosure
   // pointing at an id that exists only while open is not a disclosure.
   const regionId = useId()
-  // The two halves of the toggle unmount each other, so the activated control
-  // disappears and focus would fall to <body>. Hand focus to the counterpart
-  // once it mounts — both carry data-diff-toggle.
-  const pendingFocus = useRef(false)
+  // The chip never unmounts, so focus stays on it across a toggle; no hand-off
+  // is needed.
   const toggle = useCallback(() => {
     setExpanded(prev => {
       const next = !prev
@@ -69,13 +70,7 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
       }
       return next
     })
-    pendingFocus.current = true
   }, [foldKey])
-  useEffect(() => {
-    if (!pendingFocus.current) return
-    pendingFocus.current = false
-    containerRef.current?.querySelector<HTMLElement>('[data-diff-toggle]')?.focus()
-  }, [expanded])
 
   const stats = useMemo(() => countDiffStats(code), [code])
   const headerPath = useMemo(() => extractFilePath(code)?.path, [code]) ?? pathHint ?? null
@@ -94,31 +89,33 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
   ].join(' · ')
 
   return (
-    <div ref={containerRef}>
-      {!expanded && (
-        <button
-          type="button"
-          className="my-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden"
-          data-diff-toggle
-          data-testid="prose-diff-chip"
-          title={headerPath ?? undefined}
-          aria-expanded={false}
-          aria-controls={regionId}
-          aria-label={label}
-          onClick={toggle}
-        >
-          <FileDiff size={12} className="shrink-0" aria-hidden />
-          {basename && <span className="font-mono max-w-[240px] truncate">{basename}</span>}
-          <span className="tabular-nums">
-            {stats.removed > 0 && <span className="text-danger">-{stats.removed}</span>}
-            {stats.removed > 0 && stats.added > 0 && ' '}
-            {stats.added > 0 && <span className="text-ok">+{stats.added}</span>}
-          </span>
-        </button>
-      )}
+    <div>
+      {/* Open look mirrors ToolCallLine's tool-card chip: filled background,
+          full-strength text, chevron turned up. Colour alone did not read as a
+          state. */}
+      <button
+        type="button"
+        className={`my-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${expanded ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
+        data-diff-toggle
+        data-testid="prose-diff-chip"
+        title={headerPath ?? undefined}
+        aria-expanded={expanded}
+        aria-controls={regionId}
+        aria-label={label}
+        onClick={toggle}
+      >
+        <FileDiff size={12} className="shrink-0" aria-hidden />
+        {basename && <span className="font-mono max-w-[240px] truncate">{basename}</span>}
+        <span className="tabular-nums">
+          {stats.removed > 0 && <span className="text-danger">-{stats.removed}</span>}
+          {stats.removed > 0 && stats.added > 0 && ' '}
+          {stats.added > 0 && <span className="text-ok">+{stats.added}</span>}
+        </span>
+        <ChevronDown size={12} aria-hidden className={`shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+      </button>
       <div id={regionId}>
         {expanded && (
-          <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} onFold={toggle} />
+          <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} />
         )}
       </div>
     </div>

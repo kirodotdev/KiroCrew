@@ -12,12 +12,12 @@
  * A short recording of the same three-step flow proves the chip is one element
  * throughout (it changes look, never place).
  *
- * The second surface is the prose ```diff fence (FoldableDiffBlock), which keeps
- * DiffBlock's header chevron as its close control. Two frames: the fence open
- * (chevron visible at the header's left edge, filename clear of it), then
- * folded again by a REAL click on that chevron — the click Pierre's header used
- * to swallow. Runs the REAL built SPA (website/dist) behind the shared
- * transcript harness — no gateway, no token.
+ * The second surface is the prose ```diff fence (FoldableDiffBlock), which
+ * follows the same grammar: its chip stays mounted and a second real click on
+ * it folds the patch. Two frames: the fence open (chip present, chevron up, no
+ * fold control in the patch header), then folded again by its chip. Runs the
+ * REAL built SPA (website/dist) behind the shared transcript harness — no
+ * gateway, no token.
  *
  * Usage: node scripts/capture-diff-chip-toggle.mjs [outDir]
  */
@@ -122,19 +122,19 @@ async function run(theme, record) {
   if (s.card !== 0 || s.chip !== 1 || s.expanded !== 'false') fail(`after close click: ${JSON.stringify(s)}`)
   await shot('03-folded-again')
 
-  // Prose fence: chip opens the fence, the header chevron (the fixed control)
-  // closes it. Both are real pointer clicks.
+  // Prose fence: the same chip opens and closes it. Both are real pointer
+  // clicks; the opened patch must carry no fold control of its own.
   const prose = page.locator('[data-testid="prose-diff-chip"]').first()
-  if (await prose.count() !== 1) fail('prose fence chip missing')
+  if (await prose.count() !== 1 || await prose.getAttribute('aria-expanded') !== 'false') fail('prose fence chip missing or not folded')
   await prose.click()
   await page.waitForTimeout(900)
-  const fold = page.locator('.diff-block [data-diff-toggle]')
-  if (await page.locator('.diff-block').count() !== 1 || await fold.count() !== 1) fail('prose fence did not open with a fold handle')
-  await shot('04-prose-fence-open')
-  await fold.click()
+  if (await page.locator('.diff-block').count() !== 1 || await prose.count() !== 1 || await prose.getAttribute('aria-expanded') !== 'true') fail('prose fence did not open with its chip still mounted')
+  if (await page.locator('.diff-block [data-diff-toggle]').count() !== 0) fail('opened prose fence still carries a header fold control')
+  await shot('04-prose-fence-open-chip-stays')
+  await prose.click()
   await page.waitForTimeout(900)
-  if (await page.locator('.diff-block').count() !== 0 || await prose.count() !== 1) fail('chevron click did not fold the prose fence')
-  await shot('05-prose-fence-folded-by-chevron')
+  if (await page.locator('.diff-block').count() !== 0 || await prose.getAttribute('aria-expanded') !== 'false') fail('second chip click did not fold the prose fence')
+  await shot('05-prose-fence-folded-by-chip')
 
   const video = await close()
   if (video) {

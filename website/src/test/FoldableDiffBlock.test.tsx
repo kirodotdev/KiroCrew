@@ -3,9 +3,10 @@
  *
  * `DiffBlock` itself is covered by `DiffBlock.test.tsx`; what is asserted here
  * is only the wrapper's own behaviour — that the patch starts CLOSED, that the
- * chip carries the facts a reader needs to decide whether to open it, and that
- * an opened patch is remembered across a re-mount when (and only when) the
- * caller supplied a key.
+ * chip carries the facts a reader needs to decide whether to open it, that the
+ * SAME chip stays mounted and closes the patch again, and that an opened patch
+ * is remembered across a re-mount when (and only when) the caller supplied a
+ * key.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, fireEvent, waitFor } from '@testing-library/react'
@@ -33,7 +34,8 @@ describe('FoldableDiffBlock', () => {
     expect(container.textContent).not.toContain('const c = 4')
     fireEvent.click(chip(container)!)
     await waitFor(() => expect(container.querySelector('.diff-block')).not.toBeNull())
-    expect(chip(container)).toBeNull()
+    // The chip stays: it is the close control too.
+    expect(chip(container)!.getAttribute('aria-expanded')).toBe('true')
   })
 
   it('states the file and the ± counts on the chip', () => {
@@ -84,7 +86,7 @@ describe('FoldableDiffBlock', () => {
     first.unmount()
 
     const again = render(<FoldableDiffBlock code={PATCH} complete foldKey="msg-1:7" />)
-    expect(chip(again.container)).toBeNull()
+    expect(chip(again.container)?.getAttribute('aria-expanded')).toBe('true')
     expect(again.container.querySelector('.diff-block')).not.toBeNull()
   })
 
@@ -94,19 +96,23 @@ describe('FoldableDiffBlock', () => {
     await waitFor(() => expect(first.container.querySelector('.diff-block')).not.toBeNull())
 
     const other = render(<FoldableDiffBlock code={PATCH} complete foldKey="msg-2:7" />)
-    expect(chip(other.container)).not.toBeNull()
+    expect(chip(other.container)?.getAttribute('aria-expanded')).toBe('false')
+    expect(other.container.querySelector('.diff-block')).toBeNull()
   })
 
-  it('collapses again from the open patch and re-opens from the chip', async () => {
+  it('the chip stays mounted while open and a second click on it folds the patch', async () => {
     const { container } = render(<FoldableDiffBlock code={PATCH} complete foldKey="msg-3:1" />)
+    expect(chip(container)!.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(chip(container)!)
     await waitFor(() => expect(container.querySelector('.diff-block')).not.toBeNull())
-    // DiffBlock's own fold control is the counterpart handle; both halves of
-    // the toggle carry data-diff-toggle so focus can follow the swap.
-    const fold = container.querySelector<HTMLElement>('[data-diff-toggle]')
-    expect(fold).not.toBeNull()
-    fireEvent.click(fold!)
-    await waitFor(() => expect(chip(container)).not.toBeNull())
+    // Same grammar as the tool-card chip: the chip is the fence's only toggle.
+    // The opened patch carries no fold control of its own.
+    expect(chip(container)).not.toBeNull()
+    expect(chip(container)!.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelectorAll('[data-diff-toggle]')).toHaveLength(1)
+    fireEvent.click(chip(container)!)
+    await waitFor(() => expect(container.querySelector('.diff-block')).toBeNull())
+    expect(chip(container)!.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('keeps a local expansion out of the shared store when unkeyed', async () => {
@@ -115,17 +121,16 @@ describe('FoldableDiffBlock', () => {
     await waitFor(() => expect(first.container.querySelector('.diff-block')).not.toBeNull())
     first.unmount()
     const again = render(<FoldableDiffBlock code={PATCH} complete />)
-    expect(chip(again.container)).not.toBeNull()
+    expect(chip(again.container)?.getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('hands focus to the counterpart control after a toggle', async () => {
+  it('keeps focus on the chip across a toggle', async () => {
     const { container } = render(<FoldableDiffBlock code={PATCH} complete />)
     chip(container)!.focus()
     fireEvent.click(chip(container)!)
-    await waitFor(() => expect(container.querySelector('[data-diff-toggle]')).not.toBeNull())
-    // The activated control unmounts, so focus would fall to <body> without the
-    // hand-off; assert it landed on the control that replaced it.
-    expect(document.activeElement).toBe(container.querySelector('[data-diff-toggle]'))
+    await waitFor(() => expect(container.querySelector('.diff-block')).not.toBeNull())
+    // Nothing unmounts under the pointer, so the activated control keeps focus.
+    expect(document.activeElement).toBe(chip(container))
   })
 
   it('passes the open-file callback through to the opened patch', async () => {

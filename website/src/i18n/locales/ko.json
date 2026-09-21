@@ -9906,7 +9906,6 @@
         "thought_process": "사고 과정"
       },
       "toolCallLine": {
-        "aria_hide_diff": "diff 숨기기",
         "diff_truncated": "diff가 잘렸습니다",
         "aria_awaiting_approval": "도구 승인 대기 중: {{label}}",
         "aria_hide_details": "도구 세부 정보 숨기기: {{label}}",

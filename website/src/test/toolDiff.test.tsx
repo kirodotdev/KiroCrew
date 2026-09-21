@@ -196,7 +196,7 @@ describe('ToolCallLine diff presentation', () => {
         slotRunning: false,
       } as unknown as ChatState,
     })
-    const { container, queryByLabelText } = renderWithProviders(<ToolCallLine message={editMsg()} running={false} />, { store })
+    const { container } = renderWithProviders(<ToolCallLine message={editMsg()} running={false} />, { store })
     const chip = () => container.querySelector<HTMLElement>('[data-testid="tool-diff-chip"]')!
     // Folded: the chip is the open handle.
     expect(container.querySelector('.diff-block')).toBeNull()
@@ -211,7 +211,7 @@ describe('ToolCallLine diff presentation', () => {
     expect(chip().getAttribute('aria-expanded')).toBe('true')
     // No second toggle in the card header: one control, one place.
     await screen.findByTitle('Copy patch')
-    expect(queryByLabelText('Hide diff')).toBeNull()
+    expect(container.querySelectorAll('[data-diff-toggle]')).toHaveLength(1)
     fireEvent.click(chip())
     expect(container.querySelector('.diff-block')).toBeNull()
     expect(chip().getAttribute('aria-expanded')).toBe('false')

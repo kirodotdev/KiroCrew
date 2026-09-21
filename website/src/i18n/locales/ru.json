@@ -10329,7 +10329,6 @@
         "thought_process": "Ход размышлений"
       },
       "toolCallLine": {
-        "aria_hide_diff": "Скрыть diff",
         "diff_truncated": "diff усечён",
         "aria_awaiting_approval": "Ожидание одобрения инструмента: {{label}}",
         "aria_hide_details": "Скрыть подробности инструмента: {{label}}",
