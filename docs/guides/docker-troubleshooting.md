@@ -502,6 +502,83 @@ not a provider swap.
 
 ---
 
+## 9. Channel bot never authenticates
+
+**Symptoms:** the dashboard works, but a Slack / Discord / Telegram / WeCom /
+WeChat / Webex bot never comes online — and the gateway's own process
+environment has no trace of the token you passed in.
+
+### The variable is gone from the environ by design
+
+`docker/entrypoint.sh` moves every credential it finds in the environment into
+the data home's `.env` (written mode 600), unsets it, and exports
+`_KIROCREW_CREDS_SCRUBBED=1`. `KiroCrewConfig.load_credentials`
+(`src/kiro_crew/config/loader.py`) reads that marker and refuses to re-inject
+those keys into `os.environ`, so they never sit in the long-lived gateway's
+`/proc/<pid>/environ`.
+
+`docker exec kirocrew env` is **not** the probe: the daemon injects the
+container's configured environment into the processes it starts, so your `-e`
+token appears there whether or not the gateway still holds it. Read a long-lived
+process's `execve`-time snapshot instead — `tini` becomes PID 1 only after the
+scrub, which is what makes it a fair witness:
+
+Pass **your** bot's credential name as the last argument — the probe checks the
+key you name and nothing else, so a Discord or WeCom bot checked with Slack's key
+would read as healthy while its own credential sat in the environ. It prints a
+verdict, never the value: a scrub that failed must not be diagnosed by pasting
+the credential into your scrollback.
+
+```bash
+docker exec kirocrew sh -c '
+  if tr "\0" "\n" < /proc/1/environ | grep -q "^$1="; then
+    echo "$1 is STILL in PID 1 environ — the scrub did not run"
+  else
+    echo "$1 is absent from PID 1 environ — healthy"
+  fi' probe DISCORD_BOT_TOKEN
+```
+
+The keys moved this way are `CREDENTIAL_KEYS` — the Slack, Discord, Telegram,
+WeCom, Webex, Microsoft, WeChat, Feishu, Jira, Azure DevOps and Bitbucket
+credentials plus `KIROCREW_OWNER_ID` and `KIRO_API_KEY` — and any per-host
+`JIRA_TOKEN_<hex>`.
+
+### Confirm what was stored
+
+```bash
+# One line per credential moved, printed on every start:
+docker logs kirocrew | grep 'Stored .* and removed it from the environment'
+
+# Key names in the stored file (no values):
+docker exec kirocrew cut -d= -f1 /home/kirocrew/.kiro/crew/.env
+```
+
+Neither a `Stored …` line nor a warning for your variable means the entrypoint
+saw no non-empty value for it: the `-e` flag or the compose `environment:` entry
+did not reach the container, or it arrived empty. A `Stored …` line present and
+the bot still offline points at the value or at the channel's own setup, not at
+the scrubbing path.
+
+Environment values outrank previously stored ones, so fixing a token in your
+compose `.env` and restarting overwrites the stored copy. The reverse also
+holds: an obsolete `-e` value overwrites a corrected `.env` line on the next
+start.
+
+One warning is worth reading closely:
+
+```
+[entrypoint] WARNING: could not read /home/kirocrew/.kiro/crew/.env (grep exit 2); leaving it untouched and keeping SLACK_BOT_TOKEN in the environment.
+```
+
+The move is abandoned rather than rewriting `.env` with a single key, so the
+other stored credentials survive and the credential stays in the environ. Treat
+it as a failure rather than a degraded success: the gateway reads that same file
+on startup without guarding the read, so a `.env` the entrypoint could not read
+can stop credential loading outright. Repair the file's owner and mode — uid
+1000 and `600`, as in [section 3](#3-permission-denied-errors) — and restart.
+
+---
+
 ## Quick diagnostics checklist
 
 ```bash

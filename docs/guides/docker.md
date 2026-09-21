@@ -91,6 +91,16 @@ gateway starts — so they never sit in the long-lived gateway process's
 (same precedence the gateway itself applies), so changing a value in your
 compose `.env` and restarting updates the stored copy.
 
+Two channels cannot run in this image. **WhatsApp** needs the optional
+`neonize` dependency, declared as the `whatsapp` extra in `setup.cfg`, and the
+image installs the bare wheel with no extras (`docker/Dockerfile`), so the
+transport is absent —
+[whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md).
+**iMessage** drives Messages.app on the machine the gateway runs on and needs
+macOS 14 or newer plus Full Disk Access and Automation grants, so no Linux
+container can serve it —
+[imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md).
+
 Everything else lives in `config.json` inside the volume. Most settings are
 editable from the (token-authenticated) dashboard; the exceptions are the
 channel-credential pages (Slack/Discord/Telegram/WeCom/Webex tokens) and

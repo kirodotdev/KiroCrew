@@ -86,6 +86,16 @@ and owner-identity credentials (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`,
 / Webex). There is no model API key to configure: `kiro-cli` owns the model
 credential, and `kiro-cli login` is where it is set.
 
+Two channels do not travel to an arbitrary remote host. **iMessage** needs the
+gateway on a Mac running macOS 14 or newer, with Full Disk Access and Automation
+granted to whatever launched it, so a Linux VPS cannot serve it at all
+([imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md)).
+**WhatsApp** runs anywhere, but it is not in the base install: it needs the
+optional `neonize` dependency (`pip install ".[whatsapp]"`) and a one-time device
+pairing from **Settings → Channels → WhatsApp**, so reach the remote dashboard
+first (part 2 below) and scan the rotating code from there
+([whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md)).
+
 ### Install Kiro Crew
 
 Same two steps as a local machine (Python backend plus the React dashboard
