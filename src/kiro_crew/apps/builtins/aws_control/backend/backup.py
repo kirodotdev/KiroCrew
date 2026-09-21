@@ -2523,7 +2523,14 @@ def _unchanged_baseline(
     if not isinstance(key, str) or not key:
         return None
     try:
-        _authorize_upload(account, profile, region, caller=caller, operation=SEL_OP_BASELINE_PROBE)
+        _authorize_upload(
+            account,
+            profile,
+            region,
+            caller=caller,
+            payload_kind=None,
+            operation=SEL_OP_BASELINE_PROBE,
+        )
         meta = storage.head_object_meta(profile, region, bucket, "backup", key, account=account)
     except (AWSError, OSError) as exc:
         logger.info(

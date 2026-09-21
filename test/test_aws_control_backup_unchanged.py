@@ -649,6 +649,15 @@ class TestUnchangedBaseline:
         assert self.authz.call_count == 1
         assert self.authz.call_args.kwargs["operation"] == backup.SEL_OP_BASELINE_PROBE
         assert self.authz.call_args.kwargs["caller"] == backup.CALLER_SCHEDULED
+        # The probe carries no kind's payload -- it is a HEAD of an archive already in
+        # the bucket, and writes nothing -- so no per-kind grant governs it. Naming a
+        # kind here would subject a read to that kind's grant and turn a withdrawn
+        # snapshot consent into a refused PROBE, which this module answers by
+        # uploading: the nightly would re-upload an unchanged tree every night, the
+        # exact cost this baseline exists to avoid. `None` is the real answer the
+        # parameter documents, not an opt-out, and the parameter has no default
+        # precisely so this site must state it.
+        assert self.authz.call_args.kwargs["payload_kind"] is None
 
     def test_a_refused_probe_uploads_rather_than_skipping(self):
         # Consent withdrawn during the build: the gate raises and the run uploads. It
