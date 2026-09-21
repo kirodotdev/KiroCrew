@@ -67,8 +67,110 @@ export const DECISIONS_COMPACTION_POINT = 'compaction.keep'
  */
 export const DECISIONS_MEMORY_POINT = 'memory.recall'
 
-/** Config path of the sampling share; the only decisions value the config PATCH accepts. */
+/**
+ * Config path of the sampling share. One of the four `decisions.*` values the
+ * config PATCH accepts, beside the three `model_route` tiers; the address and the
+ * credential are deliberately not among them.
+ */
 export const DECISIONS_BUCKET_PATH = 'decisions.bucket'
+
+/**
+ * Config path of the prior-conversation budget the seam ASKS for, in characters.
+ *
+ * Not what the card writes: the number that decides how much conversation may leave
+ * is the CEILING on the keystone (`historyBudget` on the view,
+ * `api.saveDecisionsHistoryBudget`), and `PATCH /api/config/kirocrew` does not
+ * accept this path. Named here for the pointer line that tells a reader where the
+ * asked-for value lives.
+ */
+export const DECISIONS_HISTORY_BUDGET_PATH = 'decisions.history_budget_chars'
+
+/**
+ * Config path of the address decisions are sent to.
+ *
+ * READ-ONLY from the dashboard, deliberately: `PATCH /api/config/kirocrew` excludes
+ * `decisions.provider.*` so a dashboard caller cannot choose where the state a
+ * decision point collects is sent, and `api_key` beside it is schema-sensitive, so
+ * the masked read hands back a sentinel a write would clobber. The card shows the
+ * address and names this path; an operator moves it in the file.
+ */
+export const DECISIONS_ENDPOINT_PATH = 'decisions.provider.endpoint'
+
+/** Config path prefix of the tier-to-model map `model.route` reads. */
+export const DECISIONS_MODEL_ROUTE_PATH = 'decisions.model_route'
+
+/**
+ * The three tiers `model.route` may answer with, in the order the panel draws
+ * them. The point's CLOSED answer domain (`DECISION_MODEL_ROUTE_TIERS` in
+ * `config/sections.py`), restated here because the panel needs one row per tier and
+ * a tier the question never offers could never be answered.
+ */
+export const DECISIONS_MODEL_ROUTE_TIERS = ['simple', 'medium', 'complex'] as const
+
+/**
+ * The one vault entry the provider credential may come from. `provider.api_key`
+ * honours exactly `secret://TYPESAFE_API_KEY` and nothing else, because
+ * `config.json` is agent-writable — so the card writes this NAME into the secrets
+ * vault and never a value into config.
+ */
+export const DECISIONS_API_KEY_SECRET = 'TYPESAFE_API_KEY'
+
+/**
+ * Status a point row carries, as the gateway spells it. The EFFECTIVE answer, never
+ * a switch position: `off` is every reason nothing would be sent.
+ */
+export const POINT_ACTIVE = 'active'
+/** Consent stands, but this point's own egress category was never granted. */
+export const POINT_NEEDS_SCOPE = 'needs_scope'
+/** Nothing is sent: no consent, a moved endpoint, or a governance pin. */
+export const POINT_OFF = 'off'
+
+/** One decision point, as the overview list and its detail panel read it. */
+export interface DecisionPointRow {
+  /** The gateway's identifier, also the string a reader greps the decision log for. */
+  id: string
+  /** The keystone scope this point needs beyond consent itself, or `null`. */
+  needsScope: string | null
+  /** One of the three statuses above. An id this build does not know reads as `off`. */
+  status: string
+  /** `config.json` paths the panel prints a pointer to rather than controlling. */
+  configKeys: string[]
+}
+
+/**
+ * The point rows out of a `GET /api/decisions/consent` body.
+ *
+ * Empty for a body that carries no `points` — an older gateway — and the card then
+ * says the points cannot be listed rather than drawing a list written here. That is
+ * the whole reason the rows come from the server: a build that ships another point
+ * must light up a row with no edit on this side, so any array here would be a
+ * second, quietly diverging registry.
+ *
+ * A row missing its `id` is dropped: there is nothing to label, nothing to grep the
+ * log for, and no panel to open. An unknown `status` is kept as-is and renders as
+ * `off` by the chip's own fallback — the fail-closed direction, since the alternative
+ * is claiming a point is running on a word this build cannot read.
+ */
+export function readPoints(body: unknown): DecisionPointRow[] {
+  const root = asRecord(body)
+  const raw = root?.points
+  if (!Array.isArray(raw)) return []
+  const rows: DecisionPointRow[] = []
+  for (const entry of raw) {
+    const row = asRecord(entry)
+    const id = typeof row?.id === 'string' ? row.id : ''
+    if (!id) continue
+    rows.push({
+      id,
+      needsScope: typeof row?.needs_scope === 'string' && row.needs_scope ? row.needs_scope : null,
+      status: typeof row?.status === 'string' ? row.status : POINT_OFF,
+      configKeys: Array.isArray(row?.config_keys)
+        ? row.config_keys.filter((k): k is string => typeof k === 'string' && k.length > 0)
+        : [],
+    })
+  }
+  return rows
+}
 
 /** Bounds the backend clamps the sampling bucket to, restated for the reader. */
 const BUCKET_MIN = 0
@@ -133,6 +235,25 @@ export interface DecisionsView {
    * scope existed both read false, and the card draws the switch off for them.
    */
   memoryText: boolean
+  /**
+   * The prior-conversation CEILING the owner reviewed, in characters.
+   *
+   * From the KEYSTONE, not from `config.json`. The two differ exactly when an agent
+   * has raised the config value, and the keystone is the number that decides how
+   * much conversation may leave: config says what the seam asks for, this says what
+   * it is clamped to. Showing the config value would tell a reader a budget was in
+   * force that the gate refuses to honour.
+   *
+   * 0 is the shipped default and means the message alone, so it is a real answer
+   * rather than "nothing to say"; an absent or unusable field reads as 0, the
+   * fail-closed direction.
+   */
+  historyBudget: number
+  /**
+   * The points this gateway ships, in its own order. Empty on a gateway that does
+   * not project them, which the overview reports rather than papering over.
+   */
+  points: DecisionPointRow[]
 }
 
 const UNSUPPORTED: DecisionsView = {
@@ -144,6 +265,8 @@ const UNSUPPORTED: DecisionsView = {
   toolArgs: false,
   compaction: false,
   memoryText: false,
+  historyBudget: 0,
+  points: [],
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -182,7 +305,7 @@ export function readBucket(config: unknown): number | null {
  * reader mirrors that so the card never shows "on" for a value the gate reads
  * as off.
  */
-export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
+export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'points'> {
   const root = asRecord(body)
   if (!root || !('enabled' in root)) {
     return {
@@ -193,6 +316,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
       toolArgs: false,
       compaction: false,
       memoryText: false,
+      historyBudget: 0,
     }
   }
   const enabled = root.enabled === true
@@ -212,6 +336,12 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
   // An exact `true` on the same terms again: a recalled memory is text the agent wrote
   // down in an earlier conversation, so neither scope beside this one stands for it.
   const memoryText = root.memory_text === true
+  // A whole non-negative number or nothing: an older gateway omits the field, and a
+  // value nobody can read back as a budget is not one. 0 either way, which is the
+  // shipped default and the least that can leave.
+  const rawBudget = root.history_budget_chars
+  const historyBudget =
+    typeof rawBudget === 'number' && Number.isInteger(rawBudget) && rawBudget >= 0 ? rawBudget : 0
   return {
     supported: true,
     enabled,
@@ -220,6 +350,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
     toolArgs,
     compaction,
     memoryText,
+    historyBudget,
   }
 }
 
@@ -227,5 +358,26 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
 export function readDecisions(consentBody: unknown, config: unknown): DecisionsView {
   const consent = readConsent(consentBody)
   if (!consent.supported) return UNSUPPORTED
-  return { ...consent, bucket: readBucket(config) }
+  return { ...consent, bucket: readBucket(config), points: readPoints(consentBody) }
+}
+
+/**
+ * The tier-to-model map out of a `GET /api/config/kirocrew` body.
+ *
+ * Every tier is present in the result, and a tier the config does not name reads as
+ * `''` — INHERIT, the turn keeps the model its session is already on. That is the
+ * shipped default and the only default this file may carry: a concrete model id
+ * would fail on the first prompt for every account not entitled to it, which is why
+ * `code-review.yml` gates on one appearing in code at all.
+ */
+export function readModelRoute(config: unknown): Record<string, string> {
+  const root = asRecord(config)
+  const decisions = root ? asRecord(root.decisions) : null
+  const route = decisions ? asRecord(decisions.model_route) : null
+  const out: Record<string, string> = {}
+  for (const tier of DECISIONS_MODEL_ROUTE_TIERS) {
+    const raw = route?.[tier]
+    out[tier] = typeof raw === 'string' ? raw : ''
+  }
+  return out
 }

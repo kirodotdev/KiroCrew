@@ -27,6 +27,10 @@ DECISIONS_READER_PATH = ROOT / "website" / "src" / "pages" / "settings" / "decis
 FEATURE_PREVIEWS_PATH = (
     ROOT / "website" / "src" / "pages" / "settings" / "FeaturePreviewsSection.tsx"
 )
+# The Decisions (Jev) card itself. `FeaturePreviewsSection` mounts it and owns the
+# four per-device preview flags; every control that writes the keystone or a
+# `decisions.*` path lives here, so this is the file the cross-layer checks read.
+DECISIONS_CARD_PATH = ROOT / "website" / "src" / "pages" / "settings" / "DecisionsCard.tsx"
 TS_CONST_RE = r"export const {name} = '([^']+)'"
 
 
@@ -129,11 +133,55 @@ class TestDecisionsSettingCrossLayer:
         )
 
     def test_the_toggle_writes_the_consent_route_and_carries_no_config_key(self):
-        card = FEATURE_PREVIEWS_PATH.read_text(encoding="utf-8")
+        card = DECISIONS_CARD_PATH.read_text(encoding="utf-8")
         assert "api.saveDecisionsConsent(" in card
         assert (
             'configKey="decisions.enabled"' not in card
         ), "a configKey naming decisions.enabled would name a path nothing reads"
+        # The section that MOUNTS the card must not grow a second consent writer: two
+        # callers of the same keystone route are two places for an endpoint echo to
+        # drift from the address the reader was shown.
+        section = FEATURE_PREVIEWS_PATH.read_text(encoding="utf-8")
+        assert (
+            "api.saveDecisionsConsent(" not in section
+        ), "the mounting section writes consent too; the card is the one writer"
+
+    def test_the_card_offers_no_control_for_a_path_the_config_route_refuses(self):
+        """A field whose every save is refused is worse than a pointer line.
+
+        ``PATCH /api/config/kirocrew`` matches its allowlist exactly, and
+        ``decisions.provider.*`` is deliberately absent: the endpoint would let a
+        dashboard caller choose where the state a decision point collects is sent, and
+        ``api_key`` is schema-sensitive so the masked GET hands back a sentinel. The
+        card therefore SHOWS the address and names the path. Read as source text
+        because the defect is a call site, not a rendered string.
+        """
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        card = DECISIONS_CARD_PATH.read_text(encoding="utf-8")
+        reader = DECISIONS_READER_PATH.read_text(encoding="utf-8")
+        endpoint_path = _ts_const(reader, "DECISIONS_ENDPOINT_PATH")
+        budget_path = _ts_const(reader, "DECISIONS_HISTORY_BUDGET_PATH")
+        assert endpoint_path not in _EDITABLE_CONFIG
+        assert budget_path not in _EDITABLE_CONFIG
+        for const in ("DECISIONS_ENDPOINT_PATH", "DECISIONS_HISTORY_BUDGET_PATH"):
+            assert (
+                f"path: {const}" not in card
+            ), f"the card PATCHes {const}, which the config route refuses"
+        # The ceiling has a writer, and it is the owner-only consent route.
+        assert "api.saveDecisionsHistoryBudget(" in card
+
+    def test_every_tier_the_card_offers_is_editable_on_the_backend(self):
+        """The three pickers write real paths, or they are three dead controls."""
+        from kiro_crew.config.sections import DECISION_MODEL_ROUTE_TIERS
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        reader = DECISIONS_READER_PATH.read_text(encoding="utf-8")
+        prefix = _ts_const(reader, "DECISIONS_MODEL_ROUTE_PATH")
+        for tier in DECISION_MODEL_ROUTE_TIERS:
+            assert (
+                f"{prefix}.{tier}" in _EDITABLE_CONFIG
+            ), f"the card offers a picker for {tier}, which the config route refuses"
 
     def test_the_consent_routes_are_registered(self):
         from kiro_crew.dashboard import handlers

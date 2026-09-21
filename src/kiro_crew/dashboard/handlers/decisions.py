@@ -144,6 +144,111 @@ async def _deny_non_owner(request: web.Request, operation: str) -> web.Response 
     return _owner_denial_response(request, "dashboard owner required", _CODE_OWNER_REQUIRED)
 
 
+#: Status a point row carries, as the EFFECTIVE answer rather than a switch
+#: position. ``off`` covers every reason nothing is sent -- no consent, a moved
+#: endpoint, a governance pin -- because a reader acting on the row cares that it is
+#: not running, and the card states the reason once above the list rather than
+#: per row.
+_POINT_ACTIVE = "active"
+#: Consent is given and the endpoint holds, but this point sends a category the
+#: owner has not agreed to (``tool.risk`` and the keystone's ``tool_args``). Its own
+#: value rather than ``off``, because the fix is a switch on the point's own panel
+#: and ``off`` would send the reader to the main switch that is already on.
+_POINT_NEEDS_SCOPE = "needs_scope"
+_POINT_OFF = "off"
+
+
+def _sampling_admits_anybody() -> bool:
+    """Whether ``decisions.bucket`` admits ANY session. Never raises.
+
+    A share of 0 admits nobody, so no point is ever asked and the seam does nothing
+    however the keystone reads. Anything unreadable is treated as admitting nobody,
+    the same fail-closed direction the gate's own bucket parse takes: reporting a
+    point as running on a config this handler could not parse is the one answer a
+    reader has no way to check.
+
+    Reads ``config.json`` synchronously, so it belongs on a worker thread: its only
+    caller is ``_points``, which both routes reach through ``asyncio.to_thread``.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        decisions = getattr(KiroCrewConfig.load(), "decisions", None)
+        return int(getattr(decisions, "bucket", 0)) > 0
+    except Exception:
+        logger.debug("decisions: sampled share unreadable; reporting no point as running")
+        return False
+
+
+def _points(state: dict, *, permits: bool) -> list[dict]:
+    """One row per decision point this build ships, for the card's overview list.
+
+    Projected from the seam's own registry (``gate.DECISION_POINT_NAMES``,
+    ``gate.POINT_SCOPE_KEYS``, ``gate.POINT_CONFIG_KEYS``) rather than
+    authored here or in the frontend: a build that ships another point lists it with
+    no edit on either side, and the set the card draws cannot disagree with the set
+    the gate will answer for. The card holds a LABEL per id, the same arrangement
+    ``agent_sdk/backend_cards.py`` and the Agent Backend panel use.
+
+    ``status`` is the SERVER's verdict for the same reason ``permits`` is: it is
+    derived from the keystone and the governance probe the caller already resolved,
+    so the row and the gate cannot report different answers for one point. It is
+    never a switch position -- ``off`` is every reason nothing would be sent.
+
+    *permits* is the effective "anything is sent at all" answer, governance denial
+    already folded in, so this function performs no probe of its own.
+
+    The SAMPLED SHARE is folded in on the same terms. ``decisions.bucket`` at 0 means
+    no session's key falls inside the sample, so every point is asked for nobody and
+    does nothing -- and a row reporting ``active`` there would tell a reader the seam
+    is working while no turn can reach it. That is the one status word a reader cannot
+    check for themselves, so it has to be the effective answer rather than the
+    consent-shaped one. ``off`` is already every reason nothing is sent, and a share of
+    zero is one of them; the share itself is on screen in the shared block, so a reader
+    who sees every row off has the reason one glance away.
+    """
+    from kiro_crew.decisions import consent
+    from kiro_crew.decisions import gate as _gate
+
+    # Read per SCOPE rather than per point, and only for the scopes this build
+    # actually has: a point's row says whether ITS OWN consent is recorded, so a
+    # hardcoded reader would report the tool-argument answer for a point that needs
+    # the transcript scope. One read per distinct scope, reused across its points.
+    granted = {
+        key: bool(getattr(consent, f"consented_{key}")(state))
+        for key in set(_gate.POINT_SCOPE_KEYS.values())
+    }
+    # Read once for the whole projection rather than per row: it is one config read
+    # and every row resolves against the same answer, which is also what keeps the five
+    # rows from disagreeing about whether sampling admits anybody.
+    sampled = _sampling_admits_anybody()
+    rows: list[dict] = []
+    for name in _gate.DECISION_POINT_NAMES:
+        # From the gate's own scope map, so a point that gains a scope is listed with
+        # it and needs no edit here or in the card.
+        scope = _gate.POINT_SCOPE_KEYS.get(name)
+        if not permits or not sampled:
+            status = _POINT_OFF
+        elif scope is not None and not granted.get(scope, False):
+            status = _POINT_NEEDS_SCOPE
+        else:
+            status = _POINT_ACTIVE
+        rows.append(
+            {
+                "id": name,
+                # Named as the keystone spells it, so the panel's switch and the
+                # scope it writes are one string. ``None`` where a point needs no
+                # scope beyond consent itself.
+                "needs_scope": scope,
+                "status": status,
+                # Paths the card prints as a pointer rather than offering a control
+                # for; see ``gate.POINT_CONFIG_KEYS``.
+                "config_keys": list(_gate.POINT_CONFIG_KEYS.get(name, ())),
+            }
+        )
+    return rows
+
+
 def _payload(state: dict, *, denied: bool) -> dict:
     """What both verbs return: the keystone and the endpoint config names now.
 
@@ -151,11 +256,19 @@ def _payload(state: dict, *, denied: bool) -> dict:
     the effective answer is what a caller acts on, and a separate reason field had no
     reader. It is passed in rather than probed here because the probe is filesystem
     IO and both callers already have a worker thread to spend it on.
+
+    SYNCHRONOUS ON PURPOSE, and both callers reach it through ``asyncio.to_thread``.
+    It reads the configured endpoint and the sampled share from ``config.json``, so
+    on slow storage a direct call would hold the event loop for the length of a stat
+    and a parse, and the gateway's other requests and its heartbeat wait behind it
+    (``no-blocking-call-on-event-loop``). One hop covers every read in here rather
+    than one hop per read.
     """
     from kiro_crew.decisions import consent
     from kiro_crew.decisions import gate as _gate
 
     configured = _gate.configured_endpoint()
+    permits = consent.permits(configured, state) and not denied
     return {
         "enabled": consent.is_enabled(state),
         "endpoint": consent.consented_endpoint(state),
@@ -167,7 +280,7 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # it is what keeps the card from claiming a decision would be sent under a
         # pin. The denial is not reported as a field of its own -- nothing reads one,
         # and the surface a caller acts on is the 403 on an enabling write.
-        "permits": consent.permits(configured, state) and not denied,
+        "permits": permits,
         # The prior-conversation CEILING the owner reviewed. Reported so the card can
         # say what was consented to rather than what config.json currently asks for
         # -- those differ exactly when an agent has raised the config value, which is
@@ -189,6 +302,11 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # this scope existed reads false here, which is what the card must draw for
         # it rather than inferring the scope from ``enabled``.
         "memory_text": consent.consented_memory_text(state),
+        # The points this build ships, with the effective status of each. Here
+        # rather than on a route of its own because the card reads this payload
+        # already and a point's status is a function of the same keystone: a second
+        # endpoint would be a second read that could answer differently.
+        "points": _points(state, permits=permits),
     }
 
 
@@ -205,7 +323,7 @@ async def api_decisions_consent_get(request: web.Request) -> web.Response:
     # read from disk. Audited by the probe itself. Named ``withdrawn`` because
     # ``denied`` above is the owner gate's refusal, a different decision.
     withdrawn = await asyncio.to_thread(is_decisions_denied)
-    payload = _payload(state, denied=withdrawn)
+    payload = await asyncio.to_thread(_payload, state, denied=withdrawn)
     # Read audited too: WHO learned whether the owner's messages leave the machine
     # is itself a fact an auditor needs, and it pairs with the denied-read row so
     # the log shows every read of the switch, not only the refused ones.
@@ -252,7 +370,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     would then consent to an address the owner never saw. A mismatch is ``409``
     and nothing is written; the card re-reads and shows the new address.
 
-    ``enabled`` may be OMITTED, and then the body must name at least one scope. Such a
+    ``enabled`` may be OMITTED, and then the body must name at least one of the fields
+    that may move on their own -- either scope, or the history ceiling. Such a
     write moves only that scope: the switch and the endpoint are read from the keystone
     inside the writer's lock and written back unchanged, so it can neither grant nor
     revoke consent. That is the only safe shape for a scope write, because a body
@@ -263,6 +382,15 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     A scope-only write against a REVOKED keystone leaves it revoked and stores no scope:
     a scope is only meaningful while the seam is on, which is the same rule that clears
     the scopes on a disabling write.
+
+    A scope-only write against a keystone that IS enabled is additionally REFUSED
+    unless consent already stands for the endpoint config names -- ``403`` under a
+    governance pin, otherwise ``409`` with the address in force. The revoked case
+    above is not one of these: it answers ``200`` and records nothing, because there
+    is no address to disagree about. ``permits`` is the predicate, the same one the
+    GET reports and the gate enforces, so omitting ``enabled`` can only move a
+    scope under a consent that already stands and can never record one for an
+    address nobody reviewed.
 
     ``tool_args`` records whether the owner consented to sending TOOL-CALL
     ARGUMENTS, the category ``tool.risk`` needs. Absent PRESERVES the recorded scope
@@ -300,12 +428,16 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     because a later enable must not inherit a budget nobody re-reviewed.
 
     Outcomes: ``200`` with the new state; ``400`` for a body that is not a JSON
-    object carrying a boolean ``enabled`` (plus a string ``endpoint`` when
-    enabling, and a non-negative whole ``history_budget_chars`` when present);
-    ``403`` for a non-owner, and for an ENABLING write the ceiling withdrew
-    (``decisions_capability_denied``); ``409`` when the echoed endpoint is not the one
-    config names now; ``500`` for a corrupt keystone, which is left byte-identical
-    rather than clobbered (the ``StateCorruptError`` precedent in
+    object, or whose ``enabled`` is present and not a boolean (plus a string
+    ``endpoint`` when enabling, and a non-negative whole ``history_budget_chars``
+    when present); ``403`` for a non-owner, and for an ENABLING or SCOPE-ONLY write
+    the ceiling withdrew (``decisions_capability_denied``); ``409`` when the echoed
+    endpoint is not the one config names now, and for a scope-only write against a
+    keystone ENABLED for a different address than config names. A scope-only write
+    against a REVOKED keystone is not a ``409``: it answers ``200`` and records no
+    scope, because a scope is only meaningful while the seam is on and there is no
+    address to disagree about; ``500`` for a corrupt keystone, which is left
+    byte-identical rather than clobbered (the ``StateCorruptError`` precedent in
     ``handlers/computer_use.py``).
     """
     denied = await _deny_non_owner(request, OP_CONSENT_PUT)
@@ -329,11 +461,19 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     # Omitting it hands ``KEEP_ENABLED`` to the writer, which resolves the switch and the
     # endpoint from the keystone inside its own lock.
     #
-    # It is only a scope-only write when a scope is actually present: a body naming
-    # neither the switch nor a scope asks for nothing and stays a 400, so an empty or
-    # misspelled body is refused rather than silently rewriting the record as itself.
-    _SCOPE_FIELDS = ("tool_args", "compaction", "memory_text")
-    scope_named = isinstance(body, dict) and any(field in body for field in _SCOPE_FIELDS)
+    # It is only a standalone write when the body actually names one of the fields it
+    # may move on its own: a body naming neither the switch nor any of them asks for
+    # nothing and stays a 400, so an empty or misspelled body is refused rather than
+    # silently rewriting the record as itself.
+    #
+    # The history CEILING counts among them. It is not a scope, but it moves on exactly
+    # the same terms -- it is a number on the keystone that the card offers on its own,
+    # and raising it is not a review of an address -- so a body carrying only
+    # ``history_budget_chars`` is a write this route has to accept. Leaving it out made
+    # every ceiling save a 400, which is the whole control dead on the one path an owner
+    # uses for it.
+    _STANDALONE_FIELDS = ("tool_args", "compaction", "memory_text", "history_budget_chars")
+    scope_named = isinstance(body, dict) and any(f in body for f in _STANDALONE_FIELDS)
     enabled = body.get("enabled", consent.KEEP_ENABLED) if isinstance(body, dict) else None
     if enabled is consent.KEEP_ENABLED and not scope_named:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
@@ -344,7 +484,8 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    if enabled is not consent.KEEP_ENABLED and not isinstance(enabled, bool):
+    scope_only = enabled is consent.KEEP_ENABLED
+    if not scope_only and not isinstance(enabled, bool):
         await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
         return web.json_response(
             {"error": 'body must be {"enabled": true|false}', "code": _CODE_INVALID_BODY},
@@ -528,6 +669,21 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             {"error": f"decisions_consent.json is unreadable: {exc}", "code": _CODE_CORRUPT},
             status=500,
         )
+    except consent.ConsentEndpointMovedError:
+        # The scope branch above checked that consent stands for the address config
+        # names, then the writer found the keystone bound to a different one: a
+        # re-bind landed between the two. Same 409 and the same code the pre-lock
+        # checks answer with, because it is the same refusal -- the card re-reads and
+        # shows the address in force -- and nothing was written.
+        await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="endpoint_changed")
+        return web.json_response(
+            {
+                "error": "a scope needs consent in force for the endpoint config names",
+                "code": _CODE_ENDPOINT_CHANGED,
+                "configured_endpoint": endpoint,
+            },
+            status=409,
+        )
     # Written and audited as the security decision it is: which way the switch
     # went is the one fact an auditor reconstructing "when did egress start" needs.
     # The endpoint travels in the row: "when did egress start, and to where" is
@@ -552,7 +708,14 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         # is a revocation. One expression decides both what a pin refuses and what the
         # row says happened, which is the only way the two cannot drift into a refused
         # write the log calls something else.
-        outcome=_consent_write_verb(enabled, tool_args, compaction, memory_text, budget_asserts),
+        # A scope-only write gets its own word: it names no switch, so neither
+        # "granted" nor "revoked" describes it, and an auditor reconstructing when
+        # egress started must not be handed a grant row for it.
+        outcome=(
+            "scoped"
+            if scope_only
+            else _consent_write_verb(enabled, tool_args, compaction, memory_text, budget_asserts)
+        ),
         resources=(
             f"decisions_consent.json endpoint={endpoint} "
             f"history_budget_chars={consent.consented_history_budget(state)} "
@@ -561,7 +724,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             f"memory_text={consent.consented_memory_text(state)}"
         ),
     )
-    return web.json_response(_payload(state, denied=withdrawn))
+    return web.json_response(await asyncio.to_thread(_payload, state, denied=withdrawn))
 
 
 async def api_decisions_feedback(request: web.Request) -> web.Response:

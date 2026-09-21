@@ -20,6 +20,8 @@ import {
   readDecisions,
   DECISIONS_COMPACTION_POINT,
   DECISIONS_MEMORY_POINT,
+  readModelRoute,
+  readPoints,
 } from './decisionsPreview'
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
@@ -35,6 +37,8 @@ const OFF = {
   compaction: false,
   // And the recalled-memory scope.
   memoryText: false,
+  // And the prior-conversation ceiling reads 0, which is the least that can leave.
+  historyBudget: 0,
 }
 
 describe('readConsent', () => {
@@ -58,6 +62,8 @@ describe('readConsent', () => {
         compaction: false,
         // Nor to send the text of recalled memories.
         memoryText: false,
+        // Nor does it consent to prior turns: an unmentioned ceiling is 0.
+        historyBudget: 0,
       })
     for (const sloppy of [false, 'true', 1, null]) {
       expect(readConsent({ enabled: sloppy, configured_endpoint: ENDPOINT, permits: false }).enabled).toBe(false)
@@ -119,7 +125,12 @@ describe('readDecisions', () => {
     // A shadow-era `preview: true`, or a hand-edited `enabled: true` in
     // config.json, is NOT consent: that file is agent-writable.
     const config = { decisions: { preview: true, enabled: true, bucket: 25 } }
-    expect(readDecisions(undefined, config)).toEqual({ ...OFF, bucket: null })
+    expect(readDecisions(undefined, config)).toEqual({
+      ...OFF,
+      bucket: null,
+      historyBudget: 0,
+      points: [],
+    })
   })
 
   it('combines the keystone and the config bucket', () => {
@@ -135,6 +146,12 @@ describe('readDecisions', () => {
         toolArgs: false,
         compaction: false,
         memoryText: false,
+        // Absent from this payload, so the ceiling reads as 0 — the shipped
+        // default, and the least that can leave the machine.
+        historyBudget: 0,
+        // A gateway that does not project its points reports none, and the card
+        // says so rather than drawing a list written on this side.
+        points: [],
       })
     expect(readDecisions(off, { decisions: { bucket: 100 } }).bucket).toBe(100)
     expect(readDecisions(off, undefined).bucket).toBeNull()
@@ -149,6 +166,34 @@ describe('readDecisions', () => {
     expect(readConsent({ ...base, tool_args: true }).compaction).toBe(false)
     for (const sloppy of ['true', 1, 'yes', null, undefined]) {
       expect(readConsent({ ...base, compaction: sloppy }).compaction).toBe(false)
+    }
+  })
+
+  it('takes the history ceiling from the KEYSTONE, never from config.json', () => {
+    // The two differ exactly when an agent has raised the config value, and the
+    // gate honours the smaller one. Showing the config number would tell a reader
+    // a budget is in force that the gate refuses.
+    const body = {
+      enabled: true,
+      configured_endpoint: ENDPOINT,
+      permits: true,
+      history_budget_chars: 400,
+    }
+    const view = readDecisions(body, { decisions: { history_budget_chars: 99999 } })
+    expect(view.historyBudget).toBe(400)
+  })
+
+  it('reads a ceiling the backend would refuse as 0, the fail-closed direction', () => {
+    // 0 is a real answer here — it is the shipped default and means the message
+    // alone — so an unusable value collapses onto the least, never onto "unknown".
+    for (const bad of [-1, 12.5, '400', null, true, undefined]) {
+      const body = {
+        enabled: true,
+        configured_endpoint: ENDPOINT,
+        permits: true,
+        history_budget_chars: bad,
+      }
+      expect(readDecisions(body, undefined).historyBudget).toBe(0)
     }
   })
 
@@ -176,7 +221,7 @@ describe('readDecisions', () => {
 describe('the Decisions toggle has no configKey', () => {
   // `__dirname`, not `import.meta.url`: under vitest the module URL is not a
   // file: URL, so `readFileSync` on it throws before any assertion runs.
-  const source = readFileSync(resolve(__dirname, 'FeaturePreviewsSection.tsx'), 'utf-8')
+  const source = readFileSync(resolve(__dirname, 'DecisionsCard.tsx'), 'utf-8')
 
   it('names no config path for the consent switch', () => {
     expect(source).not.toContain('configKey="decisions.enabled"')
@@ -190,5 +235,94 @@ describe('the Decisions toggle has no configKey', () => {
     )
     expect(entry).toBeDefined()
     expect(entry?.configKey).toBeUndefined()
+  })
+})
+
+
+/**
+ * The overview list is the GATEWAY's, and these are the properties that keep it so.
+ *
+ * A build that ships another point must light up a row with no edit on this side, so
+ * the reader takes whatever ids the payload carries — including one it has no label
+ * for. The two rejections are the ones that would otherwise put a row on screen that
+ * cannot be acted on: a row with no id has nothing to label and no panel to open, and
+ * a status this build cannot read must not be allowed to claim a point is running.
+ */
+describe('readPoints', () => {
+  it('reads the rows the gateway sent, in its order, id and all', () => {
+    expect(
+      readPoints({
+        enabled: true,
+        points: [
+          { id: 'skills.select', needs_scope: null, status: 'active', config_keys: ['skills.max_triggered'] },
+          { id: 'tool.risk', needs_scope: 'tool_args', status: 'needs_scope', config_keys: [] },
+        ],
+      }),
+    ).toEqual([
+      { id: 'skills.select', needsScope: null, status: 'active', configKeys: ['skills.max_triggered'] },
+      { id: 'tool.risk', needsScope: 'tool_args', status: 'needs_scope', configKeys: [] },
+    ])
+  })
+
+  it('keeps a point this build has no label for, so a new one is never hidden', () => {
+    const rows = readPoints({ points: [{ id: 'invented.point', status: 'active' }] })
+    expect(rows).toEqual([
+      { id: 'invented.point', needsScope: null, status: 'active', configKeys: [] },
+    ])
+  })
+
+  it('reports none for a body that carries no rows at all', () => {
+    for (const body of [undefined, {}, { points: null }, { points: 'yes' }, 'no']) {
+      expect(readPoints(body)).toEqual([])
+    }
+  })
+
+  it('drops a row with no id, and reads an unknown status as off', () => {
+    const rows = readPoints({
+      points: [{ status: 'active' }, { id: '', status: 'active' }, { id: 'a.b', status: 'invented' }],
+    })
+    // Only the one row with a usable id survives, and its unrecognised status is kept
+    // verbatim: the chip resolves it to OFF, and rewriting it here would lose the word
+    // a reader greps the log for.
+    expect(rows).toEqual([
+      { id: 'a.b', needsScope: null, status: 'invented', configKeys: [] },
+    ])
+  })
+
+  it('keeps only the config paths that are strings, and drops an empty one', () => {
+    const rows = readPoints({
+      points: [{ id: 'a.b', config_keys: ['x.y', '', 3, null, 'z.w'] }],
+    })
+    expect(rows[0].configKeys).toEqual(['x.y', 'z.w'])
+  })
+})
+
+/**
+ * `model.route`'s map and the prior-conversation budget, read off the ordinary config
+ * GET. Both are config values rather than keystone ones because neither grants
+ * anything: a tier can only name a model the provider already advertises, and the
+ * budget is capped by the ceiling the owner recorded on the keystone.
+ */
+describe('readModelRoute', () => {
+  it('always answers all three tiers, and an unnamed tier INHERITS', () => {
+    expect(readModelRoute({ decisions: { model_route: { medium: 'some-model' } } })).toEqual({
+      simple: '',
+      medium: 'some-model',
+      complex: '',
+    })
+  })
+
+  it('inherits for a config that names nothing, and for one that is not an object', () => {
+    for (const config of [undefined, {}, { decisions: {} }, { decisions: { model_route: 7 } }]) {
+      expect(readModelRoute(config)).toEqual({ simple: '', medium: '', complex: '' })
+    }
+  })
+
+  it('inherits for a tier whose value is not a string', () => {
+    expect(readModelRoute({ decisions: { model_route: { simple: 42, complex: null } } })).toEqual({
+      simple: '',
+      medium: '',
+      complex: '',
+    })
   })
 })

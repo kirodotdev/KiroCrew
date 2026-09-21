@@ -1374,33 +1374,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
-    "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
-    "labelKey": "pages.developer.featurePreviewsTab.decisions_memory_text",
-    "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
-    "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
-    "labelKey": "pages.developer.featurePreviewsTab.decisions_compaction",
-    "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. This is the widest of the three, so it is off until you turn it on, even if the switches above are already on.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
-    "label": "Also send tool-call arguments so Jev can flag risky calls",
-    "labelKey": "pages.developer.featurePreviewsTab.decisions_tool_args",
-    "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
@@ -1434,6 +1407,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Show Developer page in sidebar with Logs, System metrics, and Memory internals",
     "tab": "developer",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
+    "label": "Earlier conversation one decision may carry, in characters",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_history_label",
+    "description": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine.",
+    "tab": "developer",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "developer.jev-api-key",
+    "label": "Jev API key",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",
+    "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it.",
+    "tab": "developer",
+    "type": "input",
     "occurrence": 1
   },
   {

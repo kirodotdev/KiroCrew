@@ -16,7 +16,7 @@
  * a fleet that pinned the seam off gets no card — see the last block.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -42,6 +42,36 @@ const notFound = () => Object.assign(new Error('Not Found'), { status: 404 })
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 
+/**
+ * The point rows the gateway projects, in the order its registry lists them.
+ *
+ * Spelled out here rather than derived, because what the card must do with them is
+ * exactly to draw whatever arrives: a test that built these from the same table the
+ * card reads would assert nothing about the projection.
+ */
+const pointsOf = (
+  enabled: boolean,
+  toolArgs = false,
+  compaction = false,
+  memoryText = false,
+) => {
+  const granted: Record<string, boolean> = {
+    tool_args: toolArgs,
+    compaction,
+    memory_text: memoryText,
+  }
+  const status = (scope: string | null) =>
+    !enabled ? 'off' : scope && !granted[scope] ? 'needs_scope' : 'active'
+  return [
+    { id: 'skills.select', needs_scope: null, status: status(null), config_keys: ['skills.max_triggered'] },
+    { id: 'tool.risk', needs_scope: 'tool_args', status: status('tool_args'), config_keys: [] },
+    { id: 'message.steer', needs_scope: null, status: status(null), config_keys: [] },
+    { id: 'model.route', needs_scope: null, status: status(null), config_keys: [] },
+    { id: 'compaction.keep', needs_scope: 'compaction', status: status('compaction'), config_keys: [] },
+    { id: 'memory.recall', needs_scope: 'memory_text', status: status('memory_text'), config_keys: [] },
+  ]
+}
+
 /** A consent payload as the gateway returns it, bound to the default endpoint. */
 const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentData> = {}): DecisionsConsentData => ({
   enabled,
@@ -58,22 +88,83 @@ const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentData> = 
   compaction: false,
   // And the recalled-memory scope, false on the same terms.
   memory_text: false,
+  points: pointsOf(
+    enabled,
+    overrides.tool_args === true,
+    overrides.compaction === true,
+    overrides.memory_text === true,
+  ),
   ...overrides,
 })
 
-/** The tool-argument consent switch. Only drawn while the main switch is on. */
-const toolArgsSwitch = () =>
-  screen.getByRole('switch', { name: 'Also send tool-call arguments so Jev can flag risky calls' })
-
-/** The recalled-memory consent switch. Only drawn while the main switch is on. */
-const memoryTextSwitch = () =>
-  screen.getByRole('switch', { name: /snippets of recalled memories/i })
-
-/** The whole-transcript consent switch. Only drawn while the main switch is on. */
-const compactionSwitch = () =>
-  screen.getByRole('switch', {
-    name: 'Also send the conversation and tool-call inputs so Jev can score compaction',
+/** The row for one point, by the plain-words name the reader sees. */
+const pointRow = (name: string) =>
+  screen.getByRole('tab', {
+    name: new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'),
   })
+
+/** Open a point's own panel. Highlighting is not selection: nothing else moves. */
+const openPoint = (name: string) => pointRow(name).click()
+
+/** The point that carries each scope, for a test that needs to reach its switch. */
+const SCOPE_POINT: Record<string, string> = {
+  tool_args: 'Risky tool-call notes',
+  compaction: 'Which tool calls a compaction would keep (measured only)',
+  memory_text: 'Which recalled memories reach the prompt',
+}
+
+/** The accessible name of each scope's consent switch, as the card labels it. */
+const SCOPE_SWITCH: Record<string, string> = {
+  tool_args: 'Also send tool-call arguments so Jev can flag risky calls',
+  compaction: 'Also send the conversation and tool-call inputs so Jev can score compaction',
+  memory_text:
+    'Also send snippets of recalled memories so Jev can drop the ones that do not help',
+}
+
+/**
+ * Open the panel that owns a scope and hand back its switch.
+ *
+ * Every scope switch lives on its own point's panel, and one panel renders at a
+ * time, so a test cannot reach two scopes at once and must say which point it means.
+ * That is the shape itself, not an accident of it: the switch is the OK for THAT
+ * point, and drawing it beside the main switch is what made it ambiguous.
+ */
+async function openScope(scope: 'tool_args' | 'compaction' | 'memory_text') {
+  await waitFor(() => {
+    expect(pointRow(SCOPE_POINT[scope])).toBeInTheDocument()
+  })
+  openPoint(SCOPE_POINT[scope])
+  return await waitFor(() => screen.getByRole('switch', { name: SCOPE_SWITCH[scope] }))
+}
+
+/**
+ * Open a scope's own panel and report whether its switch is there.
+ *
+ * The absence half of `openScope`, and it has to open the panel for the answer to
+ * mean anything: one panel renders at a time, so "the switch is not on screen" is
+ * true of every point that is not selected, whatever the card would draw for THIS
+ * one. A test asserting absence without opening the panel passes on a card that
+ * offers the switch with consent withheld.
+ */
+async function scopeSwitchOnPanel(scope: 'tool_args' | 'compaction' | 'memory_text') {
+  await waitFor(() => {
+    expect(pointRow(SCOPE_POINT[scope])).toBeInTheDocument()
+  })
+  openPoint(SCOPE_POINT[scope])
+  await waitFor(() => {
+    expect(screen.getByText(/logged as/i)).toBeInTheDocument()
+  })
+  return screen.queryByRole('switch', { name: SCOPE_SWITCH[scope] })
+}
+
+/** The tool-argument consent switch, on `tool.risk`'s own panel. */
+const toolArgsSwitch = () => screen.getByRole('switch', { name: SCOPE_SWITCH.tool_args })
+
+/** The whole-transcript consent switch, on `compaction.keep`'s own panel. */
+const compactionSwitch = () => screen.getByRole('switch', { name: SCOPE_SWITCH.compaction })
+
+/** The recalled-memory consent switch, on `memory.recall`'s own panel. */
+const memoryTextSwitch = () => screen.getByRole('switch', { name: SCOPE_SWITCH.memory_text })
 
 /**
  * Stub all three reads: the governance answer that decides whether the card is
@@ -83,16 +174,26 @@ const compactionSwitch = () =>
  * a case that wants the withdrawn state passes `governed: false` and gets no card.
  */
 function stubGateway(
-  consent: DecisionsConsentData | { enabled: boolean } | Error,
+  consent: DecisionsConsentData | (Partial<DecisionsConsentData> & { enabled: boolean }) | Error,
   config: unknown = { decisions: { bucket: 100 } },
   dashboard: unknown = { decisions_enabled: true },
 ) {
   vi.spyOn(api, 'dashboardConfig').mockResolvedValue(dashboard as never)
   vi.spyOn(api, 'kirocrewConfig').mockResolvedValue(config as never)
+  // Names only, which is all the vault ever hands back: the card shows set or unset
+  // and never holds the credential. Stubbed in every case so no test reaches the
+  // network for a field most of them do not open.
+  vi.spyOn(api, 'secretsList').mockResolvedValue({ names: [] } as never)
   if (consent instanceof Error) {
     vi.spyOn(api, 'getDecisionsConsent').mockRejectedValue(consent)
   } else {
-    const full = 'permits' in consent ? consent : consentOf(consent.enabled)
+    // The short form forwards its OTHER fields too, not just the switch: a case
+    // that stubs a recorded ceiling or a projected row list must not have it
+    // silently replaced by the default the switch alone implies.
+    const full =
+      'permits' in consent
+        ? (consent as DecisionsConsentData)
+        : consentOf(consent.enabled, consent)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(full)
   }
 }
@@ -211,6 +312,10 @@ describe('Decisions (Jev) preview card', () => {
       return new Promise(resolve => { releaseRefetch = resolve })
     }) as never)
     vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
+    // The vault index too: every read the card draws from is in its error gate now, so
+    // an unstubbed one freezes the switch this test is about -- which is the gate
+    // working, not a defect in it.
+    vi.spyOn(api, 'secretsList').mockResolvedValue({ names: [] } as never)
 
     renderSection()
     await waitFor(() => {
@@ -271,43 +376,185 @@ describe('Decisions (Jev) preview card', () => {
     expect(screen.getByText(/falls back to the same rule/i)).toBeInTheDocument()
   })
 
-  it('names the one live point in plain words beside its identifier, with no state of its own', async () => {
+  it('lists one row per point the GATEWAY projects, never a list of its own', async () => {
     stubGateway({ enabled: true }, { decisions: { bucket: 100 } })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText('skills.select')).toBeInTheDocument()
+      expect(pointRow('Automatic skill choice')).toBeInTheDocument()
     })
-    // Read off the ROW: the gloss a reader understands, then the identifier they
-    // grep the log for, introduced as such — and nothing else. The switch is the
-    // card's one on/off, so an "Enabled"/"Off" word here would read as a second
-    // control.
-    expect(screen.getByText('skills.select').parentElement?.parentElement?.textContent)
-      .toBe('Automatic skill choicelogged as skills.select')
+    // Every row the payload carried, in the registry's order. The card holds a label
+    // per id and no array of ids, so this set is the gateway's answer.
+    expect(screen.getAllByRole('tab').map(el => el.textContent)).toEqual([
+      expect.stringContaining('Automatic skill choice'),
+      expect.stringContaining('Risky tool-call notes'),
+      expect.stringContaining('Mid-turn message handling'),
+      expect.stringContaining("Model for the turn's difficulty"),
+      expect.stringContaining('Which tool calls a compaction would keep'),
+      expect.stringContaining('Which recalled memories reach the prompt'),
+    ])
     expect(screen.getByText(/what Jev decides while this is on/i)).toBeInTheDocument()
-    // Nothing consumes the answers of any other point, so no other row exists.
-    expect(screen.queryByText('skills.dedupe')).toBeNull()
-    expect(screen.queryByText('cron.novelty')).toBeNull()
-    // 100 is the shipped default, and it is said out loud: "a sample" would
-    // understate what a default enable sends.
-    expect(screen.getByText(/Jev answers for all of your sessions/i)).toBeInTheDocument()
-    expect(screen.getByText(/set decisions\.bucket in config\.json/i)).toBeInTheDocument()
   })
 
-  it('keeps the row and the share while the switch is off, phrased for the on state', async () => {
-    stubGateway({ enabled: false }, { decisions: { bucket: 25 } })
+  it('draws a row for a point this build has no label for, under its own identifier', async () => {
+    // The property the server-side projection exists for: a build that ships another
+    // point must reach a reader with no edit on this side.
+    stubGateway(
+      consentOf(true, {
+        points: [{ id: 'invented.point', needs_scope: null, status: 'active', config_keys: [] }],
+      }),
+    )
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText('skills.select')).toBeInTheDocument()
+      expect(pointRow('invented.point')).toBeInTheDocument()
     })
-    // Same row either way: it says what turning the switch on does, not whether
-    // it is on. The header already scopes it to "while this is on".
-    expect(screen.getByText('skills.select').parentElement?.parentElement?.textContent)
-      .toBe('Automatic skill choicelogged as skills.select')
-    // The share is what the reader is consenting to, so it is shown BEFORE the
-    // switch goes on -- as a statement about the on state, not a claim that
-    // anything is being sampled now.
-    expect(screen.getByText(/While this is on, Jev answers for 25% of your sessions/i))
-      .toBeInTheDocument()
+  })
+
+  it('carries the status as the EFFECTIVE answer, with its own word for a missing scope', async () => {
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow('Automatic skill choice')).toBeInTheDocument()
+    })
+    // Running: the row is marked current, which is a different fact from being the
+    // row you are looking at.
+    expect(pointRow('Automatic skill choice').getAttribute('aria-current')).toBe('true')
+    // Consent stands but this point's egress category was never granted. NOT "off":
+    // the fix is a switch on its own panel, and "off" would send the reader back to
+    // the main switch they already turned on.
+    expect(pointRow('Risky tool-call notes').textContent).toContain('Needs your OK')
+    expect(pointRow('Risky tool-call notes').getAttribute('aria-current')).toBeNull()
+  })
+
+  it('says every point is off while consent is off, and still lists them all', async () => {
+    stubGateway({ enabled: false })
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow('Automatic skill choice')).toBeInTheDocument()
+    })
+    // A point a reader cannot use still gets a row: a row is free and it is the only
+    // way to read about what consenting would turn on.
+    expect(screen.getAllByRole('tab')).toHaveLength(pointsOf(false).length)
+    for (const row of screen.getAllByRole('tab')) {
+      expect(row.getAttribute('aria-current')).toBeNull()
+      expect(row.textContent).toContain('Off')
+    }
+  })
+
+  it('opens the highlighted point\'s own panel, and highlighting is never selection', async () => {
+    const save = vi.spyOn(api, 'saveDecisionsConsent')
+    const scope = vi.spyOn(api, 'saveDecisionsScope')
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow('Automatic skill choice')).toBeInTheDocument()
+    })
+    // The first row's panel, unasked: one panel is always rendered.
+    expect(screen.getByRole('tabpanel').textContent).toContain('which one of your skills')
+    expect(screen.getByRole('tabpanel').textContent).toContain('skills.select')
+    openPoint('Mid-turn message handling')
+    await waitFor(() => {
+      expect(screen.getByRole('tabpanel').textContent).toContain('steers that turn')
+    })
+    // Exactly one panel, so the wall of prose cannot come back.
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1)
+    // And opening a row wrote nothing: a row is not a control.
+    expect(save).not.toHaveBeenCalled()
+    expect(scope).not.toHaveBeenCalled()
+  })
+
+  it('moves the highlight with the arrow keys, Home and End, and selects with none of them', async () => {
+    // The list is ONE tab stop, so the arrows are the only way through it for a reader
+    // who is not using a pointer. Enter and Space are named and do nothing beyond
+    // highlighting, which is what makes "opening a row writes nothing" a property of
+    // the keyboard path too, not only the click path.
+    const save = vi.spyOn(api, 'saveDecisionsConsent')
+    const scope = vi.spyOn(api, 'saveDecisionsScope')
+    stubGateway({ enabled: true })
+    renderSection()
+    const first = await waitFor(() => pointRow('Automatic skill choice'))
+    const panel = () => screen.getByRole('tabpanel').textContent ?? ''
+    // The panel rides a chunk boundary, so its first paint is awaited like any other.
+    await waitFor(() => expect(panel()).toContain('skills.select'))
+
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    await waitFor(() => expect(panel()).toContain('tool.risk'))
+    fireEvent.keyDown(pointRow('Risky tool-call notes'), { key: 'ArrowUp' })
+    await waitFor(() => expect(panel()).toContain('skills.select'))
+
+    // End and Home are the ends of the PROJECTED list, whatever the gateway sent.
+    fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'End' })
+    await waitFor(() => expect(panel()).toContain('memory.recall'))
+    fireEvent.keyDown(pointRow('Which recalled memories reach the prompt'), {
+      key: 'Home',
+    })
+    await waitFor(() => expect(panel()).toContain('skills.select'))
+
+    // ArrowRight/ArrowLeft are the same move: a horizontal list is what some platforms
+    // read this shape as, and a reader should not have to know which.
+    fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'ArrowRight' })
+    await waitFor(() => expect(panel()).toContain('tool.risk'))
+    fireEvent.keyDown(pointRow('Risky tool-call notes'), { key: 'ArrowLeft' })
+    await waitFor(() => expect(panel()).toContain('skills.select'))
+
+    // Named on purpose and inert on purpose, and an unhandled key is not swallowed.
+    fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'Enter' })
+    fireEvent.keyDown(pointRow('Automatic skill choice'), { key: ' ' })
+    fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'a' })
+    expect(panel()).toContain('skills.select')
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1)
+    // Not one keystroke was a write: moving through the list is reading, not consenting.
+    expect(save).not.toHaveBeenCalled()
+    expect(scope).not.toHaveBeenCalled()
+  })
+
+  it('sends a typed credential to the vault under its own name, once', async () => {
+    // The vault hands no value back, so what this has to prove is that the draft LEAVES:
+    // the name it is stored under and the value verbatim. Save is held until there is
+    // something to send, so a stray click cannot write an empty credential over a key.
+    stubGateway(consentOf(true), { decisions: { bucket: 100 } })
+    const save = vi.spyOn(api, 'secretsSave').mockResolvedValue({} as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByText('Shared settings', { exact: true }))
+    const field = await waitFor(() => screen.getByLabelText('Jev API key'))
+    expect(screen.getByRole('button', { name: 'Save key' })).toBeDisabled()
+    fireEvent.change(field, { target: { value: 'sk-live-not-a-real-key' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
+    await waitFor(() => {
+      expect(save).toHaveBeenCalledWith('TYPESAFE_API_KEY', 'sk-live-not-a-real-key')
+    })
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it('points at a setting it deliberately does not offer, by its config path', async () => {
+    // How many skills a turn may inject is not a Jev setting at all — it decides
+    // whether `skills.select` is ever reached — so the panel names where it lives
+    // instead of pretending the card is the whole story.
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByRole('tabpanel').textContent).toContain('skills.max_triggered')
+    })
+    expect(screen.getByRole('tabpanel').textContent).toContain('~/.kiro/crew/config.json')
+  })
+
+  it('offers model.route its three tier pickers, defaulting to inherit', async () => {
+    stubGateway({ enabled: true }, { decisions: { bucket: 100, model_route: { simple: '', medium: '', complex: '' } } })
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow("Model for the turn's difficulty")).toBeInTheDocument()
+    })
+    openPoint("Model for the turn's difficulty")
+    await waitFor(() => {
+      expect(screen.getByText('Model for a simple turn')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Model for a medium turn')).toBeInTheDocument()
+    expect(screen.getByText('Model for a hard turn')).toBeInTheDocument()
+    // INHERIT is what an unpinned tier reads as, and no model id is named for the
+    // reader: an id their account is not offered would fail on the first prompt.
+    expect(screen.getByRole('tabpanel').textContent).toContain("Keep the session's own model")
   })
 
   it('fades the egress note only when the gateway cannot run this at all', async () => {
@@ -325,15 +572,20 @@ describe('Decisions (Jev) preview card', () => {
     expect(screen.getByText(/Settings › Releases/)).toBeInTheDocument()
   })
 
-  it('prints the sampling rate when the config narrows it, and names the knob', async () => {
+  it('offers the sampling share as a slider, and says what the current one means', async () => {
     stubGateway({ enabled: true }, { decisions: { bucket: 25 } })
     renderSection()
     await waitFor(() => {
       expect(screen.getByText(/25% of your sessions/i)).toBeInTheDocument()
     })
-    // The rate is not something this card lets you move, so the line has to say
-    // where it IS moved — otherwise it reads as a number from nowhere.
-    expect(screen.getByText(/set decisions\.bucket in config\.json/i)).toBeInTheDocument()
+    // A control rather than a sentence telling the reader to hand-edit config.json,
+    // which is what this card used to say. The share can only ever NARROW what
+    // consent already allows, which is why it stays a config value.
+    const slider = document.querySelector('input[type="range"]') as HTMLInputElement
+    expect(slider).not.toBeNull()
+    expect(slider.value).toBe('25')
+    expect(slider.min).toBe('0')
+    expect(slider.max).toBe('100')
     // Zero is a state worth printing too: on, and deciding for nobody.
     cleanup()
     vi.restoreAllMocks()
@@ -344,6 +596,347 @@ describe('Decisions (Jev) preview card', () => {
     })
   })
 
+  it('writes a moved slider to the config path, never to the keystone', async () => {
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    const save = vi.spyOn(api, 'saveDecisionsConsent')
+    stubGateway({ enabled: true }, { decisions: { bucket: 100 } })
+    renderSection()
+    await waitFor(() => {
+      expect(document.querySelector('input[type="range"]')).not.toBeNull()
+    })
+    const slider = document.querySelector('input[type="range"]') as HTMLInputElement
+    // Through `fireEvent.change`, not a raw dispatch: React tracks the previous value
+    // on the node itself, so setting `.value` by hand and dispatching leaves the
+    // tracker in step and the handler never runs.
+    fireEvent.change(slider, { target: { value: '40' } })
+    fireEvent.pointerUp(slider)
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith('decisions.bucket', 40)
+    })
+    // The keystone is untouched: narrowing a share is not a consent decision.
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('writes the share ONCE, when the drag ends, not on every tick', async () => {
+    // A write per tick is a config write per pixel, and the thumb reads the SAVED
+    // share while they are in flight — so it snaps back to where the drag started
+    // until each refetch lands. The draft holds the position; release commits it.
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    stubGateway({ enabled: true }, { decisions: { bucket: 100 } })
+    renderSection()
+    await waitFor(() => {
+      expect(document.querySelector('input[type="range"]')).not.toBeNull()
+    })
+    const slider = document.querySelector('input[type="range"]') as HTMLInputElement
+    for (const value of ['90', '80', '70', '60']) {
+      fireEvent.change(slider, { target: { value } })
+    }
+    // Mid-drag: the thumb follows the reader and nothing has been saved.
+    expect(patch).not.toHaveBeenCalled()
+    expect(slider.value).toBe('60')
+    fireEvent.pointerUp(slider)
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith('decisions.bucket', 60)
+    })
+    expect(patch).toHaveBeenCalledTimes(1)
+  })
+
+  it('writes nothing when a drag ends where it started', async () => {
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    stubGateway({ enabled: true }, { decisions: { bucket: 100 } })
+    renderSection()
+    await waitFor(() => {
+      expect(document.querySelector('input[type="range"]')).not.toBeNull()
+    })
+    const slider = document.querySelector('input[type="range"]') as HTMLInputElement
+    fireEvent.change(slider, { target: { value: '40' } })
+    fireEvent.change(slider, { target: { value: '100' } })
+    fireEvent.pointerUp(slider)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('does not accept a ceiling while consent is off, because the write throws it away', async () => {
+    // The keystone writer stores this ceiling as 0 whenever the switch is off, so the
+    // PUT would answer 200 and the typed number would be gone on the next read -- a
+    // control that takes a value and discards it. Nothing is being sent yet, so there
+    // is no conversation for a ceiling to bound.
+    const budget = vi.spyOn(api, 'saveDecisionsHistoryBudget')
+    stubGateway(consentOf(false), { decisions: { bucket: 100 } })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByText('Shared settings', { exact: true }))
+    const box = await waitFor(() =>
+      screen.getByLabelText(/Earlier conversation one decision may carry/i)
+    )
+    expect(box).toBeDisabled()
+    // Disabled AND explained: a held control with no reason beside it is a dead one.
+    expect(screen.getByText(/takes effect once the main Jev switch is on/i)).toBeInTheDocument()
+    fireEvent.change(box, { target: { value: '6000' } })
+    fireEvent.blur(box)
+    expect(budget).not.toHaveBeenCalled()
+  })
+
+  describe('the prior-conversation ceiling', () => {
+    const budgetBox = () =>
+      screen.getByLabelText(/Earlier conversation one decision may carry/i) as HTMLInputElement
+
+    const openShared = async () => {
+      renderSection()
+      await waitFor(() => {
+        expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByText('Shared settings', { exact: true }))
+      await waitFor(() => {
+        expect(budgetBox()).toBeInTheDocument()
+      })
+    }
+
+    it('writes the KEYSTONE ceiling, never the config path', async () => {
+      // The config value is what the seam asks for and an agent may raise it; the
+      // ceiling that clamps it is on the keystone, behind the owner-only route.
+      const ceiling = vi
+        .spyOn(api, 'saveDecisionsHistoryBudget')
+        .mockResolvedValue({} as never)
+      const patch = vi.spyOn(api, 'patchConfig')
+      stubGateway({ enabled: true, history_budget_chars: 0 })
+      await openShared()
+      fireEvent.change(budgetBox(), { target: { value: '4000' } })
+      fireEvent.blur(budgetBox())
+      await waitFor(() => {
+        expect(ceiling).toHaveBeenCalledWith(4000)
+      })
+      expect(patch).not.toHaveBeenCalled()
+    })
+
+    it('refuses a value it cannot read WHOLE, rather than saving a prefix of it', async () => {
+      // `parseInt` reads a prefix, so "6,000" would save 6 — a number nobody typed,
+      // on the value that decides how much conversation leaves the machine. The
+      // saved ceiling stays, which is the smaller number and the consented one.
+      const ceiling = vi
+        .spyOn(api, 'saveDecisionsHistoryBudget')
+        .mockResolvedValue({} as never)
+      stubGateway({ enabled: true, history_budget_chars: 0 })
+      await openShared()
+      for (const typed of ['6,000', '6 000', '4e3', '12.5', '-1', 'lots', ' ']) {
+        fireEvent.change(budgetBox(), { target: { value: typed } })
+        fireEvent.blur(budgetBox())
+      }
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(ceiling).not.toHaveBeenCalled()
+    })
+
+    it('takes an explicit 0, which is how prior turns are handed back', async () => {
+      const ceiling = vi
+        .spyOn(api, 'saveDecisionsHistoryBudget')
+        .mockResolvedValue({} as never)
+      stubGateway({ enabled: true, history_budget_chars: 4000 })
+      await openShared()
+      expect(budgetBox().value).toBe('4000')
+      fireEvent.change(budgetBox(), { target: { value: '0' } })
+      fireEvent.blur(budgetBox())
+      await waitFor(() => {
+        expect(ceiling).toHaveBeenCalledWith(0)
+      })
+    })
+  })
+
+  describe('the credential never reads a failed read as "no key"', () => {
+    const openShared = async () => {
+      renderSection()
+      await waitFor(() => {
+        expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByText('Shared settings', { exact: true }))
+    }
+
+    it('says the read failed instead of rendering a set key as unset', async () => {
+      // The defect this closes: the vault index is one fetch, `apiKeySet` is derived
+      // from it, and a transient failure resolved to false. The card then said "not
+      // set" about a key that exists and offered Save under it -- an invitation to
+      // overwrite a credential the reader had just been told was absent.
+      vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+      vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { bucket: 100 } } as never)
+      vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(consentOf(true))
+      vi.spyOn(api, 'secretsList').mockRejectedValue(new Error('gateway busy'))
+      const save = vi.spyOn(api, 'secretsSave')
+
+      await openShared()
+      await waitFor(() => {
+        expect(screen.getByText(/could not read the settings/i)).toBeInTheDocument()
+      })
+      // And no credential write is on offer while the index is unknown.
+      expect(screen.queryByRole('button', { name: 'Save key' })).toBeNull()
+      expect(save).not.toHaveBeenCalled()
+    })
+
+    it('offers Save only once the index is actually known', async () => {
+      // The other half: a SUCCESSFUL read saying the vault is empty is a real answer,
+      // and it is the first-run state the setup control exists for.
+      stubGateway(consentOf(true), { decisions: { bucket: 100 } })
+      await openShared()
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Save key' })).toBeInTheDocument()
+      })
+    })
+  })
+
+  it('still lets consent be WITHDRAWN when an auxiliary read fails', async () => {
+    // The hole this closes: the vault index and the advertised model list were folded
+    // into one `readFailed`, which froze every control including the main switch. So a
+    // secrets fetch that failed while consent was ON left the seam sending with no way
+    // for its owner to turn it off -- the vault being unreachable is not a reason to
+    // keep conversation leaving the machine. Neither read is needed to write `false`.
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { bucket: 100 } } as never)
+    vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(consentOf(true))
+    vi.spyOn(api, 'secretsList').mockRejectedValue(new Error('vault unreachable'))
+    vi.spyOn(api, 'models').mockRejectedValue(new Error('no model list'))
+    const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(false) as never)
+
+    renderSection()
+    await waitFor(() => {
+      expect(decisionsSwitch()).toHaveAttribute('aria-checked', 'true')
+    })
+    // The failure is still REPORTED -- this is not a fix that hides it.
+    expect(screen.getByText(/could not read the settings/i)).toBeInTheDocument()
+    // And the one control that stops egress is still live.
+    expect(decisionsSwitch()).not.toBeDisabled()
+    fireEvent.click(decisionsSwitch())
+    await waitFor(() => {
+      expect(save).toHaveBeenCalled()
+    })
+    expect(save.mock.calls[0][0]).toBe(false)
+  })
+
+  it('says Replace key on the button itself, not only in a tooltip', async () => {
+    // An icon alone names neither the verb nor what it acts on, and beside a stored
+    // credential "replace the stored key" and "discard what I just typed" differ by
+    // whether work is lost. The wording is the button's TEXT, and then it is the
+    // button's only accessible name: a second one over a visible one is a duplicate.
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { bucket: 100 } } as never)
+    vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(consentOf(true))
+    vi.spyOn(api, 'secretsList').mockResolvedValue({ names: ['TYPESAFE_API_KEY'] } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByText('Shared settings', { exact: true }))
+    const replace = await waitFor(() => screen.getByRole('button', { name: 'Replace key' }))
+    expect(replace).toHaveTextContent('Replace key')
+    expect(replace).not.toHaveAttribute('aria-label')
+    expect(replace).not.toHaveAttribute('title')
+    // And the shared wording is gone from this card: "Replace" alone is what the
+    // reader could not act on.
+    expect(screen.queryByRole('button', { name: 'Replace' })).toBeNull()
+  })
+
+  describe('removing the credential asks before it writes', () => {
+    const stubSetKey = (held?: Promise<unknown>) => {
+      vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+      vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { bucket: 100 } } as never)
+      vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(consentOf(true))
+      vi.spyOn(api, 'secretsList').mockResolvedValue({ names: ['TYPESAFE_API_KEY'] } as never)
+      const del = vi.spyOn(api, 'secretsDelete')
+      if (held) del.mockReturnValue(held as never)
+      else del.mockResolvedValue({} as never)
+      return del
+    }
+
+    const openShared = async () => {
+      renderSection()
+      await waitFor(() => {
+        expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByText('Shared settings', { exact: true }))
+      return await waitFor(() => screen.getByRole('button', { name: 'Remove key' }))
+    }
+
+    it('writes nothing until the removal is confirmed', async () => {
+      // The defect this closes: the trash used to fire the DELETE immediately and then
+      // render the field's DEFERRED-removal strip, which carries an Undo — an Undo for
+      // something already done, in exactly the window a reader who reconsiders reaches
+      // for it. The vault never hands a value back, so nothing could be recovered.
+      //
+      // Every pre-arm assertion comes FIRST and the armed state LAST, because arming
+      // replaces the controls the earlier ones look for.
+      const del = stubSetKey()
+      const remove = await openShared()
+      expect(screen.queryByText(/cannot be undone/i)).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Delete key' })).toBeNull()
+
+      fireEvent.click(remove)
+
+      await waitFor(() => {
+        expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
+      })
+      expect(del).not.toHaveBeenCalled()
+      // No Undo affordance for a write that has not happened — and the confirm carries
+      // its own word, so it can never be mistaken for the trash that opened it.
+      expect(screen.queryByRole('button', { name: /undo/i })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Delete key' })).toBeInTheDocument()
+    })
+
+    it('keeps the key when the reader backs out', async () => {
+      const del = stubSetKey()
+      const remove = await openShared()
+      fireEvent.click(remove)
+      const keep = await waitFor(() => screen.getByRole('button', { name: 'Keep it' }))
+      fireEvent.click(keep)
+      await waitFor(() => {
+        expect(screen.queryByText(/cannot be undone/i)).toBeNull()
+      })
+      expect(del).not.toHaveBeenCalled()
+    })
+
+    it('deletes only from the confirm control', async () => {
+      const del = stubSetKey()
+      const remove = await openShared()
+      fireEvent.click(remove)
+      const confirm = await waitFor(() => screen.getByRole('button', { name: 'Delete key' }))
+      fireEvent.click(confirm)
+      await waitFor(() => {
+        expect(del).toHaveBeenCalledTimes(1)
+      })
+    })
+
+    it('offers no Save while the question is open or the DELETE is in flight', async () => {
+      // A DELETE and a POST outstanding together let whichever the server finishes last
+      // decide, so the save path stays shut for the whole removal.
+      let release: () => void = () => {}
+      const held = new Promise<unknown>(resolve => {
+        release = () => resolve({})
+      })
+      stubSetKey(held)
+      const remove = await openShared()
+      fireEvent.click(remove)
+      await waitFor(() => {
+        expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('button', { name: 'Save key' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Delete key' }))
+      await waitFor(() => {
+        expect(screen.queryByRole('button', { name: 'Save key' })).toBeNull()
+      })
+      release()
+    })
+  })
+
+  it('offers the credential as a vault entry, set or unset and never a value', async () => {
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText('Jev API key')).toBeInTheDocument()
+    })
+    // The name the field writes is the ONE entry `provider.api_key` honours, which is
+    // what keeps an agent-writable config safe to leave naming it.
+    const body = document.body.textContent ?? ''
+    expect(body).toContain('never in config.json')
+  })
+
   it('carries no point row at all against a gateway without the consent route', async () => {
     // An older gateway has no point wired, so a row reading "off" would describe
     // a check that does not exist rather than one that is switched off.
@@ -352,7 +945,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/older than this feature/i)).toBeInTheDocument()
     })
-    expect(screen.queryByText('skills.select')).toBeNull()
+    expect(screen.queryAllByRole('tab')).toEqual([])
     expect(screen.queryByText(/what Jev decides while this is on/i)).toBeNull()
   })
 
@@ -361,7 +954,12 @@ describe('Decisions (Jev) preview card', () => {
     stubGateway(consentOf(false, { configured_endpoint: 'https://proxy.example/v1/systemone' }))
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText('https://proxy.example/v1/systemone')).toBeInTheDocument()
+      // `exact: true`: a bare string matches a SUBSTRING, so an element reading
+      // `…/systemone.evil.test/x` would satisfy an assertion meant to prove the card
+      // shows the address config names. Same comparison defect as `includes` on a URL.
+      expect(
+        screen.getByText('https://proxy.example/v1/systemone', { exact: true }),
+      ).toBeInTheDocument()
     })
     expect(screen.getByText(/^Sent to$/)).toBeInTheDocument()
   })
@@ -422,7 +1020,23 @@ describe('Decisions (Jev) preview card', () => {
       await waitFor(() => {
         expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
       })
+      openPoint('Risky tool-call notes')
       expect(screen.queryByRole('switch', { name: /tool-call arguments/ })).toBeNull()
+    })
+
+    it('lives on its own point\'s panel, not beside the main switch', async () => {
+      // Which is the whole point of the redesign: what belongs to one point is one
+      // level down, so the top of the card stays scannable.
+      stubGateway({ enabled: true })
+      renderSection()
+      await waitFor(() => {
+        expect(pointRow('Automatic skill choice')).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('switch', { name: /tool-call arguments/ })).toBeNull()
+      openPoint('Risky tool-call notes')
+      await waitFor(() => {
+        expect(toolArgsSwitch()).toBeInTheDocument()
+      })
     })
 
     it('appears unchecked once consent is on, for a keystone that never recorded it', async () => {
@@ -431,6 +1045,10 @@ describe('Decisions (Jev) preview card', () => {
       // rather than inferring the scope from the main switch.
       stubGateway({ enabled: true })
       renderSection()
+      await waitFor(() => {
+        expect(pointRow('Risky tool-call notes')).toBeInTheDocument()
+      })
+      openPoint('Risky tool-call notes')
       await waitFor(() => {
         expect(toolArgsSwitch()).toBeInTheDocument()
       })
@@ -441,41 +1059,55 @@ describe('Decisions (Jev) preview card', () => {
       stubGateway(consentOf(true, { tool_args: true }))
       renderSection()
       await waitFor(() => {
+        expect(pointRow('Risky tool-call notes')).toBeInTheDocument()
+      })
+      openPoint('Risky tool-call notes')
+      await waitFor(() => {
         expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
       })
     })
 
-    it('grants the scope through the same consent route, with no new endpoint', async () => {
+    it('grants the scope WITHOUT restating consent to an address', async () => {
       stubGateway({ enabled: true })
-      const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
+      const scope = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
         consentOf(true, { tool_args: true }),
       )
+      const save = vi.spyOn(api, 'saveDecisionsConsent')
       renderSection()
+      await waitFor(() => {
+        expect(pointRow('Risky tool-call notes')).toBeInTheDocument()
+      })
+      openPoint('Risky tool-call notes')
       await waitFor(() => {
         expect(toolArgsSwitch()).toBeInTheDocument()
       })
       toolArgsSwitch().click()
       await waitFor(() => {
-        // No switch in the body at all, so this view cannot re-grant a consent
-        // revoked since it last read -- and no endpoint either, because the recorded
-        // address is part of what an absent switch preserves. Only its own scope is
-        // named: naming another would let this click move a switch nobody touched.
-        expect(save).toHaveBeenCalledWith({ toolArgs: true })
+        // The scope alone. `enabled` is omitted and no endpoint is echoed: echoing an
+        // endpoint is a REVIEW of an address, and a scope switch is not one. The
+        // gateway preserves the recorded switch and refuses the write outright unless
+        // consent already stands for the address config names.
+        expect(scope).toHaveBeenCalledWith('tool_args', true)
       })
+      expect(save).not.toHaveBeenCalled()
     })
 
     it('revokes it with an explicit false rather than by omission', async () => {
       // Omission PRESERVES the recorded scope on this route, so a revoke has to send
       // the boolean. A card that omitted it would leave the scope granted.
       stubGateway(consentOf(true, { tool_args: true }))
-      const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
+      const scope = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
       renderSection()
+      await waitFor(() => {
+        expect(pointRow('Risky tool-call notes')).toBeInTheDocument()
+      })
+      openPoint('Risky tool-call notes')
       await waitFor(() => {
         expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
       })
       toolArgsSwitch().click()
       await waitFor(() => {
-        expect(save).toHaveBeenCalledWith({ toolArgs: false })
+        expect(scope).toHaveBeenCalledWith('tool_args', false)
       })
     })
 
@@ -499,6 +1131,10 @@ describe('Decisions (Jev) preview card', () => {
     it('states what the extra data is, and that it changes no permission', async () => {
       stubGateway({ enabled: true })
       renderSection()
+      await waitFor(() => {
+        expect(pointRow('Risky tool-call notes')).toBeInTheDocument()
+      })
+      openPoint('Risky tool-call notes')
       await waitFor(() => {
         expect(toolArgsSwitch()).toBeInTheDocument()
       })
@@ -590,79 +1226,107 @@ describe('Decisions (Jev) preview card', () => {
 })
 
 describe('the whole-transcript consent scope', () => {
-  it('is not drawn while the main switch is off', () => {
+  it('is not drawn on its own panel while the main switch is off', async () => {
+    // With consent withheld nothing is sent at all, so a second egress control would
+    // describe a state that cannot happen -- and the gateway refuses the write anyway.
+    //
+    // The panel is OPENED before asserting absence. Without that, the assertion is
+    // true of any point that is not the selected one, so it would pass on a card that
+    // offered the switch with consent withheld -- which is the defect it names.
     stubGateway({ enabled: false })
     renderSection()
-    expect(
-      screen.queryByRole('switch', {
-        name: 'Also send the conversation and tool-call inputs so Jev can score compaction',
+    expect(await scopeSwitchOnPanel('compaction')).toBeNull()
+    // The row itself is still there: a point a reader cannot use is what the card
+    // exists to explain.
+    expect(pointRow(SCOPE_POINT.compaction)).toBeInTheDocument()
+  })
+
+  it('is not drawn on its own panel while the address moved out from under consent', async () => {
+    // The switch is recorded-on here and still must not be offered: nothing is being
+    // sent, so granting a wider category would be a control over an egress that is not
+    // happening, and the route answers 409 for it.
+    stubGateway(
+      consentOf(true, {
+        endpoint: ENDPOINT,
+        configured_endpoint: 'https://proxy.example/v1/systemone',
+        permits: false,
+        compaction: true,
       }),
-    ).toBeNull()
+    )
+    renderSection()
+    expect(await scopeSwitchOnPanel('compaction')).toBeNull()
   })
 
   it('draws OFF for a consent recorded before the scope existed', async () => {
     // The whole point of a third leaf: an owner who consented to sending, and even to
-    // tool arguments, has not consented to a whole transcript.
+    // tool arguments, has not consented to a whole transcript. Asserted one panel at a
+    // time, because each switch is the OK for its own point.
     stubGateway(consentOf(true, { tool_args: true }))
     renderSection()
-    await waitFor(() => {
-      expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
-      expect(compactionSwitch().getAttribute('aria-checked')).toBe('false')
-    })
+    expect((await openScope('tool_args')).getAttribute('aria-checked')).toBe('true')
+    expect((await openScope('compaction')).getAttribute('aria-checked')).toBe('false')
   })
 
   it('draws ON when the keystone recorded it', async () => {
     stubGateway(consentOf(true, { compaction: true }))
     renderSection()
-    await waitFor(() => {
-      expect(compactionSwitch().getAttribute('aria-checked')).toBe('true')
-    })
+    expect((await openScope('compaction')).getAttribute('aria-checked')).toBe('true')
   })
 
-  it('grants the scope through the same consent route, with no new endpoint', async () => {
+  it('grants the scope through the consent route, naming only its own field', async () => {
     stubGateway({ enabled: true })
-    const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
-      consentOf(true, { compaction: true }),
-    )
+    const scope = vi
+      .spyOn(api, 'saveDecisionsScope')
+      .mockResolvedValue(consentOf(true, { compaction: true }))
+    const save = vi.spyOn(api, 'saveDecisionsConsent')
     renderSection()
+    const sw = await openScope('compaction')
+    sw.click()
     await waitFor(() => {
-      expect(compactionSwitch()).toBeInTheDocument()
+      // ONE field, and no endpoint echo: every other scope is omitted, which is what
+      // preserves it, and echoing an address is a review this switch is not.
+      expect(scope).toHaveBeenCalledWith('compaction', true)
     })
-    compactionSwitch().click()
-    await waitFor(() => {
-      // The other scopes go UNNAMED, which is deliberate: an omitted field preserves
-      // the recorded scope, so acting on this switch cannot grant or erase either one
-      // beside it.
-      expect(save).toHaveBeenCalledWith({ compaction: true })
-    })
+    // And the switch that means consent itself is untouched.
+    expect(save).not.toHaveBeenCalled()
   })
 
   it('revokes it with an explicit false rather than by omission', async () => {
     stubGateway(consentOf(true, { compaction: true }))
-    const save = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
+    const scope = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
     renderSection()
+    const sw = await openScope('compaction')
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+    sw.click()
     await waitFor(() => {
-      expect(compactionSwitch().getAttribute('aria-checked')).toBe('true')
-    })
-    compactionSwitch().click()
-    await waitFor(() => {
-      expect(save).toHaveBeenCalledWith({ compaction: false })
+      // An explicit false: omission PRESERVES a scope, so a revoke has to be written.
+      expect(scope).toHaveBeenCalledWith('compaction', false)
     })
   })
 
-  it('names the point only while the scope is granted', async () => {
+  it('names the point on its own panel, as the decision log spells it', async () => {
     stubGateway(consentOf(true, { compaction: true }))
     renderSection()
-    await waitFor(() => {
-      expect(screen.getByTitle('compaction.keep')).toBeInTheDocument()
-    })
+    await openScope('compaction')
+    // The identifier a reader greps the decision log for, on the panel for the point
+    // it belongs to.
+    expect(screen.getByTitle('compaction.keep')).toBeInTheDocument()
     cleanup()
-    stubGateway(consentOf(true))
+    // And a gateway that does not ship the point names it nowhere: the card holds a
+    // label per id and no list of its own, so the row and the identifier both go.
+    stubGateway(
+      consentOf(true, {
+        points: pointsOf(true).filter(row => row.id !== 'compaction.keep'),
+      }),
+    )
     renderSection()
     await waitFor(() => {
       expect(screen.getByTitle('skills.select')).toBeInTheDocument()
     })
     expect(screen.queryByTitle('compaction.keep')).toBeNull()
+    expect(
+      screen.queryByRole('tab', { name: /Which tool calls a compaction would keep/i }),
+    ).toBeNull()
   })
 
   it('says the compaction itself is unchanged', async () => {
@@ -670,9 +1334,7 @@ describe('the whole-transcript consent scope', () => {
     // not keep: nothing is applied, and the answer is a line on a notice.
     stubGateway({ enabled: true })
     renderSection()
-    await waitFor(() => {
-      expect(compactionSwitch()).toBeInTheDocument()
-    })
+    await openScope('compaction')
     const rendered = document.body.textContent ?? ''
     expect(rendered).toContain('It is a measurement')
     expect(rendered).toContain('Tool OUTPUT is never sent')
@@ -704,9 +1366,9 @@ describe('the whole-transcript scope reports its own in-flight and failed states
     const held = heldSave()
     vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
-    await waitFor(() => { expect(compactionSwitch()).toBeInTheDocument() })
+    const sw = await openScope('compaction')
     expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
-    compactionSwitch().click()
+    sw.click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
     })
@@ -723,9 +1385,9 @@ describe('the whole-transcript scope reports its own in-flight and failed states
     const held = heldSave()
     vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
-    await waitFor(() => { expect(toolArgsSwitch()).toBeInTheDocument() })
+    const sw = await openScope('tool_args')
     expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
-    toolArgsSwitch().click()
+    sw.click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
     })
@@ -739,13 +1401,13 @@ describe('the whole-transcript scope reports its own in-flight and failed states
     stubGateway(consentOf(true))
     vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
     renderSection()
-    await waitFor(() => { expect(compactionSwitch()).toBeInTheDocument() })
-    compactionSwitch().click()
+    const sw = await openScope('compaction')
+    sw.click()
     await waitFor(() => {
-      expect(screen.getByTestId('decisions-compaction-error')).toBeInTheDocument()
+      expect(screen.getByTestId('decisions-save-error')).toBeInTheDocument()
     })
     // The stored value is what the switch shows: the refused write did not take.
-    expect(compactionSwitch().getAttribute('aria-checked')).toBe('false')
+    expect(sw.getAttribute('aria-checked')).toBe('false')
   })
 
   it('draws no error while the write is merely in flight', async () => {
@@ -753,12 +1415,12 @@ describe('the whole-transcript scope reports its own in-flight and failed states
     const held = heldSave()
     vi.spyOn(api, 'saveDecisionsScope').mockReturnValue(held.promise)
     renderSection()
-    await waitFor(() => { expect(compactionSwitch()).toBeInTheDocument() })
-    compactionSwitch().click()
+    const sw = await openScope('compaction')
+    sw.click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
     })
-    expect(screen.queryByTestId('decisions-compaction-error')).toBeNull()
+    expect(screen.queryByTestId('decisions-save-error')).toBeNull()
     held.release()
   })
 })
@@ -781,15 +1443,14 @@ describe('the recalled-memory scope switch', () => {
     // rather than inferring the scope from the main switch.
     stubGateway({ enabled: true })
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('false')
   })
 
   it('reflects a recorded scope', async () => {
     stubGateway(consentOf(true, { memory_text: true }))
     renderSection()
+    await openScope('memory_text')
     await waitFor(() => {
       expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('true')
     })
@@ -800,9 +1461,13 @@ describe('the recalled-memory scope switch', () => {
     // show a consent the owner never gave.
     stubGateway(consentOf(true, { tool_args: true }))
     renderSection()
+    await openScope('tool_args')
     await waitFor(() => {
       expect(toolArgsSwitch().getAttribute('aria-checked')).toBe('true')
     })
+    // Each scope's switch is on its OWN point's panel, so the second answer is read
+    // where it lives rather than beside the first.
+    await openScope('memory_text')
     expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('false')
   })
 
@@ -812,14 +1477,12 @@ describe('the recalled-memory scope switch', () => {
       consentOf(true, { memory_text: true }),
     )
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
     await waitFor(() => {
       // ONLY its own scope: naming the other would let this click grant or erase a
       // scope the owner did not touch, which the route's omission rule exists for.
-      expect(scopeSave).toHaveBeenCalledWith({ memoryText: true })
+      expect(scopeSave).toHaveBeenCalledWith('memory_text', true)
     })
   })
 
@@ -827,21 +1490,20 @@ describe('the recalled-memory scope switch', () => {
     stubGateway(consentOf(true, { memory_text: true }))
     const scopeSave = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true))
     renderSection()
+    await openScope('memory_text')
     await waitFor(() => {
       expect(memoryTextSwitch().getAttribute('aria-checked')).toBe('true')
     })
     memoryTextSwitch().click()
     await waitFor(() => {
-      expect(scopeSave).toHaveBeenCalledWith({ memoryText: false })
+      expect(scopeSave).toHaveBeenCalledWith('memory_text', false)
     })
   })
 
   it('states what the extra data is, and what the decision can do with it', async () => {
     stubGateway({ enabled: true })
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     const body = document.body.textContent ?? ''
     expect(body).toContain('first 200 characters')
     expect(body).toContain('It can only remove them')
@@ -877,12 +1539,10 @@ describe('a scope write and the main switch cannot interleave', () => {
     )
     const consentSave = vi.spyOn(api, 'saveDecisionsConsent')
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
     await waitFor(() => {
-      expect(scopeSave).toHaveBeenCalledWith({ memoryText: true })
+      expect(scopeSave).toHaveBeenCalledWith('memory_text', true)
     })
     // The scope path must not reach the consent writer at all: that is the function
     // whose body carries `enabled`.
@@ -897,9 +1557,7 @@ describe('a scope write and the main switch cannot interleave', () => {
       () => new Promise(resolve => { release = () => resolve(consentOf(true, { memory_text: true })) }),
     )
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
@@ -907,21 +1565,23 @@ describe('a scope write and the main switch cannot interleave', () => {
     release()
   })
 
-  it('freezes the OTHER scope switch while one scope write is in flight', async () => {
+  it('refuses the NEXT scope write while one scope write is in flight', async () => {
     // Two outstanding writes against one keystone resolve in an order the clicks did
-    // not choose, and the route records the whole file under one lock.
+    // not choose, and the route records the whole file under one lock. The invariant is
+    // about the WRITE, not about two switches being on screen together: this card draws
+    // one point's panel at a time, so the second scope is reached by opening its own
+    // panel while the first write is still outstanding, and its switch must refuse.
     stubGateway(consentOf(true, { tool_args: true }))
     let release = () => {}
     vi.spyOn(api, 'saveDecisionsScope').mockImplementation(
       () => new Promise(resolve => { release = () => resolve(consentOf(true, { tool_args: true })) }),
     )
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
+    const other = await openScope('tool_args')
     await waitFor(() => {
-      expect(toolArgsSwitch().getAttribute('aria-disabled')).toBe('true')
+      expect(other.getAttribute('aria-disabled')).toBe('true')
     })
     release()
   })
@@ -930,9 +1590,7 @@ describe('a scope write and the main switch cannot interleave', () => {
     stubGateway({ enabled: true })
     vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(consentOf(true, { memory_text: true }))
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
@@ -945,42 +1603,35 @@ describe('a refused scope write says so', () => {
   // like the click never landed. Each scope gets its OWN notice: two failures rendering
   // in one place would leave a reader unable to tell which write was refused.
 
-  it('surfaces a refused tool-argument write, with a hand-off', async () => {
+  it('surfaces a refused tool-argument write, naming that switch', async () => {
     stubGateway({ enabled: true })
     vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
     renderSection()
-    await waitFor(() => {
-      expect(toolArgsSwitch()).toBeInTheDocument()
-    })
+    await openScope('tool_args')
     toolArgsSwitch().click()
     await waitFor(() => {
-      expect(screen.getByTestId('decisions-tool-args-error')).toBeInTheDocument()
+      expect(screen.getByTestId('decisions-save-error')).toBeInTheDocument()
     })
-    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    expect(screen.getByTestId('decisions-save-error').textContent).toContain('Also send tool-call arguments')
   })
 
-  it('surfaces a refused recalled-memory write, with a hand-off', async () => {
+  it('surfaces a refused recalled-memory write, naming that switch', async () => {
     stubGateway({ enabled: true })
     vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
     await waitFor(() => {
-      expect(screen.getByTestId('decisions-memory-text-error')).toBeInTheDocument()
+      expect(screen.getByTestId('decisions-save-error')).toBeInTheDocument()
     })
-    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    expect(screen.getByTestId('decisions-save-error').textContent).toContain('Also send snippets of recalled memories')
   })
 
   it('draws neither notice while both writes are healthy', async () => {
     stubGateway({ enabled: true })
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
-    expect(screen.queryByTestId('decisions-tool-args-error')).toBeNull()
-    expect(screen.queryByTestId('decisions-memory-text-error')).toBeNull()
+    await openScope('memory_text')
+    expect(screen.queryByTestId('decisions-save-error')).toBeNull()
   })
 
   it('lists memory.recall among what Jev decides, once its scope is granted', async () => {
@@ -990,46 +1641,50 @@ describe('a refused scope write says so', () => {
     // whether to grant it.
     stubGateway(consentOf(true, { memory_text: true }))
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     const text = document.body.textContent ?? ''
     expect(text).toContain('Which recalled memories reach the prompt')
     expect(text).toContain('memory.recall')
   })
 
-  it('omits the memory.recall row while its scope is not granted', async () => {
-    // Gated exactly as the compaction row is: without the scope the point is inert,
-    // so a row for it would name a decision that cannot happen.
+  it('reports memory.recall as needing your OK while its scope is not granted', async () => {
+    // Without the scope the point is inert, and the card must not tell a reader the
+    // decision happens. In a list that names every point the GATEWAY projects, that is
+    // the row's STATUS rather than its absence: hiding the row would also hide the
+    // switch that grants it, leaving a reader no way to reach the thing they are being
+    // asked about.
     stubGateway(consentOf(true, { memory_text: false }))
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
-    const text = document.body.textContent ?? ''
-    expect(text).not.toContain('Which recalled memories reach the prompt')
-    // The skill row is still there, so this is a gate rather than an empty list.
-    expect(text).toContain('skills.select')
+    const row = await waitFor(() => pointRow('Which recalled memories reach the prompt'))
+    expect(row.textContent).toContain('Needs your OK')
+    expect(row.textContent).not.toContain('Switched on')
   })
 
-  it('counts the scope switches the note promises against the ones drawn', async () => {
-    // The note said "Two further categories" while three switches rendered below it,
-    // because the widest scope landed between the two this file's author knew about.
-    // Asserted as a RELATIONSHIP rather than as a phrase: the number in the sentence
-    // and the number of switches have to move together or the note misleads again.
+  it('counts the note\'s promised categories against the points that declare a scope', async () => {
+    // The note said "Two further categories" while three scopes existed, because the
+    // widest one landed between the two the copy knew about. Asserted as a RELATIONSHIP
+    // against the DATA, not against switches on screen: one point's panel renders at a
+    // time, so counting rendered switches would pin a card shape instead of the
+    // invariant. The number in the sentence and the number of points that declare a
+    // scope have to move together, which holds whatever the card looks like.
     stubGateway({ enabled: true })
     renderSection()
     await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
+      expect(screen.getByText(/leave this machine/i)).toBeInTheDocument()
     })
+    const scoped = pointsOf(true).filter(row => row.needs_scope !== null)
+    const COUNT_WORD: Record<number, string> = {
+      1: 'One further category',
+      2: 'Two further categories',
+      3: 'Three further categories',
+      4: 'Four further categories',
+    }
     const note = screen.getByText(/leave this machine/i).textContent ?? ''
-    expect(note).toContain('Three further categories')
+    expect(note).toContain(COUNT_WORD[scoped.length])
+    // And one clause per category, so the count is not satisfied by a bare number.
     expect(note).toContain('the name and arguments of your tool calls')
     expect(note).toContain('the conversation and tool-call inputs')
     expect(note).toContain('short snippets of the memories recalled')
-    expect(toolArgsSwitch()).toBeInTheDocument()
-    expect(compactionSwitch()).toBeInTheDocument()
-    expect(memoryTextSwitch()).toBeInTheDocument()
   })
 
   it('says WHICH switch could not be saved', async () => {
@@ -1039,14 +1694,12 @@ describe('a refused scope write says so', () => {
     stubGateway({ enabled: true })
     vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
     await waitFor(() => {
-      expect(screen.getByTestId('decisions-memory-text-error')).toBeInTheDocument()
+      expect(screen.getByTestId('decisions-save-error')).toBeInTheDocument()
     })
-    const notice = screen.getByTestId('decisions-memory-text-error').textContent ?? ''
+    const notice = screen.getByTestId('decisions-save-error').textContent ?? ''
     expect(notice).toContain('Also send snippets of recalled memories')
     expect(notice).not.toContain('this switch')
   })
@@ -1058,14 +1711,12 @@ describe('a refused scope write says so', () => {
     stubGateway({ enabled: true })
     vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('dashboard owner required'))
     renderSection()
-    await waitFor(() => {
-      expect(compactionSwitch()).toBeInTheDocument()
-    })
+    await openScope('compaction')
     compactionSwitch().click()
     await waitFor(() => {
-      expect(screen.getByTestId('decisions-compaction-error')).toBeInTheDocument()
+      expect(screen.getByTestId('decisions-save-error')).toBeInTheDocument()
     })
-    const notice = screen.getByTestId('decisions-compaction-error').textContent ?? ''
+    const notice = screen.getByTestId('decisions-save-error').textContent ?? ''
     expect(notice).toContain('Also send the conversation and tool-call inputs')
     expect(notice).not.toContain('this switch')
   })
@@ -1075,13 +1726,13 @@ describe('a refused scope write says so', () => {
     stubGateway({ enabled: true })
     vi.spyOn(api, 'saveDecisionsScope').mockRejectedValue(new Error('nope'))
     renderSection()
-    await waitFor(() => {
-      expect(memoryTextSwitch()).toBeInTheDocument()
-    })
+    await openScope('memory_text')
     memoryTextSwitch().click()
     await waitFor(() => {
-      expect(screen.getByTestId('decisions-memory-text-error')).toBeInTheDocument()
+      expect(screen.getByTestId('decisions-save-error')).toBeInTheDocument()
     })
-    expect(screen.queryByTestId('decisions-tool-args-error')).toBeNull()
+    // One notice, and it names the scope that failed and not the one beside it.
+    expect(screen.getByTestId('decisions-save-error').textContent).toContain('Also send snippets of recalled memories')
+    expect(screen.getByTestId('decisions-save-error').textContent).not.toContain('Also send tool-call arguments')
   })
 })

@@ -433,8 +433,25 @@ describe('Settings > Developer > Feature Previews', () => {
     // not an ingress — it opens an explainer dialog, never the page — and it is
     // present on either side of the toggle by design.
     const { container } = renderTab()
+    /**
+     * The Decisions card is EXCLUDED, by the card frame the switch sits in.
+     *
+     * It is not one of the four localStorage previews and it owns real buttons of its
+     * own — a credential field's reveal/replace controls, and a row per decision point
+     * — none of which is an ingress to a page. Counting them here would make this
+     * census fail for a card whose own states `decisionsCard.test.tsx` pins, and the
+     * census exists to catch an ingress LINK drifting back onto the crew card.
+     *
+     * Resolved lazily rather than once: the card is not drawn until the governance
+     * read lands, so before that there is no frame and nothing to subtract — which is
+     * the same answer, because its buttons are not there either.
+     */
+    const decisionsFrame = () =>
+      screen.queryByRole('switch', { name: 'Decisions (Jev)' })?.closest('.card-glow') ?? null
     const realButtons = () =>
-      Array.from(container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'))
+      Array.from(
+        container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'),
+      ).filter(el => !decisionsFrame()?.contains(el))
     expect(realButtons()).toHaveLength(0)
     await act(async () => {
       screen.getByRole('switch', { name: /^crew members$/i }).click()

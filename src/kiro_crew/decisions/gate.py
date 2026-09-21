@@ -97,6 +97,23 @@ POINTS_NEEDING_COMPACTION = frozenset({"compaction.keep"})
 #: reviewing when they consented. An install that granted either other scope is
 #: inert here.
 POINTS_NEEDING_MEMORY_TEXT = frozenset({"memory.recall"})
+#: Per point, the ``config.json`` paths that stay in ``config.json`` -- settings a
+#: point's behaviour depends on which the Decisions card deliberately does NOT
+#: offer a control for, so the card can print a pointer to where they are instead
+#: of leaving a reader to guess that the card is the whole story.
+#:
+#: ``skills.max_triggered`` is the example the rule exists for: how many skills a
+#: turn may inject is not a Jev setting at all -- it decides whether
+#: ``skills.select`` is ever reached -- so a control for it on this card would
+#: claim the seam owns a limit that applies with the seam off.
+#:
+#: A point with nothing left elsewhere is simply absent. The values are PATHS and
+#: not labels: the card prints the path itself, which is what a reader greps
+#: ``config.json`` for, and a translated name for it would be a second spelling of
+#: a string that has to stay exact.
+POINT_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
+    "skills.select": ("skills.max_triggered",),
+}
 
 #: The model id sent when the config leaves ``provider.model`` empty -- the same
 #: fallback ``impl_jev`` applies, so the id the scrub clears is the id sent.
@@ -296,6 +313,24 @@ def _consented_for(
 #: Points already warned about for a missing scope, so a consented install that has
 #: not opted in says so once rather than once per tool call.
 _unscoped_warned: set[str] = set()
+
+
+#: Which KEYSTONE FIELD each scoped point's consent is recorded in, as
+#: ``point -> state key``. Built from the same three sets the enforcement table below
+#: is, so the sets stay the single source: a point added to either one is both
+#: enforced and listed with the right switch, and neither side can learn about a
+#: scope the other does not.
+#:
+#: It exists because the dashboard needs the FIELD NAME -- the card's per-point panel
+#: writes that exact key back through ``PUT /api/decisions/consent`` -- while the
+#: table below needs a reader and a category to refuse and to warn with. Same
+#: membership, different projections of it. ``test_decisions_gate.py`` pins the two
+#: against each other, so a further scope set cannot be added to one alone.
+POINT_SCOPE_KEYS: dict[str, str] = {
+    **{p: _consent.STATE_KEY_TOOL_ARGS for p in POINTS_NEEDING_TOOL_ARGS},
+    **{p: _consent.STATE_KEY_COMPACTION for p in POINTS_NEEDING_COMPACTION},
+    **{p: _consent.STATE_KEY_MEMORY_TEXT for p in POINTS_NEEDING_MEMORY_TEXT},
+}
 
 
 #: What each scoped point needs, as ``point -> (keystone reader, the switch's own

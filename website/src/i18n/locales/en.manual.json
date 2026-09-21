@@ -312,9 +312,6 @@
         "state_working": "Working"
       }
     },
-    "codeReviewSage": {
-      "codeReviewSagePage": {}
-    },
     "designTweak": {
       "comments": {
         "an_earlier_comment": "an earlier comment",
@@ -2878,7 +2875,6 @@
       "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting..."
     },
-    "voiceDisabledModal": {},
     "voiceStatusBar": {
       "default_microphone": "Default microphone"
     },
@@ -6817,7 +6813,6 @@
         "cancel": "Cancel"
       }
     },
-    "systemPage": {},
     "worldsPage": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
@@ -6849,19 +6844,51 @@
         "decisions_points": "What Jev decides while this is on:",
         "decisions_point_skills_select": "Automatic skill choice",
         "decisions_point_logged_as": "logged as",
-        "decisions_point_sampled": "While this is on, Jev answers for {{percent}} of your sessions. The rest keep the word-matching rule. To change the share, set decisions.bucket in config.json in your {{productName}} data directory (~/.kiro/crew by default).",
-        "decisions_point_sampled_all": "While this is on, Jev answers for all of your sessions. To narrow that to a share, set decisions.bucket in config.json in your {{productName}} data directory (~/.kiro/crew by default).",
         "decisions_config_unavailable": "Could not read the settings, so this switch is not offered. Reload to try again.",
         "decisions_save_failed": "Could not save this setting. The switch is showing the saved value again.",
         "decisions_tool_args": "Also send tool-call arguments so Jev can flag risky calls",
         "decisions_tool_args_desc": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on.",
         "decisions_compaction": "Also send the conversation and tool-call inputs so Jev can score compaction",
-        "decisions_compaction_desc": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. This is the widest of the three, so it is off until you turn it on, even if the switches above are already on.",
+        "decisions_compaction_desc": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to.",
         "decisions_point_compaction_keep": "Which tool calls a compaction would keep (measured only)",
         "decisions_point_memory_recall": "Which recalled memories reach the prompt",
         "decisions_memory_text": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
         "decisions_memory_text_desc": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on.",
-        "decisions_scope_save_failed": "Could not save “{{switch}}”. It is showing the saved value again."
+        "decisions_scope_save_failed": "Could not save “{{switch}}”. It is showing the saved value again.",
+        "decisions_point_tool_risk": "Risky tool-call notes",
+        "decisions_point_message_steer": "Mid-turn message handling",
+        "decisions_point_model_route": "Model for the turn's difficulty",
+        "decisions_what_skills_select": "Picks which one of your skills the message you just sent should load, or that none of them fits.",
+        "decisions_what_tool_risk": "Marks the tool calls in a session that approves its own as worth a second look. It never blocks one.",
+        "decisions_what_message_steer": "Decides whether a message you send into a running turn steers that turn or waits for the next one.",
+        "decisions_what_model_route": "Rates how hard a chat turn is, and that rating picks the model — only in a session whose model picker is set to Auto (Jev).",
+        "decisions_status_active": "Switched on",
+        "decisions_status_needs_scope": "Needs your OK",
+        "decisions_status_off": "Off",
+        "decisions_global": "Shared settings",
+        "decisions_api_key_label": "Jev API key",
+        "decisions_api_key_desc": "Kept in this dashboard's secret store on the machine that runs {{productName}}, never in config.json, and never shown again once you save it.",
+        "decisions_api_key_save": "Save key",
+        "decisions_bucket_label": "Share of sessions Jev answers for",
+        "decisions_bucket_hint": "Jev answers for {{percent}} of your sessions. The rest keep the rule this build ships with.",
+        "decisions_history_label": "Earlier conversation one decision may carry, in characters",
+        "decisions_history_desc": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine.",
+        "decisions_tier_simple": "Model for a simple turn",
+        "decisions_tier_medium": "Model for a medium turn",
+        "decisions_tier_complex": "Model for a hard turn",
+        "decisions_tier_inherit": "Keep the session's own model",
+        "decisions_points_unavailable": "The {{productName}} running this dashboard does not list what Jev decides yet. Update it from Settings › Releases.",
+        "decisions_pointer_skills_max_triggered": "How many skills a turn may inject is skills.max_triggered in ~/.kiro/crew/config.json.",
+        "decisions_endpoint_pointer": "This address is set in decisions.provider.endpoint in ~/.kiro/crew/config.json. The dashboard shows it and does not change it.",
+        "decisions_history_pointer": "This is the most any one decision may carry, saved together with your agreement. What {{productName}} asks for is decisions.history_budget_chars in ~/.kiro/crew/config.json, and it never sends more than the number here.",
+        "decisions_history_off": "This takes effect once the main Jev switch is on.",
+        "decisions_scope_is_the_ok": "The switch below is the OK this needs.",
+        "decisions_what_compaction_keep": "Scores which of the session's tool calls a compaction would keep. Measured only — the compaction itself is unchanged.",
+        "decisions_api_key_replace": "Replace key",
+        "decisions_api_key_remove": "Remove key",
+        "decisions_api_key_remove_confirm": "Removing the key cannot be undone — the vault does not hand a value back, so you would have to paste a new one.",
+        "decisions_api_key_remove_cancel": "Keep it",
+        "decisions_api_key_delete": "Delete key"
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

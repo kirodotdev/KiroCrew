@@ -138,6 +138,21 @@ _STATE_FILE_MODE = 0o600
 _SAVE_LOCK = threading.Lock()
 
 
+class ConsentEndpointMovedError(RuntimeError):
+    """A scope-only write met a keystone bound to a different endpoint.
+
+    Raised by :func:`save_enabled` under :data:`KEEP_ENABLED` when the address the
+    caller established consent for differs from the one the keystone records at
+    write time. Carries the RECORDED address, which is the one a caller has to show
+    before asking again.
+    Nothing is written.
+    """
+
+    def __init__(self, recorded: str) -> None:
+        super().__init__("the recorded consent endpoint moved since it was checked")
+        self.recorded = recorded
+
+
 class ConsentCorruptError(RuntimeError):
     """The keystone exists but cannot be parsed; a writer must not clobber it."""
 
@@ -360,6 +375,14 @@ def save_enabled(
     This is what makes the route safe rather than careful. A caller that must supply
     ``enabled`` can only supply what it last read, so a view read before a revoke
     re-grants egress; with the switch resolved here, no scope write can move it.
+
+    A scope-only write also has to name the endpoint it believes is in force,
+    and this function re-checks the RECORDED address against it under the lock:
+    the caller establishes that consent stands for the configured endpoint
+    before calling, and that check runs outside this lock, so a re-bind landing
+    in the window would otherwise leave the scope written onto whatever the
+    keystone records by then. A difference raises
+    :class:`ConsentEndpointMovedError` and writes nothing.
     """
     keep_enabled = enabled is KEEP_ENABLED
     if not keep_enabled and not isinstance(enabled, bool):
@@ -389,7 +412,20 @@ def save_enabled(
             # and writing the switch from the record while re-deriving the address from
             # a caller's argument would rebind a consent nobody re-reviewed.
             enabled = is_enabled(state)
-            target = consented_endpoint(state)
+            recorded = consented_endpoint(state)
+            # And the caller's own endpoint-in-force has to still BE that address. The
+            # caller establishes consent stands for the configured endpoint before
+            # calling; that check ran outside this lock, so a re-bind landing in between
+            # would leave the scope written onto whatever the keystone now records --
+            # authorizing a wider egress category for an address the owner never
+            # reviewed. Comparing the two here closes that window: the write is refused
+            # and the caller re-reads, which is the same answer it would have got had
+            # the re-bind landed one moment earlier. Only meaningful while the switch is
+            # on; a recorded-off keystone has no address, and the clearing branch below
+            # writes the fail-closed values.
+            if enabled and recorded != target:
+                raise ConsentEndpointMovedError(recorded)
+            target = recorded
         if keep:
             history_budget_chars = consented_history_budget(state)
         if keep_scope:

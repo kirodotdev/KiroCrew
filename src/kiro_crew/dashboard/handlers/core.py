@@ -60,6 +60,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.sections import (
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
+    DECISION_MODEL_ROUTE_TIERS,
     STT_LANGUAGE_AUTO,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
@@ -2197,6 +2198,25 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
     return None
 
 
+def _active_provider_name() -> str:
+    """The configured agent provider. FILESYSTEM IO -- never call this on the loop.
+
+    ``KiroCrewConfig.load()`` deep-copies the validated dict even on a cache hit and
+    reads plus validates files on a miss. ``_model_rejected_reason`` performs exactly
+    this read when its caller supplies no provider, and the ``validate_fn`` hooks are
+    called SYNCHRONOUSLY from ``api_kirocrew_config_patch`` -- so the handler resolves
+    it with ``asyncio.to_thread`` once per request and hands the answer down
+    (``no-blocking-call-on-event-loop``).
+
+    Returns ``""`` when the config cannot be read, which is the same value
+    ``_model_rejected_reason`` falls back to, so the answer does not change.
+    """
+    try:
+        return KiroCrewConfig.load().agent.provider
+    except Exception:  # pragma: no cover - config load is resilient
+        return ""
+
+
 def _validate_role_model(
     value: str, request: web.Request, provider: str | None = None
 ) -> str | None:
@@ -2556,6 +2576,28 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
 }
 
+# The tier-to-model map `model.route` routes a turn with. Registered from the tier
+# tuple the point itself closes over, so this gate and the answer domain cannot
+# drift: a tier added there becomes editable here, and a path naming a tier the
+# question never offers stays a "field not editable" refusal.
+#
+# These are in the editable set where `provider.*` is not, and the config section
+# states the difference: a tier value is an ordinary model id that "grants nothing
+# on its own" -- the point validates it against what the provider advertises to
+# this account and keeps the session's model when it is not there -- whereas the
+# endpoint chooses WHERE collected state is sent and `api_key` is schema-sensitive,
+# so the masked GET returns a sentinel for it. Same grammar and the same
+# entitlement validation as the `agent.role_models.*` pins next to it, because the
+# vocabulary is identically unknowable up front: `""` INHERITS (the turn keeps its
+# session's model) and no concrete id is named here.
+for _tier in DECISION_MODEL_ROUTE_TIERS:
+    _EDITABLE_CONFIG[f"decisions.model_route.{_tier}"] = {
+        "type": "str",
+        "max_len": 64,
+        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "validate_fn": _validate_role_model,
+    }
+
 
 def _beacon_governance_pinned_off() -> bool:
     """Return whether a ceiling pins ``capabilities.telemetry`` off (blocking).
@@ -2692,7 +2734,15 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
         validate_fn = spec.get("validate_fn")
         if validate_fn:
-            reason = validate_fn(value, request)
+            # Resolved OFF the loop and handed down. Every validator here rejects a
+            # model pin the account cannot use, and the check behind them reads the
+            # configured provider from disk when nobody supplies it -- a file read and
+            # a schema validation, inline in this handler, for every one of the five
+            # keys that carry a hook. One hop per request, and only for a key that has
+            # a validator at all. A ``validate_fn`` added later takes the provider as
+            # its third argument for this reason.
+            provider = await asyncio.to_thread(_active_provider_name)
+            reason = validate_fn(value, request, provider)
             if reason:
                 return _deny(reason, f"{path_key}={value}")
     elif spec["type"] == "dict":

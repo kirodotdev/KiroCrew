@@ -165,6 +165,14 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { Input: 2 },
     reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
   },
+  'DecisionsCard.tsx': {
+    counts: { input: 1 },
+    reason:
+      'the sampling-share range input has no slider primitive, exactly as ' +
+      "NotificationsPanel's volume does; it is reached through the card the " +
+      'developer.decisions-jev entry deep-links to, and a manual entry for it would ' +
+      'advertise a row that the capabilities.decisions ceiling can withdraw',
+  },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1 },
     reason: 'theme-install form (source picker + location) — transient install flow, not settings',
@@ -273,6 +281,16 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
     reason:
       'labels arrive through BotChannelSpec props (per-channel copy decided by the ' +
       'mounting wrapper); the static-label primitives in the same file fan out per channel',
+  },
+  'DecisionsPointPanel.tsx': {
+    count: 2,
+    reason:
+      "the per-point scope switch and model.route's tier pickers take their label " +
+      'from a Record keyed by the SERVER id (the scope name, the tier), which is what ' +
+      'lets a gateway ship another point or scope with no edit here — the same ' +
+      'arrangement AgentBackendTab uses for capability labels. Both are one level ' +
+      'inside the card the developer.decisions-jev entry deep-links to, and a manual ' +
+      'entry would advertise a row the capabilities.decisions ceiling can withdraw',
   },
   'NotificationsPanel.tsx': {
     count: 1,

@@ -218,8 +218,13 @@ class TestRoute:
         )
         assert consent.consented_endpoint(consent.load_state()) == DEFAULT_ENDPOINT
 
-    def test_a_body_naming_neither_the_switch_nor_a_scope_is_a_400(self, _owner):
-        for body in ({}, {"endpoint": DEFAULT_ENDPOINT}, {"history_budget_chars": 10}):
+    def test_a_body_naming_nothing_it_may_move_alone_is_a_400(self, _owner):
+        # The history CEILING is absent from this list by design: it moves alone, on
+        # the same grounds either scope does, and the Decisions card offers it by
+        # itself. `test_decisions_consent.py::TestScopeOnlyWrite` pins that it lands.
+        # A body naming NOTHING the route may move alone is still refused, which is the
+        # property this case is here for.
+        for body in ({}, {"endpoint": DEFAULT_ENDPOINT}, {"history_budget": 10}):
             response = asyncio.run(_owner.api_decisions_consent_put(self._request(body)))
             assert response.status == 400, body
 

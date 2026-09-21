@@ -446,6 +446,42 @@ export interface DecisionsConsentData {
    * conversation, so consent recorded against a message excerpt cannot stand for it.
    */
   memory_text?: boolean
+  /**
+   * One row per decision point this GATEWAY ships, projected from the seam's own
+   * registry (`decisions/gate.py`). The card lists these rather than an array
+   * written here, so a build that ships another point lights up a row with no
+   * frontend edit — the same arrangement the Agent Backend panel uses for its
+   * capability lines.
+   *
+   * Absent on a gateway older than the projection, which reads as no rows: the
+   * overview then says the points cannot be listed rather than inventing a list.
+   */
+  points?: DecisionPointData[]
+}
+
+/** One decision point as the gateway reports it. */
+export interface DecisionPointData {
+  /** The gateway's identifier, e.g. `skills.select`. Also the decision log's. */
+  id: string
+  /**
+   * The keystone scope this point needs on top of consent itself (`tool_args`), or
+   * null when consent alone is enough. The point's own panel draws its switch from
+   * this, so a new scope needs no per-point branch here.
+   */
+  needs_scope: string | null
+  /**
+   * The EFFECTIVE answer, not a switch position: `active`, `needs_scope` (consent
+   * stands but this point's egress category was never granted), or `off` (nothing
+   * is sent at all — no consent, a moved endpoint, or a governance pin). Computed
+   * server-side so the row and the gate cannot disagree.
+   */
+  status: string
+  /**
+   * `config.json` paths this point's behaviour depends on which the card
+   * deliberately offers no control for. Printed as a pointer so a reader is not
+   * left to assume the card is the whole story.
+   */
+  config_keys: string[]
 }
 
 /** Which side of a logged decision a reader's verdict is about. */
@@ -5349,21 +5385,25 @@ export const api = {
           ...(memoryText === undefined ? {} : { memory_text: memoryText }),
         }
         : { enabled }).then(j) as Promise<DecisionsConsentData>,
-  // A SCOPE-ONLY write, named for what it is: the body carries the scope fields and
-  // nothing else, so it asserts nothing about whether the seam may send. `enabled` is
-  // deliberately absent rather than set to the value the card holds — that value comes
-  // from a read which a concurrent revoking PUT makes stale, and writing it back would
-  // re-commit a consent the owner had just withdrawn. The gateway preserves the recorded
-  // flag AND the recorded endpoint for an absent `enabled`, so there is nothing to echo
-  // either. Scope switches call this; the switch above calls `saveDecisionsConsent`.
-  saveDecisionsScope: (
-    scopes: { toolArgs?: boolean; compaction?: boolean; memoryText?: boolean },
-  ) =>
-    put('/api/decisions/consent', {
-      ...(scopes.toolArgs === undefined ? {} : { tool_args: scopes.toolArgs }),
-      ...(scopes.compaction === undefined ? {} : { compaction: scopes.compaction }),
-      ...(scopes.memoryText === undefined ? {} : { memory_text: scopes.memoryText }),
-    }).then(j) as Promise<DecisionsConsentData>,
+  // A SCOPE on its own, with `enabled` deliberately OMITTED and no endpoint echo.
+  // A per-point scope switch is not a review of an address, so it must not restate
+  // consent to one; the gateway preserves the recorded switch and endpoint for an
+  // absent `enabled`, and refuses the write outright (409, or 403 under a
+  // governance pin) unless consent is already in force for the address config
+  // names. So the omission can only ever move a scope under a consent that
+  // already stands.
+  saveDecisionsScope: (scope: string, value: boolean) =>
+    put('/api/decisions/consent', { [scope]: value }).then(j) as Promise<DecisionsConsentData>,
+  // The prior-conversation CEILING, on the keystone beside the switch it belongs to
+  // and NOT through the config route. What it bounds is how much of the conversation
+  // leaves the machine, so it is consent, and consent does not live in an
+  // agent-writable file: config.json carries what the seam ASKS for and this number
+  // is the ceiling that request is clamped to. `enabled` is omitted for the reason a
+  // scope omits it -- raising a ceiling is not a review of an address -- so the
+  // gateway preserves the recorded switch and endpoint and refuses the write unless
+  // consent already stands for the address config names.
+  saveDecisionsHistoryBudget: (chars: number) =>
+    put('/api/decisions/consent', { history_budget_chars: chars }).then(j) as Promise<DecisionsConsentData>,
   // One reader's verdict on one side of one decision, from the transcript's
   // decision strip. `verdict: null` takes an answer back, which is why the field
   // is nullable rather than absent — the server records the retraction.
