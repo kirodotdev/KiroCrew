@@ -7271,6 +7271,17 @@
         "unknown_date": "Data sconosciuta",
         "yesterday": "Ieri"
       },
+      "notificationBanner": {
+        "dismiss_notification": "Ignora notifica",
+        "open_notification": "Apri notifica: {{title}}",
+        "review_action": "Esamina",
+        "more_in_inbox_count": "+{{count}} nella tua casella",
+        "more_count": "Mostra altre {{count}}",
+        "mark_read_failed": "Impossibile segnare come letta. Riprova l’azione.",
+        "show_more_notifications_count_one": "Mostra {{count}} altra notifica",
+        "show_more_notifications_count_many": "Mostra altre {{count}} notifiche",
+        "show_more_notifications_count_other": "Mostra altre {{count}} notifiche"
+      },
       "notificationDetailPanel": {
         "approve": "Approva",
         "close": "Chiudi",
@@ -7311,6 +7322,12 @@
         "show_less": "Mostra meno",
         "show_muted_count": "Mostra silenziate ({{count}})",
         "try_a_different_search": "Prova una ricerca diversa"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "Ricevi avvisi quando non ci sei",
+        "allow": "Consenti",
+        "not_now": "Non ora",
+        "save_failed": "Impossibile salvare. Riprova."
       }
     },
     "onboardingChapterShell": {
@@ -14286,7 +14303,14 @@
         "use_default": "Usa il predefinito",
         "volume": "Volume",
         "preset_pulse": "Pulsazione",
-        "failed_to_save_channel_setting": "Impossibile salvare l’impostazione del canale. Il valore precedente è stato ripristinato."
+        "failed_to_save_channel_setting": "Impossibile salvare l’impostazione del canale. Il valore precedente è stato ripristinato.",
+        "system_notifications": "Notifiche di sistema",
+        "system_notifications_description": "Mostra le notifiche sul desktop anche quando questa finestra è in secondo piano.",
+        "system_notifications_allowed": "Consentite",
+        "allow_system_notifications": "Consenti le notifiche di sistema",
+        "system_notifications_blocked": "Bloccate nel browser. Riattivale nelle autorizzazioni del sito.",
+        "show_banner_for_new_notifications": "Mostra un banner per le nuove notifiche",
+        "show_banner_for_new_notifications_description": "Quando arriva una notifica, una scheda scivola sotto la barra superiore e poi si ritira nella campanella."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

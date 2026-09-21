@@ -7271,6 +7271,17 @@
         "unknown_date": "Data desconhecida",
         "yesterday": "Ontem"
       },
+      "notificationBanner": {
+        "dismiss_notification": "Dispensar notificação",
+        "open_notification": "Abrir notificação: {{title}}",
+        "review_action": "Revisar",
+        "more_in_inbox_count": "+{{count}} na sua caixa de entrada",
+        "more_count": "Mostrar mais {{count}}",
+        "mark_read_failed": "Não foi possível marcar como lida. Tente a ação novamente.",
+        "show_more_notifications_count_one": "Mostrar mais {{count}} notificação",
+        "show_more_notifications_count_many": "Mostrar mais {{count}} notificações",
+        "show_more_notifications_count_other": "Mostrar mais {{count}} notificações"
+      },
       "notificationDetailPanel": {
         "approve": "Aprovar",
         "close": "Fechar",
@@ -7311,6 +7322,12 @@
         "show_less": "Mostrar menos",
         "show_muted_count": "Mostrar silenciadas ({{count}})",
         "try_a_different_search": "Tente outra busca"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "Receba alertas quando estiver longe",
+        "allow": "Permitir",
+        "not_now": "Agora não",
+        "save_failed": "Não foi possível salvar. Tente novamente."
       }
     },
     "onboardingChapterShell": {
@@ -14286,7 +14303,14 @@
         "use_default": "Usar o padrão",
         "volume": "Volume",
         "preset_pulse": "Pulso",
-        "failed_to_save_channel_setting": "Não foi possível salvar a configuração do canal. O valor anterior foi restaurado."
+        "failed_to_save_channel_setting": "Não foi possível salvar a configuração do canal. O valor anterior foi restaurado.",
+        "system_notifications": "Notificações do sistema",
+        "system_notifications_description": "Mostra notificações na sua área de trabalho mesmo com esta janela em segundo plano.",
+        "system_notifications_allowed": "Permitidas",
+        "allow_system_notifications": "Permitir notificações do sistema",
+        "system_notifications_blocked": "Bloqueadas no seu navegador. Reative-as nas permissões do site.",
+        "show_banner_for_new_notifications": "Mostrar um banner para novas notificações",
+        "show_banner_for_new_notifications_description": "Quando chega uma notificação, um cartão desliza sob a barra superior e depois se recolhe no sino."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

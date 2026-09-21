@@ -199,5 +199,6 @@
   "pages.webhooksPage.switched_off_credentials_kept",
   "pages.worldsPage.agent",
   "pages.worldsPage.slot",
-  "utils.toolCallTitle.and_more"
+  "utils.toolCallTitle.and_more",
+  "components.notifications.notificationBanner.show_more_notifications_count"
 ]

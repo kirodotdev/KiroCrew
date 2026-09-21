@@ -7065,6 +7065,15 @@
         "unknown_date": "不明な日付",
         "yesterday": "昨日"
       },
+      "notificationBanner": {
+        "dismiss_notification": "通知を閉じる",
+        "open_notification": "通知を開く：{{title}}",
+        "review_action": "確認",
+        "more_in_inbox_count": "受信箱にさらに {{count}} 件",
+        "more_count": "他 {{count}} 件を表示",
+        "mark_read_failed": "既読にできませんでした。もう一度操作してください。",
+        "show_more_notifications_count_other": "他 {{count}} 件の通知を表示"
+      },
       "notificationDetailPanel": {
         "approve": "承認",
         "close": "閉じる",
@@ -7105,6 +7114,12 @@
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
         "try_a_different_search": "別の検索を試す"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "離席中も通知を受け取る",
+        "allow": "許可",
+        "not_now": "今はしない",
+        "save_failed": "保存できませんでした。もう一度お試しください。"
       }
     },
     "onboardingChapterShell": {
@@ -13914,7 +13929,14 @@
         "test_sound": "サウンドをテスト",
         "use_default": "デフォルトを使用",
         "volume": "ボリューム",
-        "failed_to_save_channel_setting": "チャネルの設定を保存できませんでした。以前の値に戻しました。"
+        "failed_to_save_channel_setting": "チャネルの設定を保存できませんでした。以前の値に戻しました。",
+        "system_notifications": "システム通知",
+        "system_notifications_description": "このウィンドウが背面にあるときも、デスクトップに通知を表示します。",
+        "system_notifications_allowed": "許可済み",
+        "allow_system_notifications": "システム通知を許可",
+        "system_notifications_blocked": "ブラウザーでブロックされています。サイトの権限設定で再度オンにしてください。",
+        "show_banner_for_new_notifications": "新しい通知をバナーで表示",
+        "show_banner_for_new_notifications_description": "通知が届くとカードがトップバーの下にスライドして表示され、その後ベルに収まります。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

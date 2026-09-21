@@ -7168,6 +7168,16 @@
         "unknown_date": "Unbekanntes Datum",
         "yesterday": "Gestern"
       },
+      "notificationBanner": {
+        "dismiss_notification": "Benachrichtigung schließen",
+        "open_notification": "Benachrichtigung öffnen: {{title}}",
+        "review_action": "Ansehen",
+        "more_in_inbox_count": "+{{count}} weitere im Posteingang",
+        "more_count": "{{count}} weitere anzeigen",
+        "mark_read_failed": "Konnte nicht als gelesen markiert werden. Versuche die Aktion noch einmal.",
+        "show_more_notifications_count_one": "{{count}} weitere Benachrichtigung anzeigen",
+        "show_more_notifications_count_other": "{{count}} weitere Benachrichtigungen anzeigen"
+      },
       "notificationDetailPanel": {
         "approve": "Genehmigen",
         "close": "Schließen",
@@ -7208,6 +7218,12 @@
         "show_less": "Weniger anzeigen",
         "show_muted_count": "Stummgeschaltete anzeigen ({{count}})",
         "try_a_different_search": "Versuche eine andere Suche"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "Lass dich benachrichtigen, wenn du weg bist",
+        "allow": "Erlauben",
+        "not_now": "Nicht jetzt",
+        "save_failed": "Konnte nicht gespeichert werden. Versuche es noch einmal."
       }
     },
     "onboardingChapterShell": {
@@ -14100,7 +14116,14 @@
         "use_default": "Standard verwenden",
         "volume": "Lautstärke",
         "preset_pulse": "Puls",
-        "failed_to_save_channel_setting": "Die Kanaleinstellung konnte nicht gespeichert werden. Der vorherige Wert wurde wiederhergestellt."
+        "failed_to_save_channel_setting": "Die Kanaleinstellung konnte nicht gespeichert werden. Der vorherige Wert wurde wiederhergestellt.",
+        "system_notifications": "Systembenachrichtigungen",
+        "system_notifications_description": "Zeigt Benachrichtigungen auf dem Desktop, auch wenn dieses Fenster im Hintergrund ist.",
+        "system_notifications_allowed": "Erlaubt",
+        "allow_system_notifications": "Systembenachrichtigungen erlauben",
+        "system_notifications_blocked": "Im Browser blockiert. Schalte sie in den Berechtigungen der Website wieder ein.",
+        "show_banner_for_new_notifications": "Banner für neue Benachrichtigungen anzeigen",
+        "show_banner_for_new_notifications_description": "Bei einer neuen Benachrichtigung gleitet eine Karte unter der oberen Leiste ein und verschwindet dann in der Glocke."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

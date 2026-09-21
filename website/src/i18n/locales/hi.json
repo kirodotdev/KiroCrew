@@ -7168,6 +7168,16 @@
         "unknown_date": "अज्ञात तारीख़",
         "yesterday": "कल"
       },
+      "notificationBanner": {
+        "dismiss_notification": "सूचना हटाओ",
+        "open_notification": "सूचना खोलो: {{title}}",
+        "review_action": "देखो",
+        "more_in_inbox_count": "इनबॉक्स में {{count}} और",
+        "more_count": "{{count}} और दिखाओ",
+        "mark_read_failed": "पढ़ा हुआ चिह्नित नहीं हो सका। कार्रवाई फिर से करो।",
+        "show_more_notifications_count_one": "{{count}} और सूचना दिखाओ",
+        "show_more_notifications_count_other": "{{count}} और सूचनाएँ दिखाओ"
+      },
       "notificationDetailPanel": {
         "approve": "स्वीकृत करें",
         "close": "बंद करें",
@@ -7208,6 +7218,12 @@
         "show_less": "कम दिखाएँ",
         "show_muted_count": "म्यूट दिखाओ ({{count}})",
         "try_a_different_search": "कोई दूसरी खोज आज़माएँ"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "दूर रहने पर भी अलर्ट पाओ",
+        "allow": "अनुमति दो",
+        "not_now": "अभी नहीं",
+        "save_failed": "सहेजा नहीं जा सका। फिर से कोशिश करो।"
       }
     },
     "onboardingChapterShell": {
@@ -14101,7 +14117,14 @@
         "use_default": "डिफ़ॉल्ट इस्तेमाल करें",
         "volume": "वॉल्यूम",
         "preset_pulse": "पल्स",
-        "failed_to_save_channel_setting": "चैनल सेटिंग सहेजी नहीं जा सकी। पिछला मान बहाल कर दिया गया।"
+        "failed_to_save_channel_setting": "चैनल सेटिंग सहेजी नहीं जा सकी। पिछला मान बहाल कर दिया गया।",
+        "system_notifications": "सिस्टम सूचनाएँ",
+        "system_notifications_description": "यह विंडो पीछे हो तब भी डेस्कटॉप पर सूचनाएँ दिखाओ।",
+        "system_notifications_allowed": "अनुमति मिली",
+        "allow_system_notifications": "सिस्टम सूचनाओं की अनुमति दो",
+        "system_notifications_blocked": "तुम्हारे ब्राउज़र ने इसे रोक दिया है। साइट की अनुमति सेटिंग में इसे फिर से चालू करो।",
+        "show_banner_for_new_notifications": "नई सूचनाओं के लिए बैनर दिखाओ",
+        "show_banner_for_new_notifications_description": "सूचना आने पर एक कार्ड टॉप बार के नीचे से आता है, फिर घंटी में समा जाता है।"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",

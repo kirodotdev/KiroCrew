@@ -162,3 +162,111 @@ filters by `storageArea === localStorage` and by the `mc-notification-sound`
 key (a `null` key, i.e. `clear()`, is also honored) then reloads through
 `loadSoundSettings` so validation and clamping are reused. Notification playback
 is debounced to one tone per 300 ms.
+
+## In-app banner (client)
+
+`website/src/components/notifications/NotificationBanner.tsx`, mounted once by
+the bell button in `App.tsx` and portalled beside the bell's sheet, shows a
+macOS Notification Center-style card under the top bar for a **live**
+notification. The card body is `NotificationCard.tsx`, the ONE rendering the
+bell popover's mac rows and the banner both use (kind-tinted 26 px icon square,
+one-line title, two-line body, relative time with the unread dot, hover-reveal
+close, quiet capsule actions); its `elevation` prop is the only difference —
+`popover` (72 % card tint, the theme's `--shadow-md`) versus `banner` (88 %
+tint, `--shadow-lg`); shadows are theme tokens, never literal alphas. A critical note is signalled only by its danger dot and the approval
+icon tint, never an edge or a label. Nothing about the banner is persisted
+server-side.
+
+### Trigger
+
+The banner listens to `MC_LIVE_NOTIFICATION_EVENT` (`hooks/notificationEvent.ts`),
+which `useWebSocket` fires for a `notification` frame received on a live
+connection. It never reads the Redux list: the boot `fetchNotifications`
+snapshot and reconnect refetches fill the store with history, and history is
+never bannered. `useWebSocket` withholds the event during a reconnect catch-up
+(`reconnectingRef`), the same window that mutes the turn-done chime.
+
+### Priorities
+
+| Priority | Banner |
+|---|---|
+| `critical` | stays until clicked, dismissed, or acted on; the live region is `role="alert"` while one is pending |
+| `default` | auto-hides after `BANNER_AUTO_HIDE_MS` (6 s). Every pending default card shares ONE timer, restarted by each default arrival and paused while the stack is hovered or holds focus |
+| `passive`, or `silenced` (`isSilencedNote`) | never |
+
+Auto-hide does **not** acknowledge: the note stays unread in the bell, and the
+unread dot is the visible continuation of the card. A body click or a url
+action acknowledges (the popover's selection effect for the former,
+`ackNotification` for the latter). A url action runs entirely inside the
+navigation leave guard and awaits the ack: a user who answers "stay" keeps an
+unread note and the card; a rejected ack (`ackNotification.rejected` flips
+`acked` back in the slice) keeps the card and shows an `ErrorNotice` under its
+actions, the action itself being the retry. The rollback is held to the same
+per-write stamp rule as the confirmation: a rejection carrying a stamp a newer
+ack has since moved (a second press that succeeded) changes nothing. The bell
+popover's own open-a-note auto-ack asks once per selection so that flip cannot
+loop it.
+
+### Suppression (never banner)
+
+`shouldBannerNote` in `hooks/notificationBanner.ts`, in order: the preference is
+off; the note is passive or silenced; the bell popover is open (or closing); the
+route is `/notifications`; the note describes what is already on screen —
+`targetsCurrentView`: while the window is focused, a note whose `slot` is the
+active chat on a chat route, or whose `url` path is the current route. Opening
+the popover, landing on the inbox page, or switching the preference off also
+retires every pending card.
+
+### Stack
+
+Newest on top. Beyond the top card, up to `BANNER_DECK_DEPTH` (2) older cards
+peek as a deck of BLANK shells (card material only, no text, icon or time;
+4/8 px offset, .98/.96 scale, .8/.55 opacity), so nothing prints through the
+translucent top card. Each shell and the "Show N more" pill on the top card's
+corner are the same control (`Show N more notifications`) that expands to a
+vertical list of at most `BANNER_EXPANDED_MAX` (4) cards plus a "+N more in your
+inbox" line that goes to `/notifications` (through the navigation leave guard) —
+the same place the popover's "Open inbox" goes, so "inbox" names one place. On the mobile breakpoint only the newest card renders,
+full width, with its close visible at rest (no hover on touch).
+
+### Motion
+
+Enter: slide in from the right with a fade (~220 ms). Exit, for auto-hide and
+dismiss alike: the card shrinks about its top-right corner and travels to the
+bell (`computeExitDelta` measures the vector from the card's own rect to
+`bellRef`'s) while fading (~260 ms) — the relocation animates the same element
+into its new home rather than swapping it out. Under `prefers-reduced-motion`
+(`useReducedMotion`) enter and exit are plain fades and the deck/list switch
+does no layout animation. Escape dismisses the topmost card; arrival never moves
+focus.
+
+### Setting
+
+Settings › Notifications › Desktop alerts › "Show a banner for new
+notifications", default ON, `localStorage` key `mc-notification-banner`
+(`loadBannerEnabled` / `saveBannerEnabled`). A flip is announced same-window via
+`MC_BANNER_SETTING_CHANGED_EVENT` and cross-tab via the DOM `storage` event, so
+a mounted banner honours it immediately.
+
+### System-notification permission surfaces
+
+`hooks/useNotificationPermission.ts` exposes `Notification.permission` as state
+(`unsupported | default | granted | denied`), re-read on window focus and after
+its own `request()` settles. Two user-gesture surfaces call `request()`:
+
+- **Settings › Notifications › Desktop alerts › System notifications**
+  (`SystemNotificationsRow`): `granted` shows "Allowed" with a check and no
+  button; `default` offers "Allow system notifications"; `denied` states in
+  plain language that the browser blocked it and where to turn it back on.
+  Absent entirely when `Notification` is undefined.
+- **Bell popover hint** (`NotificationPermissionHint`, in the mac controls
+  card): one row — bell-ring icon, "Get alerted when you're away", "Allow",
+  "Not now" — shown only while permission is `default`, the store holds at
+  least one notification, and the user has not pressed "Not now"
+  (`mc-notification-permission-hint-dismissed`). Any verdict after "Allow"
+  retires it too. The row leaves only once the dismissal is on disk; a failed
+  write keeps it with an `ErrorNotice`, the buttons being the retry.
+
+`useNativeNotification`'s effect-time `requestPermission()` on a first unacked
+arrival is left in place as best effort; browsers refuse a prompt with no
+gesture behind it, which is why the two surfaces above exist.

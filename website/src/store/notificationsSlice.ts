@@ -192,13 +192,23 @@ const stampUnchangedSince = (
   // it was absent then, so this response says nothing about the row now present.
   since !== undefined && ackStampOf(state, ts) === since
 
-export const ackNotification = createAsyncThunk(
+export const ackNotification = createAsyncThunk<
+  { ts: string; stamp: number | undefined },
+  string,
+  { rejectValue: { ts: string; stamp: number | undefined } }
+>(
   'notifications/ack',
-  async (ts: string, { getState }) => {
+  async (ts: string, { getState, rejectWithValue }) => {
     // Read AFTER `pending` has stamped: this is our own optimistic stamp, so a
     // later value means something newer than this request moved the flag.
     const stamp = ackStampOf((getState() as { notifications: NotificationsState }).notifications, ts)
-    await api.ackNotification(ts)
+    try {
+      await api.ackNotification(ts)
+    } catch {
+      // The rejection carries the same stamp the fulfilment would, so the
+      // rollback below can be held to the same one-rule-per-write check.
+      return rejectWithValue({ ts, stamp })
+    }
     return { ts, stamp }
   },
 )
@@ -335,6 +345,26 @@ const notificationsSlice = createSlice({
         const n = state.items.find(i => i.ts === ts)
         if (n) {
           n.acked = true
+          markAck(state, ts)
+        }
+      })
+      // The server refused or never heard the ack, so it still holds the note
+      // unread: undo the optimistic flip rather than leave a read row the next
+      // fetch (or another tab) will flip back -- but ONLY under the same rule
+      // as the confirmation: a rollback is evidence about the request it
+      // belongs to, and a newer ack that already moved the stamp (a second
+      // press that succeeded while the first was still in flight) outranks it.
+      // Stamped like every other local ack change so an in-flight fetch cannot
+      // resurrect the optimistic value.
+      .addCase(ackNotification.rejected, (state, action) => {
+        const ts = action.meta.arg
+        // A throw before the stamp was read (no payload) carries no evidence
+        // about the flag, so it rolls nothing back.
+        if (!action.payload) return
+        if (!stampUnchangedSince(state, ts, action.payload.stamp)) return
+        const n = state.items.find(i => i.ts === ts)
+        if (n) {
+          n.acked = false
           markAck(state, ts)
         }
       })

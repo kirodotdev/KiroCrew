@@ -7271,6 +7271,17 @@
         "unknown_date": "Date inconnue",
         "yesterday": "Hier"
       },
+      "notificationBanner": {
+        "dismiss_notification": "Ignorer la notification",
+        "open_notification": "Ouvrir la notification : {{title}}",
+        "review_action": "Examiner",
+        "more_in_inbox_count": "+{{count}} de plus dans votre boîte",
+        "more_count": "Afficher {{count}} de plus",
+        "mark_read_failed": "Impossible de marquer comme lue. Réessayez l’action.",
+        "show_more_notifications_count_one": "Afficher {{count}} notification de plus",
+        "show_more_notifications_count_many": "Afficher {{count}} notifications de plus",
+        "show_more_notifications_count_other": "Afficher {{count}} notifications de plus"
+      },
       "notificationDetailPanel": {
         "approve": "Approuver",
         "close": "Fermer",
@@ -7311,6 +7322,12 @@
         "show_less": "Afficher moins",
         "show_muted_count": "Afficher en sourdine ({{count}})",
         "try_a_different_search": "Essaie une autre recherche"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "Soyez alerté même en votre absence",
+        "allow": "Autoriser",
+        "not_now": "Pas maintenant",
+        "save_failed": "Impossible d’enregistrer. Réessayez."
       }
     },
     "onboardingChapterShell": {
@@ -14287,7 +14304,14 @@
         "use_default": "Utiliser la valeur par défaut",
         "volume": "Volume",
         "preset_pulse": "Pulsion",
-        "failed_to_save_channel_setting": "Impossible d’enregistrer le réglage du canal. La valeur précédente a été rétablie."
+        "failed_to_save_channel_setting": "Impossible d’enregistrer le réglage du canal. La valeur précédente a été rétablie.",
+        "system_notifications": "Notifications système",
+        "system_notifications_description": "Affiche les notifications sur votre bureau même quand cette fenêtre est en arrière-plan.",
+        "system_notifications_allowed": "Autorisées",
+        "allow_system_notifications": "Autoriser les notifications système",
+        "system_notifications_blocked": "Bloquées par votre navigateur. Réactivez-les dans les autorisations du site.",
+        "show_banner_for_new_notifications": "Afficher une bannière pour les nouvelles notifications",
+        "show_banner_for_new_notifications_description": "À l’arrivée d’une notification, une carte glisse sous la barre supérieure puis se range dans la cloche."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

@@ -1110,6 +1110,13 @@
       "description": "When the agent proactively messages you outside a chat"
     },
     {
+      "id": "notifications.show-a-banner-for-new-notifications",
+      "label": "Show a banner for new notifications",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.show-a-banner-for-new-notifications",
+      "description": "A card slides in under the top bar when a notification arrives, then tucks into the bell."
+    },
+    {
       "id": "notifications.sound-category-skills",
       "label": "Skills",
       "tab": "notifications",

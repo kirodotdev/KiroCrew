@@ -7374,6 +7374,18 @@
         "unknown_date": "Дата неизвестна",
         "yesterday": "Вчера"
       },
+      "notificationBanner": {
+        "dismiss_notification": "Скрыть уведомление",
+        "open_notification": "Открыть уведомление: {{title}}",
+        "review_action": "Посмотреть",
+        "more_in_inbox_count": "Ещё {{count}} во входящих",
+        "more_count": "Показать ещё {{count}}",
+        "mark_read_failed": "Не удалось отметить как прочитанное. Повторите действие.",
+        "show_more_notifications_count_one": "Показать ещё {{count}} уведомление",
+        "show_more_notifications_count_few": "Показать ещё {{count}} уведомления",
+        "show_more_notifications_count_many": "Показать ещё {{count}} уведомлений",
+        "show_more_notifications_count_other": "Показать ещё {{count}} уведомления"
+      },
       "notificationDetailPanel": {
         "approve": "Подтвердить",
         "close": "Закрыть",
@@ -7414,6 +7426,12 @@
         "show_less": "Свернуть",
         "show_muted_count": "Показать без звука ({{count}})",
         "try_a_different_search": "Попробуй другой запрос"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "Получайте оповещения, когда вас нет",
+        "allow": "Разрешить",
+        "not_now": "Не сейчас",
+        "save_failed": "Не удалось сохранить. Попробуйте ещё раз."
       }
     },
     "onboardingChapterShell": {
@@ -14473,7 +14491,14 @@
         "use_default": "Использовать по умолчанию",
         "volume": "Громкость",
         "preset_pulse": "Пульс",
-        "failed_to_save_channel_setting": "Не удалось сохранить настройку канала. Предыдущее значение восстановлено."
+        "failed_to_save_channel_setting": "Не удалось сохранить настройку канала. Предыдущее значение восстановлено.",
+        "system_notifications": "Системные уведомления",
+        "system_notifications_description": "Показывать уведомления на рабочем столе, даже когда это окно в фоне.",
+        "system_notifications_allowed": "Разрешены",
+        "allow_system_notifications": "Разрешить системные уведомления",
+        "system_notifications_blocked": "Заблокированы в браузере. Включите их снова в разрешениях сайта.",
+        "show_banner_for_new_notifications": "Показывать баннер для новых уведомлений",
+        "show_banner_for_new_notifications_description": "Когда приходит уведомление, карточка выезжает под верхней панелью, а затем убирается в колокольчик."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",

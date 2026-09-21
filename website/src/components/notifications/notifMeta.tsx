@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { i18nT } from '../../i18n/t'
 // Aliased: this module exports its own `fmtTime`/`fmtFull` wrappers that add the
 // unknown-date fallback on top of these.
-import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/format'
+import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields, fmtRelative as fmtRelativeLocalized } from '../../i18n/format'
 
 /**
  * Shared notification metadata + helpers, so the full page and the topbar bell
@@ -128,3 +128,45 @@ export function stripMd(text: string): string {
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+/** macOS Notification Center-style relative timestamp ("now", "35m ago", "2h ago").
+ *
+ * Delegated to the locale-aware seam so relative times render in the app
+ * language for every locale, with the "yesterday" literal from CLDR.
+ *
+ * Minute granularity is preserved deliberately — a notification feed that
+ * counted seconds would rewrite every row on every tick. Anything under a
+ * minute is collapsed to the locale's "now" rather than "45s ago". Shared by
+ * the bell popover's mac cards and the in-app banner so the same note never
+ * shows two different ages. */
+export function fmtRelativeMinute(ts: string): string {
+  const at = parseTs(ts)
+  const now = Date.now()
+  if (now - at.getTime() < 60_000) return fmtRelativeLocalized(now, { now })
+  return fmtRelativeLocalized(at, { now })
+}
+
+/** The mac-variant floating card material, split so the bell popover's rows
+ *  and the in-app banner share the blur and hairline border while each picks
+ *  its own tint and shadow (the banner floats over arbitrary page content and
+ *  needs a denser tint and a deeper shadow than a row inside the sheet's
+ *  scrim). Every consumer must also carry `notif-material`, the index.css hook
+ *  that solidifies these surfaces where backdrop-filter is unsupported. */
+export const MAC_CARD_BLUR_CLASS = 'backdrop-blur-2xl backdrop-saturate-150'
+export const MAC_CARD_BORDER_CLASS = 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
+/** Popover rows: 72% card tint, the theme's medium elevation (inside the
+ *  sheet's own scrim). Shadows are theme tokens (`--shadow-md` / `--shadow-lg`
+ *  in index.css), which is what keeps them legible on both a light and a dark
+ *  palette without a literal alpha here. */
+export const MAC_CARD_TINT_CLASS = 'bg-[color-mix(in_srgb,var(--card)_72%,transparent)]'
+export const MAC_CARD_SHADOW_CLASS = 'shadow-md'
+/** Banner cards: 88% card tint, the theme's large elevation (floating over
+ *  arbitrary page content). */
+export const BANNER_CARD_TINT_CLASS = 'bg-[color-mix(in_srgb,var(--card)_88%,transparent)]'
+export const BANNER_CARD_SHADOW_CLASS = 'shadow-lg'
+
+/** macOS NC action buttons: quiet translucent capsules, text-only, with any
+ *  semantic tint on the LABEL (never a solid coloured fill). The `bg-[…]`
+ *  token leads because the i18n lint recognises an arbitrary-value class
+ *  cluster by its FIRST bracketed token carrying a comma or underscore. */
+export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'

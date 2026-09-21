@@ -6,8 +6,9 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
 import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
-import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
+import { dispatchMcNotification, dispatchLiveNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
+import { isChatPath } from './notificationBanner'
 import { emitThemeSound } from './themeSound'
 import { streamingFlushHoldMs } from '../lib/streamHold'
 import { registerPendingChunkDrain } from '../lib/pendingChunkDrain'
@@ -61,12 +62,8 @@ type LogCallback = ((data: { level: string; msg: string }) => void) | null
  *  of the stale-badge defect. Deliberate gestures (switchSlot,
  *  mark-as-read) need no gate — they only occur on surfaces that show the
  *  slot, under real focus. */
-const isChatSurfaceVisible = (): boolean => {
-  if (typeof window === 'undefined') return false
-  const path = window.location.pathname
-  return path === '/' || path === '/chat' || path.startsWith('/chat/')
-    || path.startsWith('/popout/chat') || path.startsWith('/embed/chat')
-}
+const isChatSurfaceVisible = (): boolean =>
+  typeof window !== 'undefined' && isChatPath(window.location.pathname)
 /** True when *slot* is the thread this window is displaying: the chat
  *  surfaces' `chat.activeSlot`, or the thread a non-chat surface (the Crew
  *  Members page) registered in `viewedThread`. The unread-marker's gate: a
@@ -1626,6 +1623,15 @@ export function useWebSocket() {
             if (!n.silenced && n.priority !== 'passive') {
               dispatchMcNotification(n.kind)
             }
+            // The in-app banner hears LIVE arrivals only. A reconnect catch-up
+            // replays every frame missed while the socket was down, and those
+            // notes are already in the bell (the reconnect refetch lands them);
+            // bannering them would re-announce history as news — the same
+            // suppression the turn-done chime applies via `reconnectingRef`.
+            // The boot snapshot never reaches here at all (it arrives through
+            // `fetchNotifications`, not this frame), so mount replay is
+            // excluded by construction.
+            if (!reconnectingRef.current) dispatchLiveNotification(n)
             break
           }
           case 'panel_published': {

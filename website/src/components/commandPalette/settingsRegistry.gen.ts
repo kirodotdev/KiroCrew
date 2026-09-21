@@ -1681,6 +1681,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "When the agent proactively messages you outside a chat"
   },
   {
+    "id": "notifications.show-a-banner-for-new-notifications",
+    "label": "Show a banner for new notifications",
+    "labelKey": "pages.settings.notificationsPanel.show_banner_for_new_notifications",
+    "description": "A card slides in under the top bar when a notification arrives, then tucks into the bell.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "notifications.sound-category-skills",
     "labelKey": "pages.settings.notificationsPanel.category_skills",
     "tab": "notifications",

@@ -65,6 +65,12 @@ export function useNativeNotification(botName: string, avatar: string) {
             /* unsupported platform */
           }
         } else if (Notification.permission === 'default') {
+          // Best-effort only: browsers refuse a prompt with no user gesture
+          // behind it, and this fires from an effect. The two places that ask
+          // FROM a gesture are Settings › Notifications ("Allow system
+          // notifications", `SystemNotificationsRow`) and the bell popover's
+          // hint row (`NotificationPermissionHint`), both through
+          // `useNotificationPermission().request`.
           Notification.requestPermission()
         }
       }

@@ -7065,6 +7065,15 @@
         "unknown_date": "未知日期",
         "yesterday": "昨天"
       },
+      "notificationBanner": {
+        "dismiss_notification": "关闭通知",
+        "open_notification": "打开通知：{{title}}",
+        "review_action": "查看",
+        "more_in_inbox_count": "收件箱中还有 {{count}} 条",
+        "more_count": "再显示 {{count}} 条",
+        "mark_read_failed": "无法标记为已读。请重试该操作。",
+        "show_more_notifications_count_other": "显示另外 {{count}} 条通知"
+      },
       "notificationDetailPanel": {
         "approve": "批准",
         "close": "关闭",
@@ -7105,6 +7114,12 @@
         "show_less": "收起",
         "show_muted_count": "显示已静音（{{count}}）",
         "try_a_different_search": "换个搜索词试试"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "离开时也能收到提醒",
+        "allow": "允许",
+        "not_now": "暂不",
+        "save_failed": "无法保存。请重试。"
       }
     },
     "onboardingChapterShell": {
@@ -13914,7 +13929,14 @@
         "use_default": "使用默认",
         "volume": "音量",
         "preset_pulse": "脉冲",
-        "failed_to_save_channel_setting": "无法保存渠道设置。已恢复为之前的值。"
+        "failed_to_save_channel_setting": "无法保存渠道设置。已恢复为之前的值。",
+        "system_notifications": "系统通知",
+        "system_notifications_description": "即使此窗口在后台，也在桌面上显示通知。",
+        "system_notifications_allowed": "已允许",
+        "allow_system_notifications": "允许系统通知",
+        "system_notifications_blocked": "已被浏览器阻止。请在该网站的权限设置中重新开启。",
+        "show_banner_for_new_notifications": "新通知显示横幅",
+        "show_banner_for_new_notifications_description": "通知到达时，一张卡片会从顶栏下方滑入，随后收进铃铛。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

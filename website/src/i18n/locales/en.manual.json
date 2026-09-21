@@ -2522,6 +2522,16 @@
         "kind_task_runner": "Task Runner",
         "kind_webhook": "Webhook"
       },
+      "notificationBanner": {
+        "dismiss_notification": "Dismiss notification",
+        "open_notification": "Open notification: {{title}}",
+        "review_action": "Review",
+        "more_in_inbox_count": "+{{count}} more in your inbox",
+        "more_count": "Show {{count}} more",
+        "mark_read_failed": "Couldn't mark this as read. Try the action again.",
+        "show_more_notifications_count_one": "Show {{count}} more notification",
+        "show_more_notifications_count_other": "Show {{count}} more notifications"
+      },
       "notificationFeed": {
         "activity_will_appear_here": "Activity will appear here",
         "expand_grouped_notifications": "Expand {{count}} grouped notifications: {{title}}",
@@ -2530,6 +2540,12 @@
         "show_less": "Show less",
         "show_muted_count": "Show muted ({{count}})",
         "try_a_different_search": "Try a different search"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "Get alerted when you're away",
+        "allow": "Allow",
+        "not_now": "Not now",
+        "save_failed": "Couldn't save this. Try again."
       }
     },
     "onboardingFlow": {
@@ -6023,7 +6039,14 @@
         "priority_for": "Priority for {{name}}",
         "use_default": "Use default",
         "test_sound": "Test sound",
-        "failed_to_save_channel_setting": "Failed to save the channel setting. The previous value was restored."
+        "failed_to_save_channel_setting": "Failed to save the channel setting. The previous value was restored.",
+        "system_notifications": "System notifications",
+        "system_notifications_description": "Show notifications on your desktop even when this window is in the background.",
+        "system_notifications_allowed": "Allowed",
+        "allow_system_notifications": "Allow system notifications",
+        "system_notifications_blocked": "Blocked in your browser. Turn it back on in the site's permission settings.",
+        "show_banner_for_new_notifications": "Show a banner for new notifications",
+        "show_banner_for_new_notifications_description": "A card slides in under the top bar when a notification arrives, then tucks into the bell."
       },
       "securityPanel": {
         "all_allowed": "All allowed",

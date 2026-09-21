@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Lock, MonitorCog, Blocks } from 'lucide-react'
+import { Lock, MonitorCog, Blocks, Check } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
 import { Toggle } from '../../components/ui'
@@ -12,6 +12,8 @@ import {
   loadSoundSettings, saveSoundSettings, playPreset, presetForKind,
 } from '../../hooks/useNotificationSound'
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
+import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
+import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
@@ -247,9 +249,43 @@ function ChannelsSection() {
   )
 }
 
+/**
+ * The OS-notification permission as one settings row. Three states, one
+ * action: `default` offers the button (the click is the browser's required
+ * user gesture), `granted` confirms, `denied` says where the browser keeps the
+ * switch — this page cannot flip it, so it offers no button that would fail.
+ * Unmounted entirely where the platform has no `Notification` at all.
+ */
+function SystemNotificationsRow() {
+  const { permission, request } = useNotificationPermission()
+  if (permission === 'unsupported') return null
+  const label = i18nT('pages.settings.notificationsPanel.system_notifications')
+  return (
+    <div data-setting-label={label} data-testid="system-notifications-row" className="flex items-center justify-between gap-4 py-1.5">
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] font-semibold text-text">{label}</div>
+        <div className="text-[12px] text-muted mt-0.5">
+          {permission === 'denied'
+            ? i18nT('pages.settings.notificationsPanel.system_notifications_blocked')
+            : i18nT('pages.settings.notificationsPanel.system_notifications_description')}
+        </div>
+      </div>
+      {permission === 'granted' && (
+        <span className="flex items-center gap-1 text-[12px] text-muted shrink-0"><Check className="lucide-inline text-ok" /> {i18nT('pages.settings.notificationsPanel.system_notifications_allowed')}</span>
+      )}
+      {permission === 'default' && (
+        <button type="button" className={TEST_BTN_CLASS} onClick={() => { void request() }}>
+          {i18nT('pages.settings.notificationsPanel.allow_system_notifications')}
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function NotificationsPanel() {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
+  const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
 
   // Cross-window sync: a settings write in ANOTHER tab (or the running session's
   // own useNotificationSound reacting to one) fires a DOM `storage` event here.
@@ -322,10 +358,19 @@ export function NotificationsPanel() {
       <ChannelsSection />
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.desktop_alerts')}>
         <SettingsCard>
+          <SystemNotificationsRow />
+          {/* Adopted into local state only when the write lands, so the switch
+              never shows a value that vanishes on reload. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.notificationsPanel.show_banner_for_new_notifications')}
+            description={i18nT('pages.settings.notificationsPanel.show_banner_for_new_notifications_description')}
+            checked={bannerEnabled}
+            onChange={v => { if (saveBannerEnabled(v)) setBannerEnabled(v) }}
+          />
           {/* Writing through `saveChatCompleteNotify` rather than `safeSetItem`
-              is what makes the toggle work at all: enabling it is the user
-              gesture the OS permission prompt needs, and nothing else on this
-              page would ever ask for it. */}
+              is what makes the toggle work at all: enabling it is a user
+              gesture the OS permission prompt accepts, alongside the explicit
+              "Allow" row above. */}
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes')}
             description={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}

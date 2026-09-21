@@ -7168,6 +7168,16 @@
         "unknown_date": "অজানা তারিখ",
         "yesterday": "গতকাল"
       },
+      "notificationBanner": {
+        "dismiss_notification": "বিজ্ঞপ্তি সরাও",
+        "open_notification": "বিজ্ঞপ্তি খোলো: {{title}}",
+        "review_action": "দেখো",
+        "more_in_inbox_count": "ইনবক্সে আরও {{count}}টি",
+        "more_count": "আরও {{count}}টি দেখাও",
+        "mark_read_failed": "পঠিত হিসেবে চিহ্নিত করা যায়নি। কাজটি আবার করো।",
+        "show_more_notifications_count_one": "আরও {{count}}টি বিজ্ঞপ্তি দেখাও",
+        "show_more_notifications_count_other": "আরও {{count}}টি বিজ্ঞপ্তি দেখাও"
+      },
       "notificationDetailPanel": {
         "approve": "অনুমোদন করুন",
         "close": "বন্ধ করুন",
@@ -7208,6 +7218,12 @@
         "show_less": "কম দেখাও",
         "show_muted_count": "মিউট করা দেখাও ({{count}})",
         "try_a_different_search": "অন্য কিছু দিয়ে খুঁজে দেখো"
+      },
+      "notificationPermissionHint": {
+        "get_alerted_when_you_re_away": "দূরে থাকলেও সতর্কবার্তা পাও",
+        "allow": "অনুমতি দাও",
+        "not_now": "এখন না",
+        "save_failed": "সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।"
       }
     },
     "onboardingChapterShell": {
@@ -14101,7 +14117,14 @@
         "use_default": "ডিফল্ট ব্যবহার করো",
         "volume": "ভলিউম",
         "preset_pulse": "পালস",
-        "failed_to_save_channel_setting": "চ্যানেল সেটিং সংরক্ষণ করা যায়নি। আগের মান ফিরিয়ে আনা হয়েছে।"
+        "failed_to_save_channel_setting": "চ্যানেল সেটিং সংরক্ষণ করা যায়নি। আগের মান ফিরিয়ে আনা হয়েছে।",
+        "system_notifications": "সিস্টেম বিজ্ঞপ্তি",
+        "system_notifications_description": "এই উইন্ডো পেছনে থাকলেও ডেস্কটপে বিজ্ঞপ্তি দেখাও।",
+        "system_notifications_allowed": "অনুমতি দেওয়া আছে",
+        "allow_system_notifications": "সিস্টেম বিজ্ঞপ্তির অনুমতি দাও",
+        "system_notifications_blocked": "তোমার ব্রাউজার এটি আটকে দিয়েছে। সাইটের অনুমতি সেটিংসে আবার চালু করো।",
+        "show_banner_for_new_notifications": "নতুন বিজ্ঞপ্তির জন্য ব্যানার দেখাও",
+        "show_banner_for_new_notifications_description": "বিজ্ঞপ্তি এলে একটি কার্ড উপরের বারের নিচ থেকে ঢুকে আসে, তারপর ঘণ্টায় গুটিয়ে যায়।"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",
