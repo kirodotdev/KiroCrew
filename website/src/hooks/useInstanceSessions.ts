@@ -73,6 +73,7 @@
 import { useCallback, useMemo } from 'react'
 import { useQueries, type UseQueryResult } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
+import { hasDashboardPane } from '../utils/remoteCrew'
 
 /** The fields this hook reads off a peer slot; everything else is ignored.
  *  Types mirror `slot_projection.py` — verified against the serializer, not
@@ -180,8 +181,11 @@ const EMPTY: InstanceSessions = { rows: [], failed: [], loading: false }
  *  means the chain never sees it and the next VALID rung wins. */
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
 
-function isConnected(inst: InstanceView): boolean {
-  return inst.status?.state === 'connected'
+/** Crews whose chat slots can be listed: connected, and running a dashboard
+ *  behind the forward. A fargate crew is connected without one, so asking it
+ *  for slots would only ever report it as unreachable. */
+function listsSessions(inst: InstanceView): boolean {
+  return inst.status?.state === 'connected' && hasDashboardPane(inst)
 }
 
 /**
@@ -208,7 +212,7 @@ export function useInstanceSessions(
   instancesUnanswered = false,
 ): InstanceSessions {
   const connected = useMemo(
-    () => (enabled ? instances.filter(isConnected) : []),
+    () => (enabled ? instances.filter(listsSessions) : []),
     [enabled, instances],
   )
 

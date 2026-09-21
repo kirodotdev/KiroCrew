@@ -3,8 +3,11 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
+import { copyToClipboard } from '../utils/clipboard'
 import { consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
+
+vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
 vi.mock('../api/client', () => {
   class ApiError extends Error {
@@ -134,6 +137,7 @@ const AWS_EC2_ROW = {
 // test that seeds them would otherwise dictate what later tests probe.
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(copyToClipboard).mockResolvedValue(true)
   localStorage.clear()
   sessionStorage.clear()
   __resetErrorJournalForTests()
@@ -269,6 +273,139 @@ describe('RemoteCrewPanel', () => {
     await u.click(screen.getByRole('menuitem', { name: /Remove gpu-box/i }))
     expect(await screen.findByText(/keeps running and billing/i)).toBeInTheDocument()
     expect(api.removeInstance).not.toHaveBeenCalled()
+  })
+
+  it('a connected fargate crew shows its chat API URL to copy, and nothing to open', async () => {
+    // RULING: a fargate crew has no dashboard and no token. The one thing its
+    // connect yields is the chat API's loopback URL, so the row offers that to
+    // copy and offers no button that would point a browser at a JSON endpoint.
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f1',
+      name: 'fargate-crew',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      aws_region: 'us-west-2',
+      remote_port: 8080,
+      local_port: 7790,
+      was_connected: true,
+      status: {
+        instance_id: 'f1',
+        state: 'connected' as const,
+        local_port: 7790,
+        turn_url: 'http://127.0.0.1:7790/v1/chat/completions',
+      },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const field = await screen.findByTestId('turn-url')
+    expect(within(field).getByText('http://127.0.0.1:7790/v1/chat/completions')).toBeInTheDocument()
+    expect(within(field).getByRole('button', { name: 'Copy the chat API URL of fargate-crew' })).toBeInTheDocument()
+    // The row names the method and the ECS target it forwards to. The target
+    // is shortened so the tail that tells two tasks in one cluster apart
+    // survives the row's right-side truncation; the full target is on hover.
+    expect(screen.getByText('Fargate')).toBeInTheDocument()
+    const shownTarget = screen.getByText('ecs:crew_01234567\u2026-0123456789')
+    expect(shownTarget).toHaveAttribute('title', fargate.ssm_target)
+    // No open / dashboard affordance anywhere on the ROW (the page has other
+    // buttons whose copy mentions opening the app; the row is what RULING 2
+    // constrains).
+    const row = field.closest('[data-crew-id="f1"]') as HTMLElement
+    expect(row).not.toBeNull()
+    expect(within(row).queryByRole('button', { name: /open/i })).not.toBeInTheDocument()
+    expect(within(row).queryByRole('link')).not.toBeInTheDocument()
+    // Disconnect is the primary action of a connected row, fargate included.
+    expect(within(row).getByRole('button', { name: /Disconnect/i })).toBeInTheDocument()
+    // A fargate row IS an AWS resource, so its caption states that plainly and
+    // never hedges the way an unidentified SSM row does.
+    expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
+  })
+
+  it('shows a failed turn URL copy and clears it after a successful retry', async () => {
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f-copy',
+      name: 'copy-crew',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      remote_port: 8080,
+      local_port: 7790,
+      was_connected: true,
+      status: {
+        instance_id: 'f-copy',
+        state: 'connected' as const,
+        local_port: 7790,
+        turn_url: 'http://127.0.0.1:7790/v1/chat/completions',
+      },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const copyButton = await screen.findByRole('button', {
+      name: 'Copy the chat API URL of copy-crew',
+    })
+    await u.click(copyButton)
+    expect(await screen.findByTestId('turn-url-copy-error')).toBeInTheDocument()
+
+    await u.click(copyButton)
+    await waitFor(() => expect(screen.queryByTestId('turn-url-copy-error')).not.toBeInTheDocument())
+  })
+
+  it('a fargate crew that is not connected shows no chat API URL', async () => {
+    // The URL is a property of the open forward, not of the record: with the
+    // tunnel down there is no port behind it, so a stale URL would invite a
+    // call that can only fail.
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f2',
+      name: 'fargate-idle',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      remote_port: 8080,
+      status: { instance_id: 'f2', state: 'disconnected' as const },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    expect(await screen.findByText('fargate-idle')).toBeInTheDocument()
+    expect(screen.queryByTestId('turn-url')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Connect$/i })).toBeInTheDocument()
+  })
+
+  it('a fargate row states it is an AWS task instead of hedging about AWS resources', async () => {
+    // A fargate record IS an AWS resource by definition, so the caption names
+    // it as a task and drops the unverified-cloud hedge, while keeping the same
+    // Remove confirm step. Holds whether or not the forward is up; an idle row
+    // is the cheapest fixture that reaches the caption.
+    const fargate = {
+      ...MANUAL_INSTANCE,
+      id: 'f3',
+      name: 'fargate-note',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      remote_port: 8080,
+      status: { instance_id: 'f3', state: 'disconnected' as const },
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [fargate] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const name = await screen.findByText('fargate-note')
+    const row = name.closest('[data-crew-id="f3"]') as HTMLElement
+    expect(row).not.toBeNull()
+    expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
   })
 
   it('still lists the crews when the gateway cannot do cloud provisioning at all', async () => {

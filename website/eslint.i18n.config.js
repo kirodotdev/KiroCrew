@@ -682,6 +682,14 @@ export default [
               // the moment a label contains a colon, which several already do
               // ("Missing:", "Preset name:").
               '^cc:[A-Za-z0-9:._-]+$',
+              // An ECS Exec target example used as a form placeholder, e.g.
+              // `ecs:my-cluster_taskid_runtimeid`: a module-level ALL-CAPS constant,
+              // which is where `i18n-strict` looks inside, and the camelCase
+              // pattern cannot reach it because it forbids the colon.
+              //
+              // Anchored on the `ecs:` prefix, no spaces, and no second colon (the
+              // target shape has exactly one), so prose cannot match.
+              '^ecs:[A-Za-z0-9_.-]+$',
               '^[\\w.-]+/[\\w./-]*$',
               // EVERY PATTERN IN THIS FILE IS MATCHED FULL-STRING, so a prefix
               // pattern MUST spell out its own tail. `eslint-plugin-i18next` compiles

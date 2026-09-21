@@ -30,6 +30,7 @@ import { api, ApiError, type InstanceView } from '../api/client'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
+import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
@@ -48,9 +49,11 @@ import { i18nT } from '../i18n/t'
 import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/format'
 /**
  * Crews that get a switcher entry: sticky connect intent (`was_connected`,
- * cleared only on an explicit disconnect) OR currently connected OR warm.
+ * cleared only on an explicit disconnect) OR currently connected OR warm --
+ * and only crews with a dashboard to switch to (`hasDashboardPane`): a
+ * fargate crew's card carries its turn URL instead of a pane.
  * Exported as the single source of truth so App.tsx can decide whether the bar
- * is visible WITHOUT duplicating the rule — the bar's visibility drives the
+ * is visible WITHOUT duplicating the rule -- the bar's visibility drives the
  * macOS traffic-light clearance (when shown, the bar is the topmost strip the
  * native lights sit over, so the clearance moves off the header onto the bar).
  */
@@ -59,7 +62,7 @@ export function visibleInstanceTabs(
   warm: Record<string, WarmConn>,
 ): InstanceView[] {
   return instances.filter(
-    i => i.was_connected || i.status?.state === 'connected' || !!warm[i.id],
+    i => hasDashboardPane(i) && (i.was_connected || i.status?.state === 'connected' || !!warm[i.id]),
   )
 }
 

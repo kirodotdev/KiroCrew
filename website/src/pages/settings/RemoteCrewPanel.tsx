@@ -52,7 +52,7 @@ import {
   type CloudCoords,
   type RemoteProvisioner,
 } from '../../api/client'
-import { BUILTIN_PROVISIONER_ID, WARM_SET_CAP_AUTO_CEILING } from '../../utils/remoteCrew'
+import { BUILTIN_PROVISIONER_ID, WARM_SET_CAP_AUTO_CEILING, shortenEcsTarget, usesSsmTransport } from '../../utils/remoteCrew'
 import { Card, Btn, Badge, IconButton } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import {
@@ -92,16 +92,73 @@ const IN_PROGRESS: LaunchJob['status'][] = ['pending', 'running', 'awaiting_sign
 const isInProgress = (j: LaunchJob) => IN_PROGRESS.includes(j.status)
 
 const connectionTypeLabel = (inst: InstanceView): string =>
-  inst.connection_method === 'ssm'
-    ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
-    : i18nT('pages.settings.remoteCrewPanel.type_ssh')
+  inst.connection_method === 'fargate'
+    ? i18nT('pages.settings.remoteCrewPanel.type_fargate')
+    : inst.connection_method === 'ssm'
+      ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
+      : i18nT('pages.settings.remoteCrewPanel.type_ssh')
 
 // The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
 // not know; the hover title spells out what each one means.
 const connectionTypeHint = (inst: InstanceView): string =>
-  inst.connection_method === 'ssm'
-    ? i18nT('pages.settings.remoteCrewPanel.transport_hint_ssm')
-    : i18nT('pages.settings.remoteCrewPanel.transport_hint_ssh')
+  inst.connection_method === 'fargate'
+    ? i18nT('pages.settings.remoteCrewPanel.transport_hint_fargate')
+    : inst.connection_method === 'ssm'
+      ? i18nT('pages.settings.remoteCrewPanel.transport_hint_ssm')
+      : i18nT('pages.settings.remoteCrewPanel.transport_hint_ssh')
+
+/**
+ * What a connected fargate crew offers instead of a dashboard: the loopback
+ * URL of its turn API through the open forward, with a copy control. There
+ * is deliberately no Open button. The URL answers JSON, so a browser tab on
+ * it is a wall of text, and a button that promised a dashboard would be the
+ * defect this field replaces.
+ */
+function TurnUrlField({ url, crewName }: { url: string; crewName: string }) {
+  const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
+  const label = i18nT('pages.settings.remoteCrewPanel.copy_turn_url', { name: crewName })
+  const handleCopy = async () => {
+    if (await copyToClipboard(url)) {
+      setCopyFailed(false)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } else {
+      setCopyFailed(true)
+    }
+  }
+  return (
+    <div className="mt-2" data-testid="turn-url">
+      <div className="text-[11px] uppercase tracking-[.08em] text-muted mb-1">
+        {i18nT('pages.settings.remoteCrewPanel.turn_api')}
+      </div>
+      <div className="flex items-center gap-2 bg-bg-elevated border border-border rounded-md pl-3 pr-1.5 py-1.5">
+        <code className="flex-1 min-w-0 font-mono text-[12px] overflow-x-auto whitespace-nowrap scrollbar-none text-card-fg">
+          {url}
+        </code>
+        <IconButton aria-label={label} onClick={handleCopy} title={label}>
+          {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
+        </IconButton>
+      </div>
+      {/* No hand-off: the remedy ("select the text and copy it manually")
+          is complete on its own, and the URL stays on screen in the code
+          element above. An agent cannot supply a clipboard the browser
+          refused; the hand-off navigates to chat and unmounts the row that
+          holds the URL. */}
+      {copyFailed ? (
+        <ErrorNotice
+          variant="inline"
+          className="mt-1.5"
+          message={i18nT('pages.settings.remoteCrewPanel.copy_failed')}
+          testId="turn-url-copy-error"
+        />
+      ) : null}
+      <p className="text-[12px] text-muted mt-1">
+        {i18nT('pages.settings.remoteCrewPanel.turn_url_note')}
+      </p>
+    </div>
+  )
+}
 
 /** Remembered across navigation — see the state declarations for why. */
 const CLOUD_PROFILE_KEY = 'mc-cloud-profile'
@@ -829,13 +886,16 @@ function CrewRow({
   const unverifiedCloud =
     !isCloud &&
     (inst.provisioner_id === BUILTIN_PROVISIONER_ID ||
-      (inst.connection_method === 'ssm' && !!inst.ssm_target))
+      (usesSsmTransport(inst) && !!inst.ssm_target))
   // A stop/start this row asked for is still in flight.
   const lifecycleBusy = busy === `stop:${cloudTag}` || busy === `start:${cloudTag}`
   // States that occupy the row's second control slot with an inline button.
   const transient =
     deleting || lifecycleBusy || (isCloud && confirmDelete) || (!isCloud && confirmRemove)
-  const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+  const target = usesSsmTransport(inst) ? inst.ssm_target : inst.ssh_host
+  // A fargate crew has no dashboard; while its forward is up, the card shows
+  // the turn URL the status carries instead of offering something to open.
+  const turnUrl = inst.connection_method === 'fargate' && connected ? inst.status?.turn_url || '' : ''
   return (
     <div className="py-2.5 border-b border-border last:border-b-0" data-crew-id={inst.id}>
     <div className="flex items-start justify-between gap-3">
@@ -860,8 +920,13 @@ function CrewRow({
             <Badge variant="muted" className="mr-1" title={connectionTypeHint(inst)} aria-label={connectionTypeHint(inst)}>
               {connectionTypeLabel(inst)}
             </Badge>
-            {target}
-            {inst.connection_method === 'ssm' && inst.aws_region ? ` (${inst.aws_region})` : ''} {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port}
+            {inst.connection_method === 'fargate'
+              // Two tasks in one cluster differ only at the far right of the
+              // ECS target, which the row's truncation cuts off; the short form
+              // keeps that tail visible and the title carries the full target.
+              ? <span title={target}>{shortenEcsTarget(target)}</span>
+              : target}
+            {usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
             <StatusBadge status={inst.status} />
@@ -879,6 +944,11 @@ function CrewRow({
                 // launched by the EC2 launcher — the caption must agree with the
                 // badge, not hedge about whether AWS resources exist.
                 ? i18nT('pages.settings.remoteCrewPanel.stamped_ec2_note')
+                // A fargate row IS an AWS resource by definition, so it must not
+                // hedge like unverifiedCloud does; it keeps the same Remove confirm
+                // step but says plainly that the task keeps running after Remove.
+                : inst.connection_method === 'fargate'
+                ? i18nT('pages.settings.remoteCrewPanel.fargate_task_note')
                 : unverifiedCloud
                   ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
                   : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`}
@@ -1032,6 +1102,7 @@ function CrewRow({
         )}
       </div>
     </div>
+    {turnUrl && <TurnUrlField url={turnUrl} crewName={inst.name} />}
     {/* BELOW the row header, and naming its crew. Rendered above the name it read
         as a page-level warning banner about the whole panel, and with several rows
         it attributed the sign-in to whichever crew the reader was looking at. */}
@@ -1751,7 +1822,7 @@ export function RemoteCrewPanel() {
       setDiagReport(reportInstanceFailure({
         id,
         name: inst?.name || id,
-        transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
+        transport: inst && usesSsmTransport(inst) ? 'ssm' : 'ssh',
         status: benign ? withoutDiagnosis : st,
         stage: 'connect',
         fallbackMessage: kind === 'warn' ? reason || '' : '',

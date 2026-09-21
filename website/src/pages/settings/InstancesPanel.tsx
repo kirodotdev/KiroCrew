@@ -27,7 +27,7 @@ import {
   Power,
 } from 'lucide-react'
 import { api, ApiError, type InstanceView, type InstanceTunnelStatus } from '../../api/client'
-import { WARM_SET_CAP_AUTO_CEILING } from '../../utils/remoteCrew'
+import { WARM_SET_CAP_AUTO_CEILING, usesSsmTransport } from '../../utils/remoteCrew'
 import { Card, Btn } from '../../components/ui'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewAddForm } from '../../store/instancesSlice'
@@ -138,7 +138,9 @@ export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
         </Btn>
       </div>
       <p className="mt-2 text-[12px] text-muted">
-        {i18nT('pages.settings.instancesPanel.the_gateway_opens_an_ssh_tunnel_and_mints_a_shor')}
+        {form.isFargate
+          ? i18nT('pages.settings.remoteCrewPanel.transport_hint_fargate')
+          : i18nT('pages.settings.instancesPanel.the_gateway_opens_an_ssh_tunnel_and_mints_a_shor')}
       </p>
     </Card>
   )
@@ -168,10 +170,10 @@ function InstanceRow({
         <div className="text-text text-sm font-medium truncate">{inst.name}</div>
         <div className="text-[12px] text-muted truncate">
           <span className="uppercase tracking-wide text-muted-strong">
-            {inst.connection_method === 'ssm' ? 'SSM' : 'SSH'}
+            {inst.connection_method === 'fargate' ? 'FARGATE' : inst.connection_method === 'ssm' ? 'SSM' : 'SSH'}
           </span>{' '}
-          {inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host}
-          {inst.connection_method === 'ssm' && inst.aws_region ? ` (${inst.aws_region})` : ''}{' '}
+          {usesSsmTransport(inst) ? inst.ssm_target : inst.ssh_host}
+          {usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''}{' '}
           {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port} {i18nT('pages.settings.instancesPanel.ttl')} {inst.ttl}
           {typeof ttl === 'number' ? ' ' + i18nT('pages.settings.instancesPanel.token_left', { time: humanizeSecs(ttl) }) : ''}
         </div>

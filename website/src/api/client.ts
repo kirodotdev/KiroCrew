@@ -1881,6 +1881,9 @@ export interface InstanceTunnelStatus {
   error?: string
   connected_at?: number
   token_ttl_remaining?: number
+  /** Fargate only: the loopback URL of the crew's turn API through the open
+   *  forward. Present only while connected; never accompanied by a token. */
+  turn_url?: string
   diagnosis?: {
     code:
       | 'ok'
@@ -1911,13 +1914,16 @@ export interface InstanceView {
   local_port: number
   ttl: string
   remote_bin: string
-  /** Transport used to reach the instance. Older records default to 'ssh'. */
-  connection_method: 'ssh' | 'ssm'
-  /** SSM-only: EC2 instance id (i-...) or SSM managed-instance id (mi-...). */
+  /** Transport used to reach the instance. Older records default to 'ssh'.
+   *  'fargate' forwards SSM to an ECS task that serves a turn API and no
+   *  dashboard, so its status carries `turn_url` and never a token. */
+  connection_method: 'ssh' | 'ssm' | 'fargate'
+  /** SSM: EC2 instance id (i-...) or SSM managed-instance id (mi-...).
+   *  Fargate: ECS task target (ecs:<cluster>_<task-id>_<runtime-id>). */
   ssm_target: string
-  /** SSM-only: named AWS profile ('' = default credential chain). */
+  /** SSM/fargate: named AWS profile ('' = default credential chain). */
   aws_profile: string
-  /** SSM-only: AWS region ('' = profile/environment default). */
+  /** SSM/fargate: AWS region ('' = profile/environment default). */
   aws_region: string
   ssm_run_as: string
   /** Provisioner that created this crew, when it came from a launcher. */
@@ -1934,8 +1940,9 @@ export interface AddInstanceBody {
   ttl?: string
   remote_bin?: string
   /** Transport to reach the instance. Defaults to 'ssh' when omitted. */
-  connection_method?: 'ssh' | 'ssm'
-  /** Required when connection_method is 'ssm': i-... / mi-... instance id. */
+  connection_method?: 'ssh' | 'ssm' | 'fargate'
+  /** Required when connection_method is 'ssm' (i-... / mi-... instance id)
+   *  or 'fargate' (ecs:<cluster>_<task-id>_<runtime-id> task target). */
   ssm_target?: string
   aws_profile?: string
   aws_region?: string

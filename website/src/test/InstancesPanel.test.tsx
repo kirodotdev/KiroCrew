@@ -179,6 +179,76 @@ describe('InstancesPanel', () => {
     expect(screen.queryByLabelText('SSH host / alias')).not.toBeInTheDocument()
   })
 
+  it('switching to AWS Fargate asks for an ECS task target and drops the fields a task cannot use', async () => {
+    // A Fargate task has no remote user, mints no token, and runs no kirocrew
+    // binary, so those three fields would be inputs the backend ignores. The
+    // port default follows the transport: the task's front proxy listens on
+    // 8080, not the dashboard's 5476.
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [], warm_set_cap: 5 })
+    ;vi.mocked(api.addInstance).mockResolvedValue({})
+    const u = userEvent.setup()
+    renderWithProviders(<InstancesPanel />)
+
+    const trigger = await screen.findByRole('combobox', { name: 'Connection method' })
+    expect(screen.getByLabelText('Remote port')).toHaveValue('5476')
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('option', { name: 'AWS Fargate task (chat API)' }))
+
+    expect(trigger).toHaveTextContent('AWS Fargate task (chat API)')
+    expect(screen.getByLabelText('ECS task target')).toBeInTheDocument()
+    expect(screen.getByLabelText('ECS task target')).toHaveAttribute('placeholder', 'ecs:my-cluster_taskid_runtimeid')
+    expect(screen.getByLabelText('Remote port')).toHaveValue('8080')
+    expect(screen.queryByLabelText('SSH host / alias')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Remote user')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Token TTL')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Remote kirocrew path/i)).not.toBeInTheDocument()
+    // The footer under the form describes the connect that will happen. A task
+    // mints nothing, so the sentence about a short-lived token gives way to the
+    // transport hint the crew card uses for the same method.
+    expect(screen.queryByText(/mints a short-lived token/)).not.toBeInTheDocument()
+    expect(screen.getByText(/serves a chat API, not a dashboard/)).toBeInTheDocument()
+
+    await u.type(screen.getByLabelText('Name'), 'Fargate crew')
+    await u.type(screen.getByLabelText('ECS task target'), 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789')
+    await u.click(screen.getByRole('button', { name: 'Add remote instance' }))
+
+    await waitFor(() => expect(api.addInstance).toHaveBeenCalledTimes(1))
+    const body = vi.mocked(api.addInstance).mock.calls[0][0] as Record<string, unknown>
+    expect(body).toEqual(
+      expect.objectContaining({
+        name: 'Fargate crew',
+        connection_method: 'fargate',
+        ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+        remote_port: 8080,
+      }),
+    )
+    // Not blanked -- absent. The backend applies its own defaults to what the
+    // form does not send, and a fargate record has no use for either.
+    expect(body).not.toHaveProperty('ssm_run_as')
+    expect(body).not.toHaveProperty('remote_bin')
+    expect(body).not.toHaveProperty('ssh_host')
+    expect(body).not.toHaveProperty('remotePortAuto')
+  })
+
+  it('preserves a manually entered remote port across a Fargate round trip', async () => {
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [], warm_set_cap: 5 })
+    const u = userEvent.setup()
+    renderWithProviders(<InstancesPanel />)
+
+    const portInput = await screen.findByLabelText('Remote port')
+    await u.clear(portInput)
+    await u.type(portInput, '8080')
+
+    const trigger = screen.getByRole('combobox', { name: 'Connection method' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('option', { name: 'AWS Fargate task (chat API)' }))
+    expect(portInput).toHaveValue('8080')
+
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('option', { name: 'SSH tunnel' }))
+    expect(portInput).toHaveValue('8080')
+  })
+
   it('formats a token lifetime down to the unit that reads naturally', () => {
     // Drives the header's "expires in …" text, so a wrong unit here is a user
     // reading the wrong deadline for a credential.
