@@ -289,8 +289,8 @@ def test_shares_transcript_compares_files_not_key_strings(tmp_path) -> None:
     replacement whose stem never resolved hold two DIFFERENT key strings for one
     transcript. A string comparison would call that "not shared" and let the archive
     stamp ``closed`` on the file the live replacement is writing — the exact harm the
-    guard exists for, and the asymmetric direction: over-reporting shared only
-    declines an archive the next close will make.
+    guard exists for. The opposite error is not benign either: over-reporting shared
+    declines an archive the replacement's own close does not make.
     """
     state = _make_state(tmp_path)
     stem = "slack_1785370133.085469"
