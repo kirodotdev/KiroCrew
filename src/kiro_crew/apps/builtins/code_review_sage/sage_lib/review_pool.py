@@ -36,8 +36,9 @@ import json
 import logging
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 # The app root holds ``sage_lib/``; put it on sys.path so ``from sage_lib import store``
 # resolves on import (mirrors the sys.path setup in sibling ``review_driver.py``).
@@ -63,6 +64,18 @@ except ImportError:  # pragma: no cover - standalone / test fallback
     EVENT_COMPLETE = "complete"  # type: ignore[assignment]
     STOP_REASON_STALE_RECOVER = "stale_recover"  # type: ignore[assignment]
     STOP_REASON_TOOL_STALL = "error: tool stall"  # type: ignore[assignment]
+
+try:
+    from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
+except ImportError:  # pragma: no cover - standalone app fallback
+
+    @contextmanager
+    def workspace_cli_settings_lock(
+        work_dir: Path, *, timeout: float = 0.0
+    ) -> Iterator[Path]:
+        raise OSError("shared workspace CLI settings lock is unavailable")
+        yield work_dir  # pragma: no cover - marks this function as a context manager
+
 
 try:  # agents dir resolver — honors KIRO_HOME so a pod reads its own specs
     from kiro_crew.config.paths import kiro_agents_dir
@@ -358,29 +371,31 @@ def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT
     hermetic. Merge-safe + idempotent; best-effort (logs and continues on error so a
     bad overlay write never breaks a review)."""
     try:
-        settings_dir = Path(work_dir) / ".kiro" / "settings"
-        settings_dir.mkdir(parents=True, exist_ok=True)
-        cli_json = settings_dir / "cli.json"
-        try:
-            existing = json.loads(cli_json.read_text(encoding="utf-8")) if cli_json.exists() else {}
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-        if not isinstance(existing, dict):
-            existing = {}
-        defaults = existing.get("chat.modelDefaults")
-        if not isinstance(defaults, dict):
-            defaults = {}
-        model_cfg = defaults.get(model)
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-        output_cfg = model_cfg.get("output_config")
-        if not isinstance(output_cfg, dict):
-            output_cfg = {}
-        output_cfg["effort"] = effort
-        model_cfg["output_config"] = output_cfg
-        defaults[model] = model_cfg
-        existing["chat.modelDefaults"] = defaults
-        cli_json.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        with workspace_cli_settings_lock(Path(work_dir)) as cli_json:
+            try:
+                existing = (
+                    json.loads(cli_json.read_text(encoding="utf-8"))
+                    if cli_json.exists()
+                    else {}
+                )
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+            if not isinstance(existing, dict):
+                existing = {}
+            defaults = existing.get("chat.modelDefaults")
+            if not isinstance(defaults, dict):
+                defaults = {}
+            model_cfg = defaults.get(model)
+            if not isinstance(model_cfg, dict):
+                model_cfg = {}
+            output_cfg = model_cfg.get("output_config")
+            if not isinstance(output_cfg, dict):
+                output_cfg = {}
+            output_cfg["effort"] = effort
+            model_cfg["output_config"] = output_cfg
+            defaults[model] = model_cfg
+            existing["chat.modelDefaults"] = defaults
+            cli_json.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     except Exception:
         logger.debug("could not write review effort overlay (work_dir=%s)", work_dir, exc_info=True)
 

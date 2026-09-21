@@ -181,3 +181,6 @@ src/kiro_crew/BUILD_VERSION
 # sdist so the image can be built from an installed copy), so without this rule a
 # ~27MB build artifact sits in a tracked path waiting for a `git add -A`.
 src/kiro_crew/apps/builtins/aws_control/crew/runtime/vendor/*.whl
+
+# Cross-process lock for workspace Kiro CLI overlay writers.
+/.kiro/settings/.kirocrew-cli-settings.lock

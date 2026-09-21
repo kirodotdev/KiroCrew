@@ -660,6 +660,74 @@ class TestEffortControl:
         provider._client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_kiro_clear_effort_keeps_the_entry_when_the_overlay_lock_is_busy(self):
+        # Nothing changed: not the file, and not the map once the entry goes
+        # back. Neither bool can say that -- both make the handler commit the
+        # cleared slot value, so the UI would read "default" over an overlay
+        # that still holds the level. None is the third outcome, which the
+        # handler answers with a retryable 409 and no commit.
+        provider = self._effort_provider(backend="", model="claude-opus-4.7")
+        provider._effort_per_model = {"claude-opus-4.7": "high"}
+        with patch("kiro_crew.providers.acp._clear_cli_overlay_effort", return_value=False):
+            ok = await provider.clear_effort()
+        assert ok is None
+        assert provider._effort_per_model["claude-opus-4.7"] == "high"
+        provider._client.send_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_kiro_clear_to_default_does_not_push_when_the_overlay_write_fails(self):
+        # Clearing to a workspace default writes the overlay and pushes live. The
+        # FILE is what a respawn reads, so a live push over a write that did not
+        # persist reports a default the next spawn replaces with the level just
+        # cleared. Nothing is pushed, the override goes back, and the third
+        # outcome tells the handler to commit nothing.
+        provider = self._effort_provider(backend="", model="claude-opus-4.7")
+        provider._effort_per_model = {"claude-opus-4.7": "high"}
+        provider._effort_defaults = {"claude-opus-4.7": "low"}
+        with patch.object(type(provider), "_apply_effort_overlay", return_value=False):
+            ok = await provider.clear_effort()
+        assert ok is None
+        assert provider._effort_per_model["claude-opus-4.7"] == "high"
+        provider._client.send_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_kiro_effort_rollback_follows_the_file_when_the_rewrite_fails(self):
+        # The live push failed, so change_effort rolls the prior level back and
+        # rewrites the overlay to match. When THAT rewrite also fails the file
+        # keeps the attempted level and construction re-seeds from it, so the map
+        # follows the file instead of reporting an undo the next spawn contradicts.
+        from kiro_crew.acp.client import AcpError
+
+        provider = self._effort_provider(backend="", model="claude-opus-4.7")
+        provider._effort_per_model = {"claude-opus-4.7": "low"}
+        provider._client.send_command = AsyncMock(side_effect=AcpError("push failed"))
+        calls = []
+
+        def _apply(self_, **kwargs):
+            calls.append(kwargs)
+            # The pre-push write persists; the rollback rewrite loses the lock.
+            return len(calls) == 1
+
+        with patch.object(type(provider), "_apply_effort_overlay", _apply):
+            with pytest.raises(AcpError):
+                await provider.change_effort("xhigh")
+        assert provider._effort_per_model["claude-opus-4.7"] == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_kiro_change_effort_does_not_push_when_the_overlay_write_fails(self):
+        # The FILE is what a respawn reads, so pushing live over a write that did
+        # not persist reports a change the next reset undoes. The override is
+        # rolled back and the caller is told, rather than the session running a
+        # level the workspace does not hold.
+        provider = self._effort_provider(backend="", model="claude-opus-4.7")
+        provider._effort_per_model = {}
+        with patch.object(type(provider), "_apply_effort_overlay", return_value=False):
+            with pytest.raises(RuntimeError, match="could not persist effort"):
+                await provider.change_effort("high")
+        assert "claude-opus-4.7" not in provider._effort_per_model
+        provider._client.send_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_claude_clear_effort_returns_false_for_reset(self):
         # claude-agent-acp has no "reset to default" config value, so clearing
         # must return False to trigger a session reset; it must NOT push.

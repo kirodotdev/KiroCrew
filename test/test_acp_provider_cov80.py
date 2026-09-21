@@ -211,7 +211,10 @@ class TestClearEffort:
         provider._client.send_command = AsyncMock()
         monkeypatch.setattr(acp_mod, "model_supports_effort", lambda _m: True)
         monkeypatch.setattr(provider, "_resolve_effort", lambda: "high")
-        monkeypatch.setattr(provider, "_apply_effort_overlay", lambda: None)
+        # Signature-compatible with the real method, which takes a lock ceiling
+        # and reports whether the write persisted: clearing to a workspace
+        # default pushes live only once the overlay landed.
+        monkeypatch.setattr(provider, "_apply_effort_overlay", lambda **_kw: True)
 
         assert await provider.clear_effort() is True
         provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "high"})

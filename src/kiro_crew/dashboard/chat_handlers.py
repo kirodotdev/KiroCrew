@@ -8880,7 +8880,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
         provider = state.sessions.get_provider(session_key)
-        _updated_live = False
+        _updated_live: bool | None = False
         if isinstance(provider, AcpProvider) and provider.supports_effort():
             # Guard against racing the in-flight prompt read loop: a live
             # change_effort issues session/set_config_option and its response wait
@@ -8916,6 +8916,23 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # user switches to a capable model, but do not touch the live session.
             _updated_live = True
             logger.info("Slot %s effort persisted (model not effort-capable)", name)
+
+        if _updated_live is None:
+            # clear_effort's third outcome: NOTHING changed -- not the workspace
+            # overlay, not the provider's map. A bool cannot carry that here,
+            # because both of its values commit the new slot value below (the
+            # reset branch at the `slot.reasoning_effort = effort` before its
+            # teardown, and the success path at the one before the final 200),
+            # so either would show "default" while the overlay still holds the
+            # old level and a respawn re-applies it. Commit nothing, reset
+            # nothing, and let the caller retry once the other writer is done.
+            return web.json_response(
+                {
+                    "error": "the workspace effort overlay is locked by another writer",
+                    "code": "effort_overlay_busy",
+                },
+                status=409,
+            )
 
         if effective_session_key(slot) != session_key and _updated_live:
             # The slot was bound to a different session while change_effort /
