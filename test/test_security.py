@@ -5256,10 +5256,12 @@ class TestHomeDirTargetsCache:
         """Within the TTL the expensive builder runs once, not per call.
 
         The cache compares ``time.monotonic()`` against a stored deadline
-        (``_home_dir_targets`` reads the clock exactly once per call), so the
+        (``_home_dir_targets`` reads the clock once to test the deadline, and
+        once more after a build to measure what the build cost), so the
         clock is FROZEN here rather than raced: with a constant monotonic
         source, "every call is inside the TTL" is a fact of the test instead
-        of a bet that the loop outruns ``_HOME_TARGETS_TTL_SECS`` (0.1s) on
+        of a bet that the loop outruns the expiry floor
+        (``_home_targets_ttl(0.0)``, 0.1s) on
         the slowest runner in the matrix. That removes the only
         platform-dependent input — before this, the assertion held only while
         50 iterations plus one ~1.4ms rebuild finished inside 100ms, which the
@@ -5291,7 +5293,11 @@ class TestHomeDirTargetsCache:
         assert len(calls) == 1
 
         # Guard: advancing the frozen clock past the TTL MUST rebuild.
-        clock["now"] += security._HOME_TARGETS_TTL_SECS + 0.01
+        # Advance past the EFFECTIVE expiry, not past the floor constant. Under a
+        # frozen clock a build measures as taking zero time, so the adaptive law
+        # returns its floor -- but reading it through the law is what keeps this
+        # jump correct if the floor is ever reached differently.
+        clock["now"] += security._home_targets_ttl(0.0) + 0.01
         security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
         assert len(calls) == 2
 
@@ -5424,6 +5430,569 @@ class TestHomeDirTargetsCache:
             monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / f"h{i}"))
             security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
         assert len(security._home_targets_cache) <= 33
+
+
+class TestAdaptiveHomeTargetsExpiry:
+    """The target cache's expiry tracks what the rebuild it expires COST.
+
+    The rebuild is ~130 ``realpath`` calls and each syscall hands
+    the GIL over, so its cost is set by CPU contention rather than by the disk:
+    measured on a 64-core Linux host with one local xfs mount, 2ms on an idle
+    interpreter and 581ms, 399ms, 3859ms, 7456ms with 1, 2, 4 and 8 sibling
+    threads running pure Python. A FIXED 0.1s expiry does not move with that, so
+    the share of the wall clock spent rebuilding climbs with load until the
+    rebuild misses its budget and the gate refuses ordinary project files.
+
+    ``_home_targets_ttl`` therefore returns
+    ``clamp(cost * _HOME_TARGETS_TTL_COST_RATIO, _HOME_TARGETS_TTL_SECS,
+    _HOME_TARGETS_TTL_MAX_SECS)``. Each of those three constants gets its own
+    test here, plus the switch that turns the law off, plus the two end-to-end
+    properties the law is FOR, plus the reproduced bypass at the longest expiry
+    the law can select.
+
+    The clock is frozen and advanced by the stub builder, so "the rebuild cost
+    0.4s" is a fact of the test rather than a race against a real build.
+    """
+
+    @staticmethod
+    def _clear() -> None:
+        from kiro_crew import security
+
+        security._home_targets_cache.clear()
+
+    @staticmethod
+    def _timed_rebuild(monkeypatch, clock: dict[str, float], cost: float) -> list[int]:
+        """Replace the builder with one that "costs" *cost* frozen seconds."""
+        from kiro_crew import security
+
+        calls: list[int] = []
+        real = security._home_dir_targets_uncached
+
+        def slow(home_dirs, roots=None):
+            calls.append(1)
+            clock["now"] += cost
+            return real(home_dirs, roots)
+
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", slow)
+        return calls
+
+    def test_an_idle_rebuild_keeps_the_shipped_expiry(self) -> None:
+        """2ms * the ratio lands ON the floor, so an idle host is unchanged.
+
+        This is what makes the ratio reviewable rather than arbitrary: it is the
+        value at which the measured idle rebuild reproduces the expiry that
+        shipped before the law existed. A ratio raised without moving the floor
+        would change idle behaviour, and this catches that.
+        """
+        from kiro_crew import security
+
+        idle_rebuild_secs = 0.002  # measured, see the class docstring
+        assert security._home_targets_ttl(idle_rebuild_secs, resolution_differed=False) == (
+            security._HOME_TARGETS_TTL_SECS
+        )
+        assert (
+            idle_rebuild_secs * security._HOME_TARGETS_TTL_COST_RATIO
+            <= security._HOME_TARGETS_TTL_SECS
+        )
+
+    def test_the_expiry_scales_with_the_measured_cost(self) -> None:
+        """Between the floor and the cap the expiry is cost times the ratio."""
+        from kiro_crew import security
+
+        cost = 0.4  # measured under two contending threads
+        assert security._home_targets_ttl(cost, resolution_differed=False) == pytest.approx(
+            cost * security._HOME_TARGETS_TTL_COST_RATIO
+        )
+        # And the share of the wall clock spent rebuilding is the ratio's
+        # reciprocal, which is the whole point of expressing it as a ratio.
+        assert cost / security._home_targets_ttl(cost, resolution_differed=False) == pytest.approx(
+            1.0 / security._HOME_TARGETS_TTL_COST_RATIO
+        )
+
+    def test_the_expiry_is_capped(self) -> None:
+        """The cap binds, so the stale window has a stated ceiling.
+
+        Without it a rebuild that succeeded just under its 8s budget would earn
+        minutes of staleness, which is the trade this cap exists to bound.
+        """
+        from kiro_crew import security
+
+        expensive = 7.5  # measured under eight contending threads
+        assert expensive * security._HOME_TARGETS_TTL_COST_RATIO > (
+            security._HOME_TARGETS_TTL_MAX_SECS
+        ), "the cap must actually bind at the measured worst case, or it is decoration"
+        assert security._home_targets_ttl(expensive, resolution_differed=False) == (
+            security._HOME_TARGETS_TTL_MAX_SECS
+        )
+
+    def test_a_negative_or_zero_cost_yields_the_floor(self) -> None:
+        """A coarse or frozen clock must not produce a zero-length expiry."""
+        from kiro_crew import security
+
+        assert security._home_targets_ttl(0.0, resolution_differed=False) == (
+            security._HOME_TARGETS_TTL_SECS
+        )
+        assert security._home_targets_ttl(-1.0, resolution_differed=False) == (
+            security._HOME_TARGETS_TTL_SECS
+        )
+
+    def test_a_zero_ratio_pins_the_expiry_at_the_floor(self, monkeypatch) -> None:
+        """A ratio of 0 is the revert, and it is reachable from outside the package.
+
+        The law trades freshness for availability, so the revert has to be
+        operator-reachable rather than a source edit. It is the SAME knob as the
+        ratio itself (``KIROCREW_PATH_GATE_TTL_COST_RATIO=0``), because zero times
+        any cost clamps to the floor for every input -- so there is no second
+        mechanism to keep in step with this one.
+        """
+        from kiro_crew import security
+
+        assert security.paths._TTL_COST_RATIO_MIN == 0.0, "0 must be an accepted value"
+        monkeypatch.setattr(security, "_HOME_TARGETS_TTL_COST_RATIO", 0.0)
+        for cost in (0.0, 0.4, 7.5, 1000.0):
+            assert security._home_targets_ttl(cost, resolution_differed=False) == (
+                security._HOME_TARGETS_TTL_SECS
+            )
+
+    def test_a_contended_rebuild_outlives_the_fixed_expiry(self, monkeypatch, tmp_path) -> None:
+        """END TO END: a costly build is not re-paid 0.1s later.
+
+        This is the defect, expressed as a test. On the fixed expiry a build
+        costing 0.4s was rebuilt again 0.1s later, so a contended gateway spent
+        most of its wall clock rebuilding; here the same build is still served.
+        """
+        from kiro_crew import security
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._clear()
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+        calls = self._timed_rebuild(monkeypatch, clock, cost=0.4)
+
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1
+
+        # The jump that DID rebuild before this law. It must not now.
+        clock["now"] += security._HOME_TARGETS_TTL_SECS + 0.01
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1, "a contended build was re-paid at the fixed expiry"
+
+        # Past the expiry the cost actually earned, it rebuilds -- the cache is
+        # still TTL-bounded, only the bound moved.
+        clock["now"] += security._home_targets_ttl(0.4, resolution_differed=False)
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 2
+
+    def test_the_expiry_starts_after_the_rebuild(self, monkeypatch, tmp_path) -> None:
+        """A build costing more than its own expiry is not expired on arrival.
+
+        The expiry starts at the clock read taken AFTER the build, not at the one
+        that missed the cache. The distinction is immaterial for a 2ms build and
+        decisive for a 0.4s one: an expiry started before the build has already
+        elapsed when the build returns, so
+        the very next call rebuilds and the cache stops being a cache exactly
+        under the load it exists for. Forced here with a ratio that makes the
+        expiry shorter than the build, so the ordering is the only thing the
+        assertion can be reading.
+        """
+        from kiro_crew import security
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._clear()
+        monkeypatch.setattr(security, "_HOME_TARGETS_TTL_COST_RATIO", 0.5)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+        calls = self._timed_rebuild(monkeypatch, clock, cost=0.4)
+
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1
+        assert security._home_targets_ttl(0.4, resolution_differed=False) == pytest.approx(
+            0.2
+        )  # shorter than the build
+
+        # No clock advance at all: the entry must still be live on return.
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1, "the entry was expired the moment the build returned"
+
+    def test_the_cap_cannot_be_raised_without_bound(self, monkeypatch) -> None:
+        """The operator knob has its own ceiling, so the window stays bounded.
+
+        The ceiling is what keeps ``_HOME_TARGETS_TTL_MAX_SECS`` a bound rather
+        than a suggestion: without it an env var could widen the stale window
+        above that test's guarantee, and nothing in the module would notice.
+        """
+        from kiro_crew import security
+
+        monkeypatch.setenv(security._TTL_MAX_SECS_ENV, "99999")
+        refused = security._env_float(
+            security._TTL_MAX_SECS_ENV,
+            security.paths._TTL_MAX_SECS_DEFAULT,
+            security.paths._TTL_MAX_SECS_MIN,
+            security.paths._TTL_MAX_SECS_MAX,
+        )
+        assert refused == security.paths._TTL_MAX_SECS_DEFAULT
+
+        # And a value inside the range is honoured, or the knob is decoration.
+        monkeypatch.setenv(security._TTL_MAX_SECS_ENV, "5")
+        assert (
+            security._env_float(
+                security._TTL_MAX_SECS_ENV,
+                security.paths._TTL_MAX_SECS_DEFAULT,
+                security.paths._TTL_MAX_SECS_MIN,
+                security.paths._TTL_MAX_SECS_MAX,
+            )
+            == 5.0
+        )
+
+    def test_a_bad_knob_value_keeps_the_reviewed_default(self, monkeypatch) -> None:
+        """Absent, unparseable and out-of-range all fall back to the default.
+
+        Fail-soft to the DEFAULT is the conservative direction for both knobs:
+        the shipped ratio and ceiling are the reviewed values, so a typo can only
+        leave reviewed behaviour in place and never widen the stale window.
+        """
+        from kiro_crew import security
+
+        for raw in ("", "   ", "abc", "-5", "1e9"):
+            monkeypatch.setenv(security._TTL_COST_RATIO_ENV, raw)
+            assert (
+                security._env_float(
+                    security._TTL_COST_RATIO_ENV,
+                    security.paths._TTL_COST_RATIO_DEFAULT,
+                    security.paths._TTL_COST_RATIO_MIN,
+                    security.paths._TTL_COST_RATIO_MAX,
+                )
+                == security.paths._TTL_COST_RATIO_DEFAULT
+            ), raw
+
+    def test_the_shipped_defaults_leave_an_idle_host_identical(self) -> None:
+        """The shipped defaults make an idle rebuild select exactly today's 0.1s.
+
+        This is the requirement the defaults exist to meet: an unloaded host must
+        show no observable change, and it holds by arithmetic (2ms * 50 = 0.1s)
+        rather than by being close enough.
+
+        Asserted on the DEFAULT constants, not on the live values, so the property
+        is pinned for every host rather than only for one whose environment
+        happens to set no override. The live values are checked against the
+        defaults separately, and only when no override is present.
+        """
+        from kiro_crew import security
+
+        idle_rebuild_secs = 0.002  # measured, see the class docstring
+        assert (
+            idle_rebuild_secs * security.paths._TTL_COST_RATIO_DEFAULT
+            == security._HOME_TARGETS_TTL_SECS
+        ), "the default ratio must land an idle rebuild exactly on the floor"
+        assert security.paths._TTL_MAX_SECS_DEFAULT > security._HOME_TARGETS_TTL_SECS
+
+        if not os.environ.get(security._TTL_COST_RATIO_ENV):
+            assert security._HOME_TARGETS_TTL_COST_RATIO == (security.paths._TTL_COST_RATIO_DEFAULT)
+        if not os.environ.get(security._TTL_MAX_SECS_ENV):
+            assert security._HOME_TARGETS_TTL_MAX_SECS == security.paths._TTL_MAX_SECS_DEFAULT
+
+    def test_the_measurement_script_only_names_internals_that_exist(self) -> None:
+        """The committed measurement script must not rot silently.
+
+        ``scripts/measure_path_gate_ttl.py`` is the reproducible evidence for the
+        constants above, so it reaches into private names in this module -- and
+        nothing in CI runs it, because a contention sweep takes minutes. Without
+        this test a rename here leaves a script that still looks authoritative and
+        dies on an AttributeError the first time anyone re-derives the numbers.
+
+        The list is READ OUT OF THE SCRIPT, not restated here. A hand-maintained
+        copy would make every rename cost two edits and would drift from the
+        script the moment one of them was forgotten -- so the script stays the
+        single place its own dependencies are written down, and this test just
+        asks whether each one still resolves.
+
+        Asserts presence, not behaviour: it is a spelling contract between the
+        script and the module, which is exactly the part a rename breaks.
+        """
+        import pathlib
+        import re
+
+        from kiro_crew.security import paths
+
+        script = pathlib.Path(paths.__file__).parents[3] / "scripts" / "measure_path_gate_ttl.py"
+        assert script.is_file(), f"the measurement script is missing at {script}"
+        names = sorted(set(re.findall(r"\bgate\.(_[A-Za-z0-9_]+)", script.read_text("utf-8"))))
+        assert names, "found no gate.<private> references; the regex or the script moved"
+        missing = [name for name in names if not hasattr(paths, name)]
+        assert not missing, (
+            f"{script.name} reads {missing} from kiro_crew.security.paths, which no "
+            "longer exist; update the script in the same change as the rename"
+        )
+
+    def test_a_symlinked_keystone_leaf_pins_the_expiry_at_the_floor(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The reachable stale-credential path is closed, not merely bounded.
+
+        The review finding: a keystone leaf such as ``security_policy.json`` is
+        not an anchor, so it is not in the cache key; repoint it and the stale
+        set answers with the old target until the entry expires. Under the
+        adaptive expiry alone that window grew with load, which made an ordinary
+        contended host the reachable case.
+
+        The build now reports whether it traversed a symlink, and that pins the
+        expiry to the floor. So the very install where a repoint can strand a
+        resolution-derived target is the install that keeps the 0.1s window it
+        has today, while a host with no symlinked leaf keeps the long expiry. The
+        cost of knowing is one pass over a dict the build already filled.
+
+        Asserted end to end rather than on the flag alone: the ratio is forced
+        large enough that a long expiry would be selected if the symlink were
+        ignored, so this fails loudly if the fact stops reaching the law.
+        """
+        from kiro_crew import security
+
+        crew_home = tmp_path / "crew"
+        crew_home.mkdir()
+        real_a = tmp_path / "vol-a" / "signing.key"
+        real_b = tmp_path / "vol-b" / "signing.key"
+        real_a.parent.mkdir(parents=True)
+        real_b.parent.mkdir(parents=True)
+        real_a.write_text("a", encoding="utf-8")
+        real_b.write_text("b", encoding="utf-8")
+        leaf = crew_home / "token_signing.key"
+        # No local skip guard: this test's exact node id is listed in
+        # test/requires-real-symlinks.txt, so the root conftest skips it only when a
+        # runtime probe says the platform cannot create one. An elevated or
+        # Developer-Mode Windows runner therefore keeps the coverage.
+        leaf.symlink_to(real_a)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        self._clear()
+        monkeypatch.setattr(security, "_HOME_TARGETS_TTL_COST_RATIO", 1_000_000.0)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+        calls = self._timed_rebuild(monkeypatch, clock, cost=0.4)
+
+        target_a = str(real_a.resolve()).casefold()
+        target_b = str(real_b.resolve()).casefold()
+        warm = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert target_a in warm
+        assert len(calls) == 1
+        assert warm.resolution_differed is True, "a symlinked leaf must be reported"
+
+        # The floor, not the cap, despite a ratio that would ask for 400000s.
+        assert security._home_targets_ttl(0.4, resolution_differed=True) == (
+            security._HOME_TARGETS_TTL_SECS
+        )
+
+        leaf.unlink()
+        leaf.symlink_to(real_b)
+
+        # One floor's worth of clock, not one cap's worth, and the repoint is live.
+        clock["now"] += security._HOME_TARGETS_TTL_SECS + 0.01
+        fresh = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 2, "the floor did not expire the entry"
+        assert target_b in fresh, "the rebuilt set must carry the new target"
+
+    def test_an_install_with_no_symlinked_leaf_keeps_the_long_expiry(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The other half: without a symlink there is nothing a repoint can stale.
+
+        This is what keeps the fix above from being a blanket revert. When no
+        target's canonical form differs from its lexical one, the set holds no
+        resolution-derived entry, so reaching the stale-credential case requires
+        first CREATING a symlink inside the crew home -- a write
+        ``is_sensitive_write_path`` refuses. The adaptive expiry therefore applies
+        in full, which is the availability this PR is for.
+        """
+        from kiro_crew import security
+
+        crew_home = tmp_path / "crew"
+        crew_home.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        self._clear()
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+        calls = self._timed_rebuild(monkeypatch, clock, cost=0.4)
+
+        warm = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1
+        assert warm.resolution_differed is False, "no symlink, so nothing to report"
+
+        # The jump that expires a floor-pinned entry must NOT expire this one.
+        clock["now"] += security._HOME_TARGETS_TTL_SECS + 0.01
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1, "a symlink-free build must earn the long expiry"
+
+        # And it is still TTL-bounded: past what the cost earned, it rebuilds.
+        clock["now"] += security._home_targets_ttl(0.4, resolution_differed=False)
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 2
+
+    def test_a_builder_that_reports_nothing_gets_the_floor(self, monkeypatch, tmp_path) -> None:
+        """An unknown build is treated as having traversed a symlink.
+
+        The fact travels as an attribute on the returned set, so anything that
+        returns a plain ``set`` -- a test double, an embedder's override, a future
+        builder that forgets -- carries no answer at all. Both defaults that cover
+        that case are asserted here, because each is a separate line: the class
+        attribute for a set built without it, and the cache's own read for a set
+        that is not a :class:`_BuiltTargets` at all. Either defaulting the other
+        way would hand the long expiry to a build nobody vouched for.
+        """
+        from kiro_crew import security
+
+        assert security._BuiltTargets({"x"}).resolution_differed is True
+
+        crew_home = tmp_path / "crew"
+        crew_home.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        self._clear()
+        monkeypatch.setattr(security, "_HOME_TARGETS_TTL_COST_RATIO", 1_000_000.0)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+
+        calls: list[int] = []
+
+        def plain(home_dirs, roots=None):  # returns a bare set, not _BuiltTargets
+            calls.append(1)
+            clock["now"] += 0.4
+            return {str(crew_home / "token_signing.key").casefold()}
+
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", plain)
+
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1
+        clock["now"] += security._HOME_TARGETS_TTL_SECS + 0.01
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 2, "an unvouched build must expire at the floor"
+
+    def test_a_reported_symlink_pins_the_floor_on_every_platform(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        """The law itself, asserted without creating a symlink.
+
+        Its symlinked-leaf sibling has to build a real symlink, so it SKIPS on a
+        platform that will not make one, and that would leave the security half of
+        this change unasserted exactly there. This one reports the flag from a
+        double instead, so the pin runs everywhere: a build that says it traversed
+        a symlink gets the floor even under a ratio that would ask for days.
+        """
+        from kiro_crew import security
+
+        crew_home = tmp_path / "crew"
+        crew_home.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        self._clear()
+        monkeypatch.setattr(security, "_HOME_TARGETS_TTL_COST_RATIO", 1_000_000.0)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+
+        calls: list[int] = []
+        leaf = str(crew_home / "token_signing.key").casefold()
+
+        def reporting(home_dirs, roots=None):
+            calls.append(1)
+            clock["now"] += 0.4
+            built = security._BuiltTargets({leaf})
+            built.resolution_differed = True
+            return built
+
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", reporting)
+
+        from kiro_crew.security import paths as gate
+
+        gate._home_targets_pin_state.clear()
+        with caplog.at_level(logging.INFO, logger=gate.__name__):
+            security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        gate._home_targets_pin_state.clear()
+        assert len(calls) == 1
+        assert any(
+            "pinned to the" in record.getMessage() for record in caplog.records
+        ), "the cache fill must report the pin, not only the helper"
+        clock["now"] += security._HOME_TARGETS_TTL_SECS + 0.01
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 2, "a reported symlink must expire at the floor"
+
+    def test_the_pin_is_reported_once_per_transition(self, caplog) -> None:
+        """The diagnostic exists so the fix cannot self-disable in silence.
+
+        One line per TRANSITION, not per rebuild: a stow or chezmoi home pins the
+        floor on every build, and a per-build line would be noise that gets
+        filtered, which is the same as having none.
+        """
+        from kiro_crew.security import paths as gate
+
+        gate._home_targets_pin_state.clear()
+        with caplog.at_level(logging.INFO, logger=gate.__name__):
+            gate._report_expiry_pin(True)
+            gate._report_expiry_pin(True)
+            gate._report_expiry_pin(True)
+            gate._report_expiry_pin(False)
+        lines = [record.getMessage() for record in caplog.records]
+        gate._home_targets_pin_state.clear()
+
+        assert len(lines) == 2, "a repeated state must not be re-reported"
+        assert "pinned to the" in lines[0]
+        assert "symlink" in lines[0]
+        assert "cost-tracking expiry in force" in lines[1]
+
+    def test_repointed_home_symlink_is_not_served_from_cache_at_the_longest_expiry(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The reproduced bypass stays shut at the CAP, not only at the floor.
+
+        Companion to ``TestHomeDirTargetsCache
+        .test_repointed_home_symlink_is_not_served_from_cache``. That one runs at
+        the floor, which is not the expiry a contended host selects. The
+        reason it holds at any expiry is structural rather than temporal: every
+        anchor is part of the cache KEY, so repointing ``$HOME`` re-keys and
+        misses. Forced here by a ratio large enough that every build clamps to
+        ``_HOME_TARGETS_TTL_MAX_SECS``, with the clock frozen so nothing can
+        expire during the test.
+        """
+        from kiro_crew import security
+
+        real_a = tmp_path / "vol1" / "u"
+        real_b = tmp_path / "vol2" / "u"
+        real_a.mkdir(parents=True)
+        real_b.mkdir(parents=True)
+        link = tmp_path / "home"
+        # Listed in test/requires-real-symlinks.txt rather than skipped here, so the
+        # capability probe owns the decision and a Windows runner that CAN make a
+        # symlink still asserts the bypass stays shut at the cap.
+        link.symlink_to(real_a)
+        monkeypatch.setenv("HOME", str(link))
+        monkeypatch.setenv("USERPROFILE", str(link))
+        self._clear()
+        monkeypatch.setattr(security, "_HOME_TARGETS_TTL_COST_RATIO", 1_000_000.0)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+        calls = self._timed_rebuild(monkeypatch, clock, cost=0.4)
+
+        probe = str(link / ".aws" / "credentials")
+        assert is_sensitive_path(probe) is True  # warms the cache
+        assert len(calls) == 1
+
+        # The expiry in force here really is the cap, and that is not an
+        # assumption: a symlinked ``$HOME`` is a ROOT, which
+        # ``_resolve_root_anchors`` already canonicalised, so this build resolved
+        # nothing differently and earns the long expiry. Read the flag off the
+        # built set rather than passing a literal, so the day a root DOES start
+        # tripping it this assertion fails instead of quietly testing the floor.
+        built = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1, "re-reading the warmed cache must not rebuild"
+        differed = getattr(built, "resolution_differed", True)
+        assert differed is False, "a symlinked $HOME alone must not pin the floor"
+        assert (
+            security._home_targets_ttl(0.4, resolution_differed=differed)
+            == security._HOME_TARGETS_TTL_MAX_SECS
+        )
+
+        link.unlink()
+        link.symlink_to(real_b)  # repointed well INSIDE the longest expiry
+        assert is_sensitive_path(probe) is True, "cached target set served a fail-open verdict"
+        assert len(calls) == 2, "the repoint must MISS the cache, not be served stale"
 
 
 class TestEnvDumpGrepAwsNarrowing:

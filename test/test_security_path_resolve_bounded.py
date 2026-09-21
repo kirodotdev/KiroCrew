@@ -1206,7 +1206,10 @@ def test_a_stalled_rebuild_refuses_even_with_a_warm_cache(monkeypatch, tmp_path)
     security._home_targets_cache.clear()
     warm = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)  # canonical
     assert str(crew_home / "token_signing.key").casefold() in warm
-    clock[0] += security._HOME_TARGETS_TTL_SECS + 0.01  # the slot expires
+    # The EFFECTIVE expiry, read through the adaptive law rather than off the
+    # floor constant: under a frozen clock the warm build above measures as
+    # costing nothing, so the law returns its floor.
+    clock[0] += security._home_targets_ttl(0.0) + 0.01  # the slot expires
     logical_home = str(security.Path.home())
     stalled = _StalledRealpath()
     monkeypatch.setattr(security, "_realpath_or_none", stalled)
@@ -1270,7 +1273,7 @@ def test_a_repointed_override_root_is_never_served_stale_through_a_stall(
     monkeypatch.setattr(security.time, "monotonic", lambda: clock[0])
     security._home_targets_cache.clear()
     assert security.is_sensitive_path(str(real_a / "security_policy.json")) is True  # warm on A
-    clock[0] += security._HOME_TARGETS_TTL_SECS + 0.01
+    clock[0] += security._home_targets_ttl(0.0) + 0.01
     link.unlink()
     link.symlink_to(real_b, target_is_directory=True)  # repointed...
     real_resolver = security._realpath_or_none

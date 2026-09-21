@@ -1957,6 +1957,40 @@ def _candidate_forms(
     return candidates
 
 
+class _BuiltTargets(set[str]):
+    """The target set, plus whether building it traversed a symlink.
+
+    A plain ``set`` wherever it is consumed -- membership, iteration, equality
+    and the casefold contract are all unchanged -- carrying one extra fact that
+    only the CACHE needs and no matcher does: did any target's canonical form
+    differ from its lexical one.
+
+    That fact is what bounds the deeper-leaf staleness the target cache always
+    carried. A target whose resolution differs came through a symlink at or
+    below a resolved root, and THAT is the entry a repoint can move out from
+    under a cached set. When no target resolved differently there is no
+    resolution-derived entry to go stale, so the long adaptive expiry is safe;
+    when one did, the expiry is pinned to the floor. See
+    :func:`_home_targets_ttl`.
+
+    The roots cannot trip it. Every root reaching the builder is already
+    canonical (:func:`_resolve_root_anchors` resolved them), so re-resolving one
+    returns the same string -- which matters on a host where ``$HOME`` is itself
+    a symlink, because flagging that would pin the floor on every cloud desktop
+    and the adaptive expiry would never apply anywhere.
+
+    Carried as an ATTRIBUTE rather than a second return value because
+    ``_home_dir_targets_uncached`` has several callers and three test doubles. A
+    widened signature would break each of them, whereas a double that returns a
+    plain ``set`` simply lacks the attribute and reads as the class default
+    below -- ``True``, the fail-safe answer, which selects the floor.
+    """
+
+    #: Fail-safe: an unknown build is treated as having traversed a symlink, so a
+    #: caller that cannot prove otherwise gets the short expiry.
+    resolution_differed: bool = True
+
+
 def _home_dir_targets_uncached(
     home_dirs: list[str],
     roots: _ResolvedRoots | None = None,
@@ -2133,7 +2167,20 @@ def _home_dir_targets_uncached(
             _full_real = resolve_target(_full)
             if _full_real is not None:
                 sensitive_targets.add(_full_real.casefold())
-    return sensitive_targets
+    # Did any target come through a symlink? Read off the memo this build already
+    # filled, so the answer costs one pass over a ~75-entry dict and no extra
+    # filesystem work -- the resolutions themselves are the expense and they have
+    # already happened. Normalised on both sides so a separator or case
+    # difference cannot read as a symlink; a false positive here is merely the
+    # short expiry, a false negative would be the stale window this bounds.
+    differed = any(
+        value is not None
+        and os.path.normcase(os.path.normpath(value)) != os.path.normcase(os.path.normpath(key))
+        for key, value in resolved_paths.items()
+    )
+    built = _BuiltTargets(sensitive_targets)
+    built.resolution_differed = differed
+    return built
 
 
 # How long a built target set stays reusable. ``_home_dir_targets_uncached``
@@ -2146,7 +2193,7 @@ def _home_dir_targets_uncached(
 # Deliberately TTL-bounded rather than a plain ``lru_cache``: part of the set is
 # derived from FILESYSTEM state, so an unbounded cache would keep matching a
 # stale target if a symlink were repointed after the cache warmed — a gate that
-# fails OPEN. A few seconds bounds that window.
+# fails OPEN. ``_HOME_TARGETS_TTL_MAX_SECS`` bounds that window.
 #
 # The key is built from the RESOLVED roots (``Path.home().resolve()`` and the
 # resolved ``KIROCREW_HOME``), NOT from the raw env vars, because those two
@@ -2174,14 +2221,218 @@ def _home_dir_targets_uncached(
 # them.
 #
 # The TTL is therefore sized as small as it can be while still doing its job.
-# The value is 0.1s, NOT a "few seconds", because a skills walk issues thousands
+# The FLOOR is 0.1s, NOT a "few seconds", because a skills walk issues thousands
 # of calls in a burst and one build serves the whole burst either way. Measured
-# cold-walk cost against this constant:
+# cold-walk cost against a FIXED constant, on an idle interpreter:
 #     5.0s -> 0.95s    1.0s -> 0.93s    0.1s -> 0.95s    0.0s -> 4.66s
 # So 0.1s keeps the entire win while cutting the stale window 50x versus 5.0s.
 # Only 0.0 (no cache) closes the window completely, and that reverts to the 4.7s
-# scan whose GIL-held cost wedges the event loop — the defect this exists to fix.
+# scan whose GIL-held cost wedges the event loop -- the defect this exists to fix.
 _HOME_TARGETS_TTL_SECS = 0.1
+
+# ---------------------------------------------------------------------------
+# Why the expiry is not that floor alone.
+#
+# 0.1s was chosen against an IDLE interpreter, where one rebuild costs ~2ms, so
+# the cache spends ~2% of the wall clock rebuilding. But the rebuild is ~130
+# ``os.path.realpath`` calls and each syscall releases and re-acquires the GIL,
+# so its cost is set by CONTENTION, not by the disk. Measured on this repo's own
+# anchors -- 64-core Linux, local xfs, one mount, ``sys.getswitchinterval()``
+# 5ms -- with N sibling threads running pure Python:
+#     0 -> 2ms    1 -> 581ms    2 -> 399ms    4 -> 3859ms    8 -> 7456ms
+# A fixed 0.1s expiry does not move with that, so the share of the wall clock
+# spent rebuilding rises with load until the rebuild misses
+# ``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS`` and the gate refuses ordinary project
+# files. That is the reported defect, and the filesystem is healthy throughout.
+#
+# So the expiry tracks the MEASURED cost of the build it is expiring:
+#
+#     ttl = clamp(last rebuild seconds * _HOME_TARGETS_TTL_COST_RATIO,
+#                 _HOME_TARGETS_TTL_SECS, _HOME_TARGETS_TTL_MAX_SECS)
+#
+# The ratio is the reciprocal of the share of the wall clock the gate may spend
+# rebuilding, so that share is held at ``1 / ratio`` at EVERY load level rather
+# than only at the one the constant was picked on. The rebuild's own duration is
+# the load signal, so no separate load metric is read and nothing has to be
+# configured per host.
+#
+# WHAT THIS DOES NOT FIX, stated rather than implied: an expiry controls how
+# OFTEN the rebuild is paid, never what ONE costs. Past roughly four contending
+# threads a single COLD rebuild already exceeds its own budget, and there every
+# expiry refuses alike -- measured, see ``scripts/measure_path_gate_ttl.py``.
+# Only a resolver outside this interpreter's GIL closes that case. This law's
+# job is narrower: it stops re-paying the contended cost every 100ms.
+#
+# THE TRADE, stated plainly: a longer expiry lengthens the window in which a
+# symlink swapped DEEPER inside the crew home (a keystone leaf, or an
+# intermediate directory on the way to one) is still answered from the stale
+# set -- the residual named above, now bounded by ``_HOME_TARGETS_TTL_MAX_SECS``
+# rather than by 0.1s. It does NOT widen the two reproduced bypasses, because
+# both repoint an ANCHOR and every anchor is part of the cache KEY: a repointed
+# ``$HOME`` or ``KIROCREW_HOME`` re-keys and misses the cache at any expiry,
+# which ``test_repointed_home_symlink_is_not_served_from_cache_at_the_longest_expiry``
+# pins at the maximum expiry as well as at the floor.
+#
+# Both inputs are NAMED constants, each pinned by a test, and each an OPERATOR
+# KNOB read once at import and fail-soft to its reviewed default:
+# ``KIROCREW_PATH_GATE_TTL_COST_RATIO`` and ``KIROCREW_PATH_GATE_TTL_MAX_SECS``.
+# So a host can trade the two the other way, or revert to one fixed 0.1s expiry
+# with a ratio of 0, without a release and without patching this file.
+# ---------------------------------------------------------------------------
+
+#: Environment overrides for the two inputs below, and the bounds each accepts.
+#: Read ONCE at import, like the resolver pool size: these size a cache that is
+#: already live by the first gate call, so a mid-run change would leave entries
+#: written under one policy being judged by another.
+_TTL_COST_RATIO_ENV = "KIROCREW_PATH_GATE_TTL_COST_RATIO"
+_TTL_COST_RATIO_DEFAULT = 50.0
+#: 0 is the REVERT: zero times any cost clamps to the floor for every input, so
+#: ``KIROCREW_PATH_GATE_TTL_COST_RATIO=0`` pins one fixed 0.1s expiry at every
+#: load level. That is deliberately the only spelling of the revert -- a separate
+#: private boolean said the same thing while being unreachable from outside the
+#: package, which made "operator lever" untrue. Above 1000 the clamp makes every
+#: load level select the ceiling anyway, so a larger value expresses nothing this
+#: cannot.
+_TTL_COST_RATIO_MIN = 0.0
+_TTL_COST_RATIO_MAX = 1000.0
+_TTL_MAX_SECS_ENV = "KIROCREW_PATH_GATE_TTL_MAX_SECS"
+_TTL_MAX_SECS_DEFAULT = 30.0
+#: The ceiling an operator may raise the ceiling TO. The measurement justifies
+#: nothing above about a minute -- that is the longest expiry the default ratio
+#: asks for at the heaviest load the gate can still serve, and past that load no
+#: expiry helps at all -- so 300s leaves generous headroom while refusing a value
+#: that could only widen the stale window. The floor is the shipped floor: a
+#: ceiling below it would invert the clamp.
+_TTL_MAX_SECS_MIN = 0.1
+_TTL_MAX_SECS_MAX = 300.0
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    """Read a float operator knob, falling back to *default*.
+
+    Fail-soft TO THE DEFAULT in every failure mode -- absent, unparseable, out of
+    range -- which is the conservative direction for both callers: the shipped
+    ratio and the shipped ceiling are the reviewed values, so a bad override can
+    only leave the reviewed behaviour in place and never widen the stale window
+    the ceiling bounds.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using the default of %s", name, raw, default)
+        return default
+    if not minimum <= value <= maximum:
+        logger.warning(
+            "%s=%s is outside %s..%s; using the default of %s",
+            name,
+            value,
+            minimum,
+            maximum,
+            default,
+        )
+        return default
+    return value
+
+
+#: Reciprocal of the share of the wall clock the gate may spend rebuilding
+#: anchors. 50 holds that share at 2%, and it is the value at which an idle
+#: interpreter selects the same 0.1s EXPIRY it selects today (2ms * 50 = the floor).
+#: Only that duration is unchanged: an entry's total age is the expiry plus the build
+#: that measured it, which for a 2ms build is the same to within those 2ms. So the
+#: default is observationally identical on an unloaded host, by arithmetic rather
+#: than by measurement.
+#: Chosen as the SMALLEST ratio that refused nothing and paid the fewest
+#: rebuilds at every load level the gate can still serve -- the same rule that
+#: chose the floor, applied to the ratio. Larger ratios paid no fewer rebuilds
+#: and only lengthened the stale window.
+_HOME_TARGETS_TTL_COST_RATIO = _env_float(
+    _TTL_COST_RATIO_ENV, _TTL_COST_RATIO_DEFAULT, _TTL_COST_RATIO_MIN, _TTL_COST_RATIO_MAX
+)
+
+#: Hard ceiling on the expiry, and therefore THE WORST-CASE STALE WINDOW for the
+#: deeper-leaf residual described above: 30 seconds, and never longer by any
+#: path through this module. Deliberately NOT derived from the ratio: at high
+#: contention the ratio asks for minutes (a 7.5s rebuild wants 375s), and this
+#: gives up the 2% share there rather than give up the freshness bound. Sized to
+#: cover what the load levels the gate can still SERVE actually ask for -- a 0.4s
+#: rebuild under two contending threads asks for 20s -- so the clamp binds only
+#: where a single cold rebuild is already at its own budget and no expiry helps.
+_HOME_TARGETS_TTL_MAX_SECS = _env_float(
+    _TTL_MAX_SECS_ENV, _TTL_MAX_SECS_DEFAULT, _TTL_MAX_SECS_MIN, _TTL_MAX_SECS_MAX
+)
+
+
+def _home_targets_ttl(rebuild_secs: float, *, resolution_differed: bool = True) -> float:
+    """How long a target set that took *rebuild_secs* to build stays reusable.
+
+    See the block above the constants for why this is a function of the build's
+    own cost rather than a constant.  *rebuild_secs* is the WALL time the cache
+    fill took, pool queue wait included: the caller blocked for all of it, and a
+    saturated pool is exactly a state in which refreshing less often is correct,
+    so the queue is part of the cost being amortised rather than noise to
+    subtract.
+
+    *resolution_differed* is what keeps the long expiry off the one class of
+    install it could hurt.  True means some target's canonical form differed from
+    its lexical one, i.e. the build came through a symlink at or below a resolved
+    root -- and that resolution-derived entry is exactly what a repoint can move
+    out from under a cached set, the deeper-leaf residual.  There the expiry is
+    pinned to the floor, so that window stays at 0.1s and does not grow.  False
+    means no target resolved differently, so the set holds nothing a repoint can
+    stale WITHOUT first creating a symlink inside the crew home, which is a write
+    the write gate refuses; the adaptive expiry applies.  It defaults to True so
+    every caller that cannot prove otherwise gets the short expiry.
+
+    A STALLED rebuild never reaches here -- it raises and no entry is written --
+    so a dead mount cannot inflate the expiry.  A zero or negative duration (a
+    coarse clock, or a frozen one in tests) yields the floor, and so does a
+    ratio of zero, which is how an operator pins one fixed 0.1s expiry at every
+    load level.
+    """
+    if resolution_differed:
+        return _HOME_TARGETS_TTL_SECS
+    scaled = rebuild_secs * _HOME_TARGETS_TTL_COST_RATIO
+    return min(max(scaled, _HOME_TARGETS_TTL_SECS), _HOME_TARGETS_TTL_MAX_SECS)
+
+
+#: Last state :func:`_report_expiry_pin` reported, so the line is emitted once per
+#: TRANSITION rather than once per rebuild. A dict rather than a module global
+#: because it is written from inside a function.
+_home_targets_pin_state: dict[str, bool] = {}
+
+
+def _report_expiry_pin(pinned: bool) -> None:
+    """Say once, on each transition, which expiry the cache is actually selecting.
+
+    Without this the availability half self-disables in silence. On an install
+    whose sensitive dotfiles are symlinks -- a stow or chezmoi home is the ordinary
+    case, not an exotic one -- every build reports a traversal, every expiry is
+    therefore the floor, and both knobs read as no-ops to whoever tunes them. The
+    refusals then come back with nothing in the log to say why the fix did not
+    apply to this host. Deduplicated on the state, so a steady host says it once
+    rather than once per rebuild, and a host that flips says it again.
+    """
+    if _home_targets_pin_state.get("pinned") is pinned:
+        return
+    _home_targets_pin_state["pinned"] = pinned
+    if pinned:
+        logger.info(
+            "sensitive-path anchor cache: expiry pinned to the %.1fs floor because a "
+            "target resolved through a symlink, so the cost-tracking expiry and both "
+            "of its knobs do not apply while that holds",
+            _HOME_TARGETS_TTL_SECS,
+        )
+    else:
+        logger.info(
+            "sensitive-path anchor cache: cost-tracking expiry in force " "(ratio %s, cap %.1fs)",
+            _HOME_TARGETS_TTL_COST_RATIO,
+            _HOME_TARGETS_TTL_MAX_SECS,
+        )
+
+
 # key -> (expiry_monotonic, targets)
 _home_targets_cache: dict[tuple[object, ...], tuple[float, set[str]]] = {}
 # Only off-loop bulk readers acquire this lock. Event-loop gates retain their
@@ -2460,12 +2711,26 @@ def _cached_home_dir_targets(
         targets = _home_dir_targets_uncached(home_dirs, roots)
     else:
         targets = _rebuild_targets_bounded(home_dirs, roots)
+    # Read the clock AGAIN, and start the expiry here rather than at ``now``.
+    # Two reasons, neither of them visible while a rebuild costs 2ms. The interval
+    # between the two reads is the measured cost the expiry is a multiple of.
+    # And an expiry that started BEFORE the build would already have elapsed by
+    # the time a contended build returned -- a 2s build under a 0.1s expiry
+    # hands back an entry that is expired on arrival, so the next call rebuilds
+    # again and the cache stops being a cache exactly when it matters most.
+    built_at = time.monotonic()
+    # Read the flag off the built set, defaulting to the fail-safe answer: a test
+    # double or any future builder that returns a plain ``set`` carries no
+    # attribute and gets the floor rather than the long expiry.
+    differed = bool(getattr(targets, "resolution_differed", True))
+    _report_expiry_pin(differed)
+    ttl = _home_targets_ttl(max(0.0, built_at - now), resolution_differed=differed)
     # Bound the dict: the key space is tiny (two constant home_dirs lists ×
     # roots), but a test or embedder that churns KIROCREW_HOME must not grow it
     # without limit.
     if len(_home_targets_cache) > 32:
         _home_targets_cache.clear()
-    _home_targets_cache[key] = (now + _HOME_TARGETS_TTL_SECS, targets)
+    _home_targets_cache[key] = (built_at + ttl, targets)
     return targets
 
 
@@ -2476,7 +2741,7 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     override roots and the ~40 keystone leaves under them -- are the paths the
     sensitive-target set is built FROM, as opposed to the agent-supplied
     candidate checked AGAINST it.  They are deliberately NOT ``realpath``'d
-    inline on the event loop every time the 0.1s cache expires: on a Windows
+    inline on the event loop every time the target cache expires: on a Windows
     desktop under heavy disk load (a full test run plus several subagents, all
     being scanned by real-time antivirus) ``realpath($HOME)`` blocks past the
     25s loop-stall watchdog from inside ``on_tool_call``, and the gateway exits
@@ -2501,7 +2766,7 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     previous canonical set).  A pool fault is treated exactly like a stall, and
     a UNC home is probed here too (bounded): the candidate-side UNC shortcut is
     about tokens, not about the fence.  The stall is recorded, so the rebuild
-    does not re-probe the wedged mount every 0.1s -- it refuses without touching
+    does not re-probe the wedged mount on every expiry -- it refuses without touching
     the filesystem until the cooldown lapses.
     """
     try:

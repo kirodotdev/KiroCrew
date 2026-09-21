@@ -282,9 +282,11 @@ _MAX_STT_WORKERS = 2
 # throughput.  It is 2, justified by "healthy resolution is microseconds, so
 # sustained queueing means the filesystem is wedged".  That premise holds on the
 # host it was written for and does NOT hold on every host.  It fails for the ANCHOR
-# REBUILD, which performs ~130 ``realpath`` calls behind a 0.1s cache
-# (``security.paths._HOME_TARGETS_TTL_SECS``) and so runs near-continuously under
-# ordinary tool traffic, and it fails under sustained GIL contention, where a
+# REBUILD, which performs ~130 ``realpath`` calls behind a cache whose expiry
+# tracks the rebuild's own measured cost
+# (``security.paths._home_targets_ttl``), so ordinary tool traffic re-pays it in
+# proportion to what it costs rather than every 100ms. And it fails under
+# sustained GIL contention, where a
 # rebuild costing 0.9ms on an idle interpreter was measured at 873ms with one
 # CPU-bound sibling thread and 4.0s with four -- none of which is filesystem
 # latency.  Where both hold at once the pool sits at its ``wedged >= 2`` floor in
@@ -304,8 +306,9 @@ _MAX_STT_WORKERS = 2
 # indistinguishable from a dead mount on exactly those hosts.
 #
 # An operator whose gateway resolves under sustained GIL contention -- many
-# concurrent sessions, an anchor rebuild running near-continuously behind its 0.1s
-# cache -- raises it for THEIR box instead. Read once at import, because the pool
+# concurrent sessions, an anchor rebuild whose own contended cost is what its cache
+# expiry is now a multiple of -- raises it for THEIR box instead. Read once at
+# import, because the pool
 # is a module-level singleton; an unparseable or out-of-range value keeps the
 # default rather than failing the import, since a gateway that will not start is a
 # worse outcome than one resolving with the shipped ceiling.
