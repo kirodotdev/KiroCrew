@@ -591,6 +591,44 @@ class TestLaunchResolutionTrust:
         assert launch_windows._directory_is_writable(str(tmp_path)) is True
         assert list(tmp_path.iterdir()) == []
 
+    @pytest.mark.skipif(not IS_WINDOWS, reason="FILE_FLAG_DELETE_ON_CLOSE is a Windows flag")
+    def test_the_probe_leaves_NOTHING_even_if_the_unlink_never_RUNS(self, monkeypatch, tmp_path):
+        """The invariant the sibling above cannot state: removal does not depend on us.
+
+        ``os.unlink`` stands in for every way the explicit removal can fail to happen —
+        it raising, and the run being killed before reaching it. The directories this
+        probes are the operator's real install trees, so "the probe cleans up after
+        itself" has to mean the kernel cleans up, not that a later statement does.
+        """
+        from kiro_crew.computer_use import launch_windows
+
+        def never(*_args, **_kwargs):
+            raise AssertionError("the probe must not need an explicit unlink on Windows")
+
+        monkeypatch.setattr(os, "unlink", never)
+        assert launch_windows._directory_is_writable(str(tmp_path)) is True
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.skipif(not IS_WINDOWS, reason="the fallback only exists where the flag does")
+    def test_a_directory_that_refuses_DELETE_on_close_is_still_writable(
+        self, monkeypatch, tmp_path
+    ):
+        """``DELETE`` is a separate permission, and losing it must not become a refusal.
+
+        A directory that permits creates but not delete-on-close is still a directory
+        this user can plant a binary in, so the answer stays ``True`` and the probe falls
+        back to being removed explicitly. Reporting ``False`` here would TRUST that
+        binary — the one wrong answer this predicate must never give.
+        """
+        from kiro_crew.computer_use import launch_windows
+
+        def delete_denied(*_args, **_kwargs):
+            raise PermissionError("Access is denied")
+
+        monkeypatch.setattr(launch_windows, "_open_self_removing_probe", delete_denied)
+        assert launch_windows._directory_is_writable(str(tmp_path)) is True
+        assert list(tmp_path.iterdir()) == []
+
     def test_an_unwritable_directory_answers_False(self, monkeypatch, tmp_path):
         # Driven through a denial rather than by finding a real unwritable directory, so
         # the fail-closed branches are reachable on any host.
