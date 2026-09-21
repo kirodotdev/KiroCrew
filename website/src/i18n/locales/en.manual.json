@@ -3433,7 +3433,8 @@
     },
     "useVoiceInput": {
       "transcription_failed": "Transcription failed: {{error}}",
-      "transcription_request_failed": "Transcription request failed."
+      "transcription_request_failed": "Transcription request failed.",
+      "polish_failed": "AI cleanup didn't run. Your transcript is unchanged."
     },
     "useWebSocket": {
       "response_ready": "Response ready",
@@ -6256,15 +6257,10 @@
         "provider_desc": "Local speech recognition runs on this machine and sends nothing anywhere. Transcribe uploads your audio to AWS.",
         "streaming_desc": "Show the transcript in the input box as you speak, instead of only when you stop.",
         "model_option": "{{name}} ({{size}})",
-        "model_downloaded": "This model is already on this machine.",
         "model_download_prompt": "Not on this machine yet: a one-time {{size}} download. Fetching it now avoids a wait during your first dictation.",
         "download_model": "Download now",
         "download_failed": "The download could not be started.",
         "download_failed_reason": "The download failed: {{error}}",
-        "silence_ms": "Pause that ends a phrase (ms)",
-        "silence_ms_desc": "How much silence commits what you just said. Lower reacts sooner; higher tolerates thinking pauses.",
-        "partial_interval_ms": "Live transcript refresh (ms)",
-        "partial_interval_ms_desc": "How often the transcript is redrawn while you speak. Lower feels more immediate and costs more processing.",
         "unavailable_disabled": "Speech-to-text is turned off. Switch it on above.",
         "unavailable_extra_missing": "The voice packages are not installed in the gateway's Python environment.",
         "unavailable_no_wheel": "There is no prebuilt speech recogniser for this platform. Install a C++ compiler and CMake, then reinstall the voice packages.",
@@ -6279,7 +6275,16 @@
         "decoder_failure_unknown": "not reported",
         "decoder_agent_prompt": "The audio decoder (ffmpeg) that {{productName}} needs in order to transcribe voice recordings could not be installed. Please get it working on this host.\n\nWhat failed: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} only executes an ffmpeg whose bytes match a pinned SHA-256 digest, and it looks in exactly these places: /usr/local/bin, /opt/homebrew/bin, this operating system's own program directories, and its own digest-verified decoder store at <data home>/models/ffmpeg/. The path is never the trust anchor, so ~/.local/bin is deliberately NOT trusted and a copy left there is ignored.\n\nWork out what this host actually needs — a package manager, a build from source, or another attempt at the decoder download — and decide for yourself whether elevated privileges are appropriate before using any. When you are done, re-check GET /api/stt/status and confirm that the Voice settings page no longer reports a missing decoder.",
         "config_load_failed": "Could not load the speech-to-text settings.",
-        "status_unavailable": "Could not check the speech-to-text status. The badge above shows the saved setting, not a live probe."
+        "status_unavailable": "Could not check the speech-to-text status. The badge above shows the saved setting, not a live probe.",
+        "polish": "Tidy up transcripts with AI",
+        "polish_desc": "Sends the finished text, never the audio, to the AI model you already chat with, which fixes punctuation and capitalisation. Your words are never changed.",
+        "model_slow_on_cpu": "Slower than real time on this machine, so the transcript lags behind your speech. Still the most accurate for multilingual and mixed-language input.",
+        "section_fine_tuning": "Fine-tuning",
+        "backend_unknown": "Unknown",
+        "backend_encoder_only": "{{name}} — partly accelerated, text step on CPU",
+        "backend_cpu_only": "Runs on CPU — no GPU in this build",
+        "last_recognition_value": "{{duration}} for the finished text, {{rtf}}× the audio length",
+        "decode_threads_value": "{{n}} decode threads"
       },
       "teamsPanel": {
         "active": "Active",

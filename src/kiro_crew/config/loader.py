@@ -3381,6 +3381,10 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         provider=_validated_stt_provider(stt_data.get("provider", STT_PROVIDER_LOCAL)),
         model=_validated_stt_model(stt_data.get("model", _STT_DEFAULT_MODEL)),
         language_code=stt_data.get("language_code", _sections.STT_LANGUAGE_AUTO),
+        # Reached through the module rather than re-exported: the loader facade's
+        # import list from `sections` is a frozen pre-split snapshot
+        # (test_config_module_boundaries), so a new name must not join it.
+        polish=_safe_bool(stt_data.get("polish"), False),
         streaming=_safe_bool(stt_data.get("streaming"), True),
         silence_ms=_safe_int(
             stt_data.get("silence_ms"),

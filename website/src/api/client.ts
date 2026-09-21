@@ -4237,6 +4237,7 @@ export const api = {
     transcribe_region?: string
     transcribe_profile?: string
     language_code?: string
+    polish?: boolean
   }) => put('/api/config/stt', body).then(j),
   // Recogniser availability plus the model catalog and the progress of any
   // download in flight. Separate from `sttConfig` because it is POLLED while a
@@ -4255,6 +4256,18 @@ export const api = {
   // not pay for the graph allocation. Fire-and-forget at every call site: a
   // failure only costs the latency it was meant to hide.
   sttPrewarm: () => post('/api/stt/prewarm', {}).then(j),
+  // Hand a FINISHED transcript to a fast model for punctuation and spacing, and
+  // get back both strings. Off unless `stt.polish` is on, and refused with 403
+  // when it is off — the switch is the consent, so this is never called
+  // speculatively. Returns `changed: false` (with `text === original`) whenever
+  // the model declined or its reply failed the server's length guard, which the
+  // caller treats as "keep what you have" rather than as a failure.
+  sttPolish: (text: string) => post('/api/stt/polish', { text }).then(j) as Promise<{
+    ok: boolean
+    changed: boolean
+    text: string
+    original: string
+  }>,
   sttTranscribe: (blob: Blob, ext = 'webm') => {
     const fd = new FormData()
     fd.append('audio', blob, `recording.${ext}`)

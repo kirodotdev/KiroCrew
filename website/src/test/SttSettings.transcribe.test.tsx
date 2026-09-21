@@ -243,7 +243,10 @@ describe('SttSettings provider-aware install surface', () => {
 
   it('shows no ffmpeg warning when ffmpeg is present', async () => {
     mount({ provider: 'transcribe', available: true, ffmpeg_missing: false, prereqs: [] })
-    await screen.findByText(/ready/i)
+    // Exact, not /ready/i: that substring also matches "already" inside the AI
+    // cleanup description, so the loose form started finding two nodes as soon as
+    // the panel's copy grew. The assertion is about the STATUS badge.
+    await screen.findByText('ready', { exact: true })
     expect(screen.queryByText(/ffmpeg is missing/i)).toBeNull()
   })
 

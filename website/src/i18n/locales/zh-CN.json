@@ -8699,7 +8699,8 @@
     },
     "useVoiceInput": {
       "transcription_failed": "转写失败：{{error}}",
-      "transcription_request_failed": "转写请求失败。"
+      "transcription_request_failed": "转写请求失败。",
+      "polish_failed": "AI 润色未执行，转写文本保持原样。"
     },
     "useWebSocket": {
       "response_ready": "回复已就绪",
@@ -14378,15 +14379,10 @@
         "provider_desc": "本地语音识别在本机运行，不会向外发送任何内容；Transcribe 会把音频上传到 AWS。",
         "streaming_desc": "边说边把转写结果显示在输入框中，而不是只在停止后显示。",
         "model_option": "{{name}}（{{size}}）",
-        "model_downloaded": "该模型已在本机上。",
         "model_download_prompt": "本机上还没有此模型：需要一次性下载 {{size}}。现在下载可以避免首次听写时的等待。",
         "download_model": "立即下载",
         "download_failed": "无法开始下载。",
         "download_failed_reason": "下载失败：{{error}}",
-        "silence_ms": "结束一句话的停顿（毫秒）",
-        "silence_ms_desc": "多长的静音会提交你刚说的内容。数值越小反应越快，越大越能容忍思考时的停顿。",
-        "partial_interval_ms": "实时转写刷新间隔（毫秒）",
-        "partial_interval_ms_desc": "说话时转写文本的重绘频率。数值越小越即时，但占用更多算力。",
         "unavailable_disabled": "语音转文字已关闭。请在上方将其打开。",
         "unavailable_extra_missing": "语音相关软件包未安装在 gateway 的 Python 环境中。",
         "unavailable_no_wheel": "此平台没有预编译的语音识别组件。请先安装 C++ 编译器和 CMake，然后重新安装语音软件包。",
@@ -14401,7 +14397,16 @@
         "decoder_failure_unknown": "未报告",
         "decoder_agent_prompt": "{{productName}} 转写语音录音所需的音频解码器（ffmpeg）安装失败。请在这台主机上把它修好。\n\n失败原因：{{code}} — {{detail}}\n主机：{{os}} {{arch}}\n\n{{productName}} 只执行 SHA-256 摘要验证通过的 ffmpeg。查找范围限于以下位置：/usr/local/bin、/opt/homebrew/bin、系统默认程序目录，以及数据目录 <data home>/models/ffmpeg/。路径从不作为信任凭据，因此 ~/.local/bin 被有意排除在信任之外，放在那里的副本会被忽略。\n\n请判断这台主机真正需要什么——包管理器、从源码构建，或者再试一次解码器下载——并自行判断是否确有必要使用提权。完成后，重新检查 GET /api/stt/status，并确认语音设置页不再报告解码器缺失。",
         "config_load_failed": "无法加载语音转文字设置。",
-        "status_unavailable": "无法检查语音转文字状态。上方标记显示的是已保存的设置，而非实时探测结果。"
+        "status_unavailable": "无法检查语音转文字状态。上方标记显示的是已保存的设置，而非实时探测结果。",
+        "polish": "用 AI 润色转写文本",
+        "polish_desc": "把成稿文本（绝不含音频）发给你已在对话的 AI 模型，由它修正标点与大小写。你说的词绝不会被改动。",
+        "model_slow_on_cpu": "在这台机器上比实时更慢，转写会落后于你的语音。但在多语言和中英混合输入下仍是最准确的。",
+        "section_fine_tuning": "精细调节",
+        "backend_unknown": "未知",
+        "backend_encoder_only": "{{name}} — 部分加速，生成文字的一步仍在 CPU",
+        "backend_cpu_only": "在 CPU 上运行 — 此构建无 GPU",
+        "last_recognition_value": "完成文本用时 {{duration}}，为音频时长的 {{rtf}} 倍",
+        "decode_threads_value": "解码并发数 {{n}}"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "。与 Slack 不同，Bot Framework 没有\n              仅出站模式。",

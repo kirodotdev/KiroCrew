@@ -9,7 +9,7 @@
  * told the wrong thing about the single fact the feature depends on.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -56,6 +56,12 @@ async function renderPanel() {
     </Provider>,
   )
   await waitFor(() => expect(mockApi.sttConfig).toHaveBeenCalled())
+  // Two disclosures deep now: the panel keeps only the necessary decisions on its
+  // surface, so the key-binding block sits inside its own group inside Fine-tuning.
+  // Opened here rather than asserted shallower, because the copy this spec guards
+  // is exactly the copy a user reads AFTER choosing to configure a key.
+  fireEvent.click(await screen.findByRole('button', { name: /fine-tuning/i }))
+  fireEvent.click(await screen.findByRole('button', { name: /start dictation with a key/i }))
 }
 
 describe('push-to-talk panel copy follows the platform', () => {

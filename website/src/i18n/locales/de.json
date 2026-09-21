@@ -8815,7 +8815,8 @@
     },
     "useVoiceInput": {
       "transcription_failed": "Transkription fehlgeschlagen: {{error}}",
-      "transcription_request_failed": "Transkriptionsanfrage fehlgeschlagen."
+      "transcription_request_failed": "Transkriptionsanfrage fehlgeschlagen.",
+      "polish_failed": "KI-Bereinigung wurde nicht ausgeführt. Ihre Transkription ist unverändert."
     },
     "useWebSocket": {
       "response_ready": "Antwort ist bereit",
@@ -14564,15 +14565,10 @@
         "provider_desc": "Die lokale Spracherkennung läuft auf diesem Rechner und sendet nichts nach außen. Transcribe lädt Ihr Audio zu AWS hoch.",
         "streaming_desc": "Das Transkript beim Sprechen im Eingabefeld anzeigen, statt erst beim Stoppen.",
         "model_option": "{{name}} ({{size}})",
-        "model_downloaded": "Dieses Modell liegt bereits auf diesem Rechner.",
         "model_download_prompt": "Noch nicht auf diesem Rechner: ein einmaliger Download von {{size}}. Jetzt herunterladen erspart eine Wartezeit beim ersten Diktat.",
         "download_model": "Jetzt herunterladen",
         "download_failed": "Der Download konnte nicht gestartet werden.",
         "download_failed_reason": "Der Download ist fehlgeschlagen: {{error}}",
-        "silence_ms": "Pause, die eine Phrase beendet (ms)",
-        "silence_ms_desc": "Wie viel Stille das gerade Gesagte übernimmt. Ein kleinerer Wert reagiert schneller, ein größerer verträgt Denkpausen.",
-        "partial_interval_ms": "Aktualisierung des Live-Transkripts (ms)",
-        "partial_interval_ms_desc": "Wie oft das Transkript beim Sprechen neu gezeichnet wird. Ein kleinerer Wert wirkt unmittelbarer und kostet mehr Rechenleistung.",
         "unavailable_disabled": "Die Spracherkennung ist ausgeschaltet. Schalten Sie sie oben ein.",
         "unavailable_extra_missing": "Die Sprachpakete sind nicht in der Python-Umgebung des Gateways installiert.",
         "unavailable_no_wheel": "Für diese Plattform gibt es keine vorgebaute Spracherkennung. Installieren Sie einen C++-Compiler und CMake und installieren Sie die Sprachpakete erneut.",
@@ -14587,7 +14583,16 @@
         "decoder_failure_unknown": "nicht gemeldet",
         "decoder_agent_prompt": "Der Audio-Decoder (ffmpeg), den {{productName}} zum Transkribieren von Sprachaufnahmen braucht, konnte nicht installiert werden. Bitte bring ihn auf diesem Host zum Laufen.\n\nWas fehlgeschlagen ist: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\n{{productName}} führt nur ein ffmpeg aus, dessen Bytes zu einem festgelegten SHA-256-Digest passen, und sucht genau an diesen Stellen: /usr/local/bin, /opt/homebrew/bin, den eigenen Programmverzeichnissen dieses Betriebssystems und seinem eigenen Digest-geprüften Decoder-Speicher unter <data home>/models/ffmpeg/. Der Pfad ist nie der Vertrauensanker, deshalb gilt ~/.local/bin absichtlich NICHT als vertrauenswürdig, und eine dort abgelegte Kopie wird ignoriert.\n\nFinde heraus, was dieser Host wirklich braucht — einen Paketmanager, einen Build aus den Quellen oder einen weiteren Versuch beim Decoder-Download — und entscheide selbst, ob erhöhte Rechte angebracht sind, bevor du sie einsetzt. Prüfe danach erneut GET /api/stt/status und bestätige, dass die Voice-Einstellungsseite keinen fehlenden Decoder mehr meldet.",
         "config_load_failed": "Die Sprache-zu-Text-Einstellungen konnten nicht geladen werden.",
-        "status_unavailable": "Der Sprache-zu-Text-Status konnte nicht geprüft werden. Das Abzeichen oben zeigt die gespeicherte Einstellung, keine Live-Prüfung."
+        "status_unavailable": "Der Sprache-zu-Text-Status konnte nicht geprüft werden. Das Abzeichen oben zeigt die gespeicherte Einstellung, keine Live-Prüfung.",
+        "polish": "Transkripte mit KI aufräumen",
+        "polish_desc": "Sendet den fertigen Text, nie das Audio, an das KI-Modell, mit dem Sie bereits chatten; es korrigiert Satzzeichen und Großschreibung. Ihre Wörter werden nie geändert.",
+        "model_slow_on_cpu": "Auf diesem Rechner langsamer als Echtzeit, der Text bleibt also hinter dem Gesprochenen zurück. Für mehrsprachige und gemischtsprachige Eingaben dennoch am genauesten.",
+        "section_fine_tuning": "Feinabstimmung",
+        "backend_unknown": "Unbekannt",
+        "backend_encoder_only": "{{name}} — teilweise beschleunigt, Textschritt auf der CPU",
+        "backend_cpu_only": "Läuft auf CPU — kein GPU in diesem Build",
+        "last_recognition_value": "{{duration}} für den fertigen Text, {{rtf}}× der Audiolänge",
+        "decode_threads_value": "{{n}} Dekodier-Threads"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "oben. Im Gegensatz zu Slack hat das Bot Framework keinen\n              rein ausgehenden Modus.",

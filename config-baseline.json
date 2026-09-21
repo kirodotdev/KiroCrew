@@ -3007,6 +3007,7 @@
         "provider": "local",
         "model": "base",
         "language_code": "auto",
+        "polish": false,
         "streaming": true,
         "silence_ms": 700,
         "partial_interval_ms": 400,
@@ -3059,7 +3060,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Model",
-      "help": "Which speech model the local provider downloads and runs. Bigger is more accurate and a longer first-time download: `tiny` on a machine short of memory, `base` for everyone, `small` when accents or jargon are being misheard, `large-v3-turbo` for the best accuracy available.",
+      "help": "Which speech model the local provider downloads and runs. Bigger is more accurate and a longer first-time download: `tiny` on a machine short of memory, `base` for everyone, `small` when accents or jargon are being misheard, `large-v3-turbo` for the best accuracy available -- though on a CPU-only build it can recognise slower than you speak: an 11-second clip took 13.6 s on a 16-thread aarch64 CPU, 1.24x the audio. The Voice panel says so beside the choice when the build it measured has no acceleration.",
       "hasChildren": false,
       "enumValues": [
         "tiny",
@@ -3082,6 +3083,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "auto"
+    },
+    {
+      "path": "stt.polish",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AI Cleanup",
+      "help": "After dictation finishes, have your configured model fix punctuation and capitalisation. Your WORDS are never changed: a reply that altered one is discarded, so the worst case is that nothing happens. Off by default because it sends the TRANSCRIPT (never the audio) to that model, so a local-only setup stays local-only until you turn this on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "stt.streaming",

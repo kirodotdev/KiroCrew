@@ -8699,7 +8699,8 @@
     },
     "useVoiceInput": {
       "transcription_failed": "받아쓰기에 실패했습니다: {{error}}",
-      "transcription_request_failed": "받아쓰기 요청에 실패했습니다."
+      "transcription_request_failed": "받아쓰기 요청에 실패했습니다.",
+      "polish_failed": "AI 정리가 실행되지 않았습니다. 기록된 텍스트는 그대로입니다."
     },
     "useWebSocket": {
       "response_ready": "응답 준비 완료",
@@ -14378,15 +14379,10 @@
         "provider_desc": "로컬 음성 인식은 이 컴퓨터에서 실행되며 아무것도 외부로 보내지 않습니다. Transcribe는 오디오를 AWS로 업로드합니다.",
         "streaming_desc": "멈춘 뒤에만이 아니라 말하는 동안 입력창에 전사 결과를 표시합니다.",
         "model_option": "{{name}} ({{size}})",
-        "model_downloaded": "이 모델은 이미 이 컴퓨터에 있습니다.",
         "model_download_prompt": "아직 이 컴퓨터에 없습니다: 한 번만 내려받으면 되고, 크기는 {{size}}입니다. 지금 받아 두면 첫 음성 입력에서 기다리지 않습니다.",
         "download_model": "지금 다운로드",
         "download_failed": "다운로드를 시작할 수 없습니다.",
         "download_failed_reason": "다운로드에 실패했습니다: {{error}}",
-        "silence_ms": "구절을 끝내는 멈춤 (밀리초)",
-        "silence_ms_desc": "얼마만큼 조용하면 방금 말한 내용을 확정할지 정합니다. 값이 작으면 더 빨리 반응하고, 크면 생각하는 멈춤을 견딥니다.",
-        "partial_interval_ms": "실시간 전사 갱신 간격 (밀리초)",
-        "partial_interval_ms_desc": "말하는 동안 전사 결과를 다시 그리는 빈도입니다. 값이 작으면 더 즉각적으로 느껴지고 처리 부담이 늘어납니다.",
         "unavailable_disabled": "음성 인식이 꺼져 있습니다. 위에서 켜세요.",
         "unavailable_extra_missing": "음성 패키지가 게이트웨이의 Python 환경에 설치되어 있지 않습니다.",
         "unavailable_no_wheel": "이 플랫폼용으로 미리 빌드된 음성 인식기가 없습니다. C++ 컴파일러와 CMake를 설치한 뒤 음성 패키지를 다시 설치하세요.",
@@ -14401,7 +14397,16 @@
         "decoder_failure_unknown": "보고되지 않음",
         "decoder_agent_prompt": "{{productName}}이(가) 음성 녹음을 전사하는 데 필요한 오디오 디코더(ffmpeg)를 설치하지 못했습니다. 이 호스트에서 동작하도록 해 주세요.\n\n실패한 내용: {{code}} — {{detail}}\n호스트: {{os}} {{arch}}\n\n{{productName}}은(는) 바이트가 고정된 SHA-256 다이제스트와 일치하는 ffmpeg만 실행하며, 찾는 위치는 정확히 다음뿐입니다: /usr/local/bin, /opt/homebrew/bin, 이 운영체제 자체의 프로그램 디렉터리, 그리고 <data home>/models/ffmpeg/에 있는 다이제스트 검증 디코더 저장소. 경로는 결코 신뢰의 근거가 아니므로 ~/.local/bin은 의도적으로 신뢰하지 않으며 거기에 둔 복사본은 무시됩니다.\n\n이 호스트에 실제로 필요한 것 — 패키지 관리자, 소스에서 빌드, 또는 디코더 다운로드 재시도 — 을 파악하고, 권한 상승이 적절한지는 사용하기 전에 직접 판단하세요. 끝나면 GET /api/stt/status를 다시 확인하고 음성 설정 페이지가 더 이상 디코더 누락을 보고하지 않는지 확인하세요.",
         "config_load_failed": "음성 인식 설정을 불러올 수 없습니다.",
-        "status_unavailable": "음성 인식 상태를 확인할 수 없습니다. 위 배지는 실시간 확인이 아닌 저장된 설정을 표시합니다."
+        "status_unavailable": "음성 인식 상태를 확인할 수 없습니다. 위 배지는 실시간 확인이 아닌 저장된 설정을 표시합니다.",
+        "polish": "AI로 전사 다듬기",
+        "polish_desc": "오디오가 아니라 완성된 텍스트를 이미 대화 중인 AI 모델로 보내 문장 부호와 대소문자를 고칩니다. 당신의 단어는 절대 바뀌지 않습니다.",
+        "model_slow_on_cpu": "이 컴퓨터에서는 실시간보다 느려서 전사가 음성보다 뒤처집니다. 그래도 다국어 및 혜용 언어 입력에는 가장 정확합니다.",
+        "section_fine_tuning": "세부 조정",
+        "backend_unknown": "알 수 없음",
+        "backend_encoder_only": "{{name}} — 부분 가속, 텍스트 단계는 CPU",
+        "backend_cpu_only": "CPU에서 실행 — 이 빌드에는 GPU가 없습니다",
+        "last_recognition_value": "완성된 텍스트까지 {{duration}}, 오디오 길이의 {{rtf}}밍",
+        "decode_threads_value": "디셈드 수 {{n}}"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "위. Slack과 달리 Bot Framework에는\n 발신 전용 모드가 없습니다.",

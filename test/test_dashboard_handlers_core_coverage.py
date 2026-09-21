@@ -749,13 +749,49 @@ class TestSttConfigEndpoint:
         assert "turbo" not in core_mod._STT_MODEL_SIZES
         async with TestClient(TestServer(_stt_app())) as client:
             assert (await client.put("/api/config/stt", json={"model": "small"})).status == 200
-            refused = await client.put("/api/config/stt", json={"model": "turbo"})
+            # An ALIAS is accepted and canonicalised. It has to be: a catalog cull
+            # turns a retired name into an alias, and refusing those meant someone
+            # whose stored model was retired could not save this panel at all --
+            # a field they never edited was rejected on every write.
+            aliased = await client.put("/api/config/stt", json={"model": "turbo"})
+            assert (await aliased.json())["model"] == "large-v3-turbo"
+            # A name that resolves to NOTHING leaves the stored value alone. The
+            # distinction matters: answering the default here would let one junk
+            # request replace a model the user deliberately chose.
+            refused = await client.put("/api/config/stt", json={"model": "no-such-model"})
             assert refused.status == 200
-            assert (await refused.json())["model"] == "small"
-            accepted = await client.put("/api/config/stt", json={"model": "large-v3-turbo"})
-            assert (await accepted.json())["model"] == "large-v3-turbo"
+            assert (await refused.json())["model"] == "large-v3-turbo"
+            accepted = await client.put("/api/config/stt", json={"model": "tiny"})
+            assert (await accepted.json())["model"] == "tiny"
         stt = json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]
-        assert stt["model"] == "large-v3-turbo"
+        assert stt["model"] == "tiny"
+
+    @pytest.mark.asyncio
+    async def test_put_round_trips_the_cleanup_consent(self, seeded_config) -> None:
+        """The whole feature hangs off this round trip, and it was broken.
+
+        `polish` sends the finished transcript to a model, so it is the one CONSENT
+        setting on this surface. The PUT branch never read it and the GET response
+        never returned it, so the toggle wrote nothing and a reload read the default
+        back -- and because `api_stt_polish` refuses while the flag is False, the
+        endpoint, the hook and the panel were each correct while the feature was
+        dead. Nothing in the UI said so, which is why this asserts the value on
+        DISK rather than only the response.
+        """
+        async with TestClient(TestServer(_stt_app())) as client:
+            assert (await (await client.get("/api/config/stt")).json())["polish"] is False
+            enabled = await client.put("/api/config/stt", json={"polish": True})
+            assert enabled.status == 200
+            assert (await enabled.json())["polish"] is True
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["polish"] is True
+            # And back off again -- a consent setting that cannot be withdrawn is
+            # worse than one that cannot be given.
+            disabled = await client.put("/api/config/stt", json={"polish": False})
+            assert (await disabled.json())["polish"] is False
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["polish"] is False
+            # A non-bool is ignored rather than coerced: "on" must not read as consent.
+            await client.put("/api/config/stt", json={"polish": "yes"})
+            assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["polish"] is False
 
     @pytest.mark.asyncio
     async def test_put_persists_the_millisecond_knobs_at_their_floors(self, seeded_config) -> None:
@@ -938,6 +974,30 @@ class TestSttStatus:
         # that assert on it override this.
         monkeypatch.setattr(core_mod, "ensure_ffmpeg_in_path", lambda: None)
         monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
+
+    @pytest.mark.asyncio
+    async def test_voice_off_reports_no_backend_and_does_not_load_the_library(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """Opening Settings must not dlopen the speech library to answer a question
+        about a feature that is switched off.
+
+        Reading the acceleration calls ``whisper_print_system_info()``, which on macOS
+        runs ``ggml_metal_device_init`` -- measured at +31.8 MB resident held for the
+        process lifetime, and a one-off 6.4 s library build on a cold cache. The
+        provider is already excluded; ``enabled`` has to be too, or every operator who
+        turned voice off still pays that for one visit to the panel. The field is
+        ABSENT rather than null, so the panel renders nothing instead of an unknown.
+        """
+        probed = []
+        monkeypatch.setattr(
+            "kiro_crew.stt.engine.WhisperEngine.capabilities",
+            classmethod(lambda _cls: probed.append(1)),
+        )
+        _seed_stt(seeded_config, enabled=False)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert probed == []
+        assert "backend" not in body
 
     @pytest.mark.asyncio
     async def test_status_reports_the_resolved_model_and_the_whole_catalog(

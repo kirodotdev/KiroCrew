@@ -396,6 +396,185 @@ releases weights after a quiet spell to bound resident memory. Decodes run on
 mutates the context, so two concurrent decodes on one context corrupt each other,
 and a superseded partial aborts rather than queueing.
 
+**Boot prewarm.** `dashboard.server._stt_startup_prewarm` loads and warms the model
+in the background a few seconds after boot, so the first dictation of a gateway's
+life does not pay the cold start. Triggering only on the browser's pointer-down is
+too late: the digest verification and the native load sit in front of the first
+utterance's own decode, so a user who says a short phrase and stops is still waiting
+on them after they have finished speaking. It is registered beside the idle sweep and
+cancelled with it at shutdown.
+
+It removes the hash and the load, NOT the decode, which happens either way. Measured
+on a 32-core aarch64 CPU build (11 s clip, time from "ready to decode" to "transcript
+in hand"): `base` 1.36 s -> 0.66 s, `small` 4.39 s -> 2.44 s, `large-v3-turbo`
+15.47 s -> 13.59 s. The saving is dominated by the digest check, which scales with
+model size and page-cache state -- the same 1.6 GB model hashed in 1.14 s warm and
+5.48 s cold -- so several seconds is the upper bound on a cold host. The first
+decode's graph allocation is negligible on a CPU build (30-40 ms, the gap between the
+first and second decode after a load). On macOS it is not: a reviewer measured
+`ggml_metal_library_init` at 6.364 s on a host whose Metal library cache was cold, and
+0.018 s on every run after, because the OS caches the compiled library. Boot prewarm
+covers that once-per-machine cost, which makes it worth more on a Mac than the aarch64
+figures suggest rather than less.
+
+**A fixture is evidence too, and a wrong one is worse than none.** The capture
+harness answered `/api/stt/status` with `size_mb` where the payload's field is
+`size_bytes`, so `fmtBytes` saw `undefined` and rendered its non-finite answer: every
+screenshot showed the model picker as `base (—)`. A reviewer's blind reader read that
+as "something failed to fill in" and was right about the picture and wrong about the
+product, which is the worst shape a review can take -- a real defect reported against
+code that does not have it, and a fixture that could have hidden a real one just as
+easily. Fixture keys are payload keys; the field name is the contract.
+
+**The badge has four states and this repository's hosts only produce one.** `cpu` is
+what every published bundle links, so `metal`, `cuda`, `coreml` (encoder-only) and
+`unknown` are reachable only by mocking the status payload, and the harness takes the
+state from an environment variable for exactly that. The accelerated stills also carry
+a second fact worth seeing: the slow-model warning under the picker DISAPPEARS on an
+accelerated build, because `large-v3-turbo` is not slow there.
+
+**UI evidence is attached, never committed.** `gh pr edit --attach` rewrites a local
+path into a permanent `user-attachments` URL, which is what `docs/ci/ci-and-reviews.md`
+prescribes and what the review lanes read. Two wrong answers were tried first and are
+worth naming: force-adding the files into `temp-screenshots/` puts binaries in this
+repository's history forever past a `.gitignore` rule that exists to prevent exactly
+that, and hosting them on a side branch leaves the evidence outside the PR with no tie
+to its head, which the design lane rejects as unevaluable. The attachment path is the
+only one that satisfies both.
+
+Four restraints, each with a test, because a task on every boot has more ways to do
+harm than good:
+
+- It NEVER downloads. Only an already-present model is warmed (`is_present` is
+  checked first), so a gateway cannot spend a user's bandwidth on 1.6 GB because it
+  restarted. The first-run download stays an explicit `POST /api/stt/prepare`.
+- It does not run when `stt.enabled` is false or the provider is not `local`, and in
+  those cases it does not even IMPORT the recognizer -- that import pulls numpy and
+  the native binding, measured at 169 ms.
+- It does not block boot and does not run on the event loop: the delay plus
+  `asyncio.to_thread` for the import, exactly as the idle sweep does it.
+- It does not run when memory is short: `subagent._available_memory_gb` must report at
+  least twice the model's size, and a reading that could not be taken is treated as
+  "do not speculate". `large-v3-turbo` measured 1861 MB resident on a reviewer's Mac,
+  and a desktop install restarts the gateway with the app -- so without this an 8 GB
+  machine pays that per launch for `idle_evict_secs` whether or not its owner dictates.
+  The pointer-down prewarm still covers the case.
+
+  The reading is cgroup-CLAMPED rather than the host's `MemAvailable`, which is the
+  one that matters in a container: `/proc/meminfo` reports the HOST there, so a 1.6 GB
+  model clears a host-wide check and is then OOM-killed against the cgroup limit, and
+  because this step runs on every boot that is a crash loop no config change escapes.
+  `subagent._available_memory_gb` already takes the minimum of the host reading and the
+  tightest visible cgroup headroom on every platform, so it answers the question this
+  gate is asking; `resource_status` reuses it across modules the same way, which is why
+  this does not add a second implementation.
+- It cannot fail the gateway. Every reason it gives up -- no model, no recognizer, a
+  load that timed out -- is a state the gateway is expected to run in, so its
+  done-callback consumes the exception rather than re-raising the way the sweep's
+  deliberately does.
+
+It also passes `stt.idle_evict_secs` and `stt.timeout_secs` when it first reaches
+`shared_engine`, because that function is a process singleton whose bounds are set by
+its first caller; booting without them would leave the module defaults in force.
+
+**The section label is the backend name.** Easy to get backwards, and getting it
+backwards inverts the answer on two of the three shipped platforms. Upstream builds
+`whisper_print_system_info()` by walking the ggml backend registry and printing each
+registry's NAME as a section label, then that registry's own features as `KEY = VALUE`
+pairs. So `VITISAI`, `COREML` and `OPENVINO` are the only genuine backend flags; CUDA,
+Vulkan, Metal, ROCm, SYCL and BLAS appear only as labels, and CUDA's own flags are
+`ARCHS` / `USE_GRAPHS`. There is no `CUDA = 1` token in any build's output.
+
+The first version of `stt/capabilities.py` flattened the labels away as noise, which
+made `detect()` report every Mac (`MTL :`) and every CUDA or Vulkan build as CPU-only
+-- the exact failure this module exists to prevent, in the unsafe direction, on the
+platforms where acceleration matters most. Two reviewers caught it on real hardware,
+one measuring `large-v3-turbo` at RTF 0.070 over Metal on a machine the panel was
+warning could not keep up with speech. The fixtures were the reason the suite stayed
+green: they synthesized `CUDA = 1` and `METAL = 1` tokens inside the `CPU :` section, a
+shape no build emits, so they pinned the assumption rather than the format. Every
+fixture is now a verbatim capture, and one test asserts those tokens are ABSENT so a
+future fixture cannot drift back.
+
+Apple is the reason label matching is a table of accepted spellings: its Metal registry
+shortens to `MTL`, and its BLAS appears as the CPU-registry feature `ACCELERATE` rather
+than a `BLAS :` section.
+
+A caveat the module cannot fix: this string is COMPILE-TIME information. Which backend a
+load actually uses is stated only by the loader's own `using <name> backend` lines,
+reachable through `whisper_log_set` during a load. What is reported is therefore "what
+was linked", not "what ran".
+
+**Which acceleration is actually present.** `stt.capabilities` answers this by
+parsing `whisper_print_system_info()`, which is produced BY the compiled artifact
+and lists the backends linked into it. Nothing else is evidence:
+`whisper_context_default_params()` returns `use_gpu=True` and `flash_attn=True` on
+a CPU-only wheel (measured on the packaged `pywhispercpp` for linux-aarch64), so
+those fields report the request rather than the grant. The published wheels are
+described upstream as CPU-only builds, with CUDA, Vulkan, CoreML and OpenBLAS each
+requiring a different source build, so "has a GPU, uses the GPU" is a common false
+inference rather than an edge case. A build that cannot be interrogated reports
+`unknown` and `accelerated: false`: the module never guesses, because a guess here
+tells a user to stop expecting a speedup they are not getting.
+
+**There is deliberately no `stt.local_backend` key.** One was built and then removed
+before merge, and the reason is worth keeping: its only reader was the status echo
+that reported whether it had been honoured. No load path consulted it, so naming
+`cuda` on a CPU-only build changed nothing except the sentence the panel printed
+about the value the user had just set. A config key is honoured forever once it
+ships, and a 14-value one whose entire effect is a note about itself is surface with
+no function -- the same objection that retired the adaptive partial-cadence budget in
+this change. `detect()` and the badge stay, because reporting the backend the build
+actually links is the fix; asking for one was never the fix.
+
+Installing acceleration is a packaging problem (the published wheel links none), and
+a config key cannot solve it. If backend selection ever becomes real it needs a
+loader that acts on it, which is a different change.
+
+**Decode cost is a fixed floor plus a small marginal term.** whisper.cpp pads every
+decode into a fixed analysis window, so the cost of a decode is dominated by a
+constant rather than by the length of the audio. Measured with `base` on a 32-core
+aarch64 CPU build: 0.5 s of audio in 0.82 s, 2 s in 0.86 s, 8 s in 1.29 s, 11 s in
+1.65 s -- about 0.78 s fixed plus 0.08 s per audio-second. Two consequences that
+matter for anyone tuning this path:
+
+- The real-time factor of one model on one host spans 1.64 to 0.15 depending only
+  on how much audio it was handed, so RTF is a reporting figure and cannot be used
+  as a multiplier to project a decode's cost. The previous decode's absolute wall
+  time is the honest predictor.
+- `stt.partial_interval_ms`'s 400 ms default is below that floor, so on a CPU build
+  the cadence is bounded by inference rather than by the setting. The interval is
+  measured from the END of a decode, which bounds the queue but not the share of the
+  machine cosmetic work takes.
+
+**The Voice panel's shape follows from that.** Two duration pickers were retired from
+Settings -> Voice as a consequence of the paragraph above, not as a matter of taste:
+`stt.partial_interval_ms` asked a user to choose a cadence the recogniser cannot
+honour on any CPU build, and `stt.silence_ms` asked them to tell 700 ms from 750 ms by
+feel. Both keys are still read from `config.json`, so an operator who has measured
+their own pauses loses nothing; only the pickers are gone, because a dial nobody can
+aim is worse than no dial. What a user actually reaches for when dictation cuts them
+off is `stt.endpointing`, which is the behaviour those milliseconds were tuning.
+
+The panel now keeps six decisions on its surface (enabled, microphone, provider,
+model, language, transcript polish) and puts everything else behind a disclosure,
+with the key binding behind a second one inside it. The acceleration rides on the
+Status row rather than in a section of its own, and the decode-thread count and the
+last decode's cost sit in the tip beside it: they answer "why is it slow", which is a
+question a user goes looking for, so they do not need permanent space.
+`test/SttSettings.surface.test.tsx` pins that shape, because a regression here does
+not throw -- it quietly puts a knob back on the surface.
+
+**Where the streaming time actually goes.** Measured streaming an 11 s clip in real
+time through the full session on the same host: with `base`, 7 partials costing
+4.1 s and 5 phrase commits costing 2.9 s, against a 1.65 s final -- cosmetic and
+phrase-commit inference together are roughly 4x the cost of the text the user keeps.
+With `large-v3-turbo` the same clip costs 40 s of partials and 68 s of phrase
+commits, and the session finishes ~138 s behind real time. Phrase commits, whose
+text is RETAINED and which are therefore not cosmetic, are the larger share in both
+cases. Any future attempt to reduce streaming cost should start there rather than at
+the partial cadence.
+
 `stt.engine`'s docstring carries the two properties that make this safe inside
 the gateway process: whisper.cpp releases the GIL for the duration of a decode,
 and it writes nothing to stdout with `print_progress=False` and
@@ -405,17 +584,223 @@ stderr is not quiet, so no test may assert it empty.
 
 `redirect_whispercpp_logs_to` stays at its `False` default. Its binding governs stderr rather than the log callback, and `None` redirects process-wide fd 2 during model loading, silencing unrelated threads while leaving stdout behavior unchanged.
 
+## Tidying a finished transcript
+
+`stt.polish` (default **false**) hands a FINISHED transcript to a fast model for
+punctuation and capitalisation -- never words, and never where they divide. It is off by default because it is the one part of the local
+provider that sends anything off the machine: the TEXT leaves, the audio never does.
+The switch is the consent, so `POST /api/stt/polish` refuses with 403
+`stt_polish_disabled` when it is off rather than quietly passing the transcript
+through -- a setting that is honoured only sometimes is a decoration.
+
+Why it is an endpoint and not a frame on the speech websocket, which is the design
+decision worth recording: that socket closes shortly after the final (the server has
+a bounded deadline to deliver it and then ends the session), so a correction routed
+through it would be cancelled in the most common case of all -- the user stops talking
+and the correction is still in flight. An endpoint also serves the MediaRecorder batch
+path, which never opens that socket, and it can hand the caller BOTH strings so
+reverting is a local swap rather than another round-trip.
+
+It reuses `llm_helpers.run_bg_oneliner` with `model="auto"`, the same seam
+`stt.endpointing` already uses, so this adds a second consumer of an existing boundary
+rather than a new one. The prompt forbids changing a word at all, and
+**translating** specifically -- the last because code-switched speech is the least accurate input
+the recogniser has (CER 0.436 on `base`) and therefore the input a model is most
+tempted to "fix" by rendering it in one language.
+
+Four properties, each with a test:
+
+- **Never blocks dictation.** The recogniser's own text is in the composer and is
+  already sendable before the request goes out. The correction replaces it a moment
+  later or does not arrive at all.
+- **Never changes a WORD.** The load-bearing guard, and the length band alone was not
+  it. A reply is accepted only when its letters and digits, lowercased, are identical
+  to the original's; the 0.6-1.8x length band is kept merely to bound the comparison
+  on a pathological reply. A length check by itself admits every substitution of a
+  similar length, which is every meaning-changing rewrite there is: `deploy to
+  staging` comes back as `deploy to production`, passes, and lands in the composer of
+  a user who is by definition not watching the text appear.
+
+  The comparison is per CHARACTER rather than per token, because in Chinese the words
+  ARE the characters and a token-based check would compare one giant token and notice
+  nothing. It is blind to marks and to case, which is exactly the set of changes this
+  feature is for, and NOT blind to where the words divide, because that is where the
+  corruption hides: `apart` and `a part` share their letters and mean opposite things.
+
+  So every division in the transcript must survive, and a division the transcript did
+  not have may only appear where the separator is punctuation a correction pass is
+  entitled to insert -- a mark with no whitespace beside it, or a boundary between a
+  script that spaces its words and one that does not.
+  Both halves of that allowance turn on the same property, and the mark half is the
+  narrower one: a mark may create a division ONLY inside a script that runs its words
+  together. Chinese writes `部署到测试环境` as one run, so the comma this feature exists
+  to insert necessarily creates a division and refusing it would refuse the feature; a
+  space between Chinese and Latin text is a typographic fix on the worst-measured
+  bucket (code-switched zh/en, CER 0.436).
+
+  A script that SPACES its words gets no mark-created divisions at all, because there
+  the division is a word being replaced. `shell continue` returned as `She'll continue`
+  keeps every letter and changes who is continuing, and `well` to `we'll`, `wont` to
+  `won't` and `were` to `we're` are the same edit -- restoring a contraction apostrophe
+  and rewriting a word are indistinguishable from outside, which is the same reason
+  this pass does not attempt mis-hearing corrections at all. The cost is real and
+  accepted: `dont` stays `dont`. English loses nothing else, because a full stop or a
+  comma it legitimately restores goes on a division the transcript already has, and an
+  apostrophe the recogniser itself produced is punctuation like any other -- the rule
+  forbids CREATING a division, not keeping one.
+
+  The space allowance asks whether each side's script SPACES its words, and not
+  whether the two scripts differ. `isascii()` reads like a cheap stand-in for that and
+  is wrong in the direction that costs a word: `é` is not ASCII and `i` is, so
+  `caféine` returned as `café ine` looks like a boundary between two scripts when it
+  is one Latin word cut in half, and an accent beside a plain letter is ordinary input
+  in every accented language. Asking about spacing instead also refuses a seam the
+  scripts-differ test would have allowed -- Japanese crosses kanji and kana inside one
+  word, so `食べる` as `食 べる` has no place for a space either. Unicode has no script
+  property in the standard library; the character NAME carries it as its first word
+  (`LATIN SMALL LETTER E WITH ACUTE`, `CJK UNIFIED IDEOGRAPH-4E2D`), which is enough
+  for a question this coarse. Digits count as spaced, so a space between Chinese text
+  and a number is accepted for the same typographic reason a space before Latin text
+  is, while `abc123` as `abc 123` is not.
+
+  The content check underneath all of that discards NOTHING, and that is deliberate.
+  Every check built on normalising both sides and comparing the remainder has to decide
+  what to drop, and whatever it drops becomes a class the model may change unobserved:
+  the same guard successively missed symbols (`hello` -> `hello 🚀`), combining marks
+  (`कि` -> `क.`) and a symbol RELOCATED rather than added (`$100 fee` -> `100$ fee`,
+  same letters, same symbol, same divisions). So the two strings are case-folded and
+  ALIGNED instead, and every span that is not common to both must consist purely of
+  punctuation or whitespace. That one rule covers words changed, added, removed or
+  reordered, symbols and control codes inserted, deleted or moved, and combining marks
+  stripped -- the only characters exempt from the comparison are the ones the feature
+  exists to change. Whitespace is tested with `str.isspace` rather than by category,
+  because a newline and a tab are control characters and are ordinary separators here.
+  The division rules still stand on top of it: deleting a space IS deleting
+  whitespace, so where the words divide needs its own rule. The 0.6-1.8x length band
+  runs first, which bounds the alignment's cost on a pathological reply.
+
+  `GET /api/stt/status` skips the acceleration probe unless the local provider is BOTH
+  selected and enabled. Reading it calls `whisper_print_system_info()`, which on macOS
+  runs `ggml_metal_device_init` -- +31.8 MB resident held for the process lifetime and
+  a one-off 6.4 s library build on a cold cache -- so an operator who turned voice off
+  would otherwise pay that for one visit to Settings. The `backend` block is ABSENT
+  rather than null in that case, so the panel renders nothing instead of an unknown.
+
+  The PROMPT is narrow for the same reason. Asking a model to fix "words the recogniser
+  clearly misheard" cannot be made safe: a correct correction and a meaning change are
+  the same operation seen from outside. Punctuation and
+  capitalisation are the subset whose result can be VERIFIED
+  rather than trusted -- and they are what the panel promised all along ("fixes
+  punctuation"), so the broader prompt was asking the user to consent to something the
+  interface never mentioned.
+
+  The response reports `changed: false` for a decline, a timeout, an empty reply, a
+  length rejection and a word rejection alike: from the caller's side all five mean
+  "keep what you have", and distinguishing them would invite a client to treat a safe
+  outcome as a failure. The two rejections are logged distinctly, because a word
+  rejection means the prompt is not holding and a length one only means the model
+  rambled.
+- **Redacted both ways, and a redaction that BITES declines the reply.** Credentials
+  and exfiltration URLs are stripped from the text before it is sent, and again from
+  the model's reply, which is new text the outbound pass says nothing about. The second
+  pass runs after the word check, so if it changes anything the text is no longer the
+  text that passed: a marker has replaced a span the user dictated, which is the exact
+  failure the word check exists to prevent, arriving after it ran. Ordering cannot fix
+  this -- redacting first would validate a string the user never dictated either -- so
+  the reply is declined and the original returned. Reachable in practice: the words
+  `send it to https evil test steal data AKIA...` re-punctuate into a URL whose letters
+  are identical, every original division survives as a mark, and the scrubber then
+  rewrites the whole span.
+- **Belongs to the composer that asked.** The originating `sessionId` is captured when
+  the request goes out and re-checked before the replacement is applied. A value check
+  alone is not enough and the gap was not theoretical: two slots routinely hold
+  byte-identical drafts -- an empty one is the common case -- so a late reply for slot
+  A satisfied "the text is unchanged" and rewrote slot B's draft. Identity has to be
+  checked as identity.
+
+- **Not applied to a manually-stopped stream, which is a known gap.** After a manual
+  stop the partial route (not the delivery route) is what turns the last hypothesis
+  into the real transcript, and it keeps firing while the socket drains -- so there is
+  no "this one is final" signal to polish against, and polishing a mid-drain
+  hypothesis would be overwritten by the next partial. The falling edge of
+  `useVoiceInput`'s `streamDraining` is the signal a fix would use; wiring it is a
+  change to the streaming path rather than to this feature, so it is recorded here
+  rather than guessed at. A manually-stopped stream therefore delivers an unpolished
+  transcript even with the setting on.
+
+- **Never overwrites the user.** `useComposerVoice.polishDictation` rewrites only the
+  span it wrote itself, and only while the composer value is still byte-identical to
+  what the delivery left. If the user typed, sent, or another utterance landed, the
+  replacement is dropped rather than merged -- guessing at a merge there deletes text
+  the user authored after they stopped talking, which is worse than not polishing.
+  It never auto-submits.
+
 ## Model download
 
-`stt.models` holds the catalog: name, byte size and a sha256 digest per entry.
+`stt.models` holds the catalog: name, byte size and a sha256 digest per entry. The
+rows are `tiny`, `base`, `small` and `large-v3-turbo`, unchanged by this work.
+
+**A quantized catalog was built here and then withdrawn before merge.** The
+measurements stand and are worth keeping, because they are why the idea was
+attractive: on a CPU build `base-q8_0` decodes an 11 s clip in 0.40 s against `base`'s
+0.62 s for a byte-identical transcript at 45% of the download, and over 60 clips in ten
+language buckets `tiny` was dominated outright by it (Portuguese 0.826 against 0.409,
+Italian 0.761 against 0.477).
+
+It was withdrawn for two reasons, both of which outrank the measurements:
+
+- **It is a product-shape change, and this was not the change to make it in.** Removing
+  `tiny` and full-precision `small` alters what a user can download and run. That needs
+  its own decision with its own record; measurements in a pull-request description are a
+  proposal, not an accepted one. Making local dictation honest about its speed never
+  required changing which models exist.
+- **The speed premise is platform-local.** Every figure above was measured on a CPU
+  build. On Metal a reviewer measured full-precision `small` decoding 5.5 s of audio in
+  195 ms (RTF 0.036), where the 2.6x download `small-q5_1` saves buys nothing while
+  `small`'s accuracy advantage over it (Chinese CER 0.349 against 0.413) still applies.
+  A cull justified by CPU speed would be wrong for every accelerated user.
+
+A retired row would also have stranded its weights: `ggml-tiny.bin` and
+`ggml-small.bin` stay on disk with no catalog row referencing them, so nothing lists
+them and nothing reclaims them. Any future cull has to answer that first.
+
+**`large-v3-turbo` is slower than real time on a CPU build** (RTF 1.24, so 11 s of
+speech costs 13.6 s) and is kept, because measured per language it is the best model
+available by a wide margin for exactly the users who need one: German 0.063 against
+`small`'s 0.180, Italian 0.114 against 0.239, Portuguese 0.113 against 0.139, and
+code-switched Mandarin-English 0.282, the best reading any model produced on that
+bucket. Its cost is made VISIBLE instead, which is this change's actual subject:
+`GET /api/stt/status` reports the backend and the measured real-time factor.
+
+`PUT /api/config/stt` resolves the model field through `models.canonical_name` rather
+than testing membership of the catalog: a membership test rejects an alias, so
+someone whose stored model was retired could not save the panel at all -- a field
+they never edited was refused on every write. `canonical_name` is deliberately not
+`resolve`: an unrecognised name returns `None` and leaves the stored value alone,
+where `resolve` would answer the default and let one junk request replace a model the
+user deliberately chose.
+
 Four endpoints expose it, all four refused to an app token by `_deny_app_token`
 because they start a download and warm a resident model inside the gateway, which
 is operator setup rather than something an app earns by naming a path (the
 transcription surfaces are deliberately open to an app token):
 
 - `GET /api/stt/status`: the availability code and prose, the resolved model with
-  `model_present` and its size, whether a model is resident right now, and the
-  live transfer state. Separate from `GET /api/config/stt`, which serves settings.
+  `model_present` and its size, whether a model is resident right now, and the live
+  transfer state. Separate from `GET /api/config/stt`, which serves settings. It also
+  carries `backend: {name, accelerated, encoder_only, detail, cpu_features, sections,
+  system_info, threads, os, arch, python}` -- read from the build, with
+  `accelerated: false` whenever it cannot be interrogated. `sections` is the ordered
+  list of ggml registry LABELS, which is where `name` comes from. The whole `backend`
+  block is ABSENT rather than null-filled when the provider is not `local`, so
+  nothing reports a CPU backend for a cloud recogniser. Then `timings`, the most
+  recent load episode split into
+  `hash_ms` / `load_ms` / `first_decode_ms` plus recent per-decode costs. `timings`
+  holds durations, counts and the model name only: never audio, never a transcript,
+  no paths and no host identity, so it is safe to quote in a bug report. Splitting
+  the load episode is what makes a cold start legible -- a 1.6 GB model spends
+  seconds in its digest verification before the recognizer is asked to do anything,
+  and one total cannot tell that apart from a slow model.
   It also carries `ffmpeg: {present, source, auto_fetch, os, arch, download}`.
   `source` is `bundled` | `system` | `store` | `null` and names WHICH decoder the
   transcode path would run, because each one is repaired differently — reinstall

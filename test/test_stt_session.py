@@ -16,7 +16,7 @@ import pytest
 from kiro_crew.stt import engine as engine_mod
 from kiro_crew.stt import models
 from kiro_crew.stt import session as session_mod
-from kiro_crew.stt import vad
+from kiro_crew.stt import telemetry, vad
 
 SR = vad.SAMPLE_RATE_HZ
 
@@ -65,6 +65,8 @@ class _FakeEngine:
         #: model prepared for it rather than one another session swapped in.
         self.loaded_key = engine_mod.LoadedKey("/stub/ggml-base.bin", "en", 4)
         self.expected: list[object] = []
+        #: The `kind` each decode was labelled with, in order.
+        self.kinds: list[str] = []
         #: Set to a `DecodeFailed` to make every decode fail. Assigned per test rather
         #: than fixed at construction because the interesting cases are transitions:
         #: a session that keeps working after a failed partial, and one that recovers.
@@ -76,9 +78,21 @@ class _FakeEngine:
             return engine_mod.Availability(True)
         return engine_mod.Availability(False, engine_mod.CODE_EXTRA_MISSING, "no recogniser")
 
-    async def decode(self, pcm, *, superseding: bool = False, expect=None, abort_if=None) -> str:
+    async def decode(
+        self,
+        pcm,
+        *,
+        superseding: bool = False,
+        expect=None,
+        abort_if=None,
+        kind: str = telemetry.KIND_FINAL,
+    ) -> str:
         self.decodes.append((len(pcm), superseding))
         self.expected.append(expect)
+        # Recorded so a test can assert WHICH path spent inference. The kind decides
+        # what the partial budget reads back and what a diagnostic attributes cost
+        # to, so a decode mislabelled as cosmetic would silently be budgeted.
+        self.kinds.append(kind)
         if self.fail_with is not None:
             raise self.fail_with
         return self._text

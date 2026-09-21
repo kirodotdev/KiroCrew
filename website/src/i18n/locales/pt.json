@@ -8931,7 +8931,8 @@
     },
     "useVoiceInput": {
       "transcription_failed": "Falha na transcrição: {{error}}",
-      "transcription_request_failed": "A solicitação de transcrição falhou."
+      "transcription_request_failed": "A solicitação de transcrição falhou.",
+      "polish_failed": "A limpeza por IA não foi executada. Sua transcrição está inalterada."
     },
     "useWebSocket": {
       "response_ready": "Resposta pronta",
@@ -14750,15 +14751,10 @@
         "provider_desc": "O reconhecimento de voz local é executado nesta máquina e não envia nada para fora. O Transcribe envia o seu áudio para a AWS.",
         "streaming_desc": "Mostrar a transcrição na caixa de texto enquanto você fala, em vez de apenas quando parar.",
         "model_option": "{{name}} ({{size}})",
-        "model_downloaded": "Este modelo já está nesta máquina.",
         "model_download_prompt": "Ainda não está nesta máquina: um download único de {{size}}. Baixá-lo agora evita uma espera durante o seu primeiro ditado.",
         "download_model": "Baixar agora",
         "download_failed": "Não foi possível iniciar o download.",
         "download_failed_reason": "O download falhou: {{error}}",
-        "silence_ms": "Pausa que encerra uma frase (ms)",
-        "silence_ms_desc": "Quanto silêncio confirma o que você acabou de dizer. Um valor menor reage mais rápido; um maior tolera pausas para pensar.",
-        "partial_interval_ms": "Atualização da transcrição ao vivo (ms)",
-        "partial_interval_ms_desc": "Com que frequência a transcrição é redesenhada enquanto você fala. Um valor menor parece mais imediato e consome mais processamento.",
         "unavailable_disabled": "A transcrição de voz está desativada. Ative-a acima.",
         "unavailable_extra_missing": "Os pacotes de voz não estão instalados no ambiente Python do gateway.",
         "unavailable_no_wheel": "Não existe um reconhecedor de voz pré-compilado para esta plataforma. Instale um compilador C++ e o CMake e reinstale os pacotes de voz.",
@@ -14773,7 +14769,16 @@
         "decoder_failure_unknown": "não informado",
         "decoder_agent_prompt": "Não foi possível instalar o decodificador de áudio (ffmpeg) de que o {{productName}} precisa para transcrever gravações de voz. Faça-o funcionar neste host.\n\nO que falhou: {{code}} — {{detail}}\nHost: {{os}} {{arch}}\n\nO {{productName}} só executa um ffmpeg cujos bytes correspondam a um resumo SHA-256 fixado, e procura exatamente nestes lugares: /usr/local/bin, /opt/homebrew/bin, os diretórios de programas do próprio sistema operacional e seu próprio repositório de decodificadores verificado por resumo em <data home>/models/ffmpeg/. O caminho nunca é a âncora de confiança, então ~/.local/bin NÃO é confiável de propósito e uma cópia deixada ali é ignorada.\n\nDescubra o que este host realmente precisa — um gerenciador de pacotes, uma compilação a partir do código-fonte ou outra tentativa de baixar o decodificador — e decida por conta própria se privilégios elevados se justificam antes de usá-los. Ao terminar, verifique novamente GET /api/stt/status e confirme que a página de configurações de Voz não relata mais um decodificador ausente.",
         "config_load_failed": "Não foi possível carregar as configurações de fala para texto.",
-        "status_unavailable": "Não foi possível verificar o status de fala para texto. O selo acima mostra a configuração salva, não uma verificação ao vivo."
+        "status_unavailable": "Não foi possível verificar o status de fala para texto. O selo acima mostra a configuração salva, não uma verificação ao vivo.",
+        "polish": "Refinar transcrições com IA",
+        "polish_desc": "Envia o texto final, nunca o áudio, ao modelo de IA com que você já conversa, que corrige pontuação e maiúsculas. Suas palavras nunca são alteradas.",
+        "model_slow_on_cpu": "Nesta máquina é mais lento que o tempo real, então a transcrição atrasa em relação à sua fala. Ainda é o mais preciso para entrada multilíngue e mista.",
+        "section_fine_tuning": "Ajuste fino",
+        "backend_unknown": "Desconhecida",
+        "backend_encoder_only": "{{name}} — parcialmente acelerado, a etapa de texto na CPU",
+        "backend_cpu_only": "Executa na CPU — sem GPU nesta build",
+        "last_recognition_value": "{{duration}} para o texto final, {{rtf}}× a duração do áudio",
+        "decode_threads_value": "{{n}} threads de decodificação"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "acima. Diferente do Slack, o Bot Framework não tem\n              modo somente de saída.",

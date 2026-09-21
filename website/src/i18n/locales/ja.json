@@ -8699,7 +8699,8 @@
     },
     "useVoiceInput": {
       "transcription_failed": "文字起こしに失敗しました：{{error}}",
-      "transcription_request_failed": "転写リクエストが失敗しました。"
+      "transcription_request_failed": "転写リクエストが失敗しました。",
+      "polish_failed": "AI によるクリーンアップは実行されませんでした。文字起こしは変更されていません。"
     },
     "useWebSocket": {
       "response_ready": "応答の準備ができました",
@@ -14378,15 +14379,10 @@
         "provider_desc": "ローカルの音声認識はこのマシン上で動作し、どこにも送信しません。Transcribe は音声を AWS にアップロードします。",
         "streaming_desc": "停止したときだけでなく、話している間も入力欄に文字起こしを表示します。",
         "model_option": "{{name}}（{{size}}）",
-        "model_downloaded": "このモデルはすでにこのマシンにあります。",
         "model_download_prompt": "まだこのマシンにありません: 一度だけ {{size}} のダウンロードが必要です。今取得しておくと、最初の音声入力で待たされません。",
         "download_model": "今すぐダウンロード",
         "download_failed": "ダウンロードを開始できませんでした。",
         "download_failed_reason": "ダウンロードに失敗しました: {{error}}",
-        "silence_ms": "フレーズを区切る無音の長さ（ミリ秒）",
-        "silence_ms_desc": "どれだけ無音が続いたら話した内容を確定するか。小さくすると反応が早くなり、大きくすると考えるための間を許容します。",
-        "partial_interval_ms": "リアルタイム文字起こしの更新間隔（ミリ秒）",
-        "partial_interval_ms_desc": "話している間に文字起こしを描き直す頻度。小さくするとより即時に感じられ、処理負荷は増えます。",
         "unavailable_disabled": "音声入力はオフになっています。上でオンにしてください。",
         "unavailable_extra_missing": "音声用パッケージがゲートウェイの Python 環境にインストールされていません。",
         "unavailable_no_wheel": "このプラットフォーム向けのビルド済み音声認識エンジンはありません。C++ コンパイラーと CMake をインストールし、音声用パッケージを再インストールしてください。",
@@ -14401,7 +14397,16 @@
         "decoder_failure_unknown": "報告なし",
         "decoder_agent_prompt": "{{productName}} が音声録音を文字起こしするために必要なオーディオデコーダー（ffmpeg）をインストールできませんでした。このホストで動作するようにしてください。\n\n失敗した内容: {{code}} — {{detail}}\nホスト: {{os}} {{arch}}\n\n{{productName}} は、バイト列が固定された SHA-256 ダイジェストと一致する ffmpeg のみを実行し、探す場所はこれだけです: /usr/local/bin、/opt/homebrew/bin、この OS 自身のプログラムディレクトリ、そして <data home>/models/ffmpeg/ にあるダイジェスト検証済みのデコーダーストア。パスは決して信頼の根拠にならないため、~/.local/bin は意図的に信頼されず、そこに置いたコピーは無視されます。\n\nこのホストに実際に必要なもの——パッケージマネージャー、ソースからのビルド、あるいはデコーダーのダウンロードの再試行——を見極め、権限昇格が適切かどうかは自分で判断してから使ってください。終わったら GET /api/stt/status を再確認し、音声設定ページがデコーダーの不足を報告しなくなったことを確かめてください。",
         "config_load_failed": "音声認識の設定を読み込めませんでした。",
-        "status_unavailable": "音声認識の状態を確認できませんでした。上のバッジはライブ確認ではなく保存済みの設定を表示しています。"
+        "status_unavailable": "音声認識の状態を確認できませんでした。上のバッジはライブ確認ではなく保存済みの設定を表示しています。",
+        "polish": "AI で文字起こしを整える",
+        "polish_desc": "音声ではなく完成したテキストを、すでに会話している AI モデルに送り、句読点と大文字小文字を修正します。あなたの言葉は変更されません。",
+        "model_slow_on_cpu": "このマシンでは実時間より遅く、文字起こしが発話に追いつきません。それでも多言語・言語混在の入力では最も正確です。",
+        "section_fine_tuning": "詳細調整",
+        "backend_unknown": "不明",
+        "backend_encoder_only": "{{name}} — 一部のみ高速化、文字化の処理は CPU",
+        "backend_cpu_only": "CPU で実行 — このビルドに GPU はありません",
+        "last_recognition_value": "確定テキストまで {{duration}}、音声長の {{rtf}} 倍",
+        "decode_threads_value": "デコードスレッド {{n}}"
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "上記。Slack とは異なり、Bot Framework には\n              送信専用モードがありません。",

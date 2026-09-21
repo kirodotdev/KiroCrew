@@ -1271,7 +1271,6 @@
       "label": "Auto-submit when I finish speaking",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.endpointing",
-      "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
       "configKey": "stt.endpointing"
     },
     {
@@ -1306,15 +1305,13 @@
       "id": "voice.dictation-panel",
       "label": "Dictation panel",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.dictation-panel",
-      "description": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion."
+      "route": "/settings/voice?highlight=voice.dictation-panel"
     },
     {
       "id": "voice.enabled",
       "label": "Enabled",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.enabled",
-      "description": "Transcribe voice into the message box when you click the mic"
+      "route": "/settings/voice?highlight=voice.enabled"
     },
     {
       "id": "voice.engine",
@@ -1337,35 +1334,17 @@
       "configKey": "stt.language_code"
     },
     {
-      "id": "voice.live-transcript-refresh-ms",
-      "label": "Live transcript refresh (ms)",
-      "tab": "voice",
-      "route": "/settings/voice?highlight=key%3Astt.partial_interval_ms",
-      "description": "How often the transcript is redrawn while you speak. Lower feels more immediate and costs more processing.",
-      "configKey": "stt.partial_interval_ms"
-    },
-    {
       "id": "voice.microphone",
       "label": "Microphone",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.microphone",
-      "description": "Input device used to capture your voice"
+      "route": "/settings/voice?highlight=voice.microphone"
     },
     {
       "id": "voice.model",
       "label": "Model",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.model",
-      "description": "Models download on demand. Select one and click Download now; the desktop app already includes every other runtime dependency.",
       "configKey": "stt.model"
-    },
-    {
-      "id": "voice.pause-that-ends-a-phrase-ms",
-      "label": "Pause that ends a phrase (ms)",
-      "tab": "voice",
-      "route": "/settings/voice?highlight=key%3Astt.silence_ms",
-      "description": "How much silence commits what you just said. Lower reacts sooner; higher tolerates thinking pauses.",
-      "configKey": "stt.silence_ms"
     },
     {
       "id": "voice.piper-binary",
@@ -1386,7 +1365,6 @@
       "label": "Provider",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.provider",
-      "description": "Local speech recognition runs on this machine and sends nothing anywhere. Transcribe uploads your audio to AWS.",
       "configKey": "stt.provider"
     },
     {
@@ -1428,7 +1406,6 @@
       "label": "Streaming",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.streaming",
-      "description": "Show the transcript in the input box as you speak, instead of only when you stop.",
       "configKey": "stt.streaming"
     },
     {
@@ -1437,6 +1414,14 @@
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.tap-vs-hold-cutoff",
       "description": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on."
+    },
+    {
+      "id": "voice.tidy-up-transcripts-with-ai",
+      "label": "Tidy up transcripts with AI",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.polish",
+      "description": "Sends the finished text, never the audio, to the AI model you already chat with, which fixes punctuation and capitalisation. Your words are never changed.",
+      "configKey": "stt.polish"
     },
     {
       "id": "voice.voice",

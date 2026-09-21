@@ -1,4 +1,5 @@
 import React from 'react'
+import { ChevronRight } from 'lucide-react'
 import Clickable from './Clickable'
 import InfoTip from './InfoTip'
 import SearchableSelect, { type SearchableSelectOption } from './SearchableSelect'
@@ -38,13 +39,39 @@ interface SettingsToggleProps {
    *  switch's `aria-describedby` so assistive tech announces it before the user
    *  acts, instead of leaving a side effect discoverable only by exploring. */
   describedBy?: string
+  /**
+   * A "?" tip beside the label, for a sentence that explains what the control IS.
+   *
+   * The counterpart to `description`, which keeps its text permanently on the row.
+   * Use `description` only when the sentence is needed to MAKE the choice (a
+   * consequence, a cost, where data goes); anything a reader would want once and
+   * never again belongs here, because a row that always shows two lines of prose
+   * spends attention whether or not it is being read.
+   */
+  hint?: string
 }
 
-export function SettingsToggle({ label, description, checked, onChange, disabled, configKey, describedBy }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, hint, checked, onChange, disabled, configKey, describedBy }: SettingsToggleProps) {
+  /**
+   * Did this activation come from the "?" tip rather than the row?
+   *
+   * Checked on the ROW's own handler rather than by stopping propagation on a
+   * wrapper around the tip. The row is keyboard-activatable -- `Clickable` turns
+   * Enter/Space into the same `onClick` -- so a click-only `stopPropagation` left
+   * Enter on the tip flipping the setting it was there to explain. One guard here
+   * covers both input paths.
+   */
+  const fromHint = (e?: React.MouseEvent | React.KeyboardEvent) =>
+    e?.target instanceof HTMLElement && e.target.closest('[data-settings-hint]') !== null
   return (
-    <Clickable data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={() => onChange(!checked)} disabled={disabled}>
+    <Clickable data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!fromHint(e)) onChange(!checked) }} disabled={disabled}>
       <div className="flex-1 min-w-0 mr-4">
-        <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
+        <div className="flex items-center gap-1.5">
+          <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
+          {/* Marked, not handled: `fromHint` above reads this attribute off the
+              event target, so the tip needs no handler of its own. */}
+          {hint && <span data-settings-hint><InfoTip text={hint} /></span>}
+        </div>
         {description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
       </div>
       {/* stopPropagation prevents the row's mouse-click convenience from double-
@@ -297,10 +324,22 @@ interface SettingsSectionProps {
    * matches the header exactly.
    */
   badge?: React.ReactNode
+  /**
+   * Render the header as a disclosure that hides its own rows until clicked.
+   *
+   * For a group whose rows are real and adjustable but which almost nobody needs
+   * to see: a heading alone still spends the reader's attention on every row
+   * under it, and a panel where a dozen rows carry equal weight gives no hint
+   * which ones matter. Collapsed by default when set, because a disclosure that
+   * starts open is just a heading.
+   */
+  collapsible?: boolean
   children?: React.ReactNode
 }
 
-export function SettingsSection({ title, badge, children }: SettingsSectionProps) {
+export function SettingsSection({ title, badge, collapsible, children }: SettingsSectionProps) {
+  const [open, setOpen] = React.useState(false)
+  const bodyId = React.useId()
   return (
     <>
       {/* `mt-4` separates one section from the previous section's controls, so it
@@ -313,10 +352,33 @@ export function SettingsSection({ title, badge, children }: SettingsSectionProps
         * above the first section, the header is no longer first and keeps the
         * margin — which is what it should do, because now something IS above it. */}
       <div className="flex items-center gap-2 mt-4 mb-2 first:mt-0">
-        <h4 className="text-sm font-semibold text-text-strong">{title}</h4>
+        {collapsible ? (
+          /* The whole header is the control, not a chevron beside it: a 14px
+             target next to a clickable-looking title is the classic near-miss.
+             `<h4>` stays the heading so the document outline is unchanged and a
+             `getByText(title)` query still matches. */
+          <button
+            type="button"
+            className="flex items-center gap-1.5 bg-transparent border-none p-0 cursor-pointer text-left group"
+            onClick={() => setOpen(o => !o)}
+            aria-expanded={open}
+            aria-controls={bodyId}
+          >
+            <ChevronRight
+              size={14}
+              className={`text-muted transition-transform group-hover:text-text ${open ? 'rotate-90' : ''}`}
+            />
+            <h4 className="text-sm font-semibold text-text-strong">{title}</h4>
+          </button>
+        ) : (
+          <h4 className="text-sm font-semibold text-text-strong">{title}</h4>
+        )}
         {badge}
       </div>
-      {children}
+      {/* Unmounted rather than hidden when closed. A collapsed group exists to
+          stop costing the reader attention, and an `aria-hidden` subtree still
+          costs a screen-reader user their place in the tab order. */}
+      {collapsible ? open && <div id={bodyId}>{children}</div> : children}
     </>
   )
 }

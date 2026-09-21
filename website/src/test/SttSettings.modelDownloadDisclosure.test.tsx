@@ -84,9 +84,13 @@ describe('SttSettings model download disclosure', () => {
   it('says model download is the only desktop setup action', async () => {
     mount()
     await waitFor(() => expect(modelSelect()).toBeTruthy())
-    const desc = screen.getByText(/models download on demand/i)
-    expect(desc.textContent).toMatch(/click Download now/i)
-    expect(desc.textContent).toMatch(/every other runtime dependency/i)
+    // Read off the tip's `title`, not the row: this sentence explains what the
+    // Model row IS rather than deciding which model to pick, so it moved behind a
+    // "?" when the panel stopped spending permanent space on prose. `InfoTip`
+    // always carries its text as `title`, so the copy is still asserted verbatim.
+    const desc = screen.getByTitle(/models download on demand/i)
+    expect(desc.title).toMatch(/click Download now/i)
+    expect(desc.title).toMatch(/every other runtime dependency/i)
   })
 
   it('states each model size in its own option, from the served catalog', async () => {
@@ -150,7 +154,12 @@ describe('SttSettings model download disclosure', () => {
     mount({
       models: [{ name: 'base', size_bytes: BASE_BYTES, present: true }],
     })
-    await waitFor(() => expect(screen.getByText(/already on this machine/i)).toBeTruthy())
+    // The contract is that a present model is not offered AGAIN. Asserted as the
+    // ABSENCE of the download prompt rather than the presence of a reassuring line:
+    // the missing prompt already says it, and a row reassuring the user about the
+    // ordinary case crowds out the warnings worth reading.
+    await waitFor(() => expect(modelSelect()).toBeTruthy())
     expect(screen.queryByRole('button', { name: /download now/i })).toBeNull()
+    expect(screen.queryByText(/download .* now to avoid/i)).toBeNull()
   })
 })
