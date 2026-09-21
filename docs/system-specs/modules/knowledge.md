@@ -634,9 +634,63 @@ citation format — is
 #### Entities → Nodes
 
 Each extracted entity becomes a node in the graph:
-- Deduplication: exact name matching + case-insensitive alias lookup
+- Deduplication: **conservative lexical resolution** (3-tier, described below)
 - If "DynamoDB" appears in chunk 1 and chunk 5, both map to the same node
+- Multilingual KB: "뮤직뱅크" and "Music Bank" resolve to the same node when a
+  lexical bridge exists (the alias of one matches the canonical name of the other)
 - Stored in SQLite `entities` table + in-memory `SimpleDiGraph`
+
+##### Entity Deduplication: Conservative Lexical Resolution
+
+`_store_entities` applies a 3-tier lookup to decide whether an extracted entity
+reuses an existing node or creates a new one.  Each tier is strictly more
+permissive than the previous but still safe.
+
+**Tier 1 — Canonical-only lookup** (`find_entity_by_canonical_name`):
+  Exact + casefold name match; does NOT scan aliases.  Prevents an incoming
+  name from silently matching another entity's alias and bypassing safety guards.
+
+**Tier 2 — Name-to-existing-alias lookup**:
+  `find_entity` (full alias scan) is called with the incoming name.  If a
+  candidate is returned AND the incoming name is casefold-equivalent to one of
+  the candidate's persisted aliases, the existing entity is reused.  This is NOT
+  alias-to-alias: the incoming entity's *own name* (not its aliases) matches an
+  existing alias.  Covers the KO→EN case where the Korean entity was ingested
+  first and already carries the English name as an alias.
+  Type conflicts (different `entity_type`) are rejected — the same name string
+  used by two conceptually different entity types is treated as a distinct entity.
+
+**Tier 3 — Alias-to-canonical fallback**:
+  Each extracted alias is tested against `find_entity_by_canonical_name`.  A
+  candidate is reused only when found AND entity types do not conflict.  Covers
+  the EN→KO case where the English entity was ingested first.
+
+**Invariants preserved across all tiers:**
+- Alias-to-alias matches never trigger reuse (only prevents transitive merges).
+- Entity-type conflicts in Tier 2 and Tier 3 always produce a new entity (not a
+  silent merge).  Tier 1 applies the same guard: a canonical name match with
+  conflicting entity types is rejected and falls through to Tier 2/3 or creates
+  a new entity.
+- Ingestion order does not affect the final entity count when a lexical bridge
+  exists in the extraction output.
+
+**Tier-scoped enrichment** (when reusing an existing entity):
+- Tier 1: `add_entity_aliases(aliases)` — canonical match; `name` is always
+  rejected by `add_entity_aliases` (casefold-equivalent to canonical), so
+  passing it wastes a lock acquisition per entity.
+- Tier 2: no enrichment — incoming name already in existing aliases; adding the
+  incoming entity's own aliases could enable transitive merges.
+- Tier 3: `add_entity_aliases([name])` only — alias matched canonical; adding
+  the incoming entity's own aliases risks the same transitive collision.
+
+`KnowledgeStore.add_entity_aliases` is the only write path for alias enrichment.
+It runs in `BEGIN IMMEDIATE` and enforces the structural invariants the store
+alone can check: truncate (MAX_ENTITY_ALIAS_LEN) → casefold dedupe against
+canonical + existing + accepted → cap (MAX_ENTITY_ALIASES).  Callers are
+responsible for redacting credentials/URLs and stripping whitespace before
+calling.  When the entity is already at the alias cap the call commits and
+returns silently.
+
 
 #### Relations → Edges
 
