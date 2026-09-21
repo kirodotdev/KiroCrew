@@ -95,6 +95,8 @@ Default Memory Mode**. The choice is stored as
 `dashboard.default_memory_mode`. An explicit Incognito or Temporary choice still
 wins for that chat. App-owned chats, messaging channels, cron jobs, and direct API
 callers keep their own mode selection and do not inherit this dashboard preference.
+If `config.json` or its `dashboard` section cannot be read, new chats fail closed
+to Temporary until the file is fixed and the gateway restarts.
 
 Set via the dashboard Welcome view (ghost button), the mode icon in the chat
 header, Slack (`!incognito` / `!temporary` prefix), or Telegram (`/incognito` /

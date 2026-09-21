@@ -49,14 +49,17 @@ auto-sizing-only `subagent_auto_max`.
 ## How the Cap Is Computed
 
 ```
-mem_term = floor( (effective_available_GB * (1 - buffer%) - pool_reserve) / mem_cost )
-cpu_term = floor( (cpu_count * (1 - buffer%)) / cpu_cost )
+buf      = 1 - subagent_mem_buffer_pct / 100
+mem_term = floor( (avail_gb * buf - pool_size * mem_cost) / mem_cost )
+cpu_term = floor( (cpu_count * buf) / cpu_cost )
 cap      = clamp( min(mem_term, cpu_term), 3, hard_cap )
 ```
 
 - **Memory term** — how many agents fit in available RAM after reserving a
-  buffer for the OS and other processes. `effective_available` is
-  `min(MemAvailable, cgroup headroom)` so a memory-capped container is respected.
+  buffer for the OS and other processes, and after holding back one worker's
+  cost per warm-pool slot. `avail_gb` comes from `_available_memory_gb()`,
+  which on Linux is `min(MemAvailable, cgroup headroom)` so a memory-capped
+  container is respected.
 - **CPU term** — how many fit in the core budget, using a measured per-agent
   CPU cost (agents are mostly I/O-bound, so this is generous).
 - **`min(...)`** — the tighter of memory/CPU wins.

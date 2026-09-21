@@ -61,7 +61,7 @@ index, first-time setup, and connecting messaging channels.
 | [Follow-up Suggestions](followup-suggestions.md) | Agent-proposed next steps above the composer: start in a new git worktree, add to this session, or skip |
 | [Queued-Message Editing](dashboard.md) | Edit, reorder, or cancel a chat message waiting in the queue before it runs |
 | [Cooperative Stop](dashboard.md) | Stop sends a cancel first and only hard-kills after a budget, so session state survives |
-| [Streaming Speech-to-Text](configuration.md) | Live transcription partials in the dashboard input, with local Whisper or optional AWS Transcribe |
+| [Streaming Speech-to-Text](configuration.md) | Live transcription partials in the dashboard input, with local Whisper, the macOS on-device recognizer, or optional AWS Transcribe |
 | [Warm Pool](configuration.md) | Keep kiro-cli processes pre-spawned so a new session starts instantly |
 | [Secrets Vault](secrets-vault.md) | Credentials encrypted on disk and refused to the agent, with a `secret://` reference left in `.env` |
 
@@ -87,6 +87,7 @@ documented by their own in-panel help.
 | Instances | Additional gateways this dashboard can reach | — |
 | Privacy | What leaves the host | [Snapshot and restore](snapshot-and-restore.md) |
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
+| Connections | OAuth clients and the MCP servers this install can reach | — |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
 | Developer | The Developer Mode consent switch, plus an optional local-gateway toggle; turning it on adds a separate Developer page that holds logs, metrics, storage and the rest | [Dashboard](dashboard.md) |
 | Releases | Update channel and version | [Getting Started](getting-started.md) |

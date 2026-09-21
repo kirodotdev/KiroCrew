@@ -195,7 +195,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
     "provider": "local",
     "streaming": true,
     "transcribe_region": "us-east-1",
-    "language_code": "en-US"
+    "language_code": "auto"
   },
   "memory": {
     "embedding_provider": "llama_cpp",
@@ -310,7 +310,7 @@ transcribed the same way.
 | `stt.enabled` | Turn spoken input into text you can send | `true` |
 | `stt.provider` | `"local"` (this machine, no account), `"apple"` (the on-device recognizer built into macOS 26 and later), or `"transcribe"` (AWS Transcribe, which bills your AWS account) | `"local"` |
 | `stt.model` | Which speech model the local provider downloads and runs: `tiny`, `base`, `small`, or `large-v3-turbo`. Bigger is more accurate and a longer first-time download | `"base"` |
-| `stt.language_code` | Language for speech recognition, e.g. `en-US`, `fr-FR` | `"en-US"` |
+| `stt.language_code` | Language for speech recognition, e.g. `en-US`, `fr-FR`. `"auto"` auto-detects on the local provider | `"auto"` |
 | `stt.streaming` | Show words in the message box while you are still speaking rather than only once you stop. Every provider supports it; turning it off spends less CPU on `local` and fewer API calls on `transcribe` | `true` |
 | `stt.silence_ms` | How long a pause must last before what you said is treated as a finished phrase. Raise it if you are being cut off mid-sentence, lower it if the text lags behind you. A value outside 200-5000 ms is clamped into that range, because a shorter pause than that falls between two ordinary words | `700` |
 | `stt.partial_interval_ms` | How often the live transcript is refreshed while you speak. Lower feels more immediate and costs a little more CPU per second of speech; higher is steadier to read. A value outside 100-5000 ms is clamped into that range | `400` |

@@ -235,7 +235,8 @@ Frontend:
 cd website && npm install && npm run build 2>&1 | tail -20
 ```
 
-Node must be `20` or `>= 22`; an older Node fails the Vite build. Python must be
+Node must be `>= 22.12`, the floor Vite and Rolldown declare in
+`website/package-lock.json`; an older Node fails the Vite build. Python must be
 `>= 3.12`.
 
 ### Embedding model download failed

@@ -233,7 +233,6 @@ dead-identifier	src/kiro_crew/apps/builtins/mochi/agents/skills/mochi-plan/SKILL
 dead-identifier	src/kiro_crew/apps/builtins/mochi/agents/skills/mochi-slack/SKILL.md	list_my_channels
 dead-identifier	src/kiro_crew/apps/builtins/mochi/agents/skills/mochi-slack/SKILL.md	lookup_user
 dead-identifier	src/kiro_crew/docs/configuration.md	legal_precedents
-dead-identifier	src/kiro_crew/docs/dynamic-subagent-sizing.md	effective_available
 dead-identifier	src/kiro_crew/docs/feishu-integration.md	send_as_bot
 dead-identifier	website/docs/extension-seams.md	registerThemee
 dead-identifier	website/docs/frontend-conventions.md	darkMode

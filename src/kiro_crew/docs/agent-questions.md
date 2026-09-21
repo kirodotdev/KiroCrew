@@ -22,8 +22,7 @@ Use `ask_question` when a dashboard user needs to choose or supply an answer bef
       ],
       "multiSelect": false
     }
-  ],
-  "timeout_secs": 300
+  ]
 }
 ```
 
@@ -36,7 +35,7 @@ Use `ask_question` when a dashboard user needs to choose or supply an answer bef
 | `options[].label` | Required text; truncated to 200 characters. |
 | `options[].description` | Optional text; truncated to 500 characters. |
 | `multiSelect` | Optional boolean; false by default. |
-| `timeout_secs` | Optional integer validated from 15 through 540. The current stateless directive does not carry this value to the card, so it does not create a wait or timeout result. |
+| `timeout_secs` | Optional integer validated from 15 through 540, accepted for compatibility but never read, so the tool's inputSchema does not advertise it. The current stateless directive does not carry this value to the card, so it does not create a wait or timeout result. |
 
 Malformed nested questions and options are skipped; the request fails when no valid question remains. Duplicate normalized question text or option labels are rejected. The frontend limits a typed custom answer to 2,000 characters.
 
