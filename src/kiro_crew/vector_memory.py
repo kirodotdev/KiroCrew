@@ -6170,13 +6170,21 @@ class VectorMemoryStore:
         Args:
             query_text: Request to rank against. Empty keeps recency order for
                 explicit recall, never as filler in background admission.
-            background: Preserve all eligible in-scope rules, without query ranking
-                or ordinary-budget truncation. Extraction source does not establish
-                optionality.
-            cap: Character budget for explicit recall. 0 means unbounded.
-            hard_cap: Model-safety ceiling used only for background admission.
-                Content at or below it is byte-identical; overflow keeps the
-                highest-ranked complete lessons.
+            background: Preserve all eligible in-scope rules, without query
+                ranking beyond a lexical pass. Below the ``hard_cap`` ceiling the
+                block is returned complete; only when the full set exceeds that
+                ceiling does admission fall back to the ordinary lessons budget
+                ``cap``. Extraction source does not establish optionality.
+            cap: Character budget. In explicit recall it is the sole limit. In
+                background admission it is not consulted below the ceiling; above
+                the ceiling it becomes the ordinary target (bounded by
+                ``hard_cap``). 0 means no ordinary budget, so an overflowing
+                background block falls back to the ``hard_cap`` ceiling alone.
+            hard_cap: Model-safety ceiling for background admission. It is both
+                the admission gate -- content at or below it is returned
+                byte-identical, dropping no rule -- and the upper bound the
+                effective overflow budget is never allowed to exceed. 0 means no
+                ceiling (unbounded).
             project_dir: The session's active project, used only by the
                 ``repo_scope`` gate. Omitting it withholds every scoped lesson.
         """
@@ -6230,11 +6238,24 @@ class VectorMemoryStore:
                 return context
 
             full = render_background(kept)
+            # Unchanged from main: below the model-safe ceiling the block is
+            # returned complete, so the retain-every-eligible-in-scope-rule
+            # invariant holds exactly as the specification pins it. A ``hard_cap``
+            # of 0 keeps admission unbounded, preserving every existing caller.
             if not hard_cap or len(full) <= hard_cap:
                 return full
-            # Longest relevance-ordered prefix that fits, with room reserved for
-            # the omission notice at its widest; one pass over the rows.
-            budget = hard_cap - len(render_background([], len(kept)))
+            # Above the ceiling the retain-everything invariant is already unmet
+            # -- the block must drop rules whatever budget is chosen, and the
+            # ceiling was never a statement about which to keep here. Fall back
+            # to the ordinary lessons budget ``cap`` (still bounded by
+            # ``hard_cap``), leaving the omission notice pointing the model at
+            # memory_recall. A ``cap`` of 0 keeps the historical ``hard_cap``
+            # budget. Longest relevance-ordered prefix that fits, with room
+            # reserved for the omission notice at its widest; one pass over the
+            # rows.
+            budget = (min(cap, hard_cap) if cap else hard_cap) - len(
+                render_background([], len(kept))
+            )
             fitted: list[tuple[dict, str]] = []
             for entry in kept:
                 line = len(entry[1]) + 3

@@ -140,16 +140,17 @@ seconds.
 
 - **Admission is by whole block, never by slicing the joined prompt.** Protected
   blocks (rules, preferences, identity, steering, pinned skill bodies) go first and
-  are never truncated; the rest spend what is left, and an omitted block is named
-  in a `[Context budget: omitted …]` line.
+  are never truncated below the model-safe ceiling; the rest spend what is left, and
+  an omitted block is named in a `[Context budget: omitted …]` line.
 - **Thread history has its own window-scaled allowance**, and keeps its framing
   plus the newest tail rather than vanishing.
 - **The model-safe ceiling** on protected content is
   `max(3 × the base, window_tokens × 4.0 × 0.125)` (`_PROTECTED_CONTEXT_FLOOR` is
   the base tripled; `_PROTECTED_CONTEXT_CHARS_PER_TOKEN` and
   `_PROTECTED_CONTEXT_WINDOW_FRACTION` are the two factors). Over it, lessons
-  re-render smaller first; preferences are kept from their head with an in-prompt
-  notice naming the file.
+  fall back to the ordinary lessons budget (`caps.lessons`, still bounded by the
+  ceiling) and re-render smaller, highest-ranked complete entries first;
+  preferences are kept from their head with an in-prompt notice naming the file.
 - **A bigger model window does not buy more background.** `_resolve_caps` scales
   only thread/replay limits; an unknown or `auto` window resolves to the 1M
   reference (`_effective_window`).

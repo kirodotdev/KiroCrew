@@ -37,7 +37,17 @@ def test_v2_prompt_lifecycles_leave_retrieval_to_the_tool(env, monkeypatch):
     builder.build_message("Continue after restart", True, "session", resumed=True, **binding)
     forbidden.assert_not_called()
     assert rules.call_args_list
-    assert all(call.kwargs["query_text"] == "" for call in rules.call_args_list)
+    # The member lessons renderer must rank against the real request, matching
+    # its sibling vector renderer and the get_lessons_context contract, which
+    # forbids an empty query as filler in background admission. Every call
+    # therefore carries the text of the message that produced it, never "".
+    issued = {
+        "Find our earlier deployment decision",
+        "Now another topic",
+        "Continue after restart",
+    }
+    assert all(call.kwargs["query_text"] in issued for call in rules.call_args_list)
+    assert all(call.kwargs["query_text"] for call in rules.call_args_list)
 
 
 def test_v1_new_session_keeps_preferences_and_defers_history_to_recall(tmp_path):

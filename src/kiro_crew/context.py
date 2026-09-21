@@ -4029,7 +4029,7 @@ class ContextBuilder:
 
                 def _render_member_lessons(hard_cap: int) -> str:
                     return member_store.get_lessons_context(
-                        query_text="",
+                        query_text=query_text,
                         cap=caps.lessons,
                         project_dir=project,
                         background=True,
