@@ -155,6 +155,11 @@ class _RewritePassNotes:
     env_placeholder_seen: bool = False
     sidecar_write_failed: bool = False
     source_read_failed: bool = False
+    # A source that vanished between the listing and the read. The skip is
+    # deterministic, but the input signatures were taken while the file still
+    # existed: caching would let the same file, restored with the same size and
+    # mtime, match a fingerprint whose outputs lack its overlay.
+    source_deleted_mid_pass: bool = False
 
 
 # Separator inside a stored which-probe key (bare command NUL search-path).
@@ -504,6 +509,56 @@ def _expand_env_map(
     }
 
 
+class _SidecarLedger:
+    """Sidecar names this pass enumerated, plus writes staged for commit.
+
+    ``names`` feeds the sidecar prune and the fingerprint. A staged write is
+    renamed into place only after the overlay that references it is published,
+    so a kept overlay never pairs with the next generation's env; the caller
+    commits or discards per agent, so nothing is pending afterwards.
+    """
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self._staged: list[tuple[str, Path]] = []
+
+    def add(self, name: str) -> None:
+        """Record that *name* is a sidecar this pass owns."""
+        self.names.add(name)
+
+    def stage(self, tmp: str, final: Path) -> None:
+        """Hand over a fully-written, already-protected temp file for commit."""
+        self._staged.append((tmp, final))
+
+    def commit(self) -> bool:
+        """Publish every staged sidecar; False if any rename failed.
+
+        A failed rename also removes whatever sits at the published name, so the
+        overlay already naming it reads as "declares no env" (both readers
+        degrade to ``{}``) instead of picking up another generation's values.
+        """
+        ok = True
+        while self._staged:
+            tmp, final = self._staged.pop()
+            try:
+                os.replace(tmp, final)
+            except OSError as exc:
+                ok = False
+                logger.warning("rewriter: failed to commit env sidecar %s: %s", final, exc)
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+                with contextlib.suppress(OSError):
+                    os.unlink(final)
+        return ok
+
+    def discard(self) -> None:
+        """Drop every staged sidecar, leaving the published names untouched."""
+        while self._staged:
+            tmp, _final = self._staged.pop()
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
 def _build_stub_entry(
     *,
     stubs_dir: Path,
@@ -516,7 +571,7 @@ def _build_stub_entry(
     work_dir: Path,
     sandbox_mode: str,
     approval_mode: str,
-    sidecars_written: set[str] | None = None,
+    sidecars_written: _SidecarLedger | None = None,
     poolable: bool = False,
     identity_keys: Collection[str] = (),
     notes: _RewritePassNotes | None = None,
@@ -592,9 +647,12 @@ def _build_stub_entry(
         # components, which is injective, and gatewayd's reader recomputes that
         # same helper — so writer and reader can never disagree on the name.
         env_file = env_dir / env_sidecar_name(agent_name, server_name)
-        if sidecars_written is not None:
-            sidecars_written.add(env_file.name)
-        wrote_sidecar = False
+        # One publish path: always staged, and whoever owns the ledger commits.
+        # A caller that passed none is not deferring, so a local ledger is
+        # committed before this returns.
+        ledger = sidecars_written if sidecars_written is not None else _SidecarLedger()
+        ledger.add(env_file.name)
+        sidecar_ready = False
         try:
             # Protection BEFORE content, not after. The previous order wrote the
             # credentials with atomic_write(mode=0o600) -- inert on Windows --
@@ -604,7 +662,8 @@ def _build_stub_entry(
             # descriptor to the temp file first means the secret never exists in
             # a readable file at all, and a failure happens before any secret
             # byte is written. os.replace preserves an explicit
-            # (non-inherited) descriptor across the rename.
+            # (non-inherited) descriptor across the rename, which the ledger
+            # performs once the referencing overlay is published.
             fd, tmp = tempfile.mkstemp(
                 prefix=f".{env_file.stem}-", suffix=".json", dir=str(env_dir)
             )
@@ -626,18 +685,25 @@ def _build_stub_entry(
                             _expand_env_map(env_pairs, notes=notes), sort_keys=True
                         )
                     )
-                os.replace(tmp, env_file)
-                wrote_sidecar = True
+                # Staged, not published: the rewrite pass commits after this
+                # agent's overlay write succeeds. The temp is already written and
+                # already owner-only -- protection precedes content either way.
+                ledger.stage(tmp, env_file)
+                sidecar_ready = True
             finally:
                 if fd_owned:
                     with contextlib.suppress(OSError):
                         os.close(fd)
-                if not wrote_sidecar:
+                if not sidecar_ready:
+                    # Neither staged nor published: this temp is ours to remove.
                     with contextlib.suppress(OSError):
                         os.unlink(tmp)
         except OSError:
             logger.warning("rewriter: failed to write env sidecar %s", env_file)
-        if wrote_sidecar:
+        if sidecar_ready and sidecars_written is None:
+            # Local ledger: nobody else will publish it.
+            sidecar_ready = ledger.commit()
+        if sidecar_ready:
             stub_args.extend(["--env-file", str(env_file)])
         else:
             # Transient fault: the overlay written this pass omits --env-file,
@@ -779,7 +845,7 @@ def _rewrite_single_spec(
     identity_keys: Collection[str] = (),
     inject_servers: dict[str, Any] | None = None,
     target_env: dict[str, str] | None = None,
-    sidecars_written: set[str] | None = None,
+    sidecars_written: _SidecarLedger | None = None,
     notes: _RewritePassNotes | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Return ``(new_spec, wrapped_count)``. Idempotent.
@@ -1884,7 +1950,7 @@ def rewrite_agents(
             return cached
 
     written: set[str] = set()
-    written_sidecars: set[str] = set()
+    written_sidecars = _SidecarLedger()
     results: dict[str, int] = {}
     target_env: dict[str, str] = {}
     notes = _RewritePassNotes()
@@ -2081,6 +2147,13 @@ def rewrite_agents(
             # follow: a symlink in this user-writable directory pointing at a
             # sensitive file, whose content would otherwise land in an overlay.
             spec = read_agent_spec_strict(path, operation="mcp_overlay_rewrite", source="unknown")
+        except FileNotFoundError as exc:
+            # Gone, not faulty: prune exactly as a source already absent when the
+            # listing ran does. Ahead of the OSError arm, which would keep the
+            # deleted agent's overlay for one more pass.
+            notes.source_deleted_mid_pass = True  # signatures predate the deletion
+            logger.warning("skipping agent %s: %s (deleted: overlay pruned)", path.name, exc)
+            continue
         except OSError as exc:
             # Transient: the file stat'ed fine for the fingerprint but could
             # not be read. Readability can return without size/mtime changing,
@@ -2118,50 +2191,67 @@ def rewrite_agents(
         # stable non-empty identifier prevents the collapse.
         if not spec.get("name"):
             spec["name"] = path.stem
-        new_spec, wrapped = _rewrite_single_spec(
-            spec,
-            stubs_dir=stubs_dir,
-            socket_path=socket_path,
-            work_dir=work_dir,
-            sandbox_mode=sandbox_mode,
-            approval_mode=approval_mode,
-            stub_servers=stub_set,
-            pooling_enabled=pooling_enabled,
-            forward_env=forward_env,
-            identity_keys=identity_keys,
-            inject_servers=settings_poolable,
-            target_env=target_env,
-            sidecars_written=written_sidecars,
-            notes=notes,
-        )
-        _collect_target_env(new_spec.get("mcpServers", {}), target_env)
-        target = overlay_dir / overlay_name
         try:
-            # Atomic + owner-only: temp-file + os.replace (via atomic_write) so a
-            # concurrent reader — the per-session stub injection resolves this
-            # overlay at ACP ``session/new`` (see ``session_servers.py``; there
-            # is no bind mount), and the cache-validation pass digests it —
-            # never sees a truncated spec (which would make the agent's MCP
-            # servers vanish mid-run). ``restrict_to_owner=True`` locks the temp
-            # file down BEFORE the passed-through non-poolable / HTTP-SSE env
-            # blocks (tokens / API keys) reach it — POSIX mode bits are a no-op
-            # against NTFS ACLs, and a Windows-only post-rename lockdown would
-            # leave them readable under the inherited DACL for the write
-            # window. It implies 0o600 on POSIX. A lockdown
-            # failure happens before the rename, so the OSError handler
-            # below skips the overlay without ever publishing an unprotected
-            # copy. Matches the env sidecar.
-            atomic_write(target, json.dumps(new_spec, indent=2) + "\n", restrict_to_owner=True)
-        except OSError as exc:
-            logger.warning(
-                "failed to write overlay %s: %s (previous overlay, if any, "
-                "stays in effect until a later pass succeeds)",
-                target,
-                exc,
+            new_spec, wrapped = _rewrite_single_spec(
+                spec,
+                stubs_dir=stubs_dir,
+                socket_path=socket_path,
+                work_dir=work_dir,
+                sandbox_mode=sandbox_mode,
+                approval_mode=approval_mode,
+                stub_servers=stub_set,
+                pooling_enabled=pooling_enabled,
+                forward_env=forward_env,
+                identity_keys=identity_keys,
+                inject_servers=settings_poolable,
+                target_env=target_env,
+                sidecars_written=written_sidecars,
+                notes=notes,
             )
-            overlay_write_failed = True
-            transient_keep.add(overlay_name)
-            continue
+            _collect_target_env(new_spec.get("mcpServers", {}), target_env)
+            target = overlay_dir / overlay_name
+            try:
+                # Atomic + owner-only: temp-file + os.replace (via atomic_write) so a
+                # concurrent reader — the per-session stub injection resolves this
+                # overlay at ACP ``session/new`` (see ``session_servers.py``; there
+                # is no bind mount), and the cache-validation pass digests it —
+                # never sees a truncated spec (which would make the agent's MCP
+                # servers vanish mid-run). ``restrict_to_owner=True`` locks the temp
+                # file down BEFORE the passed-through non-poolable / HTTP-SSE env
+                # blocks (tokens / API keys) reach it — POSIX mode bits are a no-op
+                # against NTFS ACLs, and a Windows-only post-rename lockdown would
+                # leave them readable under the inherited DACL for the write
+                # window. It implies 0o600 on POSIX. A lockdown
+                # failure happens before the rename, so the OSError handler
+                # below skips the overlay without ever publishing an unprotected
+                # copy. Matches the env sidecar.
+                atomic_write(target, json.dumps(new_spec, indent=2) + "\n", restrict_to_owner=True)
+            except OSError as exc:
+                logger.warning(
+                    "failed to write overlay %s: %s (previous overlay, if any, "
+                    "stays in effect until a later pass succeeds)",
+                    target,
+                    exc,
+                )
+                overlay_write_failed = True
+                transient_keep.add(overlay_name)
+                # The kept overlay carries the older argv, so drop this agent's
+                # staged sidecars and leave it beside the env it was built
+                # against. Their names stay in the ledger, so the sidecar prune
+                # never sweeps the published files.
+                written_sidecars.discard()
+                continue
+            if not written_sidecars.commit():
+                # A staged sidecar could not be renamed into place. Same class as
+                # a failed sidecar write: make the pass uncacheable so the next
+                # one retries.
+                notes.sidecar_write_failed = True
+        finally:
+            # Any exit from this iteration, a raise included, must reclaim staged
+            # temps: their names start with a dot and pathlib's ``*.json`` glob
+            # skips dotfiles, so no prune would ever see them. A discard after a
+            # commit is a no-op.
+            written_sidecars.discard()
         written.add(overlay_name)
         if wrapped:
             results[overlay_name] = wrapped
@@ -2218,7 +2308,7 @@ def rewrite_agents(
     env_dir = env_sidecar_dir_for_stubs(stubs_dir)
     if env_dir.is_dir() and not (notes.source_read_failed or overlay_write_failed):
         for stale in env_dir.glob("*.json"):
-            if stale.name not in written_sidecars:
+            if stale.name not in written_sidecars.names:
                 try:
                     stale.unlink()
                 except OSError:
@@ -2244,6 +2334,8 @@ def rewrite_agents(
     uncacheable = ""
     if notes.source_read_failed:
         uncacheable = "transient source read failure(s)"
+    elif notes.source_deleted_mid_pass:
+        uncacheable = "source(s) deleted between listing and read"
     elif notes.sidecar_write_failed:
         uncacheable = "env sidecar write failure(s)"
     elif overlay_write_failed:
@@ -2301,9 +2393,7 @@ def rewrite_agents(
     else:
         output_sigs: dict[str, Any] = {
             "overlays": {n: _stat_sig(overlay_dir / n) for n in sorted(written)},
-            "sidecars": {
-                n: _stat_sig(env_dir / n) for n in sorted(written_sidecars)
-            },
+            "sidecars": {n: _stat_sig(env_dir / n) for n in sorted(written_sidecars.names)},
         }
         if legacy_sig is not None:
             output_sigs["settings_overlay"] = legacy_sig
