@@ -51,7 +51,11 @@ need no display and never call Bedrock.
    harness holds a session's first prompt behind that readiness barrier), reads
    the `KIROCREW_READY:{port, token}` line, opens Chromium
    (`--no-sandbox --test-type`, full-screen window, omnibox kept) at
-   `http://127.0.0.1:<port>/?token=...`, focuses the window.
+   `http://127.0.0.1:<port>/?token=...`, waits for its window and focuses it. The
+   window wait is bounded by the browser process rather than a stopwatch: a browser
+   that exits fails the boot at once, one still starting gets up to 120 s, because
+   Chromium's cold start on the hosted runner image has ranged from under 2 s to
+   over 30 s between nights with nothing else different.
 3. `harness.py` navigates to each scenario's `start_url` through the omnibox (the
    token has become the `mc_token` cookie by then), takes a screenshot, and loops:
    the model returns one action, the harness executes it, waits about a second, and

@@ -225,16 +225,38 @@ DISPLAY="$GUI_DISPLAY" setsid "$CHROME" \
   --force-device-scale-factor=1 --lang=en-US \
   "${GUI_BASE_URL}/?token=${GUI_DASHBOARD_TOKEN}" \
   > "$GUI_OUT/chrome.log" 2>&1 &
-echo "$!" >> "$PIDS"
+BROWSER_PID="$!"
+echo "$BROWSER_PID" >> "$PIDS"
 
 # Wait for a visible browser window, focus it, and give the SPA a moment.
+# The wait is bounded by the browser process, not by a stopwatch: on the same
+# hosted-runner image Chromium's cold start to its first window has measured
+# anywhere from under 2 s to over 30 s between nights with nothing else
+# different, so a short fixed cap turns a slow start into a boot failure
+# seconds before the window would have appeared. A browser that has EXITED is
+# reported at once (a crash is a real boot failure; waiting on it only delays
+# the report); one that is still alive gets the full budget.
+BROWSER_WINDOW_WAIT_SECS=120
 win=""
-for _ in $(seq 1 60); do
+window_wait_started="$SECONDS"
+while :; do
   win="$(DISPLAY="$GUI_DISPLAY" xdotool search --onlyvisible --class 'chrom' 2> /dev/null | head -n 1 || true)"
   [ -n "$win" ] && break
+  if ! kill -0 "$BROWSER_PID" 2> /dev/null; then
+    echo "::error::browser exited after $((SECONDS - window_wait_started))s without showing a window; see chrome.log" >&2
+    tail -n 40 "$GUI_OUT/chrome.log" >&2 || true
+    exit 1
+  fi
+  if [ "$((SECONDS - window_wait_started))" -ge "$BROWSER_WINDOW_WAIT_SECS" ]; then
+    # Distinguish "no window yet" from "a window that never mapped": the
+    # unmapped count is the one fact chrome.log cannot tell a reader.
+    unmapped="$(DISPLAY="$GUI_DISPLAY" xdotool search --class 'chrom' 2> /dev/null | wc -l || true)"
+    echo "::error::browser window never appeared within ${BROWSER_WINDOW_WAIT_SECS}s (browser pid $BROWSER_PID still alive, ${unmapped:-0} unmapped browser window(s)); see chrome.log" >&2
+    tail -n 40 "$GUI_OUT/chrome.log" >&2 || true
+    exit 1
+  fi
   sleep 0.5
 done
-[ -n "$win" ] || { echo "::error::browser window never appeared; see chrome.log" >&2; tail -n 40 "$GUI_OUT/chrome.log" >&2 || true; exit 1; }
 DISPLAY="$GUI_DISPLAY" xdotool windowactivate --sync "$win" > /dev/null 2>&1 || true
 DISPLAY="$GUI_DISPLAY" xdotool windowsize "$win" "$screen_w" "$screen_h" > /dev/null 2>&1 || true
 DISPLAY="$GUI_DISPLAY" xdotool windowmove "$win" 0 0 > /dev/null 2>&1 || true
