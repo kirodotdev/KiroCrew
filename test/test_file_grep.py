@@ -1506,11 +1506,21 @@ class TestHelpers:
         home = os.path.expanduser("~")
         args = f._grep_sensitive_globs(home)
         assert args[0::2] == ["--iglob"] * (len(args) // 2)
-        patterns = set(args[1::2])
+        patterns = {os.path.normcase(p) for p in args[1::2]}
         for entry in sensitive_home_dirs():
             relative = entry.strip("/")
             if relative:
-                assert f"!/{relative}" in patterns
+                # Compared through ``normcase`` because the emitted spelling is the
+                # ON-DISK one: ``sandbox_credential_targets`` realpaths every target,
+                # and on Windows that folds a leaf to the real directory name, so the
+                # ``AppData/Local/kiro-cli`` fence entry surfaces as
+                # ``!/AppData/Local/Kiro-Cli``. The exclusion still covers it -- every
+                # pattern is emitted under ``--iglob``, which ripgrep matches
+                # case-insensitively -- so byte-identical spelling is a stricter claim
+                # than the contract makes, and one only a case-insensitive volume can
+                # break. ``normcase`` is the identity on a case-sensitive platform, so
+                # the assertion there keeps comparing exactly.
+                assert os.path.normcase(f"!/{relative}") in patterns
 
     def test_every_exclusion_is_anchored_to_the_root(self):
         """The leading slash is the anchor, and without it the exclusion is not
