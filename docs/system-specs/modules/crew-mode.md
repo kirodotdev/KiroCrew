@@ -87,9 +87,13 @@ shortcuts). A pick sends `agent_kind` with the name on slot create and on
 the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a
 template pick as a template pick and a later name-only pick retracts it) and the list
 projection exposes it, so a same-name member and template are distinct sessions. A
-local switch writes the name and kind to history in one operation. Remote create,
-switch and adopt carry the kind across the gateway boundary and mirror the same pair
-locally, so either machine can restart without changing the selected namespace. A
+local switch publishes the name and kind together and writes them to history in one
+operation. Remote create, switch and adopt carry the kind across the gateway boundary
+and mirror the same pair locally. A successful local metadata write makes that pair
+restart-safe on either machine. If the peer commits but the local metadata write
+fails, the response says `local_persistence: pending`, the live slot stays aligned
+with the peer, and the dirty-slot flush retries the local record; until that retry
+lands, a local restart can restore the prior pair. A
 member DM thread's pin covers the namespace too: the same name picked as a template
 is refused like any other re-bind (`409 member_thread_agent_pinned`).
 Request and error contract: [learn-cron-dashboard](learn-cron-dashboard.md) → Chat.

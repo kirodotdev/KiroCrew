@@ -1288,32 +1288,50 @@ class TestRemotePickApplication:
         assert slot.workspace == "kept"
 
     @pytest.mark.asyncio
-    async def test_a_failed_persist_rearms_the_flush_and_still_reports_success(
-        self, tmp_path, forward
+    async def test_a_failed_persist_reports_pending_and_restart_restores_the_old_pick(
+        self, tmp_path, monkeypatch
     ):
-        """A swallowed write must not be silently final.
-
-        The peer committed the pick, so the local write is the side that failed:
-        marking the slot dirty makes the periodic flush retry it. The response
-        stays 2xx on purpose — the pick DID apply on the machine that runs the
-        turns, so reporting failure would roll the header back to a value the peer
-        does not hold.
-        """
+        """A peer commit with a stale local row is applied but not durable."""
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
+        from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.forward_peer_selection",
+            AsyncMock(return_value={"agent": "reviewer", "agent_kind": "template"}),
+        )
         state = _make_state(tmp_path)
-        state.conversation_log = MagicMock()
-        state.conversation_log.update_metadata.side_effect = OSError("history lock timeout")
         slot = _remote_slot()
+        history_key = "dashboard:chat-1"
+        await asyncio.to_thread(state.conversation_log.append, history_key, "user", "hello")
+        await asyncio.to_thread(
+            state.conversation_log.update_metadata,
+            history_key,
+            {"agent": "writer", "agent_kind": "member"},
+        )
+        monkeypatch.setattr(
+            state.conversation_log,
+            "update_metadata",
+            MagicMock(side_effect=OSError("history lock timeout")),
+        )
         slot._dirty = False
 
         resp = await _apply_remote_pick(
-            _owner_request(state), state, slot, "model", {"model": "opus"}
+            _owner_request(state),
+            state,
+            slot,
+            "agent",
+            {"agent": "reviewer", "agent_kind": "template"},
         )
 
         assert resp.status == 200
-        assert slot.model == "opus"
+        assert json.loads(resp.body.decode())["local_persistence"] == "pending"
+        assert (slot.agent, slot.agent_kind) == ("reviewer", "template")
         assert slot._dirty is True
+
+        restarted = _make_state(tmp_path)
+        restored = _rehydrate_slot_from_history(restarted, "chat-1")
+        assert restored is not None
+        assert (restored.agent, restored.agent_kind) == ("writer", "member")
 
     @pytest.mark.asyncio
     async def test_the_mirrored_workspace_is_persisted_with_the_agent(self, tmp_path, monkeypatch):
