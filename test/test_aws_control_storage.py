@@ -1475,3 +1475,185 @@ class TestSearchKeys:
         assert capped is False
         second_argv = checked.call_args_list[1].args[0]
         assert second_argv[second_argv.index("--starting-token") + 1] == "t2"
+
+
+# ---------------------------------------------------------------------------
+# Version-pinned reads — a version id is the first value in this module that
+# becomes a BARE ARGV ELEMENT rather than a field inside a JSON document, so it
+# is the first one the AWS CLI's own option grammar can misread.
+# ---------------------------------------------------------------------------
+
+
+class TestValidateVersionId:
+    """Syntax only. Whether an id names bytes we can claim is a different question.
+
+    There is no shell in the path -- ``engine.run_aws`` spawns a fixed argv -- so
+    this is not about shell metacharacters, which an argv list already neutralises.
+    It is about the CLI's parser reading a leading ``-`` as the start of another
+    option, which quoting cannot prevent.
+    """
+
+    def test_an_ordinary_s3_version_id_passes(self):
+        assert storage.validate_version_id("3sL4kqtJlcpXroDTDmJ.O1nO5RMDqsWx") is None
+
+    def test_an_id_that_would_be_read_as_an_option_is_refused(self):
+        # The whole point. A stored `--profile` would silently repoint the call at
+        # another account instead of naming a version.
+        assert storage.validate_version_id("--profile=other") is not None
+        assert storage.validate_version_id("-v") is not None
+
+    def test_a_bare_dash_is_refused(self):
+        # Many CLIs read a lone dash as stdin.
+        assert storage.validate_version_id("-") is not None
+
+    def test_an_empty_or_non_string_id_is_refused(self):
+        assert storage.validate_version_id("") is not None
+        assert storage.validate_version_id(None) is not None
+        assert storage.validate_version_id(17) is not None
+
+    def test_an_id_past_s3s_own_ceiling_is_refused(self):
+        # Reuses the module's single ceiling rather than a second number.
+        assert storage.validate_version_id("a" * storage._MAX_VERSION_ID_LEN) is None
+        assert storage.validate_version_id("a" * (storage._MAX_VERSION_ID_LEN + 1)) is not None
+
+    def test_the_version_ids_s3_actually_mints_pass(self):
+        # The regression this pins: S3 version ids are opaque and drawn from the full
+        # base64 alphabet, so `+`, `/` and `=` all occur in real ones -- AWS's own
+        # documented example carries both `/` and `+`. An alphabet narrow enough to
+        # exclude them refuses genuine ids, which turns the recovery read back into
+        # the refusal it exists to avoid, for no gain: past the first character these
+        # are inert argv data.
+        assert (
+            storage.validate_version_id(
+                "3/L4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY+MTRCxf3vjVBH40Nr8X8gdRQBpUMLUo"
+            )
+            is None
+        )
+        for good in ("a+b", "a/b", "a=", "a.b", "a_b", "a-b", "PXo4rMDq/sWx+Ab="):
+            assert storage.validate_version_id(good) is None, good
+
+    def test_whitespace_and_control_characters_are_refused(self):
+        # Not something S3 mints, and a newline or a control byte has no business
+        # reaching a log line or an argv element even as inert data.
+        for bad in ("a b", "a\nb", "a\tb", " a", "a\x00b", "a\x7fb", "a\u00a0b"):
+            assert storage.validate_version_id(bad) is not None, repr(bad)
+
+    def test_a_trailing_newline_is_refused(self):
+        # Its own case because it is the one whitespace position an anchored pattern
+        # lets through: Python's `$` matches at the end of the string AND just before
+        # a final newline, so `^...$` accepts "abc\n" while rejecting "a\nb". The
+        # check uses `fullmatch`, which has no such second meaning. A trailing
+        # newline is how a stored id arrives when the file it was read from grew one.
+        for bad in ("abc\n", "abc\r\n", "abc\r", "abc\n\n"):
+            assert storage.validate_version_id(bad) is not None, repr(bad)
+
+    def test_null_is_well_formed_here_and_rejected_elsewhere(self):
+        # "null" is syntactically fine -- it is a real id S3 issues. That it names a
+        # version SLOT rather than one version is an IDENTITY question, decided by
+        # the caller against its own upload record, not by this function. Two checks
+        # because they are two questions.
+        assert storage.validate_version_id("null") is None
+
+
+class TestGetFileVersionPinning:
+    def _argv(self, **kwargs):
+        with mock.patch.object(storage, "_checked", return_value="") as checked:
+            with tempfile.TemporaryDirectory() as tmp:
+                storage.get_file(
+                    "prof",
+                    "us-west-2",
+                    "bkt",
+                    "backup",
+                    "snapshots/a.tar.gz",
+                    str(Path(tmp) / "out"),
+                    account="111122223333",
+                    **kwargs,
+                )
+        return checked.call_args[0][0]
+
+    def _action(self, **kwargs):
+        """The IAM action `_checked` is told to name in its remediation hint."""
+        with mock.patch.object(storage, "_checked", return_value="") as checked:
+            with tempfile.TemporaryDirectory() as tmp:
+                storage.get_file(
+                    "prof",
+                    "us-west-2",
+                    "bkt",
+                    "backup",
+                    "snapshots/a.tar.gz",
+                    str(Path(tmp) / "out"),
+                    account="111122223333",
+                    **kwargs,
+                )
+        return checked.call_args[1]["action"]
+
+    def test_no_version_names_no_version_id(self):
+        # Every pre-existing caller passes nothing, so their argv must be unchanged.
+        argv = self._argv()
+        assert "--version-id" not in argv
+
+    def test_a_version_travels_as_its_own_argv_element(self):
+        argv = self._argv(version="abc123")
+        at = argv.index("--version-id")
+        # Its own element, immediately after the flag -- never concatenated, which is
+        # what keeps the value out of the option's own text.
+        assert argv[at + 1] == "abc123"
+
+    def test_the_owner_pin_survives_a_version_pinned_read(self):
+        # A version id is meaningless in the wrong account, so pinning the version is
+        # not a substitute for pinning who answers.
+        argv = self._argv(version="abc123")
+        assert "--expected-bucket-owner" in argv
+        assert argv[argv.index("--expected-bucket-owner") + 1] == "111122223333"
+
+    def test_the_output_file_stays_last(self):
+        # `s3api get-object` takes the output file positionally, so an option
+        # inserted after it would not be read as an option at all.
+        argv = self._argv(version="abc123")
+        assert argv[-1].endswith("out")
+
+    def test_a_version_pinned_read_reports_the_versioned_action(self):
+        # S3 authorizes a version-pinned GetObject against `s3:GetObjectVersion`, a
+        # DIFFERENT action. `_checked` renders the action name as its AccessDenied
+        # remediation hint, so naming the unversioned one would tell a denied reader
+        # to add a permission they already hold.
+        assert self._action(version="abc123") == "s3:GetObjectVersion"
+
+    def test_an_unpinned_read_keeps_the_unversioned_action(self):
+        # The discriminating half: one action reported for both shapes is wrong for
+        # whichever shape it does not describe.
+        assert self._action() == "s3:GetObject"
+
+    def test_a_malformed_version_never_reaches_the_cli(self):
+        with mock.patch.object(storage, "_checked") as checked:
+            with tempfile.TemporaryDirectory() as tmp:
+                with pytest.raises(ValueError):
+                    storage.get_file(
+                        "prof",
+                        "us-west-2",
+                        "bkt",
+                        "backup",
+                        "snapshots/a.tar.gz",
+                        str(Path(tmp) / "out"),
+                        account="111122223333",
+                        version="--profile=other",
+                    )
+        checked.assert_not_called()
+
+    def test_the_refusal_is_a_value_error_not_an_aws_error(self):
+        # Nothing has been asked of AWS yet. Reporting a local state problem as a
+        # service failure would send a reader to the wrong place.
+        with mock.patch.object(storage, "_checked"):
+            with tempfile.TemporaryDirectory() as tmp:
+                with pytest.raises(ValueError) as caught:
+                    storage.get_file(
+                        "prof",
+                        "us-west-2",
+                        "bkt",
+                        "backup",
+                        "snapshots/a.tar.gz",
+                        str(Path(tmp) / "out"),
+                        account="111122223333",
+                        version="-x",
+                    )
+        assert not isinstance(caught.value, AWSError)

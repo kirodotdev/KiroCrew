@@ -1422,10 +1422,16 @@ class TestEveryVersionUnderAKeyMustBeOurs:
     """The record proves we wrote A version of a key, not every version of it."""
 
     def test_a_key_whose_current_version_is_foreign_is_neither_kept_nor_retired(self, drive, state):
-        # `storage.get_file` names no version, so a restore reads whatever is CURRENT
-        # under a key. While a co-writer's version is current, our bytes are on the
-        # drive and unreachable, so the key is not a restorable copy: it holds no
-        # keep slot, and it is not retired either.
+        # `storage.get_file` reads whatever is CURRENT under a key unless it is handed
+        # a version id, so that is where a restore starts. While a co-writer's version
+        # is current, this sweep does not treat the key as a restorable copy: it holds
+        # no keep slot, and it is not retired either.
+        #
+        # Our bytes under such a key are not unreachable any more -- the restore path
+        # reads the recorded version when the current object fails the fingerprint --
+        # so not counting the key is the CONSERVATIVE reading rather than the only one.
+        # Retention's behaviour here is deliberately unchanged, which is what this
+        # test pins.
         #
         # The overwrite is dated between archives 01 and 02 on purpose, so the two
         # readings disagree. Counting the key as live makes its newest version the

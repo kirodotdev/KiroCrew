@@ -550,9 +550,10 @@ class TestUnchangedBaseline:
         # installs by design, so a co-writer can overwrite a recorded key -- and an
         # overwrite that happens to match the recorded byte length would pass a
         # length-only check. The skip would then hold, uploads would stop while the tree
-        # was unchanged, and `restore_download` (which names no version id) would fetch
-        # the foreign current version and refuse it as unverified, with no automated
-        # path back to our bytes. Same length, different version, must upload.
+        # was unchanged, and a restore would fetch the foreign current version, fail the
+        # fingerprint, and be left depending on `_recover_recorded_version` finding our
+        # noncurrent bytes still on the drive -- a narrower guarantee than simply having
+        # uploaded. Same length, different version, must upload.
         self._seed(size=10)
         with mock.patch.object(
             backup.storage,

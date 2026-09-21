@@ -638,14 +638,20 @@ for. A version the record names and the listing lacks is skipped as well: ours i
 already gone, so whatever remains under that key belongs to someone else. Delete
 markers carry no version in the record and are left alone; they carry no bytes
 either, so leaving them costs nothing billable. Ownership also decides which keys
-COUNT, not just which bytes may be erased. `storage.get_file` names no version, so a
-restore reads whatever is CURRENT under a key: a key is a restorable copy of this
-install's only while the version the record names is the current one, which is what
+COUNT, not just which bytes may be erased. A key is a restorable copy of this
+install's while the version the record names is the current one, which is what
 `backup._current_version_is_ours` answers. A key failing that holds no `keep` slot
 and is not retired either -- its current version is a delete marker, whose
 noncurrent bytes belong to the manual delete path, or it is a co-writer's, in which
-case our bytes are on the drive and unreachable through the only restore this
-product offers. Erasing them would also be this sweep deciding a key someone else is
+case our bytes are on the drive as a noncurrent version. Those bytes are reachable:
+`storage.get_file` takes an optional version, and when the current object fails the
+body fingerprint `backup._recover_recorded_version` makes one further read of the
+version the record names, accepting it only on that same fingerprint re-taken over
+the bytes that arrive. Retention still declines such a key,
+which is now the CONSERVATIVE reading rather than a forced one: it retains more,
+never less, and counting a recoverable-but-noncurrent copy toward `keep` is a
+decision about what may be DELETED and is not taken here.
+Erasing them would also be this sweep deciding a key someone else is
 actively writing is finished with. Because the rule is about the CURRENT version
 rather than the newest by timestamp, a live key also carries our version as its
 newest, so `_newest_first` orders by the age of the archive we wrote with no second
@@ -914,6 +920,68 @@ the foreign case and left the other two to a confirmation dialog, which put a
 safety property in one client, so any caller that did not open the dashboard
 restored a planted archive with no override. `ORIGIN_SELF` is the only origin that
 needs none, and it is the one the local upload record can vouch for.
+
+An `ORIGIN_SELF` key whose downloaded bytes fail the recorded body fingerprint is
+the one case where this install's archive can still be ON the drive: a co-writer
+overwrote the key, so our bytes are the noncurrent version. `storage.get_file` takes
+an optional version, and `backup._recover_recorded_version` uses it for exactly one
+further read, of the `VersionId` `uploaded_versions` records for that key. It accepts
+that read on the same evidence the current-version read uses and nothing more -- the
+same body fingerprint, re-taken over the bytes that arrive. A match settles
+provenance: those ARE the bytes this install uploaded. Whether they still open as a
+`tar.gz` is not asked, because the current-version read does not ask it either and the
+upload side pushes payloads it cannot read, so an own archive can legitimately be
+malformed; refusing one only on the recovery path would hand the operator their own
+file when nobody overwrote the key and a refusal when somebody did. An absent,
+deleted or mismatched version returns the same `ORIGIN_UNVERIFIED` refusal, and so
+does a staged copy that cannot be hashed -- reading the bytes back is part of
+fetching them, so it sits inside the same guard as the transfer rather than escaping
+a helper whose every non-matching outcome is that refusal. The recovery can only
+find bytes that already pass; it can never widen what a restore accepts.
+
+The extra read is also the one AWS call in a restore the caller did not ask for, so
+`backup._authorize_recovery_read` authorizes it again immediately before it is made,
+asking the same four questions `backup._authorize_upload` asks of the paid upload and
+in the same order: the live caller identity must still name the requested account,
+the app must still be enabled, S3 consent must still hold for this profile and
+region, and the recorded grant must name THIS account. The network round-trip runs
+FIRST and the cheap local decisions LAST, so no window sits between a check and the
+read it guards. The first read can take minutes, and the route's pre-flight cannot
+speak for a decision made after it ran -- a withdrawn grant, a disabled app, or a
+profile repointed at another account. The stored grant is read ONCE and its profile,
+region and account all checked against that one snapshot: grant reads are unlocked
+while writes take the consent lock, so checking profile and region against one read
+and the account against a second would let a re-grant landing between them satisfy
+each half from a different record, turning a refusal into an allow. The parity between
+the two gates is in the four questions they ask, not in the mechanism underneath them.
+They differ in what a refusal does -- the upload raises, because a refused upload is a
+failed run, while this returns a reason, so the recovery does not run and the caller
+keeps exactly the refusal it already had -- and in how the grant is reached: the upload
+gate still asks `is_granted` and then reads the grant again for its account, which is
+a pre-existing race recorded in #12705 for its own review rather than changed here.
+
+That further read is authorized against `s3:GetObjectVersion` rather than
+`s3:GetObject` -- S3 treats a version-pinned `GetObject` as a distinct action -- and
+`storage.get_file` reports whichever of the two matches the request it made.
+`engine._checked` uses that name twice: as the failure label on every error, and, on an
+`AccessDenied`, as the permission its remediation hint tells the operator to add.
+Neither GetObject action appears in `_ACTION_STATEMENT_HINTS`, so the statement Sid
+inside that hint falls back to the generic policy pointer; the action name in it is
+still whatever the call passed. Naming the unversioned action on a pinned read would
+send a denied operator to add a permission they already hold. The recommended drive
+tier grants neither on `backup/*`: that prefix is write-only there on purpose, so any
+restore already needs rights beyond it.
+
+The recovery runs only where the mismatch would REFUSE. Under `foreign_ok` the caller
+has already said it will take whatever is current at the key without proof, so there
+is no refusal to rescue, and reaching past the current object would hand that caller
+different bytes than it accepted, labelled `ORIGIN_SELF` instead of
+`ORIGIN_UNVERIFIED`. Gating on the override keeps its meaning intact.
+
+Retention is deliberately not taught about this: `_current_version_is_ours` stays a
+question about the CURRENT version, so a recoverable-but-noncurrent key still holds
+no `keep` slot. That errs toward retaining more, and counting it is a decision about
+what may be DELETED.
 
 The override is mandatory rather than optional: restoring onto a replacement
 machine means nothing in the bucket is provably this install's, which is what

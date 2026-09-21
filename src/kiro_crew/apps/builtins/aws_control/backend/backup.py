@@ -1674,8 +1674,9 @@ def _stamp() -> str:
 
     A manual run racing the nightly loop can land in the same second; on a
     versioned bucket an identical key does not destroy the earlier archive,
-    but it hides it — listings and restore only see the current version. The
-    hex suffix keeps every archive its own key.
+    but it hides it — listings show only the current version, and a restore
+    starts there and will only look past it for the one version this install
+    recorded. The hex suffix keeps every archive its own key.
     """
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{ts}-{secrets.token_hex(3)}"
@@ -2106,25 +2107,36 @@ def _newest_first(keys: dict[str, list[dict[str, Any]]]) -> list[str]:
 
 
 def _current_version_is_ours(rows: list[dict[str, Any]], recorded: str) -> bool:
-    """Whether the version a restore would fetch under this key is ``recorded``.
+    """Whether the version a restore would fetch FIRST under this key is ``recorded``.
 
-    `storage.get_file` names no version, so a restore reads the key's CURRENT
-    version. That makes "is this a restorable archive of ours" a question about one
-    version only, and the answer decides both whether the key may hold a ``keep``
-    slot and whether the sweep may run at all.
+    `storage.get_file` names no version unless it is given one, so a restore starts
+    at the key's CURRENT version. That makes "is this a restorable archive of ours"
+    a question about one version, and the answer decides both whether the key may
+    hold a ``keep`` slot and whether the sweep may run at all.
 
     False for a key whose current version is a delete marker, and false for one
-    whose current version is a co-writer's. In the second case our bytes are still
-    on the drive as a noncurrent version, which is exactly why the count-based
-    reading of this looked fine: they are present, and they are also unreachable
-    through the only restore this product offers.
+    whose current version is a co-writer's.
 
-    Empty ``recorded`` is therefore false as well: with no recorded id nothing can
-    be shown to be ours, which is the fail-closed end.
+    In that second case our bytes are still on the drive as a noncurrent version,
+    and a restore CAN reach them: when the current object fails the body fingerprint
+    and a provable version was recorded for the key,
+    :func:`_recover_recorded_version` reads exactly that version. Such a key is
+    therefore present and reachable, not present and stranded.
 
-    It is deliberately a question about the CURRENT version rather than the
-    newest-by-timestamp one, so a key ordered by `_newest_first` also carries our
-    version as its newest -- one rule, not two that can drift.
+    This function is deliberately about the CURRENT version, and retention's
+    behaviour follows from that alone. Declining such a key is a CONSERVATIVE
+    reading rather than a forced one: the key may in fact be recoverable, and it
+    still holds no ``keep`` slot. Declining is the safe direction -- it retains more,
+    never less -- and teaching retention to count a recoverable-but-noncurrent copy
+    is a separate decision about what may be DELETED, which is not taken here.
+
+    Empty ``recorded`` is false as well: with no recorded id nothing can be shown to
+    be ours, which is the fail-closed end. Note this is the same input that makes
+    recovery unavailable, so the two agree rather than merely coinciding.
+
+    It is a question about the CURRENT version rather than the newest-by-timestamp
+    one, so a key ordered by `_newest_first` also carries our version as its newest
+    -- one rule, not two that can drift.
     """
     if not recorded:
         return False
@@ -2633,11 +2645,16 @@ def _prune_remote_archives(
         outcome["unrecorded"] = len(unrecorded)
         outcome["unrecordedBytes"] = unrecorded_bytes
         # A key counts as a live archive of OURS only when the version a restore
-        # would actually fetch is the version this install wrote. `storage.get_file`
-        # takes no version id, so a restore reads whatever is CURRENT under the key:
-        # if a co-writer's version is on top, our bytes are still on the drive but
-        # unreachable through the product's own restore path, so the key is not a
-        # restorable copy and must not hold a `keep` slot.
+        # fetches FIRST is the version this install wrote. `storage.get_file` reads
+        # whatever is CURRENT under the key unless it is handed a version id, so if a
+        # co-writer's version is on top the key is not treated as a restorable copy
+        # and must not hold a `keep` slot.
+        #
+        # Our bytes under such a key are not unreachable any more --
+        # `_recover_recorded_version` reads the recorded version when the current
+        # object fails the fingerprint. This sweep still does not count the key, which
+        # is now the conservative reading rather than the only one: not counting it
+        # retains more, and counting it would let retention delete something else.
         #
         # Two ways a key fails that, both left entirely alone. Its current version is
         # a delete marker: the noncurrent bytes are the separate, pre-existing cost
@@ -3038,10 +3055,14 @@ def _unchanged_baseline(
     installs by design, so a co-writer can overwrite a recorded key -- and an overwrite
     that happens to match the recorded byte length would pass a length-only check. The
     skip would then hold, uploads would stop while the tree was unchanged, and the
-    object a restore actually fetches would be the foreign one: ``restore_download``
-    reads the key's CURRENT version and names no version id, so its fingerprint check
-    refuses it as ``ORIGIN_UNVERIFIED`` and there is no automated path back to our
-    bytes. Silent stopped backups with no recovery is the outcome worth spending a
+    object a restore fetches first would be the foreign one: ``restore_download`` reads
+    the key's CURRENT version, so its fingerprint check rejects that object. Since
+    :func:`_recover_recorded_version` the restore then makes one more read, of the
+    version this install recorded, so there IS now an automated path back to our bytes
+    -- but it depends on a provable recorded version, and the very buckets that make
+    this failure likely are the ones that supply none (see the unversioned and
+    suspended cases below). A skip must therefore not lean on it: silent stopped
+    backups whose recovery is conditional is still the outcome worth spending a
     comparison to avoid, so the current version must be the one we recorded writing.
     This is the same question :func:`_current_version_is_ours` answers for retention,
     asked here of one key.
@@ -3898,6 +3919,234 @@ def _staging_name(key: str) -> str:
     return prefix + _key_basename(key).encode("utf-8")[:keep].decode("utf-8", "ignore")
 
 
+def _authorize_recovery_read(profile: str, region: str, *, account: str) -> Optional[str]:
+    """``None`` if the recorded-version read may be made, else why it may not.
+
+    The recovery's extra read is the one AWS call in a restore that the caller did
+    not ask for, and the first read can take minutes -- long enough for the owner to
+    disable the app or withdraw the grant, and long enough for the profile to be
+    repointed at a different account. The route's pre-flight ran before any of that
+    could happen, so it cannot speak for it.
+
+    The same four questions :func:`_authorize_upload` asks, in the same order and for
+    the same reason it documents: the network round-trip runs FIRST and the cheap
+    local decisions LAST, so no window sits between a local check and the call it
+    guards. The two gates differ only in what a refusal DOES -- the upload raises,
+    because a refused upload is a failed run, while this returns a reason, because a
+    refused recovery is the honest refusal the restore already had.
+
+    The stored grant is read ONCE and its profile, region and account all checked
+    against that single snapshot. Grant reads are unlocked while writes take the
+    consent lock, so checking profile and region against one read and the account
+    against a second would let a re-grant landing between them satisfy each half from
+    a different record -- a refusal turned into an allow. A profile repointed between
+    the grant and now must not reach AWS under a consent the owner never gave for THIS
+    account, which is a different question from whether any S3 consent exists.
+    """
+    import json as _json
+
+    from kiro_crew import aws_consent
+    from kiro_crew.apps.manager import is_app_enabled
+    from kiro_crew.deploy.engine import _checked
+
+    try:
+        out = _checked(
+            ["sts", "get-caller-identity", "--output", "json"],
+            profile,
+            action="sts:GetCallerIdentity",
+        )
+    except (AWSError, OSError, ValueError) as exc:
+        # An unanswerable probe is a refusal, not a fault to surface: this caller's
+        # honest answer for an unprovable archive is the one it already has.
+        return f"the account this connection points at could not be confirmed ({exc})"
+    try:
+        live = str(_json.loads(out or "{}").get("Account", ""))
+    except _json.JSONDecodeError:
+        live = ""
+    if live != account:
+        return "this connection does not point at the requested account"
+    if not is_app_enabled("aws-control"):
+        return "aws-control was disabled before the recorded version could be read"
+    # ONE read of the grant, with all three fields checked against that one snapshot.
+    # Grant reads are unlocked while writes take the consent lock, so asking
+    # `is_granted` (which reads the grant and checks profile and region) and then
+    # reading the grant AGAIN for its account compares two different snapshots: a
+    # re-grant landing between them passes the profile check against the old record
+    # and the account check against the new one, which turns a refusal into an allow.
+    # One snapshot cannot disagree with itself.
+    #
+    # `_authorize_upload` asks in a two-read shape instead. That gate is working and
+    # separately tested, and changing it reaches outside this path, so it keeps its
+    # own shape here and is tracked on its own; the module spec records where.
+    grant = aws_consent.read_grant(aws_consent.SERVICE_S3)
+    if grant is None:
+        return "S3 use is not confirmed, so no consent covers reading the recorded version"
+    if grant.profile != profile or grant.region != region:
+        return (
+            "the S3 grant names "
+            f"{aws_consent.credential_source(grant.profile)} in region "
+            f"{grant.region or '(provider default)'}, which is not this call"
+        )
+    if not grant.account or grant.account != account:
+        return "the recorded S3 consent does not name this account"
+    return None
+
+
+def _recover_recorded_version(
+    profile: str,
+    region: str,
+    bucket: str,
+    key: str,
+    *,
+    account: str,
+    staging: Path,
+    expected: str,
+) -> Optional[Path]:
+    """One bounded read of the version this install recorded, or ``None``.
+
+    Called only when the object CURRENT at ``key`` failed the body fingerprint. That
+    failure means a co-writer overwrote a key this install recorded -- the drive is
+    reachable by every install pointed at the account, versioning is on for exactly
+    that reason, and an overwrite leaves our bytes behind as a noncurrent version.
+    Before this, no code path could ask for them: :func:`storage.get_file` named no
+    version, so a restore read whatever was current and the operator's own archive
+    sat on the drive, intact and unreachable.
+
+    Returns a path to a temp file holding bytes that PASSED the same fingerprint,
+    never a path to bytes that merely arrived. ``None`` means the caller should fall
+    back to the refusal it would have raised anyway, so every uncertain branch
+    returns ``None``:
+
+    * No recorded fingerprint to compare against. An empty one matches nothing, and
+      unknown is not a pass -- the same rule the rest of this module applies.
+    * No recorded version for this key, or one that names a version SLOT rather
+      than one version (see :func:`_is_provable_version_id`, which rejects
+      ``"null"``: a suspended-versioning bucket gives that id to every write, so
+      two different bodies at one key both report it).
+    * A recorded version that is not well-formed enough to pass to the CLI at all
+      (see :func:`storage.validate_version_id`).
+    * The read is not authorized at the moment it would be made -- see
+      :func:`_authorize_recovery_read`. The extra read is the one AWS call in a
+      restore the caller did not ask for, so a disabled app, a withdrawn grant, a
+      grant naming another account, or a profile repointed during the first download
+      all stop it.
+    * The version is gone -- deleted, expired out of the keep window, or never
+      there. AWS answers with an error and it is reported as a refusal, not raised:
+      for this caller an unusable recorded id is a refusal to report, not a fault.
+    * The bytes came back and do NOT match the fingerprint. This is the case worth
+      being precise about: it is not a recovery that failed, it is a second set of
+      foreign bytes, and it is discarded exactly like the first.
+
+    A fingerprint match is the WHOLE test, and nothing else is asked of the bytes.
+    Whether they still open as a ``tar.gz`` is a different question, and one this
+    module answers the same way everywhere: the current-version read accepts on the
+    fingerprint alone, and the upload side pushes payloads it cannot read
+    (:func:`_tree_fingerprint` returns ``""`` for an unreadable ``tar.gz``), so a
+    recorded fingerprint can honestly name a malformed archive. Refusing one HERE
+    would mean the operator gets their own archive when nobody overwrote the key and
+    a refusal when somebody did, for the same bytes -- so this path hands back what
+    the fingerprint proves is theirs, exactly as the other one does.
+
+    Never widens what a restore will accept. The fingerprint is re-taken over the
+    bytes that actually arrived on THIS read rather than carried over from the
+    first, so the pin is on the object in hand and not on a claim about it.
+
+    Exactly one extra read, and only on a path that was already going to refuse.
+    There is no loop and no walk of the version list: the recorded id names one
+    version, and if that one is not there this install has nothing to recover.
+    Costing a second request on the way to the same refusal is the worst case.
+
+    The id comes from local state, which is where a version id can be trusted from
+    -- it is written by this install's own successful push, and
+    ``apps/aws-control/data`` is neither agent-readable nor agent-writable (it sits
+    behind the agent file-tool floor and is bind-masked from every agent sandbox). It
+    is still validated on the way OUT, because a stored value read back later can be
+    truncated or partially rewritten, and it travels as a separate argv element where
+    a leading ``-`` would change what the command means. There is no shell in the
+    path.
+    """
+    if not expected:
+        return None
+    recorded_version = uploaded_versions(account).get(key, "")
+    if not _is_provable_version_id(recorded_version):
+        return None
+    if storage.validate_version_id(recorded_version) is not None:
+        # Malformed enough that the call would be refused by the primitive. Reported
+        # as a refusal rather than allowed to raise: this is a local state problem,
+        # and the caller's honest answer for it is the one it already has.
+        logger.warning(
+            "aws-control: the archive now at a recorded key for %s is not the one this "
+            "install uploaded, and the version recorded for that key is not well-formed, "
+            "so there is nothing to recover and the restore is refused",
+            account,
+        )
+        return None
+    # The extra read is authorized HERE, immediately before it is made, by the same
+    # four questions the paid upload is gated on. A refusal means the recovery does
+    # not RUN, which leaves exactly the refusal this caller already had -- the same
+    # shape as every other uncertain branch above.
+    refusal = _authorize_recovery_read(profile, region, account=account)
+    if refusal is not None:
+        logger.warning(
+            "aws-control: the archive now at a recorded key for %s is not the one this "
+            "install uploaded, and the recorded version is not read because %s, so the "
+            "restore is refused",
+            account,
+            refusal,
+        )
+        return None
+    fd, alt_name = tempfile.mkstemp(prefix=".kc-restore-v-", dir=str(staging))
+    os.close(fd)
+    alt = Path(alt_name)
+    try:
+        storage.get_file(
+            profile,
+            region,
+            bucket,
+            "backup",
+            key,
+            str(alt),
+            account=account,
+            version=recorded_version,
+        )
+        # Inside the same guard as the download: reading the bytes back is part of
+        # fetching them, and a staged copy that cannot be hashed is the same
+        # outcome as one that never arrived -- a refusal to report, not an error to
+        # surface. Left outside, an OSError here would escape a helper whose whole
+        # contract is that every non-matching outcome returns the existing refusal,
+        # and would leak the staged file this function owns.
+        landed = _body_fingerprint(alt)
+    except (AWSError, OSError, ValueError) as exc:
+        # The version id is deliberately absent from this message, as is anything
+        # derived from the object's bytes. An operator needs to know the recovery was
+        # attempted and did not land; the id identifies nothing they can act on.
+        logger.warning(
+            "aws-control: the archive now at a recorded key for %s is not the one this "
+            "install uploaded, and the version it did upload could not be read back, so "
+            "the restore is refused: %s",
+            account,
+            exc,
+        )
+        alt.unlink(missing_ok=True)
+        return None
+    if landed != expected:
+        logger.warning(
+            "aws-control: the archive now at a recorded key for %s is not the one this "
+            "install uploaded, and the version it recorded does not match either, so the "
+            "restore is refused",
+            account,
+        )
+        alt.unlink(missing_ok=True)
+        return None
+    logger.warning(
+        "aws-control: the archive now at a recorded key for %s is not the one this install "
+        "uploaded -- another writer replaced it -- so the restore used the version this "
+        "install recorded writing, which matches byte for byte",
+        account,
+    )
+    return alt
+
+
 def restore_download(
     profile: str,
     region: str,
@@ -3986,8 +4235,51 @@ def restore_download(
             # to slip through: this is not a claim about the object, it IS the
             # object. A mismatch means some other archive now sits at that key, so
             # the self claim does not hold.
-            if _body_fingerprint(tmp) != recorded.get(key, ""):
-                origin = ORIGIN_UNVERIFIED
+            expected = recorded.get(key, "")
+            if _body_fingerprint(tmp) != expected:
+                # A mismatch alone does not settle it in the one case where this
+                # install's own archive is still ON the drive: a co-writer overwrote
+                # the key, so our bytes are the noncurrent version. One bounded read
+                # of the version we RECORDED writing settles it on the same evidence
+                # -- the same fingerprint, re-taken over the bytes that arrive on
+                # that read.
+                #
+                # `None` keeps the original outcome exactly, so the refusal below is
+                # still what an unrecoverable mismatch reaches. Nothing here can
+                # make a restore accept bytes that failed the fingerprint; it can
+                # only find bytes that pass it.
+                #
+                # Only where the mismatch would REFUSE. `foreign_ok` means the
+                # caller has already said it will take whatever is current at the
+                # key without proof, so under it there is no refusal to rescue --
+                # and reaching past the current object would hand back different
+                # bytes than that caller asked for, labelled a proven self archive
+                # instead of the unverified one it accepted. The override keeps the
+                # meaning it has today and this change is confined to the outcome it
+                # exists to change.
+                recovered = (
+                    None
+                    if foreign_ok
+                    else _recover_recorded_version(
+                        profile,
+                        region,
+                        bucket,
+                        key,
+                        account=account,
+                        staging=staging,
+                        expected=expected,
+                    )
+                )
+                if recovered is None:
+                    origin = ORIGIN_UNVERIFIED
+                else:
+                    # Onto the path the outer cleanup already owns, so there stays
+                    # exactly one temp file to unlink on the way out. Same
+                    # directory, so this is atomic.
+                    os.replace(recovered, tmp)
+                    # Re-read: `size` was measured on the overwriting object, and
+                    # the reply reports the length of the bytes being handed back.
+                    size = tmp.stat().st_size
         if origin != ORIGIN_SELF and not foreign_ok:
             # Refused after the transfer, which only an overwritten own-archive
             # reaches. The staged bytes are discarded and the destination is never
@@ -4002,7 +4294,12 @@ def restore_download(
     # is where a client learns WHICH of them it just accepted -- a co-tenant's, one
     # under this install's prefix with no upload record, or one carrying no id at
     # all. None of the three should be assumed to be this machine's.
-    return {"path": str(dest), "bytes": size, "origin": origin, "install": owner}
+    return {
+        "path": str(dest),
+        "bytes": size,
+        "origin": origin,
+        "install": owner,
+    }
 
 
 def _account_view_checked(account: str) -> tuple[dict[str, Any], bool]:
