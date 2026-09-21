@@ -7982,6 +7982,7 @@
       "open_settings": "설정 열기",
       "pick_an_installed_provider_under_settings_voice": "설정 → 음성에서 설치된 제공자를 선택하거나 현재 제공자를 설치하세요.",
       "provider_is_not_installed_on_this_machine": "음성 텍스트 변환이 켜져 있지만 ‘{{provider}}’ 제공자가 이 컴퓨터에 설치되지 않아 녹음을 텍스트로 변환할 수 없습니다.",
+      "run_the_command_below_in_a_terminal_to_install_v": "아래 명령을 터미널에서 실행해 음성 지원을 설치한 다음 페이지를 다시 로드하세요.",
       "settings_voice": "설정 → 음성",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "음성 텍스트 변환이 아직 켜져 있지 않아 마이크가 음성을 텍스트로 바꿀 수 없습니다.",
       "then_click_the_mic_to_dictate_into_the_message_b": "을 누른 다음 마이크를 클릭해 메시지 상자에 음성으로 입력하세요.",

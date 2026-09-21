@@ -4922,9 +4922,11 @@ class ResolvedBindings:
 class SttConfig:
     """Speech-to-text configuration.
 
-    Enabled by default. Recognition runs on this machine through the bundled
-    engine, so having voice input available costs one model download the first
-    time it is used and nothing after that.
+    Enabled by default, with the `local` provider as the default. Actually
+    recognising speech requires the optional `voice` extra: desktop builds
+    bundle it, while CLI and source installs must install it themselves (it is
+    not pulled in by a plain install). Settings -> Voice and the microphone
+    modal surface the exact command when the extra is missing.
     """
 
     enabled: bool = field(

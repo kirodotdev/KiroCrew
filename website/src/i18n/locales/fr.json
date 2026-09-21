@@ -8206,6 +8206,7 @@
       "open_settings": "Ouvrir les paramètres",
       "pick_an_installed_provider_under_settings_voice": "Choisissez un fournisseur installé dans Paramètres → Voix, ou installez celui en cours.",
       "provider_is_not_installed_on_this_machine": "La reconnaissance vocale est activée, mais le fournisseur « {{provider}} » n'est pas installé sur cette machine : les enregistrements ne peuvent pas être transcrits.",
+      "run_the_command_below_in_a_terminal_to_install_v": "Exécutez la commande ci-dessous dans un terminal pour installer la prise en charge vocale, puis rechargez la page.",
       "settings_voice": "Paramètres → Voix",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "La reconnaissance vocale n'est pas encore activée, le microphone ne peut donc pas transformer votre voix en texte.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", puis cliquez sur le micro pour dicter dans la zone de message.",

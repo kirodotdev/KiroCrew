@@ -91,7 +91,7 @@ export interface ComposerVoiceHost {
   pendingCaretRef?: React.MutableRefObject<number | null>
 }
 
-export type SttConfig = { streaming?: boolean; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string }
+export type SttConfig = { streaming?: boolean; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; code?: string; prereqs?: string[] }
 
 export function useComposerVoice(host: ComposerVoiceHost) {
   const { sessionId, inputRef, setInput } = host
@@ -737,6 +737,17 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       setOpen: setVoiceSetupOpen,
       reason: (sttEnabled && !sttAvailable ? 'unavailable' : 'disabled') as 'unavailable' | 'disabled',
       provider: sttProvider,
+      /** Backend availability code, so the modal shows the same per-code reason
+       *  Settings → Voice does instead of the generic provider-named sentence. */
+      code: sttCfg?.code || '',
+      /** The pip command the backend computed for a missing voice extra, shown
+       *  verbatim so the user can self-serve the fix. ONLY the actionable pip
+       *  entry qualifies: `prereqs` can also carry an ffmpeg install command,
+       *  and surfacing that under the "install voice support" lead-in would tell
+       *  the user to run something that cannot fix a missing wheel / failed
+       *  import / absent model. No pip entry → empty string, and the modal hides
+       *  the command block. */
+      installCommand: sttCfg?.prereqs?.find(cmd => cmd.includes('pip install')) || '',
     },
     sttDictationPanel,
   }
