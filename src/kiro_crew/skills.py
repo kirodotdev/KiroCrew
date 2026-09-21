@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
@@ -232,21 +233,55 @@ _DOLLAR_SKILL_PATTERN = re.compile(r"(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)")
 # Cap how many distinct $skills one message may expand — bounds prompt growth and
 # matches the spirit of the per-message trigger cap.
 _MAX_DOLLAR_SKILLS = 5
-# Cache the discovered skill-file list for this long. get_triggered_skills runs
-# on EVERY message; without this it os.walk()s the skills dir + every extra
-# path per message.
+# How long a discovered skill-file list is served before a REVALIDATION is due.
+# Reaching this deadline never costs the caller a walk: the stale list is handed
+# back and the re-walk is queued onto the catalog-refresh worker (see
+# _request_catalog_refresh). So the deadline bounds how out-of-date an OUT OF BAND
+# change (an AIM sync, a manual cp) may be, and nothing else — the app's own
+# create/update/delete/refresh all call _invalidate_iter_cache(), so a skill
+# written through the app is visible immediately regardless of this value.
 #
-# This was 5.0s, which did not achieve that: a walk of a real skills tree (645
-# files across 21 roots on a dev desktop, incl. AIM-installed package roots)
-# takes ~0.7s, and chat messages arrive MINUTES apart — so every message missed
-# the cache and paid the full walk, and the 5s only ever deduped the several
-# _iter() calls WITHIN one message. At 60s the walk is amortized ~12x with a
-# worst-case staleness of one minute.
-#
-# Staleness only affects skills added OUT OF BAND (AIM sync, a manual cp):
-# the app's own create/update/delete/refresh all call _invalidate_iter_cache(),
-# so a skill written through the app is visible immediately regardless of TTL.
+# The value is sized against the walk it amortizes, not picked for tidiness: a walk
+# of a real skills tree (645 files across 21 roots on a dev desktop, incl.
+# AIM-installed package roots) takes ~0.7s, while chat messages arrive MINUTES
+# apart, so anything on the order of seconds is missed by every message and
+# amortizes nothing. At 60s one walk covers ~12 messages.
 _ITER_CACHE_TTL_SECS = 60.0
+
+# How long a caller with NOTHING to serve waits for the first walk of a root set.
+#
+# This is the one case where a turn can wait on discovery at all: no in-memory
+# list, and no stored snapshot either — a machine's very first run, or one whose
+# index file was deleted. It is a bounded wait on a background build, not a walk
+# on the calling thread: when the budget runs out the caller is served whatever
+# has been published, the scope is marked INCOMPLETE (see `catalog_status`), and
+# the same build keeps going, so the next call adopts the finished snapshot.
+#
+# Why wait at all rather than return empty immediately: a small tree finishes
+# inside this budget, and finishing is what makes `always: true` bodies known and
+# therefore honored. Returning empty would make the first session on every machine
+# start without its required instructions. The budget is what keeps a
+# 5,000-skill tree from turning that guarantee into a minute of silence — such a
+# tree is served from its snapshot on every run but the first.
+_COLD_CATALOG_WAIT_SECS = 2.0
+
+# A snapshot read off disk is revalidated only when it is older than this, so a
+# process that starts, answers one call and exits does not queue a walk of a tree
+# another process enumerated moments ago.
+_CATALOG_REVALIDATE_AFTER_SECS = 60.0
+
+# What an agent is told when its scope is served from an unfinished first walk.
+# Named rather than inlined because two properties are load-bearing: it must say
+# that an always-loaded skill may be MISSING (silence about that is the failure
+# this notice exists to avoid), and it must name the call that re-reads the set,
+# so the agent has an action rather than a warning.
+_DISCOVERY_IN_PROGRESS_NOTICE = (
+    "[Skills: discovery in progress]\n"
+    "This machine's skill directory is still being built, so the set below may be "
+    "incomplete and an always-loaded skill may not have been injected yet. Re-run "
+    "skill_search(action='list', offset=0) before concluding a skill does not exist.\n"
+    "[End of skills notice]\n\n"
+)
 
 # A granted repository remains attacker-controlled after consent. Bound the
 # descriptor-relative walker well below Python's recursion limit so a malicious
@@ -2047,6 +2082,23 @@ class _ScopedSkillEntry(NamedTuple):
     mapping_root: str | None = None
 
 
+def _fingerprint_mtime_and_size(fingerprint: str) -> tuple[float | None, int]:
+    """Recover ``(mtime, size)`` from a ``dev:ino:ctime_ns:mtime_ns:size`` string.
+
+    Lets a catalog read reuse the stat the WALK already paid instead of taking its
+    own. ``(None, 0)`` for anything that does not parse, which sends the caller
+    down the ordinary stat path rather than serving an invented size — a wrong
+    figure here is reported to the user as a skill's injection cost.
+    """
+    parts = fingerprint.split(":")
+    if len(parts) != 5:
+        return None, 0
+    try:
+        return int(parts[3]) / 1_000_000_000, int(parts[4])
+    except ValueError:
+        return None, 0
+
+
 class SkillsLoader:
     """Load skill markdown files from ~/.kiro/crew/skills/.
 
@@ -2098,6 +2150,46 @@ class SkillsLoader:
         # slot would serve one session's project skills to a session working in
         # a different project for the whole TTL. (monotonic_deadline, results)
         self._iter_cache: dict[str, tuple[float, list[tuple[str, Path, str | None]]]] = {}
+        # Stat fingerprints from the walk that produced each scope's list, so
+        # `list_skills` can decide whether a persisted metadata row is still usable
+        # WITHOUT re-stat'ing every skill. Keyed scope key → path → fingerprint;
+        # an absent entry simply means "stat it yourself".
+        self._catalog_fingerprints: dict[str, dict[str, str]] = {}
+        # Scope keys whose served list is known to be partial, because the first
+        # build outran `_COLD_CATALOG_WAIT_SECS`. Read by `catalog_status` so a
+        # search, a list or a directory build can say "still discovering" instead
+        # of reporting a truncated answer as the whole truth.
+        self._catalog_incomplete: set[str] = set()
+        # Unconfined paths adopted from the STORED snapshot that this process has not
+        # itself admitted. The index is an agent-writable crew-home leaf, so a stored
+        # row is not evidence anything vetted the path it names;
+        # `_read_enumerated_skill_bytes` re-runs `validate_file_path` on a path in
+        # here before its first read. A walk that republishes a scope clears it.
+        self._snapshot_unadmitted: set[str] = set()
+        # Single-flight background builds: scope key → the event its build sets on
+        # completion. Concurrent sessions sharing this loader join one walk rather
+        # than each walking the same tree.
+        self._catalog_refreshes: dict[str, tuple[threading.Event, int]] = {}
+        # Scope keys queued for the refresh worker, with the generation current when
+        # each was queued. One worker drains them, so N scopes cost N SERIAL walks
+        # rather than N concurrent ones — a session count must not multiply the
+        # filesystem work a shared corpus costs.
+        self._catalog_pending: dict[str, int] = {}
+        self._catalog_wakeup = threading.Event()
+        self._catalog_worker: threading.Thread | None = None
+        # True while a build holds the search-index handle. `close()` then leaves
+        # shutting the index down to that build, so its store still lands: a host
+        # served only by short-lived loaders converges on nothing else.
+        self._catalog_building = False
+        # Guards the four structures above AND `_iter_cache`: background builds
+        # publish into them from a worker thread while foreground callers read.
+        self._catalog_lock = threading.Lock()
+        # Bumped by every in-process invalidation. A build that started before the
+        # bump is publishing an answer that predates a change already known, so its
+        # result is dropped rather than allowed to overwrite the newer state. The
+        # index's own epoch covers the same race BETWEEN processes.
+        self._catalog_generation = 0
+        self._closed = False
         self._disabled_apps_cache: tuple[float, frozenset[str]] | None = None
         # (canonical key, allowed) pairs already audited, so the enforcement
         # record is written on first use rather than once per message.
@@ -2185,16 +2277,49 @@ class SkillsLoader:
         )
 
     def close(self) -> None:
-        """Release persistent resources owned by this loader."""
-        if self._search_index is not None:
-            self._search_index.close()
+        """Release persistent resources owned by this loader.
+
+        ``_closed`` is set FIRST, so a build already on the worker publishes
+        nothing into a loader that is going away, and so no new build can be queued
+        behind this call. The worker is a DAEMON thread and is not joined: a cold
+        first walk can outlive the loader that triggered it, and the unsigned MCP
+        fallback closes its loader as soon as one search returns, so joining here
+        would charge that call the very walk this design moved off the request path.
+
+        A build still in flight KEEPS the index handle, and closes it itself when it
+        finishes. Closing it here instead would discard that walk's store, and on a
+        host served only by short-lived loaders the store is the one thing that lets
+        the next call skip the walk — so discarding it makes every call re-walk
+        forever. Publishing into this loader's memory is still refused; only the
+        persistence survives.
+
+        Every outstanding completion event is SET, because a queued build the
+        worker abandons never reaches the ``finally`` that would have set it — and a
+        cold caller waiting on that event would otherwise sit out its whole budget
+        for an answer that will never arrive.
+        """
+        with self._catalog_lock:
+            self._closed = True
+            self._catalog_pending.clear()
+            pending_events = [event for event, _gen in self._catalog_refreshes.values()]
+            self._catalog_refreshes.clear()
+            # A build in flight owns the handle until it returns; it closes the
+            # index on its own way out.
+            index = None if self._catalog_building else self._search_index
+        for event in pending_events:
+            event.set()
+        self._catalog_wakeup.set()
+        if index is not None:
+            index.close()
 
     async def _on_config_change(self, change: "live.ConfigChange") -> None:
-        # The screening stats every configured root (resolve + is_dir), and a root
-        # on a slow or network mount would stall the loop, so it runs off-loop;
-        # only the adoption of the screened list happens here.
+        # Both halves run off-loop. The screening stats every configured root
+        # (resolve + is_dir), and a root on a slow or network mount would stall the
+        # loop; the adoption then invalidates the persisted catalog, which takes
+        # SQLite's write lock and can wait out the busy timeout when another process
+        # holds it. Neither belongs on the gateway's event loop.
         screened = await asyncio.to_thread(self._screen_extra_paths, change.new)
-        self._adopt_extra_paths(screened)
+        await asyncio.to_thread(self._adopt_extra_paths, screened)
 
     def reconfigure(self, cfg: KiroCrewConfig) -> None:
         """Re-resolve the configured extra skill roots from *cfg* (synchronously).
@@ -2234,8 +2359,10 @@ class SkillsLoader:
 
         Edition-contributed roots are preserved and stay LAST (lowest precedence);
         they come from the platform context, not config, so a config write must not
-        drop them. The discovery cache is cleared so the next listing walks the new
-        roots instead of serving the old set for the rest of the TTL.
+        drop them. A root-set change is a full catalog invalidation, not just a
+        cleared list: the stored snapshot belongs to the OLD root set, and a walk
+        already in flight over those roots must not publish under the new scope, so
+        the persisted rows are dropped and the generation moved as well.
         """
         self._configured_extra_paths = resolved_paths
         merged = list(resolved_paths)
@@ -2243,7 +2370,7 @@ class SkillsLoader:
             if edition_path not in merged:
                 merged.append(edition_path)
         self._extra_paths = merged
-        self._iter_cache.clear()
+        self._invalidate_iter_cache()
 
     def _max_triggered_now(self) -> int:
         """The per-message trigger cap, read live.
@@ -2334,21 +2461,474 @@ class SkillsLoader:
             logger.warning("could not audit project-skills enforcement", exc_info=True)
 
     def _iter(self, project_dir: str | Path | None = None) -> list[tuple[str, Path, str | None]]:
-        """Return all ``(name, skill_file)`` pairs, TTL-cached per project.
+        """Return all ``(name, skill_file, within)`` triples without walking the tree.
 
         Local skills take precedence over extra paths, and both take precedence
-        over a trusted project's own skills. The underlying os.walk is cached
-        for ``_ITER_CACHE_TTL_SECS`` because this runs on every message via
-        ``get_triggered_skills`` — re-walking the skills tree (plus every extra
-        path) per message was a per-message latency cost.
+        over a trusted project's own skills. Precedence is why enumeration ORDER is
+        part of the answer and not an incidental detail of how it was produced.
+
+        Three tiers, none of which walks on the calling thread:
+
+        1. this loader's in-memory list, while it is inside
+           ``_ITER_CACHE_TTL_SECS``;
+        2. the same list past that deadline. Expiry SCHEDULES a re-walk; it never
+           charges one to the caller that happened to arrive after it;
+        3. the stored snapshot for this root set, adopted into tier 1. A restart,
+           and every short-lived loader (the unsigned MCP fallback builds one per
+           call), lands here rather than walking.
+
+        Only a scope with no snapshot at all — a machine's first run, or one whose
+        index file was deleted — waits, and then for at most
+        ``_COLD_CATALOG_WAIT_SECS`` on a background build. Past that the partial
+        answer is served with the scope marked incomplete, so a caller can say
+        "still discovering" instead of "no skills"; see :meth:`catalog_status`.
+
+        A served list says only which files EXIST. Mapping scope, disabled apps,
+        project consent and ``repo_scope`` are all applied live on top of it, and
+        every body read re-checks confinement on the descriptor it opened — so no
+        snapshot, however stale, can widen what a session reaches.
         """
-        key = self._trusted_project_key(project_dir)
-        cached = self._iter_cache.get(key)
-        if cached is not None and time.monotonic() < cached[0]:
+        key = self._catalog_scope_key(project_dir)
+        now = time.monotonic()
+        with self._catalog_lock:
+            cached = self._iter_cache.get(key)
+            stale = cached is not None and now >= cached[0]
+        if cached is not None:
+            if stale:
+                self._request_catalog_refresh(key)
             return cached[1]
-        results = self._iter_uncached(key or None)
-        self._iter_cache[key] = (time.monotonic() + _ITER_CACHE_TTL_SECS, results)
-        return results
+
+        snapshot = self._load_catalog_snapshot(key)
+        if snapshot is not None:
+            rows, built_at = snapshot
+            self._adopt_catalog(key, rows, {}, complete=True)
+            if time.time() - built_at >= _CATALOG_REVALIDATE_AFTER_SECS:
+                self._request_catalog_refresh(key)
+            return rows
+
+        with self._catalog_lock:
+            already_reported = key in self._catalog_incomplete
+        if already_reported:
+            # "Still discovering" has already been delivered for this scope, so
+            # charging every later turn the same budget would buy nothing and break
+            # the rule that a subsequent turn never waits.
+            self._request_catalog_refresh(key)
+            logger.debug("skill catalog: scope %r still building", key or "<global>")
+            return []
+
+        # Waiting on the WORKER rather than walking here is what bounds the cost:
+        # the walk continues after the budget expires, so the wait buys a complete
+        # answer when one is cheap and costs a fixed ceiling when it is not. The
+        # loop is what makes the budget the only limit: a build can be FENCED by a
+        # mutation that lands while it runs and then publishes nothing, and its
+        # replacement is queued behind it — so waking on one build's completion is
+        # not the same as the answer being ready.
+        deadline = time.monotonic() + _COLD_CATALOG_WAIT_SECS
+        while True:
+            done = self._request_catalog_refresh(key)
+            remaining = deadline - time.monotonic()
+            if done is None or remaining <= 0:
+                break
+            done.wait(timeout=remaining)
+            with self._catalog_lock:
+                cached = self._iter_cache.get(key)
+            if cached is not None:
+                return cached[1]
+        with self._catalog_lock:
+            cached = self._iter_cache.get(key)
+            if cached is not None:
+                return cached[1]
+            # The build is still running. Serve nothing, but RECORD that this is a
+            # partial answer so no caller reports it as a complete "no skills".
+            self._catalog_incomplete.add(key)
+        logger.debug("skill catalog: first build of scope %r still running", key or "<global>")
+        return []
+
+    def _catalog_scope_key(self, project_dir: str | Path | None) -> str:
+        """The scope this request reads, as a string the snapshot layer can key on.
+
+        ``_trusted_project_key`` answers ``""`` for "no trusted project", but a
+        falsy answer of any shape means the same thing, and the two must not select
+        DIFFERENT scopes — one would then be served a snapshot the other built. So
+        the coercion happens once, here, rather than at each of the three call
+        sites that would otherwise each have to remember it.
+        """
+        return self._trusted_project_key(project_dir) or ""
+
+    def catalog_status(self, project_dir: str | Path | None = None) -> str:
+        """``"complete"`` or ``"building"`` for the scope *project_dir* selects.
+
+        The distinction a caller cannot make from an empty result alone: a machine
+        with no skills and a machine whose first discovery pass has not finished
+        both enumerate to nothing. Search, list and directory callers use this to
+        say which one it is rather than presenting a partial answer as the truth.
+        """
+        key = self._catalog_scope_key(project_dir)
+        with self._catalog_lock:
+            return "building" if key in self._catalog_incomplete else "complete"
+
+    def _catalog_fingerprint_hint(self, project_dir: str | Path | None) -> dict[str, str]:
+        """Stat fingerprints from the walk that produced this scope's list.
+
+        Empty when this process has not walked the scope yet, which simply sends
+        ``list_skills`` down its own stat path.
+        """
+        key = self._catalog_scope_key(project_dir)
+        with self._catalog_lock:
+            return self._catalog_fingerprints.get(key, {})
+
+    def _catalog_scope_id(self, project_key: str) -> str:
+        """Stable identity of the ROOT SET a stored snapshot belongs to.
+
+        The project key alone is not enough: two loaders can share it and still
+        enumerate different trees (a different skills dir under a test
+        ``KIROCREW_HOME``, a different ``skills.extra_paths``). Keying on the roots
+        as well is what stops one configuration from being served another's
+        snapshot. It is also what makes a revoked project grant unreachable rather
+        than merely unused: withdrawing trust turns the project key back into ``""``
+        (see ``_trusted_project_key``), which selects a DIFFERENT scope, so the rows
+        naming that project's files cannot be read from. Digested rather than
+        concatenated so the key stays bounded and holds no path text for an
+        unrelated reader of the index file.
+        """
+        material = "\x00".join(
+            [str(self._dir), *(str(path) for path in self._extra_paths), project_key]
+        )
+        return hashlib.sha256(material.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+
+    def _snapshot_admitted_roots(self) -> tuple[str, ...]:
+        """Roots an unconfined row read off disk may legitimately name.
+
+        The walk admits an unconfined path one of two ways: it came out of a walk
+        of this loader's own roots, or ``validate_file_path`` resolved it — which
+        may land on an app provider's tree, since an app symlinks its skills into
+        the skills dir and the resolved target sits outside it by construction. A
+        row read back from the index has neither guarantee, so it is held to the
+        union of both: this loader's roots plus the same provider roots the mapping
+        walker admits. Lexical, so screening a whole snapshot costs no syscalls.
+        """
+        return (
+            os.path.realpath(self._dir),
+            *(os.path.realpath(path) for path in self._extra_paths),
+            *_trusted_skill_roots(),
+        )
+
+    def _load_catalog_snapshot(
+        self, project_key: str
+    ) -> tuple[list[tuple[str, Path, str | None]], float] | None:
+        """Read this scope's stored enumeration, or ``None`` when there is none.
+
+        ``None`` and an empty row list are different answers: the second means this
+        root set was walked and genuinely holds no skills, which must not be
+        re-walked on every message just because the answer is nothing.
+
+        No stat fingerprints come back with it, deliberately. They would record what
+        a walk in some earlier process saw, and nothing here knows how long ago that
+        was, so letting them stand in for metadata validation would make a new
+        process serve a description for a file edited out of band since — the one
+        thing a restart is expected to notice. A stored row may name a file; it may
+        never vouch for its contents.
+
+        The index file is an agent-WRITABLE crew-home leaf, so a stored row is not
+        evidence that anything admitted the path it names. Two things therefore
+        stand between a row and a read. Here, every unconfined row must name a path
+        under :meth:`_snapshot_admitted_roots` — lexical, so a whole snapshot is
+        screened without a syscall — and rows that fail are dropped rather than
+        served. Then each surviving unconfined path is recorded as NOT YET ADMITTED,
+        because containment alone does not say the file is still a regular file in a
+        non-sensitive location; ``_read_enumerated_skill_bytes`` re-runs
+        ``validate_file_path`` on it before the first read.
+        """
+        if self._search_index is None or self._closed:
+            return None
+        stored = self._search_index.catalog_snapshot(self._catalog_scope_id(project_key))
+        if stored is None:
+            return None
+        rows_raw, built_at = stored
+        admitted_roots = self._snapshot_admitted_roots()
+        own_roots = (self._dir, *self._extra_paths)
+        provider_roots = _trusted_skill_roots()
+        rows: list[tuple[str, Path, str | None]] = []
+        unadmitted: set[str] = set()
+        for key, path, confine_root in rows_raw:
+            absolute = os.path.abspath(path)
+            if confine_root:
+                # A confined row's root decides which directory its body is read
+                # under, so taking the stored value on trust would let a forged row
+                # name ANY project and have it read as a granted one. Only the
+                # trusted project key that selected this scope is accepted, the path
+                # must sit inside it, and the key must denote that path — the same
+                # pair check the unconfined branch applies, for the same reason: the
+                # mapping is matched on the path and the body delivered by the key.
+                if (
+                    not project_key
+                    or confine_root != project_key
+                    or not _within_any(absolute, (project_key,))
+                    or os.path.abspath(Path(project_key) / ".kiro" / "skills" / key / _SKILL_FILE)
+                    != absolute
+                ):
+                    logger.warning("skill catalog: refusing a stored row with a foreign root")
+                    return None
+                rows.append((key, Path(path), confine_root))
+                continue
+            if not _within_any(absolute, admitted_roots):
+                logger.warning("skill catalog: refusing a stored row outside every root")
+                return None
+            if not self._key_denotes_path(key, absolute, own_roots, provider_roots):
+                logger.warning("skill catalog: refusing a stored row whose key is not its path")
+                return None
+            rows.append((key, Path(path), None))
+            unadmitted.add(str(Path(path)))
+        with self._catalog_lock:
+            self._snapshot_unadmitted |= unadmitted
+        return rows, built_at
+
+    def _admit_snapshot_path(self, path: Path) -> bool:
+        """Re-run the walk's admission on an unconfined path read off disk.
+
+        ``True`` — and free — for every path this process walked itself, which is
+        the normal case: the set only ever holds rows adopted from the stored
+        snapshot, and a walk that republishes the scope empties it. A path in the
+        set is put through ``validate_file_path`` exactly once; admitting it retires
+        it from the set so later reads cost nothing, and a refusal leaves it in so a
+        second attempt is refused again rather than silently admitted.
+        """
+        key = str(path)
+        with self._catalog_lock:
+            if key not in self._snapshot_unadmitted:
+                return True
+        if validate_file_path(key) is None:
+            logger.warning("Refusing a stored skill path that no longer admits: %s", path)
+            return False
+        with self._catalog_lock:
+            self._snapshot_unadmitted.discard(key)
+        return True
+
+    @staticmethod
+    def _key_denotes_path(
+        key: str, absolute: str, own_roots: tuple[Path, ...], provider_roots: tuple[str, ...]
+    ) -> bool:
+        """Does *key* name the skill that *absolute* holds?
+
+        A stored row carries the key and the path as two independent fields, and they
+        are consumed by DIFFERENT gates: an agent mapping is matched against the
+        PATH (``_matches_any``), while the body is delivered by re-resolving the KEY
+        (``load_skill``). A row that pairs one skill's key with another's path
+        therefore passes a mapping admitting the second and serves the first — so the
+        pair has to be checked, not just each half.
+
+        Two shapes a walk can legitimately produce, both decided lexically:
+
+        * the path IS what the key denotes under one of this loader's own roots, which
+          is what the global tree and an in-root ``extra_paths`` entry record;
+        * the path is an admitted PROVIDER target — an app symlinks its skills into
+          the tree, so ``validate_file_path`` resolves the row out of the root it was
+          named in — and the key's last segment still matches the directory holding
+          the file.
+
+        Anything else is refused, and the caller refuses the whole snapshot with it: a
+        dropped row would leave a truncated catalog being served as a complete one.
+        """
+        if not key:
+            return False
+        for root in own_roots:
+            if os.path.abspath(root / key / _SKILL_FILE) == absolute:
+                return True
+        return _within_any(absolute, provider_roots) and (
+            os.path.basename(os.path.dirname(absolute)) == key.rsplit("/", 1)[-1]
+        )
+
+    def _adopt_catalog(
+        self,
+        project_key: str,
+        rows: list[tuple[str, Path, str | None]],
+        fingerprints: dict[str, str],
+        *,
+        complete: bool,
+    ) -> None:
+        with self._catalog_lock:
+            self._iter_cache[project_key] = (time.monotonic() + _ITER_CACHE_TTL_SECS, rows)
+            if fingerprints:
+                self._catalog_fingerprints[project_key] = fingerprints
+            if complete:
+                self._catalog_incomplete.discard(project_key)
+
+    def _request_catalog_refresh(self, project_key: str) -> threading.Event | None:
+        """Queue one background walk of *project_key*'s roots; join any in flight.
+
+        Returns the event that build sets on completion, so the cold path can wait
+        on it with a budget. ``None`` means no build could be started — a closed
+        loader, or a host that refused the thread — and the caller must then live
+        with what it already has rather than walking on the request path.
+        """
+        with self._catalog_lock:
+            if self._closed:
+                return None
+            existing = self._catalog_refreshes.get(project_key)
+            if existing is not None and not existing[0].is_set():
+                if existing[1] != self._catalog_generation:
+                    # The build in flight was queued before a mutation, so it is
+                    # already fenced and will publish nothing. Queue the current
+                    # generation behind it, or the caller waits out its budget on an
+                    # answer that never lands and the next turn pays cold discovery.
+                    self._catalog_pending[project_key] = self._catalog_generation
+                    self._catalog_wakeup.set()
+                return existing[0]
+            done = threading.Event()
+            self._catalog_refreshes[project_key] = (done, self._catalog_generation)
+            self._catalog_pending[project_key] = self._catalog_generation
+            if self._catalog_worker is None or not self._catalog_worker.is_alive():
+                # Started on first NEED, not in __init__: a loader whose every call
+                # is served from a snapshot never starts a thread, which is what
+                # keeps the short-lived MCP fallback cheap. DAEMON because a build
+                # is deliberately abandonable, and `concurrent.futures` joins its
+                # non-daemon workers at interpreter exit — which would make a walk
+                # this design moved off the request path delay process exit instead
+                # of being dropped.
+                try:
+                    worker = threading.Thread(
+                        target=copy_context().run,
+                        args=(self._catalog_worker_loop,),
+                        name="skill-catalog-refresh",
+                        daemon=True,
+                    )
+                    worker.start()
+                except RuntimeError:  # pragma: no cover — host refused a thread
+                    logger.debug("skill catalog: refresh worker unavailable", exc_info=True)
+                    self._catalog_refreshes.pop(project_key, None)
+                    self._catalog_pending.pop(project_key, None)
+                    return None
+                self._catalog_worker = worker
+        self._catalog_wakeup.set()
+        return done
+
+    def _catalog_worker_loop(self) -> None:
+        """Drain queued scopes one at a time until this loader closes.
+
+        Serial by construction: several sessions in different trusted projects all
+        enumerate the same global tree, so running their builds concurrently would
+        multiply that one corpus's filesystem work by the session count.
+        """
+        while True:
+            with self._catalog_lock:
+                if self._closed:
+                    return
+                if self._catalog_pending:
+                    project_key, generation = self._catalog_pending.popitem()
+                else:
+                    # Cleared under the same lock the producer sets it under, and
+                    # only after observing an empty queue, so a scope queued in
+                    # between cannot lose its wakeup.
+                    self._catalog_wakeup.clear()
+                    project_key, generation = "", -1
+            if generation < 0:
+                self._catalog_wakeup.wait()
+                continue
+            self._run_catalog_build(project_key, generation)
+
+    def _run_catalog_build(self, project_key: str, generation: int) -> None:
+        """Walk *project_key*'s roots off the request path and publish the result.
+
+        Failure is logged and dropped: a scope keeps serving whatever it had, which
+        is strictly better than failing a turn over a tree that could not be read
+        this once.
+        """
+        try:
+            with self._catalog_lock:
+                if self._closed:
+                    return
+                # The handle is READ under the same lock that claims it. Reading it
+                # first and claiming second leaves a gap in which `close()` sees no
+                # build in flight, closes the index, and latches it unusable — the
+                # walk then finishes and persists nothing, which is the one thing the
+                # handover exists to prevent.
+                index = self._search_index
+                self._catalog_building = True
+            # Both captured BEFORE the walk. The epoch is the cross-process half of
+            # the generation check: `store_catalog` refuses a write whose epoch has
+            # moved. The scope is captured because `skills.extra_paths` can be
+            # reconfigured while the walk runs, and a scope id computed afterwards
+            # would file rows walked over the OLD root set under the NEW root set's
+            # key — publishing a catalog that names neither configuration's tree.
+            epoch = index.catalog_epoch() if index is not None else None
+            scope_id = self._catalog_scope_id(project_key)
+            rows = self._iter_uncached(project_key or None)
+            fingerprints = self._catalog_fingerprints_for(rows)
+            # PERSIST BEFORE PUBLISHING. The store is where a cross-process
+            # invalidation is detected: `"stale"` means another process recorded a
+            # mutation while this walk ran, so these rows must not be served either.
+            # `"unavailable"` is the opposite case — the rows are fine and only the
+            # database is missing (a read-only home), and refusing to serve them
+            # would make every turn re-walk.
+            outcome = (
+                index.store_catalog(
+                    scope_id,
+                    [(name, str(path), within or "") for name, path, within in rows],
+                    epoch=epoch,
+                )
+                if index is not None
+                else "unavailable"
+            )
+            if outcome == "stale":
+                logger.debug("skill catalog: another process invalidated mid-walk; dropping")
+                return
+            with self._catalog_lock:
+                if self._closed or generation != self._catalog_generation:
+                    # A mutation landed while this walk ran, so its answer predates
+                    # a change already known. Publishing it would resurrect the
+                    # pre-change list and undo the invalidation. The rows stay
+                    # PERSISTED when only `_closed` stopped the publish: they
+                    # describe the tree this walk saw, and a host served only by
+                    # short-lived loaders converges on nothing else.
+                    return
+                if scope_id != self._catalog_scope_id(project_key):
+                    logger.debug("skill catalog: root set changed mid-walk; dropping the result")
+                    return
+                self._iter_cache[project_key] = (time.monotonic() + _ITER_CACHE_TTL_SECS, rows)
+                self._catalog_fingerprints[project_key] = fingerprints
+                self._catalog_incomplete.discard(project_key)
+                # Only the paths THIS walk returned are admitted. A forged row the
+                # walk rejected keeps its marker, so a reader still holding the old
+                # list cannot read it unadmitted.
+                self._snapshot_unadmitted -= {
+                    str(path) for _name, path, within in rows if within is None
+                }
+        except Exception:  # noqa: BLE001 — a failed walk must not kill the worker
+            logger.warning("skill catalog: background walk failed", exc_info=True)
+        finally:
+            with self._catalog_lock:
+                self._catalog_building = False
+                entry = self._catalog_refreshes.pop(project_key, None)
+                # The handle was held for this build; a close that arrived while it
+                # ran deferred shutting it down to here.
+                index_to_close = self._search_index if self._closed else None
+            if entry is not None:
+                entry[0].set()
+            if index_to_close is not None:
+                index_to_close.close()
+
+    @staticmethod
+    def _catalog_fingerprints_for(
+        rows: list[tuple[str, Path, str | None]],
+    ) -> dict[str, str]:
+        """Stat each unconfined row once, so ``list_skills`` need not stat again.
+
+        Confined project rows are deliberately absent: their cache token comes from
+        bytes the no-link reader admitted, never from a path stat, and recording one
+        here would reintroduce the probe that confinement exists to prevent.
+        """
+        fingerprints: dict[str, str] = {}
+        for _name, path, within in rows:
+            if within is not None:
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            fingerprints[str(path)] = (
+                f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
+            )
+        return fingerprints
 
     def _get_disabled_app_names(self) -> frozenset[str]:
         now = time.monotonic()
@@ -2479,10 +3059,36 @@ class SkillsLoader:
         read, so keying the frontmatter cache on mtime alone would return the
         stale parse. Dropping it here keeps the mutator's edit immediately
         reflected in ``list_skills`` / ``get_triggered_skills``.
+
+        The stored snapshot goes too, and both generation counters move. Each is
+        required for a different race: leaving the snapshot would let the next
+        process serve the pre-mutation list, and leaving the generations alone would
+        let a walk already in flight publish its pre-mutation answer on top of this
+        clear — an invalidation a background refresh silently undoes. The in-process
+        counter covers this loader's own worker; the index's epoch, which
+        ``drop_catalog`` bumps, covers a walk running in another process.
+
+        Emptying the list rather than serving the pre-mutation one is what makes the
+        mutator's edit visible immediately, and it is also why the re-walk is QUEUED
+        here instead of waiting for the next turn to demand it: on a tree whose walk
+        outlasts ``_COLD_CATALOG_WAIT_SECS`` the next turn would otherwise re-enter
+        the cold path, and starting the walk now bounds that window to the walk's own
+        duration.
         """
         self._disabled_apps_cache = None
-        self._iter_cache = {}
+        with self._catalog_lock:
+            scopes = list(self._iter_cache)
+            self._iter_cache = {}
+            self._catalog_fingerprints = {}
+            self._catalog_incomplete.clear()
+            self._snapshot_unadmitted.clear()
+            self._catalog_generation += 1
+            index = self._search_index
         self._fm_cache.clear()
+        if index is not None:
+            index.drop_catalog()
+        for scope in scopes:
+            self._request_catalog_refresh(scope)
 
     def _read_enumerated_skill_bytes(
         self,
@@ -2515,6 +3121,20 @@ class SkillsLoader:
         after an ancestor swap. Their bodies retain the global read budget.
         """
         if within is None and canonical_root is None:
+            # A path this process never walked carries no admission: the index it
+            # came from is an agent-writable crew-home leaf, and the direct read
+            # below applies no sensitive-path or UNC screen of its own, so a row
+            # naming a link into a credential home would be read as a skill body.
+            # The walk's own admission (`validate_file_path`) is therefore re-run
+            # once per snapshot-derived path, at the single point every enumerated
+            # read goes through. The set is checked for emptiness first, which is
+            # the normal case and keeps the lock off this hot path: a scope's
+            # markers are written before its rows are published, so a caller that
+            # holds rows has already observed them.
+            if self._snapshot_unadmitted and not self._admit_snapshot_path(path):
+                if refusal_reasons is not None:
+                    refusal_reasons.append("snapshot_path_refused")
+                return None
             # No project grant is involved: the global skills dir, extra paths,
             # edition roots, and the paths writers construct themselves. These
             # are operator-installed, so there is no directory to confine them
@@ -2683,6 +3303,17 @@ class SkillsLoader:
             if _entries is None
             else _entries
         )
+        # Fingerprints from a walk THIS PROCESS performed, when it has performed
+        # one. They let a warm build skip the stat it would otherwise take purely to
+        # decide whether the persisted metadata is still good — an O(N) syscall pass
+        # every turn pays on a large tree. Restricted to this process's own walk on
+        # purpose: a fingerprint read off disk records what some earlier process
+        # saw, so trusting it would make a restart serve a description for a file
+        # edited out of band since. A row the walk did not fingerprint — a mapped
+        # row, or any row on a process still serving the stored list — stats exactly
+        # as before, which is validation rather than discovery: no walk, and no body
+        # read.
+        fingerprint_hint = self._catalog_fingerprint_hint(project_dir)
         scanned = time.monotonic()
 
         def read_entry(
@@ -2695,17 +3326,27 @@ class SkillsLoader:
             if project_root is not None:
                 meta, size_bytes = self._confined_frontmatter_and_size(skill_file, project_root)
             else:
-                try:
-                    st: os.stat_result | None = skill_file.stat()
-                except OSError:
-                    st = None
-                fingerprint = (
-                    f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
-                    if st is not None
-                    else ""
-                )
-                if fingerprint and mapping_root:
-                    fingerprint += f":{mapping_root}"
+                st: os.stat_result | None = None
+                # A mapped row's fingerprint carries its mapping root, so the hint
+                # (which records the bare stat) would not match what is stored.
+                hinted = None if mapping_root else fingerprint_hint.get(str(skill_file))
+                if hinted is not None:
+                    fingerprint = hinted
+                    mtime, size_bytes = _fingerprint_mtime_and_size(hinted)
+                else:
+                    try:
+                        st = skill_file.stat()
+                    except OSError:
+                        st = None
+                    fingerprint = (
+                        f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
+                        if st is not None
+                        else ""
+                    )
+                    if fingerprint and mapping_root:
+                        fingerprint += f":{mapping_root}"
+                    mtime = st.st_mtime if st is not None else None
+                    size_bytes = st.st_size if st is not None else 0
                 cached = cached_metadata.get(str(skill_file))
                 if cached and cached[0] == fingerprint and cached[1].get("_catalog_key") == name:
                     meta = cached[1]
@@ -2714,16 +3355,15 @@ class SkillsLoader:
                     self._fm_cache.pop(str(skill_file), None)
                     meta = self._cached_frontmatter(
                         skill_file,
-                        mtime=st.st_mtime if st is not None else None,
+                        mtime=mtime,
                         within=None,
                         canonical_root=mapping_root,
                     )
                     meta["_catalog_key"] = name
                     if fingerprint:
                         changed = (str(skill_file), fingerprint, meta)
-                if st is not None and meta:
-                    self._fm_cache[str(skill_file)] = (st.st_mtime, meta)
-                size_bytes = st.st_size if st is not None else 0
+                if mtime is not None and meta:
+                    self._fm_cache[str(skill_file)] = (mtime, meta)
             return meta, size_bytes, fingerprint, changed, reads
 
         def rows() -> Iterator[
@@ -5514,10 +6154,25 @@ class SkillsLoader:
         # `_dedupe_identical_skills` verifies exactly that: same-metadata rows
         # whose content differs are all kept.
         all_skills = _dedupe_identical_skills(all_skills)
+        # A first-run scope whose discovery pass has not finished enumerates to
+        # nothing, and nothing is indistinguishable from a machine with no skills.
+        # That matters here and nowhere else: `always: true` bodies are REQUIRED
+        # instructions, so returning "" would drop them with no signal — the one
+        # outcome this module refuses everywhere else (see SkillContextCapacityError,
+        # which fails loudly rather than trimming a required body). A first run
+        # cannot know which skills are `always: true` without enumerating, so the
+        # honest answer is neither to block the turn on the walk nor to present a
+        # truncated set as complete: state that discovery is still running, so the
+        # agent knows its instructions may be incomplete and can re-read them once
+        # it finishes. Emitted whether or not mapped rows made `all_skills`
+        # non-empty, because an incomplete catalog is incomplete either way.
+        notice = (
+            _DISCOVERY_IN_PROGRESS_NOTICE if self.catalog_status(project_dir) == "building" else ""
+        )
         if not all_skills:
-            return ""
+            return notice
         if budget is None:
-            return self._legacy_context(
+            return notice + self._legacy_context(
                 all_skills,
                 restricted=only is not None,
                 project_dir=project_dir,
@@ -5580,7 +6235,11 @@ class SkillsLoader:
             parts = []
         # Without a split consumer, required bodies still spend the total
         # allowance before optional entries. They are never clipped to fit it.
-        optional_budget = max(0, budget - (len(required) if required_parts_out is None else 0))
+        # The discovery notice is charged here too, so an incomplete catalog cannot
+        # push the assembled block past the caller's budget.
+        optional_budget = max(
+            0, budget - len(notice) - (len(required) if required_parts_out is None else 0)
+        )
         optional: list[str] = []
         on_demand = [s for s in all_skills if s["key"] not in pinned]
         if on_demand and discovery_only:
@@ -5673,7 +6332,7 @@ class SkillsLoader:
             if len(wrap(optional + [block])) <= optional_budget:
                 optional.append(block)
 
-        return (required if required_parts_out is None else "") + wrap(optional)
+        return notice + (required if required_parts_out is None else "") + wrap(optional)
 
     def _legacy_context(
         self,
@@ -5779,20 +6438,31 @@ class SkillsLoader:
         except Exception:  # pragma: no cover — telemetry must not break injection
             pass
 
-    def _recency_boost(self, path_str: str) -> float:
+    def _recency_boost(self, path_str: str, fingerprint: str = "") -> float:
         """Return the file mtime if the skill is newer than the boost window,
         else 0.0. Lets a freshly-added, never-used skill rank above stale unused
-        ones (cold-start protection) without flooding the top of the list."""
-        try:
-            mtime = Path(path_str).stat().st_mtime
-        except OSError:
-            return 0.0
+        ones (cold-start protection) without flooding the top of the list.
+
+        The mtime comes from the row's stat *fingerprint* when it carries one, so
+        ranking adds no syscall to a turn: ``list_skills`` already recorded that
+        stat, or reused the one the catalog walk took. Ranking every row on the
+        calling thread was the second O(N) stat pass a message paid, next to the
+        metadata validation one. A row with no usable fingerprint — a confined
+        project row, or a mapped row whose fingerprint carries its mapping root —
+        is stat'ed exactly as before.
+        """
+        mtime, _size = _fingerprint_mtime_and_size(fingerprint) if fingerprint else (None, 0)
+        if mtime is None:
+            try:
+                mtime = Path(path_str).stat().st_mtime
+            except OSError:
+                return 0.0
         return mtime if (time.time() - mtime) < _NEW_SKILL_BOOST_WINDOW_SECS else 0.0
 
     def _rank_key(self, s: dict) -> tuple[float, float]:
         """Sort key for on-demand skills: (usage_hits, effective_recency).
         Higher sorts first. Falls back to recency-only if the ledger is absent."""
-        boost = self._recency_boost(s["path"])
+        boost = self._recency_boost(s["path"], str(s.get("fingerprint") or ""))
         if self._usage is None:
             return (0.0, boost)
         return self._usage.score(s["key"], recency_boost=boost)
@@ -5988,8 +6658,8 @@ class SkillsLoader:
             (entry for entry in self._scoped_entries(project_dir, only) if entry[0] == key), None
         )
         if entry is None:
-            return None
-        if entry.mapping_root is not None:
+            content = self._exact_read_while_building(key, only, project_dir, max_bytes)
+        elif entry.mapping_root is not None:
             content = self._read_global_skill_text(
                 entry.path, max_bytes, canonical_root=entry.mapping_root
             )
@@ -6003,6 +6673,50 @@ class SkillsLoader:
         ):
             return None
         return content
+
+    def _exact_read_while_building(
+        self,
+        key: str,
+        only: list[str] | None,
+        project_dir: str | Path | None,
+        max_bytes: int,
+    ) -> str | None:
+        """Serve a COMPLETE key during an unfinished first walk, or ``None``.
+
+        A cold catalog cannot answer "does this skill exist", so without this an
+        exact read on a machine's first run reports a skill that is right there as
+        absent. Only reachable while :meth:`catalog_status` says ``building``: once
+        the enumeration exists it is the authority, and a second resolution path
+        running alongside it is how the two drift apart.
+
+        *key* is never treated as a path. ``_safe_name`` rejects anything that is not
+        a plain catalog key, and the candidate is composed from a root this loader
+        already owns, so ``../`` reaches nothing. The complete key is required and
+        matched namespace-first — ``team-b/review`` composes only
+        ``<root>/team-b/review/SKILL.md`` and can never resolve ``team-a/review``.
+
+        Every live gate still applies: the mapping must admit the candidate, a
+        disabled app's skill stays hidden, the caller re-checks ``repo_scope``, and
+        the body itself is read through :meth:`load_skill`'s fenced readers. The one
+        thing withheld is the confined project tier, whose containment is only
+        knowable from the enumeration — a project skill therefore waits for the walk
+        rather than being read through a path this method composed.
+        """
+        if self.catalog_status(project_dir) != "building" or not self._safe_name(key):
+            return None
+        disabled_apps = self._get_disabled_app_names()
+        for root in (self._dir, *self._extra_paths):
+            candidate = root / key / "SKILL.md"
+            if not candidate.is_file():
+                continue
+            # Precedence is the enumeration's: the first root holding the key wins,
+            # so a refusal here is final rather than a reason to try a lower root.
+            if only is not None and not _matches_any(str(candidate), only):
+                return None
+            if disabled_apps and self._owning_app(key, candidate) in disabled_apps:
+                return None
+            return self.load_skill(key, project_dir, max_bytes=max_bytes)
+        return None
 
     def search_skills(
         self,
@@ -6021,6 +6735,12 @@ class SkillsLoader:
         """
         self.search_incomplete = False
         rows = self.scoped_skills(project_dir=project_dir, only=only)
+        # An unfinished first walk is the other way this answer can be partial, and
+        # the caller cannot tell it from "no match" without being told: `incomplete`
+        # already travels to the MCP tool and the dashboard, so the existing signal
+        # carries it rather than a second one.
+        building = self.catalog_status(project_dir) == "building"
+        self.search_incomplete = building
         offset = max(0, offset)
         if browse:
             return sorted(rows, key=lambda s: str(s["key"]))[offset : offset + limit]
@@ -6035,6 +6755,10 @@ class SkillsLoader:
         frequencies: dict[str, int] = {}
         live = [str(s["key"]) for s in rows if not s.get("confine_root")]
         bodies = self._body_matches(rows, terms, live, project_dir)
+        # `_body_matches` owns this flag for the body tier and assigns it outright,
+        # so an unfinished catalog — an independent reason the answer is partial —
+        # is re-applied rather than left to be overwritten.
+        self.search_incomplete = self.search_incomplete or building
         metadata = self._search_index.metadata_matches(terms) if self._search_index else None
         for row in rows:
             key = str(row["key"])

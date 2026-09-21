@@ -2998,9 +2998,11 @@ capability check, not a best-effort `lstat` sequence; a pre-check followed by a 
 scan leaves the same swap window. Project skills remain available on macOS and Linux,
 where every traversed component stays pinned to a no-follow directory descriptor.
 
-**One enforcement point for every enumerated read.** Enumeration is TTL-cached, so a
-path vetted while genuine can be replaced by a link out of the granted directory before
-anything reads it — and the root that made it acceptable is only known at enumeration
+**One enforcement point for every enumerated read.** Enumeration is cached, and now
+also PERSISTED across processes (see *The catalog snapshot*), so a path vetted while
+genuine can be replaced by a link out of the granted directory before anything reads
+it — over a longer window than an in-memory TTL alone implied — and the root that made
+it acceptable is only known at enumeration
 time. So `_iter_uncached` records, per path, the root it was vetted against, and
 `SkillsLoader._read_enumerated_skill_bytes` is the only place an enumerated skill file is
 read: it re-checks that root on the *descriptor it opened* (`O_NOFOLLOW` + `fstat`), not
@@ -3360,8 +3362,10 @@ yields no candidate is therefore logged at debug — the one signal that separat
 tool-name drift from a legitimately non-reading call.
 
 `_maybe_note_skill_read` resolves at the tool call and **offloads to a thread** —
-resolution walks the skills tree after cache expiry and resolves every served
-skill, which on the event loop would stall every session in the gateway. Both the
+resolution resolves every served skill, which on the event loop would stall every
+session in the gateway. It no longer walks the tree after cache expiry (the
+snapshot serves the list and expiry only schedules a re-walk), but the resolution
+itself is still per-skill filesystem work and stays off the loop. Both the
 initial `tool_call` and its `tool_call_update` refinement are observed, since
 which one carries `rawInput` is provider-specific, deduped by `tool_call_id`.
 `_maybe_credit_skill_read` then records only on a `status == "completed"` result
@@ -3475,12 +3479,175 @@ the very publisher it warns about. `skill_discover` additionally clamps those
 fields per entry (name 120, id 200, author 80, description 240) so one padded
 entry cannot crowd the other candidates out of the response.
 
+**The catalog snapshot — no turn waits for discovery.** `_iter` answers from one of
+three tiers, none of which walks the tree on the calling thread:
+
+1. this loader's in-memory list, inside `_ITER_CACHE_TTL_SECS`;
+2. the same list past that deadline. Expiry queues a re-walk on the
+   `skill-catalog-refresh` worker and returns the stale list. This is the point of
+   the tier: the deadline used to be BLOCKING, so on a large tree the message that
+   happened to arrive after expiry paid a full walk — about one message in twelve
+   was seconds slower for no reason a user could see;
+3. the stored enumeration for this root set (`skill_catalog` / `skill_catalog_scope`
+   in `skill_search_index.sqlite3`). A restart lands here, and so does every
+   short-lived loader — the unsigned MCP fallback in `mcp_tools/skills.py` builds one
+   per call — instead of walking.
+
+The scope key is a digest of the skills root, the resolved `extra_paths` and the
+trusted project key (`_catalog_scope_id`), because two loaders can share a project
+and still enumerate different trees. Stored rows keep their **ordinal**: enumeration
+order IS precedence, so a re-ordered snapshot would hand a caller a different file
+for the same skill name than the walk would.
+
+A snapshot records only what EXISTS. It is not an authority on who may read it:
+mapping scope, disabled apps, project consent and `repo_scope` are all re-evaluated
+live on top of a served list, and every body still goes through
+`_read_enumerated_skill_bytes`. A revoked project grant is therefore not merely
+unused but unreachable — `_trusted_project_key` turns back into `""`, which selects
+a different scope than the one holding that project's rows. It is also not an
+authority on CONTENT: the stored stat fingerprints are deliberately never returned
+by `_load_catalog_snapshot`, because nothing knows how old they are, and trusting
+them would make a restart serve a description for a file edited out of band since. A
+row may name a file; it may never vouch for its bytes.
+
+**A stored row is not an admission, and the index is agent-writable.**
+`skill_search_index.sqlite3` is a VISIBLE crew-home leaf, so a row is a CLAIM that a
+path was once enumerated, never evidence that anything vetted it — and the unconfined
+branch of `_read_enumerated_skill_bytes` is a direct `read_bytes()` with no
+sensitive-path or UNC screen of its own. Two things therefore stand between a stored
+row and a read, split because they cost differently:
+
+* **at adoption, containment AND key/path binding.** An unconfined row must name a
+  path under `_snapshot_admitted_roots()`: this loader's skills dir, its resolved
+  `extra_paths`, or the same provider roots the mapping walker admits — an app
+  symlinks its skills into the tree, so a legitimately admitted target sits outside it
+  by construction. The key must also DENOTE that path (`_key_denotes_path`): the two
+  fields are consumed by different gates — a mapping is matched against the path while
+  the body is delivered by re-resolving the key — so a row pairing one skill's key with
+  another's path would pass a mapping admitting the second and serve the first. Both
+  checks are lexical, so screening a whole snapshot costs no syscalls. A row that fails
+  either refuses the WHOLE snapshot rather than being dropped: a trimmed catalog would
+  be served as the complete enumeration, and falling back to the walk loses only speed.
+  The same holds for a confined row whose root is not the trusted project key that
+  selected the scope, and for a table past `_MAX_CATALOG_ROWS` (100,000 rows) or
+  carrying a field wider than `_MAX_CATALOG_FIELD_CHARS` (4,096) — unbounded
+  materialization of an adversary-controlled table is an out-of-memory crash on load.
+* **at the read, admission.** Containment does not say the file is still a regular
+  file in a non-sensitive place, so each surviving unconfined path is recorded in
+  `_snapshot_unadmitted` and `_admit_snapshot_path` re-runs `validate_file_path` on it
+  before its first read. Admitting retires it from the set, so a repeated read costs
+  nothing, and a walk that republishes the scope admitted every path it returned and
+  clears the set outright. A path this process walked never pays the check.
+
+That placement is what keeps the cost shape: the O(N) work stays on the walk, and
+admission is paid once per row actually read, at the one point every enumerated read
+already goes through.
+
+**Refresh is a background re-walk, not a per-file incremental index.** There is no
+filesystem watcher: an app-side mutation (`_invalidate_iter_cache`) is the immediate
+path, and everything else converges within `_ITER_CACHE_TTL_SECS` /
+`_CATALOG_REVALIDATE_AFTER_SECS` through a full re-walk on the worker. A watcher plus
+per-file updates would buy a smaller refresh, not a faster turn — the whole walk is
+already off the request path — at the cost of a new dependency and a second source of
+truth about what the tree holds.
+
+Mutations drop the stored snapshot AND move two counters. Both are needed, for
+different races: leaving the snapshot lets the next process serve the pre-mutation
+list; leaving the counters alone lets a walk already in flight publish its
+pre-mutation answer on top of the clear, an invalidation a background refresh
+silently undoes. `_catalog_generation` fences this loader's own worker, and the
+index's `skill_catalog_epoch` — read before a walk and re-checked inside
+`store_catalog`'s own `IMMEDIATE` transaction, because a deferred one leaves the check
+and the insert open to another process's `drop_catalog` landing between them — fences
+a walk running in ANOTHER process. A ROOT-SET change is a mutation for the same reason
+and takes the same path: `_adopt_extra_paths` invalidates rather than only clearing
+the in-memory list, since the stored snapshot belongs to the old root set. And
+`_run_catalog_build` captures its scope id BEFORE the walk and refuses to publish when
+the root set moved while it ran, so rows enumerated over one configuration never
+become another's answer.
+
+**The post-mutation cold window is intended.** An invalidation empties the list rather
+than serving the pre-mutation one, so on a tree whose walk outlasts
+`_COLD_CATALOG_WAIT_SECS` the next turn re-enters the cold path and carries the
+*discovery in progress* notice, with `always: true` bodies not yet injected. Serving
+the pre-mutation list instead would contradict the one thing the mutation path
+guarantees — that a skill written through the app is visible immediately — and would
+do it silently. The invalidation therefore also QUEUES the re-walk rather than waiting
+for the next turn to demand it, which bounds that window to the walk's own duration.
+
+A refresh is single-flight per scope, and the worker drains scopes SERIALLY, so
+several sessions in different trusted projects cost one walk of the shared global tree
+at a time rather than one each. A snapshot read off disk is revalidated only when it is
+older than `_CATALOG_REVALIDATE_AFTER_SECS`, so a process that starts, answers one call
+and exits does not queue a walk of a tree another process enumerated moments ago.
+
+The worker is a DAEMON thread, started on first need and never joined by `close()`,
+which sets `_closed` first so a build already running publishes nothing into a loader
+that is going away. `concurrent.futures` was rejected here for one measured reason: it
+joins its non-daemon workers at interpreter exit, so a walk this design deliberately
+abandoned would delay process exit instead (3.0s vs 0.05s on a 3-second task). A
+finished walk still PERSISTS, though: a build in flight keeps the index handle and
+closes it on its own way out, because on a host served only by short-lived loaders —
+the unsigned MCP fallback closes its loader as soon as one search returns — that store
+is the only thing that lets the next call skip the walk, so discarding it makes every
+call re-walk forever. `close()` also SETS every outstanding completion event, since a
+queued build the worker abandons never reaches the `finally` that would have set it
+and a cold caller would otherwise sit out its whole budget.
+
+**The one case that waits, and what it is allowed to withhold.** A scope with no
+stored snapshot at all — a machine's first run, or one whose index file was deleted —
+waits on the background build for at most `_COLD_CATALOG_WAIT_SECS`. A small tree
+finishes inside that budget, and finishing is what makes `always: true` bodies known
+and therefore honored. Past the budget the partial answer is served, the scope is
+marked in `_catalog_incomplete`, and `catalog_status()` reports `"building"` so a
+caller can distinguish "still discovering" from "no skills" — an empty list alone
+cannot tell those apart. `search_skills` reports the same thing through the
+`search_incomplete` flag the MCP tool and the dashboard already surface.
+
+`get_context` consumes that verdict rather than returning `""`: it emits an explicit
+*discovery in progress* notice saying the set may be incomplete and an always-loaded
+skill may not have been injected yet, charged against the caller's budget like any
+other block. This is the deliberate resolution of a real conflict, not an oversight.
+Required instructions must never be SILENTLY dropped (which is why
+`SkillContextCapacityError` fails loudly rather than trimming a body), and a first run
+cannot know which skills are `always: true` without enumerating. The tradeoff taken is
+to state the incompleteness rather than either block the turn on a large tree or
+present a truncated set as complete.
+
+**An exact key stays readable while that first walk runs.** `read_scoped_skill` falls
+back to `_exact_read_while_building`, which composes the candidate from a root this
+loader owns and the COMPLETE key, so `team-b/review` can never resolve
+`team-a/review` and a bare leaf resolves nothing. `_safe_name` rejects anything that
+is not a plain catalog key, so the key is never a path. The mapping must still admit
+the candidate, a disabled app's skill stays hidden, and `repo_scope` is still checked
+by the caller. Two limits are deliberate: it is reachable ONLY while
+`catalog_status()` is `"building"`, because a complete enumeration is the single
+authority and a second resolution path running beside it is how the two drift apart;
+and it withholds the confined project tier, whose containment is knowable only from
+the enumeration.
+
+**What still costs O(N) per turn, and what no longer does.** `list_skills` used to
+stat every unconfined row on the calling thread purely to decide whether its
+persisted metadata row was still current. The walk now records those fingerprints
+(`_catalog_fingerprints_for`, on the worker) and `list_skills` reuses them, so a turn
+on a process that has walked takes no stat at all. A process still serving the STORED
+list holds no fingerprints of its own and stats as before — validation, not discovery:
+no walk and no body read — because a fingerprint read off disk records what an earlier
+process saw. One cost is knowingly left: `_scoped_entries` expands an EXTERNAL mapping
+prefix (one that resolves outside the catalog roots) with its own walk, which no
+snapshot covers. That walk is bounded by the operator-declared prefix rather than by
+the installed-skill count, so it does not grow with the corpus this section is about.
+
+
 **Trigger matching (`get_triggered_skills`) — per-message hot path.** Runs on
 every non-custom-agent message via the context builder, scoring word-overlap of
 the message against each skill's `triggers` (negative `!`-prefixed triggers
 exclude). To keep it off the per-message filesystem/config hot path:
-- the discovered skill-file list is TTL-cached (`_iter`, `_ITER_CACHE_TTL_SECS`),
-  invalidated by `create_auto_skill`;
+- the discovered skill-file list is served from the **catalog snapshot** rather
+  than a walk (`_iter`; see *The catalog snapshot* above). Expiry of
+  `_ITER_CACHE_TTL_SECS` SCHEDULES a re-walk and keeps serving the previous list,
+  so no message is ever the one that pays for discovery; it is invalidated
+  immediately by `create_auto_skill`;
 - the walk that rebuilds it (`_iter_skill_files`, on a worker thread) asks the
   sensitive-path fence through `is_sensitive_resolved_path` against the
   `realpath` it has already computed for loop detection and containment, with

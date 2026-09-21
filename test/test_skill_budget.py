@@ -84,6 +84,11 @@ class TestAliasFold:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 # Third element: the root the path was vetted against. These
@@ -136,6 +141,11 @@ class TestAliasFold:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("real-skill", canonical_file, None)]
@@ -173,6 +183,11 @@ class TestAliasFold:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("brand-new", skill_file, None)]
@@ -211,6 +226,11 @@ class TestAliasFold:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("measured", skill_file, None)]
@@ -254,6 +274,11 @@ class TestAliasFold:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("alpha", f1, None), ("beta", f2, None)]
@@ -286,6 +311,11 @@ class TestAliasFold:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("orphan", skill_file, None)]
@@ -351,6 +381,11 @@ class TestNestedFirstSkillBaseDir:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 # Third element: the root the path was vetted against. These
@@ -411,6 +446,9 @@ class TestAliasUnderExtraPath:
         )
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _usage = ledger
             _dir = main_dir
             _extra_paths: list = [app_dir]
@@ -468,6 +506,11 @@ class TestServedAliasIsFolded:
             _dir = tmp_path
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 # Third element: the root the path was vetted against. These
@@ -513,6 +556,9 @@ class TestServedAliasIsFolded:
         ):
 
             class FakeLoader:
+                # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+                # Empty: every row these fixtures serve was walked by this process.
+                _snapshot_unadmitted: set = set()
                 _usage = ledger
                 _dir = tmp_path
                 _extra_paths: list = []
@@ -546,6 +592,9 @@ class TestFrontmatterFailurePolicy:
         bad.write_bytes(b"---\nname: B\xff\xfead\n---\nbody")  # invalid UTF-8
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _fm_cache: dict = {}
             # No recorded root: the unconfined case, so these tests keep
             # exercising real read/decode failure rather than a refusal.
@@ -567,6 +616,9 @@ class TestFrontmatterFailurePolicy:
         bad.write_bytes(b"---\nname: B\xff\xfead\n---\nbody")
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _fm_cache: dict = {}
             # No recorded root: the unconfined case, so these tests keep
             # exercising real read/decode failure rather than a refusal.
@@ -587,6 +639,9 @@ class TestFrontmatterFailurePolicy:
         calls: list[int] = []
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _fm_cache: dict = {}
             # No recorded root: the unconfined case, so these tests keep
             # exercising real read/decode failure rather than a refusal.
@@ -631,6 +686,9 @@ class TestUnreadableSkillPropagates:
         os.chmod(skill, 0o000)
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _fm_cache: dict = {}
             _confine: dict = {}
             _read_enumerated_skill_bytes = SkillsLoader._read_enumerated_skill_bytes
@@ -669,6 +727,11 @@ class TestUndecodableSkillDoesNotCrash:
             _dir = tmp_path
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
             _fm_cache: dict = {}
             # No recorded root: the unconfined case, so these tests keep
             # exercising real read/decode failure rather than a refusal.
@@ -720,6 +783,11 @@ class TestSymlinkLoopDoesNotCrash:
             _dir = tmp_path
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("good", good, None), ("loop", loop / "SKILL.md", None)]
@@ -756,6 +824,11 @@ class TestCacheCoversTheFilesystem:
             _dir = tmp_path
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 # Third element: the vetted root. Operator-installed
@@ -797,6 +870,9 @@ class TestNameIsRedacted:
         ledger = _make_ledger(tmp_path, {"leaky": (3, now)})
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _usage = ledger
             _dir = tmp_path
             _extra_paths: list = []
@@ -827,6 +903,9 @@ class TestNameIsRedacted:
         ledger = _make_ledger(tmp_path, {"normal": (3, now)})
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _usage = ledger
             _dir = tmp_path
             _extra_paths: list = []
@@ -870,6 +949,9 @@ class TestCostIsCharactersNotBytes:
         ledger = _make_ledger(tmp_path, {"dashes": (10, now)})
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _usage = ledger
             _dir = tmp_path
             _extra_paths: list = []
@@ -930,6 +1012,9 @@ class TestAliasCacheInvalidation:
         pairs = [("first", first), ("second", second)]
 
         class FakeLoader:
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read.
+            # Empty: every row these fixtures serve was walked by this process.
+            _snapshot_unadmitted: set = set()
             _usage = ledger
             _dir = tmp_path
             _extra_paths: list = []
@@ -975,6 +1060,11 @@ class TestAliasCacheInvalidation:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("alpha", skill_file, None)]
@@ -1015,6 +1105,11 @@ class TestAlwaysTrueSkillCost:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("core-skill", skill_file, None)]
@@ -1055,6 +1150,11 @@ class TestAlwaysTrueSkillCost:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("pinned", skill_file, None)]
@@ -1100,6 +1200,11 @@ class TestAlwaysTrueSkillCost:
 
             _extra_paths: list = []
             _alias_cache = None
+            # Read by `_read_enumerated_skill_bytes` before an unconfined read: a
+            # fake standing in for the loader carries what that path reads. Empty
+            # means every row here was walked by this process, which is true of
+            # these fixtures.
+            _snapshot_unadmitted: set = set()
 
             def _iter(self):
                 return [("always-skill", always_file, None), ("regular", regular_file, None)]

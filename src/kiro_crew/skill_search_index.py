@@ -33,6 +33,16 @@ the current sync, preserving the legacy full-body search instead of indexing a
 misleading prefix. Indexed bodies pass through the repository's descriptor-pinned,
 no-link reader before their terms can reach SQLite. Nothing here is durable state —
 deleting the file costs one re-index.
+
+The same file also stores the **catalog snapshot**: which skills a given root set
+enumerated to. That is what lets a fresh process answer a turn without walking the
+tree, and it is why a snapshot records only what EXISTS — never who may read it, and
+never what a file CONTAINED. Mapping scope, disabled apps, project consent and
+``repo_scope`` are re-evaluated live on top of a served snapshot, metadata freshness
+is still decided by a live stat against ``skill_metadata``, and every body still goes
+through the descriptor-pinned no-link reader. So a stored row can neither widen what
+an agent reaches nor vouch for bytes that changed since; the worst it can do is name
+a file whose own read then refuses it.
 """
 
 from __future__ import annotations
@@ -57,7 +67,7 @@ SKILL_SEARCH_INDEX_FILENAME = "skill_search_index.sqlite3"
 
 #: Bumped when the table shape changes; a mismatch drops and rebuilds rather than
 #: migrating, because every row is derived data one read can regenerate.
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 #: Another process may be indexing the same skill. Wait briefly, then give up and
 #: let the caller read files this once rather than block a chat turn on a lock.
@@ -67,6 +77,18 @@ _BUSY_TIMEOUT_SECS = 2.0
 #: the legacy full-body reader. Indexing only a prefix would silently hide terms
 #: later in an otherwise valid global skill.
 _MAX_INDEXED_BODY_BYTES = 1_000_000
+
+#: Ceilings on what a stored CATALOG may claim. The index is an agent-writable
+#: crew-home leaf, so its row count and field widths are adversary-controlled, and
+#: `catalog_snapshot` materializes every row it is handed — an unbounded table
+#: would be an out-of-memory crash on every load, with no self-correcting path.
+#: Both are far above any real install (a 5,000-skill tree stores 5,000 rows, and a
+#: skill path is a filesystem path) and far below anything that threatens the
+#: process, so a snapshot past either is a corrupt or hostile table rather than a
+#: large one. Exceeding a ceiling rejects the WHOLE snapshot instead of dropping
+#: rows: a truncated catalog would be served as if it were complete.
+_MAX_CATALOG_ROWS = 100_000
+_MAX_CATALOG_FIELD_CHARS = 4_096
 
 #: Lone surrogates cannot be encoded, so an increment that lands in that block
 #: skips past it to the first scalar value above.
@@ -98,9 +120,30 @@ CREATE TABLE IF NOT EXISTS skill_meta_term (
     PRIMARY KEY (term, path)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS skill_meta_term_path ON skill_meta_term(path);
+CREATE TABLE IF NOT EXISTS skill_catalog_scope (
+    scope TEXT PRIMARY KEY,
+    built_at REAL NOT NULL,
+    epoch INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_catalog (
+    scope TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    path TEXT NOT NULL,
+    confine_root TEXT NOT NULL,
+    PRIMARY KEY (scope, ordinal)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS skill_catalog_epoch (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    epoch INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO skill_catalog_epoch (id, epoch) VALUES (0, 0);
 """
 
 _DROP = """
+DROP TABLE IF EXISTS skill_catalog;
+DROP TABLE IF EXISTS skill_catalog_scope;
+DROP TABLE IF EXISTS skill_catalog_epoch;
 DROP TABLE IF EXISTS skill_term;
 DROP TABLE IF EXISTS skill_metadata;
 DROP TABLE IF EXISTS skill_meta_term;
@@ -352,6 +395,181 @@ class SkillSearchIndex:
                 return found
             except sqlite3.Error:
                 return None
+
+    # ── catalog snapshot ──
+
+    def catalog_epoch(self) -> int | None:
+        """The current invalidation epoch, or ``None`` when unreadable.
+
+        A catalog build reads this BEFORE it walks and hands it back to
+        :meth:`store_catalog`, which refuses a write whose epoch has moved. That
+        is what stops a walk already in flight in one process from republishing a
+        pre-mutation enumeration over an invalidation another process just made —
+        an in-process generation counter cannot see that.
+        """
+        with self._lock:
+            db = self._db()
+            if db is None:
+                return None
+            try:
+                row = db.execute("SELECT epoch FROM skill_catalog_epoch WHERE id = 0").fetchone()
+            except sqlite3.Error:
+                return None
+            return int(row[0]) if row is not None else None
+
+    def catalog_snapshot(self, scope: str) -> tuple[list[tuple[str, str, str]], float] | None:
+        """The stored enumeration for *scope*, plus the wall clock it was built at.
+
+        ``None`` means there is nothing to serve — an unusable database, or a
+        scope this machine has never enumerated — and the caller must then build
+        the list itself. A scope that WAS enumerated and found nothing returns an
+        empty row list, which is a different answer: a machine with no skills
+        must not be re-walked on every turn just because the answer is nothing.
+
+        Rows come back in stored ``ordinal`` order because enumeration order IS
+        precedence: the first key wins, so a re-ordered snapshot could hand a
+        caller a different file for the same skill name than the walk would.
+
+        A table past ``_MAX_CATALOG_ROWS``, or carrying a field wider than
+        ``_MAX_CATALOG_FIELD_CHARS``, is rejected WHOLE and answers ``None`` — the
+        caller then walks. This file is an agent-writable crew-home leaf, so those
+        are adversary-controlled numbers, and materializing an unbounded table would
+        be an out-of-memory crash on every load; dropping only the offending rows
+        would instead serve a truncated catalog as though it were complete.
+        """
+        with self._lock:
+            db = self._db()
+            if db is None:
+                return None
+            try:
+                scope_row = db.execute(
+                    "SELECT built_at FROM skill_catalog_scope WHERE scope = ?", (scope,)
+                ).fetchone()
+                if scope_row is None:
+                    return None
+                rows = [
+                    (str(key), str(path), str(confine_root))
+                    for key, path, confine_root in db.execute(
+                        "SELECT key, path, confine_root FROM skill_catalog "
+                        "WHERE scope = ? ORDER BY ordinal LIMIT ?",
+                        (scope, _MAX_CATALOG_ROWS + 1),
+                    )
+                ]
+                if len(rows) > _MAX_CATALOG_ROWS:
+                    logger.warning(
+                        "skill-search-index: refusing a catalog of more than %d rows",
+                        _MAX_CATALOG_ROWS,
+                    )
+                    return None
+                if any(len(field) > _MAX_CATALOG_FIELD_CHARS for row in rows for field in row):
+                    logger.warning("skill-search-index: refusing a catalog row field over cap")
+                    return None
+                return rows, float(scope_row[0])
+            except (sqlite3.Error, ValueError, TypeError, MemoryError):
+                return None
+
+    def store_catalog(
+        self, scope: str, rows: Sequence[tuple[str, str, str]], *, epoch: int | None
+    ) -> str:
+        """Replace *scope*'s stored enumeration with *rows*, in one transaction.
+
+        Rows are ``(key, path, confine_root)``, where ``confine_root`` carries the
+        empty string when the row is unconfined. Replacing rather than merging is
+        deliberate: a merge keeps a row for a skill the walk does not find, and a
+        deleted skill must not stay discoverable.
+
+        *epoch* is the value :meth:`catalog_epoch` returned before the walk began.
+
+        Three outcomes, and the caller must tell them apart because they mean
+        opposite things about the rows it holds:
+
+        ``"stored"``
+            the rows are durable.
+        ``"stale"``
+            the epoch moved, so the rows describe the tree as it was before a
+            mutation somebody has already recorded. The caller must NOT serve them.
+        ``"unavailable"``
+            there is no usable database (a read-only home, a corrupt file, an epoch
+            that could not be read). The rows are fine; only persistence is missing,
+            so refusing to serve them would make every turn re-walk instead.
+
+        The epoch check runs inside an ``IMMEDIATE`` transaction, so the write lock
+        is held before it is read. ``self._lock`` serializes this process only; a
+        deferred transaction would leave the check and the insert open to another
+        process's :meth:`drop_catalog` landing between them, which is exactly the
+        stale republish the epoch exists to stop.
+        """
+        if epoch is None:
+            return "unavailable"
+        with self._lock:
+            db = self._db()
+            if db is None:
+                return "unavailable"
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute(
+                    "SELECT epoch FROM skill_catalog_epoch WHERE id = 0"
+                ).fetchone()
+                if current is None or int(current[0]) != epoch:
+                    db.rollback()
+                    return "stale"
+                db.execute("DELETE FROM skill_catalog WHERE scope = ?", (scope,))
+                db.executemany(
+                    "INSERT INTO skill_catalog(scope, ordinal, key, path, confine_root) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (scope, ordinal, key, path, confine_root)
+                        for ordinal, (key, path, confine_root) in enumerate(rows)
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO skill_catalog_scope (scope, built_at, epoch) VALUES (?, ?, ?) "
+                    "ON CONFLICT(scope) DO UPDATE SET built_at = excluded.built_at, "
+                    "epoch = excluded.epoch",
+                    (scope, time.time(), epoch),
+                )
+                db.commit()
+                return "stored"
+            except (sqlite3.Error, OSError, ValueError, TypeError):
+                try:
+                    db.rollback()
+                except sqlite3.Error:
+                    pass
+                logger.debug("skill-search-index: catalog persistence unavailable", exc_info=True)
+                return "unavailable"
+
+    def drop_catalog(self) -> None:
+        """Forget every stored enumeration and bump the epoch.
+
+        Called when a skill is created, updated or deleted. It clears ALL scopes
+        rather than the mutating one: a scope is derived from a root set plus a
+        project key, and one skills root is shared by every scope that includes
+        it, so narrowing the delete would leave a stale row under a neighbouring
+        scope. The whole table is derived data one walk regenerates, which is why
+        the cheap answer is also the correct one.
+
+        The epoch bump is the other half, and it is not optional: without it a
+        walk that started before this call would store its pre-mutation rows
+        afterwards and silently undo the invalidation for every later process. It
+        shares one ``IMMEDIATE`` transaction with the delete so a concurrent
+        :meth:`store_catalog` cannot land between the two.
+        """
+        with self._lock:
+            db = self._db()
+            if db is None:
+                return
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM skill_catalog")
+                db.execute("DELETE FROM skill_catalog_scope")
+                db.execute("UPDATE skill_catalog_epoch SET epoch = epoch + 1 WHERE id = 0")
+                db.commit()
+            except (sqlite3.Error, OSError):
+                try:
+                    db.rollback()
+                except sqlite3.Error:
+                    pass
+                logger.debug("skill-search-index: catalog invalidation failed", exc_info=True)
 
     def sync(
         self,
