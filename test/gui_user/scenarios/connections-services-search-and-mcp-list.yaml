@@ -1,0 +1,62 @@
+# Smoke: the Connections tab of Agent Capabilities, reached through the
+# `/connections` redirect (it lands on the tab directly, so the rail's
+# remembered-tab behaviour cannot put the tester elsewhere). The tab has two
+# sub-tabs. "Services" is the gallery of official providers, built from the
+# bundled registry with no network request: each launched provider is one card
+# with its name, a status label, a one-line value proposition, a
+# "Documentation" link and a "Connect" button, and the search box narrows the
+# gallery client-side. On the seeded target nothing is authorized, so every card
+# reads "Not connected". "MCP Servers" is the table of configured servers; the
+# `rich` seed ships no `mcp.json` and the isolated agent home has none either,
+# so the table shows its heading with a zero count and its empty row.
+#
+# Both reads are the whole scenario. Connecting a service needs a real OAuth
+# provider and is out of scope. Enabling or disabling a server would need a
+# seeded server row, and a live server's probe status settles only after a
+# timeout the scenario cannot wait out deterministically, while a toggle
+# persists into the retry attempt; so this scenario asserts the list, not a
+# toggle. The gallery's exact card count is not asserted: which providers have
+# passed the launch gate changes release to release.
+#
+# Three surviving screenshots: the harness keeps the newest three, so the
+# actions are the click into the search box, the typed filter (the Linear card
+# alone), and the click on "MCP Servers" -- the last is what the final
+# expectations read, the middle one is what the Linear expectation reads.
+name: connections-services-search-and-mcp-list
+tier: smoke
+feature: connections
+user_story: >-
+  As a crew operator, I want to install, enable and scope MCP servers, so that
+  agents get exactly the tools they need.
+docs_url: docs/system-specs/modules/connections.md
+summary: Search the Services gallery for Linear, then open the MCP Servers sub-tab and read its empty table
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /connections
+steps:
+  - >-
+    You are on the Agent Capabilities page with its "Connections" tab selected in the left
+    rail. The pane has two sub-tabs at the top, "Services" (selected) and "MCP Servers". Below
+    them are a search box whose placeholder reads "Search services", a badge counting the
+    services, and a grid of provider cards (Notion, Linear, Atlassian, ...) each with a
+    "Connect" button. Do not click "Connect" anywhere.
+  - >-
+    Click into the "Search services" box and type exactly "Linear". The grid narrows to one
+    card, "Linear", whose status reads "Not connected" and whose text starts with "Read your
+    Linear issues". Read it, then leave it as it is.
+  - >-
+    Click the "MCP Servers" sub-tab. The pane changes to a heading that reads "MCP Servers (0)"
+    with "Add Custom" and "Add Server" buttons at its right, and a card holding a filter box
+    ("Filter servers or tools…") and a table whose columns are Name, the product name, Globals,
+    Status, Tools and Actions.
+expectations:
+  - The "MCP Servers" sub-tab is highlighted and the heading reads "MCP Servers (0)".
+  - The servers table has no server rows; its only body row reads "No MCP servers configured".
+  - The "Add Custom" and "Add Server" buttons are visible at the right of the heading.
+  - >-
+    In the screenshot taken right after you typed "Linear", the Services grid showed exactly
+    one card, named "Linear", with the status "Not connected" and a "Connect" button.
+  - No red error banner is visible in the pane.
+max_steps: 10
+max_seconds: 240

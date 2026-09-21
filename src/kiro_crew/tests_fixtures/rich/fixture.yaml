@@ -2,8 +2,9 @@ schema-version: 2026-04-28
 fixture-name: rich
 description: |
   Superset of the ``minimal`` fixture that layers extra chat sessions,
-  folder metadata, and an archived session on top of the same skeleton
-  (two workspaces, preferences/projects/semantic/history, crons, hook).
+  folder metadata, an archived session and a three-artifact library on
+  top of the same skeleton (two workspaces, preferences/projects/semantic/
+  history, crons, hook).
   Mirrors the shape of a heavily-used user $KIROCREW_HOME so the
   dashboard looks populated on first boot — useful for UX screenshots,
   demos, and e2e tests that exercise folder grouping, History panel,
@@ -15,6 +16,12 @@ description: |
     - dashboard_triage-demo     : default agent, folder=demos, 6 msg
     - dashboard_research-notes  : closed, default agent, 12 msg (History + search)
     - archive/research-notes.<ts>.jsonl : synthesized archive slice
+
+  Shipped artifacts (the ``artifacts-library`` fixture's set, so the
+  Artifacts page renders a populated library on first boot):
+    - release-checklist : widget, version 2
+    - pagination-design : markdown, version 1
+    - queue-badge       : svg, version 1
 
   SQLite stores (memory.db, memory_index.db) are intentionally omitted —
   vector-backed semantic memory and the event log bootstrap themselves
