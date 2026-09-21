@@ -317,9 +317,10 @@ grace window, and an ownerless directory is never deleted.
 ## 4. Default agent vs other agents
 
 One function decides, for both session start and post-compaction re-injection:
-`context.py` → `_skills_injection_plan(agent, is_cc)`. It returns
-`(inject?, globs)` from two facts — whether the agent's JSON maps skills, and
-whether the agent is the built-in `kirocrew`.
+`context.py` → `_skills_injection_plan`. It returns `(inject?, globs)` from two
+facts — whether the agent's JSON maps skills, and whether the agent is the
+built-in `kirocrew`. The backend is not one of them: it accepts `is_cc` and ignores
+it (steering, below, is the one block the backend does gate).
 
 | Agent | `skill://` mapping | Skills it sees | Why |
 |---|---|---|---|
@@ -332,9 +333,10 @@ The mapping is read by `agent_discovery.py` → `agent_skill_globs`, which pulls
 `skill://` entries out of the spec's `resources` (`skill_resource_uris`) and
 expands each into an fnmatch glob over real paths (`expand_skill_uri`:
 `skill://~/…` against the home dir, `skill:///abs/…` verbatim, a relative URI
-against the project root inferred from the spec's location). `file://` steering
-entries are deliberately excluded, and an `only=` list matching nothing yields
-**no** skills rather than the full catalog.
+against the `project_dir` the caller supplies — the session's project on this path
+— falling back to the project root inferred from the spec's location only when no
+project is supplied). `file://` steering entries are deliberately excluded, and an
+`only=` list matching nothing yields **no** skills rather than the full catalog.
 
 A mapping defines availability on both backends. Crew supplies a bounded directory
 and an agent-scoped `skill_search` pointer; ordinary bodies load only when selected.

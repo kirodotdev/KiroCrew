@@ -907,12 +907,17 @@ def expand_skill_uri(
     kiro-cli accepts ``skill://~/.kiro/skills/*/SKILL.md`` (global),
     ``skill:///abs/path/SKILL.md`` (absolute), and
     ``skill://.kiro/skills/*/SKILL.md`` (workspace-relative to the cwd at
-    session start). Workspace-relative URIs are resolved against the project
-    root inferred from *agent_path* — for the ``<project>/.kiro/agents/foo.json``
-    layout that is three levels up (``foo.json`` -> ``agents`` -> ``.kiro`` ->
-    ``<project>``), so appending the ``.kiro/``-prefixed glob yields
-    ``<project>/.kiro/...`` without doubling the ``.kiro`` segment. Best-effort:
-    the cwd kiro-cli actually uses may differ.
+    session start).
+
+    A workspace-relative URI resolves against *project_dir* when the caller
+    supplies one — every path that resolves skills for a prompt passes the
+    session's own project, which is the cwd kiro-cli is launched in. With no
+    project supplied it falls back to the project root inferred from
+    *agent_path*: for the ``<project>/.kiro/agents/foo.json`` layout that is three
+    levels up (``foo.json`` -> ``agents`` -> ``.kiro`` -> ``<project>``), so
+    appending the ``.kiro/``-prefixed glob yields ``<project>/.kiro/...`` without
+    doubling the ``.kiro`` segment. Both are best-effort: the cwd kiro-cli
+    actually uses may differ.
 
     Returns ``None`` for anything that is not a ``skill://`` URI.
     """
