@@ -34,6 +34,8 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
 | `!channel agent <name/off>` | Set per-channel agent override |
+| `!voice on/off` | Speak this thread's answers as well as typing them |
+| `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
 `slack.allowed_users` in config has no effect.
@@ -43,7 +45,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | Command | Description |
 |---------|-------------|
 | `!dashboard` | Get a presigned dashboard link (DM'd to you) |
-| `!dashboard 2h` | Dashboard link with custom duration (max 6h) |
+| `!dashboard 2h` | Dashboard link with custom duration (max 20h) |
 | `!stop` | Force-halt the current agent turn in this thread. Bypasses the per-session semaphore and cancels the active task. See "Emergency Stop" below |
 
 ## Keyword Commands
@@ -53,7 +55,7 @@ Available to all allowed users (no `!` prefix needed):
 | Command | Description |
 |---------|-------------|
 | `status` | Show runtime stats (uptime, sessions, crons, lessons) |
-| `ping` | Auto-reply with `pong 🦞` |
+| `ping` | Auto-reply with `pong` |
 | `cron list` | List all scheduled cron jobs |
 | `cron remove <id>` | Remove a cron job |
 | `cron pause <id>` | Pause a cron job |
@@ -73,6 +75,15 @@ Available to all allowed users (no `!` prefix needed):
 | Command | Description |
 |---------|-------------|
 | `/kirocrew dashboard` | Same as `!dashboard` |
+| `/kirocrew agent` | Switch the active agent |
+| `/kirocrew voice` | Configure TTS voice settings |
+| `/kirocrew yolo` | Toggle auto-approve for all tool calls |
+| `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
+| `/kirocrew users` | Always refuses — multi-user access is disabled |
+| `/kirocrew channels` | Manage tracked channels |
+| `/kirocrew sessions` | List recent sessions |
+| `/kirocrew status` | Show runtime stats |
+| `/kirocrew restart` | Restart the gateway (owner only) |
 
 ## Tool Approval Flow
 
@@ -96,8 +107,10 @@ in the thread where the agent is running.
 `!stop` is intercepted before the per-session semaphore in the Slack event
 handler, so it acts even when the agent is mid-tool-call or mid-stream.
 The active asyncio task is cancelled, the message queue for that session is
-cleared, the pending queue is dropped, and the session is reset. You will
-see "⛔ Execution stopped." in the thread when the stop completes.
+cleared, the pending queue is dropped, and the session is reset. Three
+answers, one per outcome: "⏹ Execution stopped." when the turn stopped
+cooperatively, "⛔ Execution stopped — session reset." when it had to be
+escalated to a hard stop, and "Nothing running." when no turn was active.
 
 Authorization: owner and allowed users. Unauthorized callers get
 "⛔ Not authorized." and an audit log entry under `slack.stop_command`.
@@ -107,7 +120,8 @@ Authorization: owner and allowed users. Unauthorized callers get
 Responses stream in real-time via progressive Slack message edits. A cursor
 (▍) shows during streaming. Tool calls appear as 🔧 _tool name_ inline.
 
-When the response finishes, the 👀 reaction swaps to 🦞.
+With `slack.reactions_enabled` on, the reaction on your message tracks the phase: 👀 queued, 🤔 thinking,
+👨‍💻 coding, 🌐 browsing, 🔧 running a tool, 🦞 done, 😱 error.
 
 ## File attachments
 
