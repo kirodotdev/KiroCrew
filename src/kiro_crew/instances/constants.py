@@ -300,6 +300,17 @@ CAPABILITY_REPLY_MAX_BYTES: int = 2 * 1024 * 1024
 PEER_SLOTS_REPLY_MAX_BYTES: int = 4 * 1024 * 1024
 
 
+# The crew-scoped session reads (search / list / read) get their OWN bound for the
+# reason the comment above gives: one symbol cannot hold two sizings. This one is
+# sized against a FULL TRANSCRIPT, not a list of rows — ``/api/crew-sessions/read``
+# returns a whole conversation, and a long-lived session legitimately reaches
+# several megabytes, so the row-list bound above would truncate honest payloads.
+# Doubling it is the smallest bound that does not, and the per-field clamps
+# (``_PEER_FIELD_MAX_CHARS``) still apply inside it, so a hostile peer cannot turn
+# the looser total into an unbounded single field.
+PEER_SESSIONS_REPLY_MAX_BYTES: int = 8 * 1024 * 1024
+
+
 # Accepted shape for a dashboard-token lifetime: a positive integer of at most
 # four digits followed by ``h`` or ``m``. Canonical here because three layers
 # need the SAME answer — the registry that persists it and both token minters

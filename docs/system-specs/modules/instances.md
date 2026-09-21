@@ -49,6 +49,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
+- [16. Crew-scoped session reads (the `crew=` MCP scope)](#16-crew-scoped-session-reads-the-crew-mcp-scope)
 
 ---
 
@@ -1833,3 +1834,205 @@ neither resume nor delete it:
 - Any federated-endpoint failure in the UI — including the `403` when the
   instances feature is off — falls back to the plain local search, which is
   always the floor.
+
+---
+
+## 16. Crew-scoped session reads (the `crew=` MCP scope)
+
+§15 gives the **dashboard** a federated read; this gives the **agent** one. The
+three kirocrew-core session read tools — `search_chat_history`, `list_sessions`,
+`get_chat_session` — take an optional `crew=<id|name>`. Without it they read the
+local `ConversationLog` exactly as before; with it they read that remote crew's
+own sessions over the tunnel. The local (no-`crew`) path is byte-for-byte
+unchanged, so a peerless install and every existing call are unaffected.
+
+### 16.1 Why a new endpoint set, not the §15 route
+
+The MCP process is a separate process from the gateway and reaches it over the
+`X-Internal-Secret` handshake — it cannot present as an owner *dashboard*
+request, which is what `api_instances_search_sessions` (§15) requires. Rather
+than teach that bulk-disclosure route a second identity type (dual-auth on the
+one endpoint that fans every peer's titles/snippets is exactly the shape that
+invited the §6 proxy's repeated findings), the agent gets its own three GET
+endpoints:
+
+| endpoint | backs | peer route reached |
+|---|---|---|
+| `GET /api/crew-sessions/search?crew=&q=&limit=` | `search_chat_history` | `/api/sessions/search` |
+| `GET /api/crew-sessions/list?crew=&limit=` | `list_sessions` | `/api/sessions` |
+| `GET /api/crew-sessions/read?crew=&key=&max_messages=` | `get_chat_session` | `/api/sessions/{key}` |
+
+They are **STRICT internal-secret** (`_STRICT_INTERNAL_API_PATHS`, prefix
+`/api/crew-sessions`) — no browser calls them, exactly like
+`/api/sessions/summarize`. They are registered in `_register_mcp_routes`, NOT the
+dashboard-only route block, so the headless `--slack-only` gateway exposes the
+same MCP surface as the dashboard (a dashboard-only registration would 404 the
+tools in that mode). Each handler re-asserts authorization itself
+(`_authorize_crew_read`): strict is not self-enforcing at the handler, since
+a header-absent request falls through to cookie auth and a `local_only=False`
+deployment reclassifies strict paths as mixed, and these reads disclose remote
+session data. That assertion is **positive, not a denylist** — it names who may
+call rather than who may not, because the identities that reach an
+internal-secret route are not exhausted by the app claim. Three are refused:
+an **app-minted** caller (`request["app"]` non-empty); a caller whose session is
+**not owner-minted**, covering the channel-born case that carries *no* app claim
+at all (`derive_caller_app` returns `""` for it, so a Slack participant would
+otherwise arrive shaped exactly like the owner); and a **non-owner
+dashboard subject**, if a `user` claim is present at all, delegated to
+`is_owner_dashboard_request` (§15.1's bar). The provenance test reads the
+`X-Session-Key` namespace, which the MCP broker sets from the calling session's
+own context and `_verify_unix_peer` attests against `/proc` ancestry — never the
+slot's `channel_origin` flag, which lives on an agent-writable metadata line.
+An absent key stays admissible: that is the gateway's own call, the CLI and a
+loopback `curl`, which already hold the secret and are the trust root this gate
+stands on. That admissibility is precisely why the MCP side must not let an absent
+key arise by accident: the three tools resolve the caller through
+`require_strict_session_key` **before** any crew read and send the key that gate
+returned, because `_get` omits `X-Session-Key` entirely when resolution yields
+`""` — so a tool whose identity degraded would otherwise reach this route shaped
+like the gateway itself. Letting `_get` re-resolve would also be a check-then-use
+split: the lenient walk resolves a subagent to its *parent* slot, so the request
+would carry an authority the caller does not hold. The key is a **required**
+parameter on all three crew helpers, so a future call site that omits it is a
+`TypeError` rather than a silent return to lenient resolution.
+
+A fourth identity is refused ahead of the roster: a key that **names a slot that is
+gone**. A `dashboard:` key names one specific slot, and when an app-owned tab closes
+while one of its calls is still in flight the slot is popped without draining, so
+the app claim that would have refused the caller is absent *and* the surviving
+namespace is on the owner roster — every positive signal reads as the person.
+`caller_names_a_missing_slot` is the existing predicate for that class, applied here
+with its own `caller_session_missing` refusal so an audit reader sees a vanished
+slot rather than a rejected identity. It is `dashboard:`-only by its own design,
+which lines up exactly with the owner roster holding `dashboard` alone;
+`dashboard:ui` is exempt because it names no per-tab slot.
+The **ancestry walk's terminal step applies the same predicate**
+(`_owner_minted_and_attributable`), so a delegated child cannot inherit through a
+parent whose slot has vanished — a path the door's own check cannot see, because the
+caller there is `subagent:`. That terminal step **also refuses an app-owned
+parent**: reaching an owner-minted namespace establishes that the gateway minted the
+key, not that the person owns it, so a delegated caller whose own app claim is
+unreadable would otherwise inherit authority from a slot an app owns. The check
+reads the slot registry directly rather than through `derive_caller_app`, whose
+first-colon slot lookup is the blind spot in question.
+
+Provenance is settled in **two tiers**, because a namespace proves the gateway
+minted a key and not *for whom*. `OWNER_MINTED_SESSION_NAMESPACES` is
+(`dashboard`,) alone — the only namespace whose name settles who minted it, and
+whose one remaining failure mode (a popped slot) is refused ahead of the roster.
+`spawn_run`, by contrast, mints `subagent:<id>` identically whether the parent is
+the person's tab or a Slack participant's thread, so a flat roster admitting that
+prefix hands a channel-parented child the owner's authority. Those namespaces sit in
+`DELEGATED_SESSION_NAMESPACES` (`subagent`, `side`) instead, where membership is
+permission to *ask*: `_delegated_caller_is_owner_minted` walks parent pointers,
+bounded by `_ANCESTRY_MAX_HOPS` and cycle-guarded, and admits only a chain that
+terminates in the terminal tier. Every unresolvable step refuses, and the
+unresolvable steps are the design rather than an oversight. A subagent's parent is
+read from the **live in-memory record only** — `subagent_persistence` writes
+`parent_session` into `state.json`, but that run folder is agent-writable, so a
+child could name its own parent and award itself the owner's authority; a finished
+run therefore loses the read, matching `has_live_shared_session`'s rule that run
+records "survive completion/restart for display and continuation; they are not
+session authority". A side chat resolves to the dashboard slot named in its own key,
+with the **generation suffix dropped** — `side:<slot>:<gen>` is the shape
+`derive_caller_app` mishandles, and keeping the suffix would both miss the app claim
+and refuse every legitimate side caller.
+
+A listed namespace needs an ancestry record that is gateway-held **and outside the
+agent's write reach**, and that second clause is why `cron` is on neither roster.
+`CronJob.session_key` is read from `crons.json`, which `sandbox.py` exposes to the
+crew sandbox as a visible leaf that `mcp_cron` "both reads and rewrites" — so an
+agent acting for a channel participant can set a job's `session_key` to a
+`dashboard:` value and clear the walk, and a tool-gate text matcher does not fence
+it because a plain `open()` write never reaches the shell. That is the same objection
+that keeps the persisted subagent `parent_session` out of the resolver, applied to
+both record classes rather than one. `secretary` is likewise on **neither** roster:
+it has no construction site in `src/` at all, and the session-address RFC records
+that absence and asks whether an external app can mint it — an app being exactly the
+minter that must not inherit owner authority, an unanswered provenance question
+cannot carry the terminal claim. The workflow family (`wf`,
+`wf-pool`, `wf-unpooled`, `wf-worker`, `wf-author`) and `taskrunner` are excluded for
+the *first* clause instead — a workflow run's originating
+key is derived from the request header at the workflow endpoints and documented as
+spoofable there, so resolving ancestry through it would authorize against a value
+the caller chose. Adding a namespace to the delegated roster without writing its
+resolver also refuses, which is pinned by a test: that combination is the one shape
+that could silently re-open this span.
+
+`crew` is a **query param** (not a `{id}` path segment) so the
+paths stay static and match the strict prefix set cleanly; the handler resolves
+it against the registry — an **exact id first, then a name** (so an id is never
+shadowed by another entry whose name collides with it) — off the loop, and 404s
+an unknown crew. The tool schema's `crew` pattern accepts any registry display
+name (spaces/Unicode; control characters barred), because the registry allows
+them and a tighter charset silently broke `crew=<name>` for ordinary names.
+
+### 16.2 Transport reuse — no fourth hand-rolled peer request
+
+`search` rides the existing `mgr.search_sessions_remote` (§15.1). `list` and
+`read` ride the **generic `mgr.proxy_request` carrier** (§6) — the same
+`_peer_target`/`_peer_cookie_header` invariant holds: the token never leaves the
+manager, travels as the port-scoped cookie, and gets one transparent re-mint on
+`401/403`. So no new peer-request method is added; the handlers only read the
+response. Reading is delegated to `read_capped_response` (the helper the adopt
+path and the peer-slots read already use, §15) under
+`PEER_SESSIONS_REPLY_MAX_BYTES` (8 MiB) because a peer is untrusted input — an
+unbounded body must not exhaust hub memory before any per-field clamp runs, and a
+single `read(n)` on a chunked reply would resolve at the first buffered chunk and
+silently yield a truncated body. That cap is its own symbol rather than a reuse of
+`PEER_SLOTS_REPLY_MAX_BYTES`: this one is sized against a **full transcript**, not
+a row list, so the row-list bound would truncate honest payloads.
+
+### 16.3 Peer replies are untrusted input (same rule as §15.3)
+
+Every field a peer returns is re-shaped locally: only known keys are copied,
+types are checked, `key` is length-bounded, and human text is **redacted (local
+credential + exfiltration patterns) BEFORE any clamp** — the peer's own
+redaction is not taken on faith, and redacting first keeps a credential
+straddling `_PEER_FIELD_MAX_CHARS` from being split into an unmatched fragment.
+Search titles/snippets and list previews are then clamped to
+`_PEER_FIELD_MAX_CHARS`; transcript **message bodies are redacted without that
+short clamp** (legitimately long, already bounded by the 8 MB buffer cap). Two
+guarantees of the local tools are carried onto the crew path: **incognito /
+temporary sessions are excluded** — `search` and `list` drop any peer row whose
+`memory_mode` is in `INCOGNITO_MEMORY_MODES`, so an agent never even discovers
+such a key (a per-session incognito check on `read`'s raw-array response needs a
+peer metadata endpoint that does not exist yet — tracked as
+[#11954](https://github.com/kirodotdev/KiroCrew/issues/11954), which also covers
+the version-skew case where an OLDER peer ignores the unknown `exclude_incognito`
+parameter entirely; the discovery-path exclusion is the enforced half, and it is
+enforced locally because `search`/`list` rows carry `memory_mode` while a
+transcript array does not); and **`read` filters to
+`RECALL_ROLES`** before tail-capping, dropping the `system`/tool rows that
+`get_chat_session` also excludes. `read` additionally vets the `session_key` (no
+separator, no `..`) and percent-encodes it into the peer path so it cannot
+traverse — the same "validate then rebuild" discipline as the §6 proxy. The
+`list`/`read` proxy read is bounded by a total-time budget (`_CREW_PROXY_TIMEOUT`,
+under the MCP client's own read timeout) so a reachable-but-slow peer maps to a
+clean `504` rather than a false "unreachable". Every call emits a SEL audit event
+(`instances_crew_search|crew_list|crew_read`) carrying the resolved instance id
+**and the originating MCP caller's session key**, so an audit reviewer can see
+which agent session read which remote crew's history.
+
+### 16.4 What the scope does NOT do
+
+- **Search-and-read only.** There is no crew-scoped write, resume, or delete;
+  the agent cannot continue a remote session through these tools.
+- **Connected peers only.** An offline crew returns a clean "unreachable" error,
+  never a silent empty result.
+- **Not federated.** Unlike §15, a crew read targets exactly one named crew — it
+  does not fan out across every connection.
+- **No cross-scope filters.** Local-only knobs (`before`/`after`/
+  `all_workspaces` on search, `summarize` on list) do not apply in `crew` mode.
+- **Not available to a private-memory session.** A Crew Member fenced to a
+  private V2 store cannot use `crew` on any of the three tools. No local record can
+  adjudicate a peer key — a remote crew's transcripts carry no local private-store
+  provenance at all — and reading a peer crew's whole corpus is the boundary
+  crossing the fence exists to prevent. The three tools therefore resolve the
+  caller's own binding (`_caller_private_store`, over
+  `private_memory_store_for_session`) **before** the `crew` branch and refuse when
+  it returns a non-empty store name; `""` is an ordinary session. An unreadable
+  binding refuses too, since "unknown" on a cross-crew read has to fail closed.
+  The key resolved by each tool's entry `require_strict_session_key` is the key
+  used for this check *and* the key put on the wire, so no path checks one identity
+  and acts as another.

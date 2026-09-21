@@ -1226,6 +1226,141 @@ CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
     "unified",
 )
 
+#: Session-key namespaces a cross-crew read authorizes against, in TWO tiers:
+#: this one, whose name alone proves the owner minted the key, and
+#: :data:`DELEGATED_SESSION_NAMESPACES`, which must be resolved back to a member of
+#: this one first. Both are POSITIVE rosters on purpose.
+#:
+#: A denylist of identity classes cannot secure this. Two classes slip an
+#: app-claim check alone: a channel-born session carries NO app claim
+#: (``derive_caller_app`` answers ``""`` for it), and the app-platform
+#: ``channel:{id}:{agent}`` prefix is absent from
+#: :data:`CHANNEL_SESSION_NAMESPACES` because ``messaging.link.parse_session_key``
+#: treats it as a legacy shape the classifiers do not cover. A denylist can only
+#: refuse the shapes already enumerated, so each addition closes one reported class
+#: and leaves the next unreported one open.
+#:
+#: A positive roster changes the direction of failure, which is the property worth
+#: having: an unrecognised namespace — a legacy shape, or one minted by a transport
+#: added after this line — is REFUSED. A missing entry here costs a legitimate
+#: caller a visible 403 that names itself; a missing denylist entry costs a peer's
+#: transcripts, silently.
+#:
+#: A single flat roster was not enough, which is why this splits. Namespace
+#: membership answers "did the gateway mint this key", but a delegated namespace
+#: is minted identically whoever the work runs FOR, so for those the name is not
+#: an identity and the ancestry has to be read.
+#:
+#: Enumerated from the namespaces ``SessionManager`` mints, and deliberately NOT
+#: derived from ``messaging.link``'s telemetry roster: that list exists to keep
+#: metric series apart and CONTAINS ``channel``, so deriving from it re-opens the
+#: hole this closes, and a label added for telemetry would silently widen
+#: authorization. The two rosters answer different questions and must drift
+#: independently.
+#:
+#: Membership here is the STRONGER claim of the two rosters below: the namespace
+#: name alone settles who minted the key, so no further evidence is consulted.
+#: That is a high bar, and only ``dashboard`` clears it: the key names a browser
+#: slot, and the one way it can still mislead — a slot that is GONE, taking its
+#: app claim with it while the key survives — is refused ahead of this roster on
+#: its own arm (``caller_names_a_missing_slot``).
+#:
+#: ``side`` and ``secretary`` are deliberately ABSENT. Neither satisfies "the name
+#: settles who minted it", and they fail it differently:
+#:
+#: * ``side`` is minted ``side:<slot>:<gen>`` (``handlers/side.py``), and
+#:   ``derive_caller_app`` looks a slot up by everything after the first colon —
+#:   ``<slot>:<gen>`` — which matches no slot, so an app-owned side chat resolves
+#:   to NO app and would read as the person here. Its parent slot IS a gateway
+#:   record, so it sits on the delegated roster and is resolved rather than refused.
+#: * ``secretary`` has no construction site in ``src/`` at all. The session-address
+#:   RFC records that absence and asks the question directly ("Is ``secretary:``
+#:   dead? ... If an external app can mint it, the namespace inventory is
+#:   incomplete"), and an app is precisely the minter that must not inherit owner
+#:   authority. Unanswered provenance cannot support the strongest claim in this
+#:   file, so it takes the default refusal until the RFC settles it.
+OWNER_MINTED_SESSION_NAMESPACES: tuple[str, ...] = ("dashboard",)
+
+#: Namespaces whose key proves only that the GATEWAY minted it — never FOR WHOM.
+#: A cross-crew read must resolve each of these back to an owner-minted ancestor
+#: before trusting it; membership here is permission to *ask*, not to read.
+#:
+#: This is the distinction a flat roster could not make. ``spawn_run`` mints
+#: ``subagent:<id>`` identically whether the parent is the person's dashboard tab
+#: or a Slack participant's thread, so admitting the namespace by prefix hands a
+#: channel-parented child the owner's authority — the reported defect. The
+#: adjacent security layer reaches the same conclusion about delegated callers:
+#: ``mcp_dashboard._DELEGATED_CALLER_PREFIXES`` refuses them because a delegated
+#: caller's absence of an app "proves nothing about who it runs for", naming the
+#: inversion implemented here as the sound shape.
+#:
+#: ``side`` is here rather than on the owner roster because its app claim can go
+#: MISSING without the key changing (see above), so the name cannot settle
+#: ownership — but a side chat's parent slot is a gateway-held record, so the
+#: question is answerable and the capability is kept rather than refused.
+#:
+#: A listed namespace needs a gateway-held ancestry record that the AGENT CANNOT
+#: WRITE, and that second clause is why ``cron`` is absent.
+#: ``CronJob.session_key`` is read from ``crons.json``, which ``sandbox.py``
+#: exposes to the crew sandbox as a visible leaf annotated "both reads and
+#: rewrites the job store" — so an agent acting for a channel participant can set
+#: a job's ``session_key`` to a ``dashboard:`` value and have the firing job clear
+#: the walk. A tool-gate text matcher does not fence it, because a plain
+#: ``open()`` write never reaches the shell. This is the SAME objection that keeps
+#: a persisted subagent ``parent_session`` out of the resolver (its run folder is
+#: agent-writable): one standard, applied to both record classes.
+#:
+#: The workflow family (``wf``, ``wf-pool``, ``wf-unpooled``, ``wf-worker``,
+#: ``wf-author``) and ``taskrunner`` are absent for the FIRST clause instead: a
+#: workflow run's originating key is derived from the request header at the
+#: workflow endpoints and is documented as caller-influenced there ("a workflow
+#: could spoof another session's key", ``workflows/service.py``), so resolving
+#: ancestry through it would authorize against a value the caller chose.
+#:
+#: Everything unlisted takes the roster's default refusal.
+DELEGATED_SESSION_NAMESPACES: tuple[str, ...] = (
+    "subagent",
+    "side",
+)
+
+
+def _namespace_prefixes(namespaces: "tuple[str, ...]") -> "tuple[str, ...]":
+    """Both separator spellings for each namespace in *namespaces*.
+
+    A live session key uses ``:`` while a persisted filename stem uses ``_``
+    (``history._safe_key`` folds one to the other), so a classifier reading only
+    one spelling answers False for the same session depending on where the key
+    came from.
+    """
+    return tuple(f"{ns}{sep}" for ns in namespaces for sep in (":", "_"))
+
+
+def is_owner_minted_session_key(key: str) -> bool:
+    """True when *key*'s namespace alone proves the owner minted it.
+
+    An EMPTY key answers False, and callers must not read that as a refusal on its
+    own — an absent ``X-Session-Key`` means no calling session was attested at all
+    (the gateway's own call, the CLI, a loopback ``curl``), which is a separate
+    question from a key that names an untrusted namespace. The crew-read guard
+    handles the two cases distinctly.
+    """
+    if not key:
+        return False
+    return key.startswith(_namespace_prefixes(OWNER_MINTED_SESSION_NAMESPACES))
+
+
+def is_delegated_session_key(key: str) -> bool:
+    """True when *key* names delegated work whose ancestry must be resolved.
+
+    A True answer is NOT authorization: it selects the ancestry lookup. The
+    caller is authorized only if that lookup terminates at a key
+    :func:`is_owner_minted_session_key` accepts.
+    """
+    if not key:
+        return False
+    return key.startswith(_namespace_prefixes(DELEGATED_SESSION_NAMESPACES))
+
+
 #: The channels a PROACTIVE send may name -- ``send_message``'s ``channel_type``
 #: and its channel ``session`` values. Derived ONCE here rather than subtracted at
 #: each reader: the same subtraction was spelled in three places, which is the

@@ -856,6 +856,58 @@ def test_cron_followup_uses_job_authority_not_provider_template_alias(
         assert read_private_session_store(key) is None
 
 
+def test_crew_scoped_read_is_refused_for_a_private_memory_session(member_stores, monkeypatch):
+    """A member fenced to a private store cannot reach another crew's history.
+
+    No local record can adjudicate a PEER key. The per-key store index the old
+    local visibility check consulted was removed together with that check, and it
+    only ever held this crew's own members in any case -- so a remote key has no
+    provenance here to check at all. The refusal therefore has to happen before
+    the tunnel, and this asserts exactly that: the crew helper is never invoked,
+    so the test fails if the guard is moved below the early return or deleted.
+
+    The store is bound for real rather than patched -- a stubbed resolver would
+    let this pass without the binding ever being consulted. The CONTROL arm comes
+    second, because the failure mode of a fail-closed fence is refusing the
+    ordinary caller it exists to serve.
+    """
+    from kiro_crew import mcp_core
+    from kiro_crew.mcp_tools import sessions as mcp_sessions
+    from kiro_crew.mcp_tools.sessions import _crew_scope_refusal
+
+    writer, _reviewer = member_stores
+
+    # Pure-function arms: only a NON-EMPTY store name is the fenced case.
+    assert _crew_scope_refusal("") == ""  # ordinary session
+    assert _crew_scope_refusal(writer) != ""  # fenced member
+
+    reached: list = []
+    monkeypatch.setattr(
+        mcp_sessions,
+        "_crew_search_history",
+        lambda *a, **k: reached.append(a) or "REACHED TUNNEL",
+    )
+
+    fenced = "dashboard:writer:project_one"
+    bind_private_session_store(fenced, writer)
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", lambda error: (fenced, ""))
+    out = mcp_sessions.search_chat_history(
+        "search_chat_history", {"query": "anything", "crew": "chick"}
+    )
+    assert "Access denied" in out
+    assert reached == [], "a fenced member reached the peer tunnel"
+
+    # Control: an ordinary session (no private binding) still reaches the tunnel.
+    ordinary = "dashboard:ordinary"
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", lambda error: (ordinary, ""))
+    out = mcp_sessions.search_chat_history(
+        "search_chat_history", {"query": "anything", "crew": "chick"}
+    )
+    assert out == "REACHED TUNNEL"
+    # The key checked is the key put on the wire -- not a re-resolved one.
+    assert reached == [("chick", "anything", 10, ordinary)]
+
+
 @pytest.fixture
 def member_stores(monkeypatch):
     # Provider calls in this file are doubles; model the supported WSL runtime.

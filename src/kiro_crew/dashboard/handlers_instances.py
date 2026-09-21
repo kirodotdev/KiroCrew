@@ -25,12 +25,14 @@ import logging
 import math
 import re
 from typing import TYPE_CHECKING, NamedTuple
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from aiohttp import web
 
 import kiro_crew
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import is_delegated_session_key, is_owner_minted_session_key
+from kiro_crew.context import RECALL_ROLES
 from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
     _owner_denial_response,
@@ -43,8 +45,10 @@ from kiro_crew.dashboard.session_transfer import (
     local_instance_label,
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS
-from kiro_crew.history import SEARCH_MIN_CHARS
+from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
+from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS
 from kiro_crew.instances.constants import (
+    PEER_SESSIONS_REPLY_MAX_BYTES,
     PEER_SLOTS_REPLY_MAX_BYTES,
     PROXY_PATH_MAX_DECODE_PASSES,
     PROXY_REQUEST_BODY_MAX_BYTES,
@@ -62,7 +66,7 @@ from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelStat
 from kiro_crew.instances.warm_set import resolve_warm_set_cap
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
-from kiro_crew.validation import sanitize_string
+from kiro_crew.validation import MAX_SHORT_STRING, sanitize_string
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -78,8 +82,16 @@ logger = logging.getLogger(__name__)
 _PEER_FIELD_MAX_CHARS = 2048
 
 
-def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "") -> None:
-    """Emit a SEL audit event for an instances control-plane action."""
+def _audit(
+    operation: str, outcome: str, *, request_id: str = "", error: str = "", caller: str = ""
+) -> None:
+    """Emit a SEL audit event for an instances control-plane action.
+
+    ``caller`` records the originating MCP session key (the internal-secret
+    request's ``X-Session-Key``) for the crew-scoped reads, so an audit reviewer
+    can see WHICH agent session read a remote crew's history — the exact
+    cross-crew disclosure this surface enables. Omitted for browser/owner routes.
+    """
     try:
         sel().log_tool_invocation(
             session_key="dashboard:instances",
@@ -88,6 +100,7 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
             request_id=request_id,
             source="dashboard",
             error=error,
+            metadata={"caller": caller} if caller else None,
         )
     except Exception:  # audit must never break the request path
         logger.debug("SEL audit failed for instances_%s", operation, exc_info=True)
@@ -961,6 +974,647 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
             break
     _audit("search_sessions", "success", request_id=f"{len(connected)} peers")
     return web.json_response({"sessions": merged, "unreachable": unreachable})
+
+
+# ── MCP crew-scoped session reads (STRICT internal-secret; no browser caller) ──
+#
+# These three GET endpoints back the ``crew=`` scope on the kirocrew-core
+# session read tools (search_chat_history / list_sessions / get_chat_session).
+# They are MCP-only: the tools reach the gateway over the ``X-Internal-Secret``
+# handshake and cannot present as an owner-dashboard request, so they do NOT
+# ride ``api_instances_search_sessions``' owner guard — they authenticate as the
+# gateway's own trusted local caller (``internal_auth``), exactly like
+# ``/api/sessions/summarize``. The remote data itself stays gated by the tunnel
+# credential, which never leaves ``SshTunnelManager``.
+#
+# Transport reuse (no fourth hand-rolled copy of the peer-request dance):
+# ``search`` rides ``mgr.search_sessions_remote``; ``list``/``read`` ride the
+# generic ``mgr.proxy_request`` carrier, read under ``read_capped_response`` with
+# ``PEER_SESSIONS_REPLY_MAX_BYTES``. Every field a peer returns is untrusted
+# input — redacted then clamped locally before it reaches the caller.
+
+# A bounded read must return within the MCP client's _get timeout (10s): a
+# reachable-but-slow peer that overruns would otherwise be reported to the agent
+# as "unreachable". Kept under 10s with margin.
+_CREW_PROXY_TIMEOUT = 8.0
+
+# Per-message ceiling for a peer TRANSCRIPT body, in CHARACTERS, because that is
+# the unit ``_cap_str`` clamps in. A transcript message is legitimately long, so it
+# must not take the short metadata clamp, but it does not go unclamped either:
+# passing the reply's BYTE bound straight into a character clamp reads as a unit
+# confusion even though UTF-8 makes it safe (a decoded character is never fewer
+# than one byte, so the byte cap already bounds the character count). The real
+# bound remains ``PEER_SESSIONS_REPLY_MAX_BYTES`` on the whole reply; this is the
+# per-field ceiling underneath it, and no honest message reaches it.
+_PEER_MESSAGE_MAX_CHARS = PEER_SESSIONS_REPLY_MAX_BYTES
+
+
+def _peer_row_is_restricted(value: object) -> bool:
+    """Whether a peer row's ``memory_mode`` marks it incognito/temporary.
+
+    Written as a predicate rather than an inline ``in`` test because the peer's
+    payload is UNTRUSTED and ``INCOGNITO_MEMORY_MODES`` is a ``frozenset``: a
+    hostile or malformed peer answering ``memory_mode: []`` makes
+    ``[] in INCOGNITO_MEMORY_MODES`` raise ``TypeError`` on an unhashable value,
+    which surfaces as a 500 rather than a refusal. Only ``key`` is otherwise
+    type-checked on that payload.
+
+    The three cases are deliberately NOT collapsed:
+
+    * ABSENT (``None``) is the ordinary case and answers False. Most rows carry no
+      ``memory_mode`` at all, so treating a missing mode as restricted would drop
+      nearly every legitimate row.
+    * A ``str`` takes the membership test — the actual rule this mirrors.
+    * Anything else PRESENT (a list, dict, or number) cannot be a valid mode, so it
+      answers True and the row is dropped. Fail CLOSED here: the only reason a peer
+      sends a non-string mode is to dodge a filter whose whole job is keeping a
+      marked session out of a remote agent's reach, and a type guard that merely
+      skipped the test would admit exactly the row the filter exists to refuse.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value in INCOGNITO_MEMORY_MODES
+    return True
+
+
+#: Ancestry hops a delegated caller key may take before the walk gives up. A
+#: subagent spawning a subagent is ordinary, and a cron-born agent spawning one is
+#: too, so the chain is legitimately longer than one hop — but it is short. The
+#: bound is what makes the walk total: the records are written by separate
+#: subsystems with no shared cycle check, so a parent pointer that loops (a
+#: restored run re-registered under an id already in its own chain) would otherwise
+#: spin here holding the request. Exhausting the budget REFUSES.
+_ANCESTRY_MAX_HOPS = 8
+
+
+def _owner_minted_and_attributable(state: "DashboardState", key: str) -> bool:
+    """Whether *key* is owner-minted AND still names a slot we can attribute.
+
+    ``is_owner_minted_session_key`` reads the NAMESPACE only, which is what makes
+    it forgery-resistant -- but a namespace cannot notice that the slot behind the
+    key is gone. A ``dashboard:`` key names a specific slot, so its absence is not
+    "nothing to confine" but "the slot I would have been confined against has
+    vanished" -- and an APP-owned session going through that race arrives with its
+    app claim already missing, so the app refusal above it misses too and the
+    surviving ``dashboard:`` namespace reads as the person. ``token_auth`` states
+    the race is real: a tab is "popped synchronously, without draining in-flight
+    MCP calls".
+
+    Both the door and the ancestry walk's terminal step apply
+    ``caller_names_a_missing_slot``, but they need different answers: the door
+    refuses with its own ``caller_session_missing`` code so an operator reading the
+    audit sees a vanished slot rather than a rejected identity, while the walk only
+    needs a boolean. This helper is the walk's half, and it exists so a terminal
+    step that reached an owner-minted namespace cannot silently skip the slot check
+    the door performs. The predicate is only additive -- it never admits a key
+    ``is_owner_minted_session_key`` rejects -- and because the owner roster holds
+    ``dashboard`` alone, every key that reaches the slot check is a key
+    ``caller_names_a_missing_slot`` is built for, so the two line up exactly rather
+    than the check silently no-opping for some namespaces. That alignment is a
+    requirement, not a coincidence: a namespace on the owner roster whose keys name
+    no slot would pass this predicate on the namespace alone.
+
+    The terminal step ALSO rejects an APP-OWNED parent. Reaching an owner-minted
+    namespace establishes that the gateway minted the key -- not that the PERSON
+    owns it. A delegated caller whose own app claim went missing would otherwise
+    inherit authority from a slot an app owns: exactly the disclosure the door's
+    ``request["app"]`` arm exists to stop, which by construction cannot fire for
+    the caller whose claim is the one that vanished.
+    """
+    if not is_owner_minted_session_key(key):
+        return False
+    slots = getattr(state, "_slots", None)
+    if caller_names_a_missing_slot(slots, key):
+        return False
+    return not _slot_app_owner(slots, key)
+
+
+def _slot_app_owner(slots: object, key: str) -> str:
+    """The app owning the slot *key* names, or ``""`` (the person's, or no slot).
+
+    Reads the slot registry directly rather than going through
+    ``derive_caller_app``: that resolver looks a slot up by EVERYTHING after the
+    first colon, which is why a three-segment ``side:<slot>:<gen>`` key misses the
+    registry and resolves to no app at all. Taking the first segment here is the
+    same correction :func:`_side_parent_key` makes, and it is why this cannot be
+    delegated to the resolver whose blind spot is the finding.
+    """
+    lookup = getattr(slots, "get", None) if slots is not None else None
+    if lookup is None:
+        return ""
+    remainder = key.split(":", 1)[-1] if ":" in key else key
+    slot_id = remainder.split(":", 1)[0]
+    if not slot_id:
+        return ""
+    try:
+        slot = lookup(slot_id)
+    except Exception:
+        return ""
+    return str(getattr(slot, "_app", "") or "") if slot is not None else ""
+
+
+async def _delegated_caller_is_owner_minted(state: "DashboardState", caller_key: str) -> bool:
+    """Whether a delegated caller's chain terminates at an owner-minted session.
+
+    This is the positive half of the two-tier roster: :func:`is_delegated_session_key`
+    says a key names delegated work, and this decides whether that work was
+    delegated BY the owner. Walks parent pointers until it reaches a key
+    :func:`is_owner_minted_session_key` accepts (True) or runs out of evidence
+    (False).
+
+    Fails CLOSED at every unresolvable step, and the unresolvable steps are the
+    point rather than an oversight — each one is a record this repository states
+    cannot carry an authorization decision:
+
+    * A subagent's parent is read from the LIVE in-memory run record only. The
+      persisted copy in the run folder is not consulted: ``subagent_persistence``
+      writes ``parent_session`` into ``state.json`` but documents that folder as
+      agent-writable ("Resume identity is gateway-owned; the run folder itself is
+      agent writable"), so a child could name its own parent and award itself the
+      owner's authority. That is the same defect class as trusting the
+      ``channel_origin`` metadata flag, refused here for the same reason. A
+      finished run therefore loses the read even though its record survives, which
+      matches ``has_live_shared_session``: "Run records survive
+      completion/restart for display and continuation; they are not session
+      authority."
+    * A side chat's parent is the dashboard slot named in its own key, and the
+      walk's terminal step then requires that slot to be present and not app-owned.
+      Nothing about a side key is trusted beyond the slot id it carries, which the
+      gateway assigned.
+
+    ``cron`` is absent from the delegated roster for a reason worth stating here,
+    because it is the reason this list is not simply "namespaces with a record".
+    ``CronJob.session_key`` lives in ``crons.json``, and while that IS gateway-held
+    state rather than a request value, ``sandbox.py`` exposes it to the crew sandbox
+    as a writable leaf that ``mcp_cron`` "both reads and rewrites". Gateway-held is
+    therefore not the property that matters; AGENT-UNWRITABLE is. An agent can set a
+    job's ``session_key`` to a ``dashboard:`` value and have the firing job clear
+    this walk -- the same objection that keeps the persisted subagent
+    ``parent_session`` out of the bullet above. One standard, both record classes.
+
+    Every record this walk reads is gateway-held AND outside the agent's write
+    reach, never the request, so a caller can neither supply nor author its own
+    ancestry. Both clauses are load-bearing: the first alone admitted the cron row.
+    """
+    seen: set[str] = set()
+    key = caller_key
+    for _ in range(_ANCESTRY_MAX_HOPS):
+        if not key or key in seen:
+            return False
+        seen.add(key)
+        if _owner_minted_and_attributable(state, key):
+            return True
+        if not is_delegated_session_key(key):
+            # An unlisted namespace reached mid-walk is refused for the same
+            # reason it is refused at the door: the roster's default is no.
+            return False
+        parent = await _delegated_parent_key(state, key)
+        if parent is None:
+            return False
+        key = parent
+    return False
+
+
+async def _delegated_parent_key(state: "DashboardState", key: str) -> "str | None":
+    """The session that created delegated session *key*, or ``None`` to refuse.
+
+    One resolver per namespace, because the record differs per subsystem and a
+    shared lookup would have to guess which one applies. ``None`` means "no
+    trustworthy answer" and is never distinguishable from "no parent" on purpose:
+    both refuse.
+
+    Stays ``async`` although neither arm now awaits: the cron arm did (its lookup
+    re-read ``crons.json`` under a lock), the next namespace with a record on disk
+    will again, and the caller already awaits this.
+    """
+    if key.startswith(("subagent:", "subagent_")):
+        return _subagent_parent_key(state, key)
+    if key.startswith("side:"):
+        return _side_parent_key(state, key)
+    return None
+
+
+def _side_parent_key(state: "DashboardState", key: str) -> "str | None":
+    """The dashboard session a side chat hangs off, or ``None`` to refuse.
+
+    ``handlers/side.py`` mints ``side:<slot>:<gen>`` (or ``side:<slot>`` with no
+    generation), so the parent is the FIRST segment after the namespace and the
+    generation suffix must be DROPPED. Keeping it is the whole defect:
+    ``derive_caller_app`` looks the slot up by everything after the first colon,
+    so ``<slot>:<gen>`` matches no slot, an app-owned side chat resolves to no app,
+    and the key then read as the person. Returning the parent as a
+    ``dashboard:`` key hands it to the walk's terminal step, which requires the
+    slot to be PRESENT and NOT app-owned -- so "reject missing or app-owned
+    parents" is enforced by one shared predicate rather than restated here.
+
+    Only the ``:`` spelling resolves. A ``side_`` key is a persisted FILENAME stem,
+    never an attested caller identity, and slot ids may themselves contain ``_``,
+    so there is no reliable boundary to split on -- it falls through and is refused
+    rather than being split on a guess.
+    """
+    remainder = key.split(":", 1)[-1] if ":" in key else ""
+    slot_id = remainder.split(":", 1)[0]
+    if not slot_id:
+        return None
+    return f"dashboard:{slot_id}"
+
+
+def _subagent_parent_key(state: "DashboardState", key: str) -> "str | None":
+    """A live subagent's parent session key, or ``None``.
+
+    The run id is the segment after the namespace. ``SubagentManager.get`` reads
+    the in-memory registry, so a run that has completed, been reaped, or was
+    restored from disk after a restart answers ``None`` — see the class docstring
+    for why that is deliberate rather than a gap.
+    """
+    mgr = getattr(state, "subagents", None)
+    if mgr is None:
+        return None
+    run_id = key.split(":", 1)[-1] if ":" in key else key.split("_", 1)[-1]
+    if not run_id:
+        return None
+    try:
+        info = mgr.get(run_id)
+    except Exception:
+        return None
+    if info is None:
+        return None
+    # A reaped or completed record is display state, not session authority.
+    if getattr(info, "done", False) or getattr(info, "reaped", False):
+        return None
+    return str(getattr(info, "parent_session_key", "") or "") or None
+
+
+async def _authorize_crew_read(request: web.Request, operation: str) -> "web.Response | None":
+    """Positively authorize a crew-read: the owner's own agent, and nobody else.
+
+    Returns ``None`` when the caller is authorized; the 403 response otherwise.
+
+    These routes disclose ANOTHER crew's session titles, snippets and full
+    transcripts, executed on that peer with the OWNER's manager-held credential.
+    That is the same disclosure ``api_instances_search_sessions`` and
+    ``api_instances_chat_slots`` gate, so it takes the same bar: the positively
+    identified owner.
+
+    **Why not ``is_owner_dashboard_request`` alone.** That helper requires a
+    dashboard ``user`` claim, and the internal-secret branch never sets one (see
+    ``token_auth``: identity there comes from the calling session, not a cookie).
+    Applied literally it would refuse every legitimate call, so this asserts the
+    same *property* through the evidence this transport actually carries.
+
+    **Two claim checks and a two-tier roster**, because neither a denylist of
+    identity classes nor a flat allowlist can secure this:
+
+    1. *App-minted.* ``token_auth`` publishes ``request["app"]`` when it resolves
+       an owning app for the calling session. Any app claim is refused.
+    2. *Caller provenance.* A PRESENT ``X-Session-Key`` must be owner-minted —
+       either by namespace (:func:`is_owner_minted_session_key`) or by resolving a
+       delegated key's ancestry back to one. A denylist cannot do this: a
+       channel-born session carries NO app claim (``derive_caller_app`` returns
+       ``""`` because "a channel/cron-born slot is created without one"), so it is
+       indistinguishable from the owner under an app-only test. And a flat
+       allowlist could not either: ``spawn_run`` mints ``subagent:<id>`` the same
+       way whoever the parent is, so admitting that namespace by prefix hands a
+       Slack participant's child the owner's authority. Anything unrecognised —
+       the legacy ``channel:`` shape, a transport added later, a delegated run
+       whose ancestry cannot be established — is refused, so an unforeseen
+       identity class fails closed instead of reading a peer's transcripts.
+    3. *Non-owner dashboard subject.* If a ``user`` claim IS present (a
+       ``!dashboard``-minted browser token reaching a mixed-internal route), it
+       must be the configured owner — delegated to the merged helper.
+
+    The provenance test reads ``X-Session-Key``, which is server-set and attested:
+    the in-process MCP broker fills it from the calling session's own context and
+    never from tool arguments, and ``_verify_unix_peer`` has already checked it
+    against ``/proc`` ancestry. It deliberately does NOT read the slot's
+    ``channel_origin`` flag: that lives on the metadata line of an
+    agent-writable file, so an agent could clear it on its own transcript, and
+    ``handlers/sessions`` already records that provenance for a cross-session
+    decision must come from outside agent-writable storage. The ancestry walk
+    holds to the same rule — see
+    :func:`_delegated_caller_is_owner_minted` for the records it refuses to read.
+
+    An ABSENT key is left admissible, unchanged from the rest of this module:
+    that is the gateway's own call, the CLI and a loopback ``curl``, all of which
+    already hold the internal secret and are the trust root this gate stands on
+    rather than a subject it can adjudicate. That admissibility is exactly why the
+    MCP side must not let an absent key happen by accident: each read tool
+    resolves the caller STRICTLY at entry (``require_strict_session_key``) and
+    hands that same key to the crew helpers, refusing a degraded identity there,
+    because a tool whose resolution collapsed to empty would otherwise arrive
+    here shaped like the gateway itself.
+
+    A key that NAMES A SLOT THAT IS GONE is refused ahead of all of this, on its
+    own arm, because it is the one case where every positive signal still reads as
+    the owner: the namespace is owner-minted, and the app claim that would have
+    disqualified it went missing with the slot it named.
+    """
+    if request.get("internal_auth") is not True:
+        _audit(operation, "denied", error="internal secret required")
+        return web.json_response(
+            {"error": "forbidden", "code": "internal_secret_required"}, status=403
+        )
+    if request.get("app"):
+        _audit(operation, "denied", error="app-minted identity rejected")
+        return web.json_response({"error": "forbidden", "code": "owner_only"}, status=403)
+    caller_key = request.headers.get("X-Session-Key", "")
+    state: DashboardState = request.app["state"]
+    if caller_key and caller_names_a_missing_slot(getattr(state, "_slots", None), caller_key):
+        # Its own arm, ahead of the roster: this key's namespace IS owner-minted,
+        # so the roster would admit it. What disqualifies it is that the slot it
+        # names is gone, which is also why the app refusal above did not fire --
+        # the app it should have been confined to is exactly what got popped.
+        _audit(operation, "denied", error="calling session's slot is gone; caller unattributable")
+        return web.json_response(
+            {"error": "calling session not found", "code": "caller_session_missing"}, status=403
+        )
+    if caller_key and not is_owner_minted_session_key(caller_key):
+        if not await _delegated_caller_is_owner_minted(state, caller_key):
+            _audit(operation, "denied", error="caller is not owner-minted")
+            return web.json_response({"error": "forbidden", "code": "owner_only"}, status=403)
+    if str(request.get("user") or "") and not is_owner_dashboard_request(request):
+        _audit(operation, "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew session reads are owner-only")
+    return None
+
+
+async def _resolve_crew_id(state: "DashboardState", crew: str) -> "str | None":
+    """Map a crew id-or-name to a registered instance id, or ``None`` if unknown.
+
+    ``reg.list`` re-reads instances.json under a threading lock, so it is run off
+    the loop (same rule as every other registry touch in these handlers).
+    """
+    if not crew:
+        return None
+    try:
+        reg = _registry(state)
+        entries = await asyncio.to_thread(reg.list)
+    except Exception:
+        return None
+    # Resolve an exact id FIRST across ALL entries, so an id can never be
+    # shadowed by an earlier entry whose NAME happens to equal it; only then
+    # fall back to a name match.
+    for e in entries:
+        if getattr(e, "id", None) == crew:
+            return e.id
+    for e in entries:
+        if getattr(e, "name", None) == crew:
+            return e.id
+    return None
+
+
+async def _crew_proxy_json(mgr, instance_id: str, path: str, params: "dict[str, str]"):
+    """GET a peer path over the tunnel; return decoded JSON (list|dict) or None.
+
+    Body reading is delegated to ``read_capped_response`` — the same helper the
+    adopt path and the peer-slots read use — because a single ``read(n)`` on a
+    chunked reply resolves at the first buffered chunk and silently yields a
+    TRUNCATED body. It enforces ``PEER_SESSIONS_REPLY_MAX_BYTES`` against the
+    accumulated total and stops mid-stream, so a hostile peer cannot exhaust hub
+    memory before any per-field clamp runs, and returns at most ``cap + 1`` bytes
+    so ``len(body) > cap`` remains the over-cap sentinel.
+
+    Bounded by a total-time budget (``_CREW_PROXY_TIMEOUT``) so a reachable-but-
+    slow peer returns within the MCP client's own read timeout instead of being
+    misreported as unreachable. Raises ``ProxyRequestError`` (transport /
+    credential / timeout) for the caller to map to a status; returns ``None`` on a
+    non-2xx, oversized, or malformed reply.
+    """
+
+    async def _fetch():
+        async with mgr.proxy_request(instance_id, "GET", path, params=params) as resp:
+            if not 200 <= resp.status < 300:
+                return None
+            body = await read_capped_response(resp, PEER_SESSIONS_REPLY_MAX_BYTES)
+        if not body or len(body) > PEER_SESSIONS_REPLY_MAX_BYTES:
+            return None
+        try:
+            return json.loads(body)
+        except Exception:
+            return None
+
+    try:
+        return await asyncio.wait_for(_fetch(), timeout=_CREW_PROXY_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise ProxyRequestError(
+            "proxy_peer_timeout",
+            "peer did not return within the read budget",
+            http_status=504,
+        ) from None
+
+
+async def api_crew_sessions_search(request: web.Request) -> web.Response:
+    """GET /api/crew-sessions/search?crew=&q=&limit= — MCP crew-scoped search.
+
+    Rides the existing ``mgr.search_sessions_remote``; re-redacts every peer row
+    here (that method returns the raw peer payload — the federated route is what
+    normally redacts it).
+    """
+    denied = await _authorize_crew_read(request, "crew_search")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    crew = sanitize_string(request.query.get("crew", "")).strip()[:MAX_SHORT_STRING]
+    q = sanitize_string(request.query.get("q", "")).strip()[:256]
+    if len(q) < SEARCH_MIN_CHARS:
+        # A sub-threshold query still passed the internal-secret gate, so record
+        # the decision (mirrors api_instances_search_sessions' short-query audit).
+        _audit(
+            "crew_search",
+            "success",
+            request_id="short-query",
+            caller=request.headers.get("X-Session-Key", ""),
+        )
+        return web.json_response({"sessions": []})
+    try:
+        limit = max(1, min(int(request.query.get("limit", "10")), 50))
+    except (TypeError, ValueError):
+        limit = 10
+    mgr = getattr(state, "instances_manager", None)
+    iid = await _resolve_crew_id(state, crew) if mgr is not None else None
+    if mgr is None or iid is None:
+        _audit("crew_search", "denied", request_id=crew, error="unknown crew")
+        return web.json_response({"error": "unknown crew", "code": "crew_unknown"}, status=404)
+    ok, payload = await mgr.search_sessions_remote(iid, q, limit)
+    if not ok:
+        code = str(payload.get("code", "crew_unreachable"))
+        _audit("crew_search", "failure", request_id=iid, error=code)
+        return web.json_response(
+            {
+                "error": _cap_str(payload.get("error"), _PEER_FIELD_MAX_CHARS) or "unreachable",
+                "code": code,
+            },
+            status=502,
+        )
+    rows = payload.get("sessions") if isinstance(payload, dict) else None
+    out: list[dict] = []
+    if isinstance(rows, list):
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("key")
+            if not isinstance(key, str) or not key or len(key) > _PEER_FIELD_MAX_CHARS:
+                continue
+            if _peer_row_is_restricted(row.get("memory_mode")):
+                continue  # mirror the local tool's incognito/temporary exclusion
+            out.append(
+                {
+                    "key": key,
+                    "title": _cap_str(row.get("title"), _PEER_FIELD_MAX_CHARS),
+                    "snippet": _cap_str(row.get("snippet"), _PEER_FIELD_MAX_CHARS),
+                    "date": _cap_str(row.get("created") or row.get("date"), _PEER_FIELD_MAX_CHARS),
+                }
+            )
+    _audit(
+        "crew_search",
+        "success",
+        request_id=iid,
+        caller=request.headers.get("X-Session-Key", ""),
+    )
+    return web.json_response({"sessions": out})
+
+
+async def api_crew_sessions_list(request: web.Request) -> web.Response:
+    """GET /api/crew-sessions/list?crew=&limit= — MCP crew-scoped session list."""
+    denied = await _authorize_crew_read(request, "crew_list")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    crew = sanitize_string(request.query.get("crew", "")).strip()[:MAX_SHORT_STRING]
+    try:
+        limit = max(1, min(int(request.query.get("limit", "20")), 100))
+    except (TypeError, ValueError):
+        limit = 20
+    mgr = getattr(state, "instances_manager", None)
+    iid = await _resolve_crew_id(state, crew) if mgr is not None else None
+    if mgr is None or iid is None:
+        _audit("crew_list", "denied", request_id=crew, error="unknown crew")
+        return web.json_response({"error": "unknown crew", "code": "crew_unknown"}, status=404)
+    try:
+        data = await _crew_proxy_json(
+            mgr, iid, "/api/sessions", {"limit": str(limit), "preview": "1"}
+        )
+    except ProxyRequestError as e:
+        _audit("crew_list", "failure", request_id=iid, error=e.code)
+        return web.json_response({"error": e.message, "code": e.code}, status=e.http_status)
+    if not isinstance(data, dict):
+        _audit("crew_list", "failure", request_id=iid, error="malformed")
+        return web.json_response(
+            {"error": "peer returned a malformed reply", "code": "crew_malformed_reply"},
+            status=502,
+        )
+    rows = data.get("sessions")
+    out: list[dict] = []
+    if isinstance(rows, list):
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("key")
+            if not isinstance(key, str) or not key or len(key) > _PEER_FIELD_MAX_CHARS:
+                continue
+            if _peer_row_is_restricted(row.get("memory_mode")):
+                continue  # mirror the local tool's incognito/temporary exclusion
+            item: dict = {"key": key, "title": _cap_str(row.get("title"), _PEER_FIELD_MAX_CHARS)}
+            for field in ("agent", "created"):
+                redacted = _cap_str(row.get(field), _PEER_FIELD_MAX_CHARS)
+                if redacted:
+                    item[field] = redacted
+            msgs = row.get("messages")
+            if isinstance(msgs, (int, float)) and not isinstance(msgs, bool):
+                try:
+                    if math.isfinite(msgs):
+                        item["messages"] = msgs
+                except OverflowError:
+                    pass
+            preview = row.get("preview")
+            if isinstance(preview, str) and preview:
+                item["preview"] = _cap_str(preview, _PEER_FIELD_MAX_CHARS)
+            out.append(item)
+    _audit(
+        "crew_list",
+        "success",
+        request_id=iid,
+        caller=request.headers.get("X-Session-Key", ""),
+    )
+    return web.json_response({"sessions": out})
+
+
+async def api_crew_sessions_read(request: web.Request) -> web.Response:
+    """GET /api/crew-sessions/read?crew=&key=&max_messages= — MCP transcript read.
+
+    The peer route is ``/api/sessions/{key}``; the key is vetted (no separators,
+    no ``..``) and percent-encoded into the path so it cannot traverse.
+    """
+    denied = await _authorize_crew_read(request, "crew_read")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    crew = sanitize_string(request.query.get("crew", "")).strip()[:MAX_SHORT_STRING]
+    key = request.query.get("key", "")
+    try:
+        max_messages = max(1, min(int(request.query.get("max_messages", "50")), 200))
+    except (TypeError, ValueError):
+        max_messages = 50
+    if (
+        not key
+        or "/" in key
+        or "\\" in key
+        or key in ("..", ".")
+        or len(key) > _PEER_FIELD_MAX_CHARS
+    ):
+        return web.json_response(
+            {"error": "invalid session_key", "code": "crew_bad_key"}, status=400
+        )
+    mgr = getattr(state, "instances_manager", None)
+    iid = await _resolve_crew_id(state, crew) if mgr is not None else None
+    if mgr is None or iid is None:
+        _audit("crew_read", "denied", request_id=crew, error="unknown crew")
+        return web.json_response({"error": "unknown crew", "code": "crew_unknown"}, status=404)
+    peer_path = "/api/sessions/" + quote(key, safe="")
+    try:
+        # exclude_incognito=1: the peer refuses (empty) an incognito/temporary
+        # transcript, so this read enforces the same EB-7b exclusion the local
+        # get_chat_session does — not just the search/list discovery filter.
+        data = await _crew_proxy_json(mgr, iid, peer_path, {"exclude_incognito": "1"})
+    except ProxyRequestError as e:
+        _audit("crew_read", "failure", request_id=iid, error=e.code)
+        return web.json_response({"error": e.message, "code": e.code}, status=e.http_status)
+    # api_session_detail returns a raw message ARRAY (not wrapped).
+    if not isinstance(data, list):
+        _audit("crew_read", "failure", request_id=iid, error="malformed")
+        return web.json_response(
+            {"error": "peer returned a malformed reply", "code": "crew_malformed_reply"},
+            status=502,
+        )
+    # Mirror get_chat_session: keep only RECALL_ROLES (drops system/tool/thinking
+    # rows the local tool excludes), THEN tail-cap to max_messages. Incognito is
+    # enforced on BOTH sides now: search/list drop incognito/temporary rows
+    # (discovery), and this read sent exclude_incognito=1 so the peer returns an
+    # empty transcript for a marked session (same-version peers; the discovery
+    # filter is the version-independent floor).
+    recall = [m for m in data if isinstance(m, dict) and str(m.get("role", "")) in RECALL_ROLES]
+    out: list[dict] = []
+    for message in recall[-max_messages:]:
+        role = message.get("role")
+        out.append(
+            {
+                "role": str(role)[:64] if isinstance(role, str) and role else "?",
+                # A transcript body is legitimately long, so it takes the
+                # per-message ceiling rather than the short-field clamp. _cap_str
+                # still runs the redaction chain and strips hidden Unicode first,
+                # which is what stops a credential smuggled through a zero-width
+                # character from surviving into the agent's context.
+                "content": _cap_str(message.get("content"), _PEER_MESSAGE_MAX_CHARS),
+            }
+        )
+    _audit(
+        "crew_read",
+        "success",
+        request_id=iid,
+        caller=request.headers.get("X-Session-Key", ""),
+    )
+    return web.json_response({"messages": out})
 
 
 async def api_instances_send_session(request: web.Request) -> web.Response:
