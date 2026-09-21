@@ -139,9 +139,10 @@ rather than permission.
 - `scripts/claim_preflight.py` — one verdict per candidate item before you
   dispatch it: `CLAIM` / `SKIP` / `CLOSE` / `REVIEW` / `UNKNOWN`.
 - `scripts/coverage_filter.py` — the batch open-PR exclusion for the queue
-  build: which of many candidates an open PR already carries, in ONE forge call.
+  build: which of many candidates an open PR CLAIMS TO CLOSE, in ONE forge call.
   It only ever SUBTRACTS, so `UNCOVERED` is not permission and
-  `claim_preflight.py` still gates every dispatch.
+  `claim_preflight.py` still gates every dispatch. A PR that references an item
+  without a closing keyword reports `MENTIONED` and the item stays in the queue.
 - `scripts/fleet_probe.py` — batch worker-tail classification + idle age +
   error tails + banned-process scan + host load + delivery counters, in ONE
   call per cycle.
@@ -237,12 +238,13 @@ never relabel it success in the friction report.
    dispatched a worker cannot un-dispatch it. Only after exit 0 may you read the
    spec and use its values. Then `chat_folder_create` the pipeline folder.
 2. Build the queue from the work source (or adopt the operator's seeded
-   backlog), then **subtract the items an open PR already carries** with
+   backlog), then **subtract the items an open PR claims to close** with
    `scripts/coverage_filter.py` before recording it — see "Queue build
    exclusion" under "Pickup and dispatch". A work source selects and excludes by
    LABEL, and a PR carrying `Fixes #N` applies no label, so an unfiltered queue
    is mostly work already in flight (measured on this repo: 25 of 29 label-clean
-   candidates). **Record the backlog at whatever size it is** — as the queue's
+   candidates). An item a PR only REFERENCES reports `MENTIONED` and stays in the
+   queue. **Record the backlog at whatever size it is** — as the queue's
    PROVENANCE, one entry: the work source, its selector, the count, and the item
    ids as one list. What costs one `artifacts` entry EACH is an item you are
    PROCESSING, never an item merely waiting, so backlog size and ledger capacity
@@ -494,17 +496,21 @@ truncated, so page the queue build instead of trimming it.
 | Exit | Line | What you do |
 | --- | --- | --- |
 | 0 | `COVERED <n> open-pr=#<pr> …` | Drop the item from the queue and record the PR as the reason. `unvouched=true` marks a cross-repository PR whose author has no standing: the item still leaves the queue, and that marker is your cue to review the subtraction rather than let it pass as routine. |
+| 0 | `MENTIONED <n> open-pr=#<pr> …` | **Not a subtraction.** A PR references the item with no closing keyword, so it has not claimed to fix it — `Refs #N` is this repository's idiom for exactly that. **Keep the item as a candidate.** Carry the PR number into the dispatch brief as *somebody looked at this and did not fix it; establish what remains*. Occasionally it is work in flight whose author never wrote a keyword, which is what `claim_preflight.py` re-checks before the claim. |
 | 0 | `UNCOVERED <n>` | **Not permission.** Keep the item as a candidate; `claim_preflight.py` still decides. A reference made in a PR COMMENT is in the item's timeline and not in this answer, so silence here is a smaller view, never a clean bill. |
 | 2 | malformed | YOUR arguments are wrong, including a batch over 500 items. Fix the call — a bad call is not a finding about any item, and a batch this refuses was never scanned. |
 | 3 | `UNKNOWN reason=<slug>` | The forge could not be read, so NO exclusion was computed. Keep every candidate and carry on; the per-item preflight still runs. Never read it as "none are covered" — the output prints no `uncovered` list for exactly that reason. |
 
 This filter only ever SUBTRACTS, and that is what makes two evidence sources
-safe. `COVERED` is a positive finding — a reference in a PR's own title or body —
-so acting on it can only remove an item. Nothing it prints can ADD an item or
-certify one as free, so the cheaper evidence can never widen what gets
-dispatched. If the script is absent from your install, treat it as `UNKNOWN`:
-keep the whole queue and let the preflight carry the coverage question, which is
-slower but never permission you did not have.
+safe. `COVERED` is a positive finding — a closing keyword aimed at the item in a
+PR's own title or body — so acting on it can only remove an item. Nothing it
+prints can ADD an item or certify one as free, so the cheaper evidence can never
+widen what gets dispatched. `MENTIONED` and `UNCOVERED` both leave the item a
+candidate and are still separate lines, because a reference the filter declined
+to subtract on is worth a look and printing it as `UNCOVERED` would be exactly as
+silent as the subtraction it replaced. If the script is absent from your install,
+treat it as `UNKNOWN`: keep the whole queue and let the preflight carry the
+coverage question, which is slower but never permission you did not have.
 
 ### Preflight: `claim_preflight.py`
 
@@ -540,11 +546,26 @@ precedence list:
    neither CLOSE nor SKIP, so it falls through to the remaining checks, because
    treating it as coverage closes live work and treating it as a claim starves an
    item whose fix was only partial.
-2. `open_prs` — any open PR referencing it, **fork PRs included** → **SKIP**
-   `open-pr`. A fork PR from someone with no standing still SKIPs, but the line
-   carries `risk=high` and an `untrusted-fork` marker — treat that as a triage
-   signal to review rather than an item that simply left the queue, because
-   opening a fork PR needs no permission and is therefore a suppression channel.
+2. `open_prs` — an open PR that CLAIMS TO CLOSE the item (a closing keyword for
+   this item in its title or body, not a bare cross-reference), **fork PRs
+   included** → **SKIP** `open-pr`. A fork PR from someone with no standing still
+   SKIPs, but the line carries `risk=high` and an `untrusted-fork` marker — treat
+   that as a triage signal to review rather than an item that simply left the
+   queue, because opening a fork PR needs no permission and is therefore a
+   suppression channel.
+
+   **An open PR that only MENTIONS the item does not suppress it.** The timeline
+   event this check reads fires on a bare reference, so `Refs #N` — this
+   repository's own idiom for referenced-but-deliberately-not-closed, and the
+   reason the PR template keeps `Related Issues` apart from a closing trailer —
+   used to take the item out of the queue. Measured over one real candidate list:
+   of 21 (item, covering PR) pairs, 18 carried a closing keyword and 3 did not,
+   and all 3 of those PRs disclaimed the fix in their own words. Such an item now
+   reaches **CLAIM** at `risk=high`, with the PR numbers under
+   `evidence.open_pr_mention_only` in `--json`. Read that as *somebody has looked
+   at this and did not fix it* — usually a real dispatch, occasionally work in
+   flight whose author never wrote a keyword, which is why it takes the live
+   recheck rather than the batch.
 3. `prose_claim` — a closure request in the body or the last comment ("this is
    resolved", "please close") **from the item's own reporter or a repository
    insider** → **REVIEW** `reporter-asked-close` at `risk=high`. **Prose never
@@ -586,16 +607,19 @@ precedence list:
 7. otherwise → **CLAIM**, annotated with `risk` from the `recency` check (a
    recently opened item from an active contributor is a high self-claim risk).
 
-**A merged PR that only MENTIONS the item is a POINTER you hand over, not a
-verdict you drop.** The script finds it — the timeline it reads is state-agnostic,
-so a merged `Refs #N` with no closing keyword and no `closingIssuesReferences` is
-collected and then correctly falls through to CLAIM, because a mention is neither
-coverage nor a claim. But a pipeline that prefers `Refs` whenever a residue
-remains — which is the right house style, since `Closes` would shut items whose
-remainder nobody has addressed — manufactures precisely this shape, so the gate's
-blind spot is the shape of its own output. Carry the merged PR number into the
-dispatch brief as *a merged PR may cover part of this; establish what remains*,
-and the worker's preflight starts where yours stopped instead of rediscovering it.
+**A PR that only MENTIONS the item is a POINTER you hand over, not a verdict you
+drop.** This holds on both sides of the merge boundary, and for the same reason.
+The script finds the reference — the timeline it reads is state-agnostic, so a
+`Refs #N` with no closing keyword and no `closingIssuesReferences` is collected
+and then correctly falls through to CLAIM, because a mention is neither coverage
+nor a claim. But a pipeline that prefers `Refs` whenever a residue remains — which
+is the right house style, since `Closes` would shut items whose remainder nobody
+has addressed — manufactures precisely this shape, so the gate's blind spot is the
+shape of its own output. That is how the OPEN side came to suppress: it read the
+bare reference as coverage for a while, which quietly withheld every item a PR
+had deliberately left for somebody else. Carry the PR number into the dispatch
+brief as *a PR may cover part of this; establish what remains*, and the worker's
+preflight starts where yours stopped instead of rediscovering it.
 
 **A triage comment routing the item away from automated fixing is a POINTER TO A
 QUESTION — and the LABEL is noise.** A `needs-human`-class label sits on the

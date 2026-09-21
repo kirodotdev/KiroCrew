@@ -26,12 +26,26 @@ candidates any of them references.
 THE PROPERTY THAT MAKES TWO EVIDENCE SOURCES SAFE: this filter only ever
 SUBTRACTS.
 
-  * ``COVERED`` is a positive finding - a reference to the item in a pull
-    request's own title or body - and the item leaves the queue.
+  * ``COVERED`` is a positive finding - a CLOSING KEYWORD aimed at the item in a
+    pull request's own title or body - and the item leaves the queue.
+  * ``MENTIONED`` is a reference with no closing keyword. The item STAYS in the
+    queue and the reference is reported. ``Refs #N`` is this repository's own
+    idiom for referenced-but-deliberately-not-closed and its PR template keeps
+    ``Related Issues`` apart from a closing trailer, so subtracting on a bare
+    reference removed items whose referencing PR said in plain words that it was
+    not fixing them. Measured over one real candidate list: of 21 (item,
+    covering PR) pairs, 18 carried a closing keyword and 3 did not, and all 3 of
+    those PRs disclaimed the fix in their own words.
   * ``UNCOVERED`` is NOT permission and certifies nothing. A reference made in a
     PR COMMENT appears in the item's timeline and not here, so this script's
     silence is a smaller view rather than a clean bill, and
     ``claim_preflight.py`` still runs before every claim.
+
+``MENTIONED`` and ``UNCOVERED`` both leave the item a candidate, and they are
+separate lines anyway, because a declined subtraction that printed as
+``UNCOVERED`` would be exactly as silent as the subtraction it replaced. The
+reference may still be work in flight whose author never spelled a keyword, and
+the conductor is the one who can look.
 
 Read the other way round - as a certificate - the cheaper evidence would widen
 what gets dispatched, which is the opposite of what this change is for. Hence
@@ -52,7 +66,7 @@ Usage:
 
 Exit codes:
 
-    0   answered - read the ``covered`` / ``uncovered`` split
+    0   answered - read the ``covered`` / ``mentioned`` / ``uncovered`` split
     2   malformed arguments
     3   UNKNOWN - the forge could not be read, so NO exclusion was computed and
         every candidate stays in the queue
@@ -76,10 +90,14 @@ Deliberately boring properties, do not weaken:
     numbers and logins - because those are the evidence a conductor needs to
     check a subtraction, and a login is chosen by its owner rather than written
     for this item.
-  * A DRAFT pull request counts as coverage, and so does a fork PR. Both are
-    work in flight, and both are what ``claim_preflight.py``'s check 1 counts:
-    the two rules answer the same question from different evidence, so a
-    difference in what they count would be drift rather than nuance.
+  * A DRAFT pull request that claims closure counts as coverage, and so does a
+    fork PR. Both are work in flight, and both are what ``claim_preflight.py``'s
+    check 1 counts: the two rules answer the same question from different
+    evidence, so a difference in what they count would be drift rather than
+    nuance. The closing-keyword condition is now part of that agreement -- that
+    script's rule 2 suppresses on a closing keyword and reports a bare reference,
+    and this one subtracts and reports on exactly the same line, so neither
+    admits an item the other refuses.
   * A CLOSED pull request is neither coverage nor a claim - merged work is
     ``claim_preflight.py``'s rule 1 (CLOSE, on ancestry), and closed-unmerged
     work is abandoned and frees the item. Only ``state=open`` is read.
@@ -231,23 +249,27 @@ def gh_json(args: list[str]) -> tuple[Any, str | None]:
         return None, "unparseable-json"
 
 
-def item_reference_re(repo: str, item: int) -> re.Pattern[str]:
-    """A pattern matching a reference to THIS item, keyword or not.
+#: GitHub's closing keywords, spelled exactly as ``claim_preflight.py``'s
+#: ``_CLOSING_WORDS``. The two scripts answer one question from different
+#: evidence, so what must never drift is the vocabulary: a keyword one of them
+#: honours and the other does not is a queue that admits items the preflight
+#: refuses, or subtracts items it would have dispatched.
+_CLOSING_WORDS = "close[sd]?|fix(?:e[sd])?|resolve[sd]?"
 
-    The three spellings GitHub itself links on: ``#N``, ``owner/repo#N``, and the
-    full issue URL. ``\\b`` after the number stops ``#12`` matching ``#123``.
 
-    Deliberately NOT keyed on a closing keyword, and that is the whole difference
-    from ``claim_preflight.py``'s :func:`closing_reference_re`. There, a closing
-    keyword is required because the verdict it feeds is CLOSE - the strongest
-    answer that script has - and a PR that merely mentions an item has not
-    claimed to finish it. Here the verdict is a queue subtraction, and check 2 of
-    that same script already SKIPs on any open PR the item's timeline references,
-    keyword or not. Requiring a keyword would make this filter admit an item that
-    the preflight then refuses, which is the rediscovery it exists to remove.
+def _item_target(repo: str, item: int) -> str:
+    """The three spellings GitHub links on, as one alternation.
 
-    The bare ``#N`` form additionally declines a number carrying a QUALIFIER -
-    ``otherowner/otherrepo#N``, ``v1.2#N`` - because the only way a subtractive
+    ``#N``, ``owner/repo#N``, and the full issue URL. ``\\b`` after the number
+    stops ``#12`` matching ``#123``.
+
+    Shared by :func:`item_reference_re` and :func:`closing_reference_re` rather
+    than written twice, because the difference between them is the KEYWORD and
+    nothing else. Two copies of the target would let the spellings drift while
+    both patterns still looked right.
+
+    The bare ``#N`` form declines a number carrying a QUALIFIER --
+    ``otherowner/otherrepo#N``, ``v1.2#N`` -- because the only way a subtractive
     filter can be wrong is a FALSE subtraction, and that is a silent denial of
     work on an item nobody is fixing. ``owner/repo#N`` for THIS repository is
     still matched, by its own alternative, and that alternative carries the SAME
@@ -257,10 +279,45 @@ def item_reference_re(repo: str, item: int) -> re.Pattern[str]:
     wide, which is what Python's ``re`` allows.
     """
     owner_repo = re.escape(repo)
-    return re.compile(
+    return (
         rf"(?:(?<![\w./-])#{item}\b"
         rf"|(?<![\w./-]){owner_repo}#{item}\b"
-        rf"|https?://github\.com/{owner_repo}/issues/{item}\b)",
+        rf"|https?://github\.com/{owner_repo}/issues/{item}\b)"
+    )
+
+
+def item_reference_re(repo: str, item: int) -> re.Pattern[str]:
+    """A pattern matching a reference to THIS item, keyword or not.
+
+    This is the WEAKER of the two readings and it decides no subtraction. What it
+    finds is that a pull request names the item at all, which is reported as
+    ``MENTIONED`` and leaves the item in the queue;
+    :func:`closing_reference_re` is what subtracts.
+
+    The split exists because a bare reference is not a claim to fix anything.
+    ``Refs #N`` is this repository's own idiom for
+    referenced-but-deliberately-not-closed and its PR template keeps
+    ``Related Issues`` apart from a closing trailer, so subtracting on a bare
+    reference removes items whose referencing PR says in plain words that it is
+    not fixing them -- and removes them silently, which is the worse half.
+    """
+    return re.compile(_item_target(repo, item), re.IGNORECASE)
+
+
+def closing_reference_re(repo: str, item: int) -> re.Pattern[str]:
+    """A pattern matching a closing keyword aimed at THIS item.
+
+    The subtracting reading, and the same one ``claim_preflight.py`` applies to
+    both its open and its merged PRs. A closing keyword is a pull request
+    claiming to finish the item, which is what makes it coverage; a mention is a
+    pointer and decides nothing.
+
+    Deliberately negation-blind, matching GitHub's own parser and the preflight's:
+    "does not close #N" links and closes #N on the forge too, so treating it as a
+    claim keeps all three readings identical.
+    """
+    return re.compile(
+        rf"\b(?:{_CLOSING_WORDS})\s*:?\s+{_item_target(repo, item)}",
         re.IGNORECASE,
     )
 
@@ -293,7 +350,7 @@ def open_pull_requests(repo: str) -> tuple[list[dict], str | None]:
 
     One paginated call. Each entry keeps only what the answer needs: the number,
     the author and their association, whether the head is cross-repository, and
-    the searchable text. The text is read here and never printed.
+    the title and body as SEPARATE fields. Both are read here and never printed.
     """
     data, error = gh_json(
         [
@@ -326,7 +383,15 @@ def open_pull_requests(repo: str) -> tuple[list[dict], str | None]:
                 # A deleted head repo reads as cross-repository, the safe side.
                 "is_cross_repository": head_repo != base_repo,
                 "author_association": entry.get("author_association"),
-                "text": f"{entry.get('title') or ''}\n{entry.get('body') or ''}",
+                # Kept SEPARATE and never joined. A closing reference is honoured
+                # by the forge only within one field, and the closing pattern's
+                # ``\s+`` matches a newline, so a joined field lets a title ending
+                # in a closing word glue to a body opening with a bare ``#N`` and
+                # match a reference neither field carries -- fabricated coverage,
+                # which subtracts an item nobody is fixing. Both are read here and
+                # neither is printed.
+                "title": str(entry.get("title") or ""),
+                "body": str(entry.get("body") or ""),
             }
         )
     return pulls, None
@@ -337,15 +402,29 @@ def coverage(repo: str, items: list[int], pulls: list[dict]) -> dict[int, list[d
 
     Every item gets a key, so a caller reading this mapping cannot mistake an
     absent key for an unscanned item.
+
+    Every hit carries ``closes``: whether the reference was introduced by a
+    closing keyword WITHIN one field. The title and the body are searched
+    separately and never joined, because the closing pattern's ``\\s+`` spans a
+    newline and a joined field would match a reference neither field carries.
+    This function reports the FACT and decides nothing -- which of the two classes
+    subtracts is :func:`split_hits` and the caller's business, the same separation
+    ``claim_preflight.py`` keeps between its detectors and its verdict.
     """
     found: dict[int, list[dict]] = {item: [] for item in items}
-    patterns = [(item, item_reference_re(repo, item)) for item in items]
+    patterns = [
+        (item, item_reference_re(repo, item), closing_reference_re(repo, item)) for item in items
+    ]
     for pull in pulls:
-        text = str(pull.get("text") or "")
-        if not text:
+        # Each field on its own, never concatenated. See open_pull_requests: a
+        # joined field lets a closing word at the end of the title glue to a bare
+        # ``#N`` at the start of the body and fabricate coverage that subtracts an
+        # item nobody is fixing.
+        fields = [str(pull.get("title") or ""), str(pull.get("body") or "")]
+        if not any(fields):
             continue
-        for item, pattern in patterns:
-            if not pattern.search(text):
+        for item, reference, closing in patterns:
+            if not any(reference.search(field) for field in fields):
                 continue
             association = str(pull.get("author_association") or "")
             found[item].append(
@@ -353,6 +432,8 @@ def coverage(repo: str, items: list[int], pulls: list[dict]) -> dict[int, list[d
                     "pr": pull.get("number"),
                     "fork": bool(pull.get("is_cross_repository")),
                     "author": pull.get("author"),
+                    # The subtraction turns on this and nothing else.
+                    "closes": any(closing.search(field) for field in fields),
                     # Annotation only: the subtraction happens either way, for
                     # the reason INSIDER_ASSOCIATIONS gives. What this buys is
                     # that the one suppression worth a look does not read
@@ -364,23 +445,49 @@ def coverage(repo: str, items: list[int], pulls: list[dict]) -> dict[int, list[d
     return found
 
 
+def split_hits(hits: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(claims closure, mentions only) out of one item's hits, in PR order.
+
+    The policy, in one place: only the first list subtracts. An item with a
+    closing hit is COVERED whatever else references it, because a pull request
+    has claimed to finish it; an item with references but no closing hit is
+    MENTIONED, which is reported and stays in the queue.
+    """
+    closing = [hit for hit in hits if hit.get("closes")]
+    return closing, [hit for hit in hits if not hit.get("closes")]
+
+
 def human_lines(items: list[int], found: dict[int, list[dict]], pulls_read: int) -> list[str]:
     """The human form: one line per item, then one summary line.
+
+    Three line kinds, because there are three answers. ``COVERED`` subtracts,
+    ``MENTIONED`` reports a reference that is not a claim to fix and leaves the
+    item in the queue, ``UNCOVERED`` saw no reference at all. ``MENTIONED`` and
+    ``UNCOVERED`` both mean "stays a candidate" and differ in what the conductor
+    is told, which is the whole point of separating them: a declined subtraction
+    that printed as ``UNCOVERED`` would be exactly as silent as the subtraction
+    it replaced.
 
     Field names are the contract's and values are metadata only - never
     user-authored text.
     """
     lines: list[str] = []
     covered = 0
+    mentioned = 0
     for item in items:
-        hits = found.get(item) or []
-        if not hits:
+        closing, mentions = split_hits(found.get(item) or [])
+        if closing:
+            covered += 1
+            hits, label = closing, "COVERED"
+        elif mentions:
+            mentioned += 1
+            hits, label = mentions, "MENTIONED"
+        else:
             lines.append(f"UNCOVERED {item}")
             continue
-        covered += 1
         hit = hits[0]
         line = (
-            f"COVERED {item} open-pr=#{hit.get('pr')} "
+            f"{label} {item} open-pr=#{hit.get('pr')} "
             f"fork={'true' if hit.get('fork') else 'false'} author={hit.get('author')}"
         )
         if hit.get("unvouched"):
@@ -389,8 +496,8 @@ def human_lines(items: list[int], found: dict[int, list[dict]], pulls_read: int)
             line += f" also={','.join('#%s' % other.get('pr') for other in hits[1:])}"
         lines.append(line)
     lines.append(
-        f"summary items={len(items)} covered={covered} "
-        f"uncovered={len(items) - covered} open-prs-read={pulls_read}"
+        f"summary items={len(items)} covered={covered} mentioned={mentioned} "
+        f"uncovered={len(items) - covered - mentioned} open-prs-read={pulls_read}"
     )
     return lines
 
@@ -437,6 +544,14 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     found = coverage(args.repo, items, pulls)
+    covered: dict[str, list[dict]] = {}
+    mentioned: dict[str, list[dict]] = {}
+    for item in items:
+        closing, mentions = split_hits(found.get(item) or [])
+        if closing:
+            covered[str(item)] = closing
+        elif mentions:
+            mentioned[str(item)] = mentions
     if args.as_json:
         print(
             json.dumps(
@@ -444,8 +559,17 @@ def main(argv: list[str] | None = None) -> int:
                     "repo": args.repo,
                     "items": items,
                     "verdict": "OK",
-                    "covered": {str(item): hits for item, hits in found.items() if hits},
-                    "uncovered": [item for item in items if not found.get(item)],
+                    "covered": covered,
+                    "mentioned": mentioned,
+                    # Every item that is not COVERED, so a mention-only item is
+                    # LISTED HERE as well as under `mentioned`. `uncovered` keeps
+                    # its contract meaning -- "no coverage was found, it stays a
+                    # candidate" -- which is what makes a consumer that subtracts
+                    # `covered` inherit this fix without knowing `mentioned`
+                    # exists. Redefining it as "no reference at all" would leave
+                    # mention-only items out of both lists and silently restore
+                    # the old suppression for every caller not updated in step.
+                    "uncovered": [item for item in items if str(item) not in covered],
                     "open_prs_read": len(pulls),
                 },
                 sort_keys=True,

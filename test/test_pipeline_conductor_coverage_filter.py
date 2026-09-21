@@ -11,12 +11,16 @@ a second answer to one question is DRIFT. Two things here are therefore about th
 relationship rather than about this script alone:
 
 * :class:`TestVocabularyAgreesWithClaimPreflight` pins the reference spellings
-  against the other script's, and pins the one difference that is deliberate -- a
-  bare mention is coverage here and is not closure there;
+  against the other script's, and pins the agreement that a bare mention
+  subtracts on neither side -- an asymmetry there, where one layer reads a bare
+  mention as coverage and the other does not, is a defect rather than a nuance;
 * every direction test asserts the filter can only SUBTRACT. ``UNCOVERED`` and
   ``UNKNOWN`` are the halves a careless edit would turn into permission, and an
   ``UNKNOWN`` that printed an ``uncovered`` list would read as a finding about
-  items nothing scanned.
+  items nothing scanned. ``MENTIONED`` is the third answer: a reference with no
+  closing keyword, reported without subtracting, because ``Refs #N`` is this
+  repository's idiom for referenced-but-deliberately-not-closed and subtracting
+  on it removes items nobody is fixing.
 """
 
 from __future__ import annotations
@@ -47,14 +51,21 @@ def mod():
     return load_skill_script("coverage_filter", SCRIPT)
 
 
-def pull(number: int, text: str, **overrides) -> dict:
-    """One entry in the shape :func:`open_pull_requests` produces."""
+def pull(number: int, text: str = "", **overrides) -> dict:
+    """One entry in the shape :func:`open_pull_requests` produces.
+
+    ``text`` is a convenience for the common case and lands in the BODY. The two
+    fields are searched separately, so a case that does not care which one carries
+    the reference must not silently exercise both; pass ``title`` explicitly to
+    put text there.
+    """
     entry = {
         "number": number,
         "author": "someone",
         "is_cross_repository": False,
         "author_association": "MEMBER",
-        "text": text,
+        "title": "",
+        "body": text,
     }
     entry.update(overrides)
     return entry
@@ -86,7 +97,7 @@ class TestItemReference:
         [
             "Fixes #11516",
             "closes #11516 and tidies up",
-            "see #11516 for the measurement",  # a bare mention IS coverage here
+            "see #11516 for the measurement",  # a reference, reported as MENTIONED
             "Resolves kirodotdev/KiroCrew#11516",
             "refs https://github.com/kirodotdev/KiroCrew/issues/11516",
             "http://github.com/kirodotdev/KiroCrew/issues/11516",
@@ -170,16 +181,42 @@ class TestVocabularyAgreesWithClaimPreflight:
         assert preflight.closing_reference_re(REPO, ITEM).search(text)
         assert mod.item_reference_re(REPO, ITEM).search(text)
 
-    def test_a_bare_mention_is_coverage_here_and_not_closure_there(self, mod, preflight):
-        """The deliberate difference, and the reason each side is right. CLOSE is
-        the strongest answer the preflight has, so it demands a closing keyword. A
-        queue subtraction is the weakest, and the preflight's own check 2 SKIPs on
-        any open PR the timeline references -- keyword or not -- so requiring one
-        here would admit items that the preflight then refuses, which is the
-        rediscovery this script removes."""
+    def test_a_bare_mention_subtracts_nowhere_and_is_reported_on_both_sides(self, mod, preflight):
+        """The keyword is required on BOTH sides, and that is what keeps the two
+        layers in agreement: neither admits an item the other refuses, and a bare
+        mention is reported rather than acted on in both.
+
+        A tempting asymmetry argues that a queue subtraction is the weakest
+        verdict, so this layer alone could subtract on a bare reference. It cannot.
+        ``Refs #N`` is this repository's own idiom for
+        referenced-but-deliberately-not-closed, so a layer that subtracts on it
+        removes items whose referencing PR says in plain words it is not fixing
+        them -- silently, since such an item prints as covered rather than as
+        refused-for-a-reason.
+        """
         mention = "related to #11516, different fix"
         assert preflight.closing_reference_re(REPO, ITEM).search(mention) is None
+        assert mod.closing_reference_re(REPO, ITEM).search(mention) is None
+        # Still DETECTED here -- that is what MENTIONED reports.
         assert mod.item_reference_re(REPO, ITEM).search(mention)
+
+    def test_the_two_closing_vocabularies_are_the_same_words(self, mod, preflight):
+        """Copied from the expression rather than recalled, because a keyword one
+        layer honours and the other does not is exactly the drift this class
+        exists to catch."""
+        assert mod._CLOSING_WORDS == preflight._CLOSING_WORDS
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Fixes #11516",
+            "closes kirodotdev/KiroCrew#11516",
+            "resolved https://github.com/kirodotdev/KiroCrew/issues/11516",
+        ],
+    )
+    def test_a_closing_reference_is_read_the_same_way_by_both(self, mod, preflight, text):
+        assert preflight.closing_reference_re(REPO, ITEM).search(text)
+        assert mod.closing_reference_re(REPO, ITEM).search(text)
 
     def test_both_scripts_reject_a_neighbouring_number(self, mod, preflight):
         assert preflight.closing_reference_re(REPO, ITEM).search("fixes #115160") is None
@@ -240,6 +277,76 @@ class TestCoverage:
         found = mod.coverage(REPO, [ITEM], [pull(1, "see #11516"), pull(2, "Fixes #11516")])
         assert [hit["pr"] for hit in found[ITEM]] == [1, 2]
 
+    def test_each_hit_says_whether_it_claims_closure(self, mod):
+        """``coverage`` reports the FACT and decides nothing. Both references are
+        found; what separates them is the keyword, which is what
+        :func:`split_hits` then reads."""
+        found = mod.coverage(REPO, [ITEM], [pull(1, "Refs #11516"), pull(2, "Fixes #11516")])
+        assert [(hit["pr"], hit["closes"]) for hit in found[ITEM]] == [(1, False), (2, True)]
+
+    @pytest.mark.parametrize(
+        "text,closes",
+        [
+            ("Fixes #11516", True),
+            ("closes: #11516", True),
+            ("Resolved kirodotdev/KiroCrew#11516", True),
+            ("fixed https://github.com/kirodotdev/KiroCrew/issues/11516", True),
+            ("Refs #11516", False),
+            ("Related (not fixed by this PR): #11516", False),
+            ("tracked in #11516", False),
+            ("see #11516 for the measurement", False),
+            ("no linked issue, but #11516 is nearby", False),
+        ],
+    )
+    def test_the_keyword_is_what_decides_coverage(self, mod, text, closes):
+        """The disclaiming spellings are the ones measured on real pull requests:
+        "Related (not fixed by this PR)", "tracked in", "no linked issue". A layer
+        that subtracts on any reference removes each of their items from the
+        queue."""
+        found = mod.coverage(REPO, [ITEM], [pull(1, text)])
+        assert found[ITEM][0]["closes"] is closes
+
+    def test_split_hits_separates_the_subtracting_class(self, mod):
+        found = mod.coverage(REPO, [ITEM], [pull(1, "Refs #11516"), pull(2, "Fixes #11516")])
+        closing, mentions = mod.split_hits(found[ITEM])
+        assert [hit["pr"] for hit in closing] == [2]
+        assert [hit["pr"] for hit in mentions] == [1]
+
+    def test_split_hits_of_nothing_is_two_empty_lists(self, mod):
+        assert mod.split_hits([]) == ([], [])
+
+    def test_a_closing_keyword_cannot_span_the_title_and_the_body(self, mod):
+        """The two fields are searched separately and never joined. The closing
+        pattern's ``\\s+`` matches a newline, so a joined field reads a title
+        ending ``fix`` glued to a body opening ``#N`` as ``fix\\n#N`` and matches a
+        reference NEITHER field carries -- fabricated coverage, which subtracts an
+        item nobody is fixing. The reference is still SEEN, so the item reports as
+        MENTIONED and stays in the queue."""
+        found = mod.coverage(REPO, [ITEM], [pull(1, title="fix", body=f"#{ITEM}")])
+        assert [hit["pr"] for hit in found[ITEM]] == [1]
+        assert found[ITEM][0]["closes"] is False
+
+    @pytest.mark.parametrize("word", ["fix", "fixes", "closes", "resolved"])
+    def test_no_closing_word_reaches_across_the_boundary(self, mod, word):
+        found = mod.coverage(REPO, [ITEM], [pull(1, title=word, body=f"#{ITEM}")])
+        assert found[ITEM][0]["closes"] is False
+
+    def test_a_closure_in_the_title_alone_still_covers(self, mod):
+        """Both fields are read, so the fix does not lose a real title closure."""
+        found = mod.coverage(REPO, [ITEM], [pull(1, title=f"Fixes #{ITEM}", body="no ref")])
+        assert found[ITEM][0]["closes"] is True
+
+    def test_a_reference_in_the_title_alone_is_still_seen(self, mod):
+        found = mod.coverage(REPO, [ITEM], [pull(1, title=f"Refs #{ITEM}", body="")])
+        assert [hit["pr"] for hit in found[ITEM]] == [1]
+        assert found[ITEM][0]["closes"] is False
+
+    def test_a_fabricated_pair_is_not_subtracted_end_to_end(self, mod, monkeypatch, capsys):
+        found = mod.coverage(REPO, [ITEM], [pull(1, title="fix", body=f"#{ITEM}")])
+        closing, mentions = mod.split_hits(found[ITEM])
+        assert closing == []
+        assert [hit["pr"] for hit in mentions] == [1]
+
     def test_an_empty_pr_text_is_skipped(self, mod):
         assert mod.coverage(REPO, [ITEM], [pull(1, "")])[ITEM] == []
 
@@ -280,7 +387,22 @@ class TestOpenPullRequests:
         assert pulls[0]["number"] == 42
         assert pulls[0]["author"] == "someone"
         assert pulls[0]["is_cross_repository"] is False
-        assert "#11516" in pulls[0]["text"]
+        assert "#11516" in pulls[0]["body"]
+        assert pulls[0]["title"] == "fix: something (42)"
+
+    def test_the_two_fields_are_kept_apart_rather_than_joined(self, mod, monkeypatch):
+        """No single field carries both, so a closing keyword at the end of the
+        title cannot glue to a bare reference at the start of the body. A joined
+        field is what let that pair match a reference neither one carries."""
+        monkeypatch.setattr(
+            mod,
+            "gh_json",
+            lambda args: ([api_pull(42, title="fix", body="#11516")], None),
+        )
+        entry = mod.open_pull_requests(REPO)[0][0]
+        assert entry["title"] == "fix"
+        assert entry["body"] == "#11516"
+        assert "text" not in entry
 
     def test_a_cross_repository_head_is_a_fork(self, mod, monkeypatch):
         monkeypatch.setattr(
@@ -502,7 +624,56 @@ class TestMain:
         out = capsys.readouterr().out
         assert "COVERED 11516 open-pr=#12127 fork=false author=someone" in out
         assert "UNCOVERED 999" in out
-        assert "summary items=2 covered=1 uncovered=1 open-prs-read=1" in out
+        assert "summary items=2 covered=1 mentioned=0 uncovered=1 open-prs-read=1" in out
+
+    def test_a_disclaiming_pr_is_mentioned_rather_than_covered(self, mod, monkeypatch, capsys):
+        """The defect this guards. ``Refs #N`` is this repository's idiom for
+        referenced-but-deliberately-not-closed, so a layer that subtracts on any
+        reference takes the item out of the queue silently. The item stays and the
+        reference is named instead."""
+        self._with_pulls(
+            mod, monkeypatch, [pull(11586, "Refs #11516 -- the real fix is tracked there")]
+        )
+        assert mod.main(["--repo", REPO, "--items", "11516"]) == 0
+        out = capsys.readouterr().out
+        assert "MENTIONED 11516 open-pr=#11586 fork=false author=someone" in out
+        assert "COVERED" not in out
+        assert "summary items=1 covered=0 mentioned=1 uncovered=0 open-prs-read=1" in out
+
+    def test_a_mentioned_item_stays_in_the_queue_in_the_json_form(self, mod, monkeypatch, capsys):
+        """``uncovered`` keeps its contract meaning of "stays a candidate", so a
+        consumer that subtracts ``covered`` inherits this fix without knowing
+        ``mentioned`` exists. Defining it as "no reference at all" would drop the
+        item from both lists and restore the old suppression."""
+        self._with_pulls(mod, monkeypatch, [pull(11586, "Refs #11516")])
+        assert mod.main(["--repo", REPO, "--items", "11516", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["covered"] == {}
+        assert data["mentioned"]["11516"][0]["pr"] == 11586
+        assert data["uncovered"] == [11516]
+
+    def test_a_mentioned_item_is_told_apart_from_an_unreferenced_one(
+        self, mod, monkeypatch, capsys
+    ):
+        """Both stay in the queue, and they are still separate lines: a declined
+        subtraction printed as ``UNCOVERED`` would be exactly as silent as the
+        subtraction it replaced."""
+        self._with_pulls(mod, monkeypatch, [pull(11586, "Refs #11516")])
+        assert mod.main(["--repo", REPO, "--items", "11516,999"]) == 0
+        out = capsys.readouterr().out
+        assert "MENTIONED 11516" in out
+        assert "UNCOVERED 999" in out
+        assert "summary items=2 covered=0 mentioned=1 uncovered=1 open-prs-read=1" in out
+
+    def test_a_closing_pr_wins_over_a_mentioning_one(self, mod, monkeypatch, capsys):
+        """A pull request has claimed to finish the item, so the item is COVERED
+        whatever else merely references it -- and the line names the closing PR,
+        not whichever reference came first."""
+        self._with_pulls(mod, monkeypatch, [pull(1, "Refs #11516"), pull(2, "Fixes #11516")])
+        assert mod.main(["--repo", REPO, "--items", "11516"]) == 0
+        out = capsys.readouterr().out
+        assert "COVERED 11516 open-pr=#2" in out
+        assert "MENTIONED" not in out
 
     def test_an_unvouched_fork_subtraction_is_loud(self, mod, monkeypatch, capsys):
         """The subtraction happens either way; what this buys is that the one
@@ -516,9 +687,22 @@ class TestMain:
         assert "unvouched=true" in capsys.readouterr().out
 
     def test_extra_referencing_prs_are_named(self, mod, monkeypatch, capsys):
-        self._with_pulls(mod, monkeypatch, [pull(1, "see #11516"), pull(2, "Fixes #11516")])
+        """Both PRs claim closure, so both are covering hits and the second is
+        named. A mention-only sibling belongs to the other class and would not
+        appear on a COVERED line, so using one here would make ``also=``
+        unreachable."""
+        self._with_pulls(mod, monkeypatch, [pull(1, "Fixes #11516"), pull(2, "Closes #11516")])
         assert mod.main(["--repo", REPO, "--items", "11516"]) == 0
         assert "also=#2" in capsys.readouterr().out
+
+    def test_extra_mentioning_prs_are_named_too(self, mod, monkeypatch, capsys):
+        """The MENTIONED line carries the same ``also=`` field, so a conductor
+        reviewing a declined subtraction sees every reference behind it."""
+        self._with_pulls(mod, monkeypatch, [pull(1, "Refs #11516"), pull(2, "see #11516")])
+        assert mod.main(["--repo", REPO, "--items", "11516"]) == 0
+        out = capsys.readouterr().out
+        assert "MENTIONED 11516 open-pr=#1" in out
+        assert "also=#2" in out
 
     def test_no_pull_request_prose_reaches_stdout(self, mod, monkeypatch, capsys):
         """A PR's title and body are read and never printed: this output lands in
