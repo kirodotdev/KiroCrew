@@ -1815,6 +1815,7 @@ class TestLinkedSlotSessionKey:
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom)
         slot = _ChatSlot("test")
         slot.agent = "old-agent"
+        slot.agent_kind = "member"
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
         log = MagicMock()
@@ -1831,9 +1832,67 @@ class TestLinkedSlotSessionKey:
             assert resp.status == 409
             assert data["code"] == "session_rebound"
             assert slot.agent == "old-agent"
+            assert slot.agent_kind == "member"
             # The restore wrote the rolled-back agent back into the
             # transcript metadata (last call).
-            assert log.update_metadata.call_args.args[1] == {"agent": "old-agent"}
+            assert log.update_metadata.call_args.args[1] == {
+                "agent": "old-agent",
+                "agent_kind": "member",
+            }
+
+    @pytest.mark.asyncio
+    async def test_agent_and_kind_are_not_published_separately(self, monkeypatch):
+        """A sender crossing resolution observes one complete selection."""
+        entered_resolution = asyncio.Event()
+        release_resolution = asyncio.Event()
+
+        async def _blocked_warm(*_args, **_kwargs):
+            entered_resolution.set()
+            await release_resolution.wait()
+
+        cfg = MagicMock()
+        cfg.agents = {}
+        cfg.memory_stores = {}
+        cfg.default_workspace = "default"
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", _blocked_warm
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda *_args, **_kwargs: MagicMock(
+                workspace_dir="",
+                memory_store_name="",
+                selection_kind="template",
+                requested_resolved=True,
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._record_explicit_agent_selection",
+            AsyncMock(return_value=None),
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.agent_kind = "member"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = None
+
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
+            request = asyncio.create_task(
+                client.post(
+                    "/api/chat/slots/test/agent",
+                    json={"agent": "new-agent", "agent_kind": "template"},
+                )
+            )
+            await asyncio.wait_for(entered_resolution.wait(), timeout=1)
+            observed = (slot.agent, slot.agent_kind)
+            release_resolution.set()
+            response = await asyncio.wait_for(request, timeout=1)
+
+        assert response.status == 200, await response.text()
+        assert observed == ("old-agent", "member")
+        assert (slot.agent, slot.agent_kind) == ("new-agent", "template")
 
     @pytest.mark.asyncio
     async def test_concurrent_same_agent_write_survives_the_rollback(self, monkeypatch):
@@ -1867,6 +1926,7 @@ class TestLinkedSlotSessionKey:
             assert data["code"] == "session_rebound"
             # The concurrent writer's value survives; only OUR commit unwinds.
             assert slot.agent == "new-agent"
+            assert slot.agent_kind == ""
 
     @pytest.mark.asyncio
     async def test_concurrent_same_project_write_survives_the_rollback(self, monkeypatch):
