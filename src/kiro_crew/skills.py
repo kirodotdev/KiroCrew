@@ -22,7 +22,7 @@ from contextlib import suppress
 from contextvars import copy_context
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from itertools import batched, zip_longest
+from itertools import batched, islice, zip_longest
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterable, Iterator, NamedTuple
 
@@ -64,7 +64,7 @@ from kiro_crew.skill_search_index import (
     body_fingerprint,
 )
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
-from kiro_crew.skills_script_validator import validate_scripts
+from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,12 @@ SKILLS_DIR_NAME = "skills"
 # submitted work so a large catalog cannot create one thread/future per skill.
 _CATALOG_READ_WORKERS = 8
 _CATALOG_READ_BATCH = 64
+# One script-entry population budget for the pending verdict and API reports.
+# Reports may additionally retain ONE fixed truncation-summary entry.
+_PENDING_SCRIPT_MAX_ENTRIES = 64
+_VALIDATION_REPORT_MAX_FINDINGS = 16
+_VALIDATION_REPORT_MAX_STRING_CHARS = 1024
+_VALIDATION_REPORT_TRUNCATION_KEY = "<truncated>"
 #: Re-exported from ``trigger_match``, which owns the value and the grammar
 #: it belongs to. Kept as a module name because tests and call sites here
 #: reference it.
@@ -2097,6 +2103,30 @@ def _fingerprint_mtime_and_size(fingerprint: str) -> tuple[float | None, int]:
         return int(parts[3]) / 1_000_000_000, int(parts[4])
     except ValueError:
         return None, 0
+
+
+class PendingApprovalRefused(Exception):
+    """A pending-candidate approval was refused, with a machine-readable reason.
+
+    ``reason`` is one of: ``not_found`` (no such candidate), ``live_exists``
+    (a live skill already holds the name), ``kind_mismatch`` (an update
+    candidate reached the new-skill approve variant, which would promote it
+    fresh while its live target stays unchanged), ``script_validation_failed``
+    (``report`` carries the redacted ``{filename: [findings]}`` map from
+    ``validate_scripts``), ``target_missing`` (an update candidate whose live
+    target is gone), ``stale_base`` (an update merged against an older live
+    version), ``invalid_layout`` (symlink / unexpected candidate entry),
+    ``redaction_failed``, or ``promotion_failed`` (an OS-level I/O failure —
+    a read or write — after all checks passed). Raised by the ``*_checked`` approve variants so
+    the dashboard can tell the user WHY the click did nothing; the legacy
+    ``approve_pending_skill`` / ``approve_pending_update`` wrappers keep the
+    ``None``-on-failure contract for existing callers.
+    """
+
+    def __init__(self, reason: str, report: dict | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.report = report
 
 
 class SkillsLoader:
@@ -4918,23 +4948,38 @@ class SkillsLoader:
             if not _AUTO_NAME_PATTERN.match(child.name):
                 continue
             meta = self._read_pending_meta(child.name)
-            out.append(
-                {
-                    "slug": child.name,
-                    "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
-                    "description": meta.get("description", ""),
-                    "triggers": meta.get("triggers", ""),
-                    "has_scripts": bool(meta.get("has_scripts")),
-                    "created_at": meta.get("created_at", ""),
-                    "source": meta.get("source", ""),
-                    "kind": meta.get("kind", "new"),
-                    "target": meta.get("target"),
-                    "base_version": meta.get("base_version"),
-                    # NB: no on-disk ``path`` — this dict is API-facing (feeds
-                    # /api/skills/-/pending) and must not leak the server's home
-                    # / directory layout to dashboard clients.
+            # Same verdict the approve path will reach, so the card can carry a
+            # warning badge WITHOUT the user expanding the row first. The
+            # verdict walk is self-defending — descriptor-pinned, budgeted,
+            # fail-closed (see _pending_scripts_verdict) — so no candidate-wide
+            # pre-walk runs here: an unbudgeted os.walk before the budgeted one
+            # would itself be the unbounded per-poll traversal the budgets
+            # exist to prevent. ``None`` means the platform cannot compute a
+            # trustworthy verdict; the field is omitted rather than serving a
+            # false all-clear.
+            verdict = self._pending_scripts_verdict(child)
+            entry = {
+                "slug": child.name,
+                "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
+                "description": meta.get("description", ""),
+                "triggers": meta.get("triggers", ""),
+                "has_scripts": bool(meta.get("has_scripts")),
+                "created_at": meta.get("created_at", ""),
+                "source": meta.get("source", ""),
+                "kind": meta.get("kind", "new"),
+                "target": meta.get("target"),
+                "base_version": meta.get("base_version"),
+                # NB: no on-disk ``path`` — this dict is API-facing (feeds
+                # /api/skills/-/pending) and must not leak the server's home
+                # / directory layout to dashboard clients.
+            }
+            if verdict is not None:
+                v_ok, v_report = verdict
+                entry["script_validation"] = {
+                    "ok": v_ok,
+                    "report": self._redact_validation_report(v_report),
                 }
-            )
+            out.append(entry)
         return out
 
     @staticmethod
@@ -5023,6 +5068,312 @@ class SkillsLoader:
                         continue
         return out
 
+    _ALLOWED_CANDIDATE_TOP = frozenset({"SKILL.md", ".meta.json", "scripts"})
+
+    def _candidate_layout_findings_at(self, root_fd: int) -> list[str]:
+        """Top-level layout check mirroring ``_candidate_layout_ok``.
+
+        The approve path refuses a candidate whose ROOT layout is wrong — a
+        symlinked ``SKILL.md``/``.meta.json``, a non-regular one (promotion
+        reads their bytes, so a directory there is refused too), or any
+        unexpected top-level entry — so a verdict that only inspects
+        ``scripts/`` would read ``ok: true`` for a candidate approve is
+        guaranteed to refuse, which is the predict-the-refusal contract this
+        verdict exists to keep.
+
+        Operates on the ALREADY-OPEN candidate-root descriptor the caller
+        retains for the whole verdict — this function resolves no path at
+        all. Every entry is stat-ed RELATIVE to that descriptor, so nothing
+        a candidate does to the tree's names after the root was pinned can
+        redirect the scan: the descriptor IS the directory, whatever any
+        path now resolves to.
+
+        This is deliberately NOT the recursive candidate-wide pre-walk the
+        budgets removed: one capped scan of the top level plus a stat per
+        allowed name — no byte is read, nothing recurses (``scripts/``
+        internals stay the pinned walk's job). Findings use the same
+        ``invalid layout:`` vocabulary as the walk so the frontend renders
+        them identically.
+        """
+        names: list[str] = []
+        try:
+            with os.scandir(root_fd) as scanner:
+                for entry in scanner:
+                    names.append(entry.name)
+                    if len(names) > 16:
+                        # The valid top level has at most 3 entries; a
+                        # planted crowd must not grow this per-poll
+                        # scan without limit.
+                        return ["invalid layout: too many top-level entries"]
+        except OSError:
+            return ["verdict unavailable: candidate unreadable"]
+        findings: list[str] = []
+        for nm in sorted(names):
+            if nm not in self._ALLOWED_CANDIDATE_TOP:
+                findings.append(f"invalid layout: unexpected candidate entry {nm!r}")
+                continue
+            est = pinned_fs.stat_at(root_fd, nm)
+            if est is None:
+                findings.append(f"invalid layout: {nm!r} unreadable")
+            elif stat.S_ISLNK(est.st_mode):
+                findings.append(f"invalid layout: {nm!r} is a symlink")
+            elif nm != "scripts" and not stat.S_ISREG(est.st_mode):
+                # Promotion reads these files' bytes; a directory (or
+                # FIFO) named SKILL.md/.meta.json is refused at
+                # approve time, so the verdict must not read clean.
+                findings.append(f"invalid layout: {nm!r} is not a regular file")
+        return findings
+
+    def _pending_scripts_verdict(self, pdir: Path) -> tuple[bool, dict] | None:
+        """Cheap pre-approval validation verdict for the pending LIST path.
+
+        Takes the CANDIDATE ROOT: the top-level layout is prechecked against
+        the same rules the approve path enforces (see
+        :meth:`_candidate_layout_findings_at`) before the ``scripts`` walk, so a
+        symlinked ``SKILL.md`` or a stray top-level file fails the verdict
+        here exactly as approve would refuse it.
+
+        The candidate root is resolved EXACTLY ONCE: one
+        :func:`pinned_fs.open_dir_pinned` call pins it (``O_NOFOLLOW`` on the
+        root and every ancestor), and that descriptor is retained for the
+        whole verdict — the top-level layout scan reads through it, and the
+        ``scripts`` directory is opened RELATIVE to it (``dir_fd``), with an
+        identity check that the opened directory is the same inode the
+        layout scan stat-ed. No name under the candidate is ever re-resolved
+        from a path, so a candidate root swapped between any two steps —
+        whether for a symlink (refused at the pinned open) or for a
+        different REAL directory renamed over it (unreachable, because no
+        second resolution exists to land on it) — cannot redirect any part
+        of the verdict into another tree. Every entry below ``scripts`` is
+        likewise stat-ed, opened and read relative to the walk's own
+        descriptors.
+
+        The verdict fails CLOSED on everything the approve path would refuse:
+        a symlink entry is an invalid layout, an oversized script is flagged
+        from its size alone (its bytes are never loaded — this runs on every
+        dashboard poll, and a crystallize direct-write can plant files the
+        staging cap never saw), an unreadable or undecodable script is a
+        finding rather than a silent omission (approve refuses such a
+        candidate at redaction, so ``ok: true`` would be a false all-clear),
+        and an unexpected walk error degrades to a failing
+        verdict-unavailable finding rather than blanking the caller's whole
+        list. Small, decodable scripts get the real ``validate_scripts`` run,
+        matching the approve path's verdict.
+
+        Returns ``None`` on a platform without descriptor-relative opens,
+        BEFORE the candidate is touched at all. A link/junction check
+        followed by a by-name scan races with replacement of the candidate
+        root: even a refusal can expose the target's filenames. On Windows
+        the pre-click "fails validation" badge disappears entirely, because
+        no trustworthy verdict can be computed without descriptor-relative
+        opens. The caller omits the field; approve remains the authority at
+        click time.
+        """
+        if not pinned_fs.supports_pinned_walk():
+            return None
+        try:
+            root_fd = pinned_fs.open_dir_pinned(pdir, what="pending candidate root")
+        except pinned_fs.PinnedPathRefusal:
+            return False, {
+                "<candidate>": ["invalid layout: candidate root is not a real directory"]
+            }
+        except OSError:
+            return False, {"<candidate>": ["verdict unavailable: candidate unreadable"]}
+        try:
+            return self._pending_scripts_verdict_at(root_fd)
+        finally:
+            os.close(root_fd)
+
+    def _pending_scripts_verdict_at(self, root_fd: int) -> tuple[bool, dict] | None:
+        """The verdict body, entirely relative to the retained root descriptor."""
+        layout = self._candidate_layout_findings_at(root_fd)
+        if layout:
+            return False, {"<candidate>": layout}
+        sst = pinned_fs.stat_at(root_fd, "scripts")
+        if sst is None:
+            # No scripts directory at all — nothing to validate.
+            return True, {}
+        if stat.S_ISLNK(sst.st_mode) or not stat.S_ISDIR(sst.st_mode):
+            return False, {"<candidate>": ["invalid layout: 'scripts' is not a real directory"]}
+        if not pinned_fs.supports_pinned_tree_walk():
+            return None
+        try:
+            scripts_fd = os.open("scripts", pinned_fs.dir_flags(), dir_fd=root_fd)
+        except OSError:
+            return False, {"<candidate>": ["invalid layout: contains a symlink"]}
+        try:
+            # The OPENED directory must be the same inode the stat above
+            # described — a 'scripts' swapped between the stat and the open
+            # (even for another real directory; both live under the pinned
+            # root) fails the verdict closed instead of being walked as if
+            # it were the audited one.
+            ost = os.fstat(scripts_fd)
+            if (ost.st_ino, ost.st_dev) != (sst.st_ino, sst.st_dev):
+                os.close(scripts_fd)
+                return False, {"<candidate>": ["invalid layout: entry changed during scan"]}
+        except OSError:
+            os.close(scripts_fd)
+            return False, {"<candidate>": ["verdict unavailable: candidate unreadable"]}
+        scripts: list[dict] = []
+        extra: dict[str, list[str]] = {}
+        # Hard budgets for the whole walk: this runs on every dashboard poll,
+        # and a crystallize direct-write can plant MANY small files — or many
+        # nested directories — that the per-file size cap never bounds.
+        # Directories count against the same entry budget and recursion is
+        # depth-capped, so a planted tree can neither grow the traversal
+        # without limit nor raise RecursionError into the caller's degraded
+        # ok-true fallback. Exceeding any budget stops the walk immediately
+        # and OMITS the verdict (see the breach return below) — never a false
+        # refusal claim; the approve path remains the authority on the full
+        # set.
+        max_files = _PENDING_SCRIPT_MAX_ENTRIES
+        max_depth = 8
+        budget = {"files": 0, "bytes": 0, "breached": False}
+        max_total_bytes = max_files * MAX_SCRIPT_BYTES
+
+        def _breach(reason: str) -> None:
+            budget["breached"] = True
+            extra.setdefault("<candidate>", []).append(reason)
+
+        def _walk(fd: int, prefix: str, depth: int) -> None:
+            # Collect names LAZILY with a cap before sorting: an eager
+            # sorted(os.listdir(fd)) materializes an attacker-sized directory
+            # in one allocation before any budget applies, which is the exact
+            # per-poll exhaustion the budgets exist to prevent. Scanning stops
+            # at the entry budget, so at most max_files+1 names are ever held.
+            names: list[str] = []
+            with os.scandir(fd) as scanner:
+                for entry in scanner:
+                    names.append(entry.name)
+                    if len(names) > max_files:
+                        _breach(f"too many scripts: over {max_files} entries")
+                        return
+            for nm in sorted(names):
+                if budget["breached"]:
+                    return
+                rel = f"{prefix}{nm}"
+                try:
+                    est = os.stat(nm, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    extra.setdefault(rel, []).append("unreadable script: stat failed")
+                    continue
+                if stat.S_ISLNK(est.st_mode):
+                    extra.setdefault(rel, []).append("invalid layout: entry is a symlink")
+                elif stat.S_ISDIR(est.st_mode):
+                    # Directories spend the same entry budget as files, and
+                    # recursion is depth-capped — a planted tree of many or
+                    # deeply nested dirs must not reintroduce the unbounded
+                    # per-poll traversal (or a RecursionError that the
+                    # caller's fallback would degrade to a false all-clear).
+                    budget["files"] += 1
+                    if budget["files"] > max_files:
+                        _breach(f"too many scripts: over {max_files} entries")
+                        return
+                    if depth >= max_depth:
+                        _breach(f"scripts tree too deep: over {max_depth} levels")
+                        return
+                    try:
+                        sub = os.open(nm, pinned_fs.dir_flags(), dir_fd=fd)
+                    except OSError:
+                        extra.setdefault(rel, []).append("invalid layout: entry is a symlink")
+                        continue
+                    try:
+                        _walk(sub, f"{rel}/", depth + 1)
+                    finally:
+                        os.close(sub)
+                elif stat.S_ISREG(est.st_mode):
+                    if est.st_size > MAX_SCRIPT_BYTES:
+                        extra.setdefault(rel, []).append(
+                            f"too large: {est.st_size} bytes > {MAX_SCRIPT_BYTES} cap"
+                        )
+                        continue
+                    budget["files"] += 1
+                    budget["bytes"] += est.st_size
+                    if budget["files"] > max_files or budget["bytes"] > max_total_bytes:
+                        _breach(
+                            f"too many scripts: over {max_files} entries or "
+                            f"{max_total_bytes} aggregate bytes"
+                        )
+                        return
+                    try:
+                        # O_NONBLOCK: O_NOFOLLOW rejects a swapped symlink but
+                        # NOT a swapped FIFO, and a blocking O_RDONLY open of a
+                        # writerless FIFO wedges this poll thread forever. For
+                        # a regular file O_NONBLOCK is a no-op on open and
+                        # read, so the flag costs nothing on the honest path.
+                        rfd = os.open(
+                            nm,
+                            os.O_RDONLY
+                            | getattr(os, "O_NOFOLLOW", 0)
+                            | getattr(os, "O_NONBLOCK", 0),
+                            dir_fd=fd,
+                        )
+                    except OSError:
+                        extra.setdefault(rel, []).append("unreadable script: open failed")
+                        continue
+                    try:
+                        # The OPENED descriptor must be the same regular inode
+                        # the stat above described: a name swapped between the
+                        # stat and the open (FIFO, device, replaced file) fails
+                        # the verdict closed instead of being read as if it
+                        # were the audited entry.
+                        ost = os.fstat(rfd)
+                        if not stat.S_ISREG(ost.st_mode) or (ost.st_ino, ost.st_dev) != (
+                            est.st_ino,
+                            est.st_dev,
+                        ):
+                            extra.setdefault(rel, []).append(
+                                "invalid layout: entry changed during scan"
+                            )
+                            continue
+                        raw = os.read(rfd, MAX_SCRIPT_BYTES + 1)
+                    except OSError:
+                        extra.setdefault(rel, []).append("unreadable script: read failed")
+                        continue
+                    finally:
+                        os.close(rfd)
+                    try:
+                        scripts.append({"filename": rel, "content": raw.decode("utf-8")})
+                    except UnicodeDecodeError:
+                        extra.setdefault(rel, []).append("unreadable script: not valid UTF-8")
+
+        try:
+            try:
+                _walk(scripts_fd, "", 0)
+            finally:
+                os.close(scripts_fd)
+            if budget["breached"]:
+                # A breached budget means the LIST path declined to do the
+                # work, not that approve will refuse: approve's collector is
+                # unbudgeted, so a candidate with 65 small clean scripts
+                # approves fine. Claiming `ok: false` here makes the badge and
+                # hint over-promise a refusal that never comes — the honest
+                # verdict is NO verdict (the caller omits the field, exactly
+                # like a platform that cannot pin the walk). The exhaustion
+                # defense is unchanged: the walk already STOPPED at its budget.
+                return None
+            v_ok, v_report = validate_scripts(scripts)
+            if v_ok:
+                # Approve validates TWICE: raw, then again after redacting in
+                # place (a credential-shaped token redacts into broken
+                # syntax and is refused). Mirror the second stage on in-memory
+                # copies so a script that is clean raw but breaks under
+                # redaction does not read `ok: true` for a click approve
+                # refuses. Verdict-side only — nothing on disk is touched.
+                redacted = [
+                    {"filename": s["filename"], "content": self._redact_text(s["content"])}
+                    for s in scripts
+                ]
+                v_ok, v_report = validate_scripts(redacted)
+        except Exception:
+            # One broken candidate must not blank the caller's whole pending
+            # list, and an unvalidated candidate must not read clean: degrade
+            # to a failing verdict-unavailable finding.
+            return False, {"<candidate>": ["verdict unavailable: unexpected walk error"]}
+        for fn, findings in extra.items():
+            v_report.setdefault(fn, []).extend(findings)
+        return (v_ok and not extra), v_report
+
     def get_pending_skill(self, slug: str) -> dict | None:
         """Return full pending-candidate detail incl. SKILL.md body + script bodies."""
         if not self._is_pending_slug_safe(slug):
@@ -5039,10 +5390,18 @@ class SkillsLoader:
             return None
         meta = self._read_pending_meta(slug)
         scripts = self._collect_scripts(pdir / "scripts")
+        # Same hardened verdict as the pending LIST (descriptor-pinned walk,
+        # fail-closed on unreadable/oversized entries) — deriving it from the
+        # display collection instead would let a silently omitted unreadable
+        # script present a clean detail verdict while approve refuses. The
+        # display ``scripts`` list below is unchanged. ``None`` (platform
+        # cannot compute a trustworthy verdict) omits the field rather than
+        # serving a false all-clear.
+        verdict = self._pending_scripts_verdict(pdir)
         for s in scripts:
             s["filename"] = self._redact_text(s.get("filename", ""))
             s["content"] = self._redact_text(s.get("content", ""))
-        return {
+        detail = {
             "slug": slug,
             "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
             "meta": meta,
@@ -5052,6 +5411,13 @@ class SkillsLoader:
             "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
             "scripts": scripts,
         }
+        if verdict is not None:
+            v_ok, v_report = verdict
+            detail["script_validation"] = {
+                "ok": v_ok,
+                "report": self._redact_validation_report(v_report),
+            }
+        return detail
 
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
         """Shared candidate-layout guard for BOTH approve paths.
@@ -5068,7 +5434,9 @@ class SkillsLoader:
         if self._candidate_has_symlink(src):
             logger.warning("Refusing to approve %s: candidate contains a symlink", name)
             return False
-        _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
+        # One copy of the rule: the verdict's precheck reads this same set, so
+        # an entry added here is automatically predicted by the badge.
+        _allowed_top = self._ALLOWED_CANDIDATE_TOP
         for entry in src.iterdir():
             if entry.name not in _allowed_top:
                 logger.warning(
@@ -5082,17 +5450,20 @@ class SkillsLoader:
                 return False
         return True
 
-    def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes] | None:
+    def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes]:
         """Re-validate + redact a candidate's SKILL.md and scripts IN PLACE.
 
         Shared by ``approve_pending_skill`` and ``approve_pending_update`` so
         both enforce the identical discipline: validate every script (covers
         crystallize direct-writes), snapshot each target's ORIGINAL bytes, redact
         in place, then re-validate scripts (redacting a credential-shaped token
-        can break syntax). On ANY failure the originals are restored and ``None``
-        is returned so a rejected candidate is never left corrupted. On success
-        returns the ``{path: original_bytes}`` snapshot so the caller can restore
-        on a LATER failure (e.g. a failed move / snapshot).
+        can break syntax). On ANY failure the originals are restored and a
+        ``PendingApprovalRefused`` is raised naming the reason — a validation
+        failure carries the redacted ``{filename: [findings]}`` report so the
+        refusal can tell the reviewer WHAT was flagged — and a rejected
+        candidate is never left corrupted. On success returns the
+        ``{path: original_bytes}`` snapshot so the caller can restore on a
+        LATER failure (e.g. a failed move / snapshot).
         """
         sdir_src = src / "scripts"
         # Pre-redaction script validation.
@@ -5100,7 +5471,9 @@ class SkillsLoader:
             ok, report = validate_scripts(self._collect_scripts(sdir_src))
             if not ok:
                 logger.warning("Refusing to approve %s: script validation failed: %s", name, report)
-                return None
+                raise PendingApprovalRefused(
+                    "script_validation_failed", report=self._redact_validation_report(report)
+                )
         # Snapshot each target FIRST so an abort after partial in-place redaction
         # restores the candidate's ORIGINAL bytes.
         redact_targets = [src / "SKILL.md"]
@@ -5130,7 +5503,7 @@ class SkillsLoader:
                 logger.warning(
                     "Refusing to approve %s: could not redact %s before promotion", name, fp.name
                 )
-                return None
+                raise PendingApprovalRefused("redaction_failed")
         # Re-validate scripts AFTER redaction so a broken/altered helper never
         # goes live and the pending draft is not corrupted.
         if sdir_src.is_dir():
@@ -5140,8 +5513,51 @@ class SkillsLoader:
                 logger.warning(
                     "Refusing to approve %s: scripts invalid after redaction: %s", name, report
                 )
-                return None
+                raise PendingApprovalRefused(
+                    "script_validation_failed", report=self._redact_validation_report(report)
+                )
         return redact_backup
+
+    def _redact_validation_report(self, report: dict) -> dict:
+        """Bound and redact reports at retention for every pending HTTP surface.
+
+        Keep at most the verdict's script-entry budget, with independently
+        bounded finding lists and strings. Redact BEFORE shortening strings:
+        cutting first could turn a credential into an unrecognised fragment.
+        One fixed summary reports omitted entries (including redacted-key
+        collisions), findings within retained entries, and characters within
+        retained strings. Entries beyond the population cap are never redacted
+        or copied.
+        """
+        safe: dict[str, list[str]] = {}
+        omitted_entries = max(0, len(report) - _PENDING_SCRIPT_MAX_ENTRIES)
+        omitted_findings = 0
+        omitted_chars = 0
+        for fn, findings in islice(report.items(), _PENDING_SCRIPT_MAX_ENTRIES):
+            redacted_key = self._redact_text(str(fn))
+            key = redacted_key[:_VALIDATION_REPORT_MAX_STRING_CHARS]
+            # Redaction and shortening can collapse distinct filenames. Never
+            # overwrite a prior entry or let a filename steal the summary slot.
+            if key in safe or key == _VALIDATION_REPORT_TRUNCATION_KEY:
+                omitted_entries += 1
+                continue
+            omitted_chars += len(redacted_key) - len(key)
+            values: list[str] = []
+            omitted_findings += max(0, len(findings) - _VALIDATION_REPORT_MAX_FINDINGS)
+            for finding in islice(findings, _VALIDATION_REPORT_MAX_FINDINGS):
+                redacted = self._redact_text(str(finding))
+                value = redacted[:_VALIDATION_REPORT_MAX_STRING_CHARS]
+                omitted_chars += len(redacted) - len(value)
+                values.append(value)
+            safe[key] = values
+        if omitted_entries or omitted_findings or omitted_chars:
+            safe[_VALIDATION_REPORT_TRUNCATION_KEY] = [
+                "too large: validation report truncated; "
+                f"omitted {omitted_entries} script entries, "
+                f"{omitted_findings} findings from retained entries, "
+                f"{omitted_chars} characters from retained strings"
+            ]
+        return safe
 
     @staticmethod
     def _auto_slug_from_name(name: str) -> str:
@@ -5394,12 +5810,25 @@ class SkillsLoader:
         return highest + 1
 
     def approve_pending_update(self, slug: str) -> str | None:
+        """``approve_pending_update_checked`` with the legacy ``None`` contract.
+
+        Existing callers branch on ``None`` for "refused for any reason"; the
+        checked variant raises ``PendingApprovalRefused`` so the dashboard can
+        report WHY. This wrapper keeps their behaviour unchanged.
+        """
+        try:
+            return self.approve_pending_update_checked(slug)
+        except PendingApprovalRefused:
+            return None
+
+    def approve_pending_update_checked(self, slug: str) -> str:
         """Promote a pending UPDATE candidate over its live target auto-skill.
 
         Preconditions (all checked BEFORE any live mutation; a failure here
-        leaves BOTH the live skill and the candidate untouched, returns None):
-        the slug is safe, the candidate has a ``SKILL.md``, its ``.meta.json``
-        has ``kind == "update"``, and ``target`` names an EXISTING live auto
+        leaves BOTH the live skill and the candidate untouched and raises
+        ``PendingApprovalRefused`` with the reason): the slug is safe, the
+        candidate has a ``SKILL.md``, its ``.meta.json`` has
+        ``kind == "update"``, and ``target`` names an EXISTING live auto
         skill. Then: the shared symlink/unexpected-entry guard runs, scripts are
         re-validated, and SKILL.md + scripts are redacted in place (originals
         restored on failure).
@@ -5413,26 +5842,26 @@ class SkillsLoader:
         pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
         """
         if not self._is_pending_slug_safe(slug):
-            return None
+            raise PendingApprovalRefused("not_found")
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
-            return None
+            raise PendingApprovalRefused("not_found")
         meta = self._read_pending_meta(slug)
         if meta.get("kind") != "update":
-            return None
+            raise PendingApprovalRefused("not_found")
         target = meta.get("target")
         if not isinstance(target, str) or not target:
-            return None
+            raise PendingApprovalRefused("target_missing")
         target_slug = self._auto_slug_from_name(target)
         if not self._is_pending_slug_safe(target_slug):
-            return None
+            raise PendingApprovalRefused("target_missing")
         live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
         live_skill = live_dir / "SKILL.md"
         if not live_skill.exists():
             logger.warning(
                 "Refusing to approve update %s: target %r is not a live auto skill", slug, target
             )
-            return None
+            raise PendingApprovalRefused("target_missing")
         target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
         # The LIVE side is a write target here (unlike approve_pending_skill, which
         # moves into a fresh dest), so it needs its own symlink guard: a symlinked
@@ -5443,14 +5872,30 @@ class SkillsLoader:
                 "Refusing to approve update %s: live skill directory contains a symlink",
                 target_name,
             )
-            return None
+            raise PendingApprovalRefused("invalid_layout")
         # Shared symlink + unexpected-entry rejection.
         if not self._candidate_layout_ok(src, target_name):
-            return None
-        # Re-validate + redact the candidate in place (restores originals on fail).
+            raise PendingApprovalRefused("invalid_layout")
+        # One verdict, two surfaces: same consult as
+        # ``approve_pending_skill_checked`` — a computable failing verdict
+        # refuses with the badge's own report, so the update click can never
+        # disagree with the badge it stood behind.
+        _fold = self._pending_scripts_verdict(src)
+        if _fold is not None:
+            _fold_ok, _fold_report = _fold
+            if not _fold_ok:
+                logger.warning(
+                    "Refusing to approve update %s: the pending verdict this candidate's "
+                    "badge serves reports failing findings",
+                    target_name,
+                )
+                raise PendingApprovalRefused(
+                    "script_validation_failed",
+                    report=self._redact_validation_report(_fold_report),
+                )
+        # Re-validate + redact the candidate in place (restores originals on
+        # fail, raising PendingApprovalRefused with the reason).
         redact_backup = self._validate_and_redact_candidate(src, target_name)
-        if redact_backup is None:
-            return None
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -5465,7 +5910,7 @@ class SkillsLoader:
             candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
         except OSError:
             _restore_redacted()
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         current_version = self.get_auto_skill_version(target_name)
         # Snapshot under a number that is guaranteed free, so an earlier snapshot
         # can never be destroyed by drifted numbering.
@@ -5510,7 +5955,7 @@ class SkillsLoader:
                     "reason": "stale_base",
                 },
             )
-            return None
+            raise PendingApprovalRefused("stale_base")
         live_created_at = self._cached_frontmatter(live_skill, within=None).get("created_at", "")
         # Carry the live skill's pin forward: a pinned skill is exempt from the
         # lifecycle's inactivity / max-N archival, and silently dropping the flag
@@ -5548,7 +5993,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve update %s: could not snapshot live version", target_name
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         # (f) Write candidate over live.
         try:
             atomic_write(live_skill, new_live_content)
@@ -5563,7 +6008,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve update %s: could not write live SKILL.md", target_name
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         # (g) Promote candidate scripts into the live scripts/ dir (exec bit on
         # POSIX). COPY rather than move: the pending dir is deleted in (i), so a
         # move that fails partway would leave the approved script in neither
@@ -5636,7 +6081,7 @@ class SkillsLoader:
                     "Refusing to approve update %s: could not promote candidate scripts",
                     target_name,
                 )
-                return None
+                raise PendingApprovalRefused("promotion_failed")
         # (h) Prune version history to the cap.
         self._prune_versions(versions_dir)
         # (i) Remove the pending candidate.
@@ -5680,37 +6125,86 @@ class SkillsLoader:
         return target_name
 
     def approve_pending_skill(self, slug: str) -> str | None:
+        """``approve_pending_skill_checked`` with the legacy ``None`` contract.
+
+        Existing callers branch on ``None`` for "refused for any reason"; the
+        checked variant raises ``PendingApprovalRefused`` so the dashboard can
+        report WHY. This wrapper keeps their behaviour unchanged.
+        """
+        try:
+            return self.approve_pending_skill_checked(slug)
+        except PendingApprovalRefused:
+            return None
+
+    def approve_pending_skill_checked(self, slug: str) -> str:
         """Promote a pending candidate to a live auto-skill.
 
         Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
         → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
-        live name, or ``None`` if the candidate is missing, a live skill of that
-        name already exists, it contains a symlink, script validation fails, or
-        redaction fails. Every check runs BEFORE the move, so a rejected
-        candidate is left untouched in the pending queue.
+        live name; raises ``PendingApprovalRefused`` (with the reason, and the
+        redacted findings report for a validation failure) if the candidate is
+        missing, a live skill of that name already exists, it contains a
+        symlink, script validation fails, or redaction fails. Every check runs
+        BEFORE the move, so a rejected candidate is left untouched in the
+        pending queue.
         """
         if not self._is_pending_slug_safe(slug):
-            return None
+            raise PendingApprovalRefused("not_found")
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
-            return None
+            raise PendingApprovalRefused("not_found")
+        # An UPDATE candidate must never be consumed down this path: promoting
+        # it fresh would create ``auto/<candidate-slug>`` while its live target
+        # stays unchanged — the update silently never lands. The HTTP handler
+        # routes on the candidate detail's ``kind``, but a raising detail read
+        # drops that to ``None`` and defaults HERE, so the guard has to live at
+        # the consumption point. ``kind_mismatch`` (not ``not_found``): the
+        # candidate exists and is approvable via its own path, and the
+        # not-found recovery copy ("approved or dismissed elsewhere") would be
+        # a lie for a still-pending candidate.
+        if self._read_pending_meta(slug).get("kind") == "update":
+            logger.warning(
+                "Refusing to approve %s as a NEW skill: candidate metadata marks it an update",
+                slug,
+            )
+            raise PendingApprovalRefused("kind_mismatch")
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         dest = self._dir / name
         if dest.exists():
             logger.warning("Cannot approve %s: a live skill already exists", name)
-            return None
+            raise PendingApprovalRefused("live_exists")
         # Reject any symlink in the candidate + any unexpected top-level entry
         # (defense-in-depth on top of the mandatory human review); promotion +
         # chmod must only touch known, real files. Factored into a shared helper
         # so the update-approve path enforces the identical layout guard.
         if not self._candidate_layout_ok(src, name):
-            return None
+            raise PendingApprovalRefused("invalid_layout")
+        # One verdict, two surfaces: approve consults the SAME verdict function
+        # the pre-click badge serves. Where a verdict is computable, a failing
+        # one refuses HERE with the verdict's own report, so the badge and the
+        # click cannot disagree on any candidate the badge judged — an
+        # ``ok: false`` badge is a refusal by construction, not by parallel
+        # re-derivation. ``None`` (no pinned opens, or a budget breach) keeps
+        # this path's own machinery as the sole authority, exactly the
+        # authority split the verdict's contract documents.
+        _fold = self._pending_scripts_verdict(src)
+        if _fold is not None:
+            _fold_ok, _fold_report = _fold
+            if not _fold_ok:
+                logger.warning(
+                    "Refusing to approve %s: the pending verdict this candidate's badge "
+                    "serves reports failing findings",
+                    name,
+                )
+                raise PendingApprovalRefused(
+                    "script_validation_failed",
+                    report=self._redact_validation_report(_fold_report),
+                )
         # Re-validate every script + redact the body + scripts before going live;
         # snapshots each file first so a failure restores the ORIGINAL bytes and
-        # never leaves a corrupted pending draft. Shared with the update path.
+        # never leaves a corrupted pending draft (raising PendingApprovalRefused
+        # with the reason). Shared with the update path.
         redact_backup = self._validate_and_redact_candidate(src, name)
-        if redact_backup is None:
-            return None
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -5739,7 +6233,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve %s: could not read pending .meta.json before promotion", name
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         try:
             meta_path.unlink()
         except FileNotFoundError:
@@ -5750,7 +6244,7 @@ class SkillsLoader:
                 "Refusing to approve %s: could not remove pending .meta.json before promotion",
                 name,
             )
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Cutoff for notification resolution, captured BEFORE the candidate
         # leaves the pending queue: staging refuses to overwrite an existing
@@ -5771,7 +6265,7 @@ class SkillsLoader:
                     pass
             _restore_redacted()
             logger.warning("Refusing to approve %s: could not move candidate live", name)
-            return None
+            raise PendingApprovalRefused("promotion_failed")
         # Mark scripts executable now that a human approved them (recursively).
         sdir = dest / "scripts"
         if sdir.is_dir():

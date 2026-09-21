@@ -45,7 +45,7 @@ from kiro_crew.skill_trust import (
     list_trusted_projects,
     revoke_project_trust,
 )
-from kiro_crew.skills import PROJECT_SKILL_BODY_CAP
+from kiro_crew.skills import PROJECT_SKILL_BODY_CAP, PendingApprovalRefused
 from kiro_crew.validation import MAX_SKILL_KEY_CHARS
 
 from ._shared import (
@@ -78,6 +78,13 @@ logger = logging.getLogger(__name__)
 MAX_PROMPT_BYTES = 100_000  # 100 KB — public constant, imported across dashboard + gateway + tests
 _CODE_DASHBOARD_OWNER_REQUIRED = "dashboard_owner_required"
 _CODE_SLOT_NOT_FOUND = "slot_not_found"
+# Pending-skill approval refusals (api_skill_pending_approve): distinct codes so
+# the Skills tab can tell the user WHY the click did nothing instead of
+# swallowing one shapeless conflict answer.
+_CODE_PENDING_SKILL_NOT_FOUND = "pending_skill_not_found"
+_CODE_LIVE_SKILL_EXISTS = "live_skill_exists"
+_CODE_SCRIPT_VALIDATION_FAILED = "script_validation_failed"
+_CODE_PENDING_APPROVAL_REFUSED = "pending_approval_refused"
 
 #: The literal the dashboard's browser client sends as ``X-Session-Key`` on every
 #: request that has no chat to name (``website/src/api/client.ts``). It marks the
@@ -2779,9 +2786,9 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
             _meta: dict = _meta_raw if isinstance(_meta_raw, dict) else {}
             kind = _detail.get("kind") or _meta.get("kind")
         if kind == "update":
-            nm = skills.approve_pending_update(slug)
+            nm = skills.approve_pending_update_checked(slug)
         else:
-            nm = skills.approve_pending_skill(slug)
+            nm = skills.approve_pending_skill_checked(slug)
         if nm:
             # Approving consumes a slot — enforce the bound (archive, never
             # delete). Best-effort; runs in the same off-loop executor job.
@@ -2804,6 +2811,50 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
         name = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), _approve_and_bound
         )
+    except PendingApprovalRefused as e:
+        # The refusal reason reaches the user instead of collapsing into one
+        # shapeless conflict answer. SEL keeps the outcome accurate: a
+        # missing candidate is ``not_found``; every other refusal is a
+        # ``rejected`` with the reason in metadata.
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_approve",
+            tool_kind="skill",
+            outcome="not_found" if e.reason == "not_found" else "rejected",
+            metadata={"slug": slug, "reason": e.reason},
+        )
+        if e.reason == "not_found":
+            return web.json_response(
+                {"error": "pending skill not found", "code": _CODE_PENDING_SKILL_NOT_FOUND},
+                status=404,
+            )
+        if e.reason == "live_exists":
+            return web.json_response(
+                {
+                    "error": "a live skill with this name already exists",
+                    "code": _CODE_LIVE_SKILL_EXISTS,
+                },
+                status=409,
+            )
+        if e.reason == "script_validation_failed":
+            return web.json_response(
+                {
+                    "error": "script validation failed",
+                    "code": _CODE_SCRIPT_VALIDATION_FAILED,
+                    "report": e.report or {},
+                },
+                status=422,
+            )
+        return web.json_response(
+            {
+                "error": f"approval refused: {e.reason}",
+                "code": _CODE_PENDING_APPROVAL_REFUSED,
+                "reason": e.reason,
+            },
+            status=409,
+        )
     except Exception:
         _sel().log_tool_invocation(
             session_key="",
@@ -2815,21 +2866,17 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
             metadata={"slug": slug},
         )
         return web.json_response({"error": "internal error"}, status=500)
-    outcome = "ok" if name else "not_found"
+    # The checked variant either raised (mapped to a coded response above) or
+    # returned the approved name — a falsy name cannot reach here.
     _sel().log_tool_invocation(
         session_key="",
         agent="api",
         source="dashboard",
         tool_name="api_skill_pending_approve",
         tool_kind="skill",
-        outcome=outcome,
-        metadata={"slug": slug, "name": name or ""},
+        outcome="ok",
+        metadata={"slug": slug, "name": name},
     )
-    if not name:
-        return web.json_response(
-            {"error": "not found, a live skill already exists, or script validation failed"},
-            status=409,
-        )
     return web.json_response({"approved": name})
 
 
@@ -2877,7 +2924,13 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
         metadata={"slug": slug},
     )
     if not ok:
-        return web.json_response({"error": "not found"}, status=404)
+        # Coded like the approve path's not-found: the dashboard keys its
+        # recovery (refetch + catalog message) on this code, and an uncoded
+        # body would leave that branch reachable only from test mocks.
+        return web.json_response(
+            {"error": "pending skill not found", "code": "pending_skill_not_found"},
+            status=404,
+        )
     return web.json_response({"dismissed": slug})
 
 

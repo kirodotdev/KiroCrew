@@ -2,8 +2,9 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
-import { api, ApiError } from '../../api/client'
+import { api, ApiError, type SkillScriptValidation } from '../../api/client'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
+import AskAgentButton from '../../components/AskAgentButton'
 import { Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
@@ -633,6 +634,12 @@ interface PendingSkill {
   /** For updates: the live skill this proposes to change (e.g. 'auto/deploy'). */
   target?: string | null
   base_version?: number | null
+  /** Staging timestamp — with slug, the candidate's identity for refusal
+   *  bookkeeping (a re-staged slug carries a new created_at). */
+  created_at?: string
+  /** Server-computed verdict for the bundled scripts (issue #10861): lets the
+   *  card warn BEFORE the click that Approve cannot succeed as-is. */
+  script_validation?: SkillScriptValidation
 }
 interface PendingDetail {
   name: string
@@ -646,12 +653,53 @@ interface PendingDetail {
   to_version?: number | null
   /** True when the live skill advanced past the version this was merged from. */
   stale_base?: boolean
+  script_validation?: SkillScriptValidation
 }
 
-function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
+/** A refused approve, parsed from the ApiError body (code + findings report). */
+interface ApproveRefusal {
+  code?: string
+  reason?: string
+  message: string
+  report: Record<string, string[]>
+  /** The journaled structured report for the ORIGINAL server message, so the
+   *  ErrorNotice Ask-agent hand-off keeps endpoint/status context even though
+   *  the displayed message is localized (journal lookup keys on the exact
+   *  message text, which the localized string would miss). */
+  journal?: ErrorReport
+  /** created_at of the candidate the refusal belongs to — a re-staged slug
+   *  carries a new timestamp, which is what evicts a stale refusal. */
+  candidateCreatedAt?: string
+}
+
+/** Per-file validator findings, shared by the pre-approval warning and the
+ *  post-click refusal so both show the same evidence. */
+function ValidationFindings({ report }: { report: Record<string, string[]> }) {
+  const files = Object.keys(report)
+  if (files.length === 0) return null
+  return (
+    <ul className="mt-1 space-y-1">
+      {files.map(fn => (
+        <li key={fn} className="text-[11px]">
+          <span className="font-semibold">{fn}</span>
+          <ul className="list-disc ml-4">
+            {report[fn].map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprove, onDismiss }: {
   p: PendingSkill
   /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
   autoOpen?: boolean
+  /** Why the last Approve click on THIS row was refused, when it was. */
+  approveRefusal?: ApproveRefusal
+  /** True when the queue holds a flagged candidate — the only shape where the
+      disabled fade can be misread as a validation state. */
+  mixedQueue?: boolean
   onApprove: (slug: string) => void
   onDismiss: (slug: string) => void
 }) {
@@ -694,6 +742,14 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
                  fourth control in the row (AUTOSDE max-two-buttons-per-row). */
               <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">{i18nT('pages.overview.skillsTab.script')}</span>
             )}
+            {p.script_validation?.ok === false && (
+              /* The server will refuse Approve for this candidate as-is; warn
+                 BEFORE the click. The findings render in the expanded panel.
+                 WARN amber, not danger red: this is a prediction, and red is
+                 reserved for refusals that already happened — a mixed panel
+                 otherwise stacks five red surfaces at once. */
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">{i18nT('pages.overview.skillsTab.fails_validation')}</span>
+            )}
           </div>
           <div className="text-[12px] text-muted truncate">
             {isUpdate && p.target
@@ -706,11 +762,127 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
             to apply, and a stale update (live moved on since the merge) would
             replace the newer approved content — the backend refuses both, so keep
             the button disabled and let the expanded panel explain. */}
-        <Btn primary disabled={!open || !detail || (isUpdate && (!detail.diff || !!detail.stale_base))} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
+        {(() => {
+          const approveDisabled = !open || !detail || (isUpdate && (!detail.diff || !!detail.stale_base))
+          return (
+            <Btn
+              /* Non-primary while the candidate is flagged AND the button is
+                 enabled: a bright primary button beside "approving will be
+                 refused" reads as a mixed signal. The demotion applies only to
+                 the ENABLED state — a disabled Approve keeps the primary
+                 styling so both rows' disabled buttons render identically
+                 (grey-vs-faded-purple on a mixed queue read as two different
+                 controls). It stays ENABLED when flagged — the server is the
+                 authority and a fixed script can be retried — and the visible
+                 hint under the row header says so in plain words. No `title`:
+                 it would restate the already-visible hint. */
+              primary={approveDisabled || p.script_validation?.ok !== false}
+              disabled={approveDisabled}
+              onClick={() => onApprove(p.slug)}
+            >{i18nT('pages.overview.skillsTab.approve')}</Btn>
+          )
+        })()}
         <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
+      {p.script_validation?.ok === false && approveRefusal?.code !== 'script_validation_failed' && (
+        /* Visible everywhere the flagged badge is, collapsed AND expanded:
+           the warning box's heading is now the neutral "Validation findings"
+           (one heading across both its states), so this hint is the ONE place
+           the refusal prediction + fix-then-retry action renders — no longer
+           a duplicate of the box summary. Hover titles are invisible to
+           touch/keyboard, so it is text. Suppressed while THIS row's
+           validation-refusal notice is mounted: that notice ends with the
+           same fix-then-approve instruction, and one card must not give the
+           same order twice. */
+        <div className="mt-1 text-[11px] text-muted">
+          {i18nT('pages.overview.skillsTab.approve_flagged_hint')}
+        </div>
+      )}
+      {!open && mixedQueue && (
+        /* Every collapsed row's Approve is disabled until Review opens the
+           detail. On a MIXED queue (a flagged row present) the faded button
+           reads as a third validation state ("I can't tell why one is
+           faded"), so this line names the gate. On an all-clean queue every
+           Approve is identically faded — no ambiguity, no line. */
+        <div className="mt-1 text-[11px] text-muted">
+          {i18nT('pages.overview.skillsTab.approve_review_first')}
+        </div>
+      )}
+      {approveRefusal && (
+        <div className="mt-2">
+          {/* Rendered OUTSIDE the expand gate: the refused click must explain
+              itself even on a collapsed row — a silent no-op is the bug this
+              exists to fix (issue #10861).
+
+              The refusal's per-file findings ride INSIDE the notice as its
+              footer, never beside it. They originate in the rejected request's
+              422 body, and `errors-use-error-notice` decides by where a value
+              COMES FROM, not how it is drawn: the same findings in a bare
+              `<ul>` (or in a danger-tinted box of our own) are a second,
+              hand-rolled error surface that throws away the endpoint/status
+              context the notice recovers for the agent hand-off. One failure,
+              one surface. */}
+          <ErrorNotice
+            message={approveRefusal.message}
+            report={approveRefusal.journal}
+            askAgent
+            askAgentLabel={i18nT('pages.overview.skillsTab.ask_agent_about_refusal')}
+            footer={
+              Object.keys(approveRefusal.report).length > 0
+                ? <ValidationFindings report={approveRefusal.report} />
+                : undefined
+            }
+          />
+        </div>
+      )}
       {open && detail && (
         <div className="mt-2 space-y-2">
+          {(detail.script_validation?.ok === false || p.script_validation?.ok === false)
+            && approveRefusal?.code !== 'script_validation_failed' && (
+            /* Pre-approval PREDICTION: the server will refuse this candidate
+               as-is. Approve stays clickable — the server is the authority —
+               but the user learns before the click, with the findings.
+
+               Nothing here has failed yet, so this is a warning and must NOT
+               be dressed as an error (`errors-use-error-notice` excludes
+               status about something that has not failed) — hence one tone,
+               `warn`, and one source, the poll-time verdict.
+
+               Withdrawn once the validation refusal itself is showing: the
+               prediction has been superseded by the outcome it predicted, and
+               the notice above carries the live 422 findings. Keeping both
+               would put a poll-time snapshot beside findings the server just
+               computed on the live tree — two lists that can disagree, with
+               the stale one indistinguishable from the fresh one. A refusal
+               with any OTHER code has not superseded the prediction, so the
+               box stays. */
+            <details className="text-[11px] p-2 rounded border border-border bg-warn-subtle text-warn">
+              <summary className="cursor-pointer font-semibold">
+                {i18nT('pages.overview.skillsTab.validation_findings')}
+              </summary>
+              <ValidationFindings
+                report={(detail.script_validation ?? p.script_validation)?.report ?? {}}
+              />
+              {/* The hint promises "fix them" — this hand-off is the fix path
+                  the panel itself offers, BEFORE the click the UI predicts
+                  will be refused (post-refusal help alone forces a doomed
+                  click to reach it). Deliberately not ErrorNotice: nothing
+                  has failed yet, and the rule forbids dressing a warning as
+                  an error. Gated on no-refusal: once a refusal notice mounts
+                  beside this box it carries its own hand-off, and two links a
+                  few pixels apart with the same target read as different
+                  actions. */}
+              {!approveRefusal && (
+                <div className="mt-1">
+                  <AskAgentButton
+                    message={`${i18nT('pages.overview.skillsTab.scripts_fail_validation_warning')} (${p.name})`}
+                    label={i18nT('pages.overview.skillsTab.ask_agent_about_findings')}
+                    tone="warn"
+                  />
+                </div>
+              )}
+            </details>
+          )}
           {p.has_scripts && (
             /* Scripts are a hard security boundary: a script-bearing candidate
                stages for manual review even with skills.approval_required off.
@@ -758,6 +930,21 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
 
 function PendingSkillsPanel() {
   const qc = useQueryClient()
+  // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
+  // here, resolving a not-found notice's "approved or dismissed" — whether a
+  // vanished candidate reappeared below as an approved skill. isFetching gates
+  // the resolution so a stale cache cannot briefly claim "dismissed"
+  // mid-refetch, and isError withholds it entirely: a FAILED fetch defaults
+  // `data` to [], and an empty-by-error list must not be read as "not
+  // approved" — with no trustworthy answer the hedging message stands.
+  const {
+    data: liveSkills = [],
+    isFetching: liveSkillsFetching,
+    isError: liveSkillsError,
+  } = useQuery<Skill[]>({
+    queryKey: ['skills'],
+    queryFn: () => api.skills(),
+  })
   const [params, setParams] = useSearchParams()
   const reviewParam = params.get('review')
   // Latch the deep-linked slug, then strip it from the URL. Reading the param
@@ -794,10 +981,187 @@ function PendingSkillsPanel() {
     staleTime: 0,
     refetchOnMount: 'always',
   })
-  const pending: PendingSkill[] = data?.pending ?? []
+  // Stable identity per fetch: the prune effect below depends on this, and a
+  // fresh array every render would re-run it continuously.
+  const pending: PendingSkill[] = useMemo(() => data?.pending ?? [], [data])
+  // Why the last Approve click was refused, per slug. Server prose stays out of
+  // the UI: the coded body picks a catalog message, and the findings report
+  // renders next to the card so the user learns WHAT was flagged.
+  const [approveRefusals, setApproveRefusals] = useState<Record<string, ApproveRefusal>>({})
+  // Panel-level failure notices — anything that must survive a row unmount.
+  // Dismiss/dismissAll have no per-row home for an error (dismissAll has no
+  // row; a failed dismiss leaves its row right below), and a not-found approve
+  // refusal triggers a refetch that REMOVES the row, which would silently eat
+  // a per-row notice and read as success. Cleared when a retry starts,
+  // replaced on the next failure, rendered through ErrorNotice so the
+  // Ask-agent hand-off keeps the journaled endpoint/status context
+  // (errors-use-error-notice). `about` records which candidate the notice
+  // describes (slug + created_at when known), so the prune effect below can
+  // evict a notice whose subject was RESTAGED — without it, a "no longer
+  // pending" notice would sit above the replacement candidate it is not about.
+  const [panelError, setPanelError] = useState<{
+    message: string
+    journal?: ReturnType<typeof findReport>
+    about?: { slug: string; name?: string; createdAt?: string }
+    /** Set for a not-found notice: the candidate left the queue by approval
+     *  OR dismissal, and the live Skills list (refetched by the same error
+     *  branch) can resolve WHICH. `message` hedges ("approved or dismissed")
+     *  because the server's 404 cannot say; once the live list settles the
+     *  render below REPLACES it with the matching sentence here, so the panel
+     *  states the outcome once instead of hedging and then answering itself
+     *  underneath. The hedge stays only while the fetch is pending or failed —
+     *  the two states in which the app genuinely does not know. */
+    resolved?: { approved: string; dismissed: string }
+  } | null>(null)
+  // A refusal dies with its candidate however the candidate leaves — this
+  // session's actions clear it directly, and this prune covers out-of-band
+  // resolution (another tab, TTL prune). Identity is slug + created_at: a
+  // dismissal and same-slug restage BETWEEN polls keeps the slug in the list,
+  // so the timestamp mismatch is what evicts the old candidate's refusal.
+  useEffect(() => {
+    if (!isSuccess) return
+    setApproveRefusals(prev => {
+      const live = new Map(pending.map(p => [p.slug, p.created_at]))
+      const stale = Object.keys(prev).filter(k => {
+        if (!live.has(k)) return true
+        const recorded = prev[k].candidateCreatedAt
+        const current = live.get(k)
+        return Boolean(recorded && current && recorded !== current)
+      })
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const k of stale) delete next[k]
+      return next
+    })
+    // Same eviction rule for the panel notice: it must SURVIVE the refetch
+    // that removed its subject (that is its purpose), but not a refetch that
+    // brings the subject BACK — a slug present again, under a different
+    // created_at when both sides are known, is a restaged candidate the old
+    // notice is not about.
+    setPanelError(prev => {
+      if (!prev?.about) return prev
+      const current = pending.find(p => p.slug === prev.about!.slug)
+      if (!current) return prev
+      if (prev.about.createdAt && current.created_at && prev.about.createdAt === current.created_at) {
+        return prev
+      }
+      return null
+    })
+  }, [pending, isSuccess])
   const approve = useMutation({
     mutationFn: (slug: string) => api.approvePendingSkill(slug),
+    onMutate: (slug: string) => {
+      // A retry starts clean; a stale refusal must not outlive the click that
+      // supersedes it. The panel-level notice is cleared ONLY when it is about
+      // THIS candidate: approving row A must not erase an unresolved failure
+      // notice about row B — the user loses the only record of a failure they
+      // have not acted on yet.
+      setPanelError(prev => (prev?.about?.slug === slug ? null : prev))
+      setApproveRefusals(prev => {
+        if (!(slug in prev)) return prev
+        const next = { ...prev }
+        delete next[slug]
+        return next
+      })
+    },
+    onError: (err, slug) => {
+      let code: string | undefined
+      let reason: string | undefined
+      const report: Record<string, string[]> = {}
+      // Duck-typed on `body` rather than `instanceof ApiError`, matching the
+      // convention documented in api/apiError.ts: the suites mock api/client
+      // wholesale, and a class check against a mocked module cannot match.
+      const body = (err as { body?: unknown }).body
+      if (typeof body === 'string' && body) {
+        code = parseErrorCode(body)
+        try {
+          const parsed = JSON.parse(body) as { reason?: unknown; report?: unknown }
+          if (typeof parsed.reason === 'string') reason = parsed.reason
+          if (parsed.report && typeof parsed.report === 'object') {
+            for (const [fn, findings] of Object.entries(parsed.report as Record<string, unknown>)) {
+              if (Array.isArray(findings)) report[fn] = findings.map(String)
+            }
+          }
+        } catch { /* non-JSON body: fall through to the generic message */ }
+      }
+      const message =
+        code === 'script_validation_failed'
+          ? i18nT('pages.overview.skillsTab.approve_failed_script_validation')
+          : code === 'live_skill_exists'
+            ? i18nT('pages.overview.skillsTab.approve_failed_live_exists')
+            : code === 'pending_skill_not_found'
+              ? i18nT('pages.overview.skillsTab.approve_failed_not_found')
+              : i18nT('pages.overview.skillsTab.approve_failed_generic', {
+                  // Catalog fallback for uncoded failures, matching the
+                  // dismiss path: raw server/exception prose stays in the
+                  // journal for the Ask-agent hand-off, never in the notice.
+                  reason:
+                    reason ||
+                    (code
+                      ? code
+                      : i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded')),
+                })
+      setApproveRefusals(prev => ({
+        ...prev,
+        [slug]: {
+          code,
+          reason,
+          message,
+          report,
+          // Keyed by the ORIGINAL message apiFailure journaled, not the
+          // localized one we display.
+          journal: findReport(err instanceof Error ? err.message : undefined),
+          candidateCreatedAt: pending.find(p => p.slug === slug)?.created_at,
+        },
+      }))
+      // A refused approve can mean the queue moved under us (approved/dismissed
+      // elsewhere) — refetch so a not-found card disappears instead of lingering.
+      // The refetch UNMOUNTS the row and its per-row notice with it, which
+      // would read as a successful approve — so this one refusal also lands
+      // panel-level, where it survives the row's removal.
+      if (code === 'pending_skill_not_found') {
+        const row = pending.find(p => p.slug === slug)
+        const name = row?.name
+        // An UPDATE candidate's outcome is NOT observable from live-list
+        // membership: its target exists whether the update was applied or
+        // dismissed. Resolving by the candidate name calls every approved
+        // update "dismissed"; resolving by the target calls every dismissed
+        // update "approved". So updates keep the honest hedge for good.
+        const resolvable = row?.kind !== 'update'
+        setPanelError({
+          // Named when the queue still knows the candidate: the refetch below
+          // removes the row, so an unnamed banner floats above nothing and
+          // the reader cannot tell which item it refers to.
+          message: name
+            ? i18nT('pages.overview.skillsTab.approve_failed_not_found_named', { name })
+            : message,
+          journal: findReport(err instanceof Error ? err.message : undefined),
+          about: { slug, name, createdAt: row?.created_at },
+          // Only a NAMED, NEW-kind candidate can be looked up in the live
+          // list; updates and the unnamed fallback keep their open wording
+          // for good.
+          resolved:
+            name && resolvable
+              ? {
+                  approved: i18nT('pages.overview.skillsTab.approve_failed_not_found_approved_named', { name }),
+                  dismissed: i18nT('pages.overview.skillsTab.approve_failed_not_found_dismissed_named', { name }),
+                }
+              : undefined,
+        })
+        qc.invalidateQueries({ queryKey: ['skills-pending'] })
+        // Refresh the LIVE list too: "approved or dismissed elsewhere" is
+        // answerable — if it was approved, the skill now appears below, which
+        // is the closure the notice's sentence promises.
+        qc.invalidateQueries({ queryKey: ['skills'] })
+      }
+    },
     onSuccess: (_data, slug) => {
+      setApproveRefusals(prev => {
+        if (!(slug in prev)) return prev
+        const next = { ...prev }
+        delete next[slug]
+        return next
+      })
       // Drop the deep-link latch when the user acts on the linked candidate
       // THEMSELVES. Without this, approving the row you arrived at makes the
       // refetch omit it, which flips reviewMissing and reports "no longer
@@ -819,10 +1183,81 @@ function PendingSkillsPanel() {
   })
   const dismiss = useMutation({
     mutationFn: (slug: string) => api.dismissPendingSkill(slug),
+    onMutate: (slug: string) => {
+      // A retry starts clean; a stale failure notice must not outlive the
+      // click that supersedes it — but only THIS candidate's notice: a
+      // dismiss on row A is not a retry of row B's failure.
+      setPanelError(prev => (prev?.about?.slug === slug ? null : prev))
+    },
+    onError: (err, slug) => {
+      // Same duck-typed body handling as the approve path: a coded reason maps
+      // to catalog text. An UNCODED reason is system vocabulary ("gateway
+      // restarting") that means nothing to a dashboard user — the catalog
+      // fallback says it plainly and suggests the retry; the raw prose stays
+      // in the journal for the Ask-agent hand-off.
+      let code: string | undefined
+      const body = (err as { body?: unknown }).body
+      if (typeof body === 'string' && body) code = parseErrorCode(body)
+      // Status 404 counts as not-found even without a code: an older backend
+      // (or a proxy-stripped body) must not turn the achieved-outcome path
+      // into a generic server error with no refetch.
+      const notFound =
+        code === 'pending_skill_not_found' || (err as { status?: unknown }).status === 404
+      const reason = notFound
+        ? i18nT('pages.overview.skillsTab.candidate_no_longer_pending')
+        : i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded')
+      const row = pending.find(p => p.slug === slug)
+      const name = row?.name ?? slug
+      // Same rule as the approve path: an update's outcome is not observable
+      // from live-list membership, so updates keep the honest hedge.
+      const resolvable = row?.kind !== 'update'
+      setPanelError({
+        // Named, because the panel notice floats above ALL rows: without the
+        // candidate's name a reader cannot tell which item the failure was
+        // about. Renders through ErrorNotice (errors-use-error-notice):
+        // the softening for the achieved-outcome case lives in the catalog
+        // reason text, not in a parallel non-error render path.
+        message: i18nT('pages.overview.skillsTab.dismiss_failed_named', { name, reason }),
+        journal: findReport(err instanceof Error ? err.message : undefined),
+        about: { slug, name, createdAt: row?.created_at },
+        // Same framing ("Dismiss of X failed (reason)"), with the reason
+        // resolved once the live list settles — see the approve path.
+        resolved:
+          notFound && resolvable
+            ? {
+                approved: i18nT('pages.overview.skillsTab.dismiss_failed_named', {
+                  name,
+                  reason: i18nT('pages.overview.skillsTab.candidate_no_longer_pending_approved'),
+                }),
+                dismissed: i18nT('pages.overview.skillsTab.dismiss_failed_named', {
+                  name,
+                  reason: i18nT('pages.overview.skillsTab.candidate_no_longer_pending_dismissed'),
+                }),
+              }
+            : undefined,
+      })
+      // A not-found dismiss means the queue moved under us: refetch so the
+      // stale row disappears instead of contradicting the notice above it
+      // (same recovery the approve path's not-found branch performs). The
+      // LIVE list refetch resolves the notice's "approved or dismissed".
+      if (notFound) {
+        qc.invalidateQueries({ queryKey: ['skills-pending'] })
+        qc.invalidateQueries({ queryKey: ['skills'] })
+      }
+    },
     onSuccess: (_data, slug) => {
       // Same reason as approve: a dismissal the user just performed must not
       // come back as "someone resolved this already".
       if (slug === reviewSlug) setReviewSlug(null)
+      // A refusal shown for this slug dies with the candidate — a later
+      // re-stage that reuses the freed slug must not inherit the previous
+      // candidate's refusal notice.
+      setApproveRefusals(prev => {
+        if (!(slug in prev)) return prev
+        const next = { ...prev }
+        delete next[slug]
+        return next
+      })
       // Evict the per-slug detail cache too, so a slug re-staged shortly after
       // dismissal can't show the dismissed candidate's stale detail (which a
       // user might then approve without seeing the replacement).
@@ -832,8 +1267,25 @@ function PendingSkillsPanel() {
   })
   const dismissAll = useMutation({
     mutationFn: () => api.dismissAllPendingSkills(pending.map(p => p.slug)),
+    onMutate: () => {
+      // Unconditional, unlike the per-row mutations: Dismiss All targets EVERY
+      // pending candidate, so any per-candidate failure notice is about a
+      // subject this very click retries — its outcome supersedes them all.
+      setPanelError(null)
+    },
+    onError: (err) => {
+      setPanelError({
+        message: i18nT('pages.overview.skillsTab.dismiss_failed_generic', {
+          // Catalog fallback, not raw server prose — the raw message stays in
+          // the journal for the Ask-agent hand-off.
+          reason: i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded'),
+        }),
+        journal: findReport(err instanceof Error ? err.message : undefined),
+      })
+    },
     onSuccess: () => {
       setReviewSlug(null)
+      setApproveRefusals({})
       qc.removeQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
     },
@@ -845,7 +1297,24 @@ function PendingSkillsPanel() {
   // Without the notice a deep link from a notification whose candidate was
   // already resolved lands on a Skills tab that looks completely normal, and
   // the user is left hunting for a row that no longer exists.
-  if (pending.length === 0 && !reviewMissing) return null
+  // panelError keeps the panel mounted for the same reason: a not-found
+  // approve refusal empties the queue via refetch, and unmounting would eat
+  // the very notice explaining why the row vanished.
+  if (pending.length === 0 && !reviewMissing && !panelError) return null
+  // Resolve "approved or dismissed" from the live list the same error branch
+  // refetched: an approved candidate reappears there under its name. Settled
+  // only once that refetch completes SUCCESSFULLY — a stale cache cannot claim
+  // "dismissed" mid-refetch, and a failed fetch (data defaulted to []) must not
+  // masquerade as "not approved". Until then the hedging message stands, and
+  // once settled it is REPLACED (not annotated): a notice that says "approved
+  // or dismissed" and then "it was dismissed" one line below reads as the
+  // panel contradicting itself.
+  const panelOutcome =
+    panelError?.resolved && panelError.about?.name && !liveSkillsFetching && !liveSkillsError
+      ? liveSkills.some(s => s.name === panelError.about!.name)
+        ? 'approved'
+        : 'dismissed'
+      : null
   // No top margin on the root, for the same reason as the tab's heading below:
   // this panel is the Skills tab's FIRST in-flow element whenever it renders,
   // and the pane already owns the gap under the tab strip. It is also WHY that
@@ -869,6 +1338,37 @@ function PendingSkillsPanel() {
           <Trans i18nKey="pages.overview.skillsTab.approval_required_hint" components={{ settingRef: <SettingRef configKey="skills.approval_required" /> }} />
         </p>
       )}
+      {panelError && (
+        <div className="mb-2">
+          {/* ALWAYS ErrorNotice, whatever the framing: the value originates in
+              a rejected mutation, and errors-use-error-notice (blocking)
+              scopes by the value's origin — the shared surface is what keeps
+              the journaled context and the Ask-agent hand-off attached. The
+              achieved-outcome softening lives in the MESSAGE (catalog reason
+              text), not in a parallel render path. The resolved outcome lives
+              in the message too (panelOutcome above), so the banner states it
+              exactly once. */}
+          <ErrorNotice
+            message={panelOutcome ? panelError.resolved![panelOutcome] : panelError.message}
+            report={panelError.journal}
+            askAgent
+            /* Outcome-scoped hand-off: once the live list resolves what
+               happened, nothing is broken — a link that still says
+               "failure" is a false alarm for an achieved outcome. The
+               surface stays ErrorNotice (the value's origin is a rejected
+               mutation); only the label follows the resolved state. */
+            askAgentLabel={
+              panelOutcome
+                ? i18nT('pages.overview.skillsTab.ask_agent_about_outcome')
+                : i18nT('pages.overview.skillsTab.ask_agent_about_failure')
+            }
+            /* Dismissible: with the queue emptied nothing else ever evicts
+               the notice, and a banner that cannot be closed outlives its
+               usefulness for the whole session. */
+            onDismiss={() => setPanelError(null)}
+          />
+        </div>
+      )}
       {reviewMissing && (
         <div className="mb-2 text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted">
           {i18nT('pages.overview.skillsTab.linked_candidate_no_longer_pending')}
@@ -882,6 +1382,8 @@ function PendingSkillsPanel() {
                 key={p.slug}
                 p={p}
                 autoOpen={p.slug === reviewSlug}
+                approveRefusal={approveRefusals[p.slug]}
+                mixedQueue={pending.some(c => c.script_validation?.ok === false)}
                 onApprove={s => approve.mutate(s)}
                 onDismiss={s => dismiss.mutate(s)}
               />
