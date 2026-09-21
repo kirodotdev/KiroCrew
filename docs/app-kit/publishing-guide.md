@@ -363,9 +363,12 @@ MyAppRepo/
 There are two listing surfaces, and they take different paths:
 
 **The official App Store catalog** is the store's inventory, and it is
-maintainer-curated. Its authoring repository is private and not publicly
-writable, so outside authors do not open the listing pull request themselves —
-there is no self-serve PR path for third-party apps. A published entry is what
+maintainer-curated. Its authoring repository is
+[kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps), which is
+public to read and not publicly writable: you can read
+`catalog/official-registry.json` to see the authored shape your entry will take,
+but outside authors do not open the listing pull request themselves — there is no
+self-serve PR path for third-party apps. A published entry is what
 makes your app appear in the store *and installable*, with **no Kiro Crew
 release involved**: a maintainer authors a `git` source (URL + a branch or tag;
 the publish pipeline resolves and pins the exact commit) plus a category against
