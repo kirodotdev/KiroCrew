@@ -72,6 +72,32 @@ jobs:
       # on Bedrock in us-west-2 (mirrors claude-review.yml's aws-region).
       # VERIFY before merge that this SHA resolves to the intended harden-runner
       # release (authoring host had no network to confirm it).
+      #
+      # The three ubuntu archive hosts are NOT optional and NOT this lane's own
+      # dependency: setting `allowed_non_write_users` on the discovery/validation
+      # steps below auto-enables claude-code-action's bubblewrap isolation, and
+      # the action bootstraps that by `apt-get install bubblewrap socat`. With
+      # those hosts blocked the install exits 7, the action never reaches the
+      # model, and the lane fails closed with `review incomplete` on EVERY fork
+      # PR -- the failure mode tracked at #12099. Failing closed is correct (the
+      # isolation is a security control, so no-sandbox must never be a silent
+      # fallback), but the lane can then never return a verdict at all.
+      #
+      # `/etc/apt/apt-mirrors.txt` on the ubuntu-latest image lists the azure
+      # mirror first over plaintext http, then falls back to the two canonical
+      # hosts over https, so all three are needed for the install to resolve.
+      # Only these two packages are fetched. dl.google.com and
+      # packages.microsoft.com are deliberately NOT added: they are third-party
+      # repositories preinstalled on the runner image, their failures are apt
+      # warnings (`W:`) rather than errors, and nothing this lane needs comes
+      # from them.
+      #
+      # Exfil surface: unchanged in practice. The model is granted only the three
+      # read tools and no shell, so an injected prompt in the fork's diff has no
+      # way to originate a network request to these or any other endpoint; the
+      # apt fetch happens in the action's bootstrap, before the model call. Keep
+      # this allowlist minimal for that reason -- it is a blast-radius control,
+      # not a convenience list.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -88,6 +114,9 @@ jobs:
             release-assets.githubusercontent.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr

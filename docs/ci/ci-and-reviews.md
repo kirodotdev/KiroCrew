@@ -2081,7 +2081,16 @@ Nothing the fork controls can influence these reviews:
   a data file), never built, installed or executed.
 - `step-security/harden-runner` with `egress-policy: block` and a narrow endpoint
   allowlist, plus short-lived Bedrock-only OIDC credentials, bound the blast radius
-  of any prompt injection.
+  of any prompt injection. That allowlist is coupled to the reviewer's own setup, not
+  just to the model call: `allowed_non_write_users` auto-enables the action's
+  bubblewrap isolation, which the action bootstraps over apt, so the ubuntu archive
+  hosts are load-bearing. Remove them and the install exits before any model call --
+  the blocking lane then goes red, and an **advisory** lane publishes `review
+  incomplete` as a *neutral* check, which is how three reviewers can stop reviewing
+  every fork PR without turning anything red (#12099). The endpoints for both that
+  bootstrap and the bun release asset are pinned by tests in
+  `test/test_ai_review_workflows.py`, because a `workflow_run` lane always executes
+  the default branch's yaml and so cannot exercise its own change pre-merge.
 
 **`fork-workflow-guard.yml`** blocks a fork PR that modifies anything under
 `.github/**`, the vector a fork would use to fake basic-CI results (rewrite `ci.yml`

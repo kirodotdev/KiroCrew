@@ -142,6 +142,14 @@ jobs:
       # the commit pinned below. Recorded here because a wrong pin reds every fork
       # PR on the security surface fail-closed, so the next reader should not have
       # to re-open the question -- re-verify only when the version comment moves.
+      #
+      # The three ubuntu archive hosts carry claude-code-action's bubblewrap
+      # bootstrap (`apt-get install bubblewrap socat`). This lane does not need
+      # them TODAY only because the pin above predates the release that auto-
+      # enables that isolation from `allowed_non_write_users`; the input is
+      # already set here, so the next bump of that pin would break this lane the
+      # way it broke the other five. Carried now so the bump is a no-op instead
+      # of a repo-wide fork outage. Rationale: fork-opus-review.yml.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
         with:
@@ -158,6 +166,9 @@ jobs:
             release-assets.githubusercontent.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr

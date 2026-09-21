@@ -11824,6 +11824,98 @@ class TestForkLaneBunEgress:
             )
 
 
+class TestForkLaneBubblewrapBootstrapEgress:
+    """The fork reviewers apt-install the sandbox their own settings turn on.
+
+    Setting `allowed_non_write_users` auto-enables `claude-code-action`'s
+    subprocess secret-scrub plus bubblewrap isolation, and the action bootstraps
+    that with `apt-get install bubblewrap socat`. On the ubuntu-latest image
+    `/etc/apt/apt-mirrors.txt` names the azure mirror first over plaintext http
+    and falls back to the two canonical hosts over https, so all three are on
+    the path of a single install.
+
+    Blocked, the install exits 7 before the model is ever reached, and the lane
+    reports `review incomplete` rather than a verdict (#12099). Failing closed is
+    correct -- the isolation is a security control, so running unsandboxed must
+    never be a silent fallback -- but the lane then cannot review at all, and the
+    advisory lanes publish that as a NEUTRAL check, so three reviewers stopped
+    reviewing every fork PR without turning anything red.
+
+    This is the whole-file guard: `workflow_run` lanes always execute the DEFAULT
+    branch's yaml, so a PR editing these files cannot exercise its own change.
+    The endpoints are asserted on the model job only, for the same least-privilege
+    reason as the bun release-asset host above.
+    """
+
+    ENDPOINTS = (
+        "azure.archive.ubuntu.com:80",
+        "archive.ubuntu.com:443",
+        "security.ubuntu.com:443",
+    )
+    ACTION = "anthropics/claude-code-action"
+
+    @classmethod
+    def _runs_a_model(cls, job: dict) -> bool:
+        return any(cls.ACTION in str(step.get("uses") or "") for step in job.get("steps") or ())
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_every_model_job_allows_the_bubblewrap_bootstrap_hosts(self, lane: str) -> None:
+        checked = 0
+        for name, job in _lane_jobs(lane).items():
+            if not self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            checked += 1
+            missing = [host for host in self.ENDPOINTS if host not in endpoints]
+            assert not missing, (
+                f"{lane} job {name!r} runs {self.ACTION} behind a blocking egress "
+                f"policy but does not allow {missing}, so the bubblewrap bootstrap "
+                "apt-install is refused, the action exits 7 before any model call, "
+                "and the lane publishes `review incomplete` instead of a verdict"
+            )
+        assert checked, f"{lane} has no blocking-egress {self.ACTION} job to check"
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_jobs_that_run_no_model_keep_the_narrower_allowlist(self, lane: str) -> None:
+        # Least privilege, exactly as for the bun host: only a job that actually
+        # bootstraps the sandbox gets the package mirrors.
+        # `fork-security-scope-review.yml` blocks egress in four jobs and runs the
+        # model in one, so a blanket per-file edit would widen three allowlists
+        # that install nothing.
+        for name, job in _lane_jobs(lane).items():
+            if self._runs_a_model(job):
+                continue
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            present = [host for host in self.ENDPOINTS if host in endpoints]
+            assert not present, (
+                f"{lane} job {name!r} runs no model and installs no sandbox, so "
+                f"allowing {present} widens its egress for nothing"
+            )
+
+    @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
+    def test_no_lane_allows_the_third_party_apt_repositories(self, lane: str) -> None:
+        # The runner image also preinstalls google-chrome and microsoft apt
+        # sources, and a blocked `apt-get update` reports them in the same wall
+        # of text as the ubuntu archive. Their failures are apt WARNINGS (`W:`),
+        # nothing these lanes install comes from them, and reading the log as a
+        # flat list of blocked hosts is the obvious way to widen the allowlist by
+        # two general-purpose vendor CDNs that no longer need to be there.
+        forbidden = ("dl.google.com", "packages.microsoft.com")
+        for name, job in _lane_jobs(lane).items():
+            endpoints = _blocking_endpoints(job)
+            if endpoints is None:
+                continue
+            for host in forbidden:
+                assert not any(entry.startswith(host) for entry in endpoints), (
+                    f"{lane} job {name!r} allows {host}, which only ever produced an "
+                    "apt warning; nothing this lane installs is served from it"
+                )
+
+
 class TestForkGptLaneMantleEgress:
     """The GPT passes call Bedrock on the mantle host, not the runtime host.
 

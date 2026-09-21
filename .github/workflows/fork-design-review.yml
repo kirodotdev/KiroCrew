@@ -67,6 +67,13 @@ jobs:
       # an injection-driven exfil attempt fails at the network layer.
       # VERIFY before merge that this SHA resolves to the intended harden-runner
       # release (authoring host had no network to confirm it).
+      #
+      # The three ubuntu archive hosts carry claude-code-action's bubblewrap
+      # bootstrap (`apt-get install bubblewrap socat`), which this lane needs
+      # because it sets `allowed_non_write_users`. Blocked, the install exits 7
+      # and this lane publishes `review incomplete (advisory)` on every fork PR
+      # -- advisory, so it reads as neutral rather than red and the lane silently
+      # stops reviewing. Full rationale and exfil analysis: fork-opus-review.yml.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -84,6 +91,9 @@ jobs:
             github-production-user-asset-6210df.s3.amazonaws.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr

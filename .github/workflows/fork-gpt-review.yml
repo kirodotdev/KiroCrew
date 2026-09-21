@@ -86,6 +86,13 @@ jobs:
       # https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses, so that
       # host needs its own line. Without it both passes retry five times, exit 1
       # and the lane fails closed with `review incomplete`.
+      #
+      # The three ubuntu archive hosts carry claude-code-action's bubblewrap
+      # bootstrap (`apt-get install bubblewrap socat`). This lane's two GPT
+      # passes do not use that action, so the gap is latent here: it bites only
+      # on the Opus ADJUDICATION pass, which runs solely after pass 2 emits
+      # [BLOCK-MERGE] -- exactly the run that must not fail for an install
+      # reason. Full rationale and exfil analysis: fork-opus-review.yml.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -106,6 +113,9 @@ jobs:
             release-assets.githubusercontent.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr

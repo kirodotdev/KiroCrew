@@ -77,6 +77,13 @@ jobs:
       # runs on Bedrock in us-west-2 (see the AWS_BEDROCK_ROLE_ARN region below).
       # VERIFY before merge that this SHA resolves to the intended harden-runner
       # release (authoring host had no network to confirm it).
+      #
+      # The three ubuntu archive hosts carry claude-code-action's bubblewrap
+      # bootstrap (`apt-get install bubblewrap socat`), which this lane needs
+      # because it sets `allowed_non_write_users`. This lane hid the breakage
+      # rather than escaping it: its early exit on a diff with no UI surface
+      # returns success WITHOUT reaching the model, so the failure only appears
+      # once a fork PR does touch UI. Rationale: fork-opus-review.yml.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -100,6 +107,9 @@ jobs:
             github-production-user-asset-6210df.s3.amazonaws.com:443
             codeload.github.com:443
             registry.npmjs.org:443
+            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:443
 
       - name: Resolve and validate PR (authoritative from GitHub)
         id: pr
