@@ -1,0 +1,272 @@
+# Session Control — driving another session
+
+One chat session can open, seed, watch, stop and close another one. The tools
+come from the `kirocrew-dashboard` MCP server, so an agent that does not mount
+that server never has them — exactly like any other MCP server. This page is the
+reference for all 14 of its tools, written for the agent that is about to use
+them.
+
+The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
+
+- **Session control** — `session_create`, `session_send`,
+  `session_read_message`, `session_stop`, `session_close`. These reach another
+  session.
+- **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
+  `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
+  `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`.
+  These organize what the person sees in the sidebar.
+
+Everything a created session does is visible: it appears in the user's sidebar
+like any other tab, they can read it, take it over, and close it. This is how
+you stand up a workstream alongside your own, not a way to hide work.
+
+## The one mistake to avoid
+
+`session_create` takes `agent`, and **omitting it inherits the CALLER'S OWN
+agent** — not a global default. The schema says so in as many words:
+
+> Omitting it inherits the CALLER'S OWN agent, not a global default:
+> `create_session` falls back to the calling slot's agent so the child stays in
+> this workspace's memory boundary. A conductor that omits it therefore gets a
+> second conductor, which has no `fs_write` and cannot do the work. Name the
+> agent the child needs explicitly — `kirocrew-worker` for a leaf work item.
+
+So a conductor that calls `session_create(title="fix the build")` gets another
+conductor: a session that can dispatch but cannot edit a file. Always pass
+`agent` explicitly.
+
+## Session tools
+
+### `session_create`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `title` | no | Short sidebar name. Say what the session is FOR |
+| `agent` | no (but always pass it) | Agent to bind the session to |
+| `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`) |
+
+No argument is formally required. The new session **starts empty** — nothing runs
+in it until the person types, or until you send it a message. The reply carries
+the new session's key:
+
+```
+🆕 Opened `chat-7` (fix the build) filed in `Build work`. It is empty and
+waiting in the user's sidebar; watch it with session_read_message.
+```
+
+Pass that key as `target` to every other session tool.
+
+### `session_send`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title |
+| `message` | yes | Becomes the target's next user-role turn |
+| `steer` | no (default `false`) | Cut into the turn already running |
+
+Three outcomes, and the reply tells you which one happened:
+
+| Target state | `steer` | What happens |
+|---|---|---|
+| idle | either | It starts a turn on your message straight away |
+| busy | `false` | Queued; it runs when the current turn ends |
+| busy | `true` | Injected into the running turn, so the target reads it mid-work |
+
+A steer that cannot be injected **falls back to the queue** rather than being
+dropped, and the reply says that explicitly. `steer` is ignored on an idle
+target, because the message starts a turn either way.
+
+Use `steer=true` only when waiting would waste the work in flight — the target
+is heading the wrong way, or the thing it is grinding on is already done.
+
+The message lands in the target's transcript tagged as sent by your session, so
+the person reading it can tell it from their own typing.
+
+### `session_read_message`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title |
+| `limit` | no (default 20, max 100) | Max messages to return |
+| `since` | no | Return messages from this index onward |
+
+Read-only: it sends nothing and changes nothing about the target. This is how you
+read a transcript **without joining it** — no message of yours appears in the
+target, and the person's tab is untouched.
+
+The reply opens with a state line and closes with a cursor:
+
+```
+📖 `chat-7` — fix the build (still working, 2 message(s) queued; total=31)
+[29] assistant: ran the build, 3 failures left
+[30] user: keep going
+Pass since=31 on your next read to see only what is new.
+```
+
+Poll by passing the previous read's `next_since` back as `since`, so a loop does
+not re-read what it already saw. Two readings matter:
+
+- `running: false` with nothing new means the target finished and is idle. That
+  is the difference between "not done yet" and "done".
+- `total` is the backlog depth. When it exceeds `next_since` there are older
+  rows this window did not reach — read again immediately instead of waiting.
+
+`wait`, then read. See [Monitor loops](monitor-loops.md) for the loop shape.
+
+### `session_stop` vs `session_close`
+
+Both take only `target`. They are not interchangeable.
+
+| | `session_stop` | `session_close` |
+|---|---|---|
+| What it does | Cancels the in-flight turn, like pressing Stop in that tab | Dismisses the tab, like pressing ✕ |
+| The tab afterwards | Still open, idle | Archived to history, reopenable |
+| A running turn | Cancelled, its work discarded | Cancelled first, then archived |
+| Queued messages | Kept by the first stop; an escalated stop clears them | Saved with the archive and handed back when the conversation is reopened |
+| Use it when | A peer is working on something wrong or already done | You are finished with a peer session you created |
+
+`session_stop` is **cooperative and safe to re-send**. A repeat within
+`stop_retry.WINDOW_SECS` (120 seconds) of your own first stop of that target
+returns the existing "stop already in progress" no-op instead of escalating to a
+hard kill — because a hard kill discards the target's queue and pending steers,
+and a repeat cannot be told apart from a retry of a request that timed out. A
+stop arriving after that window still escalates, so a genuine second decision
+keeps the capability.
+
+The reply distinguishes the two facts a stop can report: `nothing to stop` for a
+target that was never running, and `the earlier stop still stands` for one whose
+cancel is still in flight.
+
+`session_close` is not a permanent delete — the conversation is archived and can
+be reopened — but it does discard a running turn's work. Read the session first
+when you are not sure what it is doing.
+
+## Folders
+
+The sidebar tree the person organizes their sessions in.
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
+| `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything |
+| `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
+| `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
+| `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
+
+Read `chat_folder_tree` before you move anything: it renders folders in the order
+the person actually sees, which is what makes a `before` / `after` anchor safe to
+pick. `before` and `after` are mutually exclusive — one anchor names one
+position — and the anchor must be a sibling. With an anchor and no `new_parent`,
+the anchor chooses the parent, which is how you reorder a folder without moving
+it.
+
+A folder `name` cannot contain `/`: a folder named `A/B` renders identically to
+`B` inside `A` and becomes unaddressable by path. Names are capped at 100
+characters, checked after credential redaction.
+
+`chat_folder_file_self` is the verb a conductor wants: file yourself in the
+goal's folder first, then create each worker with
+`folder="<goal>/<worker agent>"`, and the person finds the conductor and every
+worker under one heading. It can write no placement but its own, which is why it
+is safe to grant where `chat_folder_move_session` is withheld.
+
+Folder moves are metadata only: the session keeps its transcript, its model, and
+any running turn. Archived (history) sessions cannot be moved — revive one into
+the sidebar first. There is no delete verb here.
+
+## Tags
+
+One shared vocabulary of labels. A **status tag** is what a Trello-style column
+filters on, so a session normally carries one at a time.
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `chat_tag_list` | none | Every tag's id, name, color, and whether it is a status tag. Read-only |
+| `chat_tag_create` | `name` (required), `color`, `status` | Create a tag. `name` matches case-insensitively against existing tags, so calling it for one that exists is a safe no-op |
+| `chat_tag_update` | `tag` (required), plus at least one of `name`, `color`, `status` | Rename, recolor, or toggle the status flag |
+| `chat_tag_assign` | `session` (required), `add`, `remove` | Add and/or remove tags on a live session |
+
+`chat_tag_assign` is a **delta**: tags you do not name are kept. It is applied
+compare-and-set against the tag list the call read, so if the person toggles a
+tag at the same moment, the call fails with the current list instead of
+overwriting their click — re-read and retry. At least one of `add` / `remove`
+must be non-empty, and a tag must already exist.
+
+Tag names are capped at 60 characters, checked after redaction. **This server can
+never delete a tag**, so nothing here can lose a label the person put on a
+session. `chat_tag_update` is metadata only: every session carrying the tag keeps
+it, and a column filtering on it keeps filtering.
+
+## What you cannot reach
+
+Session control authorizes on the **calling session's identity**, and only a
+gateway-issued key counts. Refusals you should expect, by code:
+
+| Code | Meaning |
+|---|---|
+| `target_not_found` | No open session matches that key or title. A closed tab is out of scope |
+| `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
+| `self_target` | A session cannot control itself |
+| `not_creator` | The caller is fenced to sessions it created itself (a crew member's DM slot, a scheduled run, and anything either of them created) |
+| `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary |
+| `ephemeral_target` | Incognito and temporary sessions are not addressable |
+| `app_scoped_target` | App-scoped sessions are not addressable, in either direction |
+| `unattended_caller` / `unattended_target` | Scheduled runs cannot be controlled; a cron caller reaches only what it created |
+| `linked_session_target` / `mirrored_target` | A channel-linked or channel-mirrored session is out of scope — reaching it would cross into a thread other people read |
+| `session_control_disabled` | `agent.session_control` is off in config |
+| `create_rate_limited` | Per-caller creation budget spent |
+
+`target` resolves three ways, all of them checked before any answer: the slot
+key (`chat-7`), the transcript name `list_sessions` prints
+(`dashboard_chat-7`), and the session's exact title, matched
+case-insensitively. A string that matches two DIFFERENT sessions across those
+forms is refused rather than guessed at — `session_stop` discards a live turn's
+work, so picking the wrong conversation is the one outcome resolution must never
+produce. Pass the key when a title might collide.
+
+A **spawned subagent has no gateway-issued key of its own**, so every
+session-control tool refuses it: its identity would resolve to its parent slot,
+handing it the parent's authority. Drive sessions from a real session, not from
+inside a subagent.
+
+A **channel agent** (Slack, Telegram, and the rest) is blocked from all five
+session tools by `CHANNEL_AGENT_BLOCKED_TOOLS` in `src/kiro_crew/channel.py`.
+Reading a dashboard transcript would pull a private conversation into a channel
+other humans can see, and sending would run channel text as a turn inside it.
+
+### Switches and ceilings
+
+| Knob | Default | Effect |
+|---|---|---|
+| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec |
+| `agent.member_dispatch` | `true` | A crew member's DM session drives workers it created even when session control is off. Turn it off to put member callers back under the switch |
+
+Rate limits are per caller, per verb, over a 300-second window: **20** session
+creates, **10** folder creates, **10** tag creates. Capacity ceilings sit behind
+them: 500 live sessions, 50 per creator, 500 folders.
+
+## This or `spawn_run`?
+
+Both run work in parallel. They differ in who owns the result and whether the
+person can see it happening.
+
+| | Session control | `spawn_run` |
+|---|---|---|
+| Where the work lives | A real session in the user's sidebar | A background subagent process |
+| Visibility | The person reads, steers and takes over the tab | A completion event injected into your turn |
+| Lifetime | Until closed; survives your session ending | Bounded by the spawn timeout |
+| Two-way traffic | `session_send` in, `session_read_message` out, any number of rounds | Task in, result out; `spawn_steer` for one injection |
+| Nesting | A created session can create its own | Subagents cannot spawn subagents |
+| Cost of a mistake | A tab the person can inspect and stop | A run you re-do |
+| Reach for it when | A workstream needs its own identity, a long life, or the person's oversight | You need fan-out, distillation of a large input, or a blind second opinion |
+
+Rule of thumb: **`spawn_run` for answers, session control for workstreams.** A
+parallel code review is a spawn. A worker that will grind for an hour, report,
+get corrected, and report again is a session.
+
+## Related
+
+- [Subagents & parallel work](subagents.md) — `spawn_run` and the solo gate
+- [Dashboard](dashboard.md) — the sidebar, tabs and queued messages these tools write to
+- [Monitor loops](monitor-loops.md) — the `wait`-then-read shape a watcher uses
+- [Configuration](configuration.md) — where `agent.session_control` lives

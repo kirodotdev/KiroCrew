@@ -45,6 +45,7 @@ organized for someone browsing the repository.
 | [secrets-vault.md](secrets-vault.md) | Storing credentials encrypted where the agent cannot read them. |
 | [monitor-loops.md](monitor-loops.md) | Keeping one session checking something on an interval until an exit condition fires. |
 | [session-ledger.md](session-ledger.md) | The durable per-session work record that survives context compaction. |
+| [session-control.md](session-control.md) | Opening, seeding, watching, stopping and closing another session, and the sidebar folders and tags that file them. |
 | [artifacts.md](artifacts.md) | Saving, versioning, and reverting generated UI and documents. |
 | [computer-use.md](computer-use.md) | Reading and driving native desktop applications; opt-in and off by default. |
 | [decisions.md](decisions.md) | Jev decisions: letting a small fast model pick the automatic skill for a sampled conversation and pick whether a mid-turn message steers or queues, with the shipped behaviour as the fallback; flagging a risky tool call on its own card in a session that approves its own calls, which changes no permission; and a basic diagnostic log for all of them. |

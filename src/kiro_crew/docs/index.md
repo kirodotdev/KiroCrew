@@ -44,6 +44,7 @@ index, first-time setup, and connecting messaging channels.
 | [Artifacts](artifacts.md) | Save, version, and revert generated UI and documents so they outlive the chat scrollback |
 | [Monitor Loops](monitor-loops.md) | Keep one session checking something on an interval — a pull request, a CI run, a deployment — until an exit condition fires |
 | [Session Ledger](session-ledger.md) | A durable per-session record of goal, phase, and next step that survives context compaction |
+| [Session Control](session-control.md) | Let one chat session open, seed, watch, stop and close another one — the 14 `kirocrew-dashboard` MCP tools, plus the sidebar folders and tags that keep them findable |
 | [Browser Control](browser-control.md) | Drive a real web page from the dashboard's Browser panel: navigate, snapshot, click, type, screenshot |
 | [Computer Use](computer-use.md) | Read and drive native desktop applications through the accessibility layer; opt-in and off by default |
 | [Jev Decisions](decisions.md) | Let a small fast model choose the automatic skill for a sampled conversation, choose whether a message sent mid-turn steers or queues, flag a risky tool call on its own card without changing any permission, fall back to what shipped whenever it cannot, and keep a basic log of the calls |
