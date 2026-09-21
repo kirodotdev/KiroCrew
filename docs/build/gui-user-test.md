@@ -222,8 +222,21 @@ logged, or fail with none.
   screenshot's artifact path and the step number. Twelve entries per attempt; a
   duplicate or a malformed call gets a one-line answer and never fails the task. The
   entries ride in `summary.json` under each attempt as `friction[]`.
-- **Identity across nights.** `friction.entry_key(feature, element, what_confused)`
-  after case / whitespace / punctuation normalization. The workflow fetches the
+- **Identity across nights.** `friction.entry_key(feature, element)`
+  after case / whitespace / punctuation normalization -- which control, on which
+  feature. `what_confused` is deliberately not part of it: it is the tester's
+  first-person narration, written fresh every run, and keying on it made one folder
+  row file seven issues across five nights (#11269, #11503, #11504, #11761, #12000,
+  #12261, #12262) including two on a single night from attempt 1 and attempt 2 of
+  the same scenario. Two testers stalling on the same control for different reasons
+  is one issue about that control; each narration still arrives, as the row's
+  current wording and as a recurrence comment. A ledger written before this change
+  (`version: 1`) is re-keyed on load by `friction.migrate_ledger`, which folds the
+  rows that now collide -- earliest `first_seen`, latest `last_seen`, worst
+  severity, newest evidence, the first-filed issue as the survivor and the others
+  recorded in `merged_from`; `count` becomes the number of distinct dates the
+  folded rows can prove, a floor rather than a sum, because a v1 row records no
+  list of nights. The workflow fetches the
   previous `gui-user-test-friction-ledger` artifact, folds
   tonight's entries in (`friction.py merge`: a recurrence bumps `count` and
   `last_seen`, takes the newest sighting's wording and screenshot and keeps the worst

@@ -13,9 +13,16 @@ This module owns everything about those entries once the model has spoken:
 * :func:`validate_entry` -- the only way an entry gets into ``summary.json``
   (every field typed, bounded and stripped; the model cannot smuggle Markdown,
   fences or mentions into a bot-authored comment);
-* :func:`entry_key` -- the cross-night identity ``(feature, element,
-  what_confused)`` after normalization, so the same confusion seen on
-  consecutive nights is one row with a count, not a new row each night;
+* :func:`entry_key` -- the cross-night identity ``(feature, element)`` after
+  normalization, so the same control stalling a tester on consecutive nights is
+  one row with a count, not a new row each night. ``what_confused`` is
+  deliberately NOT part of it: it is the tester's own first-person narration of
+  the stall, written afresh every run, so an identity including it changes
+  whenever the wording does -- one control then files an issue per night, and
+  two per night whenever attempt 1 and attempt 2 both stall on it. A
+  deduplicating key must be built only from fields a machine produces. Each
+  night's narration is kept on the row and reaches the recurrence comment; it
+  just does not decide identity;
 * :func:`merge_ledger` -- folds a run into the ledger the workflow carries
   from night to night as an artifact;
 * :func:`render_section` -- the "New-user friction" block for ``verdict.md``,
@@ -73,7 +80,11 @@ FIELD_MAX = 240
 ATTEMPT_CAP = 12
 #: New issues one night may open; the rest stay in the run summary.
 ISSUE_CAP = 5
-LEDGER_VERSION = 1
+LEDGER_VERSION = 2
+#: Ledger versions this module can read. A ``LEDGER_VERSION - 1`` document is
+#: re-keyed on load (see :func:`migrate_ledger`) because the key changed shape;
+#: anything older or newer is refused rather than guessed at.
+LEDGER_READABLE = (1, 2)
 LEDGER_FILE = "friction_ledger.json"
 LEDGER_ARTIFACT = "gui-user-test-friction-ledger"
 WORKFLOW_PATH = ".github/workflows/gui-user-test.yml"
@@ -158,7 +169,14 @@ FRICTION_TOOL: dict[str, Any] = {
 }
 
 _WS = re.compile(r"\s+")
-_PUNCT = re.compile(r"[^a-z0-9 ]+")
+#: Quote marks delimit a name, they are never part of one, so they go before
+#: anything else is judged: a tester writing ``The "+ New" button`` and one
+#: writing ``The + New button`` mean the same control.
+_QUOTES = re.compile(r"""['"`\u2018\u2019\u201c\u201d\u00ab\u00bb]+""")
+#: Punctuation ATTACHED to a word is incidental -- a trailing ``!``, a comma, a
+#: hyphen inside a slug -- and is dropped so the same control survives being
+#: written up twice.
+_ATTACHED_PUNCT = re.compile(r"(?<=[a-z0-9])[^a-z0-9\s]+|[^a-z0-9\s]+(?=[a-z0-9])")
 
 
 class FrictionError(ValueError):
@@ -181,12 +199,33 @@ def _clean(value: Any, what: str) -> str:
 
 
 def normalize(text: str) -> str:
-    """Case-, whitespace- and punctuation-insensitive form used for the key."""
-    return _WS.sub(" ", _PUNCT.sub(" ", text.lower())).strip()
+    """Case- and whitespace-insensitive form used for the key.
+
+    Punctuation is handled by where it sits, not by which character it is, so
+    there is no symbol allowlist to keep current:
+
+    * quote marks go first -- they delimit a name and are never part of one;
+    * punctuation ATTACHED to a word is incidental (a trailing ``!``, a comma, a
+      hyphen inside a slug) and is dropped, so one control survives being written
+      up twice in slightly different prose;
+    * punctuation STANDING ALONE as its own word is the control's name and is
+      kept, because ``+ New`` and ``- New`` are two controls, not one.
+    """
+    lowered = _QUOTES.sub("", text.lower())
+    return _WS.sub(" ", _ATTACHED_PUNCT.sub("", lowered)).strip()
 
 
-def entry_key(feature: str, element: str, what_confused: str) -> str:
-    raw = "\n".join([feature, normalize(element), normalize(what_confused)])
+def entry_key(feature: str, element: str) -> str:
+    """The cross-night identity of a friction row: which control, on which feature.
+
+    ``what_confused`` is excluded on purpose. It is the tester's own narration,
+    rewritten every run, so a key folding it in reads "I wasn't sure whether the
+    Demos folder was expanded" and "I couldn't tell if the Demos folder was
+    expanded" as two different defects. Two testers stalling on the SAME control
+    for different reasons is one issue about that control, and each narration
+    still arrives -- as the row's current wording, and as a recurrence comment.
+    """
+    raw = "\n".join([feature, normalize(element)])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -216,7 +255,7 @@ def validate_entry(
         "screenshot": str(screenshot),
         "step": int(step),
     }
-    entry["key"] = entry_key(feature, entry["element"], entry["what_confused"])
+    entry["key"] = entry_key(feature, entry["element"])
     return entry
 
 
@@ -280,6 +319,96 @@ def empty_ledger() -> dict[str, Any]:
     return {"version": LEDGER_VERSION, "entries": {}}
 
 
+def migrate_ledger(doc: dict[str, Any]) -> dict[str, Any]:
+    """Re-key a v1 ledger onto the v2 identity, folding rows that now collide.
+
+    A v1 document keys on ``(feature, element, what_confused)``, so several of its
+    rows are one v2 row. Without the re-key a run matches nothing in such a
+    document and opens a fresh issue for every defect it already tracks.
+
+    Folding follows :func:`merge_ledger`'s own rules so a migrated row is
+    indistinguishable from one the lane built night by night: earliest
+    ``first_seen``, latest ``last_seen``, worst severity, and the newest
+    sighting's evidence taken whole. Two numbers cannot be recovered exactly and
+    are therefore floors, not guesses:
+
+    * ``count`` is a FLOOR, taken as the larger of two provable lower bounds: the
+      largest ``count`` any folded row already stores, and the number of distinct
+      dates the folded rows can show (the union of their ``first_seen`` /
+      ``last_seen``). Each is a floor on its own and neither dominates: a row's
+      stored count is an exact distinct-night total for that row -- :func:`merge_ledger`
+      raises it only when ``last_seen`` moves to a new date, and skips a repeated
+      run entirely -- so it must never be reduced, while the date union catches
+      several single-night rows that between them span more dates than any one of
+      them stores. Summing is wrong in the other direction: two rows seen on the
+      same night, which is what attempt 1 and attempt 2 of one scenario produce,
+      would count that night twice.
+    * ``issue`` is the issue of the earliest-first_seen row that has one: the
+      first issue filed for this control is its home. The numbers the other rows
+      carried are kept in ``merged_from`` rather than dropped, so the fold is
+      auditable and no issue silently loses its ledger row.
+
+    ``closed_issues`` is unioned across every member, because the ledger is the
+    only place still naming an issue that was filed, commented on and then closed
+    -- the recurrence footer reads that list to say "earlier issue(s)". Keeping
+    only the newest row's list would drop the others' back-references.
+
+    Writes nothing to GitHub. A migrated row that recurs will comment on its
+    surviving issue on the next real sighting.
+    """
+    rows: dict[str, Any] = doc.get("entries") or {}
+    groups: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for old_key, row in rows.items():
+        feature = str(row.get("feature") or "")
+        element = str(row.get("element") or "")
+        groups.setdefault(entry_key(feature, element), []).append((old_key, row))
+
+    migrated: dict[str, Any] = {}
+    for new_key, members in groups.items():
+        by_first = sorted(members, key=lambda kv: str(kv[1].get("first_seen") or ""))
+        newest = max(members, key=lambda kv: str(kv[1].get("last_seen") or ""))[1]
+        oldest_row = by_first[0][1]
+        row = dict(newest)
+        row["first_seen"] = min(str(r.get("first_seen") or "") for _, r in members)
+        row["last_seen"] = max(str(r.get("last_seen") or "") for _, r in members)
+        dates = {str(r.get(f) or "") for _, r in members for f in ("first_seen", "last_seen")}
+        row["count"] = max(
+            max(int(r.get("count") or 1) for _, r in members),
+            len(dates - {""}) or 1,
+        )
+        row["severity"] = min(
+            (r.get("severity") for _, r in members),
+            key=lambda s: severity_rank(str(s)),
+        )
+        row["issue"] = next(
+            (r.get("issue") for _, r in by_first if r.get("issue") is not None),
+            oldest_row.get("issue"),
+        )
+        # Every member's closed-issue back-references, not just the newest row's.
+        # ``row = dict(newest)`` would keep one list and drop the rest, and the
+        # numbers it drops are issues that were filed, commented on and closed --
+        # the ledger is the only place still naming them, since the recurrence
+        # footer reads this list to say "earlier issue(s)".
+        closed: list[int] = []
+        for _, member in by_first:
+            for number in member.get("closed_issues") or []:
+                value = int(number)
+                if value not in closed:
+                    closed.append(value)
+        # An issue chosen as the survivor is live, not an earlier closed one.
+        closed = [n for n in closed if n != row.get("issue")]
+        if closed:
+            row["closed_issues"] = closed
+        else:
+            row.pop("closed_issues", None)
+        if len(members) > 1:
+            row["merged_from"] = [
+                {"key": k, "issue": r.get("issue"), "count": r.get("count")} for k, r in by_first
+            ]
+        migrated[new_key] = row
+    return {"version": LEDGER_VERSION, "entries": migrated}
+
+
 def load_ledger(path: Optional[Path]) -> dict[str, Any]:
     if path is None or not path.exists():
         return empty_ledger()
@@ -289,13 +418,15 @@ def load_ledger(path: Optional[Path]) -> dict[str, Any]:
         raise FrictionError(f"ledger {path}: {exc}") from exc
     if (
         not isinstance(doc, dict)
-        or doc.get("version") != LEDGER_VERSION
+        or doc.get("version") not in LEDGER_READABLE
         or not isinstance(doc.get("entries"), dict)
     ):
         raise FrictionError(f"ledger {path}: unexpected shape")
     for key, row in doc["entries"].items():
         if not isinstance(row, dict) or row.get("severity") not in SEVERITIES:
             raise FrictionError(f"ledger {path}: entry {key} is malformed")
+    if doc["version"] != LEDGER_VERSION:
+        return migrate_ledger(doc)
     return doc
 
 
@@ -357,8 +488,12 @@ def merge_ledger(
         # Take the newest sighting whole -- surface, wording and evidence together --
         # so a row never pairs an old location with a new screenshot, and a
         # same-day run other than the one recorded (a dispatch after the nightly)
-        # reports ITS evidence under ITS artifact, not the earlier run's. The key
-        # is normalized, so ``element`` / ``what_confused`` may differ in spelling.
+        # reports ITS evidence under ITS artifact, not the earlier run's. The key is
+        # ``(feature, element)`` normalized, so ``element`` may differ in spelling
+        # and ``what_confused`` may be a wholly different sentence about the same
+        # control -- that is the point: this row is the control, and the newest
+        # narration of it replaces the older one here while the recurrence comment
+        # carries it out to the issue.
         for field in ("scenario", "surface", "element", "what_confused", "expected", "actual"):
             row[field] = e[field]
         row["screenshot"] = e["screenshot"]

@@ -111,7 +111,7 @@ class TestEntries:
         e = _entry()
         assert e["feature"] == "members" and e["scenario"] == "members-dm-hello"
         assert e["screenshot"].endswith("02-left_click.png") and e["step"] == 2
-        assert e["key"] == friction.entry_key("members", e["element"], e["what_confused"])
+        assert e["key"] == friction.entry_key("members", e["element"])
         assert set(e) == {
             "feature",
             "scenario",
@@ -126,11 +126,68 @@ class TestEntries:
             "key",
         }
 
-    def test_key_ignores_case_whitespace_and_punctuation(self) -> None:
-        a = friction.entry_key("chat", "The  Send button!", "I could not find it.")
-        b = friction.entry_key("chat", "the send button", "i could NOT find   it")
+    def test_key_ignores_case_whitespace_and_attached_punctuation(self) -> None:
+        a = friction.entry_key("chat", "The  Send button!")
+        b = friction.entry_key("chat", "the send button")
         assert a == b
-        assert friction.entry_key("sidebar", "the send button", "i could not find it") != a
+        assert friction.entry_key("sidebar", "the send button") != a
+
+    def test_a_symbol_that_is_the_controls_name_survives_normalization(self) -> None:
+        """``+ New`` and ``- New`` are two controls, so they are two rows.
+
+        Punctuation is judged by where it sits rather than by which character it
+        is: attached to a word it is incidental and dropped, standing alone as its
+        own word it is the control's name and kept. Deleting every punctuation
+        character folds a plus button and a minus button into one issue -- the same
+        defect as over-splitting, from the other side.
+        """
+        assert friction.entry_key("chat", "+ New") != friction.entry_key("chat", "- New")
+        # Quote marks delimit a name and are never part of one, so quoting style
+        # must not split a control two nights described the same way.
+        assert friction.entry_key("chat", 'The "+ New" button') == friction.entry_key(
+            "chat", "The + New button"
+        )
+
+    def test_key_is_the_control_not_the_testers_narration(self) -> None:
+        """Every narration below is a real filing for ONE stall, and they are one key.
+
+        These are the lane's own words for the same ``sidebar`` /
+        ``Demos folder row`` confusion on five consecutive nights, two of them
+        from attempt 1 and attempt 2 of a single run. An identity that included
+        ``what_confused`` reads them as seven different defects.
+        """
+        narrations = [
+            "I wasn't sure whether the Demos folder was expanded or collapsed in the initial state",
+            "I couldn't tell if the Demos folder was expanded or collapsed from the initial view",
+            "I wasn't sure if the Demos folder was expanded or collapsed in the initial view",
+            "I could not tell if the Demos folder was expanded or collapsed from the initial screenshot",
+            "I clicked the Demos folder expecting it to expand and show sessions inside",
+            "I couldn't tell if the Demos folder was expanded or collapsed at first glance",
+            "I wasn't sure whether the Demos folder was expanded or collapsed in the initial view",
+        ]
+        keys = {
+            _entry(
+                feature="sidebar",
+                element="Demos folder row",
+                what_confused=text,
+            )["key"]
+            for text in narrations
+        }
+        assert len(keys) == 1
+
+    def test_a_different_control_on_the_same_feature_stays_its_own_row(self) -> None:
+        """The negative control: collapsing narration must not collapse controls.
+
+        Without this the previous test passes just as well for a key that ignores
+        ``element`` too, which would fold every stall on a feature into one issue.
+        """
+        folder = _entry(feature="sidebar", element="Demos folder row", what_confused="same words")
+        older = _entry(
+            feature="sidebar",
+            element="Older sessions disclosure",
+            what_confused="same words",
+        )
+        assert folder["key"] != older["key"]
 
     def test_fields_are_trimmed_and_capped_not_rejected(self) -> None:
         e = _entry(what_confused="  x " * 200)
@@ -237,10 +294,34 @@ class TestHarnessRecordsFriction:
         assert r._record_friction(sc, _raw(severity="huge"), entries, "", 2, log).startswith(
             "Not recorded"
         )
+        # Distinct CONTROLS, not distinct narrations: the key is
+        # ``(feature, element)``, so twelve retellings of one stall are one entry
+        # (that fold is the point of the key) and only a new control fills the log.
         for i in range(friction.ATTEMPT_CAP + 2):
-            r._record_friction(sc, _raw(what_confused=f"confusion {i}"), entries, "", 3, log)
+            r._record_friction(sc, _raw(element=f"control {i}"), entries, "", 3, log)
         assert len(entries) == friction.ATTEMPT_CAP
         assert any(k == "friction_dropped" for k, _ in log.records)
+
+    def test_retelling_one_stall_does_not_consume_the_attempt_cap(self) -> None:
+        """A tester who narrates the same control twelve ways files one entry.
+
+        A key that folded in ``what_confused`` would let this loop take twelve
+        slots and exhaust ``ATTEMPT_CAP`` on a single control.
+        """
+        sc = scenarios.load_all(SCENARIOS_DIR)[0]
+        entries: list[dict] = []
+        log = _Log()
+        r = self._runner()
+        for i in range(friction.ATTEMPT_CAP + 2):
+            r._record_friction(
+                sc,
+                _raw(element="the Send button", what_confused=f"confusion {i}"),
+                entries,
+                "",
+                3,
+                log,
+            )
+        assert len(entries) == 1
 
     def test_attempt_result_carries_friction_into_summary(self) -> None:
         att = harness.AttemptResult(
@@ -486,6 +567,227 @@ class TestLedger:
         bad.write_text("{not json")
         with pytest.raises(friction.FrictionError):
             friction.load_ledger(bad)
+
+
+class TestLedgerMigration:
+    """v1 ledgers keyed on the narration; v2 keys on the control.
+
+    Without the migration the key change is a silent regression rather than a fix:
+    the next run matches nothing and opens a fresh issue for every defect the lane
+    is already tracking. ``test_without_migration_every_tracked_row_refiles`` is
+    the control that proves these tests are not vacuous.
+    """
+
+    @staticmethod
+    def _v1(tmp_path: Path, rows: dict) -> Path:
+        p = tmp_path / "ledger.json"
+        p.write_text(json.dumps({"version": 1, "entries": rows}), encoding="utf-8")
+        return p
+
+    @staticmethod
+    def _row(**over) -> dict:
+        row = {
+            "feature": "sidebar",
+            "scenario": "sidebar-folders-and-older-sessions",
+            "surface": "Sessions sidebar",
+            "element": "Demos folder row",
+            "what_confused": "I could not tell if it was expanded",
+            "expected": "a chevron",
+            "actual": "no chevron",
+            "severity": "slows-down",
+            "screenshot": "s/attempt-1/02.png",
+            "first_seen": "2026-09-16",
+            "last_seen": "2026-09-16",
+            "count": 1,
+            "issue": 11269,
+            "run_url": "https://example.invalid/r/1",
+            "artifact_url": "https://example.invalid/a/1",
+            "head_sha": "a" * 40,
+        }
+        row.update(over)
+        return row
+
+    def test_v1_rows_for_one_control_fold_onto_one_v2_row(self, tmp_path: Path) -> None:
+        old = {
+            "k1": self._row(issue=11269, first_seen="2026-09-16", last_seen="2026-09-16"),
+            "k2": self._row(
+                issue=11503,
+                what_confused="no expand indicator at all",
+                first_seen="2026-09-17",
+                last_seen="2026-09-17",
+                severity="blocker",
+            ),
+            "k3": self._row(
+                issue=11504,
+                what_confused="clicking collapsed it instead",
+                first_seen="2026-09-17",
+                last_seen="2026-09-20",
+                screenshot="s/attempt-2/02.png",
+            ),
+        }
+        led = friction.load_ledger(self._v1(tmp_path, old))
+        assert led["version"] == 2
+        assert len(led["entries"]) == 1
+        row = next(iter(led["entries"].values()))
+        assert row["first_seen"] == "2026-09-16" and row["last_seen"] == "2026-09-20"
+        # Three distinct dates are provable (09-16, 09-17, 09-20) and no member
+        # stores more than one, so the floor is 3. Summing the three counts would
+        # claim four nights, two of which were the same night.
+        assert row["count"] == 3
+        assert row["severity"] == "blocker"
+        # The survivor is the first issue filed for this control.
+        assert row["issue"] == 11269
+        # Newest sighting's evidence, taken whole.
+        assert row["screenshot"] == "s/attempt-2/02.png"
+        assert row["what_confused"] == "clicking collapsed it instead"
+        # Nothing is dropped: the other issues keep a home in the ledger.
+        assert [m["issue"] for m in row["merged_from"]] == [11269, 11503, 11504]
+
+    def test_distinct_controls_are_not_folded(self, tmp_path: Path) -> None:
+        old = {
+            "k1": self._row(element="Demos folder row", issue=11269),
+            "k2": self._row(element="Older sessions disclosure", issue=11270),
+        }
+        led = friction.load_ledger(self._v1(tmp_path, old))
+        assert len(led["entries"]) == 2
+        assert all("merged_from" not in r for r in led["entries"].values())
+
+    def test_a_migrated_row_is_matched_by_tonights_entry(self, tmp_path: Path) -> None:
+        """The whole point: tonight's sighting must land on the migrated row."""
+        led = friction.load_ledger(self._v1(tmp_path, {"k1": self._row()}))
+        tonight = _entry(
+            feature="sidebar",
+            element="Demos folder row",
+            what_confused="wording nobody has used before",
+        )
+        merged, new_keys = friction.merge_ledger(
+            led, [tonight], date="2026-09-21", run_url="https://example.invalid/r/2"
+        )
+        assert new_keys == []  # a recurrence, not a new issue
+        row = merged["entries"][tonight["key"]]
+        assert row["issue"] == 11269 and row["count"] == 2
+
+    def test_without_migration_every_tracked_row_refiles(self, tmp_path: Path) -> None:
+        """Negative control -- what the migration prevents.
+
+        Feed the same v1 document straight in as if it were already v2 and the
+        night's entry matches nothing, so the lane opens a second issue for a
+        defect it is already tracking.
+        """
+        unmigrated = {"version": 2, "entries": {"k1": self._row()}}
+        tonight = _entry(
+            feature="sidebar",
+            element="Demos folder row",
+            what_confused="wording nobody has used before",
+        )
+        _merged, new_keys = friction.merge_ledger(
+            unmigrated, [tonight], date="2026-09-21", run_url="https://example.invalid/r/2"
+        )
+        assert new_keys == [tonight["key"]]
+
+    def test_a_rows_own_night_count_is_never_reduced(self, tmp_path: Path) -> None:
+        """A v1 ``count`` is an exact distinct-night total and must survive re-keying.
+
+        ``merge_ledger`` raises ``count`` only when ``last_seen`` moves to a new
+        date and skips a repeated run entirely, so a row reading ``count: 5``
+        was seen on five nights while storing only the first and the last. A
+        migration that recomputed the number from the dates it can see would
+        report two, and every later recurrence comment would count up from there.
+        This holds for a row that collides with nothing, which is most of them.
+        """
+        old = {
+            "k1": self._row(count=5, first_seen="2026-09-16", last_seen="2026-09-20"),
+        }
+        led = friction.load_ledger(self._v1(tmp_path, old))
+        assert len(led["entries"]) == 1
+        assert next(iter(led["entries"].values()))["count"] == 5
+
+    def test_the_date_union_still_raises_a_fold_of_single_night_rows(self, tmp_path: Path) -> None:
+        """The other direction: neither bound dominates, so the floor is the larger.
+
+        Three rows each storing ``count: 1`` on three different nights are three
+        nights, which no member's own count shows.
+        """
+        old = {
+            "k1": self._row(count=1, first_seen="2026-09-16", last_seen="2026-09-16"),
+            "k2": self._row(
+                count=1,
+                what_confused="a second telling",
+                first_seen="2026-09-17",
+                last_seen="2026-09-17",
+            ),
+            "k3": self._row(
+                count=1,
+                what_confused="a third telling",
+                first_seen="2026-09-20",
+                last_seen="2026-09-20",
+            ),
+        }
+        led = friction.load_ledger(self._v1(tmp_path, old))
+        assert len(led["entries"]) == 1
+        assert next(iter(led["entries"].values()))["count"] == 3
+
+    def test_every_members_closed_issue_references_survive(self, tmp_path: Path) -> None:
+        """A closed issue is named nowhere but the ledger, so the union is kept.
+
+        ``file_issues`` moves an issue into ``closed_issues`` when a recurrence
+        comment lands on a closed thread, and the recurrence footer reads that list
+        back as "earlier issue(s)". Taking the newest row whole keeps one list and
+        drops the rest, and the numbers dropped belong to issues that were filed
+        and commented on -- GitHub still has them, but nothing points at them.
+        """
+        old = {
+            "k1": self._row(issue=None, closed_issues=[11269, 11503], first_seen="2026-09-16"),
+            "k2": self._row(
+                issue=None,
+                closed_issues=[11503, 11761],
+                what_confused="a later telling",
+                first_seen="2026-09-18",
+                last_seen="2026-09-19",
+            ),
+            "k3": self._row(
+                issue=12261,
+                closed_issues=[12000],
+                what_confused="the newest telling",
+                first_seen="2026-09-20",
+                last_seen="2026-09-20",
+            ),
+        }
+        row = next(iter(friction.load_ledger(self._v1(tmp_path, old))["entries"].values()))
+        # Union, de-duplicated, in first-seen order -- 11503 appears on two rows.
+        assert row["closed_issues"] == [11269, 11503, 11761, 12000]
+        assert row["issue"] == 12261
+
+    def test_the_surviving_live_issue_is_not_also_listed_as_closed(self, tmp_path: Path) -> None:
+        """Negative control: a live issue must not appear in its own closed list.
+
+        Without this the union would happily report the surviving issue as an
+        earlier closed one, and the footer would name it twice.
+        """
+        old = {
+            "k1": self._row(issue=None, closed_issues=[11269], first_seen="2026-09-16"),
+            "k2": self._row(
+                issue=11269,
+                what_confused="a later telling",
+                first_seen="2026-09-18",
+                last_seen="2026-09-18",
+            ),
+        }
+        row = next(iter(friction.load_ledger(self._v1(tmp_path, old))["entries"].values()))
+        assert row["issue"] == 11269
+        assert "closed_issues" not in row
+
+    def test_an_unknown_ledger_version_is_refused_not_guessed_at(self, tmp_path: Path) -> None:
+        for version in (0, 3, "2"):
+            p = tmp_path / f"v{version}.json"
+            p.write_text(json.dumps({"version": version, "entries": {}}), encoding="utf-8")
+            with pytest.raises(friction.FrictionError, match="unexpected shape"):
+                friction.load_ledger(p)
+
+    def test_a_malformed_v1_row_is_refused_before_migration(self, tmp_path: Path) -> None:
+        p = self._v1(tmp_path, {"k1": self._row(severity="enormous")})
+        with pytest.raises(friction.FrictionError, match="malformed"):
+            friction.load_ledger(p)
 
 
 class TestIssues:
