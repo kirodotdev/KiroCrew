@@ -2435,8 +2435,13 @@ is what says whether it worked.
 catalog-membership gate described above — into session
 context as a `[UI LANGUAGE] <tag>` block (next to `[CURRENT AGENT]`/`[RUNTIME]`,
 and in `minimal_context` mode as well). It exists for one string: the tool-call
-purpose (`__tool_use_purpose`), which the dashboard paints as the tool-call pill
-label and the messaging renderers reuse as the task title. That is the only piece
+purpose, which the dashboard paints as the tool-call pill label and the
+messaging renderers reuse as the task title. Which field carries that string
+depends on the harness — the Kiro backend's reserved `__tool_use_purpose`
+argument, or the `description` field other backends' shell tool takes beside
+`command` (`acp/_dispatch.py::select_tool_title` reads it first) — so the block
+names both; a model on the second kind never sees a field called "purpose" and
+would otherwise miss the steer. That is the only piece
 of model-generated prose rendered as *chrome*, and without the block the model
 has nothing to go on and mirrors the language the user typed in — an inferred
 signal that flips mid-session the moment the user pastes an English stack trace,

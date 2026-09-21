@@ -1706,7 +1706,14 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
 def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     """Build the [UI LANGUAGE] block from ``dashboard.language``.
 
-    Tool-call purpose text (``__tool_use_purpose``) is the one piece of
+    Which FIELD carries the tool-call purpose depends on the harness: the Kiro
+    backend injects a reserved ``__tool_use_purpose`` argument into every tool
+    schema, while other backends' shell tool takes a ``description`` field
+    beside ``command`` (``select_tool_title`` in ``acp/_dispatch.py`` reads it
+    first). The block names both, because a model on the second kind never
+    sees a field called "purpose" and would otherwise miss the steer.
+
+    Tool-call purpose text is the one piece of
     model-generated prose that renders as UI *chrome* rather than as a reply:
     the dashboard shows it as the tool-call pill label, and the messaging
     renderers (Slack/Discord/Telegram/...) reuse it as the task title. Every
@@ -1749,7 +1756,9 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
         f"[UI LANGUAGE] {lang}\n"
         "The interface around your output is rendered in this language "
         "(BCP-47 tag). Write the short purpose you attach to each tool call in "
-        "this language too, so the tool-call timeline and the task titles "
+        "this language too, whichever field carries it: the reserved "
+        "`__tool_use_purpose` argument, or a tool's own `description` field "
+        "(as on a shell tool), so the tool-call timeline and the task titles "
         "derived from it read in one language instead of two.\n"
         "This applies ONLY to that tool-call purpose text. Your replies to the "
         "user keep following the language the user writes in, and code, "
