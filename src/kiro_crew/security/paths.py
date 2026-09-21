@@ -1391,7 +1391,8 @@ class PathResolutionStalled(RuntimeError):
 
 
 def _stall_prefix(expanded: str) -> str:
-    """The path prefix a stall is charged to: the first two components.
+    """The path prefix a stall is charged to: the first two components, extended
+    by one when the second names a container of home directories.
 
     A wedged mount stalls everything beneath its mount point, and mount points
     sit at depth one or two (``/home/<user>`` autofs, ``/Volumes/<share>``,
@@ -1410,6 +1411,30 @@ def _stall_prefix(expanded: str) -> str:
     the profile refused path resolution for essentially the whole host -- the exact
     opposite of the per-mount isolation this function exists to provide.
 
+    **The key never ENDS on a container of homes**, a component spelled ``home``.
+    A host whose homes sit one level deeper than ``/home`` reproduces the
+    ``C:\\Users`` collapse on POSIX: two components of ``/local/home/<user>/ws/f``
+    is ``/local/home``, which holds every user, every workspace and checkout, the
+    data home and the credential stores, so one stall anywhere under it refused
+    path resolution for the whole host (kirodotdev/KiroCrew#12386).  When the
+    second component is such a container the key takes one more, so the boundary
+    is the home directory itself -- ``/local/home/<user>`` -- exactly the key a
+    ``/home/<user>`` layout already gets.  Every other key is unchanged, and the
+    container alone (``/local/home``) stays its own key.
+
+    The rule is lexical, like the rest of this function: it must not touch the
+    filesystem, because it is consulted BEFORE deciding whether to probe at all
+    and it names the prefix charged when the ``$HOME`` anchor itself stalls.  A
+    mount-derived key (``os.path.ismount`` walked upward) would both ``lstat``
+    the very mount that may be wedged and, on a single-filesystem host, reach
+    ``/`` -- a process-wide key, worse than the collapse.  The price of a lexical
+    key stands: two spellings of one tree (``/home/<user>`` and its
+    ``/local/home/<user>`` target) remain two keys, each paying its own timeout.
+    And when the container is itself ONE wedged mount (an NFS ``/export/home``),
+    each user's tree pays its own timeout and pins its own worker -- the cost a
+    ``/home/<user>`` autofs layout already carries per user, bounded the same
+    way, by the pool size -- in exchange for the isolation this key exists for.
+
     A UNC share root is returned whole: ``\\\\server\\share`` IS the mount point,
     and ``splitdrive`` already reports it as the drive, so no component of the
     remainder belongs in the key.
@@ -1420,6 +1445,17 @@ def _stall_prefix(expanded: str) -> str:
         return drive
     parts = rest.split(os.sep)
     keep = 3 if parts and parts[0] == "" else 2  # leading "" for an absolute path
+    # A component spelled ``home`` is a CONTAINER of home directories, never a home:
+    # ``/home/<user>`` is the common layout, and the layouts that put the homes one
+    # level deeper all keep the word -- ``/local/home/<user>`` on a cloud desktop
+    # (where ``/home/<user>`` is a symlink into it), ``/usr/home`` on FreeBSD,
+    # ``/var/home`` on Fedora Silverblue, ``/export/home`` on Solaris and NFS
+    # servers.  ``Users`` needs no entry: it only ever sits at depth one
+    # (``/Users/<user>``, ``C:\Users\<user>``), where the key already ends on the
+    # user.  Matched exactly: the container is spelled by the OS or the
+    # administrator, not by the agent.
+    if len(parts) > keep and parts[keep - 1] == "home":
+        keep += 1  # the container holds every user: key on the home beneath it
     return (drive + os.sep.join(parts[:keep])) or normalized
 
 
