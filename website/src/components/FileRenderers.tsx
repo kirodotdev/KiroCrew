@@ -15,7 +15,8 @@ const CSV_EXTS = new Set(['.csv', '.tsv'])
 // Media served through /api/file-stream (Range-capable). Split decides the
 // element: <video> renders a picture surface, <audio> a compact control bar.
 // .ogg goes to audio -- the extension is overwhelmingly audio in practice and
-// the .ogv variant exists for video.
+// the .ogv variant exists for video. .opus is an audio-only Ogg mapping, so it
+// follows the same compact-player route.
 const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.mkv', '.ogv'])
 const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga', '.opus'])
 const JSON_EXTS = new Set(['.json'])
