@@ -62,11 +62,15 @@ class TestShippedScenarios:
         # the sum of the scenarios' own limits, which the nightly tier then inherits.
         # The totals are pinned, not bounded, so a new smoke scenario moves them on
         # purpose and the cost note in docs/build/gui-user-test.md is re-read with them.
+        # Re-pin by summing `max_steps` / `max_seconds` over this `smoke` selection;
+        # the assertion messages print the live totals, so a stale pin names its fix.
         for s in smoke:
             assert len(s.steps) <= 5, s.name
             assert s.max_steps <= 14, s.name
-        assert sum(s.max_steps for s in smoke) == 190
-        assert sum(s.max_seconds for s in smoke) == 5100
+        smoke_steps = sum(s.max_steps for s in smoke)
+        smoke_seconds = sum(s.max_seconds for s in smoke)
+        assert smoke_steps == 190, f"smoke max_steps total is {smoke_steps}; re-pin"
+        assert smoke_seconds == 5100, f"smoke max_seconds total is {smoke_seconds}; re-pin"
 
     def test_nightly_includes_smoke(self) -> None:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
