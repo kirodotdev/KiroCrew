@@ -11,10 +11,12 @@ header field and a read-side ``flattenLineage``: the record lives on the child,
 the tree is a pure function over the collection, and an orphan or a cycle
 degrades to root rather than to an error.
 
-Two pieces, kept apart so each is testable on its own:
+Three pieces, kept apart so each is testable on its own:
 
 * :func:`fold_tree` -- pure. :class:`OpenedRecord` in, one :class:`TreeNode`
   per slot out.
+* :func:`fold_slot_chain` -- pure. The same records in, one slot's logs out,
+  newest first, with the reason the walk stopped.
 * :class:`SessionTree` -- the scanner. It reads the header and the first entry
   of every session log's oldest surviving segment and keeps that head cached
   per unit, for at most :data:`TREE_UNIT_CAP` units per scan. The store never
@@ -36,6 +38,27 @@ The tree is keyed by SLOT. ``parent.sid`` on the entry is the creator's ACP
 session id at the moment of creation -- an audit citation for a reader of the
 logs themselves, not a tree key: a slot outlives its ACP session, and the live
 row a child nests under is the slot's. This reader does not read it.
+
+The same first entry carries a SECOND edge, on a different axis, and this module
+reads both. ``parent {slot, sid?}`` is PARENTHOOD, between two slots. ``previous
+{sid}`` is SUCCESSION, between two logs of ONE slot: a slot outlives its ACP
+session, so a supersede -- a restart whose ``session/load`` does not re-attach, a
+reset, an agent, model or effort switch, a compaction, a provider swap -- gives
+that slot a new log under a new id, and the new log names the one it replaced.
+Parenthood is keyed by slot and folded over the whole collection; succession is
+keyed by ACP session id and WALKED from one log backwards, because its whole
+purpose is the order the slot's logs came in, which a slot-keyed fold cannot
+express. :func:`fold_slot_chain` is that walk, and it is the third piece.
+
+The walk enforces the edge's own specification rather than trusting it. ``previous``
+means the log the SAME slot was writing, so a step is taken only onto a log whose
+immutable header slot matches the one the walk started on. The emitter checks this
+too when it writes the edge, and that is not a reason for the reader to skip it: the
+id reaches the emitter from an agent-writable mapping, logs written before that
+check existed are still on disk, and a walk that followed a foreign edge would
+present another slot's turns, costs and approvals as this slot's own. A step it
+refuses ends the walk and says so, which is strictly better than a wrong answer
+that calls itself whole.
 """
 
 from __future__ import annotations
@@ -77,16 +100,62 @@ TYPE_OPENED: Final[str] = "session/opened"
 #: store far smaller); a store that reaches it usually has retention disabled.
 TREE_UNIT_CAP: Final[int] = 4096
 
+#: How many logs ONE slot-succession walk visits, counting the log it starts on.
+#: Separate from :data:`TREE_UNIT_CAP` because it bounds a different thing: the
+#: cap above bounds how much of the store a SCAN admits, this one bounds how far
+#: a walk steps through what that scan already produced. A walk is over records
+#: held in memory, so the cost it refuses is not I/O but an unbounded loop over
+#: records whose edges an agent-writable mapping can influence. A slot reaches a
+#: new log only by being superseded -- a restart, a reset, a model switch -- so a
+#: real slot's population is orders below this, and a walk that hits the bound
+#: reports :data:`CHAIN_END_CAP` rather than pretending it reached the first log.
+SLOT_CHAIN_CAP: Final[int] = 512
+
+#: Why a succession walk stopped. Exactly one holds, which is why this is one
+#: field rather than several flags: "ran off the end", "refused a step" and "hit
+#: the bound" are alternatives, and a set of bools would make their impossible
+#: combinations representable and force every reader to check all of them.
+#:
+#: Only :data:`CHAIN_END_FIRST` means the walk reached the slot's whole life. The
+#: other four each mean there is more the walk could not reach, and they are kept
+#: apart because the remedies differ: retention took a log, a step was refused as
+#: another slot's, the edges form a loop, the bound was hit.
+CHAIN_END_FIRST: Final[str] = "first"
+#: The cited log answered no record -- retention removed it, or its header was
+#: refused. An absence, and the ordinary end of an old chain.
+CHAIN_END_MISSING: Final[str] = "missing"
+#: The cited log exists and its immutable header names a DIFFERENT slot, so the
+#: step is REFUSED. Not an absence: a record that should not have been written,
+#: and the one end reason that reports damage rather than age.
+CHAIN_END_FOREIGN: Final[str] = "foreign"
+#: The cited log is already on this walk. Reachable only through forged or
+#: damaged records, since a log cannot have superseded its own successor.
+CHAIN_END_CYCLE: Final[str] = "cycle"
+#: :data:`SLOT_CHAIN_CAP` visits were made and the chain had not ended.
+CHAIN_END_CAP: Final[str] = "cap"
+#: The log the walk was ASKED to start from answered no usable record, so there
+#: is no slot to walk and no citation to report. Distinct from
+#: :data:`CHAIN_END_MISSING`, which is a step that failed after a real start.
+CHAIN_END_UNKNOWN: Final[str] = "unknown"
+
 
 @dataclass(frozen=True)
 class OpenedRecord:
-    """What one session log contributes: its header identity, and the creator
-    slot its first entry names (``None`` for a session nobody created)."""
+    """What one session log contributes: its header identity, the creator
+    slot its first entry names (``None`` for a session nobody created), and the
+    log of the SAME slot this one superseded (``None`` when it is that slot's
+    first, which the emitter writes as an omitted key so the two are distinct).
+
+    The two citations are on different axes and neither implies the other: a slot
+    that nobody created still supersedes its own earlier logs, and a slot's first
+    log still names its creator.
+    """
 
     sid: str
     slot: str
     created_at: int
     parent_slot: str | None = None
+    previous_sid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +191,22 @@ class TreeReading:
     """
 
     nodes: dict[str, TreeNode]
+    incomplete: bool
+
+
+@dataclass(frozen=True)
+class ChainReading:
+    """One scan's succession chain, and whether that scan saw every unit.
+
+    The pair exists for the same reason :class:`TreeReading` is a pair, and the
+    consequence is sharper: a chain's ``ended`` reason is computed from the records
+    a scan produced, so a predecessor the scan never admitted is indistinguishable
+    -- to the walk -- from one retention removed. ``incomplete`` is the only thing
+    that separates "the slot's chain ends here" from "my scan ends here", and a
+    reader that totals a whole life must not present the second as the first.
+    """
+
+    chain: SlotChain
     incomplete: bool
 
 
@@ -195,6 +280,97 @@ def _cycle_members(edge: Mapping[str, str]) -> set[str]:
     return members
 
 
+@dataclass(frozen=True)
+class SlotChain:
+    """One slot's logs in succession order, newest first, and why the walk stopped.
+
+    ``sids`` always begins with the log the walk was asked to start from, so a slot
+    with one log answers a single id and :data:`CHAIN_END_FIRST`. It is empty only
+    for :data:`CHAIN_END_UNKNOWN`, where that starting log answered no record.
+
+    ``ended`` is the load-bearing field and a reader that joins folds MUST read it.
+    ``sids`` alone cannot say whether it is the slot's whole life: a chain cut short
+    by retention, a refused step, a loop or the bound looks exactly like a complete
+    one from the ids. Only :data:`CHAIN_END_FIRST` means whole.
+
+    ``cited`` is the id the walk could not follow -- present for
+    :data:`CHAIN_END_MISSING`, :data:`CHAIN_END_FOREIGN` and
+    :data:`CHAIN_END_CYCLE`, and ``None`` otherwise. It is kept because it is
+    evidence: a reader reporting an incomplete chain can name the log it stopped
+    at, and for :data:`CHAIN_END_FOREIGN` that id is the only record of a citation
+    that should never have been written.
+    """
+
+    slot: str
+    sids: tuple[str, ...]
+    ended: str
+    cited: str | None = None
+
+
+def fold_slot_chain(records: Iterable[OpenedRecord], head_sid: str) -> SlotChain:
+    """The logs of *head_sid*'s slot, newest first, by walking ``previous``. Pure.
+
+    Bounded by :data:`SLOT_CHAIN_CAP` visits, cycle-guarded by the set of ids
+    already visited, and restricted to ONE slot: a step is taken only onto a
+    record whose header slot equals the slot the walk started on.
+
+    The same-slot rule is the reader's own enforcement of what ``previous`` means,
+    not a re-check of something already guaranteed. The id reaches the emitter from
+    an agent-writable mapping; the emitter verifies the candidate's header before
+    writing the edge, but logs written before that check existed are still on disk
+    and a damaged entry can carry anything. Following a foreign edge would join
+    another slot's turns, costs and approvals into this slot's whole-life figure --
+    a wrong answer presenting itself as complete -- so the step is refused and the
+    walk ends at :data:`CHAIN_END_FOREIGN`.
+
+    A cited id that no record answers is NOT the same refusal and gets its own
+    reason: retention removing an old log is the ordinary way a long-lived slot's
+    chain ends, and reporting that as damage would cry wolf on every healthy store.
+
+    Order is the edges', never a timestamp. ``created_at`` is wall clock, so a
+    backward clock step across a restart gives the newer log the earlier stamp and
+    two creates inside one millisecond tie; the edge inverts in neither case, which
+    is the whole reason it was recorded.
+    """
+    by_sid: dict[str, OpenedRecord] = {}
+    for record in records:
+        # First writer wins, so a duplicate id -- which the store's own layout makes
+        # impossible and only a hand-built record list can produce -- cannot make
+        # the same walk answer differently on two runs over the same input.
+        if record.sid and record.sid not in by_sid:
+            by_sid[record.sid] = record
+
+    head = by_sid.get(head_sid)
+    if head is None or not head.slot:
+        # No record, or one whose header carried no slot. Either way there is no
+        # slot to hold the walk to, and a walk with no same-slot rule is exactly
+        # the foreign-edge hazard above, so it does not start.
+        return SlotChain(slot="", sids=(), ended=CHAIN_END_UNKNOWN)
+
+    slot = head.slot
+    sids: list[str] = [head.sid]
+    seen: set[str] = {head.sid}
+    cursor = head
+    while True:
+        cited = cursor.previous_sid
+        if cited is None:
+            return SlotChain(slot=slot, sids=tuple(sids), ended=CHAIN_END_FIRST)
+        if cited in seen:
+            return SlotChain(slot, tuple(sids), CHAIN_END_CYCLE, cited)
+        if len(sids) >= SLOT_CHAIN_CAP:
+            # Checked BEFORE the lookup so the bound limits the work, not just the
+            # answer's length.
+            return SlotChain(slot, tuple(sids), CHAIN_END_CAP, None)
+        step = by_sid.get(cited)
+        if step is None:
+            return SlotChain(slot, tuple(sids), CHAIN_END_MISSING, cited)
+        if step.slot != slot:
+            return SlotChain(slot, tuple(sids), CHAIN_END_FOREIGN, cited)
+        sids.append(step.sid)
+        seen.add(step.sid)
+        cursor = step
+
+
 def opened_record(
     directory: Path, header: Mapping[str, Any] | None, entry: Entry | None
 ) -> OpenedRecord | None:
@@ -217,6 +393,15 @@ def opened_record(
     took the creating segment, a process that died between create and announce
     -- contributes the slot with no parent, which the fold reads as "no parent
     known here", never as a retraction.
+
+    The superseded log is taken from the same entry's ``previous.sid``, and here
+    the id IS the value: succession is an edge between logs, so the citation a
+    walk follows is the id and there is no slot key to prefer. It is bounded by
+    ``MAX_ACP_SESSION_ID_LEN`` rather than ``MAX_SHORT_STRING`` for that reason.
+    An entry that names no ``previous`` contributes none, which
+    :func:`fold_slot_chain` reads as "this is the slot's first log" -- the
+    emitter omits the key rather than writing a null exactly so that a reader can
+    tell that from a predecessor it failed to record.
     """
     if header is None or entry is None or header.get("type") != KIND_SESSION:
         return None
@@ -230,6 +415,7 @@ def opened_record(
         return None
     created = header.get("createdAt")
     parent_slot: str | None = None
+    previous_sid: str | None = None
     if entry.type == TYPE_OPENED:
         parent = entry.data.get("parent")
         if isinstance(parent, dict):
@@ -238,11 +424,27 @@ def opened_record(
                 return None
             if isinstance(cited_slot, str) and cited_slot:
                 parent_slot = cited_slot
+        # The superseded log of this same slot. Bounded by the SESSION ID limit,
+        # not the short-string one: it is an ACP session id, the same kind of
+        # value as ``sid`` above, and it is retained in the scanner's cache for as
+        # long as the log exists. Refusing the whole record past the bound rather
+        # than dropping just this key is deliberate and matches the parent above:
+        # a value the gateway never writes means this entry is not the emitter's,
+        # so nothing on it should be believed -- and a truncated id would be a
+        # different key, which would resolve to no log or, worse, to another one.
+        previous = entry.data.get("previous")
+        if isinstance(previous, dict):
+            cited_sid = previous.get("sid")
+            if cited_sid is not None and not _bounded(cited_sid, MAX_ACP_SESSION_ID_LEN):
+                return None
+            if isinstance(cited_sid, str) and cited_sid:
+                previous_sid = cited_sid
     return OpenedRecord(
         sid=sid,
         slot=slot if isinstance(slot, str) else "",
         created_at=created if isinstance(created, int) and not isinstance(created, bool) else 0,
         parent_slot=parent_slot,
+        previous_sid=previous_sid,
     )
 
 
@@ -531,6 +733,42 @@ class SessionTree:
         use :meth:`reading` there.
         """
         return self.reading(preferred).nodes
+
+    def chain(self, head_sid: str, preferred: Iterable[str] = ()) -> ChainReading:
+        """One slot's succession chain as of this scan, WITH whether that scan saw
+        the whole store.
+
+        *head_sid* is the log to walk back from -- for a dashboard caller, the unit
+        a slot key resolves to. It is admitted FIRST, ahead of *preferred*, because
+        a walk that cannot read its own starting log answers
+        :data:`CHAIN_END_UNKNOWN` and nothing else is worth scanning for.
+
+        ``incomplete`` matters more here than it does for the tree, and a caller
+        must not collapse it into ``ended``. A predecessor this scan did not admit
+        -- past :data:`TREE_UNIT_CAP`, or a unit whose bytes faulted -- is absent
+        from the records, so the walk reports :data:`CHAIN_END_MISSING` for a log
+        that is on disk and readable. The walk cannot tell those apart; only the
+        scan can, and it says so here. So an incomplete reading downgrades every
+        end reason except :data:`CHAIN_END_FIRST` to "this is where MY scan
+        stopped", which is why the two travel in one object taken from one call.
+
+        Never raises, for the reason :meth:`snapshot` does not: a whole-life figure
+        is an enrichment, and a store fault must not take its page down.
+        """
+        try:
+            records, faulted, over_cap = self._records_with_fault([head_sid, *preferred])
+            return ChainReading(
+                chain=fold_slot_chain(records, head_sid), incomplete=faulted or over_cap
+            )
+        except Exception:  # pragma: no cover -- defensive; the store calls are guarded
+            logger.warning(
+                "session chain scan failed for %s; reporting no succession",
+                head_sid,
+                exc_info=True,
+            )
+            return ChainReading(
+                chain=SlotChain(slot="", sids=(), ended=CHAIN_END_UNKNOWN), incomplete=True
+            )
 
 
 def parent_payload(

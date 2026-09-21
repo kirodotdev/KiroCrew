@@ -234,8 +234,13 @@ retired id. `SessionMap.get` repairs or removes an entry it judges stale, so
 consulting it would make a panel READ mutate session state, which is the reason
 `crew_log/resolve.py` documents for never touching it. And a retired unit belongs
 to a session this slot no longer is: presenting its totals here would imply a
-whole-life figure, which needs the lineage pointer (`session/opened.data.previous`)
-and a fold that follows it -- neither exists yet (§8).
+whole-life figure. Both halves a whole-life figure needs now exist -- the lineage
+pointer `session/opened.data.previous`, and `session_tree.fold_slot_chain`, which
+walks it newest unit first, bounded, cycle-guarded and held to one slot -- but this
+route calls neither, so what it reports is still what is addressable. Joining the
+folds those ids name is the remaining step, and it must read the walk's own `ended`
+reason: only `first` means the chain reached the slot's first unit, so any other
+reason totals PART of a life and must not be presented as the whole of one (§8).
 
 `writes_drained` -- whether the emitter owed nothing when the fold was taken. An
 append is handed to a queue and the entry point returns, so a turn can END with its
@@ -288,10 +293,12 @@ of those folds the CURRENT record and not the retired one -- totals drop, and
 nothing in the answer says why. A key whose session was torn down and not
 re-created resolves to nothing and reads back the empty fold at seq 0, which is the
 same answer a session with no entries gets; the difference is not observable from
-here. A reader that must span a slot's retired units needs the lineage pointer
-(`session/opened.data.previous`) and a fold that follows it, which this module does
-not do. The dashboard panel states the limit in its own footer rather than implying
-a whole-life total.
+here. A reader that must span a slot's retired units has the lineage pointer
+(`session/opened.data.previous`) and the fold that follows it
+(`session_tree.fold_slot_chain`); this module calls neither, and folding one unit
+and reading nothing else is the property FR-4 pins on it, so the join belongs to a
+caller above it rather than here. The dashboard panel states the limit in its own
+footer rather than implying a whole-life total.
 
 Those two are the BROWSER's door: cookie auth, keyed on a session id the dashboard
 already holds. A second, unit-keyed door serves the `kirocrew-crew-log` MCP server
@@ -521,10 +528,12 @@ can tell exactly what happened. Only `turn/completed` closes a turn.
 ## 6. The session tree -- the one fold across logs
 
 Every fold above reads its own unit's file and nothing else (FR-4). Two readers
-look across logs, and they read the SAME recorded edge for different questions:
-the session tree here, and the dispatch fence in section 5. The `session_create`
-edge is recorded on the CHILD (`crew-log-core.md` section 5), so "which session
-opened which" is not in any one log.
+look across logs for the PARENT edge, and they read the SAME recorded edge for
+different questions: the session tree here, and the dispatch fence in section 5.
+The `session_create` edge is recorded on the CHILD (`crew-log-core.md` section 5),
+so "which session opened which" is not in any one log. A SECOND edge, on a
+different axis, is recorded on the same entry and walked by the same module --
+subsection 6.1.
 
 The tree (`crew_log/session_tree.py`) folds EVERY log and keys the result by
 SLOT, because it answers "what does the whole tree look like" for a display, and
@@ -683,6 +692,66 @@ never as a native `title`: a keyboard or touch reader sees no tooltip, and this
 row has nothing else that says it. The table re-checks the edge it is handed --
 a key naming no row in the payload, or a chain returning to its own start --
 because a table must never fail to paint on a payload it did not produce.
+
+### 6.1 The succession walk -- one slot's own chain of logs
+
+The same first entry carries a second edge, and the two are on different axes.
+`parent {slot, sid?}` is PARENTHOOD between two slots, above. `previous {sid}` is
+SUCCESSION between two logs of ONE slot: a slot owns one ACP session id at a time
+rather than for its whole life, so a supersede -- a restart whose `session/load`
+does not re-attach, a reset, an agent, model or effort switch, a compaction, a
+provider swap -- gives that slot a new log under a new id, and the new log names the
+one it replaced (`crew-log-emitter.md`, `session-types.md`).
+
+Parenthood is keyed by slot and folded over the whole collection. Succession is
+keyed by ACP session id and WALKED from one log backwards, because what it answers
+is the ORDER a slot's logs came in, which a slot-keyed fold cannot express: every
+log of one slot folds to the same key.
+
+`session_tree.fold_slot_chain(records, head_sid)` is that walk, pure over the same
+`OpenedRecord`s the tree folds, and `SessionTree.chain` is the scanner entry point.
+It answers a `SlotChain`: the slot, its logs newest first starting with `head_sid`,
+the reason it stopped, and the id it could not follow.
+
+**Three constraints, each of which can end the walk.** It visits at most
+`SLOT_CHAIN_CAP` logs; it never visits an id twice; and it steps only onto a log
+whose immutable header slot equals the slot it started on. That last one is the
+reader's own enforcement of what the edge means, not a re-check of the emitter's.
+The id reaches the emitter from an agent-writable mapping, and logs written before
+that check existed are still on disk, so a walk that followed a foreign edge would
+join another slot's turns, costs and approvals into this slot's whole-life figure --
+a wrong answer presenting itself as a complete one.
+
+**The end reason is the load-bearing field**, because the ids alone cannot say
+whether they are a slot's whole life: a chain cut short looks exactly like a
+complete one. Exactly one reason holds, which is why it is one field and not a set
+of flags. `first` reached the slot's first log and is the ONLY complete answer.
+`missing` means the cited log answered no record -- retention took it, or its header
+was refused -- which is the ordinary way an old chain ends. `foreign` means the
+cited log exists and names another slot, so the step was refused; it is the one
+reason that reports damage rather than age. `cycle` means the cited log is already
+on the walk, reachable only through forged or damaged records. `cap` means the bound
+was reached. `unknown` means the log the walk was ASKED to start from answered no
+usable record, so there is no slot to walk.
+
+**Completeness travels with the answer.** `SessionTree.chain` returns a
+`ChainReading` pairing the walk with the scan's own `incomplete`, for the reason
+`TreeReading` is a pair and with a sharper consequence: a predecessor the scan never
+admitted -- past `TREE_UNIT_CAP`, or a unit whose bytes faulted -- is absent from
+the records, so the walk reports `missing` for a log that is on disk and readable.
+The walk cannot tell those apart; only the scan can.
+
+**Order comes from the edges, never from a timestamp.** `header.createdAt` is wall
+clock, so a backward step across a restart gives the newer log the earlier stamp and
+two creates inside one millisecond tie. The edge inverts in neither case, which is
+why it was recorded.
+
+One gap is inherited rather than introduced, and the walk cannot detect it: an
+allocation whose replay is still pending does not publish its fresh id over the
+mapping, so two successive logs can cite one predecessor and the log between them is
+cited by nobody. It is tracked with the rest of the supersede work in #12148. No
+shipped route calls this walk yet; closing a superseded log's own interrupted turn
+and tool calls is a WRITE into another log and is tracked there too.
 
 ## 7. Savepoints on disk
 

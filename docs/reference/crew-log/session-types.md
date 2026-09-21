@@ -120,6 +120,13 @@ read an absent field on an older entry as *unknown*, which is the same misreadin
 `previous` never names this same session: a re-attach is the same crew log, and a
 self-edge would make a chain walker revisit the crew log it started from.
 
+The chain walker is `crew_log/session_tree.fold_slot_chain`
+(`crew-log-projection.md` subsection 6.1). It walks this edge newest crew log
+first, bounded, refusing to visit an id twice, and stepping only onto a crew log
+whose own header slot matches the slot it started on -- so it enforces the
+same-slot rule below rather than trusting it. It reports WHY it stopped, and only
+`first` means it reached the slot's first crew log; no shipped route calls it yet.
+
 `previous` always names a crew log of the SAME slot, and that is verified rather
 than assumed. The id reaches the emitter from the slot-to-session mapping, read
 without pruning and latched by whichever allocation observes it first. One limit

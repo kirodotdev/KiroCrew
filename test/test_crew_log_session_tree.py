@@ -18,8 +18,22 @@ from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, session_tree
 from kiro_crew.crew_log import store as crew_store
-from kiro_crew.crew_log.session_tree import OpenedRecord, SessionTree, fold_tree, parent_payload
+from kiro_crew.crew_log.session_tree import (
+    CHAIN_END_CAP,
+    CHAIN_END_CYCLE,
+    CHAIN_END_FIRST,
+    CHAIN_END_FOREIGN,
+    CHAIN_END_MISSING,
+    CHAIN_END_UNKNOWN,
+    SLOT_CHAIN_CAP,
+    OpenedRecord,
+    SessionTree,
+    fold_slot_chain,
+    fold_tree,
+    parent_payload,
+)
 from kiro_crew.session_ledger import _store_name
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 GATEWAY = "gateway"
 
@@ -31,8 +45,10 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
 
 
-def _rec(sid: str, slot: str, created: int = 1, parent: str | None = None):
-    return OpenedRecord(sid=sid, slot=slot, created_at=created, parent_slot=parent)
+def _rec(sid: str, slot: str, created: int = 1, parent: str | None = None, previous=None):
+    return OpenedRecord(
+        sid=sid, slot=slot, created_at=created, parent_slot=parent, previous_sid=previous
+    )
 
 
 def _log(sid: str, slot: str) -> CrewLog:
@@ -45,6 +61,7 @@ def _opened(
     *,
     parent: dict[str, str] | None = None,
     resumed: bool = False,
+    previous: object = None,
 ) -> None:
     data = {
         "agent": "kirocrew",
@@ -56,6 +73,10 @@ def _opened(
     }
     if parent is not None:
         data["parent"] = parent
+    # Written only when asked, because the emitter OMITS the key for a slot's first
+    # log and the reader's "first log" answer depends on that absence.
+    if previous is not None:
+        data["previous"] = previous
     handle.append("session/opened", data, src=GATEWAY)
 
 
@@ -743,3 +764,279 @@ def test_parent_payload_never_nests_a_cycle_or_a_row_under_itself() -> None:
     live = {"A": "dashboard:A", "B": "dashboard:B", "S": "dashboard:S"}
     assert parent_payload(nodes["A"], live, "dashboard:A")["key"] is None  # type: ignore[index]
     assert parent_payload(nodes["S"], live, "dashboard:S")["key"] is None  # type: ignore[index]
+
+
+# --- succession: the slot's own chain of logs, walked through ``previous`` -------
+#
+# The tree above is PARENTHOOD between slots. These are SUCCESSION between logs of
+# one slot, and the two share only the entry they are written on. Every test here
+# names the rule it pins, because the walk's whole value is that its answer says
+# how far it got: a chain cut short by retention, a refused step, a loop or the
+# bound is indistinguishable from a complete one if only the ids are read.
+
+
+def test_a_slot_s_logs_come_back_newest_first_through_the_previous_edge() -> None:
+    chain = fold_slot_chain(
+        [
+            _rec("a", "chat-1", created=1),
+            _rec("b", "chat-1", created=2, previous="a"),
+            _rec("c", "chat-1", created=3, previous="b"),
+        ],
+        "c",
+    )
+    assert chain.slot == "chat-1"
+    assert chain.sids == ("c", "b", "a")
+    assert chain.ended == CHAIN_END_FIRST
+    assert chain.cited is None
+
+
+def test_a_slot_s_first_log_answers_only_itself_and_reports_first() -> None:
+    chain = fold_slot_chain([_rec("a", "chat-1")], "a")
+    assert chain.sids == ("a",)
+    # Not "missing": the emitter omits the key for a first log, so a reader can tell
+    # "there is nothing before this" from "a predecessor I could not reach".
+    assert chain.ended == CHAIN_END_FIRST
+    assert chain.cited is None
+
+
+def test_order_comes_from_the_edges_and_not_from_the_timestamps() -> None:
+    """The reason the edge was recorded at all.
+
+    ``created_at`` is wall clock. A backward clock step across a restart gives the
+    NEWER log the earlier stamp, so a timestamp sort inverts the pair; the edge does
+    not. Here the stamps say a-then-b is wrong and the edges say it is right.
+    """
+    records = [
+        _rec("older_stamp", "chat-1", created=500, previous="newer_stamp"),
+        _rec("newer_stamp", "chat-1", created=900),
+    ]
+    chain = fold_slot_chain(records, "older_stamp")
+    assert chain.sids == ("older_stamp", "newer_stamp")
+    assert chain.ended == CHAIN_END_FIRST
+
+
+def test_a_cited_log_no_record_answers_ends_the_walk_as_missing() -> None:
+    """Retention took the predecessor. An absence, and the ordinary end of a chain."""
+    chain = fold_slot_chain([_rec("b", "chat-1", previous="a")], "b")
+    assert chain.sids == ("b",)
+    assert chain.ended == CHAIN_END_MISSING
+    assert chain.cited == "a"
+
+
+def test_a_cited_log_of_another_slot_is_refused_rather_than_followed() -> None:
+    """The read side's own enforcement of what ``previous`` means.
+
+    Following this would join another slot's turns, costs and approvals into this
+    slot's whole-life figure -- a wrong answer that calls itself complete. The step
+    is refused, and ``foreign`` rather than ``missing`` because the cited log is
+    right there: this is damage, not age.
+    """
+    chain = fold_slot_chain(
+        [
+            _rec("b", "chat-1", created=2, previous="a"),
+            _rec("a", "chat-OTHER", created=1),
+        ],
+        "b",
+    )
+    assert chain.sids == ("b",)
+    assert chain.ended == CHAIN_END_FOREIGN
+    assert chain.cited == "a"
+
+
+def test_a_loop_in_the_edges_ends_the_walk_and_names_the_repeat() -> None:
+    chain = fold_slot_chain(
+        [
+            _rec("a", "chat-1", created=1, previous="b"),
+            _rec("b", "chat-1", created=2, previous="a"),
+        ],
+        "b",
+    )
+    # Each log appears once: the guard is the visited set, not a depth counter.
+    assert chain.sids == ("b", "a")
+    assert chain.ended == CHAIN_END_CYCLE
+    assert chain.cited == "b"
+
+
+def test_a_log_citing_itself_is_not_visited_twice() -> None:
+    chain = fold_slot_chain([_rec("a", "chat-1", previous="a")], "a")
+    assert chain.sids == ("a",)
+    assert chain.ended == CHAIN_END_CYCLE
+    assert chain.cited == "a"
+
+
+def test_the_walk_stops_at_the_bound_and_reports_the_bound() -> None:
+    """A bound that reports itself. Truncating silently would present the newest
+    ``SLOT_CHAIN_CAP`` logs as the slot's whole life."""
+    total = SLOT_CHAIN_CAP + 5
+    records = [
+        _rec(f"s{i}", "chat-1", created=i, previous=(f"s{i - 1}" if i else None))
+        for i in range(total)
+    ]
+    chain = fold_slot_chain(records, f"s{total - 1}")
+    assert len(chain.sids) == SLOT_CHAIN_CAP
+    assert chain.ended == CHAIN_END_CAP
+    # No citation: the walk stopped of its own accord, it did not fail to follow one.
+    assert chain.cited is None
+
+
+def test_a_head_no_record_answers_reports_unknown_and_no_slot() -> None:
+    chain = fold_slot_chain([_rec("a", "chat-1")], "absent")
+    assert chain.slot == ""
+    assert chain.sids == ()
+    # Distinct from `missing`, which is a step that failed AFTER a real start.
+    assert chain.ended == CHAIN_END_UNKNOWN
+    assert chain.cited is None
+
+
+def test_a_head_whose_header_named_no_slot_does_not_start_a_walk() -> None:
+    """Without a slot there is nothing to hold the walk to, and a walk with no
+    same-slot rule is exactly the foreign-edge hazard above."""
+    chain = fold_slot_chain([_rec("a", "", previous="b"), _rec("b", "chat-1")], "a")
+    assert chain.ended == CHAIN_END_UNKNOWN
+    assert chain.sids == ()
+
+
+def test_a_record_carries_the_previous_sid_its_entry_names() -> None:
+    handle = _log("sid-new", "chat-1")
+    _opened(handle, "chat-1", previous={"sid": "sid-old"})
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-new")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    record = session_tree.opened_record(directory, header, entry)
+    assert record is not None
+    assert record.previous_sid == "sid-old"
+    # The two citations are independent axes: no creator was named here.
+    assert record.parent_slot is None
+
+
+def test_a_record_names_no_previous_when_its_entry_omits_the_key() -> None:
+    handle = _log("sid-first", "chat-1")
+    _opened(handle, "chat-1")
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-first")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    record = session_tree.opened_record(directory, header, entry)
+    assert record is not None
+    assert record.previous_sid is None
+
+
+def test_an_oversized_previous_sid_refuses_the_whole_record() -> None:
+    """Bounds refuse rather than truncate, and refuse the RECORD rather than the key.
+
+    A value the gateway never writes means this entry is not the emitter's, so
+    nothing on it should be believed -- and a truncated id would be a different key,
+    which resolves to no log or, worse, to another one.
+    """
+    handle = _log("sid-big", "chat-1")
+    _opened(handle, "chat-1", previous={"sid": "x" * (MAX_ACP_SESSION_ID_LEN + 1)})
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-big")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    assert session_tree.opened_record(directory, header, entry) is None
+
+
+def test_a_previous_at_the_bound_is_kept() -> None:
+    """The other side of the bound, so the refusal above is a bound and not a ban."""
+    at_bound = "x" * MAX_ACP_SESSION_ID_LEN
+    handle = _log("sid-edge", "chat-1")
+    _opened(handle, "chat-1", previous={"sid": at_bound})
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-edge")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    record = session_tree.opened_record(directory, header, entry)
+    assert record is not None
+    assert record.previous_sid == at_bound
+
+
+def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
+    """The reader's shape guard, driven where it is reachable.
+
+    The write-time schema REFUSES a non-object ``previous`` (``handle.append``
+    raises), so this shape cannot be produced through the emitter. The guard is
+    still the reader's job and still exactly the guard ``parent`` already has one
+    field above: ``opened_record`` is handed JSON parsed off disk, which a damaged
+    or hand-edited segment can hold, and the alternative to guarding is a
+    ``TypeError`` out of a scan that is supposed to degrade to "no lineage known".
+
+    A bad shape costs the EDGE and not the record: a mistyped key says nothing
+    about the header identity or the slot, which the rest of the entry still
+    carries.
+    """
+    handle = _log("sid-odd", "chat-1")
+    _opened(handle, "chat-1")
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-odd")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    assert entry is not None
+
+    from kiro_crew.crew_log.schema import Entry
+
+    with pytest.raises(Exception):
+        # The premise of this test: the emitter cannot write it.
+        _opened(_log("sid-refused", "chat-1"), "chat-1", previous="sid-old")
+
+    for shape in ("sid-old", ["sid-old"], 7, None):
+        planted = Entry.from_dict(
+            {
+                "seq": 1,
+                "type": "session/opened",
+                "time": 1,
+                "src": GATEWAY,
+                "data": {"slot": "chat-1", "previous": shape},
+            }
+        )
+        assert planted is not None
+        record = session_tree.opened_record(directory, header, planted)
+        assert record is not None, shape
+        assert record.previous_sid is None, shape
+        assert record.slot == "chat-1"
+
+
+def test_a_previous_object_with_an_empty_sid_refuses_the_whole_record() -> None:
+    """An empty citation is refused exactly as an oversized one is, and for the same
+    reason: it is not a value the emitter can write.
+
+    ``emit.py`` gates the write on the id's own truthiness, so ``{"sid": ""}`` never
+    reaches a log the gateway wrote. An entry carrying one is therefore not the
+    emitter's, and nothing on it is believed -- which is also precisely how the
+    ``parent.slot`` field one line above treats an empty slot, so the two citations
+    do not drift into two different ideas of a bad value.
+    """
+    handle = _log("sid-empty", "chat-1")
+    # The write schema permits the shape, so the reader is the layer that refuses it.
+    _opened(handle, "chat-1", previous={"sid": ""})
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-empty")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    assert session_tree.opened_record(directory, header, entry) is None
+
+
+def test_the_scanner_walks_two_real_logs_of_one_slot_on_disk() -> None:
+    """End to end through the store, so the walk is reachable from the scanner and
+    not only from a hand-built record list."""
+    first = _log("acp-1", "chat-7")
+    _opened(first, "chat-7")
+    second = _log("acp-2", "chat-7")
+    _opened(second, "chat-7", previous={"sid": "acp-1"})
+
+    reading = SessionTree().chain("acp-2")
+    assert reading.chain.slot == "chat-7"
+    assert reading.chain.sids == ("acp-2", "acp-1")
+    assert reading.chain.ended == CHAIN_END_FIRST
+    assert reading.incomplete is False
+
+
+def test_a_predecessor_the_scan_could_not_admit_is_reported_as_incomplete(monkeypatch) -> None:
+    """The one thing ``ChainReading`` exists for.
+
+    A predecessor past the scan's cap is absent from the records, so the WALK
+    reports ``missing`` for a log that is on disk and readable. Only the scan knows
+    the difference, so it must be the scan that says so -- otherwise a partial chain
+    is presented as a slot's whole life.
+    """
+    first = _log("acp-1", "chat-7")
+    _opened(first, "chat-7")
+    second = _log("acp-2", "chat-7")
+    _opened(second, "chat-7", previous={"sid": "acp-1"})
+
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 1)
+    reading = SessionTree().chain("acp-2")
+    assert reading.chain.sids == ("acp-2",)
+    assert reading.chain.ended == CHAIN_END_MISSING
+    assert reading.chain.cited == "acp-1"
+    # The chain says "ends here"; only this bit says "and that may be my fault".
+    assert reading.incomplete is True

@@ -189,9 +189,15 @@ def _unit_id(request: web.Request, given: str) -> tuple[str, bool]:
     state -- the exact reason ``crew_log/resolve.py`` documents for not touching it.
     And a retired unit belongs to a different session from the one this slot serves:
     presenting its totals here would imply a whole-life figure that needs the lineage
-    pointer (``session/opened.data.previous``) and a fold that follows it, and this
-    module has neither. So the honest move is to say what is addressable, not to
-    guess.
+    pointer (``session/opened.data.previous``) and a fold that follows it. Both now
+    exist -- the pointer on the entry, and ``session_tree.fold_slot_chain``, which
+    walks it newest unit first, bounded, cycle-guarded and held to one slot -- but
+    this function calls neither and deliberately answers the narrower question. A
+    caller that does join them owes the walk's ``ended`` reason as well as its ids:
+    only ``first`` reached the slot's first unit, so every other reason is a total
+    over PART of a life and presenting it as the whole would be the same false
+    implication in a new place. So the honest move here is still to say what is
+    addressable, not to guess.
     """
     if not given:
         return given, False
