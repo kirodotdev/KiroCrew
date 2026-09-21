@@ -65,6 +65,8 @@ from kiro_crew.dashboard.chat_persistence import (
     _restored_agent_name,
     _restored_mode,
     _validate_autocompact_pct,
+    admit_peer_effort,
+    admit_peer_value,
     get_reasoning_effort_values,
     pin_private_agent_store,
     release_prewarmed_session,
@@ -196,6 +198,7 @@ from kiro_crew.validation import (
     SUGGEST_FOLLOWUP_SCHEMA,
     ValidationError,
     normalize_theme_consent_sha,
+    sanitize_string,
     validate_tool_args,
 )
 
@@ -1010,15 +1013,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     #
     # `executor == "remote"` with an incomplete binding does NOT fall through to
     # a local run: that would execute on this machine work the user asked a named
-    # crew to do, the one failure the binding exists to prevent.
-    if slot.executor == "remote" and not slot.is_remote:
-        return web.json_response(
-            {
-                "error": "this session is bound to a remote crew but the binding is incomplete",
-                "code": "remote_binding_incomplete",
-            },
-            status=409,
-        )
+    # crew to do, the one failure the binding exists to prevent. Shared with
+    # every control-mutating route (see _remote_binding_incomplete): the rule has
+    # one home, because a per-route copy is a per-route chance to omit it.
+    half_bound = _remote_binding_incomplete(slot)
+    if half_bound is not None:
+        return half_bound
     # Lock a remote session while its tunnel is down. A gateway that just
     # restarted has not re-established its instance tunnels yet, and dispatching a
     # turn into a half-open or absent tunnel loses it — the peer never receives
@@ -2667,6 +2667,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             {"error": "invalid agent kind", "code": "invalid_agent_kind"}, status=400
         )
     model = body.get("model", "")
+    # No body read for the effort on purpose: this endpoint has never accepted
+    # one, and `api_chat_slot_reasoning_effort` owns setting it. Initialized here
+    # only so the peer-binding stamp below is safe on the MINT path too, where a
+    # brand-new peer session has no effort to inherit and "" is the honest record.
+    reasoning_effort = ""
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
     # visibly too late: get_or_create_slot broadcasts the new slot before this
     # handler returns, so the dashboard renders it at the top level for a frame
@@ -2923,6 +2928,37 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # surrounding resolve/normalize steps are skipped for every peer-bound
         # create precisely because they answer from THIS machine's roster.
         agent = peer_meta.get("agent", "")
+        # The model too, unconditionally, and this one is a REPAIR rather than a
+        # preference. Execution never depended on it -- the relayed turn body
+        # carries no model, so the peer's slot has always decided what answers --
+        # but three pieces of LOCAL state read `slot.model`: the header's pin
+        # display, the context/autocompact window's denominator, and the model
+        # picker's current value. Leaving it `""` for a peer session that is
+        # actually pinned made the third one destructive: the picker is fed from
+        # the PEER's roster, so the user's first pick was forwarded by
+        # `forward_peer_selection` and overwrote the peer's real pin on a live
+        # conversation.
+        #
+        # No `or model` fallback, for the same reason as the agent above: an empty
+        # peer value means the peer session runs on ITS default, and resolving
+        # that to the REQUEST's model would pin the peer's conversation to
+        # something nobody chose for it.
+        model = peer_meta.get("model", "")
+        # And the effort, which is the SAME defect as the model rather than a new
+        # one: `_PEER_CONTROL_SEGMENTS` makes four controls forwardable (agent,
+        # model, workspace, reasoning_effort), and each one this slot leaves empty
+        # is a control whose picker is seeded from the PEER's roster with no
+        # current value -- so the user's first pick reads as a change and
+        # `forward_peer_selection` overwrites the peer's real setting on a live
+        # conversation. Fixing only the model would have left this instance of a
+        # pattern this PR's own harvest names.
+        #
+        # `workspace` is deliberately NOT inherited: it is resolved from THIS
+        # machine's agent bindings (which is why the peer-bound create skips that
+        # resolution entirely -- "the peer resolves its own") and it feeds local
+        # project/memory-store selection, so importing a peer-resolved value would
+        # claim a workspace this machine never resolved.
+        reasoning_effort = peer_meta.get("reasoning_effort", "")
         # Read the history BEFORE `get_or_create_slot`, so the peer round-trip
         # happens outside the `suspend_slots_push` block below. That suspension is
         # process-wide: holding it across a transcript read would defer every other
@@ -3164,6 +3200,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot.executor = "remote"
             slot.instance_id = instance_id
             slot.remote_slot = remote_slot_key
+            # Stamped with the binding rather than passed to get_or_create_slot,
+            # which takes no effort argument. Guarded rather than unconditional:
+            # `_ChatSlot` already defaults this to "", so writing "" back on a mint
+            # (or on an adopt of a peer with no level) would be a no-op ride-along.
+            if reasoning_effort:
+                slot.reasoning_effort = reasoning_effort
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
@@ -4454,6 +4496,58 @@ def _slot_not_found() -> web.Response:
     matches ``api_chat_slot_continue``.
     """
     return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+
+def _remote_binding_incomplete(slot: _ChatSlot) -> web.Response | None:
+    """The one 409 every control-mutating route returns for a HALF-BOUND slot.
+
+    ``executor == "remote"`` is the slot-owned fact that this session belongs to
+    a named crew. ``is_remote`` asserts something stronger: that the binding is
+    COMPLETE. A slot can hold the first without the second — restore reads the
+    executor marker back before the rest of the binding lands — so a route that
+    branches on ``is_remote`` alone skips its remote arm for such a slot and
+    falls through to the LOCAL mutation, answering 200 for a control the peer
+    owns. The fall-through is older than this change and harmless while a bound
+    slot carries no inherited value: the local write then clobbers a local
+    default. It bites once an adopted session carries the value the peer pinned,
+    because the same write destroys an inherited peer control — which is what
+    ``admit_peer_value``/``admit_peer_effort`` exist to prevent, undone from the
+    opposite side.
+
+    Returns the refusal for the caller to return unchanged, or ``None`` when the
+    slot is not half-bound, so a route reads as one ``if ... is not None``
+    beside its other guards. Called BEFORE the ``if slot.is_remote:`` branch by
+    every route that mutates a forwardable control, and after that route's
+    ``read_bounded_json`` — the one validator all four share — so an unparseable
+    body still 400s first: refusing the binding would otherwise mask a parse
+    error the client must fix either way.
+
+    Where the rest of a route's validation sits relative to this is NOT uniform,
+    and the tests pin each case rather than a single rule. ``agent`` and
+    ``workspace`` vet the submitted value at route level above this call, so a
+    bad value there still 400s. ``model`` and ``reasoning_effort`` keep their
+    shape check INSIDE the ``is_remote`` arm — it exists to keep a malformed id
+    off the wire, and it deliberately skips this machine's registry judgement
+    because the picker lists the PEER's roster — so a half-bound slot never
+    reaches it and this 409 is the only answer available. That is also the
+    truthful one: no value whatsoever succeeds on a half-bound slot, so a 400
+    would invite a retry that cannot pass.
+
+    ``stop_slot_turn`` is the one ``is_remote`` branch that does NOT call this:
+    its fall-through reaches escalation machinery for a local turn that cannot
+    exist, because the send path refuses a half-bound dispatch at this same
+    predicate before any turn is recorded. It returns a plain dict rather than a
+    ``web.Response`` too, so it could not share this shape.
+    """
+    if slot.executor == "remote" and not slot.is_remote:
+        return web.json_response(
+            {
+                "error": "this session is bound to a remote crew but the binding is incomplete",
+                "code": "remote_binding_incomplete",
+            },
+            status=409,
+        )
+    return None
 
 
 def _cancel_target(slot: _ChatSlot) -> str:
@@ -6581,6 +6675,22 @@ async def _apply_remote_pick_locked(
             # credential here outlives the session.
             slot.workspace = redact_peer_text(peer_workspace)
     if control == "model":
+        # The peer may accept a deprecated alias but commit and report its
+        # canonical model. Mirror that peer-owned value through the same
+        # admission chokepoint as adopt/restore; an omitted or refused value
+        # leaves the accepted request value intact rather than blanking it.
+        # Redacted like the workspace above and like adopt's spelling of this
+        # same sink (``admit_peer_value(redact_peer_text(sanitize_string(..)))``):
+        # the value is rendered in the header AND persisted below, so a
+        # credential the peer echoed back would outlive the session. Sanitize
+        # first so a hidden character cannot split a credential past the
+        # redactor; the admission's own sanitize is then idempotent.
+        peer_model = accepted.get("model")
+        if isinstance(peer_model, str) and peer_model:
+            admitted_model = admit_peer_value(redact_peer_text(sanitize_string(peer_model)))
+            if admitted_model:
+                value = admitted_model
+                slot.model = value
         # Same reason the local path bumps it: an explicit pick has to outrank
         # the model-fallback restore probe.
         slot._model_pick_gen += 1
@@ -6834,6 +6944,14 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             {"error": "member thread agent is pinned", "code": "member_thread_agent_pinned"},
             status=409,
         )
+    # A half-bound slot must not reach either arm: the remote arm cannot forward
+    # (there is no complete binding to forward through) and the local arm below
+    # would run the resolve/reset/commit transaction on this machine for a
+    # session the user bound to a crew. GPT named the model and effort endpoints;
+    # this one carries the same fall-through and was not named.
+    half_bound = _remote_binding_incomplete(slot)
+    if half_bound is not None:
+        return half_bound
     if slot.is_remote:
         # A bound session has no local ACP session to reset — the whole
         # transaction below would resolve a crew on the wrong machine. The pick
@@ -7906,16 +8024,51 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    model_name = _normalize_model(body.get("model", ""))
+    raw_model = body.get("model", "")
+    # The site GPT's finding names first. Without this, a slot whose executor is
+    # "remote" but whose binding is incomplete skips the arm below and commits
+    # the model LOCALLY with a 200 — overwriting the model this session
+    # inherited from the peer, which is exactly what the admission below exists
+    # to protect on the outbound side.
+    half_bound = _remote_binding_incomplete(slot)
+    if half_bound is not None:
+        return half_bound
+    if slot.is_remote:
+        # Shape, not the local provider's judgement, and BEFORE
+        # ``_model_rejected_reason`` — which rejects a canonical registry key
+        # unless THIS machine's provider is claude_code. The picker for a bound
+        # session lists the PEER's models, so that gate 400s the id this slot
+        # INHERITED from the peer: visible in the header, refused on
+        # re-selection, and after any other pick the model the session actually
+        # runs could never be chosen again. ``_normalize_model`` is skipped for
+        # the same reason it is skipped on the restore path — the deprecation
+        # rename is a fact about this build's registry, not about the machine
+        # answering the turn. The peer judges its own roster on receipt; this
+        # keeps a malformed value off the wire. Spelled as "the admission would
+        # change it" rather than as a separate predicate, so the endpoint that
+        # REFUSES a pick and the restore path that admits a persisted one cannot
+        # drift apart: a value the picker displays has to stay re-selectable, or
+        # the header lies. ``""`` passes — it means "the provider's default", is
+        # cleared rather than set, and the admission maps it to itself. A
+        # non-string fails the same comparison: the admission returns ``""`` for
+        # it, which is never equal to the value sent.
+        if admit_peer_value(raw_model) != raw_model:
+            return web.json_response(
+                {
+                    "error": "model must be a short single-line identifier",
+                    "code": "invalid_model_shape",
+                },
+                status=400,
+            )
+        # The picker lists the PEER's models, so the live-switch/reset machinery
+        # below has nothing to act on: the session that would receive
+        # ``session/set_model`` is on the other machine.
+        return await _apply_remote_pick(request, state, slot, "model", {"model": raw_model})
+    model_name = _normalize_model(raw_model)
     reason = _model_rejected_reason(model_name)
     if reason:
         logger.warning("Slot %s model rejected: %s", name, reason)
         return web.json_response({"error": reason}, status=400)
-    if slot.is_remote:
-        # The picker lists the PEER's models, so the live-switch/reset machinery
-        # below has nothing to act on: the session that would receive
-        # ``session/set_model`` is on the other machine.
-        return await _apply_remote_pick(request, state, slot, "model", {"model": model_name})
     # Three locks, always in this order (slot._lock, then the session lock,
     # then _model_pick_lock -- see _slot_switch_session_lock; the bulk handler
     # nests them the same way and nothing takes them in the opposite order).
@@ -8579,6 +8732,9 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     mid-turn, while this bulk endpoint always resets and skips mid-turn slots
     when ``skip_running`` is true (the default) — passing ``skip_running:
     false`` is an explicit opt-in that still tears down in-flight turns.
+    Slots bound to a peer crew are excluded and reported in ``skipped_remote``:
+    their model belongs to the machine that runs their turns, and every step
+    below is local.
     Returns the slot keys that were switched / skipped / unchanged /
     failed; a per-slot reset failure is isolated (that slot is reported in
     ``failed`` and keeps its old model) rather than aborting the whole switch.
@@ -8609,6 +8765,9 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
 
     switched: list[str] = []
     skipped_running: list[str] = []
+    #: Slots bound to a peer crew: their model is the peer's and this endpoint
+    #: applies only local machinery, so they are reported rather than rewritten.
+    skipped_remote: list[str] = []
     unchanged: list[str] = []
     failed: list[str] = []
     # Snapshot the slot keys up front: sessions.reset awaits, so iterating the
@@ -8669,6 +8828,24 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
                 # session (the cancel routes' second condition): an app caller
                 # does not get to switch the model a channel thread runs on.
                 # Skipped silently, like every other slot the app does not own.
+                continue
+            if slot.executor == "remote":
+                # Ownership, not reachability, decides whether this model is
+                # ours to write. `api_chat`'s `remote_binding_incomplete`
+                # dispatch guard uses the same executor key to refuse an
+                # incomplete remote binding before dispatch; this bulk path
+                # must likewise skip local reset and slot.model writes
+                # even when `slot.is_remote` is false. Such an incomplete binding
+                # is imprecisely reported in `skipped_remote` although no peer
+                # currently answers it; a separate bucket is not warranted for
+                # a state produced only by a truncated or hand-edited history
+                # JSONL record. A complete bound slot's model lives on the peer,
+                # and forwarding is deliberately not done here: "set the model
+                # for all of MY chat slots" must not reach across the network
+                # and rewrite live peer conversations. The single-slot picker
+                # is the forwarding path. Classified before equality so every
+                # peer-owned value remains out of scope.
+                skipped_remote.append(name)
                 continue
             if slot.model == model_name:
                 unchanged.append(name)
@@ -8769,10 +8946,12 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
 
     if switched:
         logger.info(
-            "Bulk model switch to %r: %d switched, %d skipped-running, %d unchanged, %d failed",
+            "Bulk model switch to %r: %d switched, %d skipped-running, "
+            "%d skipped-remote, %d unchanged, %d failed",
             model_name or "auto",
             len(switched),
             len(skipped_running),
+            len(skipped_remote),
             len(unchanged),
             len(failed),
         )
@@ -8785,6 +8964,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             "model": model_name,
             "switched": switched,
             "skipped_running": skipped_running,
+            "skipped_remote": skipped_remote,
             "unchanged": unchanged,
             "failed": failed,
         }
@@ -8817,6 +8997,37 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     effort = body.get("reasoning_effort", "")
+    # GPT's second named site, same fall-through as the model endpoint above.
+    half_bound = _remote_binding_incomplete(slot)
+    if half_bound is not None:
+        return half_bound
+    if slot.is_remote:
+        # Shape, not membership: the local level set is grown by
+        # ``update_reasoning_effort_values`` from LOCAL ACP session config, so two
+        # machines on the same build can hold different sets and a hub that mostly
+        # drives peers holds barely more than the fallback. Membership here would
+        # 400 the level this slot INHERITED from the peer -- visible in the box,
+        # refused on re-selection -- and the peer is the only authority that can
+        # judge its own vocabulary. It re-validates on receipt; this keeps a
+        # malformed value off the wire. Spelled as "the admission would change
+        # it", exactly as the model pick above is, so the endpoint that REFUSES a
+        # pick, the adopt path that inherits one and the restore path that reads
+        # one back are three callers of ``admit_peer_effort`` and cannot drift
+        # apart. "" is "use the provider default" and is cleared rather than set:
+        # it matches no shape, and the admission maps it to itself, so it passes
+        # the comparison. A non-string fails it -- the admission returns "" for
+        # it, which is never equal to the value sent.
+        if admit_peer_effort(effort) != effort:
+            return web.json_response(
+                {
+                    "error": "reasoning_effort must be a short lowercase level name",
+                    "code": "invalid_reasoning_effort_shape",
+                },
+                status=400,
+            )
+        return await _apply_remote_pick(
+            request, state, slot, "reasoning_effort", {"reasoning_effort": effort}
+        )
     valid_efforts = get_reasoning_effort_values()
     if not isinstance(effort, str) or effort not in valid_efforts:
         return web.json_response(
@@ -8824,14 +9035,6 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 "error": f"reasoning_effort must be one of: {', '.join(sorted(valid_efforts - {''}))}"
             },
             status=400,
-        )
-    if slot.is_remote:
-        # Validated against the LOCAL level set above, which is safe because a
-        # bound session is version-gated to a peer running this same build — the
-        # levels are an enumeration in the code, not per-machine config. The peer
-        # re-validates regardless; this only keeps an obvious typo off the wire.
-        return await _apply_remote_pick(
-            request, state, slot, "reasoning_effort", {"reasoning_effort": effort}
         )
     # Same serialization + transactional ordering as the agent switch: the
     # awaits below yield the event loop, so the section runs under the slot's
@@ -9297,6 +9500,12 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "workspace must be a string", "code": "invalid_workspace"}, status=400
         )
+    # The second unnamed site. The local arm below writes the workspace and
+    # reaches `default_project_dir`, so a half-bound slot would have its
+    # inherited workspace replaced by a local one with a 200.
+    half_bound = _remote_binding_incomplete(slot)
+    if half_bound is not None:
+        return half_bound
     if slot.is_remote:
         # ``slot.project`` is deliberately left alone: it is a path on THIS
         # machine (file search, @-mentions), and `default_project_dir` would

@@ -652,6 +652,330 @@ class TestBindingPersistence:
         assert restored.remote_slot == "peer-chat-9"
         assert restored.is_remote is True
 
+    def test_a_peer_only_effort_survives_the_rehydrate(self, tmp_path):
+        """A level the peer runs and this process has never seen must survive.
+
+        Membership-checking it against the LOCAL vocabulary blanks it, the picker
+        then seeds empty, and the user's first pick forwards and overwrites the
+        peer's live setting — the corruption inheriting the level prevents.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+            get_reasoning_effort_values,
+        )
+
+        # Precondition: this level is genuinely unknown to this process, so the
+        # assertion cannot pass because the vocabulary happens to contain it.
+        assert "turbo" not in get_reasoning_effort_values()
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.reasoning_effort = "turbo"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.reasoning_effort == "turbo"
+
+    def test_a_local_slot_still_loses_an_unknown_effort_on_rehydrate(self, tmp_path):
+        """The relaxation is scoped to the remote marker: a local slot's level is
+        meaningful only in this process's vocabulary, so an unrecognised one is
+        still corruption and is still dropped."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.reasoning_effort = "turbo"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.executor != "remote"
+        assert restored.reasoning_effort == ""
+
+    def test_a_peer_pinned_model_survives_the_rehydrate_unrewritten(self, tmp_path):
+        """``claude-opus-4.6-1m`` is in this build's deprecation map, so the local
+        restore path renames it. The peer named the model it is actually running:
+        renaming it here makes the header, the picker and the peer's real pin
+        disagree, and the next flush persists the rewrite.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+        from kiro_crew.dashboard.chat_utils import _normalize_model
+
+        # Precondition: this build really does rewrite the id, so the assertion
+        # below cannot pass because the rename happens to be a no-op.
+        assert _normalize_model("claude-opus-4.6-1m") != "claude-opus-4.6-1m"
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.model = "claude-opus-4.6-1m"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.model == "claude-opus-4.6-1m"
+
+    def test_a_local_slot_still_takes_the_deprecation_rename_on_rehydrate(self, tmp_path):
+        """The split is scoped to the remote marker: a local slot's model IS a
+        value this machine chose, so the rename still applies to it."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.model = "claude-opus-4.6-1m"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.executor != "remote"
+        assert restored.model == "claude-opus-4.6"
+
+    def test_the_recent_sessions_path_restores_the_complete_peer_binding(self, tmp_path):
+        """Peer ownership and peer-authored controls reconstruct as one slot."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_persistence import _apply_recent_session
+
+        state = _make_state(tmp_path)
+        key = "dashboard:chat-9"
+        meta = {
+            "executor": "remote",
+            "instance_id": "nobita",
+            "remote_slot": "peer-chat-9",
+            "agent": "writer",
+            "model": "claude-opus-4.6-1m",
+            "reasoning_effort": "turbo",
+        }
+        state.conversation_log.append(key, "user", "hi")
+        state.conversation_log.update_metadata(key, meta)
+
+        _apply_recent_session(
+            state,
+            key,
+            "chat-9",
+            {},
+            meta,
+            [{"role": "user", "content": "hi"}],
+            conv_log=state.conversation_log,
+            kiro_model_map={},
+            restore_cfg=KiroCrewConfig.load(),
+        )
+
+        restored = state._slots["chat-9"]
+        assert restored.executor == "remote"
+        assert restored.instance_id == "nobita"
+        assert restored.remote_slot == "peer-chat-9"
+        assert restored.is_remote is True
+        assert restored.agent == "writer"
+        assert restored.model == "claude-opus-4.6-1m"
+        assert restored.reasoning_effort == "turbo"
+
+    def test_the_recent_sessions_path_fails_closed_on_an_incomplete_binding(self, tmp_path):
+        """The ownership marker survives when its instance target is empty."""
+        from kiro_crew.dashboard.chat_persistence import _apply_recent_session
+
+        state = _make_state(tmp_path)
+        meta = {
+            "executor": "remote",
+            "instance_id": "",
+            "remote_slot": "peer-chat-9",
+        }
+        _apply_recent_session(
+            state,
+            "dashboard:chat-9",
+            "chat-9",
+            {},
+            meta,
+            [],
+            conv_log=state.conversation_log,
+            kiro_model_map={},
+            restore_cfg=None,
+        )
+
+        restored = state._slots["chat-9"]
+        assert restored.executor == "remote"
+        assert restored.instance_id == ""
+        assert restored.remote_slot == "peer-chat-9"
+        assert restored.is_remote is False
+
+    def test_the_recent_sessions_path_rejects_malformed_binding_targets(self, tmp_path):
+        """Non-string targets cannot make a remote ownership marker fail open."""
+        from kiro_crew.dashboard.chat_persistence import _apply_recent_session
+
+        state = _make_state(tmp_path)
+        meta = {
+            "executor": "remote",
+            "instance_id": 7,
+            "remote_slot": {"slot": "peer-chat-9"},
+        }
+        _apply_recent_session(
+            state,
+            "dashboard:chat-9",
+            "chat-9",
+            {},
+            meta,
+            [],
+            conv_log=state.conversation_log,
+            kiro_model_map={},
+            restore_cfg=None,
+        )
+
+        restored = state._slots["chat-9"]
+        assert restored.executor == "remote"
+        assert restored.instance_id == ""
+        assert restored.remote_slot == ""
+        assert restored.is_remote is False
+
+    def test_the_recent_sessions_path_keeps_the_local_restore_path(self, tmp_path):
+        """Metadata without a remote marker restores controls as local values."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_persistence import _apply_recent_session
+
+        state = _make_state(tmp_path)
+        meta = {
+            "agent": "writer",
+            "model": "claude-opus-4.6-1m",
+            "reasoning_effort": "high",
+        }
+        _apply_recent_session(
+            state,
+            "dashboard:chat-8",
+            "chat-8",
+            {},
+            meta,
+            [],
+            conv_log=state.conversation_log,
+            kiro_model_map={},
+            restore_cfg=KiroCrewConfig.load(),
+        )
+
+        restored = state._slots["chat-8"]
+        assert restored.executor == "local"
+        assert restored.instance_id == ""
+        assert restored.remote_slot == ""
+        assert restored.is_remote is False
+        assert restored.agent == "writer"
+        assert restored.model == "claude-opus-4.6"
+        assert restored.reasoning_effort == "high"
+
+    def test_an_unpinned_peer_model_is_not_synthesized_from_the_local_agent_map(self, tmp_path):
+        """The chokepoint guards the persisted model, but the branch that runs when
+        NO model was persisted is a LOCAL derivation: it keys this machine's
+        ``kiro_model_map`` by the agent name. The name on a remote-bound slot is
+        the PEER's agent, and both ends commonly run the same names, so the lookup
+        hands the slot a model the peer never pinned — rendered in the header and
+        persisted by the next flush. An unpinned peer must restore unpinned.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.agent = "writer"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+        assert not state.conversation_log.get_metadata("dashboard:chat-1").get("model")
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(
+            state, "chat-1", kiro_model_map={"writer": "locally-resolved-model"}
+        )
+        assert restored is not None
+        assert restored.executor == "remote"
+        assert restored.agent == "writer"
+        assert restored.model == ""
+
+    def test_a_local_slot_still_derives_its_model_from_the_agent_map(self, tmp_path):
+        """The guard is scoped to the remote marker. This is also the reachability
+        witness for its twin above: the same map and the same agent name DO
+        resolve when the slot is local, so the remote case reading ``""`` is the
+        guard at work rather than a lookup that never fired."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.agent = "writer"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(
+            state, "chat-1", kiro_model_map={"writer": "locally-resolved-model"}
+        )
+        assert restored is not None
+        assert restored.executor != "remote"
+        assert restored.model == "locally-resolved-model"
+
+    def test_the_recent_sessions_path_leaves_an_unpinned_peer_unpinned_too(self, tmp_path):
+        """The twin restore path carries the same unguarded fallback."""
+        from kiro_crew.dashboard.chat_persistence import _apply_recent_session
+
+        state = _make_state(tmp_path)
+        model_map = {"writer": "locally-resolved-model"}
+        for slot_name, meta in (
+            (
+                "chat-9",
+                {
+                    "executor": "remote",
+                    "instance_id": "nobita",
+                    "remote_slot": "peer-chat-9",
+                    "agent": "writer",
+                },
+            ),
+            ("chat-8", {"agent": "writer"}),
+        ):
+            key = f"dashboard:{slot_name}"
+            state.conversation_log.append(key, "user", "hi")
+            state.conversation_log.update_metadata(key, meta)
+            _apply_recent_session(
+                state,
+                key,
+                slot_name,
+                {},
+                meta,
+                [{"role": "user", "content": "hi"}],
+                conv_log=state.conversation_log,
+                kiro_model_map=model_map,
+                restore_cfg=None,
+            )
+
+        # The local twin is the reachability witness for the remote assertion.
+        assert state._slots["chat-8"].executor != "remote"
+        assert state._slots["chat-8"].model == "locally-resolved-model"
+        assert state._slots["chat-9"].agent == "writer"
+        assert state._slots["chat-9"].model == ""
+
     def test_the_empty_window_merge_persists_a_complete_binding(self, tmp_path):
         """The window is empty for the whole gap before the first relayed row.
 
@@ -681,30 +1005,49 @@ class TestBindingPersistence:
         assert meta.get("instance_id") == "nobita"
         assert meta.get("remote_slot") == "peer-chat-9"
 
-    def test_the_empty_window_merge_writes_no_half_binding(self, tmp_path):
-        """The empty-window merge must not persist a half binding it holds in memory.
+    def test_the_empty_window_merge_persists_the_marker_without_its_target(self, tmp_path):
+        """The empty-window merge writes the ownership marker even when a target is missing.
 
-        A complete binding round-trips through save unchanged; an in-memory slot
-        that is only partially bound (target missing) is not written as a ``remote``
-        marker, so the merge is never the writer of a marker-without-target. (An
-        on-disk file that IS truncated to that shape now fails CLOSED on rehydrate —
-        see ``test_an_incomplete_stored_binding_fails_closed_not_open`` below.)
+        This inverts what this test pinned before. It asserted the merge dropped the
+        marker for a partially bound slot, on the rationale that a half binding is
+        then never on disk. But the sibling
+        ``test_an_incomplete_stored_binding_fails_closed_not_open`` establishes that a
+        half binding CAN reach disk (truncated write, hand-edit) and that rehydration
+        deliberately KEEPS its marker so the send is refused. Dropping the marker on
+        the next save undoes that refusal: the marker leaves disk and the following
+        restore comes back local, which is the silent wrong-host execution the other
+        test exists to prevent. So the writer now mirrors the reader -- marker always,
+        targets only when present.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("chat-1")
-        slot.executor = "remote"
-        slot.instance_id = "nobita"  # no remote_slot: the peer open never landed
+        # Establish the metadata line while still LOCAL, so the marker asserted below
+        # can only have been written by the empty-window merge. A merge is an upsert
+        # that cannot delete a key, so a marker written by an earlier full save would
+        # survive here no matter what the merge did, and the assertion would hold
+        # against a merge that writes nothing.
         slot.append("assistant", "hello", "msg msg-a")
         _save_slot_to_history(state, slot, force=True)
+        assert "executor" not in state.conversation_log.get_metadata("dashboard:chat-1")
 
+        slot.executor = "remote"
+        slot.instance_id = "nobita"  # no remote_slot: the peer open never landed
+        # Set the crash signal so the assertion below can actually fail: a half
+        # binding never dispatched a turn, so this must not reach disk.
+        slot._relay_in_flight = True
         slot.messages.clear()
         _save_slot_to_history(state, slot, force=True)
 
         meta = state.conversation_log.get_metadata("dashboard:chat-1")
-        assert "executor" not in meta
-        assert "instance_id" not in meta
+        assert meta.get("executor") == "remote"
+        assert meta.get("instance_id") == "nobita"
+        # The absent target stays absent rather than being written as a falsy value.
+        assert "remote_slot" not in meta
+        # Only a COMPLETE binding can have dispatched a turn, so the crash signal is
+        # still withheld from a half binding.
+        assert "relay_in_flight" not in meta
 
     def test_an_incomplete_stored_binding_fails_closed_not_open(self, tmp_path):
         """A truncated write / hand-edit that keeps the ``remote`` marker but loses
@@ -740,6 +1083,121 @@ class TestBindingPersistence:
         # False, which is exactly what the incomplete-binding guard keys on.
         assert restored.executor == "remote"
         assert restored.is_remote is False
+
+    def test_an_incomplete_binding_survives_a_save_after_the_restore(self, tmp_path):
+        """The refusal must survive the NEXT save, not only the first restore.
+
+        The sibling above proves the marker survives one rehydrate. This pins the step
+        after it: the restored slot gets saved (any ordinary activity does this), and
+        that save must not drop the marker. When it did, the sequence
+        restore -> save -> restart erased the refusal and the session came back as an
+        ordinary local one, so the following turn ran on THIS machine -- the wrong-host
+        execution the marker exists to prevent. Both writers are asserted, because
+        either one alone reaching disk is enough to lose the marker.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+        path = state.conversation_log._path("dashboard:chat-1")
+        lines = path.read_text().splitlines()
+        meta = json.loads(lines[0])
+        meta["executor"] = "remote"  # marker only, no instance_id / remote_slot
+        lines[0] = json.dumps(meta)
+        path.write_text("\n".join(lines) + "\n")
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None and restored.executor == "remote"
+
+        # The full-save path, with the window populated.
+        restored.append("user", "still here", "msg msg-b")
+        _save_slot_to_history(state, restored, force=True)
+        assert state.conversation_log.get_metadata("dashboard:chat-1").get("executor") == "remote"
+
+        # The empty-window merge path, which rebuilds the line from a cleared window.
+        restored.messages.clear()
+        _save_slot_to_history(state, restored, force=True)
+        assert state.conversation_log.get_metadata("dashboard:chat-1").get("executor") == "remote"
+
+        # The decisive assertion: a SECOND restart still refuses rather than running
+        # local, which is the step a dropped marker breaks.
+        del state._slots["chat-1"]
+        again = _rehydrate_slot_from_history(state, "chat-1")
+        assert again is not None
+        assert again.executor == "remote"
+        assert again.is_remote is False
+
+    def test_the_recent_sessions_path_keeps_the_refusal_across_a_save(self, tmp_path):
+        """Same round trip through ``_apply_recent_session``, this PR's restore path.
+
+        ``_apply_recent_session`` is the second fail-closed reader, so it reaches the
+        same asymmetry the writers had: it keeps a targetless marker, and a save that
+        dropped it would hand the next restore a local session.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _apply_recent_session,
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        _apply_recent_session(
+            state,
+            "dashboard:chat-9",
+            "chat-9",
+            {},
+            {"executor": "remote"},  # marker only
+            [],
+            conv_log=state.conversation_log,
+            kiro_model_map={},
+            restore_cfg=None,
+        )
+        restored = state._slots["chat-9"]
+        assert restored.executor == "remote" and restored.is_remote is False
+
+        restored.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, restored, force=True)
+        assert state.conversation_log.get_metadata("dashboard:chat-9").get("executor") == "remote"
+
+        del state._slots["chat-9"]
+        again = _rehydrate_slot_from_history(state, "chat-9")
+        assert again is not None and again.executor == "remote"
+        assert again.is_remote is False
+
+    def test_a_complete_binding_still_round_trips_unchanged(self, tmp_path):
+        """The widened writer must not stop writing a COMPLETE binding in full.
+
+        Guards against the symmetric mistake: making the marker unconditional while
+        dropping a target that is present.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        meta = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert meta.get("executor") == "remote"
+        assert meta.get("instance_id") == "nobita"
+        assert meta.get("remote_slot") == "peer-chat-9"
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.is_remote is True
 
 
 # ── Authorization before the peer is touched ───────────────────────────────────
@@ -1885,6 +2343,42 @@ class TestPeerTurnRequest:
         assert kwargs["params"] == {"relay": "1"}
         # The PEER's slot key, and only the message — see the known gap in the PR.
         assert json.loads(kwargs["data"]) == {"message": "hi", "slot": "peer-chat-9"}
+
+    @pytest.mark.asyncio
+    async def test_a_locally_pinned_model_is_still_not_relayed(self, tmp_path):
+        """The adopt path copies the peer's ``model`` onto the local slot, and this
+        pins that doing so did NOT turn into a routing change.
+
+        The inherited value is display state -- the header's pin, the context
+        denominator, the picker's starting value. Execution stays where it always
+        was: the peer's own slot decides what answers, because the turn body names
+        only the message and the peer key. Were a model ever added here, an
+        inherited (or stale) local value would start dictating the peer's model
+        per turn, which is exactly the overwrite the inherit exists to prevent.
+        """
+        state = _make_state(tmp_path)
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
+
+        class _Streaming(_FakeUpstream):
+            def __init__(self):
+                super().__init__(200, b"")
+                self.content = SimpleNamespace(iter_any=self._iter)
+
+            async def _iter(self):
+                yield b"data: [DONE]\n\n"
+
+        mgr.proxy_request = MagicMock(return_value=_Streaming())
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        slot.model = "claude-opus-4.5"
+
+        await relay_remote_turn(state, slot, "hi")
+
+        body = json.loads(mgr.proxy_request.call_args.kwargs["data"])
+        assert body == {"message": "hi", "slot": "peer-chat-9"}
+        assert "model" not in body
 
     @pytest.mark.asyncio
     async def test_a_peer_that_refuses_the_turn_becomes_an_error_row(self, tmp_path):

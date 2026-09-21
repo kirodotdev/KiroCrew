@@ -4424,6 +4424,8 @@
       "connected_to": "Connected to {{label}}",
       "session_failed_to_switch_one": "{{count}} session failed to switch",
       "session_failed_to_switch_other": "{{count}} sessions failed to switch",
+      "remote_session_kept_model_one": "{{count}} session runs on another of your machines and kept its model — it is not counted below.",
+      "remote_session_kept_model_other": "{{count}} sessions run on your other machines and kept their models — they are not counted below.",
       "session_source": "Session",
       "new_chat": "New chat",
       "new_chat_on_crew": "New chat on crew",

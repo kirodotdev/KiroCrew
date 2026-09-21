@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from itertools import islice
 from pathlib import Path
 
@@ -80,7 +80,7 @@ from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import session_agent_selection_name
-from kiro_crew.validation import ARTIFACT_SLUG_RE
+from kiro_crew.validation import ARTIFACT_SLUG_RE, sanitize_string
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +288,23 @@ def get_reasoning_effort_ordered() -> list[str]:
 _SAFE_EFFORT_RE = re.compile(r"[a-z][a-z0-9_-]{0,20}\Z")
 
 
+def _is_safe_effort_shape(value: object) -> bool:
+    """Return whether *value* is shape-safe to carry as an effort level.
+
+    This is the check applied to every level ACP reports
+    (:func:`update_reasoning_effort_values`): the reported vocabulary is not
+    known in advance, so shape is what makes an unrecognised level safe to hold.
+    It is deliberately NOT a membership test — see :func:`is_valid_effort` for
+    the canonical five, and :data:`_reasoning_effort_values` for the levels this
+    process currently accepts on the read path.
+
+    Callers that must not impose THIS process's vocabulary on a level chosen
+    elsewhere use this instead of membership: a peer crew may legitimately run a
+    level no local ACP session has ever reported.
+    """
+    return isinstance(value, str) and bool(_SAFE_EFFORT_RE.match(value))
+
+
 def update_reasoning_effort_values(acp_levels: list[str]) -> None:
     """Update valid effort levels from ACP session config.
 
@@ -305,9 +322,7 @@ def update_reasoning_effort_values(acp_levels: list[str]) -> None:
     live provider is available.
     """
     global _reasoning_effort_values, _reasoning_effort_ordered
-    safe_levels = [
-        level for level in acp_levels if isinstance(level, str) and _SAFE_EFFORT_RE.match(level)
-    ]
+    safe_levels = [level for level in acp_levels if _is_safe_effort_shape(level)]
     level_set = set(safe_levels)
     # Union-only: never drop a previously-valid level (persistence safety).
     merged = _reasoning_effort_values | set(_REASONING_EFFORT_FALLBACK) | level_set | {""}
@@ -330,6 +345,165 @@ def _validate_reasoning_effort(raw: object) -> str:
     if raw:
         logger.warning("Discarding invalid persisted reasoning_effort: %r", raw)
     return ""
+
+
+#: Maximum length of a peer-authored control value held on a local slot. Matches
+#: the clamp the adopt path applies to the peer's agent and model.
+_PEER_VALUE_MAX = 128
+
+#: ``strip_hidden_unicode`` removes every control character EXCEPT ``\n``, ``\r``
+#: and ``\t``, so those three are the only ones that reach a slot through the
+#: sanitizer — and none of them belongs in an agent name or a model id. Refusing
+#: them is the same job the effort pattern's ``\Z`` anchor does for ``"low\n"``.
+#: An ordinary space is deliberately NOT refused: a value the redactor rewrote to
+#: ``[REDACTED: credential]`` contains one, and dropping it would blank the picker
+#: — handing back the first-pick overwrite the inherit exists to prevent.
+_PEER_VALUE_UNSAFE_RE = re.compile(r"[\n\r\t]")
+
+
+def admit_peer_value(raw: object) -> str:
+    """Admit one peer-authored control value (agent, model), or "" to drop it.
+
+    Shape only — no allowlist, no registry lookup, no provider-keyed rewrite. A
+    peer's agent name and model id are opaque strings this machine's rosters have
+    no standing to judge: refusing one the local gateway does not recognise
+    rejects exactly the cross-version peer whose pin matters most, and REWRITING
+    one is the same error wearing different clothes — see :func:`_restore_model`
+    for the two local rewrites this exists to keep away from a peer's value.
+
+    This is the SAME function the adopt path admits the inherited value with, so
+    a value admitted there is admitted here unchanged and survives a restart —
+    the asymmetry (accepted on adopt, destroyed on restore) is the defect class
+    this shared home makes unreachable. Sanitizing is therefore idempotent on an
+    already-admitted value; it is repeated because the restore path's input is a
+    file on disk that a truncated write or a hand-edit can have changed.
+    """
+    if not isinstance(raw, str):
+        return ""
+    value = sanitize_string(raw)
+    if not value or _PEER_VALUE_UNSAFE_RE.search(value):
+        return ""
+    return value[:_PEER_VALUE_MAX]
+
+
+def admit_peer_effort(raw: object) -> str:
+    """Admit an effort level a REMOTE-bound slot owns on the peer, or "" to drop it.
+
+    Shape, not membership, for the reasons in :func:`_restore_reasoning_effort`:
+    the level came from a machine whose vocabulary this process cannot enumerate.
+
+    The one home for "admit a peer's effort level", as :func:`admit_peer_value`
+    is for the agent and model: the adopt inherit
+    (``remote_adopt.peer_row_metadata``), the effort endpoint's remote branch
+    (``chat_handlers.api_chat_slot_reasoning_effort``, spelled as "the admission
+    would change it") and the :data:`_PEER_OWNED_RESTORE` entry all call it, so
+    a level accepted on adopt is accepted on re-selection and survives a restart
+    by construction. Value-returning rather than a bool so the table holds one
+    entry per control with no spelling of the check outside these functions;
+    "" maps to "" — the endpoint relies on that to admit "use the provider
+    default" through the same comparison.
+    """
+    return raw if isinstance(raw, str) and _is_safe_effort_shape(raw) else ""
+
+
+def _restore_reasoning_effort(raw: object, *, remote: bool) -> str:
+    """Return the effort level to restore onto a slot, or "" to drop it.
+
+    A slot bound to a remote crew owns its effort level on the PEER, whose
+    vocabulary this process cannot enumerate: ``_reasoning_effort_values`` grows
+    only from levels a LOCAL ACP session reported, so membership here discards a
+    level the peer legitimately runs and hands the picker back a blank box —
+    whose first pick forwards and overwrites the peer's live setting, the exact
+    corruption inheriting the level exists to prevent. Shape is what makes an
+    unenumerable level safe to hold (:func:`_is_safe_effort_shape`), and it is
+    already the sole gate on every level ACP itself reports.
+
+    Relaxing membership HERE does not widen the local ``--effort`` boundary that
+    :func:`_validate_reasoning_effort` defends, for two independent reasons: the
+    local application site membership-checks the level itself before pushing it
+    (``providers.acp.AcpProvider.change_effort`` raises on a level outside
+    :func:`get_reasoning_effort_values`), and a slot carrying the remote marker
+    never dispatches a local turn at all — an incomplete binding is refused with
+    ``remote_binding_incomplete`` rather than run locally.
+
+    A LOCAL slot keeps the membership check unchanged: its level is meaningful
+    only in this process's vocabulary, so an unrecognised one is corruption.
+    """
+    if not remote:
+        return _validate_reasoning_effort(raw)
+    return restore_peer_owned("reasoning_effort", raw)
+
+
+def _restore_model(raw: object, *, remote: bool, provider: str) -> str:
+    """Return the model to restore onto a slot, or "" to drop it.
+
+    A LOCAL slot's model is a value this machine chose, so it keeps the existing
+    treatment: ``_normalize_model`` for the deprecation renames, then the
+    provider-keyed canonicalization that maps a pre-migration claude_code id onto
+    the canonical dropdown key (a no-op for every other provider).
+
+    A REMOTE-bound slot's model belongs to the peer and is admitted, not
+    interpreted. Both local steps are wrong for it, in the same direction:
+    ``canonicalize_for_provider`` is keyed on the LOCAL agent's provider, so a
+    claude_code-backed hub folds a kiro peer's ``claude-opus-4.8`` onto the
+    canonical key ``opus-4.8-1m`` the peer never advertised, and the deprecation
+    rename is a fact about THIS build's registry generation rather than about the
+    machine that answers the turns. Either rewrite makes the header, the picker
+    and the peer's real pin disagree with nothing reporting a problem, and the
+    next flush persists the rewrite.
+    """
+    if not remote:
+        if not isinstance(raw, str):
+            return ""
+        return model_registry.canonicalize_for_provider(_normalize_model(raw), provider)
+    return restore_peer_owned("model", raw)
+
+
+#: How each control a remote-bound slot owns ON THE PEER is admitted when it is
+#: read back off disk, keyed by the control name in ``_PEER_CONTROL_SEGMENTS``.
+#:
+#: The table is the point. Five review rounds of this family were the same rule
+#: found one site at a time — a peer-owned value met by a LOCAL vocabulary, which
+#: either refused it or rewrote it, and either way handed the picker a value that
+#: disagrees with the machine actually running the turns. Enumerating the sites
+#: correctly once does not stop the next control from being added with a local
+#: gate; a table does, because
+#: ``TestEveryForwardableControlIsInheritedOrNamed`` asserts every forwardable
+#: control that IS inherited has an entry here.
+#:
+#: ``agent`` is inherited but deliberately absent: :func:`_restored_agent_name`
+#: owns its restore and returns the persisted value unrewritten for a peer-bound
+#: slot, so this table has no decision to make for it. That guard names the
+#: exemption and its reason in ``ADMITTED_ELSEWHERE``.
+_PEER_OWNED_RESTORE: dict[str, "Callable[[object], str]"] = {
+    "model": admit_peer_value,
+    "reasoning_effort": admit_peer_effort,
+}
+
+
+def restore_peer_owned(control: str, raw: object) -> str:
+    """Admit one value a remote-bound slot owns on the peer, or "" to drop it.
+
+    The single decision for "this value is the peer's, not ours". Callers pass
+    the control name rather than picking an admission function, so a control
+    added to ``_PEER_CONTROL_SEGMENTS`` without an admission cannot silently
+    inherit the LOCAL treatment: it is dropped and logged as the programming
+    error it is. Failing closed is the safe direction — an empty value shows an
+    unset picker, while a locally-reinterpreted one shows a confident wrong
+    answer.
+    """
+    admit = _PEER_OWNED_RESTORE.get(control)
+    if admit is None:
+        logger.error(
+            "No peer-owned admission for control %r — dropping the peer's value. "
+            "Add it to _PEER_OWNED_RESTORE.",
+            control,
+        )
+        return ""
+    value = admit(raw)
+    if raw and not value:
+        logger.warning("Discarding malformed persisted %s: %r", control, raw)
+    return value
 
 
 #: Retired session modes. A slot persisted under one of these comes back as a
@@ -1384,15 +1558,26 @@ def _rehydrate_slot_from_history(
                 else _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta)
             )
         if meta.get("model"):
-            # _normalize_model handles deprecation renames. For claude_code sessions,
-            # also map a pre-migration raw provider id back to the canonical key so it
-            # matches the canonical-keyed dropdown (no-op for other providers). Reuse
-            # the already-loaded _restore_cfg provider — no second config load.
-            _prov = _restore_cfg.agent.provider if _restore_cfg else ""
-            slot.model = model_registry.canonicalize_for_provider(
-                _normalize_model(meta["model"]), _prov
+            # Keyed on the persisted MARKER, not on ``slot.executor``, for the
+            # reason spelled out at the reasoning_effort line below: the marker is
+            # restored further down, so the slot does not yet know it is remote.
+            slot.model = _restore_model(
+                meta["model"],
+                remote=meta.get("executor") == "remote",
+                # Reuse the already-loaded _restore_cfg provider — no second
+                # config load. Local path only; a peer's model is not judged
+                # against this machine's provider at all.
+                provider=_restore_cfg.agent.provider if _restore_cfg else "",
             )
-        elif slot.agent:
+        elif slot.agent and meta.get("executor") != "remote":
+            # The agent->model fallback is a LOCAL derivation: it keys THIS
+            # machine's ``kiro_model_map`` by the agent name. A remote-bound slot
+            # whose peer pinned no model must restore unpinned — the name it
+            # carries is the PEER's agent, and when the same name also exists
+            # here the lookup invents a model the peer never chose, which the
+            # header renders and the next flush persists. Keyed on the persisted
+            # marker for the reason at the model line above: the slot does not
+            # yet know it is remote.
             try:
                 mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
                 kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
@@ -1402,7 +1587,12 @@ def _rehydrate_slot_from_history(
                     "Failed to resolve model for rehydrated slot %s", slot_name, exc_info=True
                 )
         if meta.get("reasoning_effort"):
-            slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+            # Keyed on the persisted MARKER, not on ``slot.executor``: the marker
+            # is restored further down (independently of its target fields), so
+            # the slot does not yet know it is remote at this line.
+            slot.reasoning_effort = _restore_reasoning_effort(
+                meta["reasoning_effort"], remote=meta.get("executor") == "remote"
+            )
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
@@ -1985,6 +2175,24 @@ def _apply_recent_session(
     # the guard's missing-file witness still fires for it.
     slot._disk_meta_observed = bool(meta)
     slot._memory_assignment_from_history = True
+    # Establish peer ownership before admitting peer-owned controls, matching
+    # ``_rehydrate_slot_from_history``. Keep the admissions below keyed on the
+    # persisted marker: ``get_or_create_slot`` may return a live slot whose
+    # attributes describe a different transcript, and write ordering inside this
+    # function must not decide ownership. A remote marker is authoritative
+    # independently of target validity; preserving it lets ``api_chat``'s
+    # incomplete-binding guard (409 ``remote_binding_incomplete``) and the
+    # ``_run_chat`` chokepoint refuse an incomplete target rather than run local.
+    # Metadata without the marker leaves any valid live binding intact.
+    _executor_meta = meta.get("executor")
+    _instance_meta = meta.get("instance_id")
+    _remote_slot_meta = meta.get("remote_slot")
+    if _executor_meta == "remote":
+        slot.executor = "remote"
+        if isinstance(_instance_meta, str) and _instance_meta:
+            slot.instance_id = _instance_meta
+        if isinstance(_remote_slot_meta, str) and _remote_slot_meta:
+            slot.remote_slot = _remote_slot_meta
     # Member keys keep the binding-derived agent/mode: transcript metadata is
     # the operator-editable file the pin must not re-derive from.
     if _member_identity is None:
@@ -1996,14 +2204,16 @@ def _apply_recent_session(
             )
         )
     if meta.get("model"):
-        # Canonicalize a pre-migration claude_code provider id to the
-        # canonical dropdown key (no-op for other providers); reuse the
-        # already-loaded _restore_cfg provider.
-        _prov = _restore_cfg.agent.provider if _restore_cfg else ""
-        slot.model = model_registry.canonicalize_for_provider(
-            _normalize_model(meta["model"]), _prov
+        # Same executor split as _rehydrate_slot_from_history above, keyed on the
+        # persisted marker rather than slot.executor.
+        slot.model = _restore_model(
+            meta["model"],
+            remote=meta.get("executor") == "remote",
+            provider=_restore_cfg.agent.provider if _restore_cfg else "",
         )
-    elif slot.agent:
+    elif slot.agent and meta.get("executor") != "remote":
+        # Same guard as _rehydrate_slot_from_history above: the fallback is a
+        # LOCAL derivation, and an unpinned peer must restore unpinned.
         try:
             mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
             kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
@@ -2011,7 +2221,9 @@ def _apply_recent_session(
         except Exception:
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
     if meta.get("reasoning_effort"):
-        slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+        slot.reasoning_effort = _restore_reasoning_effort(
+            meta["reasoning_effort"], remote=meta.get("executor") == "remote"
+        )
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
@@ -3576,24 +3788,36 @@ def _save_slot_to_history(
                     fields["channel_origin"] = True
                 if slot.forked_from is not None:
                     fields["forked_from"] = slot.forked_from
-                if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
-                    # All three or none, exactly like the full save: a newborn
-                    # bound to a peer has an EMPTY window until the first relayed
-                    # row lands, so this merge is the only writer its binding
-                    # ever sees. Dropping it here means a restart in that window
-                    # brings the session back as an ordinary local one and the
-                    # next turn runs on this machine instead of the crew the user
-                    # picked. The completeness guard keeps the fail-closed
-                    # invariant: a half-binding is never written, so rehydration
-                    # never has to repair one.
+                if slot.executor == "remote":
+                    # The marker is written INDEPENDENTLY of its target fields,
+                    # matching the way rehydration reads it back. A newborn bound to
+                    # a peer has an EMPTY window until the first relayed row lands,
+                    # so this merge is the only writer its binding ever sees, and
+                    # dropping the marker means a restart in that window brings the
+                    # session back as an ordinary local one and the next turn runs on
+                    # this machine instead of the crew the user picked. Gating the
+                    # marker on target completeness would do precisely that to a
+                    # half-binding: rehydration deliberately KEEPS a marker whose
+                    # targets are missing and lets the 409
+                    # ``remote_binding_incomplete`` guard refuse the send, so a save
+                    # that dropped it would launder that refusal back into a local
+                    # session on the next restore. Write whichever targets are
+                    # present; an absent one stays absent and stays refused.
                     fields["executor"] = "remote"
-                    fields["instance_id"] = slot.instance_id
-                    fields["remote_slot"] = slot.remote_slot
-                    if getattr(slot, "_relay_in_flight", False):
+                    if slot.instance_id:
+                        fields["instance_id"] = slot.instance_id
+                    if slot.remote_slot:
+                        fields["remote_slot"] = slot.remote_slot
+                    if (
+                        slot.instance_id
+                        and slot.remote_slot
+                        and getattr(slot, "_relay_in_flight", False)
+                    ):
                         # Only ever written while a turn is mid-flight; the relay
                         # clears it when the turn ends, so a persisted True means
-                        # "crashed mid-turn" on reload. Nested under the binding
-                        # because it is meaningless without one.
+                        # "crashed mid-turn" on reload. Still nested under a COMPLETE
+                        # binding: an incomplete one never dispatched, so it has no
+                        # in-flight turn to recover.
                         fields["relay_in_flight"] = True
                 if getattr(slot, "_tab_id", None):
                     fields["tab_id"] = slot._tab_id
@@ -3934,19 +4158,33 @@ def _save_slot_to_history(
                 meta_line["agent_kind"] = slot.agent_kind
             if slot.project:
                 meta_line["project"] = slot.project
-            # Remote-execution binding. All three are written together or not at
-            # all: a half-restored binding (executor="remote" with no peer slot)
-            # is the fail-closed refusal case, so persisting the marker without
-            # its target would resurrect a session that can never run. Written
-            # only when the whole binding is present, and read back the same way.
-            if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
+            # Remote-execution binding. The marker is written whenever the slot
+            # carries it, independently of its target fields, because that is how
+            # rehydration reads it back: a marker whose instance_id / remote_slot is
+            # missing is KEPT on restore so the 409 ``remote_binding_incomplete``
+            # guard can refuse the send, rather than dropped so the session silently
+            # becomes local. Gating the marker on completeness here would undo that
+            # decision one save later — the restore refuses, this save drops the
+            # marker, and the NEXT restore runs the user's turn on this machine,
+            # which is the wrong-host execution the binding exists to prevent.
+            # A half-binding therefore stays refused until the session is removed;
+            # only a truncated write or a hand-edit can seed one, and an inert
+            # refused session is the lesser harm.
+            if slot.executor == "remote":
                 meta_line["executor"] = "remote"
-                meta_line["instance_id"] = slot.instance_id
-                meta_line["remote_slot"] = slot.remote_slot
-                if getattr(slot, "_relay_in_flight", False):
+                if slot.instance_id:
+                    meta_line["instance_id"] = slot.instance_id
+                if slot.remote_slot:
+                    meta_line["remote_slot"] = slot.remote_slot
+                if (
+                    slot.instance_id
+                    and slot.remote_slot
+                    and getattr(slot, "_relay_in_flight", False)
+                ):
                     # See the merge-save site: written only while a turn is
                     # in-flight, so a True read back on reload is the crash signal
-                    # that triggers the interrupted-turn row.
+                    # that triggers the interrupted-turn row. Requires the COMPLETE
+                    # binding, since an incomplete one never dispatched a turn.
                     meta_line["relay_in_flight"] = True
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
