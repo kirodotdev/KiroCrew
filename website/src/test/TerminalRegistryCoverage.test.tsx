@@ -30,6 +30,7 @@ import {
   registerTerminalWs,
   unregisterTerminalWs,
   getTerminalWs,
+  getTerminalInputWs,
   onTerminalReady,
   sendToTerminalSession,
   sendRawToTerminalSession,
@@ -313,6 +314,74 @@ describe('terminalRegistry', () => {
       ws.send.mockImplementation(() => { throw new Error('socket gone') })
       expect(sendToTerminalSession(id, 'ls')).toBe(false)
       expect(sendRawToTerminalSession(id, 'ls')).toBe(false)
+    })
+  })
+
+  /**
+   * The two input tiers, and the session state that separates them (#7657).
+   *
+   * A login profile that ASSIGNS `PROMPT_COMMAND` replaces the hook the `ready`
+   * frame rides on, so that frame never arrives: the socket is open, the shell
+   * is usable, and the execution barrier stays shut for the life of the session.
+   * Typing must keep working there -- `term.onData` already writes hand-typed
+   * keystrokes to the same socket -- while newline-terminated dispatch must not.
+   */
+  describe('input tiers on a session with no ready frame', () => {
+    /** Open socket, no `ready` frame: the clobbered-hook state. */
+    function openUnreadySession(sessionId: string): MockWebSocket {
+      ensureTerminalConnection(
+        sessionId, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(),
+      )
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      return ws
+    }
+
+    it('types an accepted completion into a session that never went ready', () => {
+      const id = session('unready-typing')
+      const ws = openUnreadySession(id)
+      // Precondition, or this proves nothing: the barrier is genuinely shut, so
+      // the session is in the clobbered state rather than simply ready.
+      expect(getTerminalWs(id)).toBeNull()
+
+      expect(getTerminalInputWs(id)).not.toBeNull()
+      expect(sendRawToTerminalSession(id, '/loc')).toBe(true)
+      expect(decode(ws)).toBe('/loc')
+    })
+
+    it('keeps newline-terminated dispatch waiting on that same session', () => {
+      const id = session('unready-execution')
+      const ws = openUnreadySession(id)
+      const waiter = vi.fn()
+      onTerminalReady(id, waiter)
+
+      expect(sendToTerminalSession(id, 'ls')).toBe(false)
+      expect(waiter).not.toHaveBeenCalled()
+      expect(ws.send).not.toHaveBeenCalled()
+    })
+
+    it('refuses to type a payload that would submit a line', () => {
+      const id = session('no-submit')
+      const ws = openSocket(id)
+      // A directory entry may legally hold a newline (`touch $'evil\nrm -rf x'`).
+      // The typing tier is allowed to run before `ready` only because it cannot
+      // execute anything, so a newline or carriage return is refused here even
+      // on a ready session.
+      expect(sendRawToTerminalSession(id, 'evil\nrm -rf x')).toBe(false)
+      expect(sendRawToTerminalSession(id, 'evil\rrm -rf x')).toBe(false)
+      expect(sendRawToTerminalSession(id, '\n')).toBe(false)
+      expect(ws.send).not.toHaveBeenCalled()
+    })
+
+    it('does not type into a socket that has not finished dialing', () => {
+      const id = session('dialing')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+
+      expect(ws.readyState).toBe(MockWebSocket.CONNECTING)
+      expect(getTerminalInputWs(id)).toBeNull()
+      expect(sendRawToTerminalSession(id, '/loc')).toBe(false)
+      expect(ws.send).not.toHaveBeenCalled()
     })
   })
 
