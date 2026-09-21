@@ -2684,7 +2684,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
     0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
-[data-theme*="dark"] .glass-surface {
+[data-mode="dark"] .glass-surface {
   background: linear-gradient(135deg,
     rgba(255, 255, 255, 0.08),
     rgba(255, 255, 255, 0.03));
@@ -2693,7 +2693,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     0 1px 3px rgba(0, 0, 0, 0.15);
 }
-[data-theme*="dark"] .glass-surface:not(.glass-static):hover {
+[data-mode="dark"] .glass-surface:not(.glass-static):hover {
   background: linear-gradient(135deg,
     rgba(255, 255, 255, 0.12),
     rgba(255, 255, 255, 0.05));
@@ -2719,7 +2719,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
     transparent 45%);
   pointer-events: none;
 }
-[data-theme*="dark"] .glass-refract::before {
+[data-mode="dark"] .glass-refract::before {
   background: linear-gradient(180deg,
     rgba(255, 255, 255, 0.03) 0%,
     transparent 50%);
@@ -2732,36 +2732,39 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 /* Composer halo (ChatInput.tsx): an offset-free shadow spreading evenly on all
  * four sides, so the box reads as set INTO the page rather than dropped onto it.
  * At rest it is neutral and faint; while the composer holds focus it takes the
- * accent tint, lighting up together with the wrapper's focus-within accent
- * border as one signal. Dark themes need a stronger alpha for the same
- * perceived depth because the surrounding background is already near black.
- * Neutral black is intentional: a themed shadow color would shift hue on
- * colorful backgrounds instead of reading as depth. */
+ * theme's --accent-glow (the accent at each theme's own glow alpha, stronger in
+ * dark themes and tunable by an installed pack), lighting up together with the
+ * wrapper's focus-within accent border as one signal. The rest shadow is
+ * neutral black on purpose: a themed shadow color would shift hue on colorful
+ * backgrounds instead of reading as depth, and dark themes take a stronger
+ * alpha because the surrounding background is already near black. */
 .composer-halo {
   box-shadow: 0 0 18px rgba(0, 0, 0, 0.06);
   transition: box-shadow 0.18s ease;
 }
-.composer-halo:focus-within {
-  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-[data-theme*="dark"] .composer-halo {
+/* Polarity is read from data-mode, the attribute useTheme sets to what it
+ * paints, so a custom pack gets the right alpha whatever its slug is called.
+ * This rule sits BEFORE the focus rule: both have equal specificity, so source
+ * order is what lets focus win over the dark rest shadow. */
+[data-mode="dark"] .composer-halo {
   box-shadow: 0 0 18px rgba(0, 0, 0, 0.30);
 }
-[data-theme*="dark"] .composer-halo:focus-within {
-  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 22%, transparent);
+.composer-halo:focus-within {
+  box-shadow: 0 0 18px var(--accent-glow);
 }
 /* Memory-mode variants follow the wrapper's always-on border color (warn for
- * incognito, aim for temporary) so focus reads as one color per control. */
+ * incognito, aim for temporary) so focus reads as one color per control. No
+ * per-theme glow token exists for these two colors, so the alpha is fixed. */
 .composer-halo-warn:focus-within {
   box-shadow: 0 0 18px color-mix(in srgb, var(--warn) 18%, transparent);
 }
 .composer-halo-aim:focus-within {
   box-shadow: 0 0 18px color-mix(in srgb, var(--aim) 18%, transparent);
 }
-[data-theme*="dark"] .composer-halo-warn:focus-within {
+[data-mode="dark"] .composer-halo-warn:focus-within {
   box-shadow: 0 0 18px color-mix(in srgb, var(--warn) 22%, transparent);
 }
-[data-theme*="dark"] .composer-halo-aim:focus-within {
+[data-mode="dark"] .composer-halo-aim:focus-within {
   box-shadow: 0 0 18px color-mix(in srgb, var(--aim) 22%, transparent);
 }
 
@@ -2777,11 +2780,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   border-color: rgba(0, 0, 0, 0.10);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
-[data-theme*="dark"] .file-chip {
+[data-mode="dark"] .file-chip {
   border-color: rgba(255, 255, 255, 0.05);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
-[data-theme*="dark"] .file-chip:not(.glass-static):hover {
+[data-mode="dark"] .file-chip:not(.glass-static):hover {
   border-color: rgba(255, 255, 255, 0.09);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
