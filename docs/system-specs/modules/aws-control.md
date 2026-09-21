@@ -935,6 +935,105 @@ of the schedule: with the keys namespaced there is nothing left to collide, and 
 single-owner schedule would leave one machine silently un-backed-up, which is
 discovered at restore time and is worse than the state it replaced.
 
+### A failed unattended attempt is recorded, so the loop can back off
+
+The half-hourly wake is a due-CHECK interval and never a retry interval. Only
+completed runs used to be recorded, so a deterministic fault — an unreadable file,
+a disconnected mount, a payload database that cannot be shown free of credentials —
+left the state file unable to distinguish
+"never ran" from "keeps breaking": `due_for_nightly` took its never-ran branch on
+every wake, re-staged the whole data home into a fresh temporary directory, and
+repeated the same traceback roughly every half hour for as long as the fault
+lasted.
+
+`hooks._failed_attempt` closes that. It is the single place a failed unattended
+attempt is both SEL-audited and recorded, reached from the shared setup's handler
+and from each kind's own push, so the backoff cannot depend on which way the run
+broke.
+
+It closes that for a fault that leaves the state file writable, which is not every
+fault. A full disk fails the failure-write as well, so nothing is recorded and every
+wake is due exactly as before. That residual is deliberate rather than overlooked:
+`record_nightly_failure` never raises, because a state file it cannot write must not
+turn a logged backup failure into an unhandled one, and a count that did not persist
+leaves the loop retrying as it does today. So a full disk is still a repeated-traceback
+case; what this closes is the larger class where the disk is fine and the backup is not.
+
+Cancellation does not reach it: a cancelled attempt is teardown, and
+counting it would let a clean shutdown push the next night out.
+
+The record lives under `backup.NIGHTLY_FAILURE_STATE_KEY`, per account then per
+kind, as `{"at": iso8601, "since": iso8601, "consecutive": int, "error": str}`. It is a SEPARATE key
+from `runs`, because `runs` is read by `uploaded_versions`, `_unchanged_baseline`
+and the retention sweep as proof an archive exists — a failed attempt filed there
+would hand each of them a baseline to compare against and a version to retire for
+an upload that never happened.
+
+`backup.NIGHTLY_RETRY_BACKOFF_SECS` maps consecutive failures to a wait, indexed by
+N-1 with the last entry as the ceiling: 0, 1 h, 2 h, 4 h, 8 h, then 12 h. The first
+entry is zero, so a single failure is retried on the next wake exactly as before —
+one failure is not yet a pattern. A module-level assertion pins the ceiling below
+`NIGHTLY_WINDOW_SECS`, which is what keeps this a backoff rather than a second way
+for a backup the owner enabled to go quiet.
+
+`_backoff_withholds` answers DUE for every unusable reading — a corrupt count, a
+corrupt or absent stamp, a stamp in the future from a backwards clock step. That is
+the rule `_a_day_since_last_run` already states for an unparseable success stamp,
+and a failure record is a new place for the same silence to appear.
+
+Any success clears the count, atomically inside `_record_run_locked`'s mutate
+rather than as a second write beside it, so no wake can land between the run record
+and the clear. Only the SCHEDULED path records a failure, while a success from
+anywhere clears one: an owner pressing the button is present and has just
+demonstrated the fault is gone, which is the line `_unattended_sessions_redaction_gap`
+already draws. The status read serves the record as `nightlyFailures` so an operator
+can see the count and the day it started; no console renderer ships with it.
+
+The clear alone is not enough, because the two writers serialize under the sidecar lock
+but each mutate re-reads fresh state. An unconditional failure write can therefore land
+AFTER a concurrent manual success cleared the count and record a failure against a kind
+that just succeeded. So `nightly_run_witness` reads the run slot's `(process, sequence)`
+identity BEFORE an attempt starts, `record_nightly_failure` requires it, and the write is
+refused when the slot moved during the attempt. Absent compares equal to absent, which is
+what keeps a nightly that has never succeeded recording its count normally; only an actual
+move refuses. That identity is the one `_record_run_locked`'s `expected` parameter
+already established for this compare-and-set, because neither `at` nor `key` can stand
+in for it: the clock resolves to a platform tick and a skip copies the matched run's key.
+
+What the raced write costs was measured, not assumed, and the obvious claim is wrong: it
+restarts the count at 1, `nightly_retry_delay_secs` answers 0 there, and the fresh run
+record already holds the account not-due for the window, so it withholds no attempt. What
+it produces is a false `nightlyFailures` row for an account that just backed up, plus a
+one-step skew on the next genuine failure. The row is why the guard ships -- making that
+state readable is half of what this change is for -- and a review lane that priced the
+guard against the withheld-attempt claim was right to reject that claim.
+
+A run record reaches the document by TWO paths, so the clear sits on both. The second is
+`_merge_pending`, which carries a run whose own state write raised and was held in memory;
+before it also cleared, a stale count outlived the success that should have ended it, and
+after a restart withheld one nightly for up to the ceiling on an account that had already
+backed up. It is gated on `_run_is_newer` for the same reason the run write is.
+
+`run_witness` is a required keyword with no default, so a call site added later cannot
+opt out of the protocol silently -- which is the shape of the bug it closes. Each hooks
+call site reads it at the top of its own attempt, never in the handler, because by then
+the window it has to witness has closed. A refusal returns `None` and is logged as the
+good case it is: skipping a real failure costs the extra attempts the loop already makes,
+while writing a false one misreports a healthy account, so this ambiguity resolves toward
+attempting the backup like every other one here.
+
+The row carries TWO stamps. `at` is the latest attempt and is what the backoff measures
+from; `since` is when the current run of failures began, carried forward while the streak
+continues and cleared with the row. Both are needed because the issue asks for the second
+by name -- an operator has to see that the nightly has been failing since a particular day
+-- and one overwritten stamp cannot say both. A stored `since` is carried only when it
+PARSES as a timestamp, not merely when it is a non-empty string: it is published in an
+operator-facing row and each write carries the previous one forward, so an unparseable
+value would otherwise be rendered as the day the failures began for the whole life of the
+streak. Anything unusable restarts the streak, so corruption can only ever under-report the
+outage. The backoff never reads `since`, so a corrupt value there cannot affect scheduling
+in either direction.
+
 ### The nightly sessions archive is a second, separate grant
 
 `backup.nightly_sessions_enabled` authorizes the scheduled SESSIONS archive and
