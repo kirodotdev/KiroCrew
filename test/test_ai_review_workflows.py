@@ -11835,7 +11835,7 @@ class TestForkLaneBubblewrapBootstrapEgress:
     the path of a single install.
 
     Blocked, the install exits 7 before the model is ever reached, and the lane
-    reports `review incomplete` rather than a verdict (#12099). Failing closed is
+    reports `review incomplete` rather than a verdict. Failing closed is
     correct -- the isolation is a security control, so running unsandboxed must
     never be a silent fallback -- but the lane then cannot review at all, and the
     advisory lanes publish that as a NEUTRAL check, so three reviewers stopped
@@ -11903,7 +11903,7 @@ class TestForkLaneBubblewrapBootstrapEgress:
         # of text as the ubuntu archive. Their failures are apt WARNINGS (`W:`),
         # nothing these lanes install comes from them, and reading the log as a
         # flat list of blocked hosts is the obvious way to widen the allowlist by
-        # two general-purpose vendor CDNs that no longer need to be there.
+        # two general-purpose vendor CDNs that belong nowhere near this lane.
         forbidden = ("dl.google.com", "packages.microsoft.com")
         for name, job in _lane_jobs(lane).items():
             endpoints = _blocking_endpoints(job)
