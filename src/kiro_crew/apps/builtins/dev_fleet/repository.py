@@ -637,8 +637,8 @@ def _parse_worktree_porcelain(raw: str) -> list[dict]:
     return entries
 
 
-async def _discover_worktrees() -> list[dict]:
-    """List git worktrees of MAIN_REPO."""
+async def _worktree_porcelain_entries() -> list[dict]:
+    """List all git worktree records of MAIN_REPO, including prunable entries."""
     # Nothing to discover when no checkout resolved; _repo() raises
     # RepoNotConfigured and the setup state is the caller's job.
     repo = _repo()
@@ -705,6 +705,12 @@ async def _discover_worktrees() -> list[dict]:
     # repository discovery hint).
     for i, e in enumerate(entries):
         e["is_main"] = i == 0
+    return entries
+
+
+async def _discover_worktrees() -> list[dict]:
+    """List usable git worktrees of MAIN_REPO."""
+    entries = await _worktree_porcelain_entries()
     # A `prunable` entry has no checkout on disk, so every git call against its
     # path fails and it renders as a ghost row with no branch, behind count or
     # timestamp — and no refresh ever clears it, because git keeps reporting the
@@ -1073,6 +1079,21 @@ async def _find_worktree(name: str) -> tuple[dict | None, str | None]:
     return _find_worktree_sync(wts, name)
 
 
+async def _find_retained_worktree_path(name: str) -> tuple[str | None, str | None]:
+    """Find a non-main worktree record, including a prunable checkout."""
+    matches = [
+        worktree
+        for worktree in await _worktree_porcelain_entries()
+        if not worktree.get("is_main") and Path(worktree["path"]).name == name
+    ]
+    if not matches:
+        return None, f"worktree not found: {name}"
+    if len(matches) > 1:
+        paths = ", ".join(worktree["path"] for worktree in matches)
+        return None, f"ambiguous worktree name {name!r} matches multiple checkouts: {paths}"
+    return matches[0]["path"], None
+
+
 async def _valid_worktree_names() -> set[str]:
     return {
         Path(w["path"]).name if not w.get("is_main") else BASE_BRANCH
@@ -1142,6 +1163,7 @@ __all__ = (
     "_discover_main_repo",
     "ensure_main_repo_discovered",
     "_discover_worktrees",
+    "_find_retained_worktree_path",
     "_find_worktree",
     "_find_worktree_by_path",
     "_find_worktree_sync",

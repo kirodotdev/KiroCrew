@@ -197,7 +197,9 @@ async def _pod_checkout_guard(name: str) -> str | None:
     return None
 
 
-def _reclaim_pod_locked(cfg, name: str, expected_checkout: str) -> tuple[str, str]:
+def _reclaim_pod_locked(
+    cfg, name: str, expected_checkout: str, *, require_missing_checkout: bool = False
+) -> tuple[str, str]:
     """Attribute pod *name* and tear it down as ONE locked transaction.
 
     Runs entirely inside ``rt.pod_name_mutex``, which is the cross-process flock
@@ -215,12 +217,13 @@ def _reclaim_pod_locked(cfg, name: str, expected_checkout: str) -> tuple[str, st
     submitted to the executor as one callable, so ``stop_pod``'s own acquisition
     nests instead of deadlocking.
 
-    *expected_checkout* is this repo's worktree path for *name*, resolved by the
-    caller before the lock -- it is not the racy half, since a foreign ``up``
-    moves the PIN, never our own worktree.
+    *expected_checkout* identifies this repository's checkout for *name*. The
+    missing-checkout teardown passes git's retained worktree record. When
+    *require_missing_checkout* is true, the locked transaction refuses if that
+    path is back on disk because a new pod may own the name.
 
-    Mirrors :func:`_pod_checkout_guard`'s attribution rules, and the CLI's
-    post-teardown env-file clear, so behaviour matches the paths it replaces.
+    Mirrors :func:`_pod_checkout_guard`'s attribution rules and clears the
+    checkout pin after a successful reclaim.
 
     Returns ``(outcome, detail)`` with outcome one of:
       ``reclaimed``  -- ours, torn down, HOME verified gone
@@ -264,6 +267,11 @@ def _reclaim_pod_locked(cfg, name: str, expected_checkout: str) -> tuple[str, st
         if not mine:
             return "foreign", (
                 f"pod {name!r} is pinned to a different checkout " "(basename collision)"
+            )
+        if require_missing_checkout and Path(expected_checkout).exists():
+            return "handed_over", (
+                f"pod {name!r}: its checkout {expected_checkout!r} is back on disk, "
+                "so a new pod may own the name"
             )
         cp = runtime.rt.stop_pod(cfg, name)
         if cp.returncode != 0:
@@ -318,34 +326,61 @@ async def _pod_up(name: str) -> dict:
 
 
 async def _pod_down(name: str) -> dict:
-    guard = await _pod_checkout_guard(name)
-    if guard:
-        return {"ok": False, "error": guard}
-    await runtime._warm_build_path()
-    cmd = runtime._find_cli() + ["pod", "down", name]
-    rc, stdout, stderr = await runtime._run_cmd(
-        cmd, cwd=repository._repo(), env=_pod_env(), timeout=30
-    )
-    if rc != 0:
-        return {"ok": False, "error": runtime._redact(stderr or stdout)}
-    # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
-    # broken `-m` entry point can no-op with rc 0, and a real stop
-    # can still fail or time out). Re-check the live unit state and fail CLOSED
-    # if the pod is still active — mirrors the post-shutdown recheck in
-    # _worktree_remove so "Stopped" is never reported for a pod still running.
+    target, ferr = await repository._find_worktree(name)
+    if target is not None:
+        guard = await _pod_checkout_guard(name)
+        if guard:
+            return {"ok": False, "error": guard}
+        await runtime._warm_build_path()
+        cmd = runtime._find_cli() + ["pod", "down", name]
+        rc, stdout, stderr = await runtime._run_cmd(
+            cmd, cwd=repository._repo(), env=_pod_env(), timeout=30
+        )
+        if rc != 0:
+            return {"ok": False, "error": runtime._redact(stderr or stdout)}
+        # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
+        # broken `-m` entry point can no-op with rc 0, and a real stop
+        # can still fail or time out). Re-check the live unit state and fail CLOSED
+        # if the pod is still active -- mirrors the post-shutdown recheck in
+        # _worktree_remove so "Stopped" is never reported for a pod still running.
+        cfg = runtime._load_cfg()
+        if runtime._POD_AVAILABLE and cfg:
+            try:
+                loop = asyncio.get_running_loop()
+                active = await loop.run_in_executor(
+                    subprocess_executor(), runtime.rt.active_names, cfg
+                )
+                if name in active:
+                    return {"ok": False, "error": "pod still active after shutdown"}
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "ok": False,
+                    "error": f"cannot verify pod shutdown: {runtime._redact(str(exc))}",
+                }
+        return {"ok": True, "error": None}
+
+    recorded, rerr = await repository._find_retained_worktree_path(name)
+    if recorded is None:
+        return {"ok": False, "error": ferr or rerr or f"worktree not found: {name!r}"}
     cfg = runtime._load_cfg()
-    if runtime._POD_AVAILABLE and cfg:
-        try:
-            loop = asyncio.get_running_loop()
-            active = await loop.run_in_executor(subprocess_executor(), runtime.rt.active_names, cfg)
-            if name in active:
-                return {"ok": False, "error": "pod still active after shutdown"}
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "ok": False,
-                "error": f"cannot verify pod shutdown: {runtime._redact(str(exc))}",
-            }
-    return {"ok": True, "error": None}
+    if cfg is None or not runtime._POD_AVAILABLE:
+        return {"ok": False, "error": ferr or f"worktree not found: {name!r}"}
+    try:
+        outcome, detail = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(
+                _reclaim_pod_locked,
+                cfg,
+                name,
+                recorded,
+                require_missing_checkout=True,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"cannot reclaim pod: {runtime._redact(str(exc))}"}
+    if outcome == "reclaimed":
+        return {"ok": True, "error": None}
+    return {"ok": False, "error": detail}
 
 
 async def _pod_restart(name: str) -> dict:

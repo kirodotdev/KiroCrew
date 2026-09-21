@@ -274,7 +274,9 @@ in-gateway read and lease routes admit only Dev Fleet's own backend token.
 
 ## Input Validation
 
-- `name` parameter is validated against the discovered worktree set before any operation
+- `name` parameter is validated against the discovered worktree set before any operation.
+  The agent surface's `pod down` also accepts a missing checkout only when this
+  repository retains the matching git worktree record (see *Pod identity guard*).
 - Ambiguous worktree names (multiple checkouts with same basename) return HTTP 400
 - `force` must be a boolean when provided
 - Main worktree removal is always refused regardless of force flag
@@ -412,6 +414,29 @@ running" bug, issue #220). As defence-in-depth, `_pod_up` and `_pod_down` both
 re-check `runtime.active_names` after the CLI returns and fail closed
 (`pod not active after start` / `pod still active after shutdown`) — a CLI exit 0
 is never taken as proof of the state change, in either direction.
+
+### Pod identity guard
+
+Pod names are global basenames while Dev Fleet scopes worktrees to `MAIN_REPO`,
+so every pod verb first runs `_pod_checkout_guard`. It resolves the name to this
+repo's worktree, reads the pod's pinned `CHECKOUT` strictly, and refuses when the
+pin names a different checkout, carries no verifiable `CHECKOUT`, or is absent
+while a unit under that name is active. A matching pin proceeds, and so does no
+pin with no live unit. Every refusal is about identity: acting on a basename
+collision would stop another repository's pod or delete its HOME.
+
+A missing checkout is attributed only by git's retained worktree record for this
+repository. `repository._find_retained_worktree_path` includes a `prunable`
+record that normal discovery omits. When no record names the worktree, the agent
+surface refuses and the CLI `kirocrew pod down <name>` remains the remedy.
+
+For a retained record, `_pod_down` submits `_reclaim_pod_locked` to the
+subprocess executor. The helper runs under `pod_name_mutex`, re-reads the pin,
+and refuses unless it still matches the retained path. It also refuses when that
+path is back on disk, because a new pod may own the name. Pin attribution and
+teardown are one locked transaction, so a same-name pod cannot be accepted
+between the ownership decision and `stop_pod`. `up` requires a discovered
+checkout and never takes this missing-checkout path.
 
 ### Pod HOME reclamation on worktree removal
 

@@ -869,18 +869,27 @@ async def test_pod_up_unverifiable_start_fails_closed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pod_down_refused_by_guard(monkeypatch):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/worktrees/feat"}, None))
+    )
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value="denied"))
     assert await worktree_ops._pod_down("feat") == {"ok": False, "error": "denied"}
 
 
 @pytest.mark.asyncio
 async def test_pod_down_cli_failure_is_reported(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/worktrees/feat"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(2, "out", "")))
     assert await worktree_ops._pod_down("feat") == {"ok": False, "error": "out"}
 
 
 @pytest.mark.asyncio
 async def test_pod_down_still_active_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/worktrees/feat"}, None))
+    )
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value=None))
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "", "")))
     monkeypatch.setattr(runtime, "_load_cfg", lambda: SimpleNamespace())
@@ -896,6 +905,9 @@ async def test_pod_down_still_active_fails_closed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pod_down_unverifiable_shutdown_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/worktrees/feat"}, None))
+    )
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value=None))
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "", "")))
     monkeypatch.setattr(runtime, "_load_cfg", lambda: SimpleNamespace())
@@ -912,6 +924,9 @@ async def test_pod_down_unverifiable_shutdown_fails_closed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pod_down_success(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/worktrees/feat"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "", "")))
     assert await worktree_ops._pod_down("feat") == {"ok": True, "error": None}
 
