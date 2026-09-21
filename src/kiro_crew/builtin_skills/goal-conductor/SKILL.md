@@ -46,7 +46,7 @@ A candidate qualifies only if **all three** hold:
    work — CI runs the suite, and its verdict is the one that counts. If an item's
    completion genuinely cannot be stated as one of these, it is not assertable:
    say so and treat it as a needs-human item rather than inventing a condition.
-   A `pr_checks` condition names a NON-DRAFT pull request: while a pull request is a draft, a repository that gates readiness on draft state holds its checks incomplete, so the verdict stays `pending` for as long as the draft lasts and the item can never pass.
+   A `pr_checks` condition names a NON-DRAFT pull request: a draft whose checks have not finished comes back `refused` rather than `pending` — the evaluator reads an unfinished check run on a draft as the author's turn, so no later cycle resolves it and you surface it instead of waiting. A draft whose checks have RESOLVED is judged on them like any other PR, so a green draft passes.
 3. **Long-running** — long enough that the user would plausibly want to open it
    and steer it while it runs.
 
@@ -160,7 +160,7 @@ For each item in the round, in **exactly this order**:
    The seed is the item's whole contract: the child session gets no other
    context from you.
 
-**A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft costs a whole verify cycle that can only answer `pending`.
+**A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft whose checks have not finished costs a whole verify cycle that answers `refused`, which you surface to the user rather than retry.
 
 **A `pr_checks` seed may name the PR procedure.** The worker is a custom agent
 and sees no skill catalog, so nothing auto-loads `prepare-pr` for it. If the

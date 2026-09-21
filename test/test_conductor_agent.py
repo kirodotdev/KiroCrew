@@ -19,6 +19,7 @@ name ``python -c <payload>``), and pinning that is one of the tests below.
 
 import inspect
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1282,6 +1283,46 @@ class TestDraftPullRequest:
         assert verdict == "error"
         assert "integer pr" in evidence
         assert seen == []
+
+    def test_the_skill_prose_names_the_verdict_this_evaluator_returns(self, monkeypatch):
+        """Doc ratchet: ``SKILL.md`` and this script must agree on a pending draft.
+
+        The conductor acts on the prose, not on the code, so a doc naming the
+        wrong verdict is the same defect as a wrong return - and every
+        behavioural test in this class is blind to it, because none of them read
+        the doc.
+
+        So derive the word by RUNNING the evaluator, then hold the shipped file's
+        draft sentences to it. A rewording that keeps the fact passes; one that
+        promises a pending wait, or claims a draft cannot pass, fails.
+        """
+        mod = _load_evaluator()
+        self._wire(mod, monkeypatch, [(8, "still running", ""), (0, "true", "")])
+        verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
+        assert verdict == "refused", "the ratchet below pins the doc to THIS word"
+
+        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        draft_sentences = [
+            " ".join(s.split()) for s in re.split(r"(?<=[.!?])\s+", body) if "draft" in s.lower()
+        ]
+        assert draft_sentences, "SKILL.md says nothing about a draft PR"
+        assert any(
+            f"`{verdict}`" in s for s in draft_sentences
+        ), f"no draft sentence in SKILL.md names the `{verdict}` verdict the script returns"
+        for sentence in draft_sentences:
+            assert not re.search(
+                r"(?:stays|remains|answers?|comes back|returns|waits for)\s+`pending`",
+                sentence,
+            ), f"SKILL.md still promises a pending wait on a draft: {sentence}"
+            assert "never pass" not in sentence, (
+                "a draft whose checks RESOLVE is judged on them, so it can pass: " + sentence
+            )
+        # The other half of the fact, which drifted with the first: a draft whose
+        # checks RESOLVE is judged on them, so it can pass. Matched loosely - the
+        # ratchet is on the fact surviving a rewrite, not on one phrasing of it.
+        assert any(
+            "resolved" in s.lower() and "pass" in s.lower() for s in draft_sentences
+        ), "SKILL.md must keep the exception: a draft whose checks resolve green passes"
 
 
 class TestUsageInsteadOfBlockingOnStdin:
