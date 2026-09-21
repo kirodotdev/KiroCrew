@@ -1,0 +1,53 @@
+# Smoke: the bookmarkable session chooser at /sessions. The page lists the OPEN
+# sessions the sidebar shows (closed ones belong to the Older Sessions pane), a
+# "Pinned" group first and then by local day, with a search box and a row of
+# filter chips (All, Unread, one per status tag in use). It has no rail row on
+# purpose, so the harness reaches it by URL. Against `rich`, "Pinned" holds the
+# two pinned sessions -- "Welcome to KiroCrew" and "Fix empty-glob crash in  (brand-ok: fixture title)
+# list_sessions" -- and the unpinned "Triage: cron runs twice per tick" sits
+# under a day group ("Earlier": its last message is dated months back). No
+# seeded session carries a status tag, so the chip row is All and Unread only.
+# The Pinned expectation names only the row no other scenario renames, so a
+# failed rename earlier in the run cannot fail this scenario too.
+#
+# Typing "cron" narrows the list to the one Triage row (the search matches
+# titles, and the Pinned group disappears with its rows); clicking a row leaves
+# the page for that session on /chat. Only the newest three screenshots survive
+# (harness.KEEP_IMAGES), so the flow is exactly three actions: the kept frames
+# are the full list (right after clicking into the search box), the narrowed
+# list and the opened session, and the expectations read the list from the
+# first two and the landing from the last. Nothing here changes state, so the
+# retry reads the same page.
+name: chat-sessions-page
+tier: smoke
+feature: sidebar
+user_story: >-
+  As a dashboard user, I want a bookmarkable session chooser with search,
+  filter chips and recency groups, so that I can pick a session without one
+  being auto-selected or auto-created.
+docs_url: docs/feature-map/README.md
+summary: Read the All sessions page, narrow it by typing "cron" and open the one matching session
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /sessions
+steps:
+  - You are on a page titled "All sessions" with a "New session" button at its top right. Under the title is a search box whose placeholder reads "Search sessions…", then a row of round filter chips starting with "All" (highlighted) and "Unread", then the sessions in groups under small capital-letter headings, the first being "Pinned". Click into the search box; do not click "New session" or scroll.
+  - Type exactly "cron". The list narrows as you type.
+  - >-
+    One row is left, titled "Triage: cron runs twice per tick", under a day heading (such as
+    "Earlier"); the "Pinned" heading is gone. Click that row. Do nothing else after that.
+expectations:
+  - >-
+    The main area shows a conversation whose header reads "Triage: cron runs twice per tick"
+    and whose first message is about cron-scheduled messages arriving twice.
+  - The "All sessions" page, its search box and its filter chips are no longer showing.
+  - >-
+    In the screenshot taken right after you typed "cron", the page listed exactly one session
+    row, "Triage: cron runs twice per tick", and no "Pinned" heading was showing.
+  - >-
+    In the screenshot taken before you typed, a "Pinned" group held two rows, one of them
+    "Fix empty-glob crash in list_sessions", and a further group under a day heading held
+    "Triage: cron runs twice per tick".
+max_steps: 8
+max_seconds: 240
