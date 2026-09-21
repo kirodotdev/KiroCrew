@@ -3382,16 +3382,6 @@ PROVIDER_ERROR_CONNECTION = "connection"
 PROVIDER_ERROR_HTTP_5XX = "http_5xx"
 PROVIDER_ERROR_UNKNOWN = "unknown"
 
-_PROVIDER_ERROR_RETRYABLE: frozenset[str] = frozenset(
-    {
-        PROVIDER_ERROR_MODEL_UNAVAILABLE,
-        PROVIDER_ERROR_THROTTLE,
-        PROVIDER_ERROR_CREDENTIAL_PROPAGATION,
-        PROVIDER_ERROR_CONNECTION,
-        PROVIDER_ERROR_HTTP_5XX,
-    }
-)
-
 
 @dataclass(frozen=True)
 class ProviderErrorClass:

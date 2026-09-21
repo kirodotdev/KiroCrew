@@ -245,7 +245,13 @@ class KasMcpReadiness:
         if self.tool_policy is None or "tools" not in self.tool_policy:
             return True
         raw = self.tool_policy["tools"]
-        tools = ["*"] if raw == "*" else raw if isinstance(raw, list) else []
+        tools: list[Any]
+        if raw == "*":
+            tools = ["*"]
+        elif isinstance(raw, list):
+            tools = raw
+        else:
+            tools = []
         excluded = self.tool_policy.get("excludedTools", [])
         if not isinstance(excluded, list):
             excluded = []
@@ -617,11 +623,10 @@ class McpSessionReport:
             # text would present a reason this failure never gave — the same
             # stale-evidence defect, one layer in, that this view exists to
             # remove.
-            if name in target:
-                if error:
-                    self._failures[name] = error
-                else:
-                    self._failures.pop(name, None)
+            if error:
+                self._failures[name] = error
+            else:
+                self._failures.pop(name, None)
         else:
             # A server that has since initialized (or gone back to asking for
             # authorization) must not keep showing the stale reason it failed
