@@ -381,9 +381,10 @@ agent execution is disabled by design. See [section 4](#4-sandbox-related-errors
 
 ### Missing tools in the container
 
-The image is minimal — it does not include language runtimes, compilers, or
-package managers beyond Python. If the agent needs `git`, `node`, `gcc`, etc.,
-they are not available by default.
+The image ships `git`, `curl`, `ripgrep` and `unzip` alongside Python and
+`kiro-cli`. It carries no second language runtime and no compiler toolchain,
+so `node`, `gcc` and `npm` are not available by default (`pip` and `apt` are
+there, being Python's and Debian's own).
 
 **Options:**
 
@@ -392,12 +393,12 @@ they are not available by default.
    ```dockerfile
    FROM ghcr.io/kirodotdev/kirocrew:stable
    USER root
-   RUN apt-get update && apt-get install -y git nodejs npm && rm -rf /var/lib/apt/lists/*
+   RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
    USER kirocrew
    ```
 
 2. **Mount a tools volume read-only.** Only worth trying for a statically
-   linked binary — a host `git` or `node` is dynamically linked against the
+   linked binary — a host `node` is dynamically linked against the
    host's libc and will not run under this image. Where it does apply, mount
    it `:ro`: the container runs as uid 1000, which a typical host account
    shares, so a writable mount lets the agent replace the executable and the

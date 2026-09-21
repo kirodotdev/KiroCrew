@@ -234,11 +234,12 @@ endpoints it recognizes by exact `(host, path)`. That recognized set is
 code-owned — read its current contents from
 `security._OAUTH_AUTHORIZATION_ENDPOINTS`; it covers the Connections launch
 providers' MCP authorization servers plus the classic web-OAuth hosts.
-**Miro is not in it**, so its real consent URL — which routinely exceeds the
-query-length heuristic — fails closed. The chat banner that reports the
-rejection (`dashboard/chat_runner.py`) names the remedy inline, because the fix
-is agent-fenced with no dashboard writer and that banner is the only place a
-user learns it exists.
+**Miro is in it** (`mcp.miro.com` + `/authorize`), so the public Miro MCP
+server needs no entry of your own; a host outside that set whose consent URL
+exceeds the query-length heuristic fails closed instead. The chat banner that
+reports the rejection (`dashboard/chat_runner.py`) names the remedy inline,
+because the fix is agent-fenced with no dashboard writer and that banner is the
+only place a user learns it exists.
 
 The remedy is the operator keystone **`oauth_endpoints.json`**, which extends
 the recognized set without weakening the gate. Create or edit it in the Kiro

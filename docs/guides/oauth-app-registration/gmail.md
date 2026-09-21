@@ -2,6 +2,11 @@
 
 *Who this is for: the person who owns (or can create) a Google Cloud project and wants Kiro Crew agents to search and read mail, and optionally create drafts, in a Gmail mailbox through Google's remote Gmail MCP server. Expected time: 30–45 minutes of clicking, plus a wait of "a couple of days" for Google to accept you into the Developer Preview Program if you are not already a member.*
 
+**Gmail has no Connections entry yet** — see the
+[index](README.md) for the providers pre-registered on this build — so its card
+and its **Connect** button appear once that entry ships. Registering the redirect
+URI below now means it already matches when it does.
+
 Google's Gmail MCP server is a **Developer Preview** feature. Google accepts a plain-http loopback redirect URI, so Kiro Crew's callback works as-is. Every Gmail scope the server uses is in Google's **restricted** class, which matters only if you publish an External app; Internal or Testing installs are unaffected.
 
 ## Before you start

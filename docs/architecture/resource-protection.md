@@ -15,7 +15,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Periodic reaper loop | `subagent.py` | Subagent tasks | 60s sweep (`_REAPER_INTERVAL`), kills at the same deadline | Yes, runs independently of the spawning session | `_force_reap`: reset, SIGKILL fallback, mark done, SEL audit, announce |
 | Startup watchdog | `subagent.py` | Pre-first-turn subagents | 120s with no runtime (`_STARTUP_TIMEOUT_SECS`) | Yes | Reaps a subagent that never got a runtime |
 | Reset timeout in `_run` finally | `subagent.py` | Subagent cleanup | 30s (`_RESET_TIMEOUT`) | No | SIGKILL fallback plus SEL audit if `reset()` hangs |
-| Turn limit | `subagent.py` | Subagent tool calls | 100 turns (`_TURN_LIMIT`, configurable) | No | Stops execution, returns partial output |
+| Turn limit | `subagent.py` | Subagent tool calls | 1000 turns (`_TURN_LIMIT`, configurable) | No | Stops execution, returns partial output |
 | Stall surfacing | `subagent.py` | Running subagents | 120s with no stream activity (`_STALL_IDLE_SECS`) | Yes | Surfaces the subagent as "stalled" in the UI |
 | `asyncio.wait_for` on `_execute` | `cron.py` | Cron jobs | 30 min (`_JOB_TIMEOUT_SECS`) | No | Raises `TimeoutError`, logs error, marks job failed |
 | Periodic reaper loop | `cron.py` | Cron jobs | 60s sweep (`_REAPER_INTERVAL`), kills at 30 min; reset bounded by `_REAPER_RESET_TIMEOUT` (30s) | Yes, runs independently of job execution | `_force_reap`: reset, SIGKILL fallback, mark failed, SEL audit |
@@ -23,7 +23,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Global task timeout | `taskrunner.py` | Entire task run | User-configurable (`--timeout`) | Checked in the watchdog loop | Stops the task run, marks failed |
 | ACP process death detection | `acp/client.py` | All sessions | 5 consecutive empty reads (`_MAX_CONSECUTIVE_EMPTY`) | No | Raises `AcpProcessDied`, triggers session recovery |
 | ACP init timeout | `acp/client.py` | Session creation | 4 min (`_INIT_TIMEOUT`; MCP servers can be slow to initialize) | No | Raises `AcpTimeoutError`, retries once |
-| ACP prompt timeout | `acp/client.py` | Per prompt | 2 hr (`_DEFAULT_PROMPT_TIMEOUT`) | No | Raises `AcpTimeoutError` |
+| ACP prompt timeout | `acp/client.py` | Per prompt | 4 hr (`_DEFAULT_PROMPT_TIMEOUT`) | No | Raises `AcpTimeoutError` |
 | ACP read timeout | `acp/client.py` | Per readline | 20s (`_READ_TIMEOUT`) | No | Allows `CancelledError` delivery at each yield point |
 | Cooperative-cancel grace | `acp/client.py` | Per cancel | `max(_CANCEL_GRACE_SECS, caller budget)`, floor 10s | No | Read loop abandons the turn as unresponsive once the grace elapses |
 | Process group kill | `acp/client.py` | Process cleanup | Immediate | No | `killpg(SIGTERM)`, `killpg(SIGKILL)`, then `_kill_escaped_children` for descendants that changed PGID |

@@ -1,7 +1,9 @@
 # Running Kiro Crew in Docker
 
 The official image runs the Kiro Crew **gateway** — dashboard, channel bots
-(Slack / Discord / Telegram / WeCom / Webex), crons, and the kiro-cli agent
+(Slack / Discord / Telegram / WeCom / WeChat / Webex — Teams, Feishu and
+WhatsApp need their own extras, which the image does not install), crons, and
+the kiro-cli agent
 runtime — as a headless container. It is the recommended way to run Kiro Crew
 24/7 on a server or NAS; the strongest fit is the always-on channel bot that
 does not need a desktop session.

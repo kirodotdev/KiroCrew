@@ -36,7 +36,7 @@ a hard requirement.
 | Capability | kiro-cli alone | With Kiro Crew |
 |---|---|---|
 | Sessions | One per terminal | Many concurrent (channel threads, dashboard slots, cron jobs, subagents, task steps) |
-| Surfaces | Terminal only | CLI, web dashboard, Electron desktop, and seven messaging channels |
+| Surfaces | Terminal only | CLI, web dashboard, Electron desktop, and the messaging channels under [`src/kiro_crew/docs/`](../../src/kiro_crew/docs/README.md) (Slack, Discord, Telegram, Teams, WeChat and more) |
 | Persistence | Per-directory transcript | Cross-session memory (preferences, projects, daily history, lessons) |
 | Cross-session awareness | None | Sessions share memory, so one session sees what another learned |
 | Scheduling | None | Cron jobs (`every` / `at` / `cron` expression) with cross-process file locking |

@@ -27,9 +27,9 @@ ACP runtimes — inherit that value. The backend does re-add a fixed list of
 well-known install locations (Apple Silicon Homebrew's `/opt/homebrew/bin`,
 `~/.local/bin`, common version-manager shim directories), so CLIs there
 resolve already. A CLI anywhere *outside* both the system `PATH` and that
-fixed list — Intel Homebrew's `/usr/local/bin`, a custom `~/bin`, a
-tool-managed directory like `~/.opencode/bin` — is unresolvable inside the
-app even though the same command works in Terminal.
+fixed list — a custom `~/bin`, a tool-managed directory like
+`~/.opencode/bin` — is unresolvable inside the app even though the same
+command works in Terminal.
 
 To recover your real `PATH`, the app reads the **launchd user domain**
 (`launchctl getenv PATH`) just before it spawns the Gateway and appends the

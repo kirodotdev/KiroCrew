@@ -2,6 +2,11 @@
 
 *Who this is for: a Box Admin or Co-Admin of the Box enterprise whose files Kiro Crew should read, or the person who can ask one to click through the Admin Console with them. You need a browser and a Box account that can open the Admin Console. Expected time: 15 minutes if you are the admin; longer if you have to wait for one.*
 
+**Box has no Connections entry yet** — see the
+[index](README.md) for the providers pre-registered on this build — so its card
+and its **Connect** button appear once that entry ships. Registering the redirect
+URI below now means it already matches when it does.
+
 This runbook covers the **Box MCP server** (`https://mcp.box.com`), Box's hosted Model Context Protocol endpoint. It lets Kiro Crew search, read and (if you allow it) write Box files as the signed-in Box user. Box's own documentation says the credentials for a custom client come from the **Admin Console**, not from the Developer Console app you may already know; the difference matters and is explained in section 1.
 
 ## Before you start
