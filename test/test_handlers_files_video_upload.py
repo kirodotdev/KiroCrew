@@ -203,19 +203,12 @@ async def test_a_playable_but_unaccepted_container_names_the_way_out(
 
 
 @pytest.mark.asyncio
-async def test_an_audio_container_is_not_told_to_re_encode_into_video(
+async def test_an_unsupported_audio_container_gets_no_video_hint(
     upload_dir: Path,
     mock_sel,
 ) -> None:
-    """``.m4a`` is refused WITHOUT the accepted-video-containers hint.
-
-    The hint's whole purpose is "your video needs a re-encode"; attaching it to
-    an audio upload tells that sender to wrap audio in a video container, which
-    is worse guidance than the bare refusal. ``.m4a`` shares the MP4 ``ftyp``
-    magic, so only the extension set separates the two cases -- which is exactly
-    why this is easy to reintroduce.
-    """
-    status, body = await _post(MP4_HEADER + b"\x00" * 256, "voice.m4a", "audio/mp4")
+    """An unsupported audio extension is not given video re-encoding advice."""
+    status, body = await _post(b"\xff\xf1" + b"\x00" * 256, "voice.aac", "audio/aac")
     assert status == 400, body
     assert ".webm" not in body["error"], body
     assert "accepted video containers" not in body["error"], body
@@ -334,31 +327,28 @@ def _website_source(name: str) -> str:
     return (root / "website" / "src" / name).read_text(encoding="utf-8")
 
 
-def test_accept_list_covers_every_accepted_extension() -> None:
-    """The composer's `accept` MIME list matches the server's accepted set.
-
-    This pin only works from the Python side: a vitest cannot read
-    ``_ALLOWED_VIDEO_EXT``, so a frontend-only assertion is one-sided and cannot
-    catch the drift that matters — an extension the server accepts but the
-    picker filters out of the photo library, which is invisible until a user
-    cannot find their own recording.
-    """
-    accept = re.search(
-        r"const VIDEO_ACCEPT = '([^']+)'", _website_source("components/ChatInput.tsx")
-    )
-    assert accept, "VIDEO_ACCEPT not found in ChatInput.tsx"
-    offered = set(accept.group(1).split(","))
-    # Every accepted extension needs a MIME a picker can filter on. `.m4v` is the
-    # trap: its `video/x-m4v` type is not implied by `video/mp4`.
-    required = {"video/mp4", "video/x-m4v", "video/quicktime", "video/webm"}
-    assert required <= offered, (offered, required - offered)
+def test_accept_lists_cover_every_accepted_media_extension() -> None:
+    """The composer's media hints match the server's accepted sets."""
+    source = _website_source("components/ChatInput.tsx")
+    video_match = re.search(r"const VIDEO_ACCEPT = '([^']+)'", source)
+    assert video_match, "VIDEO_ACCEPT not found in ChatInput.tsx"
+    offered_video = set(video_match.group(1).split(","))
+    # Every video extension needs a MIME a mobile picker can filter on. `.m4v`
+    # is not implied by `video/mp4`, so it carries its own type.
+    required_video = {"video/mp4", "video/x-m4v", "video/quicktime", "video/webm"}
+    assert required_video <= offered_video, (offered_video, required_video - offered_video)
     assert set(files_mod._ALLOWED_VIDEO_EXT) == {".mp4", ".m4v", ".mov", ".webm"}
+
+    audio_match = re.search(r"const AUDIO_ACCEPT = '([^']+)'", source)
+    assert audio_match, "AUDIO_ACCEPT not found in ChatInput.tsx"
+    offered_audio = set(audio_match.group(1).split(","))
+    assert offered_audio == set(files_mod._ALLOWED_AUDIO_EXT), offered_audio
 
 
 def test_file_picker_covers_every_text_and_document_extension() -> None:
     """The browser picker exposes every text/document type the server accepts."""
     match = re.search(
-        r"const FILE_ACCEPT = IMAGE_ACCEPT \+ ',' \+ VIDEO_ACCEPT \+ '([^']+)'",
+        r"const FILE_ACCEPT = IMAGE_ACCEPT \+ ',' \+ VIDEO_ACCEPT \+ ',' \+ AUDIO_ACCEPT \+ '([^']+)'",
         _website_source("components/ChatInput.tsx"),
     )
     assert match, "FILE_ACCEPT not found in ChatInput.tsx"
